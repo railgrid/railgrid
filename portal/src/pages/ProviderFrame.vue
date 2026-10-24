@@ -113,8 +113,11 @@ const isAppStudioLandingRoute = computed(() =>
   ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value),
 )
 const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
+// Full bleed hides the host identity/readiness header and content padding;
+// providers own in-view identity while host readiness and access still gate mounting.
 const isFullBleedProvider = computed(() =>
-  isAppStudioWorkspaceRoute.value || providerFullBleedOverride.value === true,
+  isAppStudioWorkspaceRoute.value ||
+  (providerFullBleedOverride.value === true && accessAllowed.value),
 )
 
 const isBuiltinProvider = computed(() => {
@@ -488,7 +491,12 @@ function onNavigate(e: Event) {
 
 function onLayoutChange(e: Event) {
   const element = elementRef.value
-  if (!element || e.target !== element) return
+  if (!element || e.target !== element) {
+    if (import.meta.env.DEV) {
+      console.warn('[railgrid] ignored railgrid-layout-change; dispatch it from the provider custom element root.')
+    }
+    return
+  }
   const fullBleed = (e as CustomEvent<{ fullBleed?: unknown }>).detail?.fullBleed
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }

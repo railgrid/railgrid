@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.foundations.provider-integration","title":"Provider visual integration and PortalKit distribution","kind":"policy","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Host-compiled and self-contained providers share the canonical stylesheet through the sync script and version 36 core style handoff; standalone fallbacks remain source-aligned."},"appliesTo":["provider-portals","portalkit","portal"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/provider-integration.md#provider-visual-integration-and-portalkit-distribution","role":"design"},{"path":"hack/sync-portalkit.sh","role":"implementation"},{"path":"provider-sdk/portalkit/styles.ts","role":"implementation"},{"path":"portal/src/pages/ProviderFrame.vue","role":"implementation"},{"path":"providers/agents/portal/src/App.vue","role":"implementation"},{"path":"hack/verify-ui-conformance.mjs","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current byte-for-byte PortalKit and AgentKit copy and manifest parity passed."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing","evidence":"Current UI conformance scanned 426 files with zero violations and passed all 32 tests."},{"kind":"browser","ref":"Core and provider rendered fixture matrices","status":"passing","evidence":"Six core and six provider dark/light desktop/mobile/hybrid cases passed with no captured errors or horizontal overflow; actual fonts loaded. This fixture evidence does not establish all routes, live Tilt, or assistive-technology verification."},{"kind":"browser","ref":"Auth, Dex, and host hybrid fixtures","status":"passing","evidence":"Auth, Dex, and host hybrid fixtures passed with the scoped rendered checks; these fixtures do not establish all routes, live Tilt, or assistive-technology verification."}]},"relatedDocuments":[{"id":"design.components.portalkit-assets","relation":"see-also","path":"docs/design/components/portalkit-assets.md"}]}
+{"schema":1,"id":"design.foundations.provider-integration","title":"Provider visual integration and PortalKit distribution","kind":"policy","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"Host-compiled and self-contained providers share the canonical stylesheet through the sync script and version 36 core style handoff; standalone fallbacks remain source-aligned. The generic provider full-bleed request path is implemented; live provider/backend acceptance is still pending."},"appliesTo":["provider-portals","portalkit","portal"],"owner":"design-system","canonicalSource":[{"path":"docs/design/foundations/provider-integration.md#provider-visual-integration-and-portalkit-distribution","role":"design"},{"path":"hack/sync-portalkit.sh","role":"implementation"},{"path":"provider-sdk/portalkit/styles.ts","role":"implementation"},{"path":"portal/src/pages/ProviderFrame.vue","role":"implementation"},{"path":"providers/agents/portal/src/App.vue","role":"implementation"},{"path":"hack/verify-ui-conformance.mjs","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Current byte-for-byte PortalKit and AgentKit copy and manifest parity passed."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing","evidence":"Current UI conformance scanned 463 files with zero violations and passed all 32 tests."},{"kind":"browser","ref":"Historical fixture: Core and provider rendered fixture matrices","status":"passing","evidence":"Historical evidence: six core and six provider dark/light desktop/mobile/hybrid cases passed with no captured errors or horizontal overflow; actual fonts loaded. This fixture evidence does not establish all routes, live Tilt, or assistive-technology verification."},{"kind":"browser","ref":"Historical fixture: Auth, Dex, and host hybrid fixtures","status":"passing","evidence":"Historical evidence: Auth, Dex, and host hybrid fixtures passed with the scoped rendered checks; these fixtures do not establish all routes, live Tilt, or assistive-technology verification."},{"kind":"browser","ref":"Generic provider full-bleed live acceptance","status":"not-run","evidence":"Live acceptance was blocked before application startup: the kind kubelet exhausted inotify watchers (inotify_init: too many open files), so the application backend did not start and no screenshots were obtained. Supplemental mock-browser checks recorded 72 rendered-shell and route-transition assertions separately; they do not establish or pass live provider/backend acceptance."}]},"relatedDocuments":[{"id":"design.components.portalkit-assets","relation":"see-also","path":"docs/design/components/portalkit-assets.md"}]}
 ---
 
 # Provider visual integration and PortalKit distribution
@@ -61,13 +61,22 @@ core PortalKit does not import AgentKit or imply that its recipes are present.
 
 Providers may request the host's full-bleed layout with a bubbling
 `railgrid-layout-change` event from their mounted custom-element root.
-`ProviderFrame` accepts boolean requests only from the currently mounted
-provider element and clears the override when its route changes or access is
-lost. App Studio workspace routes retain their full-bleed default. Agents use
-this request on agent instance routes (`/agents/:name/...`), and the Agents
-shell reasserts `fullBleed: true` as its route or host context changes. The
-request affects layout only; it does not change provider routing or tenant
-authority.
+Full bleed hides the host provider name, version, readiness header, and
+content padding, so the provider owns its in-view identity. Host readiness
+and workspace access still control whether its bundle may mount; the request
+changes layout only. `ProviderFrame` accepts boolean requests only from the
+currently mounted provider element and clears the override when its route
+changes or access is lost. It resets the override before every fresh element
+is appended, including remounts after host-context changes, so an old
+instance's layout state cannot carry into a new lifecycle. The mount listener
+is bound before append; when the mount is reused and already has that
+listener, it remains attached and resolves the current element at dispatch
+time, so synchronous `connectedCallback` requests are still handled.
+Providers that need full bleed must reassert `fullBleed: true` after every
+route change, remount, or host-context reset. App Studio workspace routes
+retain their full-bleed default. Agents use this request on agent instance
+routes (`/agents/:name/...`) and reassert it as their route or host context
+changes.
 
 Provider-owned dialogs may keep their Teleport target inside the provider to
 retain scoped styles. While a visible dialog is mounted with `role="dialog"`

@@ -16,6 +16,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
+// These source-contract tests execute extracted functions; they do not mount
+// Vue, exercise DOM event bubbling, or verify the rendered shell. Supplemental
+// mock-browser checks cover that shell; live provider/backend acceptance stays separate.
 const source = await readFile(new URL('./ProviderFrame.vue', import.meta.url), 'utf8')
 
 function functionBody(name) {
@@ -24,52 +27,108 @@ function functionBody(name) {
   return body
 }
 
+function executableBody(name) {
+  return functionBody(name)
+    .replace('(e as CustomEvent<{ fullBleed?: unknown }>)', 'e')
+    .replaceAll('import.meta.env.DEV', 'isDev')
+}
+
+function layoutHandler() {
+  return new Function(
+    'elementRef', 'providerFullBleedOverride', 'e', 'isDev', 'console',
+    executableBody('onLayoutChange'),
+  )
+}
+
 test('any mounted provider can request or release full bleed with a boolean', () => {
-  const body = functionBody('onLayoutChange')
-  const handler = new Function('elementRef', 'providerFullBleedOverride', 'e',
-    body.replace('(e as CustomEvent<{ fullBleed?: unknown }>)', 'e'))
+  const handler = layoutHandler()
   const element = {}
   const state = { value: null }
 
-  handler({ value: element }, state, { target: element, detail: { fullBleed: true } })
+  handler({ value: element }, state, { target: element, detail: { fullBleed: true } }, false, { warn() {} })
   assert.equal(state.value, true)
-  handler({ value: element }, state, { target: element, detail: { fullBleed: false } })
+  handler({ value: element }, state, { target: element, detail: { fullBleed: false } }, false, { warn() {} })
   assert.equal(state.value, false)
 })
 
 test('nested, stale, unmounted, and nonboolean layout requests are ignored', () => {
-  const body = functionBody('onLayoutChange')
-  const handler = new Function('elementRef', 'providerFullBleedOverride', 'e',
-    body.replace('(e as CustomEvent<{ fullBleed?: unknown }>)', 'e'))
+  const handler = layoutHandler()
   const element = {}
   const state = { value: null }
 
   for (const target of [{}, { stale: true }]) {
-    handler({ value: element }, state, { target, detail: { fullBleed: true } })
+    handler({ value: element }, state, { target, detail: { fullBleed: true } }, false, { warn() {} })
   }
-  handler({ value: null }, state, { target: element, detail: { fullBleed: true } })
+  handler({ value: null }, state, { target: element, detail: { fullBleed: true } }, false, { warn() {} })
   for (const fullBleed of ['false', 0, null, undefined]) {
-    handler({ value: element }, state, { target: element, detail: { fullBleed } })
+    handler({ value: element }, state, { target: element, detail: { fullBleed } }, false, { warn() {} })
   }
   assert.equal(state.value, null)
 })
 
-test('full-bleed defaults to App Studio workspace routes and accepts provider overrides', () => {
+test('development warns on layout events outside the mounted provider root', () => {
+  const handler = layoutHandler()
+  const element = {}
+  const state = { value: null }
+  const warnings = []
+  const devConsole = { warn: message => warnings.push(message) }
+
+  handler({ value: element }, state, { target: {}, detail: { fullBleed: true } }, true, devConsole)
+  handler({ value: null }, state, { target: element, detail: { fullBleed: true } }, true, devConsole)
+
+  const instruction = '[railgrid] ignored railgrid-layout-change; dispatch it from the provider custom element root.'
+  assert.deepEqual(warnings, [instruction, instruction])
+  assert.equal(state.value, null)
+})
+
+test('production stays quiet for layout events outside the mounted provider root', () => {
+  const handler = layoutHandler()
+  const element = {}
+  const state = { value: null }
+  const warnings = []
+  const prodConsole = { warn: message => warnings.push(message) }
+
+  handler({ value: element }, state, { target: {}, detail: { fullBleed: true } }, false, prodConsole)
+  handler({ value: null }, state, { target: element, detail: { fullBleed: true } }, false, prodConsole)
+
+  assert.deepEqual(warnings, [])
+  assert.equal(state.value, null)
+})
+
+test('App Studio keeps its workspace default and dynamic overrides require host access', () => {
   const expression = source.match(/const isFullBleedProvider = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
+  const accessExpression = source.match(/const accessAllowed = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
   assert.ok(expression)
-  const createValue = new Function('computed', 'isAppStudioWorkspaceRoute', 'providerFullBleedOverride',
+  assert.ok(accessExpression)
+  const createValue = new Function('computed', 'isAppStudioWorkspaceRoute', 'providerFullBleedOverride', 'accessAllowed',
     `return computed(() => ${expression})`)
+  const createAccess = new Function(
+    'computed', 'catalogSettled', 'entry', 'requiresBinding', 'bindingsAuthoritative', 'providerBound',
+    `return computed(() => ${accessExpression})`,
+  )
   const computed = getter => ({ get value() { return getter() } })
-  const fullBleed = (workspaceRoute, override) => createValue(
+  const access = (ready, bound) => createAccess(
+    computed,
+    { value: true },
+    { value: { ready, serving: { ui: '/main.js' } } },
+    { value: true },
+    { value: true },
+    { value: bound },
+  ).value
+  const fullBleed = (workspaceRoute, override, allowed = true) => createValue(
     computed,
     { value: workspaceRoute },
     { value: override },
+    { value: allowed },
   ).value
 
   assert.equal(fullBleed(false, null), false)
-  assert.equal(fullBleed(true, null), true)
+  assert.equal(fullBleed(true, null, false), true)
   assert.equal(fullBleed(false, true), true)
   assert.equal(fullBleed(false, false), false)
+  assert.equal(fullBleed(false, true, access(false, true)), false)
+  assert.equal(fullBleed(false, true, access(true, false)), false)
+  assert.equal(fullBleed(false, true, access(true, true)), true)
 })
 
 test('route reset watcher tracks provider and subroute and runs synchronously', () => {
@@ -143,13 +202,13 @@ test('mounted-element cleanup clears the override and removes the mount listener
 
 test('mount resets old layout state and accepts a synchronous request from the new element', () => {
   const body = functionBody('mountElement').replace(' as HTMLElement', '')
-  const onLayoutChange = new Function('elementRef', 'providerFullBleedOverride', 'e',
-    functionBody('onLayoutChange').replace('(e as CustomEvent<{ fullBleed?: unknown }>)', 'e'))
+  const onLayoutChange = layoutHandler()
   const elementRef = { value: { stale: true } }
   const state = { value: true }
   const order = []
   let emitDuringAppend = false
   let listenersBound = false
+  let bindCalls = 0
   const mount = {
     replaceChildren() {
       assert.equal(elementRef.value, null)
@@ -160,7 +219,9 @@ test('mount resets old layout state and accepts a synchronous request from the n
       assert.equal(elementRef.value, element)
       assert.equal(listenersBound, true)
       order.push('append')
-      if (emitDuringAppend) onLayoutChange(elementRef, state, { target: element, detail: { fullBleed: true } })
+      if (emitDuringAppend) {
+        onLayoutChange(elementRef, state, { target: element, detail: { fullBleed: true } }, false, { warn() {} })
+      }
     },
   }
   const makeMount = new Function(
@@ -177,7 +238,15 @@ test('mount resets old layout state and accepts a synchronous request from the n
     state,
     { subPath: 'library' },
     { before: () => order.push('focus') },
-    () => { listenersBound = true; order.push('bind') },
+    () => {
+      if (listenersBound) {
+        order.push('already-bound')
+        return
+      }
+      listenersBound = true
+      bindCalls++
+      order.push('bind')
+    },
     () => order.push('context'),
   )
 
@@ -189,6 +258,8 @@ test('mount resets old layout state and accepts a synchronous request from the n
 
   emitDuringAppend = true
   assert.equal(mountElement('external-editor'), true)
+  assert.equal(bindCalls, 1)
+  assert.ok(order.indexOf('already-bound') < order.lastIndexOf('append'))
   assert.equal(state.value, true)
 })
 
