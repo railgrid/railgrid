@@ -114,9 +114,7 @@ const isAppStudioLandingRoute = computed(() =>
 )
 const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
 const isFullBleedProvider = computed(() =>
-  (props.providerName === 'app-studio' &&
-    (!isAppStudioLandingRoute.value || providerFullBleedOverride.value === true)) ||
-  (props.providerName === 'agents' && providerFullBleedOverride.value === true),
+  isAppStudioWorkspaceRoute.value || providerFullBleedOverride.value === true,
 )
 
 const isBuiltinProvider = computed(() => {
@@ -307,6 +305,7 @@ function clearMountedElement() {
   pageResource.clear(resourceSource)
   routeFocus.clear()
   mountGeneration++
+  providerFullBleedOverride.value = null
   boundMount?.removeEventListener('railgrid-route-ready', onRouteReady)
   boundMount?.removeEventListener('railgrid-navigate', onNavigate)
   boundMount?.removeEventListener('railgrid-layout-change', onLayoutChange)
@@ -326,12 +325,14 @@ function clearMountedElement() {
 function mountElement(name: string, generation?: number): boolean {
   const currentGeneration = generation ?? ++mountGeneration
   if (!mountRef.value || !isCurrentMount(currentGeneration, name)) return false
+  providerFullBleedOverride.value = null
+  elementRef.value = null
   mountRef.value.replaceChildren()
   const el = document.createElement(tagFor(name)) as HTMLElement
-  mountRef.value.appendChild(el)
   elementRef.value = el
-  routeFocus.before(el, props.subPath || '')
   bindMountEvents()
+  mountRef.value.appendChild(el)
+  routeFocus.before(el, props.subPath || '')
   pushContext()
   return true
 }
@@ -486,7 +487,8 @@ function onNavigate(e: Event) {
 }
 
 function onLayoutChange(e: Event) {
-  if (props.providerName !== 'app-studio' && props.providerName !== 'agents') return
+  const element = elementRef.value
+  if (!element || e.target !== element) return
   const fullBleed = (e as CustomEvent<{ fullBleed?: unknown }>).detail?.fullBleed
   if (typeof fullBleed === 'boolean') providerFullBleedOverride.value = fullBleed
 }

@@ -59,13 +59,15 @@ AgentKit is an optional layer. Its independent `AGENT_UI_VERSION` and
 `--railgrid-agent-ui-version` marker are owned by `provider-sdk/agentkit/styles.ts`;
 core PortalKit does not import AgentKit or imply that its recipes are present.
 
-Agents may request the host's full-bleed layout with a bubbling
-`railgrid-layout-change` event while a usable context is on an agent instance
-route (`/agents/:name/...`). `ProviderFrame` accepts that boolean for Agents,
-and the Agents shell reasserts `fullBleed: true` as the route or host context
-changes. The request is cleared when leaving the agent instance, when context
-is lost, and when the provider unmounts; it does not change provider routing or
-tenant authority.
+Providers may request the host's full-bleed layout with a bubbling
+`railgrid-layout-change` event from their mounted custom-element root.
+`ProviderFrame` accepts boolean requests only from the currently mounted
+provider element and clears the override when its route changes or access is
+lost. App Studio workspace routes retain their full-bleed default. Agents use
+this request on agent instance routes (`/agents/:name/...`), and the Agents
+shell reasserts `fullBleed: true` as its route or host context changes. The
+request affects layout only; it does not change provider routing or tenant
+authority.
 
 Provider-owned dialogs may keep their Teleport target inside the provider to
 retain scoped styles. While a visible dialog is mounted with `role="dialog"`
