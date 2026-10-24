@@ -77,6 +77,9 @@ type Config struct {
 	// per-connection client id/secret — mirroring the code provider. Empty →
 	// users bring their own OAuth app credentials per connection.
 	OAuthApps map[string]OAuthApp
+	// MCPAppApprovedDigests is the operator-reviewed digest allowlist for exact
+	// provider MCP App HTML. Empty denies every hosted App.
+	MCPAppApprovedDigests map[string][]string
 }
 
 // DefaultTriggerDeliveryRetention is the delivery-sink cap per Webhook when
@@ -145,6 +148,9 @@ type Server struct {
 // DatabaseURL is configured (production), the in-memory backend otherwise
 // (bare-hub dev; explicitly forced by InMemoryStore).
 func New(ctx context.Context, cfg Config) (*Server, error) {
+	if err := validateMCPAppApprovedDigests(cfg.MCPAppApprovedDigests); err != nil {
+		return nil, err
+	}
 	var st store.Store
 	switch {
 	case cfg.DatabaseURL != "" && !cfg.InMemoryStore:

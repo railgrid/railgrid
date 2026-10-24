@@ -227,6 +227,46 @@ tool supports them; side-effecting calls must not be repeated just to recover
 the output. This is a per-result safety limit; the conversation still uses the
 context-budget and compaction policy below.
 
+## Saved results and MCP Apps
+
+An attended chat can save one successful tool result with
+`capture_agent_artifact`, then attach its artifact ID and SHA-256 digest to a
+later chat turn. `open_analysis_artifact` rereads only an exact attached
+capture; it does not rerun the source tool. Capture and source-backed reopen
+require caller-attended MCP so the provider can check current run/source access
+and exact source object UIDs; no data-plane POST capture route is served.
+Source-free detail reads remain available from the Agent artifacts endpoint.
+Each caller can retain at most 100 captures and 16 MiB of result plus recorded
+input across all of that caller's Agents in a workspace. The provider reports
+size-limit and quota failures directly, and the caller can delete an existing
+capture to make room. Artifacts retain only a content-free App resource URI
+and SHA-256 receipt; the provider fetches exact HTML transiently for an
+attended capture or reopen and never writes it to the run trace or artifact
+store. Captures are immutable and caller-owned; list responses contain
+metadata only.
+
+Run checkpoints retain only the attached artifact owner and ID/digest pointers,
+never the caller bearer or captured bytes. If an approval resume needs to reopen
+a source-backed saved result, the data-plane approval route has no caller bearer;
+the provider fails that continuation closed with a current-caller-authorization
+error. Start a fresh attended chat with the result attached to reopen it.
+
+MCP App negotiation and resource reads are limited to the explicit trusted Hub
+aggregate connection. Ordinary MCP connections do not advertise Apps or fetch
+their UI resources. An App is available only when its tool result includes
+validated source references and its provider plus exact HTML digest appears in
+the operator's `RAILGRID_MCP_APP_APPROVED_DIGESTS` allowlist (chart value
+`mcpApps.approvedDigests`). The allowlist defaults to empty, which disables
+hosted Apps while preserving ordinary captured result data. Capture and every
+reopen resolve the exact namespaced URI through the current Hub aggregate and
+require the returned HTML digest to match both the saved receipt and an
+operator-approved pin. Removing approval or changing the installed resource
+withholds the App while leaving the saved result available after source
+revalidation. This source check applies to saved capture data and App HTML; it
+does not retroactively revoke ordinary historical MCP text, prior assistant
+answers, or the existing run trace. Hosted App HTML may make its own network
+requests; the provider does not claim to prevent those requests.
+
 ## Conversation history and compaction
 
 Chat, channel, and resumed runs retain structured assistant tool calls and their

@@ -33,6 +33,7 @@ import (
 	"github.com/eino-contrib/jsonschema"
 
 	"github.com/railgrid/provider-agents/backend"
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // Role constants for engine messages (aligned with Eino's schema roles).
@@ -216,6 +217,9 @@ func (e *Engine) StreamTurnWithTools(
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: no messages to send")
 	}
+	if err := rehydrateReferenceOnly(ctx, in, identities, byName, nil); err != nil {
+		return Result{}, err
+	}
 	task := latestUserMessage(msgs)
 	var content strings.Builder
 	var usage Usage
@@ -255,6 +259,9 @@ func (e *Engine) ResumeTurnWithTools(
 	in, identities := restoreMessagesWithIdentities(ck.Messages)
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: checkpoint has no messages")
+	}
+	if err := rehydrateReferenceOnly(ctx, in, identities, byName, ck.Pending); err != nil {
+		return Result{Usage: ck.Usage}, err
 	}
 	checkpointHistory := make([]Message, 0, len(ck.Messages))
 	for _, message := range ck.Messages {
@@ -299,6 +306,17 @@ func (e *Engine) bindTools(model einomodel.BaseChatModel, tools []Tool) (einomod
 		return nil, nil, errors.New("engine: nil chat model")
 	}
 	byName := map[string]Tool{}
+	for _, tool := range tools {
+		switch tool.ResultPolicy {
+		case "", backend.ToolResultRetain:
+		case backend.ToolResultReferenceOnly:
+			if tool.ExecRich == nil || tool.RehydrateResult == nil {
+				return nil, nil, fmt.Errorf("engine: reference-only tool %q needs rich execution and a fresh reader", tool.Name)
+			}
+		default:
+			return nil, nil, fmt.Errorf("engine: tool %q has unsupported result policy %q", tool.Name, tool.ResultPolicy)
+		}
+	}
 	if len(tools) == 0 {
 		return model, byName, nil
 	}
@@ -349,6 +367,20 @@ func (e *Engine) loop(
 			in, identities, compacted, compactErr = compactBeforeRequest(ctx, in, identities, toolSchemaTokens, task, cfg)
 			if compactErr != nil {
 				return Result{}, compactErr
+			}
+			if compacted {
+				if err := rehydrateReferenceOnly(ctx, in, identities, byName, nil); err != nil {
+					return Result{Usage: *usage}, err
+				}
+				if cfg.ContextBudgetTokens > 0 {
+					estimate := requestContextEstimate(in, toolSchemaTokens, cfg.ContextBudgetTokens)
+					if estimate.TotalTokens > estimate.BudgetTokens {
+						return Result{Usage: *usage}, &ContextBudgetError{
+							Estimate: estimate,
+							Reason:   "reopened reference-only tool results leave too little room for the current turn",
+						}
+					}
+				}
 			}
 			// Offer a resumable snapshot: no tool call is in flight here, so the
 			// checkpoint is coherent and resuming just re-asks the model. A compacted
@@ -411,7 +443,7 @@ func (e *Engine) loop(
 			}
 			started := time.Now()
 			cb.toolStart(pc.ID, pc.Name, pc.Args)
-			result, images, execErr := execute(ctx, byName, pc)
+			observation, execErr := execute(ctx, byName, pc)
 			if ie := asInterrupt(execErr); ie != nil {
 				// Pause: checkpoint the conversation with the un-executed calls
 				// (this one first) so the run resumes exactly here.
@@ -429,13 +461,72 @@ func (e *Engine) loop(
 					},
 				}, nil
 			}
-			failed := false
-			if execErr != nil {
-				result, failed = "error: "+execErr.Error(), true
+			tool := byName[pc.Name]
+			referenceOnly := tool.ResultPolicy == backend.ToolResultReferenceOnly
+			failed := execErr != nil
+			result := observation.Text
+			images := observation.Images
+			sources := validatedSources(observation.Sources)
+			var presentation *resulttypes.ProviderPresentation
+			var resultReference *backend.ToolResultReference
+			unavailable := false
+			if referenceOnly {
+				images = nil
+				sources = nil
+				presentation = nil
+				if execErr != nil {
+					result = backend.ToolResultUnavailablePlaceholder
+					unavailable = true
+				} else {
+					if len(observation.Images) != 0 || strings.TrimSpace(observation.Text) == "" {
+						return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+					}
+					ref, err := BindToolResultReference(pc.Name, pc.ID, pc.Args, observation.ResultReference, observation.Receipt)
+					if err != nil {
+						return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+					}
+					resultReference = &ref
+				}
+			} else {
+				if len(observation.ResultReference) != 0 || len(observation.Receipt) != 0 {
+					return Result{Usage: *usage}, ErrToolResultReferenceUnavailable
+				}
+				if execErr != nil {
+					result = "error: " + execErr.Error()
+					images, sources = nil, nil
+				} else if result == "" && len(images) > 0 {
+					result = fmt.Sprintf("[returned %d image(s); shown below]", len(images))
+				}
+				if execErr == nil && observation.Presentation != nil && observation.Presentation.Validate() == nil {
+					presentation = observation.Presentation.Clone()
+					if presentation.MCPApp != nil && len(sources) == 0 {
+						presentation.MCPApp = nil
+					}
+				}
 			}
 			turnImages = append(turnImages, images...)
-			cb.tool(ToolEvent{ID: pc.ID, Name: pc.Name, Args: pc.Args, Result: result, Err: failed, Duration: time.Since(started)})
-			in = append(in, schema.ToolMessage(result, pc.ID, schema.WithToolName(pc.Name)))
+			eventResult := result
+			if referenceOnly && resultReference != nil {
+				eventResult = backend.ToolResultReferencePlaceholder
+			}
+			modelResult := result
+			if len(sources) > 0 {
+				modelResult += "\n\nSource references are attached to this successful tool receipt. If you use this evidence, cite it as [[tool:" + compactToolCitationReference(pc.ID) + "]]. Do not invent a URL or source reference."
+			}
+			cb.tool(ToolEvent{
+				ID: pc.ID, Name: pc.Name, Args: pc.Args, Result: eventResult, Err: failed, Duration: time.Since(started),
+				Sources: cloneSourceReferences(sources), Presentation: presentation.Clone(),
+			})
+			toolMessage := schema.ToolMessage(modelResult, pc.ID, schema.WithToolName(pc.Name))
+			in = append(in, toolMessage)
+			if referenceOnly {
+				identity := historyIdentity{resultUnavailable: unavailable}
+				if resultReference != nil {
+					ref := resultReference.Clone()
+					identity.resultReference = &ref
+				}
+				identities[toolMessage] = identity
+			}
 			pending = pending[1:]
 		}
 		// A durable result write may have failed in OnTool, including on the
@@ -460,27 +551,20 @@ func (e *Engine) loop(
 // execute runs one tool call, preferring the rich executor. The returned error
 // may be an *InterruptError (approval gate) — callers check before treating it
 // as a failure observation.
-func execute(ctx context.Context, byName map[string]Tool, pc PendingCall) (string, []ToolImage, error) {
+func execute(ctx context.Context, byName map[string]Tool, pc PendingCall) (Observation, error) {
 	tool, ok := byName[pc.Name]
 	if !ok {
-		return "", nil, fmt.Errorf("unknown tool %q", pc.Name)
+		return Observation{}, fmt.Errorf("unknown tool %q", pc.Name)
 	}
+	ctx = backend.WithToolCallID(ctx, pc.ID)
 	switch {
 	case tool.ExecRich != nil:
-		obs, err := tool.ExecRich(ctx, pc.Args)
-		if err != nil {
-			return "", nil, err
-		}
-		result := obs.Text
-		if result == "" && len(obs.Images) > 0 {
-			result = fmt.Sprintf("[returned %d image(s); shown below]", len(obs.Images))
-		}
-		return result, obs.Images, nil
+		return tool.ExecRich(ctx, pc.Args)
 	case tool.Exec != nil:
 		out, err := tool.Exec(ctx, pc.Args)
-		return out, nil, err
+		return Observation{Text: out}, err
 	default:
-		return "", nil, fmt.Errorf("tool %q has no executor", pc.Name)
+		return Observation{}, fmt.Errorf("tool %q has no executor", pc.Name)
 	}
 }
 

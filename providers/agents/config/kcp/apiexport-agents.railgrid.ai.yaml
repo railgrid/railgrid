@@ -117,6 +117,15 @@ spec:
     storage:
       crd: {}
   - group: agents.railgrid.ai
+    name: agents/artifacts
+    schema: v261023-088a2cfe.artifacts.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
     name: agents/chat
     schema: v260924-87f1980f.chat.agents.railgrid.ai
     storage:

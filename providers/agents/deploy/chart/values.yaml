@@ -53,6 +53,11 @@ store:
 triggers:
   deliveryRetention: 200
 
+# MCP Apps are executable HTML. The exact provider/resource digest must be
+# explicitly reviewed and pinned; an empty map disables hosted Apps.
+mcpApps:
+  approvedDigests: {}
+
 hub:
   url: "http://railgrid-hub.railgrid.svc.cluster.local:8080"
   insecure: false

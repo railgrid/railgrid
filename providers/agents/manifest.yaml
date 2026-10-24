@@ -92,6 +92,8 @@ spec:
             description: "Follow the agent's run and inbox activity as it happens."
             stream: true
             readOnly: true
+          - name: artifacts
+            description: "List or delete caller-owned immutable tool-result captures; source-free details can be read here, while capture and source-backed reads require caller-attended MCP."
       # A model credential is an object, so its probes are verbs on IT rather
       # than on some agent that happens to use it. That is what makes first-run
       # work: a workspace with no agent yet can still save a credential and ask

@@ -293,6 +293,7 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 	s.registerConfigMCPTools(srv, r)
 	s.registerRunMCPTools(srv, r)
 	s.registerChatMCPTool(srv, r)
+	s.registerAgentArtifactMCPTools(srv, r)
 
 	yes := true
 	no := false

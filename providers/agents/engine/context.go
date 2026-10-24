@@ -14,6 +14,8 @@ import (
 	"fmt"
 
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/railgrid/provider-agents/backend"
 )
 
 // ContextEstimate describes the estimated model input size at a request
@@ -146,9 +148,11 @@ func EstimateHistoryTokens(messages []Message) int {
 }
 
 type historyIdentity struct {
-	id        string
-	sequence  int64
-	ephemeral bool
+	id                string
+	sequence          int64
+	ephemeral         bool
+	resultReference   *backend.ToolResultReference
+	resultUnavailable bool
 }
 
 func messagesFromEino(in []*schema.Message, identities map[*schema.Message]historyIdentity) []Message {
@@ -168,6 +172,11 @@ func messagesFromEino(in []*schema.Message, identities map[*schema.Message]histo
 			msg.ID = identity.id
 			msg.Sequence = identity.sequence
 			msg.Ephemeral = identity.ephemeral
+			if identity.resultReference != nil {
+				ref := identity.resultReference.Clone()
+				msg.ResultReference = &ref
+			}
+			msg.ResultUnavailable = identity.resultUnavailable
 		}
 		if msg.Content == "" && (len(m.UserInputMultiContent) > 0 || len(m.MultiContent) > 0) {
 			msg.Content = "[multimodal content from tool calls omitted during context compaction]"
@@ -187,10 +196,18 @@ func messageName(message *schema.Message) string {
 func identitiesFromMessages(messages []Message, wire []*schema.Message) map[*schema.Message]historyIdentity {
 	identities := make(map[*schema.Message]historyIdentity, len(messages))
 	for i, message := range messages {
-		if i >= len(wire) || (message.ID == "" && message.Sequence == 0 && !message.Ephemeral) {
+		if i >= len(wire) || (message.ID == "" && message.Sequence == 0 && !message.Ephemeral && message.ResultReference == nil && !message.ResultUnavailable) {
 			continue
 		}
-		identities[wire[i]] = historyIdentity{id: message.ID, sequence: message.Sequence, ephemeral: message.Ephemeral}
+		identity := historyIdentity{
+			id: message.ID, sequence: message.Sequence, ephemeral: message.Ephemeral,
+			resultUnavailable: message.ResultUnavailable,
+		}
+		if message.ResultReference != nil {
+			ref := message.ResultReference.Clone()
+			identity.resultReference = &ref
+		}
+		identities[wire[i]] = identity
 	}
 	return identities
 }
@@ -269,7 +286,8 @@ func compactBeforeRequest(
 		return nil, nil, false, &ContextBudgetError{Estimate: estimate, Reason: "no context compactor is configured"}
 	}
 	history := messagesFromEino(in, identities)
-	replacement, err := cfg.ContextCompactor(ctx, history, estimate)
+	safeHistory := redactReferenceOnlyForCompaction(history)
+	replacement, err := cfg.ContextCompactor(ctx, safeHistory, estimate)
 	if err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
@@ -279,10 +297,13 @@ func compactBeforeRequest(
 	if err := validateToolMessagePairing(replacement); err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
+	if err := validateReferenceOnlyCompaction(history, replacement); err != nil {
+		return nil, nil, false, err
+	}
 	if err := ensureLatestUserMessageRetained(replacement, task); err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
-	if err := ensureSystemMessagesRetained(history, replacement); err != nil {
+	if err := ensureSystemMessagesRetained(safeHistory, replacement); err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
 	rebuilt, rebuiltIdentities := toEinoWithIdentities(replacement)
@@ -293,6 +314,94 @@ func compactBeforeRequest(
 		return nil, nil, false, &ContextBudgetError{Estimate: estimate, Reason: "context compactor returned history over budget"}
 	}
 	return rebuilt, rebuiltIdentities, true, nil
+}
+
+// redactReferenceOnlyForCompaction preserves opaque references but never sends
+// reference-only result bytes to the callback that writes replacement history.
+func redactReferenceOnlyForCompaction(messages []Message) []Message {
+	out := append([]Message(nil), messages...)
+	for i := range out {
+		if out[i].ResultReference != nil {
+			ref := out[i].ResultReference.Clone()
+			out[i].ResultReference = &ref
+			out[i].Content = backend.ToolResultReferencePlaceholder
+		} else if out[i].ResultUnavailable {
+			out[i].Content = backend.ToolResultUnavailablePlaceholder
+		}
+	}
+	return out
+}
+
+// validateReferenceOnlyCompaction requires every reference-only receipt to
+// survive compaction unchanged and rejects replacement text in place of its
+// fixed placeholder.
+func validateReferenceOnlyCompaction(source, replacement []Message) error {
+	want := make(map[string]Message)
+	for _, message := range source {
+		if message.ResultReference == nil && !message.ResultUnavailable {
+			continue
+		}
+		if message.Role != RoleTool || message.ToolCallID == "" || message.Name == "" || (message.ResultReference != nil && message.ResultUnavailable) {
+			return ErrToolResultReferenceUnavailable
+		}
+		if message.ResultReference != nil {
+			args, ok := findToolCallArgs(source, message.ToolCallID, message.Name)
+			if !ok || ValidateToolResultReference(*message.ResultReference, message.Name, message.ToolCallID, args) != nil {
+				return ErrToolResultReferenceUnavailable
+			}
+		} else if message.Content != backend.ToolResultUnavailablePlaceholder {
+			return ErrToolResultReferenceUnavailable
+		}
+		if _, duplicate := want[message.ToolCallID]; duplicate {
+			return ErrToolResultReferenceUnavailable
+		}
+		want[message.ToolCallID] = message
+	}
+	for _, message := range replacement {
+		if message.ResultReference == nil && !message.ResultUnavailable {
+			continue
+		}
+		prior, ok := want[message.ToolCallID]
+		if !ok || prior.Name != message.Name || prior.ResultUnavailable != message.ResultUnavailable ||
+			((prior.ResultReference == nil) != (message.ResultReference == nil)) ||
+			(prior.ResultReference != nil && !prior.ResultReference.Equal(*message.ResultReference)) {
+			return ErrToolResultReferenceUnavailable
+		}
+		if message.ResultReference != nil && message.Content != backend.ToolResultReferencePlaceholder ||
+			message.ResultUnavailable && message.Content != backend.ToolResultUnavailablePlaceholder {
+			return ErrToolResultReferenceUnavailable
+		}
+		args, ok := findToolCallArgs(replacement, message.ToolCallID, message.Name)
+		priorArgs, priorOK := findToolCallArgs(source, message.ToolCallID, prior.Name)
+		if !ok || !priorOK || args != priorArgs {
+			return ErrToolResultReferenceUnavailable
+		}
+		delete(want, message.ToolCallID)
+	}
+	if len(want) != 0 {
+		return ErrToolResultReferenceUnavailable
+	}
+	return nil
+}
+
+func findToolCallArgs(messages []Message, callID, toolName string) (string, bool) {
+	var args string
+	found := false
+	for _, message := range messages {
+		if message.Role != RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.ID != callID || call.Function.Name != toolName {
+				continue
+			}
+			if found {
+				return "", false
+			}
+			args, found = call.Function.Arguments, true
+		}
+	}
+	return args, found
 }
 
 func cloneToolCalls(in []schema.ToolCall) []schema.ToolCall {

@@ -36,6 +36,8 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/schema"
+
+	"github.com/railgrid/provider-agents/resulttypes"
 )
 
 // Role constants for the conversation a turn runs over.
@@ -45,6 +47,44 @@ const (
 	RoleAssistant = "assistant"
 	RoleTool      = "tool"
 )
+
+// ToolResultPolicy controls whether a completed tool result is retained in
+// durable checkpoints or represented by a bounded opaque reference. The zero
+// value preserves ordinary result retention.
+type ToolResultPolicy string
+
+const (
+	ToolResultRetain                 ToolResultPolicy = "retain"
+	ToolResultReferenceOnly          ToolResultPolicy = "reference_only"
+	MaxToolResultReferenceBytes                       = 8 * 1024
+	ToolResultReferencePlaceholder                    = "[tool result withheld from durable history; it will be reopened only after current authorization is checked]"
+	ToolResultUnavailablePlaceholder                  = "[tool result is unavailable; no result bytes were retained]"
+)
+
+// ToolResultReference is opaque to the backend and engine. ToolName and
+// ArgumentsDigest bind adapter-provided Payload and Receipt to one exact tool
+// call; the current adapter must still reauthorize the reference before use.
+// Adapters must keep both JSON values bounded and free of result bytes/secrets.
+type ToolResultReference struct {
+	ToolName        string          `json:"toolName"`
+	ToolCallID      string          `json:"toolCallID"`
+	ArgumentsDigest string          `json:"argumentsDigest"`
+	Payload         json.RawMessage `json:"payload"`
+	Receipt         json.RawMessage `json:"receipt,omitempty"`
+}
+
+// Clone returns a deep copy of the opaque JSON values.
+func (r ToolResultReference) Clone() ToolResultReference {
+	r.Payload = append(json.RawMessage(nil), r.Payload...)
+	r.Receipt = append(json.RawMessage(nil), r.Receipt...)
+	return r
+}
+
+// Equal reports byte-for-byte equality of the binding and adapter values.
+func (r ToolResultReference) Equal(other ToolResultReference) bool {
+	return r.ToolName == other.ToolName && r.ToolCallID == other.ToolCallID && r.ArgumentsDigest == other.ArgumentsDigest &&
+		string(r.Payload) == string(other.Payload) && string(r.Receipt) == string(other.Receipt)
+}
 
 // Message is a role-tagged turn in the conversation a turn is given.
 //
@@ -66,6 +106,12 @@ type Message struct {
 	// such as a tool-returned image follow-up. It must not become a durable user
 	// request or enter a session replacement checkpoint.
 	Ephemeral bool `json:"ephemeral,omitempty"`
+	// ResultReference carries only the bounded adapter reference for a result
+	// whose bytes are withheld from durable checkpoints.
+	ResultReference *ToolResultReference `json:"resultReference,omitempty"`
+	// ResultUnavailable marks a reference-only result that failed and therefore
+	// has no adapter reference to reopen.
+	ResultUnavailable bool `json:"resultUnavailable,omitempty"`
 }
 
 // Param describes one tool parameter (a pragmatic subset of JSON schema).
@@ -88,6 +134,9 @@ type Tool struct {
 	Desc       string
 	Params     map[string]Param
 	JSONSchema map[string]any
+	// ResultPolicy controls durable result retention. Reference-only tools must
+	// also provide a fresh result reader; tools without a policy retain results.
+	ResultPolicy ToolResultPolicy
 	// Exec runs the tool with the model-provided JSON arguments and returns the
 	// text observation fed back to the model. An error is fed back too (as an
 	// error observation) rather than ending the turn — except a *GateError,
@@ -97,6 +146,11 @@ type Tool struct {
 	// ExecRich, when non-nil, is used in preference to Exec and may return
 	// images (a camera snapshot) alongside text.
 	ExecRich func(ctx context.Context, argsJSON string) (Observation, error)
+	// RehydrateResult reauthorizes and reopens a reference-only result before a
+	// resumed model call. It receives the exact original raw arguments and the
+	// bounded reference issued by this same tool adapter. It must read the
+	// already captured result without executing the original tool again.
+	RehydrateResult func(ctx context.Context, argsJSON string, ref ToolResultReference) (Observation, error)
 }
 
 // Image is binary image output from a tool, carried back to the model as vision
@@ -110,6 +164,30 @@ type Image struct {
 type Observation struct {
 	Text   string
 	Images []Image
+	// Sources are adapter-authored provenance bound to exact published objects
+	// and access actions. They are descriptive only; readers must reauthorize.
+	Sources []resulttypes.SourceReference
+	// ResultReference and Receipt are opaque bounded JSON supplied only by an
+	// adapter registered with ToolResultReferenceOnly. They must not contain
+	// result bytes or secrets.
+	ResultReference json.RawMessage
+	Receipt         json.RawMessage
+	// Presentation is validated, untrusted display metadata. Hosted resource
+	// bytes remain out of model context and checkpoints.
+	Presentation *resulttypes.ProviderPresentation
+}
+
+type toolCallIDKey struct{}
+
+// WithToolCallID carries the engine-issued call identity to a tool adapter.
+func WithToolCallID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, toolCallIDKey{}, id)
+}
+
+// ToolCallIDFromContext returns the engine-issued call identity, if present.
+func ToolCallIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(toolCallIDKey{}).(string)
+	return id
 }
 
 // GateError is returned by a tool executor to park the turn instead of
@@ -141,6 +219,26 @@ type ToolEvent struct {
 	Result   string // observation (or error text)
 	Err      bool
 	Duration time.Duration
+	// Sources are server-observed source references attached to a successful
+	// tool result. They are not verified business truth or freshness.
+	Sources []resulttypes.SourceReference
+	// Presentation is available to in-process observers. Embedded UI resources
+	// stay out of serialized event payloads.
+	Presentation *resulttypes.ProviderPresentation `json:"-"`
+}
+
+// HasMCPApp reports whether this successful event carries a validated
+// source-backed MCP App. It is a UI availability hint, not authorization.
+func (e ToolEvent) HasMCPApp() bool {
+	if e.Err || len(e.Sources) == 0 || e.Presentation == nil || e.Presentation.MCPAppReference == nil || e.Presentation.Validate() != nil {
+		return false
+	}
+	for _, source := range e.Sources {
+		if source.Validate() != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // AssistantMessage is one model response attempt within a turn. Complete is

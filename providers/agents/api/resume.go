@@ -110,6 +110,11 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			return
 		}
 	}
+	artifactOwner, artifactRefs, artifactErr := resumeArtifactReferences(ck, access.CallerUser)
+	if artifactErr != nil {
+		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, artifactErr.Error())
+		return
+	}
 	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
@@ -130,6 +135,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger,
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
+		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
 		// A spawned worker's constraints come back off its checkpoint, so a
 		// resumed sub-task is rebuilt as the worker it was — same narrowed
 		// toolset, same approval class, same tool-turn budget, same model
