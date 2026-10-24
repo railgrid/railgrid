@@ -38,6 +38,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 const (
@@ -77,6 +78,28 @@ type projectThumbnailCommit struct {
 	SHA       string
 	CreatedAt time.Time
 	Order     string
+}
+
+type projectThumbnailFailure struct {
+	commitSHA       string
+	commitCreatedAt time.Time
+	commitOrder     string
+	sourceRevision  uint64
+	retryAfter      time.Time
+}
+
+func newProjectThumbnailFailure(request *projectThumbnailCaptureRequest, retryAfter time.Time) projectThumbnailFailure {
+	return projectThumbnailFailure{
+		commitSHA: request.commitSHA, commitCreatedAt: request.commitCreatedAt,
+		commitOrder: request.commitOrder, sourceRevision: request.sourceRevision,
+		retryAfter: retryAfter,
+	}
+}
+
+func (failure projectThumbnailFailure) matches(request *projectThumbnailCaptureRequest) bool {
+	return request != nil && failure.commitSHA == request.commitSHA &&
+		failure.commitCreatedAt.Equal(request.commitCreatedAt) &&
+		failure.commitOrder == request.commitOrder && failure.sourceRevision == request.sourceRevision
 }
 
 func projectThumbnailRequestMatches(left, right *projectThumbnailCaptureRequest) bool {
@@ -164,9 +187,17 @@ func (s *Server) scheduleProjectThumbnailCapture(id identity, project *aiv1alpha
 	if s.projectThumbnailCaptures == nil {
 		s.projectThumbnailCaptures = map[string]*projectThumbnailCaptureRequest{}
 	}
-	if retryAfter := s.projectThumbnailFailures[keyString]; retryAfter.After(time.Now()) {
-		s.mu.Unlock()
-		return false
+	if failure, failed := s.projectThumbnailFailures[keyString]; failed {
+		if failure.matches(request) && failure.retryAfter.After(time.Now()) {
+			s.mu.Unlock()
+			// Keep the gallery's refresh signal active while this exact capture
+			// is cooling down. A later view request can retry once retryAfter
+			// passes, while the cooldown itself prevents rapid retry loops.
+			return true
+		}
+		// A new commit or source revision is a distinct capture attempt. Do not
+		// let an earlier failure delay a thumbnail for the newer project state.
+		delete(s.projectThumbnailFailures, keyString)
 	}
 	_, running := s.projectThumbnailCaptures[keyString]
 	s.projectThumbnailCaptures[keyString] = request
@@ -235,7 +266,8 @@ func (s *Server) runProjectThumbnailCapture(parent context.Context, key string) 
 		}
 		err := s.captureProjectThumbnail(parent, key, request)
 		if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, errProjectThumbnailClaimHeld) {
-			klog.V(1).Infof("capture project thumbnail for %s: %v", request.project.Name, err)
+			klog.Warningf("app-studio: project thumbnail capture failed: project=%q sourceRevision=%d reason=%s", request.project.Name, request.sourceRevision, projectThumbnailFailureSummary(err))
+			klog.V(1).Infof("app-studio: project thumbnail capture details for %s: %v", request.project.Name, err)
 		}
 		s.mu.Lock()
 		current := s.projectThumbnailCaptures[key]
@@ -245,9 +277,9 @@ func (s *Server) runProjectThumbnailCapture(parent context.Context, key string) 
 				delete(s.projectThumbnailFailures, key)
 			} else if !errors.Is(err, context.Canceled) && !errors.Is(err, errProjectThumbnailClaimHeld) {
 				if s.projectThumbnailFailures == nil {
-					s.projectThumbnailFailures = map[string]time.Time{}
+					s.projectThumbnailFailures = map[string]projectThumbnailFailure{}
 				}
-				s.projectThumbnailFailures[key] = time.Now().Add(projectThumbnailRetryCooldown)
+				s.projectThumbnailFailures[key] = newProjectThumbnailFailure(request, time.Now().Add(projectThumbnailRetryCooldown))
 			}
 			current = nil
 		}
@@ -287,6 +319,11 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 
 	ctx, cancel := context.WithTimeout(parent, projectThumbnailCaptureTimeout)
 	defer cancel()
+	// Capture workers outlive the authenticated view request that scheduled
+	// them. Reattach the Project-scoped ledger before any FileStore read: in a
+	// deployment the store requires this control-plane-backed ledger and has no
+	// process-local fallback.
+	ctx = s.withProjectLedger(ctx, request.id)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if currentErr := s.requireProjectThumbnailCurrentRevision(ctx, request); currentErr != nil {
@@ -358,6 +395,19 @@ func (s *Server) captureProjectThumbnail(parent context.Context, key string, req
 		}
 	}
 	return lastErr
+}
+
+func projectThumbnailFailureSummary(err error) string {
+	switch {
+	case errors.Is(err, workspace.ErrNoLedger):
+		return "project workspace ledger unavailable"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "capture timed out"
+	case errors.Is(err, errProjectAssistantRunSandboxConflict):
+		return "workspace or preview source is not current"
+	default:
+		return "capture failed; details are available at debug verbosity"
+	}
 }
 
 func (s *Server) requireProjectThumbnailCurrentRevision(ctx context.Context, request *projectThumbnailCaptureRequest) error {

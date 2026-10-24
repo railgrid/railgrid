@@ -19,6 +19,7 @@ package api
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -88,6 +89,42 @@ func TestWorkerRuntimeProjectionReadsOnlyOwnedResources(t *testing.T) {
 	statuses[1].Outputs["url"] = "changed"
 	if p.Status.Environments[0].Bindings[1].Outputs["url"] != "https://reference.example" {
 		t.Fatal("runtime projection shares mutable status with the original project")
+	}
+}
+
+func TestProjectViewRefreshesOwnedRuntimeWithoutReadingProviderReferences(t *testing.T) {
+	p := workerRuntimeProjectionProject()
+	dyn := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	var reads []string
+	dyn.PrependReactor("get", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		get := action.(clienttesting.GetAction)
+		resource := action.GetResource().Resource
+		reads = append(reads, resource+"/"+get.GetName())
+		if resource != "instances" {
+			t.Fatalf("project view read optional provider reference: %s", resource)
+		}
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "infrastructure.railgrid.ai/v1alpha1", "kind": "Instance",
+			"metadata": map[string]any{"name": get.GetName()},
+			"status": map[string]any{
+				"phase": "Ready", "previewURL": "https://fresh-runtime.example",
+				"outputs": map[string]any{"previewURL": "https://fresh-runtime.example"},
+			},
+		}}, nil
+	})
+
+	view := projectView(context.Background(), asclient.NewFromDynamic(dyn), p, identity{})
+	if len(reads) != 1 || !strings.HasPrefix(reads[0], "instances/") {
+		t.Fatalf("project view resource reads = %v, want only the owned Instance", reads)
+	}
+	if len(view.Environments) != 1 || len(view.Environments[0].Bindings) != 2 {
+		t.Fatalf("project view environments = %#v, want owned runtime and mirrored reference", view.Environments)
+	}
+	if got := view.Environments[0].Bindings[0].PreviewURL; got != "https://fresh-runtime.example" {
+		t.Fatalf("owned runtime preview URL = %q, want the fresh observed value", got)
+	}
+	if got := view.Environments[0].Bindings[1].Outputs["url"]; got != "https://reference.example" {
+		t.Fatalf("provider reference output = %q, want the reconciled status mirror", got)
 	}
 }
 

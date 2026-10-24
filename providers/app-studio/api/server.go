@@ -235,7 +235,7 @@ type Server struct {
 	projectThumbnailCancel      context.CancelFunc
 	projectThumbnailCaptures    map[string]*projectThumbnailCaptureRequest
 	projectThumbnailCurrentness func(context.Context, identity, *aiv1alpha1.Project, uint64) error
-	projectThumbnailFailures    map[string]time.Time
+	projectThumbnailFailures    map[string]projectThumbnailFailure
 	projectThumbnailQueue       chan string
 	projectThumbnailWorkersUp   bool
 	// publishingMembershipFetcher is a test seam for the hub-mediated

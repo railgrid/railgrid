@@ -15,6 +15,7 @@ const shareDialog = await readFile(new URL('./ProjectShareDialog.vue', import.me
 const assistantPlanPopover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
 const providerFrame = await readFile(new URL('../../../../portal/src/pages/ProviderFrame.vue', import.meta.url), 'utf8')
 const api = await readFile(new URL('./api.ts', import.meta.url), 'utf8')
+const projectThumbnailViews = await readFile(new URL('./projectThumbnailViews.ts', import.meta.url), 'utf8')
 const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
 
 test('uses host catalog chrome on landing routes and keeps project workbenches full bleed', () => {
@@ -94,13 +95,15 @@ test('replaces the stable project-card fallback with authenticated commit screen
   assert.match(app, /:alt="`\$\{project\.displayName\} app preview`"/)
   assert.match(app, /class="absolute inset-0 z-10 h-full w-full object-cover object-top"/)
   assert.match(app, /class="app-studio-touch-target app-studio-touch-visible absolute right-2 top-2 z-20[^\"]*focus:opacity-100[^\"]*group-hover:opacity-100/)
-  assert.match(app, /project\.thumbnail\?\.refreshing/)
+  assert.match(projectThumbnailViews, /project\.thumbnail\?\.refreshing/)
   assert.match(app, /URL\.revokeObjectURL/)
   assert.match(app, /interface ProjectThumbnailRequestGuard/)
   assert.match(app, /guard\.contextFingerprint === appContextFingerprint\(props\.ctx\)/)
-  assert.match(app, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) \{[\s\S]*createdURLs[\s\S]*URL\.revokeObjectURL/)
+  assert.match(app, /if \(!projectThumbnailRequestIsCurrent\(guard\)\) \{\s*URL\.revokeObjectURL\(url\)/)
   assert.match(app, /api\.listProjects\(guard\.ctx\)/)
-  assert.match(app, /api\.getProjectThumbnail\(guard\.ctx, project\.name, revision\)/)
+  assert.match(app, /api\.getProjectThumbnail\(guard\.ctx, project\.name, revision, controller\.signal\)/)
+  assert.match(app, /PROJECT_THUMBNAIL_VIEW_TIMEOUT_MS = 15_000/)
+  assert.match(app, /PROJECT_THUMBNAIL_BLOB_TIMEOUT_MS = 15_000/)
   assert.match(api, /headers: tenantHeaders\(\{\}\)/)
   // The bundle never handles the raw token: every request goes through the
   // host-owned fetch (portalkit providerFetch), which injects credentials.

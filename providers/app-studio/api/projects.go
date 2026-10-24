@@ -1559,7 +1559,11 @@ func projectStatusTouchPatch(now metav1.Time) ([]byte, error) {
 }
 
 func projectView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
-	p = projectWithLiveBindingStatus(ctx, c, p, id)
+	// Optional provider references are surfaced from the Project reconciler's
+	// status mirror. Refresh only resources App Studio owns here: resolving
+	// every referenced provider object serially makes a project view depend on
+	// the latency and availability of unrelated providers.
+	p = projectWithLiveRuntimeBindingStatus(ctx, c, p, id)
 	view := ProjectView{
 		Name:         p.Name,
 		UID:          string(p.UID),

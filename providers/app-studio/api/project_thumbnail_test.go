@@ -25,6 +25,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -33,7 +34,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
+	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
@@ -90,6 +94,66 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 	t.Fatal("thumbnail capture did not finish")
 }
 
+func TestProjectThumbnailCaptureAttachesRequiredProjectLedger(t *testing.T) {
+	proxy := tenanttest.NewServer(t)
+	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, `
+apiVersion: ai.railgrid.ai/v1alpha1
+kind: Project
+metadata:
+  name: app
+  uid: uid-app
+spec: {}
+status:
+  workspace:
+    sourceRevision: 7
+`))
+
+	files := workspace.NewFileStore(t.TempDir())
+	files.RequireContextLedger()
+	providerTenant := proxy.Client()
+	s := &Server{
+		store:      store.NewMemoryStore(),
+		workspaces: files,
+		projectClientFor: func(id identity) (*asclient.Client, error) {
+			scope, err := providerTenant.For(id.clusterID)
+			if err != nil {
+				return nil, err
+			}
+			return asclient.NewFromScope(scope), nil
+		},
+	}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid-app")}}
+	id := identity{clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "workspace-a"}
+	request := &projectThumbnailCaptureRequest{
+		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: time.Now().UTC(),
+		commitOrder: "commit-name", sourceRevision: 7,
+	}
+
+	// With the production-style required ledger, the detached worker must read
+	// the Project status before it can check the runtime. This fixture has no
+	// development template, so after the ledger read the expected failure is
+	// the missing target, not ErrNoLedger. The short parent deadline bounds the
+	// worker's normal retry delay.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	err := s.captureProjectThumbnail(ctx, projectThumbnailCaptureKey(id, project), request)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("capture error = %v, want bounded retry deadline after reading the ledger", err)
+	}
+	projectReads := proxy.RequestsFor("GET", asclient.ProjectGVR)
+	if len(projectReads) == 0 {
+		t.Fatal("capture worker did not attach the Project ledger before reading workspace revision")
+	}
+}
+
+func TestProjectThumbnailFailureSummaryDoesNotExposeUnderlyingError(t *testing.T) {
+	secret := "https://preview.example/?token=do-not-log"
+	err := fmt.Errorf("preview inspection failed: %s", secret)
+	if got := projectThumbnailFailureSummary(err); strings.Contains(got, "do-not-log") || strings.Contains(got, "preview.example") {
+		t.Fatalf("failure summary exposed raw error: %q", got)
+	}
+}
+
 func TestLatestSuccessfulProjectCommitSkipsIncompleteHistory(t *testing.T) {
 	now := time.Now().UTC()
 	got := latestSuccessfulProjectCommit(&ProjectRepositoryView{Commits: []ProjectRepositoryCommitView{
@@ -100,6 +164,83 @@ func TestLatestSuccessfulProjectCommitSkipsIncompleteHistory(t *testing.T) {
 	}})
 	if got.SHA != "current" || got.Order != "commit-z" || !got.CreatedAt.Equal(now) {
 		t.Fatalf("latest successful commit = %#v", got)
+	}
+}
+
+func TestProjectThumbnailCooldownIsScopedToFailedCapture(t *testing.T) {
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid")}}
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	key := projectThumbnailCaptureKey(id, project)
+	now := time.Now().UTC()
+	failed := &projectThumbnailCaptureRequest{
+		id: id, project: project, commitSHA: "old-sha", commitCreatedAt: now,
+		commitOrder: "old-commit", sourceRevision: 7,
+	}
+	s := &Server{
+		projectThumbnailFailures: map[string]projectThumbnailFailure{
+			key: newProjectThumbnailFailure(failed, now.Add(time.Minute)),
+		},
+		projectThumbnailQueue:     make(chan string, 1),
+		projectThumbnailWorkersUp: true,
+	}
+
+	if !s.scheduleProjectThumbnailCapture(id, project, projectThumbnailCommit{
+		SHA: failed.commitSHA, CreatedAt: failed.commitCreatedAt, Order: failed.commitOrder,
+	}, failed.sourceRevision) {
+		t.Fatal("failed capture cooldown should continue reporting refreshing")
+	}
+	if len(s.projectThumbnailQueue) != 0 {
+		t.Fatal("capture was queued before its cooldown expired")
+	}
+	if s.projectThumbnailCaptures[key] != nil {
+		t.Fatal("cooling-down capture should not be marked queued")
+	}
+
+	newer := projectThumbnailCommit{SHA: "new-sha", CreatedAt: now.Add(time.Second), Order: "new-commit"}
+	if !s.scheduleProjectThumbnailCapture(id, project, newer, failed.sourceRevision+1) {
+		t.Fatal("newer commit should bypass the failed capture cooldown")
+	}
+	if got := s.projectThumbnailCaptures[key]; got == nil || got.commitSHA != newer.SHA || got.sourceRevision != failed.sourceRevision+1 {
+		t.Fatalf("scheduled capture = %#v, want newer commit and source revision", got)
+	}
+	if len(s.projectThumbnailQueue) != 1 {
+		t.Fatalf("queued captures = %d, want 1", len(s.projectThumbnailQueue))
+	}
+	if _, remains := s.projectThumbnailFailures[key]; remains {
+		t.Fatal("superseded failure cooldown was not cleared")
+	}
+}
+
+func TestProjectThumbnailCooldownExpirySchedulesRetry(t *testing.T) {
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid")}}
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	key := projectThumbnailCaptureKey(id, project)
+	now := time.Now().UTC()
+	request := &projectThumbnailCaptureRequest{
+		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: now,
+		commitOrder: "commit-name", sourceRevision: 7,
+	}
+	s := &Server{
+		projectThumbnailFailures: map[string]projectThumbnailFailure{
+			key: newProjectThumbnailFailure(request, now.Add(-time.Second)),
+		},
+		projectThumbnailQueue:     make(chan string, 1),
+		projectThumbnailWorkersUp: true,
+	}
+
+	if !s.scheduleProjectThumbnailCapture(id, project, projectThumbnailCommit{
+		SHA: request.commitSHA, CreatedAt: request.commitCreatedAt, Order: request.commitOrder,
+	}, request.sourceRevision) {
+		t.Fatal("expired capture cooldown should schedule a retry")
+	}
+	if got := s.projectThumbnailCaptures[key]; got == nil || !projectThumbnailRequestMatches(got, request) {
+		t.Fatalf("scheduled capture = %#v, want the original failed capture", got)
+	}
+	if len(s.projectThumbnailQueue) != 1 {
+		t.Fatalf("queued captures = %d, want 1", len(s.projectThumbnailQueue))
+	}
+	if _, remains := s.projectThumbnailFailures[key]; remains {
+		t.Fatal("expired failure cooldown was not cleared")
 	}
 }
 
