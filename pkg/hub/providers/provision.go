@@ -25,9 +25,11 @@ import (
 
 	"github.com/kcp-dev/sdk/apis/core"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -412,8 +414,7 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 	default:
 		current, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
 		if current == roleName {
-			crb.SetResourceVersion(existing.GetResourceVersion())
-			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, crb, metav1.UpdateOptions{}); err != nil {
+			if err := updateUnstructured(ctx, cl, clusterRoleBindingGVR, existing, crb); err != nil {
 				return fmt.Errorf("updating %s: %w", providerSABindingName, err)
 			}
 			return nil
@@ -1109,8 +1110,9 @@ func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) 
 	return nil
 }
 
-// applyUnstructured is a create-or-update helper for cluster-scoped resources.
-// Preserves resourceVersion on update.
+// applyUnstructured ensures the declared non-metadata fields of a cluster-scoped
+// resource. Existing metadata belongs to the API server and other controllers;
+// these provider RBAC declarations supply only a name.
 func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, desired *unstructured.Unstructured) error {
 	existing, err := cl.Resource(gvr).Get(ctx, desired.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1120,8 +1122,16 @@ func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.Gro
 	if err != nil {
 		return err
 	}
-	desired.SetResourceVersion(existing.GetResourceVersion())
-	_, err = cl.Resource(gvr).Update(ctx, desired, metav1.UpdateOptions{})
+	return updateUnstructured(ctx, cl, gvr, existing, desired)
+}
+
+func updateUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, existing, desired *unstructured.Unstructured) error {
+	updated := desired.DeepCopy()
+	updated.Object["metadata"] = runtime.DeepCopyJSONValue(existing.Object["metadata"])
+	if equality.Semantic.DeepEqual(existing.Object, updated.Object) {
+		return nil
+	}
+	_, err := cl.Resource(gvr).Update(ctx, updated, metav1.UpdateOptions{})
 	return err
 }
 

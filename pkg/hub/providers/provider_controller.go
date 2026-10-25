@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/rest"
@@ -44,6 +45,15 @@ const providerFinalizer = "admin.railgrid.ai/cleanup"
 // minted kubeconfig Secret is written to.
 const kubeconfigSecretNamespace = "default"
 
+type providerProvisioner interface {
+	EnsureProviderWorkspace(context.Context, string) (string, error)
+	EnsureProviderSA(context.Context, string) error
+	MintProviderKubeconfig(context.Context, string, string) ([]byte, error)
+	WriteKubeconfigSecret(context.Context, string, string, string, []byte, string) error
+	DeleteProviderWorkspace(context.Context, string) error
+	DeleteKubeconfigSecret(context.Context, string, string) error
+}
+
 // ProviderReconciler provisions the kcp-side scaffolding declared by a Provider
 // CR: the per-provider sub-workspace, the "provider" ServiceAccount, and a
 // minted kubeconfig written into a Secret in root:railgrid:system:providers. It is the
@@ -56,7 +66,7 @@ const kubeconfigSecretNamespace = "default"
 // the provider's own `init` responsibility.
 type ProviderReconciler struct {
 	mgr  mcmanager.Manager
-	prov *Provisioner
+	prov providerProvisioner
 	// providerServerURL is baked into minted kubeconfigs when the Provider
 	// does not override it: the hub-internal URL when set, otherwise the
 	// hub external URL.
@@ -166,6 +176,7 @@ func (r *ProviderReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		return r.fail(ctx, c, &p, "SecretError", fmt.Sprintf("writing kubeconfig Secret: %v", err), err)
 	}
 
+	previousStatus := p.Status.DeepCopy()
 	now := metav1.NewTime(time.Now())
 	p.Status.WorkspacePath = providersParentWorkspace + ":" + p.Name
 	p.Status.WorkspaceCluster = cluster
@@ -174,7 +185,6 @@ func (r *ProviderReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		Name:      secretName,
 		Key:       ProviderKubeconfigSecretKey,
 	}
-	p.Status.LastProvisioned = &now
 	setCondition(&p.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionTrue,
@@ -183,6 +193,12 @@ func (r *ProviderReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 		LastTransitionTime: now,
 		ObservedGeneration: p.Generation,
 	})
+	// Our own status update is a watch event too. Keep timestamps stable and
+	// stop writing once the observed provisioning state has converged.
+	if p.Status.LastProvisioned != nil && equality.Semantic.DeepEqual(previousStatus, &p.Status) {
+		return ctrl.Result{}, nil
+	}
+	p.Status.LastProvisioned = &now
 	if err := c.Status().Update(ctx, &p); err != nil {
 		if apierrors.IsConflict(err) {
 			return ctrl.Result{Requeue: true}, nil
@@ -196,6 +212,7 @@ func (r *ProviderReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 // fail sets a False Ready condition with the given reason/message, persists
 // status (best-effort), and returns the underlying error so the item requeues.
 func (r *ProviderReconciler) fail(ctx context.Context, c client.Client, p *adminv1alpha1.Provider, reason, message string, cause error) (ctrl.Result, error) {
+	previousStatus := p.Status.DeepCopy()
 	setCondition(&p.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
@@ -204,7 +221,10 @@ func (r *ProviderReconciler) fail(ctx context.Context, c client.Client, p *admin
 		LastTransitionTime: metav1.NewTime(time.Now()),
 		ObservedGeneration: p.Generation,
 	})
-	// Best-effort status write; the returned error drives the requeue.
-	_ = c.Status().Update(ctx, p)
+	// The returned error drives the rate-limited retry. Rewriting an unchanged
+	// failure would enqueue another watch event ahead of that backoff.
+	if !equality.Semantic.DeepEqual(previousStatus, &p.Status) {
+		_ = c.Status().Update(ctx, p)
+	}
 	return ctrl.Result{}, cause
 }

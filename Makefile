@@ -553,6 +553,10 @@ codegen-app-studio-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for 
 test:
 	go test $(shell go list ./... | grep -v '/test/e2e')
 
+.PHONY: test-provider-provisioning
+test-provider-provisioning: ## Verify provider provisioning convergence, RBAC, and credentials
+	go test -race -count=1 ./pkg/hub/providers
+
 .PHONY: test-organization-bootstrap
 test-organization-bootstrap: ## Verify personal and shared organization initialization and REST creation
 	go test -count=1 ./pkg/hub/controllers/organization ./pkg/hub/restapi ./pkg/hub/kcp ./pkg/hub/bootstrap

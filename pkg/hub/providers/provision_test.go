@@ -23,10 +23,12 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
@@ -275,6 +277,108 @@ func TestEnsureProviderRoleBindingReplacesAnExistingClusterAdminBinding(t *testi
 	}
 	if got, _, _ := unstructured.NestedString(crb.Object, "roleRef", "name"); got != "cluster-admin" {
 		t.Fatalf("roleRef after rollback = %q, want cluster-admin", got)
+	}
+}
+
+func TestEnsureProviderRBACConvergesAndPreservesMetadata(t *testing.T) {
+	for _, clusterAdmin := range []bool{true, false} {
+		name := "narrow role"
+		if clusterAdmin {
+			name = "cluster-admin"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			cl := newRBACDynamicFake().(*dynamicfake.FakeDynamicClient)
+			p := NewProvisioner(nil, WithWorkspaceClusterAdmin(clusterAdmin))
+			if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+				t.Fatal(err)
+			}
+			targets := map[schema.GroupVersionResource]string{clusterRoleBindingGVR: providerSABindingName}
+			if !clusterAdmin {
+				targets[clusterRoleGVR] = ProviderClusterRoleName
+			}
+			metadata := map[schema.GroupVersionResource]any{}
+			for gvr, name := range targets {
+				obj, err := cl.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				obj.SetUID(types.UID("retained-uid"))
+				obj.SetResourceVersion("42")
+				obj.SetAnnotations(map[string]string{"internal.kcp.io/replicate": "apis.kcp.io,core.kcp.io,tenancy.kcp.io", "example.test/owner": "retained"})
+				obj.SetLabels(map[string]string{"example.test/label": "retained"})
+				obj.SetFinalizers([]string{"example.test/cleanup"})
+				obj.SetOwnerReferences([]metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "owner", UID: types.UID("owner-uid")}})
+				if _, err := cl.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+				metadata[gvr] = runtime.DeepCopyJSONValue(obj.Object["metadata"])
+			}
+			mutations := func() []k8stesting.Action {
+				var writes []k8stesting.Action
+				for _, action := range cl.Actions() {
+					if action.GetVerb() != "get" && action.GetVerb() != "list" {
+						writes = append(writes, action)
+					}
+				}
+				return writes
+			}
+			checkMetadata := func() {
+				t.Helper()
+				for gvr, name := range targets {
+					got, err := cl.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !equality.Semantic.DeepEqual(metadata[gvr], got.Object["metadata"]) {
+						t.Fatalf("metadata changed on %s", gvr.Resource)
+					}
+				}
+			}
+			cl.ClearActions()
+			for range 3 {
+				if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if writes := mutations(); len(writes) != 0 {
+				t.Fatalf("converged RBAC caused %d writes", len(writes))
+			}
+			checkMetadata()
+
+			binding, err := cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSubjects := runtime.DeepCopyJSONValue(binding.Object["subjects"])
+			binding.Object["subjects"] = []any{map[string]any{"kind": "ServiceAccount", "name": "wrong", "namespace": ProviderSANamespace}}
+			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, binding, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			cl.ClearActions()
+			if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+				t.Fatal(err)
+			}
+			writes := mutations()
+			if len(writes) != 1 || writes[0].GetVerb() != "update" || writes[0].GetResource() != clusterRoleBindingGVR {
+				t.Fatalf("subject drift should cause exactly one binding update, got %d writes", len(writes))
+			}
+			repaired, err := cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !equality.Semantic.DeepEqual(wantSubjects, repaired.Object["subjects"]) {
+				t.Fatal("subject drift was not repaired")
+			}
+			checkMetadata()
+			cl.ClearActions()
+			if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+				t.Fatal(err)
+			}
+			if len(mutations()) != 0 {
+				t.Fatal("repaired binding did not converge")
+			}
+		})
 	}
 }
 
