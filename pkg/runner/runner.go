@@ -290,7 +290,15 @@ func (r *Runner) ListenAndServe(ctx context.Context) error {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
-	server := &http.Server{Handler: r.Handler()}
+	// IdleTimeout reaps keep-alive connections a client abandons without
+	// closing, so a leaky caller cannot pin the runner's descriptors forever.
+	// ReadHeaderTimeout bounds a connection that never sends a request head;
+	// attempt streams are long-lived bodies, which neither timeout touches.
+	server := &http.Server{
+		Handler:           r.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 	err = server.Serve(listener)
 	if errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) {
 		return nil

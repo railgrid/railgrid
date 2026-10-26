@@ -764,3 +764,52 @@ func TestSvcUpgradeBackendHangsUpBeforeHead(t *testing.T) {
 		})
 	}
 }
+
+// TestSvcProxyHandlerDoesNotLeakUpstreamConnections is the regression for the
+// loopback port exhaustion that took a supervised runner offline: the handler
+// builds a transport per request, and an abandoned http.Transport never closes
+// the keep-alive connection it holds, so every proxied request pinned one
+// socket on each end until the agent could no longer dial 127.0.0.1:8787.
+// After N requests the upstream must observe every connection closed.
+func TestSvcProxyHandlerDoesNotLeakUpstreamConnections(t *testing.T) {
+	var open atomic.Int32
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		switch state {
+		case http.StateNew:
+			open.Add(1)
+		case http.StateClosed:
+			open.Add(-1)
+		}
+	}
+	upstream.Start()
+	t.Cleanup(upstream.Close)
+
+	cfg := svcProxyConfig{allowCluster: false}
+	cfg.dial = (&countingDialer{}).dial
+	h := newSvcProxyHandler(cfg)
+
+	const requests = 20
+	for i := 0; i < requests; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/svc/runner/v1/capabilities", nil)
+		req.Header.Set(svcTargetHeader, upstream.URL)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		resp := rec.Result()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("request %d: status %d, want 200", i, resp.StatusCode)
+		}
+		readBody(t, resp)
+	}
+
+	// Closing is asynchronous on the upstream side; give it a bounded moment.
+	deadline := time.Now().Add(5 * time.Second)
+	for open.Load() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := open.Load(); n != 0 {
+		t.Fatalf("%d upstream connections still open after %d proxied requests; the per-request transport leaks its keep-alive connection", n, requests)
+	}
+}

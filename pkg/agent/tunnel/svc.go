@@ -169,10 +169,18 @@ func newSvcProxyHandler(cfg svcProxyConfig) http.HandlerFunc {
 			return
 		}
 
+		// The transport is built per request because the dial is pinned to the
+		// vetted target and the TLS config names it. A per-request transport
+		// must not keep the upstream connection alive: nothing ever reuses it,
+		// and an abandoned http.Transport never closes its idle connections, so
+		// every proxied request would leak one socket on both ends until the
+		// loopback ephemeral-port range is exhausted and the runner is
+		// unreachable ("connect: cannot assign requested address").
 		proxy := &httputil.ReverseProxy{
 			Transport: &http.Transport{
-				DialContext:     dial,
-				TLSClientConfig: tlsConfig,
+				DialContext:       dial,
+				TLSClientConfig:   tlsConfig,
+				DisableKeepAlives: true,
 			},
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.Out.URL.Scheme = target.Scheme
