@@ -1748,6 +1748,13 @@ CatalogEntry).
 
 ## Security considerations
 
+- **MCP Apps resources (read-only transport).** The Hub aggregate forwards
+  provider-declared `ui://` resources but is not a browser host. The consuming
+  host must decide which app HTML to trust and how to sandbox it. A scripted
+  app can navigate its own frame and potentially disclose result data it
+  receives; do not render untrusted app code. App-only backend calls are
+  unsupported in this read-only profile.
+
 - **Auth token forwarding** (backend proxy): the user's bearer token is
   forwarded to the provider backend. Operators MUST trust the providers
   they install. Same trust model as installing any cluster operator.

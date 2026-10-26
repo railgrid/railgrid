@@ -118,7 +118,14 @@ const (
 	// checkout grows by 4/3 when base64-encoded, plus JSON framing), so the
 	// cap is 96 MiB. A response over the cap is a loud error, never a
 	// silently truncated body that later fails to decode.
-	providerMCPMaxResponseBytes int64 = 96 << 20
+	providerMCPMaxResponseBytes   int64 = 96 << 20
+	providerMCPAppConcurrentReads       = 4
+	providerMCPAppContentBytes          = 1 << 20
+	providerMCPAppMIMEType              = "text/html;profile=mcp-app"
+	providerMCPAppMetaBytes             = 8 << 10
+	// JSON may escape each content byte as six bytes (e.g. < as \u003c).
+	// This also covers base64's smaller inflation, metadata and RPC framing.
+	providerMCPAppEnvelopeBytes int64 = 6*providerMCPAppContentBytes + 64<<10
 )
 
 // FederatedProvider is the introspection view of one federation target: a Ready
@@ -279,13 +286,18 @@ func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string
 // Registration runs sequentially, in the original provider order, so the
 // aggregate tool list is deterministic across requests. AddTool on a shared
 // server is not guaranteed goroutine-safe, so it stays on one goroutine.
-func registerProviderTools(srv *mcp.Server, log logr.Logger, found []*providerTools) {
+func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger, found []*providerTools, readSlots chan struct{}) {
 	for _, r := range found {
 		if r == nil || len(r.tools) == 0 {
 			continue
 		}
+		registerAppResources(ctx, srv, r, log, readSlots)
 		log.V(1).Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
 		for _, t := range r.tools {
+			if !appToolModelVisible(t) {
+				log.V(1).Info("provider federation: skipping app-only or invalid-visibility tool", "provider", r.provider.Name, "tool", t.Name)
+				continue
+			}
 			func() {
 				defer func() {
 					if rec := recover(); rec != nil {
@@ -350,14 +362,21 @@ func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTar
 		Description: t.Description,
 		Annotations: t.Annotations,
 		InputSchema: t.InputSchema,
-		Meta:        toolCoordinateMeta(p, t),
+		Meta:        proxyToolMeta(p, t),
 	}
 
 	srv.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args map[string]any
 		if len(req.Params.Arguments) > 0 {
-			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+			decoder := json.NewDecoder(bytes.NewReader(req.Params.Arguments))
+			// Arguments are transport data. Passing them through float64
+			// changes large IDs and exact decimal filter values.
+			decoder.UseNumber()
+			if err := decoder.Decode(&args); err != nil {
 				return nil, fmt.Errorf("decode arguments: %w", err)
+			}
+			if err := decoder.Decode(new(any)); err != io.EOF {
+				return nil, fmt.Errorf("decode arguments: expected one JSON object")
 			}
 		}
 		res, err := cli.callTool(ctx, p.MCPURL, t.Name, args)
@@ -475,9 +494,33 @@ func (c *providerMCPClient) callTool(ctx context.Context, mcpURL, name string, a
 	if err != nil {
 		return nil, err
 	}
-	var res mcp.CallToolResult
-	if err := json.Unmarshal(body, &res); err != nil {
+	// The SDK custom unmarshaller uses float64 for interface values. Keep
+	// arbitrary structured payloads out of that decoder entirely: overriding
+	// afterward would still reject valid numbers outside float64's range.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil || fields == nil {
+		return nil, fmt.Errorf("decode tools/call result: expected a JSON object")
+	}
+	structured, metadata := fields["structuredContent"], fields["_meta"]
+	delete(fields, "structuredContent")
+	delete(fields, "_meta")
+	typedBody, err := json.Marshal(fields)
+	if err != nil {
 		return nil, fmt.Errorf("decode tools/call result: %w", err)
+	}
+	var res mcp.CallToolResult
+	if err := json.Unmarshal(typedBody, &res); err != nil {
+		return nil, fmt.Errorf("decode tools/call result: %w", err)
+	}
+	if len(structured) > 0 {
+		res.StructuredContent = structured
+	}
+	if len(metadata) > 0 {
+		decoder := json.NewDecoder(bytes.NewReader(metadata))
+		decoder.UseNumber()
+		if err := decoder.Decode(&res.Meta); err != nil {
+			return nil, fmt.Errorf("decode tool result metadata: %w", err)
+		}
 	}
 	return &res, nil
 }

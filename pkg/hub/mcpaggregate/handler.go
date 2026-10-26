@@ -105,9 +105,10 @@ type Options struct {
 // /{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/{name}/mcp.
 func New(opts Options) http.Handler {
 	h := &handler{
-		opts:      opts,
-		verified:  make(map[string]verifiedEntry),
-		discovery: newDiscoveryCache(opts.DiscoveryCacheTTL),
+		opts:         opts,
+		verified:     make(map[string]verifiedEntry),
+		discovery:    newDiscoveryCache(opts.DiscoveryCacheTTL),
+		appReadSlots: make(chan struct{}, providerMCPAppConcurrentReads),
 	}
 	if h.opts.VerifyCacheTTL <= 0 {
 		h.opts.VerifyCacheTTL = DefaultVerifyCacheTTL
@@ -126,7 +127,8 @@ type handler struct {
 
 	// discovery caches providers' tools and instructions per caller; nil
 	// when disabled.
-	discovery *discoveryCache
+	discovery    *discoveryCache
+	appReadSlots chan struct{}
 }
 
 // verifiedEntry is one cached verification: the tenant context the verifier
@@ -160,14 +162,15 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	handler := mcp.NewStreamableHTTPHandler(
 		func(req *http.Request) *mcp.Server {
 			return buildServer(req.Context(), buildParams{
-				cluster:     cluster,
-				name:        name,
-				token:       token,
-				caller:      caller,
-				externalURL: h.opts.ExternalURL,
-				enumerate:   h.opts.Providers,
-				discovery:   h.discovery,
-				log:         h.opts.Logger,
+				cluster:      cluster,
+				name:         name,
+				token:        token,
+				caller:       caller,
+				externalURL:  h.opts.ExternalURL,
+				enumerate:    h.opts.Providers,
+				discovery:    h.discovery,
+				appReadSlots: h.appReadSlots,
+				log:          h.opts.Logger,
 			})
 		},
 		&mcp.StreamableHTTPOptions{
@@ -288,14 +291,15 @@ func remoteHost(r *http.Request) string {
 }
 
 type buildParams struct {
-	cluster     string
-	name        string
-	token       string
-	caller      Caller
-	externalURL string
-	enumerate   ProviderEnumerator
-	discovery   *discoveryCache
-	log         logr.Logger
+	cluster      string
+	name         string
+	token        string
+	caller       Caller
+	externalURL  string
+	enumerate    ProviderEnumerator
+	discovery    *discoveryCache
+	appReadSlots chan struct{}
+	log          logr.Logger
 }
 
 // buildServer constructs the aggregate mcp.Server for one request: generic
@@ -350,7 +354,7 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	// or absent still has its declared contract published here.
 	registerCapabilitiesResource(srv, capabilitiesFor(p.cluster, p.name, targets))
 
-	registerProviderTools(srv, p.log, found)
+	registerProviderTools(ctx, srv, p.log, found, p.appReadSlots)
 	return srv
 }
 

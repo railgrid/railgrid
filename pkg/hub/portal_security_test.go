@@ -19,9 +19,14 @@ package hub
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/go-logr/logr"
+
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 func TestWithPortalSecurityHeadersAllowsConfiguredFrameSources(t *testing.T) {
@@ -117,5 +122,41 @@ func TestPortalFrameSourcesDefaultsToSelf(t *testing.T) {
 	want := []string{"'self'"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("portalFrameSources(nil) = %#v, want %#v", got, want)
+	}
+}
+
+// The SPA's strict script policy must not be applied to provider static assets.
+// Match the production UIProxy + CSP-wrapped fallback arrangement in server.go.
+func TestProviderAppSandboxAssetDoesNotInheritPortalScriptPolicy(t *testing.T) {
+	const document = `<!doctype html><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; frame-src blob:"><script>window.proxyReady=true</script>`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/mcp-app-sandbox.html" {
+			t.Errorf("unexpected asset path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(document))
+	}))
+	defer upstream.Close()
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := providers.NewRegistry()
+	registry.Upsert(providers.Provider{Name: "agents", UIURL: target, EndpointsValid: true})
+	proxy := providers.NewUIProxy(registry, logr.Discard())
+	proxy.SetFallback(WithPortalSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("portal")) })))
+	record := httptest.NewRecorder()
+	proxy.ServeHTTP(record, httptest.NewRequest(http.MethodGet, "/ui/providers/agents/mcp-app-sandbox.html?v=proxy-digest", nil))
+	if record.Code != http.StatusOK || record.Body.String() != document {
+		t.Fatalf("sandbox asset did not reach provider: %d %s", record.Code, record.Body.String())
+	}
+	if policy := record.Header().Get("Content-Security-Policy"); policy != "" {
+		t.Fatalf("unexpected portal header on static app proxy: %q", policy)
+	}
+	if framing := record.Header().Get("X-Frame-Options"); framing != "" {
+		t.Fatalf("unexpected frame restriction: %q", framing)
+	}
+	if contentType := record.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/html") {
+		t.Fatalf("incorrect document MIME: %q", contentType)
 	}
 }
