@@ -8,7 +8,8 @@ Join this edge to the hub as a persistent installation.
 
 For Linux server-type edges (bare-metal / VM):
   Installs a systemd service that runs "railgrid agent run" and survives reboots.
-  Requires root. The service is named railgrid-agent-<edge-name>.service.
+  Requires root. The service is always named railgrid-edge.service, whichever
+  edge it joins, so fleet tooling can address every host the same way.
 
 For macOS service edges:
   Installs a system LaunchDaemon that runs as the configured non-root worker

@@ -330,7 +330,8 @@ func newAgentJoinCommand() *cobra.Command {
 
 For Linux server-type edges (bare-metal / VM):
   Installs a systemd service that runs "railgrid agent run" and survives reboots.
-  Requires root. The service is named railgrid-agent-<edge-name>.service.
+  Requires root. The service is always named railgrid-edge.service, whichever
+  edge it joins, so fleet tooling can address every host the same way.
 
 For macOS service edges:
   Installs a system LaunchDaemon that runs as the configured non-root worker
@@ -393,7 +394,7 @@ func agentJoinServer(opts *agent.Options) error {
 		}
 	}
 
-	unitName := "railgrid-agent-" + opts.EdgeName
+	unitName := linuxUnitName
 	data, err := joinServerUnitData(opts, binaryPath, absKubeconfig)
 	if err != nil {
 		return err
@@ -412,6 +413,15 @@ func agentJoinServer(opts *agent.Options) error {
 	}
 
 	unitPath := "/etc/systemd/system/" + unitName + ".service"
+	// The unit name no longer carries the edge, so a join for a second edge on
+	// a host would otherwise silently replace the first edge's unit and restart
+	// it as the new one. Re-joining the SAME edge (a new token, a new hub URL)
+	// still overwrites, which is what it always did.
+	if existing, err := unitEdgeName(unitPath); err != nil {
+		return err
+	} else if existing != "" && existing != opts.EdgeName {
+		return fmt.Errorf("%s already runs edge %q; a host runs one agent — run 'railgrid agent uninstall' first", unitPath, existing)
+	}
 	f, err := os.Create(unitPath)
 	if err != nil {
 		return fmt.Errorf("creating unit file %s: %w (are you running as root?)", unitPath, err)
@@ -438,7 +448,7 @@ func agentJoinServer(opts *agent.Options) error {
 	fmt.Printf("Agent installed and running as systemd service.\n")
 	fmt.Printf("  Check status:  systemctl status %s\n", unitName)
 	fmt.Printf("  View logs:     journalctl -u %s -f\n", unitName)
-	fmt.Printf("  Uninstall:     railgrid agent uninstall --edge-name %s\n", opts.EdgeName)
+	fmt.Printf("  Uninstall:     railgrid agent uninstall\n")
 	return nil
 }
 
@@ -999,7 +1009,7 @@ Example:
 			}
 
 			if unitName == "" {
-				unitName = "railgrid-agent-" + edgeName
+				unitName = linuxUnitName
 			}
 
 			data := systemdUnitData{
@@ -1081,7 +1091,7 @@ Example:
 	cmd.Flags().StringVar(&sshPrivateKey, "ssh-private-key", "", "Path to SSH private key file")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "kcp logical cluster path")
 	cmd.Flags().BoolVar(&insecureSkipTLS, "hub-insecure-skip-tls-verify", false, "Skip TLS verification")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: railgrid-agent-<edge-name>)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: "+linuxUnitName+")")
 	cmd.Flags().StringVar(&workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon")
 	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
@@ -1111,13 +1121,20 @@ func newAgentUninstallCommand() *cobra.Command {
 				return uninstallLaunchdAgent(edgeName, plistPath, dryRun)
 			}
 			if unitName == "" {
-				if edgeName == "" {
-					return fmt.Errorf("--edge-name or --unit-name is required")
-				}
-				unitName = "railgrid-agent-" + edgeName
+				unitName = linuxUnitName
 			}
 
 			serviceName := unitName + ".service"
+			unitPath := "/etc/systemd/system/" + serviceName
+			// Report a missing unit instead of "uninstalled": stop/disable of
+			// a unit that does not exist only warns, and exit 0 would claim
+			// success while whatever IS running on the host keeps running.
+			if _, err := os.Stat(unitPath); err != nil {
+				if os.IsNotExist(err) {
+					return fmt.Errorf("%s is not installed (pass --unit-name for a unit installed under another name)", unitPath)
+				}
+				return fmt.Errorf("checking %s: %w", unitPath, err)
+			}
 
 			// Stop and disable.
 			for _, c := range [][]string{
@@ -1131,7 +1148,6 @@ func newAgentUninstallCommand() *cobra.Command {
 			}
 
 			// Remove unit file.
-			unitPath := "/etc/systemd/system/" + serviceName
 			if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("removing %s: %w", unitPath, err)
 			}
@@ -1147,11 +1163,41 @@ func newAgentUninstallCommand() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Edge name (used to derive unit name)")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: railgrid-agent-<edge-name>)")
+	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Edge name (macOS only: names the launchd label; the systemd unit is "+linuxUnitName+" regardless)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: "+linuxUnitName+")")
 	cmd.Flags().StringVar(&installType, "type", "server", "Installation type: server or macos")
 	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be removed without changing the host")
 
 	return cmd
+}
+
+// linuxUnitName is the systemd unit every Linux server edge runs under. It is
+// deliberately not derived from the edge name: a host runs one agent, and a
+// fixed name lets fleet tooling (Ansible, cloud-init, Terraform provisioners)
+// enable, restart and read the unit on every host with the same command.
+// --unit-name on install/uninstall still overrides it.
+const linuxUnitName = "railgrid-edge"
+
+// unitEdgeName reports the edge a unit written by this CLI runs, read off its
+// "--edge-name <edge>" argument, "" when there is no unit at path, and an
+// error for any other failure to read it.
+func unitEdgeName(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	fields := strings.Fields(string(raw))
+	for i, f := range fields {
+		switch {
+		case f == "--edge-name" && i+1 < len(fields):
+			return fields[i+1], nil
+		case strings.HasPrefix(f, "--edge-name="):
+			return strings.TrimPrefix(f, "--edge-name="), nil
+		}
+	}
+	return "", nil
 }

@@ -44,6 +44,13 @@ const (
 	maxIdentifierBytes = 128
 	maxMessageBytes    = 8 << 10
 
+	// serverReadHeaderTimeout bounds a connection that never sends a request
+	// head; serverIdleTimeout reaps keep-alive connections a client abandons
+	// without closing. Attempt streams are long-lived response bodies, which
+	// neither touches.
+	serverReadHeaderTimeout = 10 * time.Second
+	serverIdleTimeout       = 2 * time.Minute
+
 	// This is the blocker that runner/v1 wrote when Close cancelled an
 	// adapter. Keep it exact because the v1 -> v2 migration only reopens this
 	// ambiguous receipt when the rest of the durable state proves that no
@@ -290,7 +297,12 @@ func (r *Runner) ListenAndServe(ctx context.Context) error {
 		<-ctx.Done()
 		_ = listener.Close()
 	}()
-	server := &http.Server{Handler: r.Handler()}
+	// A leaky caller must not be able to pin the runner's descriptors forever.
+	server := &http.Server{
+		Handler:           r.Handler(),
+		ReadHeaderTimeout: serverReadHeaderTimeout,
+		IdleTimeout:       serverIdleTimeout,
+	}
 	err = server.Serve(listener)
 	if errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) {
 		return nil
