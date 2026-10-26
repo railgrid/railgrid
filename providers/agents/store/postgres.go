@@ -217,10 +217,14 @@ var agentsSchema = []string{
 		workspace_uuid TEXT NOT NULL,
 		agent_name TEXT NOT NULL,
 		run_id TEXT NOT NULL DEFAULT '',
+		call_id TEXT NOT NULL DEFAULT '',
+		session_id TEXT NOT NULL DEFAULT '',
 		trigger_kind TEXT NOT NULL DEFAULT '',
 		tool TEXT NOT NULL,
 		args TEXT NOT NULL DEFAULT '',
 		result TEXT NOT NULL DEFAULT '',
+		sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+		presentation JSONB NOT NULL DEFAULT '{}'::jsonb,
 		outcome TEXT NOT NULL,
 		error TEXT NOT NULL DEFAULT '',
 		duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -230,11 +234,43 @@ var agentsSchema = []string{
 	// migrate in place (idempotent).
 	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS args TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS result TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS call_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS sources JSONB NOT NULL DEFAULT '[]'::jsonb`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS presentation JSONB NOT NULL DEFAULT '{}'::jsonb`,
 	`ALTER TABLE agents_tool_calls DROP COLUMN IF EXISTS args_digest`,
 	`CREATE INDEX IF NOT EXISTS agents_tool_calls_scope_idx
 		ON agents_tool_calls (org_uuid, workspace_uuid, agent_name, created_at DESC)`,
 	`CREATE INDEX IF NOT EXISTS agents_tool_calls_run_idx
 		ON agents_tool_calls (org_uuid, workspace_uuid, run_id, created_at ASC)`,
+	`CREATE TABLE IF NOT EXISTS agents_agent_artifacts (
+		id TEXT NOT NULL,
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		agent_uid TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		tool_call_id TEXT NOT NULL,
+		tool_name TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		media_type TEXT NOT NULL,
+		input BYTEA NOT NULL DEFAULT ''::bytea,
+		input_digest TEXT NOT NULL DEFAULT '',
+		input_size BIGINT NOT NULL DEFAULT 0,
+		digest TEXT NOT NULL,
+		size BIGINT NOT NULL,
+		data BYTEA NOT NULL,
+		sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+		presentation JSONB NOT NULL DEFAULT '{}'::jsonb,
+		created_at TIMESTAMPTZ NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_artifacts_owner_idx
+		ON agents_agent_artifacts (org_uuid, workspace_uuid, agent_name, agent_uid, owner, created_at DESC, id DESC)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_artifacts_owner_quota_idx
+		ON agents_agent_artifacts (org_uuid, workspace_uuid, owner)`,
 	// The per-trigger delivery log never shipped; the sink moved to the
 	// Webhook (agents_webhook_deliveries). Dropped so a dev database that ran
 	// the interim schema sheds it.
@@ -1434,11 +1470,33 @@ func (p *PostgresStore) AppendToolCall(ctx context.Context, scope Scope, tc Tool
 	if err := scope.validate(); err != nil {
 		return err
 	}
+	for i, source := range tc.Sources {
+		if err := source.Validate(); err != nil {
+			return fmt.Errorf("tool call source %d: %w", i, err)
+		}
+	}
+	if len(tc.Sources) > MaxAgentArtifactSources {
+		return fmt.Errorf("tool call has more than %d sources", MaxAgentArtifactSources)
+	}
+	tc.Presentation = contentFreePresentation(tc.Presentation, tc.Sources)
+	if tc.Presentation != nil {
+		if err := tc.Presentation.Validate(); err != nil {
+			return err
+		}
+	}
+	sourcesJSON, err := json.Marshal(tc.Sources)
+	if err != nil {
+		return err
+	}
+	presentationJSON, err := json.Marshal(tc.Presentation)
+	if err != nil {
+		return err
+	}
 	_, err = mutation.executor.ExecContext(ctx, `
-		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, trigger_kind, tool, args, result, outcome, error, duration_ms, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.Trigger, tc.Tool, tc.Args, tc.Result,
-		tc.Outcome, tc.Error, tc.DurationMS, tc.CreatedAt.UTC())
+		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.CallID, tc.SessionID, tc.Trigger, tc.Tool, tc.Args, tc.Result,
+		sourcesJSON, presentationJSON, tc.Outcome, tc.Error, tc.DurationMS, tc.CreatedAt.UTC())
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1509,7 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 		return nil, err
 	}
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, agent_name, run_id, trigger_kind, tool, args, result, outcome, error, duration_ms, created_at
+		SELECT id, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, created_at
 		FROM agents_tool_calls
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND run_id=$3
 		ORDER BY created_at ASC, id ASC LIMIT 500`,
@@ -1463,14 +1521,83 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 	var out []ToolCall
 	for rows.Next() {
 		var tc ToolCall
-		if err := rows.Scan(&tc.ID, &tc.AgentName, &tc.RunID, &tc.Trigger, &tc.Tool, &tc.Args, &tc.Result,
-			&tc.Outcome, &tc.Error, &tc.DurationMS, &tc.CreatedAt); err != nil {
+		var sourcesJSON, presentationJSON []byte
+		if err := rows.Scan(&tc.ID, &tc.AgentName, &tc.RunID, &tc.CallID, &tc.SessionID, &tc.Trigger, &tc.Tool, &tc.Args, &tc.Result,
+			&sourcesJSON, &presentationJSON, &tc.Outcome, &tc.Error, &tc.DurationMS, &tc.CreatedAt); err != nil {
 			return nil, err
+		}
+		if len(sourcesJSON) > 0 {
+			if err := json.Unmarshal(sourcesJSON, &tc.Sources); err != nil {
+				return nil, fmt.Errorf("decode tool-call sources: %w", err)
+			}
+		}
+		if len(presentationJSON) > 0 && string(presentationJSON) != "null" {
+			var presentation ProviderPresentation
+			if err := json.Unmarshal(presentationJSON, &presentation); err != nil {
+				return nil, fmt.Errorf("decode tool-call presentation: %w", err)
+			}
+			tc.Presentation = &presentation
 		}
 		tc.CreatedAt = tc.CreatedAt.UTC()
 		out = append(out, tc)
 	}
 	return out, rows.Err()
+}
+
+// GetToolResult reopens one exact tool result from the transcript. The call ID
+// lives in the tool message metadata; run and session are included in the
+// predicate so a reused call ID cannot cross either boundary. The database
+// reports the original size while omitting oversized content from the result
+// row, avoiding a large provider-side allocation for an un-capturable output.
+func (p *PostgresStore) GetToolResult(ctx context.Context, scope Scope, runID, sessionID, callID string) (Message, bool, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.withAgent(); err != nil {
+		return Message{}, false, err
+	}
+	if strings.TrimSpace(runID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(callID) == "" {
+		return Message{}, false, fmt.Errorf("run, session and tool-call IDs are required")
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, session_id, run_id, role,
+			CASE WHEN octet_length(content) <= $7 THEN content ELSE '' END,
+			content_encrypted, content_key_id, metadata, created_at, octet_length(content)
+		FROM agents_messages
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4 AND session_id=$5
+			AND role='tool' AND metadata->>'toolCallID'=$6
+		ORDER BY created_at ASC, id ASC LIMIT 2`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID, sessionID, callID, MaxAgentArtifactBytes)
+	if err != nil {
+		return Message{}, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	var result Message
+	count := 0
+	for rows.Next() {
+		count++
+		var metadata []byte
+		var contentSize int64
+		if err := rows.Scan(&result.ID, &result.SessionID, &result.RunID, &result.Role, &result.Content,
+			&result.ContentEncrypted, &result.ContentKeyID, &metadata, &result.CreatedAt, &contentSize); err != nil {
+			return Message{}, false, err
+		}
+		if count > 1 {
+			return Message{}, false, fmt.Errorf("tool-call result identity is ambiguous")
+		}
+		if contentSize > MaxAgentArtifactBytes {
+			return Message{}, false, ErrAgentArtifactResultTooLarge
+		}
+		if len(metadata) > 0 {
+			if err := json.Unmarshal(metadata, &result.Metadata); err != nil {
+				return Message{}, false, fmt.Errorf("decode tool-result metadata: %w", err)
+			}
+		}
+		result.AgentName = scope.AgentName
+		result.CreatedAt = result.CreatedAt.UTC()
+	}
+	if err := rows.Err(); err != nil {
+		return Message{}, false, err
+	}
+	return result, count == 1, nil
 }
 
 // ---- webhook deliveries ----------------------------------------------------
@@ -1775,6 +1902,7 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
+			EXISTS (SELECT 1 FROM agents_agent_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_webhook_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2)`,
 		fromOrg, fromWorkspace).Scan(&hasSource); err != nil {
 		return fmt.Errorf("check legacy scope for cluster %s: %w", clusterID, err)
@@ -1820,6 +1948,17 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
 		return fmt.Errorf("remove migrated run artifacts for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE agents_agent_artifacts AS src SET org_uuid=$3, workspace_uuid=$4
+		WHERE src.org_uuid=$1 AND src.workspace_uuid=$2 AND NOT EXISTS (
+			SELECT 1 FROM agents_agent_artifacts AS dst
+			WHERE dst.org_uuid=$3 AND dst.workspace_uuid=$4 AND dst.agent_name=src.agent_name AND dst.id=src.id)`,
+		fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
+		return fmt.Errorf("migrate agent artifacts for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_agent_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
+		return fmt.Errorf("remove migrated agent artifacts for cluster %s: %w", clusterID, err)
 	}
 	// Usage is a cumulative bucket: combine both partitions once, then remove
 	// the source so a later catch-up cannot count it a second time.
@@ -2075,7 +2214,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
@@ -2167,6 +2306,196 @@ func (p *PostgresStore) GetRunArtifact(ctx context.Context, scope Scope, runID, 
 	}
 	a.CreatedAt = a.CreatedAt.UTC()
 	return a, true, nil
+}
+
+// ---- agent artifacts --------------------------------------------------------
+
+func (p *PostgresStore) SaveAgentArtifact(ctx context.Context, scope Scope, artifact AgentArtifact) error {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	if artifact.AgentName != scope.AgentName {
+		return fmt.Errorf("artifact Agent does not match scope Agent")
+	}
+	artifact.Presentation = contentFreePresentation(artifact.Presentation, artifact.Sources)
+	if err := artifact.validate(); err != nil {
+		return err
+	}
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin Agent artifact mutation: %w", err)
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
+	lockKey := "agents-agent-artifact-owner:" + scope.OrgUUID + "/" + scope.WorkspaceUUID + "/" + artifact.Owner
+	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return fmt.Errorf("lock Agent artifact retention: %w", err)
+	}
+	var exists bool
+	if err := mutation.executor.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM agents_agent_artifacts
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND id=$4
+		)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.ID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("artifact ID already exists")
+	}
+	var count int
+	var retained int64
+	if err := mutation.executor.QueryRowContext(ctx, `
+		SELECT COUNT(*), COALESCE(SUM(size + input_size), 0)
+		FROM agents_agent_artifacts
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND owner=$3`,
+		scope.OrgUUID, scope.WorkspaceUUID, artifact.Owner).Scan(&count, &retained); err != nil {
+		return err
+	}
+	if count >= MaxAgentArtifactsPerOwner || retained+artifact.retainedBytes() > MaxAgentArtifactBytesPerOwner {
+		return ErrAgentArtifactLimit
+	}
+	sources, err := json.Marshal(artifact.Sources)
+	if err != nil {
+		return err
+	}
+	presentation, err := json.Marshal(artifact.Presentation)
+	if err != nil {
+		return err
+	}
+	_, err = mutation.executor.ExecContext(ctx, `
+		INSERT INTO agents_agent_artifacts
+			(id, org_uuid, workspace_uuid, agent_name, agent_uid, owner, run_id, session_id, tool_call_id, tool_name,
+			 title, media_type, input, input_digest, input_size, digest, size, data, sources, presentation, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+		artifact.ID, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, artifact.AgentUID, artifact.Owner,
+		artifact.RunID, artifact.SessionID, artifact.ToolCallID, artifact.ToolName, artifact.Title, artifact.MediaType,
+		artifact.Input, artifact.InputDigest, artifact.InputSize, artifact.Digest, artifact.Size, artifact.Data,
+		sources, presentation, artifact.CreatedAt.UTC())
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
+}
+
+func (p *PostgresStore) ListAgentArtifacts(ctx context.Context, scope Scope, agentUID, owner string, limit int) ([]AgentArtifact, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.withAgent(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" {
+		return nil, fmt.Errorf("agent UID and artifact owner are required")
+	}
+	if limit <= 0 || limit > MaxAgentArtifactsPerOwner {
+		limit = MaxAgentArtifactsPerOwner
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT id, agent_name, agent_uid, owner, run_id, session_id, tool_call_id, tool_name, title, media_type,
+			input_digest, input_size, digest, size, sources, created_at
+		FROM agents_agent_artifacts
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND owner=$5
+		ORDER BY created_at DESC, id DESC LIMIT $6`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, owner, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AgentArtifact
+	for rows.Next() {
+		var artifact AgentArtifact
+		var sources []byte
+		if err := rows.Scan(&artifact.ID, &artifact.AgentName, &artifact.AgentUID, &artifact.Owner, &artifact.RunID,
+			&artifact.SessionID, &artifact.ToolCallID, &artifact.ToolName, &artifact.Title, &artifact.MediaType,
+			&artifact.InputDigest, &artifact.InputSize, &artifact.Digest, &artifact.Size, &sources, &artifact.CreatedAt); err != nil {
+			return nil, err
+		}
+		if len(sources) > 0 {
+			if err := json.Unmarshal(sources, &artifact.Sources); err != nil {
+				return nil, fmt.Errorf("decode Agent artifact sources: %w", err)
+			}
+		}
+		artifact.CreatedAt = artifact.CreatedAt.UTC()
+		out = append(out, artifact)
+	}
+	return out, rows.Err()
+}
+
+func (p *PostgresStore) GetAgentArtifact(ctx context.Context, scope Scope, agentUID, owner, id string) (AgentArtifact, bool, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.withAgent(); err != nil {
+		return AgentArtifact{}, false, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(id) == "" {
+		return AgentArtifact{}, false, fmt.Errorf("agent UID, artifact owner and ID are required")
+	}
+	var artifact AgentArtifact
+	var sources, presentation []byte
+	err := p.db.QueryRowContext(ctx, `
+		SELECT id, agent_name, agent_uid, owner, run_id, session_id, tool_call_id, tool_name, title, media_type,
+			input, input_digest, input_size, digest, size, data, sources, presentation, created_at
+		FROM agents_agent_artifacts
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND owner=$5 AND id=$6`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, owner, id).
+		Scan(&artifact.ID, &artifact.AgentName, &artifact.AgentUID, &artifact.Owner, &artifact.RunID, &artifact.SessionID,
+			&artifact.ToolCallID, &artifact.ToolName, &artifact.Title, &artifact.MediaType, &artifact.Input,
+			&artifact.InputDigest, &artifact.InputSize, &artifact.Digest, &artifact.Size, &artifact.Data, &sources, &presentation, &artifact.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AgentArtifact{}, false, nil
+	}
+	if err != nil {
+		return AgentArtifact{}, false, err
+	}
+	if err := json.Unmarshal(sources, &artifact.Sources); err != nil {
+		return AgentArtifact{}, false, fmt.Errorf("decode Agent artifact sources: %w", err)
+	}
+	if len(presentation) > 0 && string(presentation) != "null" {
+		var decoded ProviderPresentation
+		if err := json.Unmarshal(presentation, &decoded); err != nil {
+			return AgentArtifact{}, false, fmt.Errorf("decode Agent artifact presentation: %w", err)
+		}
+		artifact.Presentation = &decoded
+	}
+	artifact.CreatedAt = artifact.CreatedAt.UTC()
+	if err := artifact.validate(); err != nil {
+		return AgentArtifact{}, false, fmt.Errorf("stored Agent artifact is invalid: %w", err)
+	}
+	return artifact, true, nil
+}
+
+func (p *PostgresStore) DeleteAgentArtifact(ctx context.Context, scope Scope, agentUID, owner, id string) (bool, error) {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(agentUID) == "" || strings.TrimSpace(owner) == "" || strings.TrimSpace(id) == "" {
+		return false, fmt.Errorf("agent UID, artifact owner and ID are required")
+	}
+	result, err := mutation.executor.ExecContext(ctx, `
+		DELETE FROM agents_agent_artifacts
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND owner=$5 AND id=$6`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, owner, id)
+	if err != nil {
+		return false, err
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := mutation.commit(); err != nil {
+		return false, err
+	}
+	return deleted > 0, nil
 }
 
 // ---- helpers ----------------------------------------------------------------------------

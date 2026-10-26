@@ -655,13 +655,28 @@ func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event stri
 		emit("delta", map[string]any{"text": delta})
 	}
 	run.OnToolStart = func(callID, toolName, args string) {
-		emit("tool_start", map[string]any{"id": callID, "name": toolName, "args": redactArgs(args)})
+		emit("tool_start", map[string]any{
+			"id": callID, "toolCallID": callID, "runID": runID, "sessionID": sessionID,
+			"name": toolName, "args": redactArgs(args),
+		})
 	}
 	run.OnTool = func(ev backend.ToolEvent) {
-		emit("tool_end", map[string]any{
-			"id": ev.ID, "name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
+		data := map[string]any{
+			"id": ev.ID, "toolCallID": ev.ID, "runID": runID, "sessionID": sessionID,
+			"name": ev.Name, "args": redactArgs(ev.Args), "result": safeTruncate(ev.Result, 8*1024),
 			"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
-		})
+			"hasMcpApp": ev.HasMCPApp(),
+		}
+		if len(ev.Sources) > 0 {
+			data["sources"] = ev.Sources
+		}
+		if presentation := safeToolPresentation(ev.Presentation); presentation != nil {
+			data["presentation"] = presentation
+		}
+		if savedCapture := savedCaptureForToolEvent(run, ev); savedCapture != nil {
+			data["savedCapture"] = savedCapture
+		}
+		emit("tool_end", data)
 	}
 
 	res, err := s.executeTask(ctx, run)

@@ -58,6 +58,25 @@ type ArtifactRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// ArtifactsRequest is the payload of the "artifacts" custom subresource on agents.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=artifacts,scope=Cluster
+type ArtifactsRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // AuthorizeRequest is the payload of the "authorize" custom subresource on connections.
 //
 // +kubebuilder:object:root=true
@@ -423,6 +442,7 @@ func init() {
 	SchemeBuilder.Register(func(scheme *runtime.Scheme) error {
 		scheme.AddKnownTypes(SchemeGroupVersion,
 			&ArtifactRequest{},
+			&ArtifactsRequest{},
 			&AuthorizeRequest{},
 			&CancelRequest{},
 			&ChatRequest{},

@@ -165,7 +165,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// tool, which deliberately does not block a run — carries no run id and
 	// resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
-		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID}
+		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
 		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, req.Response)
 	}
 	writeJSON(w, http.StatusOK, item)

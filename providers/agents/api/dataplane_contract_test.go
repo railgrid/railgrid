@@ -126,6 +126,24 @@ func TestDataPlaneConformance(t *testing.T) {
 	})
 }
 
+func TestAgentArtifactCaptureRequiresAttendedMCP(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster,
+		User:    conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		},
+	}
+	handler := gatedHandler(t, newGatedTestServer(t, callers))
+	path := verbBase(conformanceCluster, "agents", conformanceAgent) + "/artifacts"
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, stamped(http.MethodPost, path, strings.NewReader(`{"runID":"run"}`), conformanceUser))
+	if recorder.Code != http.StatusMethodNotAllowed || recorder.Header().Get("Allow") != "GET, DELETE" {
+		t.Fatalf("POST artifacts → %d Allow=%q, want 405 Allow=GET, DELETE: %s", recorder.Code, recorder.Header().Get("Allow"), recorder.Body.String())
+	}
+}
+
 // TestRunVerbsGateOnTheRunObject: the run verbs address a Run, so the gate
 // runs against the Run — and the agent whose store rows they then read comes
 // off that object's spec, never off the request.
