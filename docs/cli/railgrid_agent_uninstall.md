@@ -10,7 +10,7 @@ railgrid agent uninstall [flags]
 
 ```
       --dry-run                Print what would be removed without changing the host
-      --edge-name string       Edge name (used to derive unit name)
+      --edge-name string       Edge name (macOS only: names the launchd label; the systemd unit is railgrid-edge regardless)
   -h, --help                   help for uninstall
       --launchd-plist string   LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)
       --type string            Installation type: server or macos (default "server")

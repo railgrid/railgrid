@@ -176,6 +176,11 @@ func newSvcProxyHandler(cfg svcProxyConfig) http.HandlerFunc {
 		// every proxied request would leak one socket on both ends until the
 		// loopback ephemeral-port range is exhausted and the runner is
 		// unreachable ("connect: cannot assign requested address").
+		// DisableKeepAlives costs a dial (and a TLS handshake for an https
+		// target) per proxied request; the traffic here is probes and MCP
+		// calls at seconds apart, which a loopback or LAN dial absorbs. A
+		// transport cache keyed by vetted target would save that dial at the
+		// price of an eviction policy; revisit only if a service shows it.
 		proxy := &httputil.ReverseProxy{
 			Transport: &http.Transport{
 				DialContext:       dial,
