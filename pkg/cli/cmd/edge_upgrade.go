@@ -115,7 +115,7 @@ func printServerUpgradeInstructions(name, _ string) {
 	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
 	fmt.Println()
 	fmt.Printf("Then restart the agent:\n\n")
-	fmt.Printf("  sudo systemctl restart railgrid-agent-%s\n", name)
+	fmt.Printf("  sudo systemctl restart %s\n", linuxUnitName)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  railgrid edge list\n")

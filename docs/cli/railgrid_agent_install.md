@@ -43,7 +43,7 @@ railgrid agent install [flags]
       --svc-policy string                        Service proxy policy for targets outside the allowed set: enforce, warn or allow-any (rendered into the unit only when not the default) (default "warn")
       --token string                             Bootstrap join token (macOS token bootstrap)
       --type string                              Edge type: kubernetes (Kubernetes), server (Linux), or macos (MacOS) (default "server")
-      --unit-name string                         Systemd unit name (default: railgrid-agent-<edge-name>)
+      --unit-name string                         Systemd unit name (default: railgrid-edge)
       --worker-user string                       Existing non-root account for a macOS LaunchDaemon
 ```
 

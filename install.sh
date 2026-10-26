@@ -145,10 +145,10 @@ fi
 # `railgrid agent join` keeps running its current build until its unit is
 # restarted, and the unit records the symlink-resolved path of whichever binary
 # registered it (os.Executable + EvalSymlinks), which can be neither ${target}
-# nor ${shadow}. So name the units and have the operator read the path off the
-# unit rather than assume one.
+# nor ${shadow}. So name the unit and have the operator read the path off the
+# unit rather than assume one. The unit is railgrid-edge.service on every host.
 if command -v systemctl >/dev/null 2>&1; then
-    units="$(systemctl list-units --all --no-legend --plain --type=service 'railgrid-agent-*' 2>/dev/null \
+    units="$(systemctl list-units --all --no-legend --plain --type=service 'railgrid-edge.service' 2>/dev/null \
         | awk '{print $1}' | tr '\n' ' ')"
     units="${units% }"
     if [ -n "$units" ]; then

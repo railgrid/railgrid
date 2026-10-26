@@ -205,7 +205,7 @@ func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
 	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
-	fmt.Printf("  sudo systemctl restart railgrid-agent-%s\n\n", edgeName)
+	fmt.Printf("  sudo systemctl restart %s\n\n", linuxUnitName)
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  railgrid edge list\n")
 	return nil

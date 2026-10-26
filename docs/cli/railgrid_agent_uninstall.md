@@ -14,7 +14,7 @@ railgrid agent uninstall [flags]
   -h, --help                   help for uninstall
       --launchd-plist string   LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)
       --type string            Installation type: server or macos (default "server")
-      --unit-name string       Systemd unit name (default: railgrid-agent-<edge-name>)
+      --unit-name string       Systemd unit name (default: railgrid-edge)
 ```
 
 ### Options inherited from parent commands

@@ -131,7 +131,7 @@ func installServer(opts *installOptions) error {
 
 	configDir := "/etc/railgrid"
 	configPath := filepath.Join(configDir, "agent.yaml")
-	servicePath := "/etc/systemd/system/railgrid-agent.service"
+	servicePath := "/etc/systemd/system/" + linuxUnitName + ".service"
 
 	agentConfig := fmt.Sprintf("hub-url: %s\nedge-name: %s\ntoken: %s\n", opts.hubURL, opts.edgeName, opts.token)
 
@@ -151,7 +151,7 @@ WantedBy=multi-user.target
 	if opts.dryRun {
 		fmt.Printf("--- (dry-run) Would write %s ---\n%s\n", configPath, agentConfig)
 		fmt.Printf("--- (dry-run) Would write %s ---\n%s\n", servicePath, serviceUnit)
-		fmt.Println("--- (dry-run) Would run: systemctl daemon-reload && systemctl enable --now railgrid-agent ---")
+		fmt.Println("--- (dry-run) Would run: systemctl daemon-reload && systemctl enable --now " + linuxUnitName + " ---")
 		return nil
 	}
 
@@ -176,7 +176,7 @@ WantedBy=multi-user.target
 	if isSystemdAvailable() {
 		for _, args := range [][]string{
 			{"daemon-reload"},
-			{"enable", "--now", "railgrid-agent"},
+			{"enable", "--now", linuxUnitName},
 		} {
 			//nolint:gosec // systemctl is a known system command
 			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
@@ -184,9 +184,9 @@ WantedBy=multi-user.target
 			}
 		}
 		fmt.Println()
-		fmt.Println("✓ railgrid-agent installed and started")
-		fmt.Println("  Status: systemctl status railgrid-agent")
-		fmt.Println("  Logs:   journalctl -u railgrid-agent -f")
+		fmt.Printf("✓ %s installed and started\n", linuxUnitName)
+		fmt.Printf("  Status: systemctl status %s\n", linuxUnitName)
+		fmt.Printf("  Logs:   journalctl -u %s -f\n", linuxUnitName)
 	} else {
 		fmt.Println("\n⚠ systemd not detected. Start the agent manually:")
 		printAgentRunCmd(opts)

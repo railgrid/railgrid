@@ -330,7 +330,8 @@ func newAgentJoinCommand() *cobra.Command {
 
 For Linux server-type edges (bare-metal / VM):
   Installs a systemd service that runs "railgrid agent run" and survives reboots.
-  Requires root. The service is named railgrid-agent-<edge-name>.service.
+  Requires root. The service is always named railgrid-edge.service, whichever
+  edge it joins, so fleet tooling can address every host the same way.
 
 For macOS service edges:
   Installs a system LaunchDaemon that runs as the configured non-root worker
@@ -393,7 +394,7 @@ func agentJoinServer(opts *agent.Options) error {
 		}
 	}
 
-	unitName := "railgrid-agent-" + opts.EdgeName
+	unitName := linuxUnitName
 	data, err := joinServerUnitData(opts, binaryPath, absKubeconfig)
 	if err != nil {
 		return err
@@ -438,7 +439,7 @@ func agentJoinServer(opts *agent.Options) error {
 	fmt.Printf("Agent installed and running as systemd service.\n")
 	fmt.Printf("  Check status:  systemctl status %s\n", unitName)
 	fmt.Printf("  View logs:     journalctl -u %s -f\n", unitName)
-	fmt.Printf("  Uninstall:     railgrid agent uninstall --edge-name %s\n", opts.EdgeName)
+	fmt.Printf("  Uninstall:     railgrid agent uninstall\n")
 	return nil
 }
 
@@ -999,7 +1000,7 @@ Example:
 			}
 
 			if unitName == "" {
-				unitName = "railgrid-agent-" + edgeName
+				unitName = linuxUnitName
 			}
 
 			data := systemdUnitData{
@@ -1081,7 +1082,7 @@ Example:
 	cmd.Flags().StringVar(&sshPrivateKey, "ssh-private-key", "", "Path to SSH private key file")
 	cmd.Flags().StringVar(&cluster, "cluster", "", "kcp logical cluster path")
 	cmd.Flags().BoolVar(&insecureSkipTLS, "hub-insecure-skip-tls-verify", false, "Skip TLS verification")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: railgrid-agent-<edge-name>)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: "+linuxUnitName+")")
 	cmd.Flags().StringVar(&workerUser, "worker-user", "", "Existing non-root account for a macOS LaunchDaemon")
 	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the macOS LaunchDaemon and skip installation (works on Linux)")
@@ -1111,10 +1112,7 @@ func newAgentUninstallCommand() *cobra.Command {
 				return uninstallLaunchdAgent(edgeName, plistPath, dryRun)
 			}
 			if unitName == "" {
-				if edgeName == "" {
-					return fmt.Errorf("--edge-name or --unit-name is required")
-				}
-				unitName = "railgrid-agent-" + edgeName
+				unitName = linuxUnitName
 			}
 
 			serviceName := unitName + ".service"
@@ -1148,10 +1146,17 @@ func newAgentUninstallCommand() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&edgeName, "edge-name", "", "Edge name (used to derive unit name)")
-	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: railgrid-agent-<edge-name>)")
+	cmd.Flags().StringVar(&unitName, "unit-name", "", "Systemd unit name (default: "+linuxUnitName+")")
 	cmd.Flags().StringVar(&installType, "type", "server", "Installation type: server or macos")
 	cmd.Flags().StringVar(&plistPath, "launchd-plist", "", "LaunchDaemon plist path (default: /Library/LaunchDaemons/com.railgrid.agent.<edge>.plist)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print what would be removed without changing the host")
 
 	return cmd
 }
+
+// linuxUnitName is the systemd unit every Linux server edge runs under. It is
+// deliberately not derived from the edge name: a host runs one agent, and a
+// fixed name lets fleet tooling (Ansible, cloud-init, Terraform provisioners)
+// enable, restart and read the unit on every host with the same command.
+// --unit-name on install/uninstall still overrides it.
+const linuxUnitName = "railgrid-edge"

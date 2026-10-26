@@ -80,7 +80,7 @@ Agent flags shared by `agent run` and `agent join`: `--hub-url`, `--token`,
 (also `$RAILGRID_AGENT_HARNESS`; seeds `spec.harness` only, the edge object wins),
 `--runner-user` (also `$RAILGRID_AGENT_RUNNER_USER`). `agent join` adds
 `--dry-run`, `--launchd-plist`, `--worker-user` (macOS). `agent join --type server`
-writes a systemd unit `railgrid-agent-<edge>.service`; `--type macos` a
+writes a systemd unit `railgrid-edge.service` (the same name on every host, so fleet tooling can address all of them alike); `--type macos` a
 LaunchDaemon `/Library/LaunchDaemons/com.railgrid.agent.<edge>.plist`;
 `--type kubernetes` applies a namespace `railgrid-agent`, a per-edge
 ServiceAccount, and a Deployment `railgrid-agent-<edge>`.

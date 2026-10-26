@@ -275,12 +275,13 @@ const upgradeHelmSnippet = computed(
 )
 // Both host snippets mirror what `railgrid edge upgrade` prints: the release
 // archives are named after uname (kubectl-railgrid_Linux_x86_64, …), the
-// installer places the binary at /usr/local/bin/railgrid, and the unit / label
-// carry the edge name (pkg/cli/cmd/agent.go, launchd.go).
+// installer places the binary at /usr/local/bin/railgrid, the systemd unit is
+// always railgrid-edge.service and the launchd label carries the edge name
+// (pkg/cli/cmd/agent.go, launchd.go).
 const upgradeServerSnippet = computed(
   () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
 sudo mv kubectl-railgrid /usr/local/bin/railgrid
-sudo systemctl restart railgrid-agent-${props.name}`,
+sudo systemctl restart railgrid-edge`,
 )
 const upgradeMacOSSnippet = computed(
   () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
