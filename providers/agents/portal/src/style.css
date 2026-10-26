@@ -253,6 +253,28 @@ railgrid-provider-agents .agents-radiocard.sel { border-color: var(--color-accen
 railgrid-provider-agents .agents-radiocard input { grid-area: r; width: auto; margin-top: 3px; }
 railgrid-provider-agents .agents-radiocard-t { grid-area: t; font-weight: 600; }
 railgrid-provider-agents .agents-radiocard-b { grid-area: b; font-size: 12px; color: var(--color-text-secondary, #8a8ca6); }
+/* --- agent templates: the Start-from cards, the rendered instructions, the
+ * first-run starters. Cards reuse the radiocard recipe; a starter is the same
+ * card as a button. --- */
+railgrid-provider-agents .agents-template-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+railgrid-provider-agents .agents-template-needs { display: block; margin-top: 4px; font-size: 11px; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-template-prompt { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+railgrid-provider-agents .agents-template-prompt .agents-field-label { font-size: 13px; }
+railgrid-provider-agents .agents-template-prompt-text {
+  margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: inherit; font-size: 12.5px; line-height: 1.45; padding: 10px 12px; border-radius: 6px;
+  background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
+  color: var(--color-text-secondary, #8a8ca6);
+}
+railgrid-provider-agents .agents-template-starters { display: flex; flex-direction: column; gap: 8px; width: 100%; }
+railgrid-provider-agents .agents-template-starters-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-template-starters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
+railgrid-provider-agents .agents-template-starter {
+  display: grid; gap: 2px; text-align: left; padding: 11px 13px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
+  background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); color: inherit; box-shadow: none;
+}
+railgrid-provider-agents .agents-template-starter:hover,
+railgrid-provider-agents .agents-template-starter:focus-visible { border-color: var(--color-accent, #8b6bff); background: var(--color-accent-subtle); }
 
 /* --- tables --- */
 /* Tables scroll inside their own container so a wide run table never forces

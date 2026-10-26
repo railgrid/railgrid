@@ -1161,12 +1161,60 @@ reflect the 2026-07-12 state (see [Implementation status](#implementation-status
    (bundled stdio binary + remote-endpoint mode).
 10. ⬜ **Optional integrations** — `edges` family behind MCPServer detection;
     `claude-code` runner sharing the workspace PVC; `AgentSkill` resource.
+13. ✅ **Agent templates** — built-in catalog, portal Start-from step, MCP
+    tools (see "Agent templates" above). **Not done:** tenant-owned templates
+    and Save as template (phase 2).
 11. **Tier 2 — knowledge + observability** — document/URL ingestion with
     chunked retrieval (RAG) beyond memory notes; per-run trace view (steps,
     tool I/O, tokens, latency).
 12. **Tier 2 — safety + notifications** — egress/exfiltration controls
     (outbound-with-data approval, egress allowlists, secret redaction in tool
     args/logs); quiet hours + notification digest batching.
+
+## Agent templates
+
+A **template** is a curated starting point a user instantiates into an ordinary
+`Agent` (plus the `Schedule`s it needs) by wiring in only what the template
+cannot know about their workspace. Nothing about the runtime changes: the
+result is the same objects the blank form or `create_agent` would write.
+
+- **Shape.** An `AgentTemplate` manifest (`agents.railgrid.ai/v1alpha1`,
+  Go type `providers/agents/templates/types.go`): `spec.agent` is a real
+  `AgentSpec` with the wired fields required empty; `spec.parameters` declares
+  `{{key}}` placeholders (string / text / list, with defaults) substituted into
+  the prompt, description and schedule text; `spec.wiring` declares typed slots
+  (`modelCredential`, `channel`, `connection` of a `connectionType`, `edge`,
+  `harnessCredential`, `githubConnection`), each mapping onto exactly one Agent
+  field; `spec.schedules` are cron schedules created with the agent, named
+  `<agent>-<name>`. `templates.Validate` enforces all of it (every placeholder
+  declared and used, backend-appropriate slots, known families, no pre-wired
+  field) and `TestBuiltinCatalog` runs it on every shipped file.
+- **Where they live.** Shipped content, not tenant state: YAML under
+  `providers/agents/templates/builtin/`, embedded for the MCP tools and
+  rendered by `internal/gentemplates` (`make gen-agents-templates`, part of
+  `make codegen-agents-provider`) into `portal/public/agent-templates.json`
+  plus one parity fixture per template under
+  `portal/src/test/fixtures/agent-templates/`. `templates.TestAssetsAreFresh`
+  fails on a stale copy. Tenant-owned templates ("save as template") are
+  phase 2 in `docs/roadmap/agents-templates.md`.
+- **Instantiation is a pure function, twice.** `templates.Instantiate` (Go,
+  used by `create_agent`) and `portal/src/agent-template.ts` (used by the
+  create view, writing through the kube client); the fixtures hold both to the
+  same output. Flat `create_agent` fields double as wiring (`modelCredential`,
+  the primary `channels` entry) and every explicit field overrides the
+  template. The provider additionally checks a wired connection exists and has
+  the slot's type (`verifyTemplateWiring`); the portal only offers the right
+  type. The agent is created first, then its schedules; a failed schedule is
+  reported (`warnings`), not rolled back.
+- **Surfaces.** Portal: a **Start from** card step on `#/create/agent`
+  (`#/create/agent/<template>` preselects one), parameter fields, the
+  template's slots as the form's pickers, a read-only rendered prompt with
+  **Customize instructions**, and starter cards in the empty list state. MCP:
+  `list_agent_templates`, `get_agent_template`, and `create_agent(template,
+  parameters, wiring)`.
+- **Catalog (v1).** `code-reviewer` (harness, GitHub connection),
+  `news-reporter` (web, daily cron to the primary channel), `researcher` (web,
+  spawn, visualization), `workspace-assistant`.
 
 ## Out of scope (v1)
 

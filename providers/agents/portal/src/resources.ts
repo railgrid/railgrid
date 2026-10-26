@@ -467,6 +467,13 @@ function defined<T extends object>(obj: T): T {
  * constructed per call from the live RailgridContext, so a workspace switch can
  * never be served by a client pinned to the previous cluster.
  */
+/** TemplateCreateResult is what a templated create produced. */
+export interface TemplateCreateResult {
+  agent: Agent
+  createdSchedules: string[]
+  warnings: string[]
+}
+
 export class Resources {
   private ctx: RailgridContext | null = null
 
@@ -604,6 +611,42 @@ export class Resources {
         metadata: { name },
         spec,
       } as Agent & KubeObject)
+    })
+
+  /**
+   * createAgentFromTemplate writes an instantiated template: the agent first,
+   * then its schedules. A schedule that fails is reported, not rolled back —
+   * the agent is useful on its own, and the caller sees exactly what landed.
+   * Mirrors createAgentFromRequest in api/agent_templates.go.
+   */
+  createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
+    this.run(async (client) => {
+      const name = (agent.metadata?.name ?? '').trim()
+      if (!name) throw validationError('name is required')
+      const channels = agent.spec.channels ?? []
+      if (channels.length > 0) await this.assertChannelsUnclaimed(client, name, channels)
+      const created = await client.create<Agent & KubeObject>(AGENTS, {
+        apiVersion: API_VERSION,
+        kind: 'Agent',
+        metadata: { name },
+        spec: agent.spec,
+      } as Agent & KubeObject)
+      const createdSchedules: string[] = []
+      const warnings: string[] = []
+      for (const sched of schedules) {
+        try {
+          await client.create<Schedule & KubeObject>(SCHEDULES, {
+            apiVersion: API_VERSION,
+            kind: 'Schedule',
+            metadata: { name: sched.metadata.name },
+            spec: sched.spec,
+          } as unknown as Schedule & KubeObject)
+          createdSchedules.push(sched.metadata.name)
+        } catch (e) {
+          warnings.push(`schedule "${sched.metadata.name}" was not created: ${(e as Error).message}`)
+        }
+      }
+      return { agent: created, createdSchedules, warnings }
     })
 
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> =>

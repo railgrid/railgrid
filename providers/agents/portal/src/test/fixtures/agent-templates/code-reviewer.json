@@ -1,0 +1,48 @@
+{
+  "template": "code-reviewer",
+  "inputs": {
+    "name": "code-reviewer",
+    "parameters": {
+      "repositories": "alpha item\nbeta item\n",
+      "reviewFocus": "Sample What to focus on."
+    },
+    "wiring": {
+      "edge": "LinuxServer/fixture-edge",
+      "githubConnection": "fixture-github",
+      "harnessCredential": "fixture-harness"
+    }
+  },
+  "agent": {
+    "kind": "Agent",
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "metadata": {
+      "name": "code-reviewer"
+    },
+    "spec": {
+      "displayName": "Code reviewer",
+      "description": "Reviews pull requests in the repositories you name, running Claude Code or Codex on one of your machines with a GitHub connection. It comments; it never merges.",
+      "systemPrompt": "You are a code reviewer for these repositories:\n- alpha item\n- beta item\n\nReview focus:\nSample What to focus on.\n\nHow you work:\n- Use `gh` to find and read the pull request you are asked about, including its diff, description and existing review comments. Check out the branch when you need to run or trace code.\n- Read the surrounding code before judging a change. A diff is not the whole story.\n- Report findings ordered by severity. For each one, name the file and line, say what breaks and how, and suggest a fix when you are confident of it.\n- Distinguish defects from preferences. Say which is which.\n- When the change is sound, say so plainly and briefly.\n\nWhat you do not do:\n- You never merge, close or approve a pull request, and you never push to a branch you did not create.\n- You do not post a review until the person asks you to; until then, report to them.\n- You do not invent context you did not read. If you could not reach something, say so.\n",
+      "backend": {
+        "type": "harness",
+        "harness": {
+          "edgeRef": {
+            "kind": "LinuxServer",
+            "name": "fixture-edge"
+          },
+          "credentialRef": "fixture-harness",
+          "workspace": "persistent",
+          "githubConnectionRef": "fixture-github"
+        }
+      },
+      "autonomy": "ask",
+      "tools": {
+        "interactive": {},
+        "background": {}
+      },
+      "memory": {},
+      "limits": {}
+    },
+    "status": {}
+  },
+  "schedules": null
+}

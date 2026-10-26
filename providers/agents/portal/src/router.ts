@@ -76,7 +76,12 @@ export function parseHash(hash = location.hash): Route {
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
   const [head, second, third, fourth, fifth] = parts
   if (head === 'create') {
-    if (second === 'agent' || second === 'model') {
+    // #/create/agent/harness preselects the harness backend; any other third
+    // segment names an agent template to start from.
+    if (second === 'agent') {
+      return { kind: 'create', resource: second, ...(third ? { type: decodePart(third) } : {}) }
+    }
+    if (second === 'model') {
       return {
         kind: 'create',
         resource: second,

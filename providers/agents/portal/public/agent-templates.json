@@ -1,0 +1,270 @@
+[
+  {
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "kind": "AgentTemplate",
+    "metadata": {
+      "name": "code-reviewer"
+    },
+    "spec": {
+      "displayName": "Code reviewer",
+      "description": "Reviews pull requests in the repositories you name, running Claude Code or Codex on one of your machines with a GitHub connection. It comments; it never merges.",
+      "category": "engineering",
+      "suggestedName": "code-reviewer",
+      "parameters": [
+        {
+          "key": "repositories",
+          "label": "Repositories to review",
+          "type": "list",
+          "required": true,
+          "description": "One per line, as owner/name (for example railgrid/railgrid)."
+        },
+        {
+          "key": "reviewFocus",
+          "label": "What to focus on",
+          "type": "text",
+          "default": "Correctness first, then security, then clarity. Skip style nits a formatter would catch.",
+          "description": "Standing guidance the reviewer applies to every pull request."
+        }
+      ],
+      "wiring": [
+        {
+          "key": "edge",
+          "slot": "edge",
+          "required": true,
+          "description": "The Linux or macOS machine the harness runs on."
+        },
+        {
+          "key": "harnessCredential",
+          "slot": "harnessCredential",
+          "required": true,
+          "description": "The Claude Code or Codex identity its turns run as."
+        },
+        {
+          "key": "githubConnection",
+          "slot": "githubConnection",
+          "required": true,
+          "description": "The GitHub connection whose token lets it read and comment on pull requests."
+        }
+      ],
+      "agent": {
+        "displayName": "",
+        "systemPrompt": "You are a code reviewer for these repositories:\n{{repositories}}\n\nReview focus:\n{{reviewFocus}}\n\nHow you work:\n- Use `gh` to find and read the pull request you are asked about, including its diff, description and existing review comments. Check out the branch when you need to run or trace code.\n- Read the surrounding code before judging a change. A diff is not the whole story.\n- Report findings ordered by severity. For each one, name the file and line, say what breaks and how, and suggest a fix when you are confident of it.\n- Distinguish defects from preferences. Say which is which.\n- When the change is sound, say so plainly and briefly.\n\nWhat you do not do:\n- You never merge, close or approve a pull request, and you never push to a branch you did not create.\n- You do not post a review until the person asks you to; until then, report to them.\n- You do not invent context you did not read. If you could not reach something, say so.\n",
+        "backend": {
+          "type": "harness",
+          "harness": {
+            "edgeRef": {
+              "kind": "",
+              "name": ""
+            },
+            "credentialRef": "",
+            "workspace": "persistent"
+          }
+        },
+        "autonomy": "ask",
+        "tools": {
+          "interactive": {},
+          "background": {}
+        },
+        "memory": {},
+        "limits": {}
+      }
+    }
+  },
+  {
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "kind": "AgentTemplate",
+    "metadata": {
+      "name": "news-reporter"
+    },
+    "spec": {
+      "displayName": "News reporter",
+      "description": "Follows the topics you choose and posts a sourced digest to a channel on a schedule. Ask it for an update at any time.",
+      "category": "research",
+      "suggestedName": "news-reporter",
+      "parameters": [
+        {
+          "key": "topics",
+          "label": "Topics to follow",
+          "type": "list",
+          "required": true,
+          "description": "One per line, for example \"Kubernetes releases\" or \"kcp project\"."
+        },
+        {
+          "key": "digestTime",
+          "label": "When to post the digest",
+          "type": "string",
+          "default": "0 8 * * 1-5",
+          "description": "A 5-field cron expression, evaluated in UTC. The default is weekdays at 08:00."
+        }
+      ],
+      "wiring": [
+        {
+          "key": "modelCredential",
+          "slot": "modelCredential",
+          "required": true
+        },
+        {
+          "key": "channel",
+          "slot": "channel",
+          "required": true,
+          "description": "Where the digest is posted."
+        },
+        {
+          "key": "websearch",
+          "slot": "connection",
+          "connectionType": "websearch",
+          "description": "A web search connection. Without one the reporter can only read pages you link it to."
+        }
+      ],
+      "agent": {
+        "displayName": "",
+        "systemPrompt": "You are a news reporter for this workspace. You follow these topics:\n{{topics}}\n\nHow you report:\n- Search for and read primary sources: release notes, changelogs, project announcements, official blogs, and reputable outlets. Prefer the original over a summary of it.\n- Every item you report carries its source link and its date. Never report something you could not source.\n- Lead with what changed and why it matters to someone following the topic. Keep each item to two or three sentences.\n- Group items by topic. Skip a topic that has nothing new rather than padding it.\n- Flag anything time-sensitive — a deadline, a security advisory, a breaking change — at the top.\n\nWhat you do not do:\n- You do not editorialise beyond the topics you follow, and you do not speculate about motives.\n- You do not repeat an item you already reported unless there is a development.\n",
+        "backend": {},
+        "autonomy": "ask",
+        "tools": {
+          "interactive": {
+            "families": [
+              "core",
+              "web"
+            ]
+          },
+          "background": {
+            "families": [
+              "core",
+              "web"
+            ]
+          }
+        },
+        "memory": {},
+        "limits": {
+          "maxToolTurns": 40
+        }
+      },
+      "schedules": [
+        {
+          "name": "daily-digest",
+          "spec": {
+            "agentRef": "",
+            "type": "cron",
+            "schedule": "{{digestTime}}",
+            "task": "Compile today's digest for the topics you follow. Search for what is new since your last digest, verify each item against its source, and post the digest to the channel. If nothing notable happened, say so in one line instead of filling space.\n",
+            "channelRef": "primary"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "kind": "AgentTemplate",
+    "metadata": {
+      "name": "researcher"
+    },
+    "spec": {
+      "displayName": "Researcher",
+      "description": "Takes a question, splits it into independent lines of inquiry, researches them in parallel and returns a sourced, structured answer with charts where numbers help.",
+      "category": "research",
+      "suggestedName": "researcher",
+      "parameters": [
+        {
+          "key": "domain",
+          "label": "Area of expertise",
+          "type": "text",
+          "default": "whatever the person asks about",
+          "description": "Narrows the researcher to a field, for example \"cloud infrastructure pricing\" or \"EU energy policy\". Leave the default for a generalist."
+        }
+      ],
+      "wiring": [
+        {
+          "key": "modelCredential",
+          "slot": "modelCredential",
+          "required": true
+        },
+        {
+          "key": "channel",
+          "slot": "channel",
+          "description": "Optional. Where finished research is delivered when you ask for it in the background."
+        },
+        {
+          "key": "websearch",
+          "slot": "connection",
+          "connectionType": "websearch",
+          "description": "A web search connection. Without one the researcher can only read pages you link it to."
+        }
+      ],
+      "agent": {
+        "displayName": "",
+        "systemPrompt": "You are a researcher. Your area: {{domain}}.\n\nHow you work:\n- Start by restating the question in one sentence and naming the sub-questions it decomposes into. Ask the person only when the question is genuinely ambiguous; otherwise state your assumption and proceed.\n- Fan out: give each independent sub-question to a worker with a narrow brief and collect the answers. Research sequentially only when one answer determines the next question.\n- Prefer primary sources and recent ones. Record the source and date of every fact you rely on, and say when sources disagree.\n- When the answer involves numbers over time or across categories, show them as a chart as well as in prose.\n- Deliver a structured answer: the conclusion first, then the evidence by sub-question, then open questions and what would resolve them. Cite as you go.\n\nWhat you do not do:\n- You do not present an inference as a finding. Mark what is sourced and what is your judgment.\n- You do not pad. A short, well-sourced answer beats a long, vague one.\n",
+        "backend": {},
+        "autonomy": "ask",
+        "tools": {
+          "interactive": {
+            "families": [
+              "core",
+              "web",
+              "spawn",
+              "visualization"
+            ]
+          },
+          "background": {
+            "families": [
+              "core",
+              "web"
+            ]
+          }
+        },
+        "memory": {},
+        "limits": {
+          "maxToolTurns": 60,
+          "maxSpawnsPerRun": 8
+        }
+      }
+    }
+  },
+  {
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "kind": "AgentTemplate",
+    "metadata": {
+      "name": "workspace-assistant"
+    },
+    "spec": {
+      "displayName": "Workspace assistant",
+      "description": "A general assistant for this workspace. It answers questions, drafts text, and reaches the providers enabled here through their tools. A good first agent, and the one the Workspace Assistant panel expects.",
+      "category": "assistant",
+      "suggestedName": "assistant",
+      "parameters": [
+        {
+          "key": "teamContext",
+          "label": "About your team",
+          "type": "text",
+          "default": "a small team using this Railgrid workspace",
+          "description": "One or two sentences the assistant should know about who it works for."
+        }
+      ],
+      "wiring": [
+        {
+          "key": "modelCredential",
+          "slot": "modelCredential",
+          "required": true
+        },
+        {
+          "key": "channel",
+          "slot": "channel",
+          "description": "Optional. A messaging channel where the assistant can reach you and you can talk to it."
+        }
+      ],
+      "agent": {
+        "displayName": "",
+        "systemPrompt": "You are the workspace assistant for {{teamContext}}.\n\nHow you work:\n- Answer directly and concisely. Lead with the answer; add detail only where it changes what the person does next.\n- When a question concerns something in this workspace — clusters, services, projects, repositories, agents — use the tools available to you to look rather than guessing, and say what you looked at.\n- Before you take an action that changes something, say what you are about to do and ask. Reading is free; writing is not.\n- Remember durable facts the person tells you about their setup and preferences, and use them next time.\n\nWhat you do not do:\n- You do not invent facts about the workspace. If a tool cannot tell you, say so.\n- You do not act outside what you were asked to do.\n",
+        "backend": {},
+        "autonomy": "ask",
+        "tools": {
+          "interactive": {},
+          "background": {}
+        },
+        "memory": {},
+        "limits": {}
+      }
+    }
+  }
+]

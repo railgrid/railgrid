@@ -195,8 +195,9 @@ export interface Agent {
     channels?: AgentChannel[]
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
-    // 0 on either limit means "use the provider default".
-    limits?: { maxToolTurns?: number; timeoutSeconds?: number }
+    // 0 on any limit means "use the provider default".
+    limits?: { maxToolTurns?: number; timeoutSeconds?: number; maxSpawnsPerRun?: number; maxConcurrentSpawns?: number }
+    memory?: { enabled?: boolean; maxNotes?: number }
     tools?: { interactive?: ToolGrant; background?: ToolGrant }
   }
   status?: {

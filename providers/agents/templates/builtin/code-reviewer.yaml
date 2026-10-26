@@ -1,0 +1,57 @@
+apiVersion: agents.railgrid.ai/v1alpha1
+kind: AgentTemplate
+metadata:
+  name: code-reviewer
+spec:
+  displayName: Code reviewer
+  description: Reviews pull requests in the repositories you name, running Claude Code or Codex on one of your machines with a GitHub connection. It comments; it never merges.
+  category: engineering
+  suggestedName: code-reviewer
+  parameters:
+    - key: repositories
+      label: Repositories to review
+      type: list
+      required: true
+      description: One per line, as owner/name (for example railgrid/railgrid).
+    - key: reviewFocus
+      label: What to focus on
+      type: text
+      default: Correctness first, then security, then clarity. Skip style nits a formatter would catch.
+      description: Standing guidance the reviewer applies to every pull request.
+  wiring:
+    - key: edge
+      slot: edge
+      required: true
+      description: The Linux or macOS machine the harness runs on.
+    - key: harnessCredential
+      slot: harnessCredential
+      required: true
+      description: The Claude Code or Codex identity its turns run as.
+    - key: githubConnection
+      slot: githubConnection
+      required: true
+      description: The GitHub connection whose token lets it read and comment on pull requests.
+  agent:
+    autonomy: ask
+    backend:
+      type: harness
+      harness:
+        workspace: persistent
+    systemPrompt: |
+      You are a code reviewer for these repositories:
+      {{repositories}}
+
+      Review focus:
+      {{reviewFocus}}
+
+      How you work:
+      - Use `gh` to find and read the pull request you are asked about, including its diff, description and existing review comments. Check out the branch when you need to run or trace code.
+      - Read the surrounding code before judging a change. A diff is not the whole story.
+      - Report findings ordered by severity. For each one, name the file and line, say what breaks and how, and suggest a fix when you are confident of it.
+      - Distinguish defects from preferences. Say which is which.
+      - When the change is sound, say so plainly and briefly.
+
+      What you do not do:
+      - You never merge, close or approve a pull request, and you never push to a branch you did not create.
+      - You do not post a review until the person asks you to; until then, report to them.
+      - You do not invent context you did not read. If you could not reach something, say so.

@@ -4,8 +4,19 @@ import { ArrowLeft, Bot, Check, Clock } from 'lucide-vue-next'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { portalHref } from '../portalkit/navigation'
+import { toast } from '../portalkit/toast'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
+import {
+  instantiateTemplate,
+  previewPrompt,
+  slotsOfKind,
+  templateBackend,
+  templateFamilies,
+  type AgentTemplate,
+  type TemplateSlotKind,
+  type TemplateWiringSlot,
+} from '../agent-template'
 import type { AppStore } from '../store'
 import { emptyAgentCreateDraft, type AgentCreateDraft, type AgentCredentialFamily } from '../agent-create-draft'
 import type { CreateSuccessDetail, Route } from '../router'
@@ -32,7 +43,9 @@ const props = withDefaults(defineProps<{
   createSession?: number
   initialDraft?: AgentCreateDraft | null
   initialBackendType?: AgentBackendType
-}>(), { authorityEpoch: 0, createSession: 0, initialDraft: null, initialBackendType: AGENT_BACKEND_MODEL })
+  /** A template name from #/create/agent/<template>; preselected once the catalog loads. */
+  initialTemplate?: string
+}>(), { authorityEpoch: 0, createSession: 0, initialDraft: null, initialBackendType: AGENT_BACKEND_MODEL, initialTemplate: '' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'add-credential': [detail: {
@@ -55,8 +68,21 @@ const BACKENDS: { id: AgentBackendType; label: string; blurb: string }[] = [
   { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Runs on a Linux or macOS machine and uses its own tools. Agent tool grants do not apply.' },
 ]
 
-const initialDraft = props.initialDraft || emptyAgentCreateDraft(props.initialBackendType)
+const initialDraft = props.initialDraft || emptyAgentCreateDraft(props.initialBackendType, props.initialTemplate)
 const name = ref(initialDraft.name)
+// Templates: the catalog is a bundle asset (see api.agentTemplates). The chosen
+// template drives the backend, the parameter fields and which wiring is asked
+// for; '' is the blank form this view always was.
+const templates = ref<AgentTemplate[]>([])
+const templatesError = ref('')
+const template = ref(initialDraft.template || props.initialTemplate || '')
+const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
+// Connection-slot wiring, by slot key. The other slot kinds reuse the fields
+// below (model credential, channel, machine, harness identity, GitHub).
+const slotWiring = ref<Record<string, string>>({ ...initialDraft.wiring })
+// The template's instructions render read-only from the parameters until the
+// user asks to edit them; then the textarea takes over as an override.
+const customPrompt = ref(false)
 const backendType = ref<AgentBackendType>(initialDraft.backendType)
 const modelCredential = ref(initialDraft.modelCredential)
 const harnessEdge = ref(initialDraft.harnessEdge)
@@ -121,6 +147,56 @@ const githubConnectionOptions = computed(() => [
   { value: '', label: '— none —' },
   ...githubConnections.value.map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
 ])
+const selectedTemplate = computed(() => templates.value.find(item => item.metadata.name === template.value) || null)
+const templateParameters = computed(() => selectedTemplate.value?.spec.parameters ?? [])
+const connectionSlots = computed(() => selectedTemplate.value ? slotsOfKind(selectedTemplate.value, 'connection') : [])
+function slotOf(kind: TemplateSlotKind): TemplateWiringSlot | undefined {
+  return selectedTemplate.value ? slotsOfKind(selectedTemplate.value, kind)[0] : undefined
+}
+const channelSlot = computed(() => slotOf('channel'))
+const githubSlot = computed(() => slotOf('githubConnection'))
+const connections = computed(() => { revision.value; return props.store.connections.data })
+function connectionOptions(type: string, required: boolean): FormSelectOption[] {
+  return [
+    { value: '', label: required ? '— pick a connection —' : '— none —' },
+    ...connections.value.filter(item => item.spec.type === type).map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
+  ]
+}
+const SLOT_LABELS: Record<TemplateSlotKind, string> = {
+  modelCredential: 'model credential', channel: 'channel', connection: 'connection',
+  edge: 'machine', harnessCredential: 'harness identity', githubConnection: 'GitHub connection',
+}
+function slotLabel(slot: TemplateWiringSlot): string {
+  return slot.slot === 'connection' ? `${slot.connectionType ?? ''} connection`.trim() : SLOT_LABELS[slot.slot]
+}
+function templateNeeds(item: AgentTemplate): string {
+  return (item.spec.wiring ?? []).map(slotLabel).join(' · ')
+}
+const promptPreview = computed(() => selectedTemplate.value ? previewPrompt(selectedTemplate.value, parameters.value) : '')
+watch(selectedTemplate, (current, previous) => {
+  if (!current) { customPrompt.value = false; return }
+  backendType.value = templateBackend(current)
+  const suggested = current.spec.suggestedName || current.metadata.name
+  const previousSuggested = previous ? previous.spec.suggestedName || previous.metadata.name : ''
+  if (!name.value.trim() || (previousSuggested && name.value === previousSuggested)) name.value = suggested
+  if (previous && previous.metadata.name !== current.metadata.name) {
+    parameters.value = {}
+    slotWiring.value = {}
+    customPrompt.value = false
+  }
+}, { immediate: true })
+async function loadTemplates(): Promise<void> {
+  try {
+    templates.value = await props.api.agentTemplates()
+    templatesError.value = ''
+  } catch (e) {
+    templatesError.value = (e as Error).message
+  }
+}
+function customizePrompt(): void {
+  systemPrompt.value = promptPreview.value
+  customPrompt.value = true
+}
 const credentialOptions = computed(() => chatCredentials.value.map(item => ({
   value: item.name,
   label: `${item.name}${item.model ? ` (${item.model})` : ''}`,
@@ -132,7 +208,7 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const capabilities = computed(() => isHarness.value ? 'The harness’s own tools' : [
+const capabilities = computed(() => isHarness.value ? 'The harness’s own tools' : selectedTemplate.value ? (templateFamilies(selectedTemplate.value).join(', ') || 'Core only') : [
   visualization.value ? `charts${visualizationBackground.value ? ' (+background)' : ''}` : '',
   web.value ? `web${webBackground.value ? ' (+background)' : ''}` : '',
   fanOut.value ? `fan-out${fanOutBackground.value ? ' (+background)' : ''}` : '',
@@ -161,6 +237,7 @@ const prerequisites = computed(() => isHarness.value
     'Optional channel connections can be added now or attached later from Config.',
   ])
 const summaryValues = computed(() => [
+  { label: 'Start from', value: selectedTemplate.value?.spec.displayName || 'Blank' },
   { label: 'Agent name', value: name.value.trim() || 'Not entered yet', technical: true },
   ...(isHarness.value
     ? [
@@ -171,12 +248,17 @@ const summaryValues = computed(() => [
     : [{ label: 'Model', value: modelCredential.value || 'Not selected', technical: true }]),
   { label: 'Primary channel', value: channel.value || 'None', technical: true },
   { label: 'Capabilities', value: capabilities.value },
+  ...(selectedTemplate.value?.spec.schedules?.length
+    ? [{ label: 'Schedules', value: selectedTemplate.value.spec.schedules.map(item => `${name.value.trim() || '<name>'}-${item.name}`).join(', '), technical: true }]
+    : []),
 ])
 const guidanceDescription = computed(() => isHarness.value
   ? 'Choose the machine and harness identity that will run the agent’s turns.'
   : 'Choose the model connection the agent will use for its turns.')
 const guidanceNextSteps = computed(() => [
-  'Railgrid creates the agent and opens its Config workspace.',
+  selectedTemplate.value
+    ? 'Railgrid creates the agent (and any schedules the template declares) and opens its Config workspace.'
+    : 'Railgrid creates the agent and opens its Config workspace.',
   'Start a conversation to make sure the agent responds as expected.',
   ...(isHarness.value
     ? ['Add schedules and triggers when you’re ready to automate it.']
@@ -189,7 +271,10 @@ const canSubmit = computed(() => isHarness.value
   ? hostEdges.value.length > 0 && harnessCredentials.value.length > 0
   : credentialOptions.value.length > 0)
 
-onMounted(() => { void nextTick(() => nameInput.value?.focus()) })
+onMounted(() => {
+  void nextTick(() => nameInput.value?.focus())
+  void loadTemplates()
+})
 
 function clearErrors(): void {
   for (const key of Object.keys(errors)) delete errors[key]
@@ -217,6 +302,9 @@ function addCredential(family: AgentCredentialFamily): void {
       webBackground: webBackground.value,
       fanOutBackground: fanOutBackground.value,
       visualizationBackground: visualizationBackground.value,
+      template: template.value,
+      parameters: { ...parameters.value },
+      wiring: { ...slotWiring.value },
     },
     store: props.store,
     authorityEpoch: props.authorityEpoch,
@@ -248,7 +336,22 @@ async function submit(): Promise<void> {
   } else if (!modelCredential.value) {
     errors.modelCredential = 'Pick the model this agent reasons with.'
   }
+  const chosen = selectedTemplate.value
+  if (chosen) {
+    for (const param of templateParameters.value) {
+      if (param.required && !(parameters.value[param.key] ?? '').trim() && !param.default) errors[`param-${param.key}`] = `${param.label} is required.`
+    }
+    if (channelSlot.value?.required && !channel.value) errors.channel = 'This template posts to a channel; pick one.'
+    if (githubSlot.value?.required && !harnessGitHubConnection.value) errors.harnessGitHubConnection = 'This template needs a GitHub connection.'
+    for (const slot of connectionSlots.value) {
+      if (slot.required && !(slotWiring.value[slot.key] ?? '')) errors[`slot-${slot.key}`] = `Pick a ${slotLabel(slot)}.`
+    }
+  }
   if (Object.keys(errors).length) return
+  if (chosen) {
+    await submitTemplate(chosen, normalizedName)
+    return
+  }
 
   const body: AgentCreateBody = { name: normalizedName, displayName: normalizedName }
   if (isHarness.value) {
@@ -304,6 +407,61 @@ async function submit(): Promise<void> {
     createSession: props.createSession,
   })
 }
+
+// submitTemplate instantiates the chosen template with this form's fields as
+// its wiring and writes the result through the kube client — the same
+// function the provider runs for MCP's create_agent(template=...), held to
+// the same output by the parity fixtures.
+async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Promise<void> {
+  const wiring: Record<string, string> = { ...slotWiring.value }
+  for (const slot of chosen.spec.wiring ?? []) {
+    switch (slot.slot) {
+      case 'modelCredential': wiring[slot.key] = modelCredential.value; break
+      case 'channel': wiring[slot.key] = channel.value; break
+      case 'edge': wiring[slot.key] = harnessEdge.value; break
+      case 'harnessCredential': wiring[slot.key] = harnessCredential.value; break
+      case 'githubConnection': wiring[slot.key] = harnessGitHubConnection.value; break
+      default: break
+    }
+  }
+  let instance
+  try {
+    instance = instantiateTemplate(chosen, { name: normalizedName, parameters: parameters.value, wiring })
+  } catch (e) {
+    errors.template = (e as Error).message
+    return
+  }
+  if (customPrompt.value && systemPrompt.value.trim()) instance.agent.spec.systemPrompt = systemPrompt.value.trim()
+  const harness = instance.agent.spec.backend?.harness
+  if (harness) {
+    if (harnessModel.value.trim()) harness.model = harnessModel.value.trim()
+    harness.workspace = harnessWorkspace.value
+  }
+  const { agent, schedules } = instance
+
+  busy.value = true
+  let result
+  try {
+    result = await mutate(props.store, {
+      run: () => props.api.createAgentFromTemplate(agent, schedules),
+      success: `Agent “${normalizedName}” created from ${chosen.spec.displayName}.`,
+      failure: 'Create failed',
+      reload: schedules.length ? ['agents', 'schedules'] : ['agents'],
+    })
+  } finally {
+    busy.value = false
+  }
+  if (!result) return
+  for (const warning of result.warnings) toast('error', warning)
+  emit('create-success', {
+    resource: 'agent',
+    name: normalizedName,
+    item: result.agent,
+    store: props.store,
+    authorityEpoch: props.authorityEpoch,
+    createSession: props.createSession,
+  })
+}
 </script>
 
 <template>
@@ -313,7 +471,7 @@ async function submit(): Promise<void> {
     </button>
     <header class="k-create-header">
       <h1 class="k-create-title">Create agent</h1>
-      <p class="k-create-description">Choose where this agent’s turns run, set its instructions, and optionally connect a channel.</p>
+      <p class="k-create-description">Start from a template or a blank agent, choose where its turns run, and wire in what it needs from this workspace.</p>
     </header>
 
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
@@ -341,6 +499,26 @@ async function submit(): Promise<void> {
       <form class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields">
+            <fieldset class="agents-cap-fs agents-template-fs" aria-describedby="agent-create-template-hint">
+              <legend>Start from</legend>
+              <div v-if="templatesError" class="k-inline-notification k-inline-notification--warning" role="status">
+                <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load templates. {{ templatesError }}</span></span>
+                <button class="k-inline-notification__action" type="button" :disabled="busy" @click="loadTemplates">Retry</button>
+              </div>
+              <div class="agents-radiocards agents-template-cards">
+                <label class="agents-radiocard k-checkbox-hit" :class="{ sel: template === '' }">
+                  <input v-model="template" type="radio" name="agent-create-template" value="" :disabled="busy" />
+                  <span class="agents-radiocard-t">Blank</span><span class="agents-radiocard-b">Write the instructions and pick capabilities yourself.</span>
+                </label>
+                <label v-for="item in templates" :key="item.metadata.name" class="agents-radiocard k-checkbox-hit" :class="{ sel: item.metadata.name === template }">
+                  <input v-model="template" type="radio" name="agent-create-template" :value="item.metadata.name" :disabled="busy" />
+                  <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
+                  <span class="agents-radiocard-b">{{ item.spec.description }}<span class="agents-template-needs">Needs: {{ templateNeeds(item) }}</span></span>
+                </label>
+              </div>
+              <span id="agent-create-template-hint" class="agents-hint">A template sets the instructions, autonomy, capabilities and schedules; you wire in what it needs from this workspace.</span>
+            </fieldset>
+
             <label for="agent-create-name">
               Name *
               <input
@@ -365,11 +543,11 @@ async function submit(): Promise<void> {
               <legend>Backend</legend>
               <div class="agents-radiocards">
                 <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: option.id === backendType }">
-                  <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy" />
+                  <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy || !!selectedTemplate" />
                   <span class="agents-radiocard-t">{{ option.label }}</span><span class="agents-radiocard-b">{{ option.blurb }}</span>
                 </label>
               </div>
-              <span id="agent-create-backend-hint" class="agents-hint">Where this agent’s turns execute.</span>
+              <span id="agent-create-backend-hint" class="agents-hint">{{ selectedTemplate ? `Set by the ${selectedTemplate.spec.displayName} template.` : 'Where this agent’s turns execute.' }}</span>
             </fieldset>
 
             <template v-if="isHarness">
@@ -448,14 +626,16 @@ async function submit(): Promise<void> {
                 </label>
 
                 <label>
-                  <span id="agent-create-github-label">GitHub connection</span>
-                  <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" labelledby="agent-create-github-label" describedby="agent-create-github-hint" />
-                  <span id="agent-create-github-hint" class="agents-hint">Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.</span>
+                  <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
+                  <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required" :invalid="Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label" :describedby="['agent-create-github-hint', errors.harnessGitHubConnection ? 'agent-create-github-error' : ''].filter(Boolean).join(' ')" />
+                  <span v-if="errors.harnessGitHubConnection" id="agent-create-github-error" class="agents-fielderr" role="alert">{{ errors.harnessGitHubConnection }}</span>
+                  <span id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description || 'Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.' }}</span>
                 </label>
               </template>
             </template>
 
-            <label v-else>
+            <template v-else>
+            <label>
               <span id="agent-create-model-label">Model credential *</span>
               <FormSelect
                 id="agent-create-model"
@@ -480,20 +660,81 @@ async function submit(): Promise<void> {
               </span>
             </label>
 
-            <label>
-              <span id="agent-create-system-prompt-label">System prompt</span>
-              <textarea v-model="systemPrompt" class="k-input" rows="3" placeholder="You are a concise assistant that…" :disabled="busy" aria-labelledby="agent-create-system-prompt-label" aria-describedby="agent-create-system-prompt-hint" />
-              <span id="agent-create-system-prompt-hint" class="agents-hint">Optional — persona and standing instructions, not mechanics.</span>
+            <label v-for="slot in connectionSlots" :key="slot.key">
+              <span :id="`agent-create-slot-${slot.key}-label`">{{ slotLabel(slot) }}{{ slot.required ? ' *' : '' }}</span>
+              <FormSelect
+                :id="`agent-create-slot-${slot.key}`"
+                :model-value="slotWiring[slot.key] ?? ''"
+                @update:model-value="value => { slotWiring[slot.key] = value }"
+                :options="connectionOptions(slot.connectionType || '', !!slot.required)"
+                :disabled="busy"
+                :required="!!slot.required"
+                :invalid="Boolean(errors[`slot-${slot.key}`])"
+                :labelledby="`agent-create-slot-${slot.key}-label`"
+                :describedby="[`agent-create-slot-${slot.key}-hint`, errors[`slot-${slot.key}`] ? `agent-create-slot-${slot.key}-error` : ''].filter(Boolean).join(' ')"
+              />
+              <span v-if="errors[`slot-${slot.key}`]" :id="`agent-create-slot-${slot.key}-error`" class="agents-fielderr" role="alert">{{ errors[`slot-${slot.key}`] }}</span>
+              <span :id="`agent-create-slot-${slot.key}-hint`" class="agents-hint">{{ slot.description || (slot.required ? '' : 'Optional.') }}</span>
+            </label>
+            </template>
+
+            <label v-for="param in templateParameters" :key="param.key">
+              <span :id="`agent-create-param-${param.key}-label`">{{ param.label }}{{ param.required ? ' *' : '' }}</span>
+              <textarea
+                v-if="param.type !== 'string'"
+                :id="`agent-create-param-${param.key}`"
+                v-model="parameters[param.key]"
+                class="k-input"
+                :rows="param.type === 'list' ? 3 : 2"
+                :placeholder="param.default || (param.type === 'list' ? 'One per line' : '')"
+                :disabled="busy"
+                :aria-labelledby="`agent-create-param-${param.key}-label`"
+                :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+              />
+              <input
+                v-else
+                :id="`agent-create-param-${param.key}`"
+                v-model="parameters[param.key]"
+                class="k-input"
+                :placeholder="param.default || ''"
+                :disabled="busy"
+                autocomplete="off"
+                :aria-labelledby="`agent-create-param-${param.key}-label`"
+                :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+              />
+              <span v-if="errors[`param-${param.key}`]" :id="`agent-create-param-${param.key}-error`" class="agents-fielderr" role="alert">{{ errors[`param-${param.key}`] }}</span>
+              <span :id="`agent-create-param-${param.key}-hint`" class="agents-hint">{{ param.description }}{{ param.type === 'list' ? ' One per line.' : '' }}{{ param.default && param.type !== 'string' ? ' Leave blank for the default.' : '' }}</span>
             </label>
 
+            <label v-if="!selectedTemplate || customPrompt">
+              <span id="agent-create-system-prompt-label">System prompt</span>
+              <textarea v-model="systemPrompt" class="k-input" :rows="customPrompt ? 10 : 3" placeholder="You are a concise assistant that…" :disabled="busy" aria-labelledby="agent-create-system-prompt-label" aria-describedby="agent-create-system-prompt-hint" />
+              <span id="agent-create-system-prompt-hint" class="agents-hint">{{ customPrompt ? 'Your edited copy replaces the template’s instructions.' : 'Optional — persona and standing instructions, not mechanics.' }}</span>
+            </label>
+            <div v-else class="agents-template-prompt">
+              <span id="agent-create-prompt-preview-label" class="agents-field-label">Instructions from template</span>
+              <pre class="agents-template-prompt-text" aria-labelledby="agent-create-prompt-preview-label" aria-describedby="agent-create-prompt-preview-hint">{{ promptPreview }}</pre>
+              <div class="agents-form-actions">
+                <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="customizePrompt">Customize instructions</button>
+              </div>
+              <span id="agent-create-prompt-preview-hint" class="agents-hint">Rendered from your answers above. Editable here, or later in Config.</span>
+            </div>
+
             <label>
-              <span id="agent-create-channel-label">Primary channel</span>
-              <FormSelect v-model="channel" :options="channelOptions" :disabled="busy" labelledby="agent-create-channel-label" describedby="agent-create-channel-hint" />
-              <span id="agent-create-channel-hint" class="agents-hint">Optional — where this agent messages you.</span>
+              <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : '' }}</span>
+              <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
+              <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
+              <span id="agent-create-channel-hint" class="agents-hint">{{ channelSlot?.description || 'Optional — where this agent messages you.' }}</span>
             </label>
 
             <p v-if="isHarness" class="agents-hint">
               A coding harness uses its own tools; configure those on the selected machine. Agent tool grants do not apply.
+            </p>
+
+            <p v-else-if="selectedTemplate" class="agents-hint">
+              This template grants: {{ capabilities }}. Changeable later in Config.
             </p>
 
             <fieldset v-else class="agents-cap-fs" aria-describedby="agent-create-capabilities-hint">
@@ -540,6 +781,9 @@ async function submit(): Promise<void> {
           </CreateGuidance>
         </div>
 
+        <div v-if="errors.template" class="k-inline-notification k-inline-notification--error" role="alert">
+          <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
+        </div>
         <div class="k-create-actions">
           <button type="button" class="k-btn k-btn--ghost secondary" :disabled="busy" @click="cancel">Cancel</button>
           <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">

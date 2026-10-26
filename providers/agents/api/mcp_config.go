@@ -96,6 +96,10 @@ type createAgentInput struct {
 	MaxToolTurns    int32          `json:"maxToolTurns,omitempty" jsonschema:"Cap on tool-call iterations per run; 0 uses the provider default"`
 	TimeoutSeconds  int32          `json:"timeoutSeconds,omitempty" jsonschema:"Wall-clock budget for one run in seconds; 0 uses the provider default"`
 	Channels        []channelInput `json:"channels,omitempty" jsonschema:"Messaging channel bindings (name + connectionRef + primary)"`
+	// Templates: see agent_templates.go.
+	Template   string            `json:"template,omitempty" jsonschema:"Built-in template to start from (see list_agent_templates). Its prompt, autonomy, grants and schedules are applied first; the other fields here override them"`
+	Parameters map[string]string `json:"parameters,omitempty" jsonschema:"Template parameter values by key; a list parameter is one item per line"`
+	Wiring     map[string]string `json:"wiring,omitempty" jsonschema:"Template wiring by slot key: model credential, connection and channel names, or <Kind>/<name> for an edge. modelCredential and channels above fill their slots when left out here"`
 }
 
 type nameInput struct {
@@ -369,8 +373,9 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:  "create_agent",
 		Title: "Create an agent",
-		Description: "Create a new agent. Assign its model with modelCredential (from list_model_credentials), bind messaging channels with channels, and bound runs with maxToolTurns / timeoutSeconds. " +
-			"Tool grants and prompts can be set afterwards with update_agent.",
+		Description: "Create a new agent. The well-configured way is to start from a template (template, from list_agent_templates) and wire in parameters and wiring; the agent then arrives with its prompt, autonomy, tool grants and schedules set. " +
+			"Otherwise assign its model with modelCredential (from list_model_credentials), bind messaging channels with channels, and bound runs with maxToolTurns / timeoutSeconds. " +
+			"Every explicit field overrides the template's value. Tool grants and prompts can be changed afterwards with update_agent.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in createAgentInput) (*mcp.CallToolResult, agentSettings, error) {
 		c, err := s.mcpClient(r)
@@ -383,12 +388,16 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 			ModelCredential: in.ModelCredential, ModelFallbacks: in.ModelFallbacks,
 			BudgetTokens: in.BudgetTokens, BudgetUSD: in.BudgetUSD, Channels: in.Channels,
 			MaxToolTurns: in.MaxToolTurns, TimeoutSeconds: in.TimeoutSeconds,
+			Template: in.Template, Parameters: in.Parameters, Wiring: in.Wiring,
 		}
-		a, err := s.applyAgentCreate(ctx, c, &req)
+		a, report, err := s.createAgentFromRequest(ctx, c, &req)
 		if err != nil {
 			return nil, agentSettings{}, err
 		}
-		return nil, settingsView(a), nil
+		view := settingsView(a)
+		view.CreatedSchedules = report.Schedules
+		view.Warnings = report.Warnings
+		return nil, view, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{

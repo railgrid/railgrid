@@ -117,7 +117,7 @@ describe('route-owned creation surfaces', () => {
     expect(credential.getAttribute('aria-required')).toBe('true')
     expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
 
-    expect(el.querySelector('.k-create-description')?.textContent).toContain('where this agent’s turns run')
+    expect(el.querySelector('.k-create-description')?.textContent).toContain('where its turns run')
     expect(el.querySelector('.k-create-guidance__description')?.textContent).toContain('machine and harness identity')
     expect(el.querySelector('.k-create-guidance__description')?.textContent).not.toContain('model connection')
     expect(el.querySelector('.k-create-guidance')?.textContent).toContain('Add schedules and triggers')
@@ -519,4 +519,74 @@ it('creates a reusable visualization toolset without an external connection', as
   el.querySelector('form')!.dispatchEvent(new Event('submit'))
   await settleVue(4, 1)
   expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'charts', connections: [], families: ['core', 'visualization'] }))
+})
+
+it('creates an agent from a template with its parameters, wiring and schedule', async () => {
+  const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
+  const createAgentFromTemplate = vi.fn(async (agent: { metadata: { name: string } }, schedules: { metadata: { name: string } }[]) => ({
+    agent, createdSchedules: schedules.map(s => s.metadata.name), warnings: [],
+  }))
+  const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+  const store = makeStore(api)
+  store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-4.1' }]
+  store.connections.data = [
+    { metadata: { name: 'tg' }, spec: { type: 'telegram', displayName: 'Team Telegram' } },
+    { metadata: { name: 'searx' }, spec: { type: 'websearch' } },
+    { metadata: { name: 'gh' }, spec: { type: 'github' } },
+  ] as never
+  markAuthoritative(store, 'agents', 'credentials', 'connections', 'edges')
+  const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+  await settle(el)
+
+  // The template preselects itself, suggests a name, locks the backend and
+  // asks for exactly its parameters and slots.
+  const picked = el.querySelector<HTMLInputElement>('input[name="agent-create-template"]:checked')!
+  expect(picked.value).toBe('news-reporter')
+  expect(el.querySelector<HTMLInputElement>('#agent-create-name')!.value).toBe('news-reporter')
+  expect(el.querySelector<HTMLInputElement>('input[name="agent-create-backend"]')!.disabled).toBe(true)
+  expect(el.querySelector('#agent-create-param-topics')).not.toBeNull()
+  expect(el.querySelector('#agent-create-slot-websearch')).not.toBeNull()
+  expect(el.querySelector('#agent-create-channel-label')?.textContent).toContain('*')
+  // The template's instructions render read-only, and the websearch picker
+  // offers only websearch connections.
+  expect(el.querySelector('.agents-template-prompt-text')?.textContent).toContain('news reporter')
+  el.querySelector<HTMLButtonElement>('#agent-create-slot-websearch')!.click()
+  await settleVue()
+  const slotOptions = [...document.querySelectorAll<HTMLElement>('.k-form-select__option')].map(o => o.textContent?.trim())
+  expect(slotOptions).toContain('searx')
+  expect(slotOptions).not.toContain('gh')
+  document.body.click()
+  await settleVue()
+
+  // Submitting without the required pieces names each one and writes nothing.
+  el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await settle(el)
+  expect(el.querySelector('#agent-create-param-topics-error')?.textContent).toContain('Topics')
+  expect(el.querySelector('#agent-create-channel-error')?.textContent).toContain('channel')
+  expect(createAgentFromTemplate).not.toHaveBeenCalled()
+
+  const topics = el.querySelector<HTMLTextAreaElement>('#agent-create-param-topics')!
+  topics.value = 'kcp\nkubernetes'
+  topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  await chooseFormSelect(el, '#agent-create-model', 'openai')
+  await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
+  await chooseFormSelect(el, '#agent-create-slot-websearch', 'searx')
+  expect(el.querySelector('.agents-template-prompt-text')?.textContent).toContain('- kcp')
+  el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await settle(el)
+
+  const remaining = [...el.querySelectorAll('.agents-fielderr, .k-inline-notification--error')].map(n => n.textContent?.trim())
+  expect(remaining, 'no validation errors should remain').toEqual([])
+  expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
+  const [agent, schedules] = createAgentFromTemplate.mock.calls[0] as unknown as [
+    { metadata: { name: string }; spec: Record<string, any> },
+    { metadata: { name: string }; spec: Record<string, any> }[],
+  ]
+  expect(agent.metadata.name).toBe('news-reporter')
+  expect(agent.spec.systemPrompt).toContain('- kcp\n- kubernetes')
+  expect(agent.spec.backend).toEqual({ type: 'model', model: { credentials: { chat: 'openai' } } })
+  expect(agent.spec.channels).toEqual([{ name: 'primary', connectionRef: 'tg', primary: true }])
+  expect(agent.spec.tools.interactive.connections).toEqual(['searx'])
+  expect(schedules.map(s => s.metadata.name)).toEqual(['news-reporter-daily-digest'])
+  expect(schedules[0].spec).toMatchObject({ agentRef: 'news-reporter', type: 'cron', channelRef: 'primary' })
 })

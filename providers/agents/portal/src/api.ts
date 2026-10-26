@@ -94,7 +94,8 @@ import type {
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS } from './resources'
+import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
+import type { AgentTemplate } from './agent-template'
 import { presentRequestFailure } from './request-errors'
 import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
 import { artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from './artifactIntegrity'
@@ -396,6 +397,8 @@ export class ApiClient {
   // workspace, so the provider backend has no business relaying CRUD for them.
   listAgents = (): Promise<Agent[]> => this.resources.listAgents()
   createAgent = (body: AgentCreate): Promise<Agent> => this.resources.createAgent(body)
+  createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
+    this.resources.createAgentFromTemplate(agent, schedules)
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
 
@@ -460,6 +463,16 @@ export class ApiClient {
   // windows, capabilities — with no tenant content, so it ships in the bundle
   // rather than over a route. providers/agents/api keeps it honest against
   // llm.Catalog().
+  // The agent template catalog is shipped content too — prompts, grants and
+  // schedules with no tenant data — rendered into the bundle by
+  // internal/gentemplates from the YAML the provider embeds for MCP.
+  // templates.TestAssetsAreFresh keeps the two copies the same.
+  agentTemplates = async (): Promise<AgentTemplate[]> => {
+    const r = await this.fetch(this.assetURL('/agent-templates.json'), { credentials: 'same-origin' })
+    if (!r.ok) throw await this.fail(r)
+    return (await r.json()) as AgentTemplate[]
+  }
+
   catalog = async (): Promise<ModelInfo[]> => {
     const r = await this.fetch(this.assetURL('/model-catalog.json'), { credentials: 'same-origin' })
     if (!r.ok) throw await this.fail(r)

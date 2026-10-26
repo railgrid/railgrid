@@ -61,7 +61,8 @@ func (s *Server) MCPHandler() http.Handler {
 					"run_trigger. Toolsets, " +
 					"connections, and model credentials each have list + create/update + delete, " +
 					"plus test_connection and test_model_credential. list_tool_families explains " +
-					"the grantable families. Two rules govern every update tool: only the fields " +
+					"the grantable families. To create a well-configured agent, start from " +
+					"list_agent_templates and pass its name as create_agent's template. Two rules govern every update tool: only the fields " +
 					"you pass change, and list fields replace the stored list wholesale — so read " +
 					"the resource first when appending. Prefer updating over delete-and-recreate; " +
 					"to stop something temporarily use suspend=true. Names referenced by one " +
@@ -136,6 +137,10 @@ type agentSettings struct {
 	Budget          *agentsv1alpha1.AgentBudget     `json:"budget,omitempty"`
 	Phase           string                          `json:"phase,omitempty"`
 	SuspendedReason string                          `json:"suspendedReason,omitempty"`
+	// CreatedSchedules and Warnings are set only on a templated create: the
+	// Schedules that landed with the agent, and anything that did not.
+	CreatedSchedules []string `json:"createdSchedules,omitempty"`
+	Warnings         []string `json:"warnings,omitempty"`
 }
 
 func settingsView(a *agentsv1alpha1.Agent) agentSettings {
@@ -294,6 +299,7 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 	s.registerRunMCPTools(srv, r)
 	s.registerChatMCPTool(srv, r)
 	s.registerAgentArtifactMCPTools(srv, r)
+	s.registerAgentTemplateTools(srv)
 
 	yes := true
 	no := false
