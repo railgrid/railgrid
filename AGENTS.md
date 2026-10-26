@@ -342,8 +342,9 @@ own document — pinned with the SRI hash the hub computed at registration
 (`<railgrid-provider-{name}>`). The host sets `element.railgridContext` (user, tenant,
 orgUUID/workspaceUUID, resolved theme, basePath, subPath, and a host-owned
 `fetch`) as a JS property and re-pushes it on every change; there is no iframe
-and no postMessage handshake. **A provider bundle executes as fully trusted code
-in the portal document.** Bundles must reach the hub through
+or postMessage bridge for this ordinary provider-element mount. **A provider
+bundle executes as fully trusted code in the portal document.** Bundles must
+reach the hub through
 `railgridContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
 `Authorization` + tenant headers and allows only the provider's own
 `/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
@@ -351,6 +352,25 @@ in the portal document.** Bundles must reach the hub through
 is deprecated (one-release fallback) and will be removed. See
 [`docs/providers.md`](docs/providers.md) §"Portal changes" and §"Security
 considerations".
+
+The Agents portal has one narrow nested-frame exception for attended MCP App
+result views. It is limited to app HTML whose provider/resource identity and
+exact HTML SHA-256 are independently supplied by the attended backend after
+operator review and current resource/source checks. The portal verifies exact
+UTF-8 result and supplied-input digests before display, then sends the full
+authorized result and recorded arguments after limited credential-like
+key-name filtering through the read-only MCP Apps JSON-RPC bridge. That filter
+cannot guarantee that arbitrary values contain no secrets. A Hub-served
+same-origin proxy document and the provider HTML
+each run in opaque-origin frames with `sandbox="allow-scripts"`; the bridge
+grants no tools, resources, prompts, sampling, downloads, host navigation, or
+model-context updates. Theme/display context and bounded inline-size updates
+are the presentation protocol. A sandboxed app can navigate its own frame, and
+a later document may make network requests, so this view is only for reviewed
+providers; app HTML, recorded arguments, and captured results must not contain
+secrets. The Hub portal CSP
+must allow `frame-src 'self'` for the Agents sandbox proxy asset. This exception
+does not change the trusted-code status of the provider bundle itself.
 
 Build chain (Makefile):
 - `make build-{name}-provider-portal` — `vite build` only.

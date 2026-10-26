@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { createMcpAppProxyDocument } from './src/mcpAppHost'
 
 // The railgrid hub serves this provider under /ui/providers/agents/. The
 // ProviderFrame injects a <script src="/ui/providers/agents/main.js"> tag once
@@ -11,7 +12,12 @@ import vue from '@vitejs/plugin-vue'
 //      and registers the custom element as a side effect.
 //   3. Place lazy chunks under /assets/ so the hub's UI proxy routes them here.
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), {
+    name: 'agents-mcp-app-sandbox-document',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'mcp-app-sandbox.html', source: createMcpAppProxyDocument() })
+    },
+  }],
   define: {
     'process.env.NODE_ENV': JSON.stringify('production'),
     __VUE_OPTIONS_API__: 'true',

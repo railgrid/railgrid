@@ -397,8 +397,46 @@ railgrid-provider-agents .agents-conversation-rail-shell { display: contents; }
 railgrid-provider-agents .agents-desktop-rail-toggle { display: none; }
 railgrid-provider-agents .agents-mobile-rail-toggle { display: none; }
 railgrid-provider-agents .agents-chat-main {
-  display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 0;
+  display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 0; container-type: inline-size;
 }
+railgrid-provider-agents .agents-chat-workspace {
+  display: flex; width: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; gap: 14px;
+}
+railgrid-provider-agents .agents-conversation-column {
+  display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column;
+}
+railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { flex: 1 1 56%; }
+railgrid-provider-agents .agents-artifact-panel {
+  display: flex; min-width: 360px; min-height: 0; flex: 0 1 44%; flex-direction: column; gap: 12px; overflow: auto;
+  border-left: 1px solid var(--color-border-subtle); padding: 10px 0 10px 14px;
+}
+railgrid-provider-agents .agents-artifact-panel__header { display: flex; min-height: 32px; align-items: center; justify-content: space-between; gap: 8px; }
+railgrid-provider-agents .agents-artifact-panel__header h2 { margin: 0; font-size: 13px; font-weight: 600; }
+railgrid-provider-agents .agents-artifact-panel__header button { display: inline-flex; width: 30px; height: 30px; align-items: center; justify-content: center; padding: 0; }
+railgrid-provider-agents .agents-artifact-panel__status { margin: 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; line-height: 1.5; }
+railgrid-provider-agents .agents-artifact-panel__status p { margin: 0 0 8px; }
+railgrid-provider-agents .agents-artifact-panel__app { width: 100%; min-height: 300px; height: min(68vh, 720px); flex: 1 1 420px; overflow: hidden; border: 1px solid var(--color-border-subtle); border-radius: 6px; }
+railgrid-provider-agents .agents-artifact-panel__data,
+railgrid-provider-agents .agents-artifact-panel__evidence { min-width: 0; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
+railgrid-provider-agents .agents-artifact-panel__data summary,
+railgrid-provider-agents .agents-artifact-panel__evidence summary { min-height: 30px; cursor: pointer; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-artifact-panel__data pre { max-height: 360px; overflow: auto; padding: 10px; border: 1px solid var(--color-border-subtle); border-radius: 5px; background: var(--color-surface-raised, #111320); color: var(--color-text-primary, inherit); white-space: pre-wrap; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-artifact-panel__evidence p { margin: 4px 0; }
+railgrid-provider-agents .agents-artifact-panel__evidence ul { margin: 4px 0; padding-left: 18px; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-inline-app {
+  width: 100%; min-width: 0; margin: 12px 0; overflow: hidden; border: 1px solid var(--color-border-subtle);
+  border-radius: 6px; background: var(--color-surface-raised, #111320);
+}
+railgrid-provider-agents .agents-inline-app__attribution { display: flex; min-height: 30px; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 6px 2px 10px; color: var(--color-text-muted); font-size: 11px; }
+railgrid-provider-agents .agents-inline-app__attribution > span { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+railgrid-provider-agents .agents-inline-app__open { display: inline-flex; width: 28px; height: 28px; flex: none; align-items: center; justify-content: center; padding: 0; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents .agents-inline-app__body { min-width: 0; }
+railgrid-provider-agents .agents-inline-app__state,
+railgrid-provider-agents .agents-inline-app__placeholder { margin: 0; padding: 10px 12px; color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
+railgrid-provider-agents .agents-inline-app__state { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+railgrid-provider-agents .agents-mcp-app { position: relative; width: 100%; min-width: 0; min-height: 96px; background: var(--color-surface-raised, #111320); }
+railgrid-provider-agents .agents-mcp-app__proxy { position: absolute; inset: 0; display: block; width: 100%; height: 100%; border: 0; background: transparent; }
+railgrid-provider-agents .agents-mcp-app__loading { position: absolute; right: 8px; bottom: 6px; color: var(--color-text-muted); font-size: 10px; pointer-events: none; }
 railgrid-provider-agents .agents-chat-head { min-width: 0; }
 railgrid-provider-agents .agents-chat-head--agent .agents-mobile-rail-toggle { flex: none; }
 railgrid-provider-agents .agents-chat-title { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
@@ -926,9 +964,22 @@ railgrid-provider-agents .agents-assistant-settings__action { padding: 5px 10px;
 .agents-overlay-threads__item[aria-current] { background: var(--color-accent-subtle); }
 @media (pointer: coarse) { .agents-overlay-threads__item, .agents-overlay-threads__new { min-height: 44px; } }
 
-railgrid-provider-agents .agents-chat-shell--bar .agents-chat-main > :not(.agents-composer) { display: none; }
+railgrid-provider-agents .agents-chat-shell--bar .agents-chat-workspace { display: block; }
+railgrid-provider-agents .agents-chat-shell--bar .agents-conversation-column > :not(.agents-composer),
+railgrid-provider-agents .agents-chat-shell--bar .agents-artifact-panel { display: none; }
 railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
 railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }
+
+@container (max-width: 760px) {
+  railgrid-provider-agents .agents-chat-workspace--inspection { flex-direction: column; gap: 8px; }
+  railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { display: contents; }
+  railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column > :not(.agents-composer) { display: none; }
+  railgrid-provider-agents .agents-chat-workspace--inspection .agents-artifact-panel {
+    min-width: 0; flex: 1 1 0; border-left: 0; padding: 8px 10px 0; order: 1;
+  }
+  railgrid-provider-agents .agents-chat-workspace--inspection .agents-composer { min-width: 0; flex: 0 0 auto; order: 2; }
+  railgrid-provider-agents .agents-chat-workspace--inspection .agents-artifact-panel__app { min-height: 220px; height: min(58vh, 520px); flex: 1 1 320px; }
+}
 
 /* Conversation navigation stays outside the scrolling transcript. */
 railgrid-provider-agents .agents-history-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px; }

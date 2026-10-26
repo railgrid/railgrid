@@ -41,6 +41,47 @@ localStorage copy is only a fallback.
 Navigation state lives in `location.hash` (`src/router.ts`), never in the host
 router.
 
+## MCP Apps result views
+
+Successful tool results may include a provider-owned MCP App view. The portal
+keeps the app inside the conversation as a compact card and opens that same
+result in a details pane when requested. The app owns its rich result UI; the
+portal offers raw captured JSON only through an explicit disclosure. Source
+references are attached to a citation only when the exact successful tool
+receipt is present, and source-backed bytes or app HTML are requested again
+through the attended MCP API before either view is mounted. Capture metadata is
+the only artifact state cached by the browser.
+
+Provider apps are default-deny: the attended backend supplies an independent
+provider, resource, and content pin only after its operator-reviewed allowlist
+and current resource checks pass. The portal requires that pin to match the app
+metadata and verifies the exact HTML bytes before creating the frame. A missing
+or mismatched pin leaves the authorized raw result available through the
+explicit data disclosure, but never mounts app HTML. Only enable reviewed
+providers whose apps are trusted with the full result and tool input after limited credential-like key-name filtering.
+That filter cannot guarantee removal of secrets from arbitrary values.
+
+This is a read-only host profile. It sends the recorded result text and
+recorded arguments after limited credential-like key-name filtering to the iframe. The host grants no tools, resource
+reads, prompts, sampling, downloads, chat messages, host navigation, or model
+context updates, and rejects requests for those capabilities. App HTML must
+match the independent backend-reviewed SHA-256 pin. The host inserts a restrictive CSP
+and uses nested frames with opaque origins, scripts-only sandbox flags, no
+referrer, and no host credentials. These controls are defense in depth, not a
+claim that arbitrary HTML is harmless: a sandboxed app can still attempt to
+navigate its own frame, and a later navigated document may make network
+requests. App HTML must therefore be treated as provider-controlled code that
+can see the complete disclosed result. Do not include secrets in app HTML or
+captured results; only enable reviewed providers and account for the residual
+own-frame navigation and network-request risk.
+
+The static sandbox proxy is currently served only from the platform Agents
+bundle path (`/ui/providers/agents`). The host context exposes the same
+`basePath` for platform and org-owned bundles, so the portal checks the actual
+Agents script URL and refuses to load the platform proxy when that URL carries
+the host's `grant` query parameter. Org-owned Agents overrides need a
+grant-aware auxiliary asset URL before MCP App frames can be enabled there.
+
 ## Layout
 
 ```
