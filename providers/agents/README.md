@@ -115,6 +115,46 @@ EOF
 kubectl get modelcredentials
 ```
 
+## Agent templates
+
+A template is a curated starting point: the prompt, autonomy, tool grants,
+limits and any schedules of a well-configured agent, with the workspace
+specifics left as **wiring slots** (a model credential, a channel, a websearch
+or GitHub connection, a machine and harness identity) and the prompt's
+variables as **parameters**. Instantiating one produces an ordinary `Agent`
+plus its `Schedule`s; after that the agent is yours to edit.
+
+Built-ins ship with the provider under `templates/builtin/`:
+
+| Template | Backend | Needs | Creates |
+|---|---|---|---|
+| `code-reviewer` | harness (Claude Code / Codex on an edge) | machine, harness identity, GitHub connection | reviews pull requests in the repositories you list; never merges |
+| `news-reporter` | model | model credential, channel; optional websearch connection | a sourced digest of your topics, posted by a daily cron |
+| `researcher` | model | model credential; optional channel and websearch | parallel, sourced research with charts |
+| `workspace-assistant` | model | model credential; optional channel | a general assistant for the workspace |
+
+Use them from the portal's **Create agent → Start from** step
+(`#/create/agent/<template>` deep-links one), or over MCP:
+
+```text
+list_agent_templates
+get_agent_template(name: news-reporter)
+create_agent(name: daily-news, template: news-reporter,
+             parameters: {topics: "kcp\nKubernetes releases"},
+             wiring: {modelCredential: openai, channel: team-telegram, websearch: searx})
+```
+
+Any explicit `create_agent` field overrides the template's value, and
+`modelCredential` / `channels` fill their slots without a `wiring` entry. The
+result names the schedules it created (`createdSchedules`) and anything that
+did not land (`warnings`).
+
+The catalog is content, not tenant state: the YAML is embedded for MCP and
+rendered into the portal bundle by `make gen-agents-templates` (part of
+`make codegen-agents-provider`); `templates.TestAssetsAreFresh` fails on a
+stale copy. Tenant-authored templates are planned, not shipped — see
+`docs/roadmap/agents-templates.md`.
+
 ## Webhooks and triggers
 
 A `Webhook` is one inbound URL (`status.webhookPath`, minted by the provider

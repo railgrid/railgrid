@@ -1,0 +1,85 @@
+{
+  "template": "news-reporter",
+  "inputs": {
+    "name": "news-reporter",
+    "parameters": {
+      "digestTime": "0 8 * * 1-5",
+      "topics": "alpha item\nbeta item\n"
+    },
+    "wiring": {
+      "channel": "fixture-channel",
+      "modelCredential": "fixture-model",
+      "websearch": "fixture-websearch"
+    }
+  },
+  "agent": {
+    "kind": "Agent",
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "metadata": {
+      "name": "news-reporter"
+    },
+    "spec": {
+      "displayName": "News reporter",
+      "description": "Follows the topics you choose and posts a sourced digest to a channel on a schedule. Ask it for an update at any time.",
+      "systemPrompt": "You are a news reporter for this workspace. You follow these topics:\n- alpha item\n- beta item\n\nHow you report:\n- Search for and read primary sources: release notes, changelogs, project announcements, official blogs, and reputable outlets. Prefer the original over a summary of it.\n- Every item you report carries its source link and its date. Never report something you could not source.\n- Lead with what changed and why it matters to someone following the topic. Keep each item to two or three sentences.\n- Group items by topic. Skip a topic that has nothing new rather than padding it.\n- Flag anything time-sensitive — a deadline, a security advisory, a breaking change — at the top.\n\nWhat you do not do:\n- You do not editorialise beyond the topics you follow, and you do not speculate about motives.\n- You do not repeat an item you already reported unless there is a development.\n",
+      "backend": {
+        "type": "model",
+        "model": {
+          "credentials": {
+            "chat": "fixture-model"
+          }
+        }
+      },
+      "autonomy": "ask",
+      "tools": {
+        "interactive": {
+          "families": [
+            "core",
+            "web"
+          ],
+          "connections": [
+            "fixture-websearch"
+          ]
+        },
+        "background": {
+          "families": [
+            "core",
+            "web"
+          ],
+          "connections": [
+            "fixture-websearch"
+          ]
+        }
+      },
+      "memory": {},
+      "limits": {
+        "maxToolTurns": 40
+      },
+      "channels": [
+        {
+          "name": "primary",
+          "connectionRef": "fixture-channel",
+          "primary": true
+        }
+      ]
+    },
+    "status": {}
+  },
+  "schedules": [
+    {
+      "kind": "Schedule",
+      "apiVersion": "agents.railgrid.ai/v1alpha1",
+      "metadata": {
+        "name": "news-reporter-daily-digest"
+      },
+      "spec": {
+        "agentRef": "news-reporter",
+        "type": "cron",
+        "schedule": "0 8 * * 1-5",
+        "task": "Compile today's digest for the topics you follow. Search for what is new since your last digest, verify each item against its source, and post the digest to the channel. If nothing notable happened, say so in one line instead of filling space.\n",
+        "channelRef": "primary"
+      },
+      "status": {}
+    }
+  ]
+}

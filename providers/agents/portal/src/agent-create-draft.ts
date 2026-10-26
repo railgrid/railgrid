@@ -25,9 +25,14 @@ export interface AgentCreateDraft {
   webBackground: boolean
   fanOutBackground: boolean
   visualizationBackground: boolean
+  // The template the form started from, with its parameter values and the
+  // connection-slot wiring that has no field of its own.
+  template: string
+  parameters: Record<string, string>
+  wiring: Record<string, string>
 }
 
-export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACKEND_MODEL): AgentCreateDraft {
+export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACKEND_MODEL, template = ''): AgentCreateDraft {
   return {
     name: '',
     backendType,
@@ -46,6 +51,9 @@ export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACK
     webBackground: false,
     fanOutBackground: false,
     visualizationBackground: false,
+    template,
+    parameters: {},
+    wiring: {},
   }
 }
 

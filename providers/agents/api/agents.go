@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"math"
 	"net/http"
 	"regexp"
@@ -94,6 +93,17 @@ type createAgentRequest struct {
 	MaxToolTurns int32 `json:"maxToolTurns,omitempty"`
 	// TimeoutSeconds bounds a run's wall clock (0 = provider default).
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
+	// Template names a built-in agent template (templates.Builtin). When set,
+	// the agent and its schedules are instantiated from it with Parameters and
+	// Wiring, and every other field of this request is applied on top as an
+	// override; see agentFromTemplateRequest.
+	Template string `json:"template,omitempty"`
+	// Parameters are the template's declared inputs by key; a list parameter
+	// is one item per line.
+	Parameters map[string]string `json:"parameters,omitempty"`
+	// Wiring are workspace object names by the template's slot key. An edge
+	// slot takes "<Kind>/<name>".
+	Wiring map[string]string `json:"wiring,omitempty"`
 }
 
 var budgetDecimalPattern = regexp.MustCompile(`^[+-]?([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$`)
@@ -275,32 +285,13 @@ func agentFromCreateRequest(req *createAgentRequest) (*agentsv1alpha1.Agent, err
 	return a, nil
 }
 
-// applyAgentCreate validates the request and creates the agent. Shared by the
-// REST handler and the MCP create_agent tool.
+// applyAgentCreate validates the request and creates the agent, by template
+// when one is named. Shared by the REST handler and the MCP create_agent tool;
+// the tool uses createAgentFromRequest directly to report the schedules a
+// template created.
 func (s *Server) applyAgentCreate(ctx context.Context, c *agentsclient.Client, req *createAgentRequest) (*agentsv1alpha1.Agent, error) {
-	a, err := agentFromCreateRequest(req)
-	if err != nil {
-		return nil, err
-	}
-	if len(a.Spec.Channels) > 0 {
-		if err := s.validateChannelUniqueness(ctx, c, a.Name, a.Spec.Channels); err != nil {
-			return nil, errConflict(err.Error())
-		}
-	}
-	out, err := c.Agents().Create(ctx, a, metav1.CreateOptions{})
-	if err != nil {
-		return nil, err
-	}
-	// A fresh agent is usable as soon as it exists — say so. Nothing else
-	// reconciles Agent status at create time, and an empty status read as
-	// "not ready" to callers polling for phase Ready. Best-effort: the agent
-	// was created either way and the background sweep re-stamps the phase.
-	if err := c.Agents().PatchStatus(ctx, out.Name, agentsv1alpha1.AgentStatus{Phase: agentsv1alpha1.AgentPhaseReady}); err != nil {
-		log.Printf("create agent %s: stamping phase Ready: %v", out.Name, err)
-	} else {
-		out.Status.Phase = agentsv1alpha1.AgentPhaseReady
-	}
-	return out, nil
+	a, _, err := s.createAgentFromRequest(ctx, c, req)
+	return a, err
 }
 
 // knownToolFamilies are the grantable built-in families (core is always on).

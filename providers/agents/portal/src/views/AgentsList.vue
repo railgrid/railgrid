@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
@@ -16,6 +16,7 @@ import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import { agentHarness, agentHarnessBacked, agentModelCredential, harnessLabel, type Agent } from '../types'
+import type { AgentTemplate } from '../agent-template'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
@@ -44,6 +45,16 @@ const agents = computed(() => { revision.value; return { ...props.store.agents }
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
 const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
 const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
+// Starter templates for the first-run guide. Best-effort: the guide's primary
+// action creates a blank agent whether or not the catalog loaded.
+const starterTemplates = ref<AgentTemplate[]>([])
+onMounted(async () => {
+  try {
+    starterTemplates.value = await props.api.agentTemplates()
+  } catch {
+    starterTemplates.value = []
+  }
+})
 const showFirstRun = computed(() => agents.value.loaded && agents.value.data.length === 0 && (!agents.value.error || agents.value.hasSnapshot))
 const filters: TableFilterDefinition[] = [
   { key: 'backendType', label: 'Backend', allLabel: 'All backends', options: [
@@ -219,6 +230,24 @@ function openAgentRow(row: Record<string, unknown>): void {
           @secondary="navigate(firstRunSecondary.route)"
         >
           <template #icon><Bot aria-hidden="true" /></template>
+          <template v-if="starterTemplates.length" #details>
+            <div class="agents-template-starters">
+              <p class="agents-template-starters-title">Or start from a template</p>
+              <div class="agents-template-starters-grid" role="list" aria-label="Agent templates">
+                <button
+                  v-for="item in starterTemplates"
+                  :key="item.metadata.name"
+                  type="button"
+                  class="agents-template-starter"
+                  role="listitem"
+                  @click="navigate({ kind: 'create', resource: 'agent', type: item.metadata.name })"
+                >
+                  <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
+                  <span class="agents-radiocard-b">{{ item.spec.description }}</span>
+                </button>
+              </div>
+            </div>
+          </template>
         </FirstRunGuide>
       </template>
     </template>

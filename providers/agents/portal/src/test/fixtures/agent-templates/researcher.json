@@ -1,0 +1,71 @@
+{
+  "template": "researcher",
+  "inputs": {
+    "name": "researcher",
+    "parameters": {
+      "domain": "Sample Area of expertise."
+    },
+    "wiring": {
+      "channel": "fixture-channel",
+      "modelCredential": "fixture-model",
+      "websearch": "fixture-websearch"
+    }
+  },
+  "agent": {
+    "kind": "Agent",
+    "apiVersion": "agents.railgrid.ai/v1alpha1",
+    "metadata": {
+      "name": "researcher"
+    },
+    "spec": {
+      "displayName": "Researcher",
+      "description": "Takes a question, splits it into independent lines of inquiry, researches them in parallel and returns a sourced, structured answer with charts where numbers help.",
+      "systemPrompt": "You are a researcher. Your area: Sample Area of expertise..\n\nHow you work:\n- Start by restating the question in one sentence and naming the sub-questions it decomposes into. Ask the person only when the question is genuinely ambiguous; otherwise state your assumption and proceed.\n- Fan out: give each independent sub-question to a worker with a narrow brief and collect the answers. Research sequentially only when one answer determines the next question.\n- Prefer primary sources and recent ones. Record the source and date of every fact you rely on, and say when sources disagree.\n- When the answer involves numbers over time or across categories, show them as a chart as well as in prose.\n- Deliver a structured answer: the conclusion first, then the evidence by sub-question, then open questions and what would resolve them. Cite as you go.\n\nWhat you do not do:\n- You do not present an inference as a finding. Mark what is sourced and what is your judgment.\n- You do not pad. A short, well-sourced answer beats a long, vague one.\n",
+      "backend": {
+        "type": "model",
+        "model": {
+          "credentials": {
+            "chat": "fixture-model"
+          }
+        }
+      },
+      "autonomy": "ask",
+      "tools": {
+        "interactive": {
+          "families": [
+            "core",
+            "web",
+            "spawn",
+            "visualization"
+          ],
+          "connections": [
+            "fixture-websearch"
+          ]
+        },
+        "background": {
+          "families": [
+            "core",
+            "web"
+          ],
+          "connections": [
+            "fixture-websearch"
+          ]
+        }
+      },
+      "memory": {},
+      "limits": {
+        "maxToolTurns": 60,
+        "maxSpawnsPerRun": 8
+      },
+      "channels": [
+        {
+          "name": "primary",
+          "connectionRef": "fixture-channel",
+          "primary": true
+        }
+      ]
+    },
+    "status": {}
+  },
+  "schedules": null
+}

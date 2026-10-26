@@ -596,6 +596,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :api="api"
         :initial-draft="agentCreateDraft"
         :initial-backend-type="route.type === 'harness' ? 'harness' : 'model'"
+        :initial-template="route.type && route.type !== 'harness' ? route.type : ''"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
