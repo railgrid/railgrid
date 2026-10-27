@@ -11,6 +11,7 @@ import type { ResourceRefreshMode } from '../portalkit/page-state'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
+import { confirmDialog } from '../portalkit/confirm'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import type { Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
@@ -54,6 +55,11 @@ const error = ref<string | null>(null)
 const loaded = ref(false)
 const refreshMode = ref<ResourceRefreshMode>('foreground')
 const resolvingInbox = ref(new Map<string, InboxDecision>())
+// bulkDismiss is the progress of a "Dismiss all" pass over the pending list;
+// null when none is running. While it runs every per-item control is locked,
+// because the same item must not be resolved twice.
+const bulkDismiss = ref<{ done: number; total: number } | null>(null)
+const BULK_DISMISS_CONCURRENCY = 4
 // answerDrafts holds the reply typed for each pending question, by item id, so
 // a draft survives the list re-rendering around it.
 const answerDrafts = reactive<Record<string, string>>({})
@@ -191,7 +197,7 @@ async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise
 // dismissal (`deny`), which closes the item without resuming — the run, if it
 // is still paused, is ended from its own page.
 async function resolve(item: InboxItem, decision: InboxDecision, response?: string): Promise<void> {
-  if (resolvingInbox.value.has(item.id)) return
+  if (locked(item.id)) return
   const answer = (response ?? '').trim()
   if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
@@ -216,6 +222,57 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: stri
       resolvingInbox.value = next
     }
   }
+}
+
+// locked reports whether an item's controls are unavailable: its own
+// resolution is in flight, or a bulk pass owns the whole list.
+function locked(id: string): boolean {
+  return bulkDismiss.value !== null || resolvingInbox.value.has(id)
+}
+
+// dismissAll resolves every pending item with `deny` — the one decision that
+// is safe without reading each item: an approval is refused and its run told
+// no, a question is closed and its run stays paused. It is a client-side pass
+// over the list, a few requests at a time, because the verb resolves one item
+// (inbox-resolve/{id}) and nothing here is worth a second grammar for.
+async function dismissAll(): Promise<void> {
+  if (bulkDismiss.value) return
+  const items = pending.value.filter(item => !resolvingInbox.value.has(item.id))
+  if (!items.length) return
+  const approvals = items.filter(item => item.kind === 'approval').length
+  const questions = items.length - approvals
+  const ok = await confirmDialog({
+    title: `Dismiss all ${items.length} pending items?`,
+    message: [
+      approvals ? `${approvals} approval${approvals === 1 ? '' : 's'} will be denied and the agent told no.` : '',
+      questions ? `${questions} question${questions === 1 ? '' : 's'} will be dismissed; a run waiting on one stays paused until you answer or cancel it from its page.` : '',
+    ].filter(Boolean).join('\n'),
+    confirmLabel: 'Dismiss all',
+    danger: true,
+  })
+  if (!ok) return
+  const authority = captureAuthority()
+  bulkDismiss.value = { done: 0, total: items.length }
+  let failed = 0
+  const queue = [...items]
+  const worker = async (): Promise<void> => {
+    for (let item = queue.shift(); item; item = queue.shift()) {
+      try {
+        await authority.api.resolveInbox(item.id, 'deny')
+      } catch {
+        failed += 1
+      }
+      if (!authorityIsCurrent(authority)) return
+      bulkDismiss.value = { done: bulkDismiss.value!.done + 1, total: items.length }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(BULK_DISMISS_CONCURRENCY, items.length) }, worker))
+  if (!authorityIsCurrent(authority)) return
+  bulkDismiss.value = null
+  const resolved = items.length - failed
+  if (failed) toast('error', `Dismissed ${resolved} of ${items.length}; ${failed} could not be resolved. Refresh and try again.`)
+  else toast('ok', `Dismissed ${resolved} item${resolved === 1 ? '' : 's'}.`)
+  await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
 }
 
 function resolutionToast(item: InboxItem, decision: InboxDecision): string {
@@ -270,6 +327,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   error.value = null
   refreshMode.value = 'foreground'
   resolvingInbox.value = new Map()
+  bulkDismiss.value = null
   void reload('foreground')
 }, { flush: 'post' })
 onBeforeUnmount(() => {
@@ -313,7 +371,17 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
       </div>
       <section v-if="pending.length" class="agents-approvals">
-        <component :is="agent ? 'h3' : 'h2'" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
+        <div class="agents-attention-head">
+          <component :is="agent ? 'h3' : 'h2'" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
+          <button
+            v-if="pending.length > 1 || bulkDismiss"
+            class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
+            type="button"
+            :disabled="bulkDismiss !== null"
+            :aria-busy="bulkDismiss !== null || undefined"
+            @click="dismissAll"
+          ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
+        </div>
         <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
@@ -326,8 +394,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="agents-approval-actions">
             <template v-if="item.kind === 'approval'">
-              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
+              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
             </template>
             <!--
               A question is answered in words, not with a verdict, and a
@@ -339,13 +407,13 @@ onBeforeUnmount(() => {
                 v-model="answerDrafts[item.id]"
                 class="k-input agents-approval-answer"
                 type="text"
-                :disabled="resolvingInbox.has(item.id)"
+                :disabled="locked(item.id)"
                 placeholder="Your answer…"
                 :aria-label="item.prompt || 'Your answer'"
                 @keydown.enter.prevent="resolve(item, 'answer', answerDrafts[item.id])"
               />
-              <button class="k-btn k-btn--primary" type="button" :disabled="resolvingInbox.has(item.id) || !(answerDrafts[item.id] || '').trim()" :aria-busy="resolvingInbox.get(item.id) === 'answer' || undefined" @click="resolve(item, 'answer', answerDrafts[item.id])"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'answer' ? 'Sending…' : 'Send answer' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="resolvingInbox.has(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Dismissing…' : 'Dismiss' }}</button>
+              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !(answerDrafts[item.id] || '').trim()" :aria-busy="resolvingInbox.get(item.id) === 'answer' || undefined" @click="resolve(item, 'answer', answerDrafts[item.id])"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'answer' ? 'Sending…' : 'Send answer' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Dismissing…' : 'Dismiss' }}</button>
             </template>
           </div>
         </div>

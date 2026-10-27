@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -89,6 +90,8 @@ type Runner struct {
 	closeErr     error
 	shutdown     map[string]struct{}
 	capabilities Capabilities
+	// lastPurge paces the retention sweep (retention.go).
+	lastPurge time.Time
 }
 
 // executionGate keeps adapter callbacks ordered with terminal result
@@ -220,6 +223,9 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 		_ = store.closeJournals()
 		_ = lock.Close()
 		return nil, err
+	}
+	if removed := r.purgeLocked(time.Now()); removed > 0 {
+		log.Printf("retention: dropped %d expired attempt(s) at startup", removed)
 	}
 	if err := r.persistLocked(); err != nil {
 		_ = store.closeJournals()
@@ -442,6 +448,9 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 		AcceptedAt:      now,
 		UpdatedAt:       now,
 	}
+	// Acceptance is where the state grows, so it is where the cap is applied:
+	// the oldest finished attempts make room before the new one is written.
+	r.purgeLocked(now)
 	r.state.Attempts[request.AttemptID] = &attemptRecord{
 		CleanupEligible: true,
 		Receipt:         receipt,

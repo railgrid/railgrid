@@ -20,7 +20,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,7 +132,13 @@ func (s *stateStore) load() (persistedState, error) {
 		return state, fmt.Errorf("open runner state: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(f, 32<<20))
+	// The file is read whole. It is the runner's own atomic write in a 0700
+	// directory, and a cap here is a trap, not a guard: the loader once read at
+	// most 32 MiB while save wrote without limit, so a state that grew past
+	// the cap failed to decode with "unexpected EOF" on every start and the
+	// runner could never come up again. Retention (retention.go) is what keeps
+	// the file small; the loader's job is to read what save wrote.
+	decoder := json.NewDecoder(f)
 	if err := decoder.Decode(&state); err != nil {
 		return state, fmt.Errorf("decode runner state: %w", err)
 	}

@@ -165,6 +165,9 @@ serves the task clone from it.
   "environment": ["<approved-environment-capability>"],
   "verificationCapabilities": ["<verification-capability>"],
   "maximumCapacity": 1,
+  "attemptRetentionHours": 168,
+  "parkedAttemptRetentionHours": 720,
+  "maxRetainedAttempts": 200,
   "repositories": {
     "<repository-id>": {
       "source": "<absolute-local-git-source>",
@@ -195,6 +198,17 @@ single-process lock for that directory, and places task workspaces below
 `stateDir/worktrees/<taskID>/<attemptID>`. Keep this directory on durable
 storage on the same machine. Do not share one state directory between runner
 instances.
+
+The runner retains finished and parked attempts for a bounded time and then
+drops them with everything it kept for them: the state records, the event
+journal, the artifacts and the attempt's own worktree. A workspace attempt's
+persistent directory and a warm environment's checkout are not touched. The
+defaults are 7 days for a terminal attempt (`attemptRetentionHours`), 30 days
+for one parked in `needs_input` (`parkedAttemptRetentionHours`) and at most 200
+retained attempts at once, oldest first (`maxRetainedAttempts`); the sweep runs
+at startup, when an attempt is accepted and every ten minutes. A dropped
+attempt answers `inspect` and `resume` with "attempt not found", so a caller
+that parks an attempt on a question must resume it within the parked window.
 
 ### Allow an enrolled repository to fetch a missing commit
 

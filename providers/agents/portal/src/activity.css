@@ -3,6 +3,7 @@ railgrid-provider-agents .agents-run-cell { display: flex; flex-direction: colum
 railgrid-provider-agents .agents-run-preview { font-weight: 500; }
 railgrid-provider-agents .agents-run-secondary { color: var(--color-text-secondary); font-size: 11px; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-approvals { display: flex; flex-direction: column; gap: 12px; }
+railgrid-provider-agents .agents-attention-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 railgrid-provider-agents .agents-attention-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 14px; font-weight: 600; }
 railgrid-provider-agents .agents-approval-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 16px; }
 railgrid-provider-agents .agents-approval-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; flex: 1; }

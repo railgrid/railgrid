@@ -72,23 +72,33 @@ type ResourceConfig struct {
 // Config contains local runner identity, enrollment, persistence, and
 // capability settings. It is intentionally independent of the Codex adapter.
 type Config struct {
-	ProtocolVersion string                      `json:"protocolVersion,omitempty"`
-	RunnerID        string                      `json:"runnerID"`
-	Version         string                      `json:"version,omitempty"`
-	Listen          string                      `json:"listen,omitempty"`
-	StateDir        string                      `json:"stateDir"`
-	TokenFile       string                      `json:"tokenFile"`
-	Token           string                      `json:"-"`
-	Toolchains      []string                    `json:"toolchains,omitempty"`
-	Environment     []string                    `json:"environment,omitempty"`
-	Verification    []string                    `json:"verificationCapabilities,omitempty"`
-	MaximumCapacity int                         `json:"maximumCapacity,omitempty"`
-	MaxEvents       int                         `json:"maxEvents,omitempty"`
-	MaxEventBytes   int                         `json:"maxEventBytes,omitempty"`
-	MaxBodyBytes    int                         `json:"maxBodyBytes,omitempty"`
-	MaxArtifactSize int64                       `json:"maxArtifactSize,omitempty"`
-	Repositories    map[string]RepositoryConfig `json:"repositories,omitempty"`
-	Resources       map[string]ResourceConfig   `json:"resources,omitempty"`
+	ProtocolVersion string   `json:"protocolVersion,omitempty"`
+	RunnerID        string   `json:"runnerID"`
+	Version         string   `json:"version,omitempty"`
+	Listen          string   `json:"listen,omitempty"`
+	StateDir        string   `json:"stateDir"`
+	TokenFile       string   `json:"tokenFile"`
+	Token           string   `json:"-"`
+	Toolchains      []string `json:"toolchains,omitempty"`
+	Environment     []string `json:"environment,omitempty"`
+	Verification    []string `json:"verificationCapabilities,omitempty"`
+	MaximumCapacity int      `json:"maximumCapacity,omitempty"`
+	MaxEvents       int      `json:"maxEvents,omitempty"`
+	MaxEventBytes   int      `json:"maxEventBytes,omitempty"`
+	MaxBodyBytes    int      `json:"maxBodyBytes,omitempty"`
+	MaxArtifactSize int64    `json:"maxArtifactSize,omitempty"`
+	// AttemptRetentionHours is how long a finished attempt (completed, failed
+	// or cancelled) stays in durable state after its last update; default 7
+	// days. ParkedAttemptRetentionHours is the same for an attempt parked on a
+	// question or a restart (needs_input), which a caller may still resume;
+	// default 30 days. MaxRetainedAttempts caps the finished-or-parked
+	// attempts kept at once, oldest dropped first; default 200. See
+	// retention.go.
+	AttemptRetentionHours       int                         `json:"attemptRetentionHours,omitempty"`
+	ParkedAttemptRetentionHours int                         `json:"parkedAttemptRetentionHours,omitempty"`
+	MaxRetainedAttempts         int                         `json:"maxRetainedAttempts,omitempty"`
+	Repositories                map[string]RepositoryConfig `json:"repositories,omitempty"`
+	Resources                   map[string]ResourceConfig   `json:"resources,omitempty"`
 }
 
 // LoadConfig reads a JSON runner configuration. A missing path is equivalent
@@ -153,6 +163,15 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.MaxArtifactSize <= 0 {
 		c.MaxArtifactSize = defaultMaxArtifactSize
+	}
+	if c.AttemptRetentionHours <= 0 {
+		c.AttemptRetentionHours = defaultAttemptRetentionHours
+	}
+	if c.ParkedAttemptRetentionHours <= 0 {
+		c.ParkedAttemptRetentionHours = defaultParkedAttemptRetentionHours
+	}
+	if c.MaxRetainedAttempts <= 0 {
+		c.MaxRetainedAttempts = defaultMaxRetainedAttempts
 	}
 	if c.TokenFile != "" {
 		b, err := os.ReadFile(c.TokenFile)
