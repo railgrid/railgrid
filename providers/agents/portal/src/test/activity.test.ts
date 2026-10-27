@@ -493,6 +493,79 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
   })
 
+  it('dismisses every pending item at once after a confirmation', async () => {
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const listInbox = vi.fn().mockResolvedValue([])
+    const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    const at = new Date().toISOString()
+    store.inbox.data = [
+      { id: 'q1', agentName: 'railgrid-reviewer', runID: 'r1', kind: 'question', state: 'pending', prompt: 'Which PR?', createdAt: at },
+      { id: 'q2', agentName: 'railgrid-reviewer', runID: 'r2', kind: 'question', state: 'pending', prompt: 'Which repository?', createdAt: at },
+      { id: 'a1', agentName: 'scout', runID: 'r3', kind: 'approval', state: 'pending', prompt: 'scout wants to run deploy', payload: { tool: 'deploy', args: '{}' }, createdAt: at },
+    ]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    const dismissAll = buttonWithText(view.element.querySelector('.agents-attention-head')!, 'Dismiss all')
+    dismissAll.click()
+    await settleVue()
+    expect(resolveInbox).not.toHaveBeenCalled()
+    resolveConfirm(false)
+    await settleVue(2)
+    expect(resolveInbox).not.toHaveBeenCalled()
+
+    dismissAll.click()
+    await settleVue()
+    resolveConfirm(true)
+    await settleVue(4)
+
+    expect(resolveInbox).toHaveBeenCalledTimes(3)
+    expect(resolveInbox).toHaveBeenCalledWith('q1', 'deny')
+    expect(resolveInbox).toHaveBeenCalledWith('q2', 'deny')
+    expect(resolveInbox).toHaveBeenCalledWith('a1', 'deny')
+    expect(listInbox).toHaveBeenCalled()
+    expect(text(document.querySelector('.k-toast--ok'))).toContain('Dismissed 3 items')
+    expect(view.element.querySelector('.agents-approvals')).toBeNull()
+  })
+
+  it('locks every per-item control while a bulk dismissal runs and reports the ones that failed', async () => {
+    const first = deferred<Record<string, never>>()
+    const resolveInbox = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockRejectedValueOnce(new ApiError(500, 'backend detail'))
+    const listInbox = vi.fn().mockResolvedValue([])
+    const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    const at = new Date().toISOString()
+    store.inbox.data = [
+      { id: 'q1', agentName: 'railgrid-reviewer', runID: 'r1', kind: 'question', state: 'pending', prompt: 'Which PR?', createdAt: at },
+      { id: 'q2', agentName: 'railgrid-reviewer', runID: 'r2', kind: 'question', state: 'pending', prompt: 'Which repository?', createdAt: at },
+    ]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    const dismissAll = buttonWithText(view.element.querySelector('.agents-attention-head')!, 'Dismiss all')
+    dismissAll.click()
+    await settleVue()
+    resolveConfirm(true)
+    await settleVue(3)
+
+    expect(dismissAll.disabled).toBe(true)
+    expect(dismissAll.getAttribute('aria-busy')).toBe('true')
+    expect(text(dismissAll)).toContain('Dismissing 1 of 2')
+    for (const button of view.element.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')) expect(button.disabled).toBe(true)
+
+    first.resolve({})
+    await settleVue(4)
+    expect(resolveInbox).toHaveBeenCalledTimes(2)
+    const toastText = text(document.querySelector('.k-toast--error'))
+    expect(toastText).toContain('Dismissed 1 of 2')
+    expect(toastText).not.toContain('backend detail')
+  })
+
   it('refreshes pending approvals after a denied or uncertain resolution without exposing backend text', async () => {
     const item: InboxItem = {
       id: 'i2', agentName: 'scout', runID: 'r10', kind: 'approval', state: 'pending',
