@@ -430,6 +430,13 @@ func (r *Runner) startEnvironmentExpiry() {
 							r.evictEnvironmentLocked(env)
 						}
 					}
+					if now := time.Now(); now.Sub(r.lastPurge) >= purgeInterval {
+						if removed := r.purgeLocked(now); removed > 0 {
+							if err := r.persistLocked(); err != nil {
+								log.Printf("retention: persist after dropping %d attempt(s): %v", removed, err)
+							}
+						}
+					}
 				}
 				r.mu.Unlock()
 			}
