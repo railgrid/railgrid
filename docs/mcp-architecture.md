@@ -33,8 +33,12 @@ https://<hub>/services/mcpserver/{cluster}/apis/railgrid.ai/v1alpha1/mcpservers/
 
 That single endpoint is filled, **per request**, from exactly **one** source:
 **provider federation**. Every *Ready* provider visible to the verified caller
-has its own `/mcp` endpoint fetched over HTTP and its tools re-exposed as
-`<provider>__<tool>`.
+has its own `/mcp` endpoint fetched over HTTP and its tools entered into a
+catalog as `<provider>__<tool>`. The catalog is not the tool list: the
+aggregate serves **two tools**, `search` and `execute`, and the model reaches
+every federated tool by writing JavaScript against them — see
+[Code mode](#code-mode-search-and-execute). Only a tool whose declared action
+needs human consent is listed directly.
 
 > **There is no in-binary tool registry any more.** The former `mcp`,
 > `kubernetesedges` and `serveredges` built-ins were folded into the standalone
@@ -133,14 +137,14 @@ path, never anything from request headers — and lists
 `Registry.ListForOrg(caller's Org)`: every platform provider plus that Org's
 own. A platform provider's MCP URL is `BackendURL + "/mcp"`. An org-owned
 provider's is reached over its edge route (below). Targets are sorted by name,
-so the aggregate's tool list is stable.
+so the aggregate's catalog (`spec.tools`) is stable.
 
 **Federation.** Per request,
 [`pkg/hub/mcpaggregate/federation.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/federation.go):
 
 1. enumerates Ready providers,
 2. `POST`s `tools/list` to each `{BackendURL}/mcp`,
-3. registers every returned tool on the aggregate as **`<provider>__<tool>`**
+3. enters every returned tool into the code-mode catalog as **`<provider>__<tool>`**
    (e.g. `infrastructure__provision`), proxying `tools/call` straight through.
 
 It also merges each provider's server-level MCP `instructions` into the
@@ -184,11 +188,12 @@ remain the consuming application's responsibility.
 
 ## Capability discovery: `railgrid://providers/capabilities`
 
-`tools/list` answers *"what can I call right now"*. It does not answer *"what
-does this platform declare it can do"* — that question is about the contract,
-and the tool list is a poor proxy for it: a provider that is Ready but slow to
-answer `tools/list` contributes nothing, tool names are provider-local prose,
-and a data-plane verb (`kubernetesclusters/ssh`) usually has no tool at all.
+The catalog `search` exposes answers *"what can I call right now"*. It does not
+answer *"what does this platform declare it can do"* — that question is about
+the contract, and the catalog is a poor proxy for it: a provider that is Ready
+but slow to answer `tools/list` contributes nothing, tool names are
+provider-local prose, and a data-plane verb (`kubernetesclusters/ssh`) usually
+has no tool at all.
 
 The second question is answered from the **validated provider registry** — the
 same `CatalogEntry` declarations the hub already admits and enforces against.
@@ -486,6 +491,74 @@ Two consequences:
   cluster, DB, or internal Services. This is the cross-provider half of the
   platform [provider-isolation rule](./providers.md#provider-isolation-the-cross-provider-boundary).
 
+## Code mode: `search` and `execute`
+
+The federated catalog grows with every provider a tenant enables, and a tool
+list is paid for in the model's context on every turn. The aggregate therefore
+does not serve one. It serves two tools whose schemas never change
+([`pkg/hub/mcpaggregate/codemode.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/codemode.go)),
+after [Cloudflare's Code Mode](https://blog.cloudflare.com/code-mode-mcp/): the
+model writes a short JavaScript function and the hub runs it.
+
+| Tool | Globals | What it is for |
+|------|---------|----------------|
+| `search(code)` | `spec` | Narrow the surface in code: `spec.tools[]` is every federated tool (`name`, `provider`, `description`, `inputSchema`, `_meta`, `consentRequired`), `spec.providers[]` the declared capabilities document. Nothing enters the model's context but what the function returns. |
+| `execute(code)` | `spec`, `railgrid.call(name, args)` | Chain, paginate and filter across tools in one step. `railgrid.call` returns `{ok, text, data, raw, content}` and throws (catchably) on an unknown tool, a refusal or a provider error. |
+
+Both return `{result, logs, calls, error}`: the function's return value, its
+`console` output, and one `{tool, ok, durationMs}` record per provider call
+the script made, so a client sees what the script did and not just its answer.
+A script's own failure (syntax error, thrown error, limit) is an `isError`
+result the model can read and fix, never a protocol error.
+
+A catalog tool's `_meta` is exactly what a proxy tool for it would carry: the
+registry-resolved coordinate under `railgrid` (see
+[Joining the declaration to the tool list](#joining-the-declaration-to-the-tool-list))
+and the namespaced app resource under `ui`. App-only tools are in neither the
+catalog nor the tool list, so they can be neither seen nor called.
+
+**The sandbox** ([`sandbox.go`](https://github.com/railgrid/railgrid/blob/main/pkg/hub/mcpaggregate/sandbox.go))
+is a fresh [goja](https://github.com/dop251/goja) runtime per run. goja is a
+pure-Go interpreter with no filesystem, network, timers, module loader or
+process object, so nothing has to be switched off: the only way out of a
+script is `railgrid.call`, and the script never sees a bearer, a header or a
+URL. Every run is bounded (code size, 60 s wall-clock including provider time,
+32 calls, 256 KiB result, 32 KiB console, call-stack depth); the deadline
+interrupts the interpreter and cancels any provider call in flight through the
+same context. Values cross the Go/JS boundary as JSON, so arguments reach the
+provider as the script wrote them. JavaScript numbers are float64: an ID above
+2^53 must be passed as a string, and on the way back `data` is the parsed
+result while `raw` and `text` keep the provider's exact text.
+
+**What does not change: who calls.** `railgrid.call` dispatches through the
+very `providerMCPClient` discovery used, so a platform provider still receives
+the caller's bearer, an org-owned provider still receives a delegated token,
+and the provider still authorizes by the caller's RBAC in the tenant
+workspace. Code mode widens nothing. It narrows one thing: a tool backing a
+declared action with `consent.required` is **refused** inside a script. There
+is no human in the middle of a running function, so those tools — and only
+those — are registered directly on the aggregate as `<provider>__<tool>`,
+where the client can show the consent prompt. `search` exposes
+`consentRequired` so a script can see this before it tries.
+
+**Machine consumers** do not write JavaScript by hand.
+[`provider-sdk/mcpcode`](https://github.com/railgrid/railgrid/blob/main/provider-sdk/mcpcode/mcpcode.go)
+writes the one-line program for a single named call
+(`() => railgrid.call("<tool>", {args})`), fetches the catalog through
+`search`, and decodes the envelope back into the tool's own result, `_meta`
+and exact structured bytes included; `CallError.ConsentRequired` tells a caller
+to fall back to the direct tool. The CLI (`railgrid mcp call`, `railgrid
+commit`, `railgrid app sync`), App Studio's assistant and the agents provider's
+edges tool family all go through it, and
+`mcpcode/mcpcodetest` stands in for the aggregate in their tests. A hub test
+(`TestCodeModeWireMatchesSDKHelper`) keeps the helper and this endpoint in
+lockstep.
+
+**Not yet covered**: a per-execution memory cap (goja has none; the result and
+log caps bound what leaves the sandbox, not what it allocates), and the agents
+provider's own runner, whose tool families are built in-process rather than
+through this endpoint.
+
 ## Adding a new integration
 
 There is one way in: **be a provider**. Tools cannot be compiled into the hub.
@@ -509,7 +582,7 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
    — run through the same executor and the same authorization as the verb. A
    tool may not hold a credential or reach a coordinate the caller would not
    be granted directly.
-5. Your tools appear in the aggregate as `<your-provider>__<tool>`
+5. Your tools appear in the aggregate's `search` catalog as `<your-provider>__<tool>`
    automatically, on the **one** aggregate endpoint; clients do not add each
    provider separately.
 
@@ -521,14 +594,18 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
 3. A fresh `mcp.Server` is built:
    - the `railgrid://about` resource is added,
    - federation enumerates the Ready providers visible to the verified caller
-     and registers their `/mcp` tools as `<provider>__<tool>`, merging their
-     server-level instructions and stamping each tool's validated
-     `_meta.railgrid` coordinate,
+     and enters their `/mcp` tools into the catalog as `<provider>__<tool>`,
+     merging their server-level instructions and stamping each tool's
+     validated `_meta.railgrid` coordinate,
    - `railgrid://providers/capabilities` is added from the same enumeration —
      from the registry, so a Ready provider whose `/mcp` is slow or absent
      still has its declared contract published.
+   - the `search` / `execute` pair is registered over that catalog, plus a
+     direct proxy tool for each consent-gated entry and each provider's MCP
+     app resources.
 4. The composed server answers `tools/list` / `tools/call`.
-5. Federated `tools/call` is forwarded to the provider's `/mcp` with
+5. `railgrid.call` inside `execute` (or a direct call of a consent-gated
+   tool) is forwarded to the provider's `/mcp` with
    `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (the cluster ID) and — for a platform
    provider — the caller's bearer, or —
    for an org-owned provider — over the edge tunnel with a delegated token.
@@ -541,9 +618,9 @@ There is one way in: **be a provider**. Tools cannot be compiled into the hub.
 - **Fault isolation** — a provider failing `tools/list`, or a single tool
   failing schema validation, is logged and skipped; `AddTool` panics are
   recovered.
-- **Naming collisions** — every tool is namespaced `<provider>__<tool>` and
-  targets are registered in sorted order, so the tool list is deterministic and
-  a duplicate surfaces as a logged `AddTool` error, never a silent override.
+- **Naming collisions** — every catalog tool is namespaced `<provider>__<tool>`
+  and targets are entered in sorted order, so `spec.tools` is deterministic
+  and a duplicate name keeps its first entry, never a silent override.
 
 ## Key files
 

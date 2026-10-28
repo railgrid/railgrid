@@ -42,6 +42,9 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-sdk/mcpcode"
+	"github.com/railgrid/provider-sdk/mcpcode/mcpcodetest"
+
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
 )
@@ -259,19 +262,7 @@ func projectChatToolNames(tools []chatTool) []string {
 }
 
 func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing.T) {
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		if envelope.Method != "tools/list" {
-			t.Fatalf("method = %q, want tools/list", envelope.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"databricks__list_tables","description":"List tables","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import table","inputSchema":{"type":"object"}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]}}`)
-	}))
+	mcp := httptest.NewServer(&mcpcodetest.Server{Tools: mcpcodetest.Catalog(json.RawMessage(`[{"name":"code__commit_files","description":"Commit files","inputSchema":{"type":"object"}},{"name":"code__read_repository_file","description":"Read files","inputSchema":{"type":"object"}},{"name":"infrastructure__list_templates","description":"List templates","inputSchema":{"type":"object","properties":{"cloud":{"type":"string"}}}},{"name":"infrastructure__describe_template","description":"Describe template","inputSchema":{"type":"object","required":["name"],"properties":{"name":{"type":"string"}}}},{"name":"infrastructure__provision","description":"Provision template","inputSchema":{"type":"object","required":["template","name"],"properties":{"template":{"type":"string"},"name":{"type":"string"},"values":{"type":"object"}}}},{"name":"databricks__list_tables","description":"List tables","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import table","inputSchema":{"type":"object"}},{"name":"infrastructure__delete_instance","description":"Delete instance","inputSchema":{"type":"object"}}]`))})
 	defer mcp.Close()
 
 	server := NewWithWorkspace(nil, nil, workspace.NewFileStore(t.TempDir()), mcp.URL, false)
@@ -316,19 +307,7 @@ func TestLoadProjectMCPToolsExposesCommitBridgeAndInfrastructureTools(t *testing
 }
 
 func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(t *testing.T) {
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		if envelope.Method != "tools/list" {
-			t.Fatalf("method = %q, want tools/list", envelope.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"Commit workspace files","inputSchema":{"type":"object"}}]}}`)
-	}))
+	mcp := httptest.NewServer(&mcpcodetest.Server{Tools: mcpcodetest.Catalog(json.RawMessage(`[{"name":"code__commit_files","description":"Commit workspace files","inputSchema":{"type":"object"}}]`))})
 	defer mcp.Close()
 
 	messages := store.NewMemoryStore()
@@ -397,20 +376,15 @@ func TestGenerateProjectAssistantStreamIncludesDiscoveredToolPromptOnFirstInput(
 
 func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuestions(t *testing.T) {
 	mcpCalls := 0
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mcpCalls++
-		var envelope struct {
-			Method string `json:"method"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		if envelope.Method != "tools/list" {
-			t.Fatalf("method = %q, want tools/list", envelope.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}},{"name":"databricks__query_table","description":"Query a table ref","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import a table ref","inputSchema":{"type":"object"}}]}}`)
-	}))
+	mcp := httptest.NewServer(&mcpcodetest.Server{
+		Tools: mcpcodetest.Catalog(json.RawMessage(`[{"name":"databricks__list_tables","description":"List imported tables","inputSchema":{"type":"object"}},{"name":"databricks__describe_table","description":"Describe a table ref","inputSchema":{"type":"object"}},{"name":"databricks__query_table","description":"Query a table ref","inputSchema":{"type":"object"}},{"name":"databricks__import_table","description":"Import a table ref","inputSchema":{"type":"object"}}]`)),
+		Observe: func(inv mcpcodetest.Invocation) {
+			if inv.Method != "search" {
+				t.Errorf("aggregate request = %+v, want the search catalog only", inv)
+			}
+			mcpCalls++
+		},
+	})
 	defer mcp.Close()
 
 	messages := store.NewMemoryStore()
@@ -448,7 +422,7 @@ func TestGenerateProjectAssistantStreamDiscoversDatabricksToolsForDataTableQuest
 		t.Fatalf("reply = %q, want Databricks guidance", reply)
 	}
 	if mcpCalls != 1 {
-		t.Fatalf("MCP tools/list calls = %d, want 1", mcpCalls)
+		t.Fatalf("aggregate catalog (search) calls = %d, want 1", mcpCalls)
 	}
 	var joined string
 	for _, msg := range model.Inputs[0].Messages {
@@ -1747,30 +1721,13 @@ func TestProjectPromptMessagesCollapsesConsecutiveDuplicateUserMessages(t *testi
 
 func TestGenerateProjectAssistantStreamRejectsUnverifiedCommitProjectFiles(t *testing.T) {
 	var commitCalls int
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var envelope struct {
-			Method string `json:"method"`
-			Params struct {
-				Name string `json:"name"`
-			} `json:"params"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&envelope); err != nil {
-			t.Fatalf("decode MCP request: %v", err)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch envelope.Method {
-		case "tools/list":
-			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__commit_files","description":"commit files"}]}}`)
-		case "tools/call":
+	mcp := httptest.NewServer(&mcpcodetest.Server{Tools: []mcpcodetest.Tool{{
+		CatalogTool: mcpcode.CatalogTool{Name: "code__commit_files", Description: "commit files"},
+		Call: func(json.RawMessage) (json.RawMessage, error) {
 			commitCalls++
-			if envelope.Params.Name != "code__commit_files" {
-				t.Fatalf("unexpected MCP tool call: %#v", envelope)
-			}
-			_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}}`)
-		default:
-			t.Fatalf("unexpected MCP request method %q", envelope.Method)
-		}
-	}))
+			return json.RawMessage(`{"content":[],"structuredContent":{"phase":"Succeeded","files":["index.html"],"commitSHA":"abcdef1234567890"}}`), nil
+		},
+	}}})
 	defer mcp.Close()
 
 	model := &repositoryFlowEinoChatModel{Steps: []repositoryFlowEinoModelStep{{

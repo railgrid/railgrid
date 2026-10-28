@@ -20,12 +20,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
 )
 
 // newMCPCallCommand is the one-shot form of 'railgrid mcp proxy': it sends a
@@ -45,7 +48,7 @@ your own railgrid login (the same path as 'railgrid mcp proxy'), and print
 its result: the structured content when the tool returns one, otherwise the
 text. A failing tool exits non-zero with the tool's message.
 
-  railgrid mcp call --list                                         # every tool you can call
+  railgrid mcp call --list                                         # every tool you can call (the aggregate's search catalog)
   railgrid mcp call infrastructure__list_instances
   railgrid mcp call code__build_status '{"repositoryRef":"shop"}'
   railgrid mcp call infrastructure__dev_sync --args-file sync.json
@@ -114,14 +117,38 @@ func mcpOneShot(ctx context.Context, errOut io.Writer, o *mcpProxyOptions, reque
 }
 
 func runMCPCall(ctx context.Context, out, errOut io.Writer, o *mcpProxyOptions, tool string, args json.RawMessage) error {
-	body, err := mcpOneShot(ctx, errOut, o, map[string]any{
-		"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-		"params": map[string]any{"name": tool, "arguments": args},
-	})
+	params, err := mcpcode.CallParams(tool, args)
 	if err != nil {
 		return err
 	}
-	result, err := parseMCPToolResult(body)
+	body, err := mcpOneShot(ctx, errOut, o, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params})
+	if err != nil {
+		return err
+	}
+	reply, err := mcpReplyResult(body)
+	if err != nil {
+		return err
+	}
+	var result json.RawMessage
+	call, err := mcpcode.DecodeCallResult(reply)
+	var refused *mcpcode.CallError
+	switch {
+	case errors.As(err, &refused) && refused.ConsentRequired():
+		// Listed directly by the aggregate because a human has to approve
+		// it; the one case a plain tools/call is the right path.
+		body, err = mcpOneShot(ctx, errOut, o, map[string]any{
+			"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+			"params": map[string]any{"name": tool, "arguments": args},
+		})
+		if err != nil {
+			return err
+		}
+		result, err = parseMCPToolResult(body)
+	case err != nil:
+		return fmt.Errorf("%s: %w", tool, err)
+	default:
+		result, err = toolResultOutput(call.ToolResultJSON())
+	}
 	if err != nil {
 		return err
 	}
@@ -134,31 +161,25 @@ func runMCPCall(ctx context.Context, out, errOut io.Writer, o *mcpProxyOptions, 
 }
 
 func runMCPList(ctx context.Context, out, errOut io.Writer, o *mcpProxyOptions) error {
-	body, err := mcpOneShot(ctx, errOut, o, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+	body, err := mcpOneShot(ctx, errOut, o, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": mcpcode.CatalogParams()})
 	if err != nil {
 		return err
 	}
-	var reply struct {
-		Result struct {
-			Tools []struct {
-				Name        string `json:"name"`
-				Description string `json:"description"`
-			} `json:"tools"`
-		} `json:"result"`
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+	reply, err := mcpReplyResult(body)
+	if err != nil {
+		return fmt.Errorf("listing tools: %w", err)
 	}
-	if err := json.Unmarshal(bytes.TrimSpace(body), &reply); err != nil {
-		return fmt.Errorf("decoding tools/list: %w", err)
-	}
-	if reply.Error != nil {
-		return fmt.Errorf("MCP error %d: %s", reply.Error.Code, reply.Error.Message)
+	tools, err := mcpcode.DecodeCatalog(reply)
+	if err != nil {
+		return fmt.Errorf("listing tools: %w", err)
 	}
 	tw := newTabWriter(out)
-	for _, t := range reply.Result.Tools {
-		printRow(tw, t.Name, oneLine(strings.TrimSpace(t.Description), 100))
+	for _, t := range tools {
+		desc := oneLine(strings.TrimSpace(t.Description), 100)
+		if t.ConsentRequired {
+			desc = strings.TrimSpace(desc + " (needs your consent)")
+		}
+		printRow(tw, t.Name, desc)
 	}
 	return tw.Flush()
 }

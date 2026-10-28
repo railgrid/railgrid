@@ -58,11 +58,21 @@ fc() { curl -s -H "Authorization: Bearer $TOKEN" -H "X-Railgrid-Org: $ORG" -H "X
 # kube API in your workspace. Its verbs are $AS/projects/<p>/<verb>, $AS/sessions/<s>/<verb>,
 # $AS/studios/studio/<verb>; a bare $AS/projects[/<p>] is the plain CR.
 # Newer CLIs ship this as `railgrid mcp call <tool> ['<json args>']` (and `--list`); fmcp is the same thing for older ones.
+# The aggregate serves two tools, `search` and `execute` (code mode): a named provider tool is reached by
+# sending `execute` the program `() => railgrid.call("<provider__tool>", {args})`. fmcp writes that line.
 fmcp() {  # fmcp <provider__tool> ['<json args>'] → the tool's result; a tool error exits non-zero with its text
-  jq -nc --arg n "$1" --argjson a "${2:-null}" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:$n,arguments:($a // {})}}' |
+  jq -nc --arg n "$1" --argjson a "${2:-null}" '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"execute",
+      arguments:{code:("() => railgrid.call(" + ($n|tojson) + ", " + (($a // {})|tojson) + ")")}}}' |
     railgrid mcp proxy 2>/dev/null |
-    jq -r 'if .error then error(.error.message) elif (.result.isError // false) then error(.result.content[0].text)
-           else (.result.structuredContent // (.result.content[0].text | (fromjson? // .))) end'
+    jq -r 'if .error then error(.error.message)
+           elif (.result.isError // false) then error(.result.structuredContent.error // .result.content[0].text)
+           else .result.structuredContent.result as $r
+             | if ($r.ok|not) then error($r.text)
+               elif $r.raw then ($r.raw|fromjson) else ($r.text | (fromjson? // .)) end end'
+}
+fmcp_list() {  # the tools you can call, from the aggregate's catalog
+  jq -nc '{jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"search",arguments:{code:"() => spec.tools.map(t => ({name: t.name, description: t.description, inputSchema: t.inputSchema, consentRequired: t.consentRequired}))"}}}' |
+    railgrid mcp proxy 2>/dev/null | jq -r '.result.structuredContent.result[] | "\(.name)\t\(.description // "")"'
 }
 ```
 
@@ -85,9 +95,14 @@ call. `fmcp` needs no token: the proxy reads and refreshes your login itself.
    `railgrid login --token`.
 4. **Use kubectl** to read and write workspace resources.
 5. **Enumerate, don't trust lists.** Providers, their `scope`, and your MCP
-   tools differ per hub and per org: `GET /api/providers` and MCP `tools/list`
-   are the only authority. Tool names are `<provider>__<tool>`; an MCP client
-   adds its own prefix (e.g. `mcp__railgrid__code__list_repositories`).
+   tools differ per hub and per org: `GET /api/providers` and the aggregate's
+   catalog (`railgrid mcp call --list`, `fmcp_list`, or `search` with
+   `spec.tools`) are the only authority. The aggregate's own `tools/list` is
+   just `search`, `execute` and any consent-gated tool. Provider tool names
+   are `<provider>__<tool>` and are invoked through `execute` as
+   `railgrid.call("<provider>__<tool>", {args})`; an MCP client sees
+   `mcp__railgrid__search` / `mcp__railgrid__execute`. Where this skill says
+   "call `code__build_status`", that is what it means.
 6. **Check readiness before promising outcomes.** `exposure: internal` never
    gets a URL; a build is promotable only when every component has an image
    for the exact railgrid-recorded commit; a private or restricted URL answers

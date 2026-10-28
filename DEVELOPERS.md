@@ -25,10 +25,12 @@ For the fastest local dev loop, use [Tilt](https://tilt.dev/) instead of running
 make tilt
 ```
 
-This wraps `tilt up -f Tiltfile` and first checks that no local kcp is running
-and that nothing already holds `:9443` or Tilt's own port — the two stacks
-(`make tilt` and `make tilt-cluster`) cannot run side by side. Plain `tilt up`
-still works if you want to skip the checks.
+This wraps `tilt up -f Tiltfile`. Each checkout is allocated its own ports
+(20000-29999, persisted in `.kcp/tilt-checkout.json`; `make tilt-status` prints
+them), its own kind cluster and container names, and Tilt is pinned to that
+cluster's context. The launcher checks that every allocated port is free and
+creates the kind cluster before `tilt up`. `make tilt-cluster` still uses fixed
+ports and cannot run beside a `make tilt` stack that shares them.
 
 This starts two local resources:
 
@@ -36,14 +38,15 @@ This starts two local resources:
    Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
 
 2. **`hub`** — `railgrid-hub` binary with embedded KCP, static auth, and portal dev proxy  
-   Serves HTTPS on `https://console.127.0.0.1.sslip.io:9443` (listening on :9443, so `https://localhost:9443` works too). The hub depends on the portal resource and rebuilds on Go file changes.
+   Serves HTTPS on `https://console-<key>.127.0.0.1.sslip.io:<HUB_PORT>` (the `DEV_HUB_URL` from `make tilt-status`; `https://localhost:<HUB_PORT>` works too). The hub depends on the portal resource and rebuilds on Go file changes.
 
 ### Smoke test
 
 ```bash
-curl -k https://console.127.0.0.1.sslip.io:9443/healthz   # hub healthz
-curl -k https://console.127.0.0.1.sslip.io:9443/ui/       # portal via hub proxy
-curl http://localhost:3000/ui/           # portal direct (Vite dev server)
+make -s tilt-status                               # prints HUB_PORT and PORTAL_PORT
+curl -k https://localhost:<HUB_PORT>/healthz      # hub healthz
+curl -k https://localhost:<HUB_PORT>/ui/          # portal via hub proxy
+curl http://localhost:<PORTAL_PORT>/ui/           # portal direct (Vite dev server)
 ```
 
 ### Stop everything

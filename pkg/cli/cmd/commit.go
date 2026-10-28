@@ -23,12 +23,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os/exec"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
 )
 
 // commitMessageLimit is the RepositoryCommit CRD's spec.message cap. Bytes
@@ -434,63 +435,24 @@ func (c *mcpClient) toolFileEncodingSupported(ctx context.Context, name string) 
 	return schemaFileItemsHaveEncoding(schema), nil
 }
 
-// toolInputSchema fetches tools/list and returns the named tool's
-// inputSchema. The aggregate answers statelessly, so no initialize is needed.
+// toolInputSchema reads the aggregate's catalog through its search tool and
+// returns the named tool's inputSchema. The aggregate answers statelessly, so
+// no initialize is needed.
 func (c *mcpClient) toolInputSchema(ctx context.Context, name string) (json.RawMessage, bool, error) {
-	body, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": map[string]any{}})
-	if err != nil {
-		return nil, false, err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, false, err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json, text/event-stream")
-	req.Header.Set("User-Agent", cliUserAgent())
-	resp, err := c.http.Do(req)
+	result, err := c.toolsCall(ctx, mcpcode.ToolSearch, mcpcode.CatalogParams())
 	if err != nil {
 		return nil, false, fmt.Errorf("listing MCP tools: %w", err)
 	}
-	defer resp.Body.Close() //nolint:errcheck
-	reply, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	tools, err := mcpcode.DecodeCatalog(result)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading tools/list reply: %w", err)
+		return nil, false, fmt.Errorf("listing MCP tools: %w", err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, false, decodeAPIError(http.MethodPost, req.URL.Path, resp.StatusCode, reply)
+	for _, t := range tools {
+		if t.Name == name {
+			return t.InputSchema, true, nil
+		}
 	}
-	for _, payload := range jsonRPCPayloads(reply) {
-		var msg struct {
-			Result *struct {
-				Tools []struct {
-					Name        string          `json:"name"`
-					InputSchema json.RawMessage `json:"inputSchema"`
-				} `json:"tools"`
-			} `json:"result"`
-			Error *struct {
-				Code    int    `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(payload, &msg); err != nil {
-			continue
-		}
-		if msg.Error != nil {
-			return nil, false, fmt.Errorf("tools/list: MCP error %d: %s", msg.Error.Code, msg.Error.Message)
-		}
-		if msg.Result == nil {
-			continue
-		}
-		for _, t := range msg.Result.Tools {
-			if t.Name == name {
-				return t.InputSchema, true, nil
-			}
-		}
-		return nil, false, nil
-	}
-	return nil, false, fmt.Errorf("no JSON-RPC result in tools/list reply")
+	return nil, false, nil
 }
 
 // schemaFileItemsHaveEncoding reports whether a JSON Schema has

@@ -43,10 +43,9 @@ programs can still occupy a saved port.
 Do not copy `.kcp` between checkouts. An occupied saved port fails startup with
 its name and number; stop the process using it before restarting.
 
-Existing checkouts with `.kcp/admin.kubeconfig` keep their previous defaults,
-kcp/port conflict checks, and conditional cluster preparation (only when
-external providers are configured). Fresh isolated checkouts always prepare
-their own kind cluster, so they cannot inherit another checkout's context.
+Every checkout prepares its own kind cluster before `tilt up` and pins Tilt to
+that context, so a stack never inherits another checkout's cluster or the
+developer's current kube context. There is no shared or default-port mode.
 The Go VCS-stamping workaround applies only to Git worktrees (`.git` is a file);
 ordinary clones keep normal Go build stamping.
 

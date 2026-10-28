@@ -32,6 +32,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/railgrid/provider-sdk/mcpcode"
+
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 )
@@ -259,8 +261,9 @@ func (b bearerTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 // The proxy against the real aggregate handler: the handshake, a
-// notification, tools/list and a federated tools/call all go through the
-// SDK's stateless streamable-HTTP server as an MCP client would drive them.
+// notification, tools/list and a federated call through execute all go
+// through the SDK's stateless streamable-HTTP server as an MCP client would
+// drive them.
 func TestMCPProxyAgainstAggregate(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var msg jsonRPCMessage
@@ -296,13 +299,18 @@ func TestMCPProxyAgainstAggregate(t *testing.T) {
 			client: &http.Client{Transport: bearerTransport{token: "alice-token"}},
 		}, nil
 	}
+	callParams, err := mcpcode.CallParams("infra__provision", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": callParams})
 	var out bytes.Buffer
 	p := newMCPProxy(resolve, &out, io.Discard)
 	for _, msg := range []string{
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}`,
 		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
 		`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`,
-		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"infra__provision","arguments":{}}}`,
+		string(call),
 	} {
 		p.handle(context.Background(), []byte(msg))
 	}
@@ -311,7 +319,9 @@ func TestMCPProxyAgainstAggregate(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("stdout has %d messages, want 3 (no reply to the notification):\n%s", len(lines), out.String())
 	}
-	for i, want := range []string{`"protocolVersion":"2025-06-18"`, `"name":"infra__provision"`, `provisioned`} {
+	// The aggregate serves code mode: tools/list is search and execute, and
+	// the provider's tool answers through execute.
+	for i, want := range []string{`"protocolVersion":"2025-06-18"`, `"name":"search"`, `provisioned`} {
 		if !strings.Contains(lines[i], want) || !strings.Contains(lines[i], fmt.Sprintf(`"id":%d`, i+1)) {
 			t.Errorf("reply %d = %s, want id %d containing %s", i+1, lines[i], i+1, want)
 		}

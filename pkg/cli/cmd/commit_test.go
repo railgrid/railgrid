@@ -22,7 +22,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +30,9 @@ import (
 	"sync"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
+	"github.com/railgrid/provider-sdk/mcpcode/mcpcodetest"
 )
 
 func TestBuildCommitMessage(t *testing.T) {
@@ -304,8 +306,9 @@ func TestSchemaFileItemsHaveEncoding(t *testing.T) {
 	}
 }
 
-// fakeCommitMCP serves tools/list (with or without the files[].encoding
-// property) and code__commit_files on the fake hub's /mcp. A successful
+// fakeCommitMCP stands in for the aggregate on the fake hub's /mcp: its
+// search catalog carries code__commit_files (with or without the
+// files[].encoding property) and execute runs it. A successful
 // commit pushes the clone's HEAD to its origin, standing in for the provider.
 type fakeCommitMCP struct {
 	mu        sync.Mutex
@@ -322,39 +325,36 @@ func (f *fakeCommitMCP) install(t *testing.T, hub *fakeHub, clone string, withEn
 		"repositoryRef": map[string]any{"type": "string"},
 		"files":         map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": itemProps}},
 	}}
-	hub.handle("POST /mcp", func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			Method string `json:"method"`
-			Params struct {
-				Name      string          `json:"name"`
-				Arguments json.RawMessage `json:"arguments"`
-			} `json:"params"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&req)
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		var result any
-		switch req.Method {
-		case "tools/list":
-			f.listCalls++
-			result = map[string]any{"tools": []map[string]any{
-				{"name": "infrastructure__list_instances", "inputSchema": map[string]any{"type": "object"}},
-				{"name": commitFilesTool, "inputSchema": schema},
-			}}
-		case "tools/call":
-			var args commitFilesArgs
-			_ = json.Unmarshal(req.Params.Arguments, &args)
-			f.calls = append(f.calls, args)
-			c := exec.Command("git", "push", "-q", "origin", "HEAD:main")
-			c.Dir = clone
-			if out, err := c.CombinedOutput(); err != nil {
-				t.Errorf("fake provider push: %v\n%s", err, out)
+	schemaJSON, _ := json.Marshal(schema)
+	fake := &mcpcodetest.Server{
+		Tools: []mcpcodetest.Tool{
+			{CatalogTool: mcpcode.CatalogTool{Name: "infrastructure__list_instances", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+			{CatalogTool: mcpcode.CatalogTool{Name: commitFilesTool, InputSchema: schemaJSON}, Call: func(raw json.RawMessage) (json.RawMessage, error) {
+				var args commitFilesArgs
+				_ = json.Unmarshal(raw, &args)
+				f.mu.Lock()
+				f.calls = append(f.calls, args)
+				f.mu.Unlock()
+				c := exec.Command("git", "push", "-q", "origin", "HEAD:main")
+				c.Dir = clone
+				if out, err := c.CombinedOutput(); err != nil {
+					t.Errorf("fake provider push: %v\n%s", err, out)
+				}
+				text, _ := json.Marshal(map[string]any{"phase": "Succeeded", "commitSHA": "abc123"})
+				return json.Marshal(map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}})
+			}},
+		},
+		// The catalog is read through search; that is the one "list" the
+		// commit path makes before it sends binaries.
+		Observe: func(inv mcpcodetest.Invocation) {
+			if inv.Method == "search" {
+				f.mu.Lock()
+				f.listCalls++
+				f.mu.Unlock()
 			}
-			text, _ := json.Marshal(map[string]any{"phase": "Succeeded", "commitSHA": "abc123"})
-			result = map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}}
-		}
-		writeTestJSON(w, map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
-	})
+		},
+	}
+	hub.handle("POST /mcp", fake.ServeHTTP)
 }
 
 func commitBinaryInClone(t *testing.T, clone string) []byte {

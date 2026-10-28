@@ -26,7 +26,8 @@ limitations under the License.
 // path, verifies the caller's bearer against that tenant (see BearerVerifier),
 // builds a fresh stateless mcp.Server, federates the /mcp endpoint of every
 // Ready provider visible to the verified tenant (see ProviderEnumerator) into
-// it, and serves the MCP protocol over streamable HTTP. Providers' discovered
+// it behind the code-mode search/execute pair (see codemode.go), and serves
+// the MCP protocol over streamable HTTP. Providers' discovered
 // tools and instructions are cached per caller (see discovery.go), so only the
 // first request of a caller waits on provider discovery. Nothing is federated
 // for a bearer that fails verification.
@@ -303,19 +304,14 @@ type buildParams struct {
 }
 
 // buildServer constructs the aggregate mcp.Server for one request: generic
-// per-tenant metadata, the railgrid://about resource, and every Ready provider's
-// federated tools. It never fails — with no providers it serves an empty but
-// valid MCP server.
+// per-tenant metadata, the railgrid://about and capabilities resources, the
+// code-mode search/execute pair over every Ready provider's federated tools,
+// and a direct proxy for each consent-gated tool (see codemode.go). It never
+// fails — with no providers it serves a valid MCP server whose catalog is
+// empty.
 func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	title := fmt.Sprintf("Railgrid — %s (tenant %s)", p.name, p.cluster)
-	instructions := fmt.Sprintf(
-		"You are connected to the railgrid aggregate MCP endpoint %q in tenant workspace %q.\n\n"+
-			"This single endpoint federates the tools of every enabled railgrid provider in this tenant "+
-			"(for example infrastructure, code, and edge access). Provider tools are namespaced as "+
-			"\"<provider>__<tool>\". Call tools/list to enumerate what is currently reachable — the set "+
-			"reflects which providers are enabled and healthy right now.",
-		p.name, p.cluster,
-	)
+	instructions := codeModeInstructions(p.name, p.cluster)
 
 	var targets []ProviderTarget
 	if p.enumerate != nil {
@@ -352,9 +348,17 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	// Declared capabilities come from the registry, not from the providers'
 	// live answers: a provider that is Ready but whose /mcp endpoint is slow
 	// or absent still has its declared contract published here.
-	registerCapabilitiesResource(srv, capabilitiesFor(p.cluster, p.name, targets))
+	caps := capabilitiesFor(p.cluster, p.name, targets)
+	registerCapabilitiesResource(srv, caps)
 
-	registerProviderTools(ctx, srv, p.log, found, p.appReadSlots)
+	cat := buildToolCatalog(found)
+	registerCodeModeTools(srv, p.log, cat, codeModeSpec{
+		Tenant:    p.cluster,
+		MCPServer: p.name,
+		Providers: caps.Providers,
+		Tools:     cat.tools,
+	})
+	registerDirectTools(ctx, srv, p.log, found, cat, p.appReadSlots)
 	return srv
 }
 

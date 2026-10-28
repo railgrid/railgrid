@@ -43,6 +43,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/railgrid/provider-sdk/mcpcode"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -1861,40 +1862,71 @@ func mcpServerURL(hubBase, cluster, mcpServerName string) string {
 		fmt.Sprintf("/services/mcpserver/%s/apis/railgrid.ai/v1alpha1/mcpservers/%s/mcp", cluster, mcpServerName)
 }
 
+// fetchProjectMCPTools reads the aggregate's catalog: the federated tools a
+// project may call. The aggregate serves code mode (search and execute), so
+// the catalog comes from search with mcpcode.CatalogCode, not from tools/list,
+// which lists only the two code-mode tools and the consent-gated ones.
 func fetchProjectMCPTools(ctx context.Context, endpoint string, r *http.Request, tenantID string, skipTLSVerify bool) ([]projectMCPTool, error) {
-	params := []byte(`{}`)
-	body, err := projectMCPRequest(ctx, endpoint, "tools/list", params, r, tenantID, skipTLSVerify)
+	params, err := json.Marshal(mcpcode.CatalogParams())
 	if err != nil {
 		return nil, err
 	}
-	var envelope struct {
-		Tools []projectMCPTool `json:"tools"`
-		Error *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+	body, err := projectMCPRequest(ctx, endpoint, "tools/call", params, r, tenantID, skipTLSVerify)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("decode tools/list response: %w", err)
+	catalog, err := mcpcode.DecodeCatalog(body)
+	if err != nil {
+		return nil, fmt.Errorf("decode aggregate catalog: %w", err)
 	}
-	if envelope.Error != nil {
-		return nil, fmt.Errorf("provider MCP error %d: %s", envelope.Error.Code, envelope.Error.Message)
+	tools := make([]projectMCPTool, 0, len(catalog))
+	for _, t := range catalog {
+		tools = append(tools, projectMCPTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
 	}
-	return envelope.Tools, nil
+	return tools, nil
 }
 
+// callProjectMCPTool invokes one federated tool through the aggregate's
+// execute tool with the one-line program mcpcode writes. A tool whose declared
+// action needs human consent is refused inside a script and listed directly
+// by the aggregate instead; that refusal falls back to a plain tools/call.
 func callProjectMCPTool(ctx context.Context, endpoint string, r *http.Request, tenantID string, skipTLSVerify bool, name string, args map[string]any) (string, error) {
-	params, err := json.Marshal(map[string]any{
-		"name":      name,
-		"arguments": args,
-	})
+	callParams, err := mcpcode.CallParams(name, args)
 	if err != nil {
 		return "", fmt.Errorf("encode tool args: %w", err)
 	}
-	body, err := projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantID, skipTLSVerify, projectAssistantMCPToolCallTimeout(name, args))
+	params, err := json.Marshal(callParams)
+	if err != nil {
+		return "", fmt.Errorf("encode tool args: %w", err)
+	}
+	timeout := projectAssistantMCPToolCallTimeout(name, args)
+	body, err := projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantID, skipTLSVerify, timeout)
 	if err != nil {
 		return "", err
 	}
+	call, err := mcpcode.DecodeCallResult(body)
+	var refused *mcpcode.CallError
+	if errors.As(err, &refused) && refused.ConsentRequired() {
+		params, err = json.Marshal(map[string]any{"name": name, "arguments": args})
+		if err != nil {
+			return "", fmt.Errorf("encode tool args: %w", err)
+		}
+		body, err = projectMCPRequestWithTimeout(ctx, endpoint, "tools/call", params, r, tenantID, skipTLSVerify, timeout)
+		if err != nil {
+			return "", err
+		}
+		return projectMCPToolResultText(body)
+	}
+	if err != nil {
+		return "", err
+	}
+	return projectMCPToolResultText(call.ToolResultJSON())
+}
+
+// projectMCPToolResultText renders a tools/call result object as the text the
+// assistant sees: the text content joined, else the structured content, else
+// the body itself. A tool error becomes a Go error carrying the tool's text.
+func projectMCPToolResultText(body json.RawMessage) (string, error) {
 	var result struct {
 		Content []struct {
 			Type string `json:"type"`

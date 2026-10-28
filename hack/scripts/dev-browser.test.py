@@ -18,14 +18,14 @@ class BrowserTest(unittest.TestCase):
             (root / '.kcp').mkdir()
             (root / '.kcp/tilt-owner.json').write_text(json.dumps({
                 'root': str(root), 'tiltDevDir': '/private-harness/tilt-settings'}))
-            config = {'root': str(root), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+            config = {'root': str(root), 'key': 'abc', 'ports': m.checkout.PORTS}
             setup = m.Setup(config)
             self.assertEqual(setup.env['TILT_DEV_DIR'], '/private-harness/tilt-settings')
             self.assertEqual(setup.env.get('HOME'), os.environ.get('HOME'))
 
 
     def test_provisioning_wait_handles_restart_pending_and_stale_readiness(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
         def status(generation=None):
             conditions = [] if generation is None else [
@@ -42,7 +42,7 @@ class BrowserTest(unittest.TestCase):
         self.assertIn(str(m.ROOT / '.kcp/admin.kubeconfig'), args)
 
     def test_provisioning_timeout_names_provider_and_diagnostics(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
         setup.command = Mock(return_value=json.dumps({'metadata': {'generation': 1}}))
         setup.remaining = Mock(side_effect=[10, TimeoutError('expired')])
@@ -52,7 +52,7 @@ class BrowserTest(unittest.TestCase):
         self.assertEqual(setup.command.call_count, 1)
 
     def test_provisioning_timeout_preserves_safe_command_diagnostic(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         for error, expected in [
             (ValueError('kubectl get failed; inspect .kcp/dev-browser-error.log'),
              'kubectl get failed; inspect .kcp/dev-browser-error.log'),
@@ -68,7 +68,7 @@ class BrowserTest(unittest.TestCase):
                 self.assertIn(expected, str(caught.exception))
 
     def test_successful_pending_poll_clears_previous_query_error(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
         setup.command = Mock(side_effect=[ValueError('API restarting'),
                                          json.dumps({'metadata': {'generation': 1}})])
@@ -80,7 +80,7 @@ class BrowserTest(unittest.TestCase):
         self.assertNotIn('API restarting', str(caught.exception))
 
     def test_external_provider_catalog_is_read_from_its_own_workspace(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
         external = {'metadata': {'name': 'planner'}, 'spec': {'serving': {'backend': {'url': 'http://127.0.0.1:20341'}}}}
         setup.command = Mock(side_effect=[json.dumps({'items': []}), json.dumps(external)])
@@ -93,7 +93,7 @@ class BrowserTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)), patch.object(m.sys, 'argv', ['dev-browser.py', 'down']):
             state = Path(tmp) / '.kcp'
             state.mkdir()
-            (state / 'tilt-checkout.json').write_text(json.dumps({'root': tmp, 'legacy': False}))
+            (state / 'tilt-checkout.json').write_text(json.dumps({'root': tmp}))
             with (state / 'dev-browser.lock').open('a') as held:
                 m.fcntl.flock(held, m.fcntl.LOCK_EX)
                 with patch.object(m.checkout, 'stop_owned') as stop:
@@ -104,7 +104,7 @@ class BrowserTest(unittest.TestCase):
         c = m.checkout
         with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'ROOT', Path(tmp)):
             (Path(tmp) / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': c.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': c.PORTS}
             handlers = {}
             child = Mock(pid=1234)
             child.poll.return_value = None
@@ -126,7 +126,7 @@ class BrowserTest(unittest.TestCase):
                 root = Path(tmp)
                 (root / '.kcp').mkdir()
                 (root / '.kcp/tilt-owner.json').write_text(json.dumps({'root': tmp, 'pid': 1234, 'birth': 'original'}))
-                setup = m.Setup({'root': tmp, 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS})
+                setup = m.Setup({'root': tmp, 'key': 'abc', 'ports': m.checkout.PORTS})
                 setup.tilt = Mock()
                 with patch.object(m.checkout, 'process_identity', return_value=identity):
                     with self.assertRaisesRegex(ValueError, 'TILT_DETACHED=1'):
@@ -134,7 +134,7 @@ class BrowserTest(unittest.TestCase):
                 setup.tilt.assert_not_called()
 
     def test_timeout_and_url_ignore_host_overrides(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         with patch.dict(os.environ, {'DEV_HUB_URL': 'https://production.example', 'DEV_BROWSER_TIMEOUT': 'bad'}):
             with self.assertRaisesRegex(ValueError, 'DEV_BROWSER_TIMEOUT'):
                 m.Setup(config)
@@ -145,7 +145,7 @@ class BrowserTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.checkout.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.checkout.PORTS}
             record = root / '.kcp/tilt-owner.json'
             m.checkout.write_owner(record, {'root': tmp, 'resources': m.checkout.owned_resources(config)})
             def remove(args, **kwargs):
@@ -185,7 +185,7 @@ class BrowserTest(unittest.TestCase):
             self.assertFalse(token.is_symlink())
 
     def test_ready_uses_assigned_url_without_integration_credentials(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': dict(m.checkout.PORTS, HUB_PORT=20341)}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': dict(m.checkout.PORTS, HUB_PORT=20341)}
         setup = m.Setup(config)
         self.assertEqual(setup.url, 'https://console-abc.127.0.0.1.sslip.io:20341')
         setup.deadline = 0
@@ -193,7 +193,7 @@ class BrowserTest(unittest.TestCase):
             setup.remaining()
 
     def test_failed_tilt_task_reports_resource_without_waiting_for_timeout(self):
-        config = {'root': str(m.ROOT), 'key': 'abc', 'legacy': False, 'ports': m.checkout.PORTS}
+        config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
         setup = m.Setup(config)
         setup.tilt = Mock(return_value=json.dumps({'status': {'updateStatus': 'error'}}))
         with self.assertRaisesRegex(ValueError, 'tilt logs planner-init --port'):
@@ -201,7 +201,7 @@ class BrowserTest(unittest.TestCase):
 
     def test_fresh_and_repeat_setup_and_failure(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp).resolve()):
-            config = {'root': tmp, 'key': 'test', 'legacy': False, 'ports': m.checkout.PORTS}
+            config = {'root': tmp, 'key': 'test', 'ports': m.checkout.PORTS}
             setup = m.Setup(config)
             completed = set()
             triggered = []
@@ -263,7 +263,7 @@ class BrowserTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.checkout.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.checkout.PORTS}
             resources = m.checkout.owned_resources(config)
             record = root / '.kcp/tilt-owner.json'
             record.write_text(json.dumps({'root': tmp, 'resources': resources}))
@@ -285,7 +285,7 @@ class BrowserTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.checkout.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.checkout.PORTS}
             record = root / '.kcp/tilt-owner.json'
             record.write_text(json.dumps({'root': '/other', 'resources': {}}))
             with self.assertRaisesRegex(ValueError, 'ownership'):

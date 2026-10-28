@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/workspace"
+	"github.com/railgrid/provider-sdk/mcpcode"
 )
 
 func TestProjectAssistantHTTPToolPortLocalReadDoesNotRequireProjectIdentity(t *testing.T) {
@@ -97,8 +99,24 @@ func TestProjectAssistantHTTPToolPortMCPUsesOnlyProjectIdentity(t *testing.T) {
 		gotUser = r.Header.Get(dataplane.HeaderUser)
 		gotTenant = r.Header.Get(dataplane.HeaderTenant)
 		gotActionProof = r.Header.Get(dataplane.HeaderActionProof)
+		// The aggregate serves code mode: the named tool arrives inside
+		// execute, and its result goes back inside the envelope.
+		var request struct {
+			Params struct {
+				Name      string `json:"name"`
+				Arguments struct {
+					Code string `json:"code"`
+				} `json:"arguments"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&request)
+		tool, _, ok := mcpcode.ParseCallCode(request.Params.Arguments.Code)
+		if request.Params.Name != mcpcode.ToolExecute || !ok || tool != projectToolAgentsListAgents {
+			t.Errorf("aggregate request = %#v, want execute of %s", request.Params, projectToolAgentsListAgents)
+		}
+		result, _ := mcpcode.EncodeCallResult(tool, json.RawMessage(`{"content":[{"type":"text","text":"mcp result"}]}`))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"mcp result"}]}}`)
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":%s}`, result)
 	}))
 	t.Cleanup(mcp.Close)
 

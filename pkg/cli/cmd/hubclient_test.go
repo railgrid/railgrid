@@ -29,6 +29,8 @@ import (
 
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
 )
 
 const (
@@ -312,13 +314,24 @@ func TestMCPCallToolOverSSE(t *testing.T) {
 			} `json:"params"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
-		var result map[string]any
-		switch req.Params.Name {
-		case "code__commit_files":
-			text, _ := json.Marshal(map[string]any{"phase": "Succeeded", "commitSHA": "abc123", "echo": req.Params.Arguments})
-			result = map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}}
+		// The aggregate serves code mode: a named tool arrives as execute
+		// running the one-line program mcpcode writes.
+		var code struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(req.Params.Arguments, &code)
+		tool, args, ok := mcpcode.ParseCallCode(code.Code)
+		var result json.RawMessage
+		switch {
+		case req.Params.Name != mcpcode.ToolExecute || !ok:
+			result = mcpcode.EncodeRunError("the fake hub serves tools through execute only, got " + req.Params.Name)
+		case tool == "code__commit_files":
+			text, _ := json.Marshal(map[string]any{"phase": "Succeeded", "commitSHA": "abc123", "echo": args})
+			inner, _ := json.Marshal(map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}})
+			result, _ = mcpcode.EncodeCallResult(tool, inner)
 		default:
-			result = map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": "tool " + req.Params.Name + " failed"}}}
+			inner, _ := json.Marshal(map[string]any{"isError": true, "content": []map[string]any{{"type": "text", "text": "tool " + tool + " failed"}}})
+			result, _ = mcpcode.EncodeCallResult(tool, inner)
 		}
 		msg, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": result})
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -36,11 +36,13 @@ import (
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
+	"github.com/railgrid/provider-sdk/mcpcode/mcpcodetest"
+
 	"github.com/railgrid/provider-app-studio/tenant/tenanttest"
 )
 
 func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The MCP aggregate is reached as the Project's own hub-minted
 		// identity, never as the provider; the caller's name is a label.
 		if got := r.Header.Get("Authorization"); got != "Bearer project-workload-token" {
@@ -67,7 +69,7 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"repositoryRef":"repo-a","found":true,"runID":42,"htmlURL":"https://example.test/actions/42","headSHA":"70aed526","status":"in_progress","jobs":[{"name":"web","status":"completed","conclusion":"success"},{"name":"api","status":"in_progress"}]}}}`)
-	}))
+	})))
 	t.Cleanup(mcp.Close)
 
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, hubToken: "provider-hub-token", projectIdentityTokenFor: testProjectIdentityToken}
@@ -87,7 +89,7 @@ func TestFetchProjectBuildRunNormalizesStructuredCodeStatus(t *testing.T) {
 
 func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 	var gotWorkflow string
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Params struct {
 				Arguments struct {
@@ -100,7 +102,7 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 		}
 		gotWorkflow = request.Params.Arguments.Workflow
 		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"found":false}}}`)
-	}))
+	})))
 	t.Cleanup(mcp.Close)
 
 	template := applicationTemplateObject()
@@ -133,7 +135,7 @@ func TestDeclaredWorkflowPathIsPassedAsWorkflowFileName(t *testing.T) {
 
 func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) {
 	var workflows []string
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Params struct {
 				Arguments struct {
@@ -146,7 +148,7 @@ func TestDeclaredWorkflowErrorDoesNotFallBackToCompatibilityNames(t *testing.T) 
 		}
 		workflows = append(workflows, request.Params.Arguments.Workflow)
 		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"declared workflow unavailable"}}`)
-	}))
+	})))
 	t.Cleanup(mcp.Close)
 
 	template := applicationTemplateObject()
@@ -194,7 +196,7 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 				ref      string
 			}
 			var calls []workflowCall
-			mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var request struct {
 					Params struct {
 						Arguments struct {
@@ -210,7 +212,7 @@ func TestProjectBuildWorkflowUsesCanonicalWithoutLegacyFallback(t *testing.T) {
 				calls = append(calls, workflowCall{workflow: request.Params.Arguments.Workflow, ref: request.Params.Arguments.Ref})
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":%s}}`, tt.response)
-			}))
+			})))
 			t.Cleanup(mcp.Close)
 
 			s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
@@ -243,7 +245,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 		ref      string
 	}
 	var calls []workflowCall
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Params struct {
 				Arguments struct {
@@ -264,7 +266,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 			return
 		}
 		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"found":true,"headSHA":"reviewed-sha"}}}`)
-	}))
+	})))
 	t.Cleanup(mcp.Close)
 
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, hubBase: mcp.URL, projectIdentityTokenFor: testProjectIdentityToken}
@@ -291,7 +293,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnStatusError(t *testing.T) {
 func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 	var workflows []string
 	var refs []string
-	mcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	mcp := httptest.NewServer(mcpcodetest.Unwrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Params struct {
 				Name      string `json:"name"`
@@ -316,7 +318,7 @@ func TestProjectBuildWorkflowFallsBackToLegacyOnRebuildError(t *testing.T) {
 			return
 		}
 		_, _ = fmt.Fprint(w, `{"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"dispatched":true}}}`)
-	}))
+	})))
 	t.Cleanup(mcp.Close)
 
 	p := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "demo", UID: "project-uid"}, Spec: aiv1alpha1.ProjectSpec{Repository: &aiv1alpha1.ProjectRepositoryBinding{RepositoryRef: "repo-a"}}}

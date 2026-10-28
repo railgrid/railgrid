@@ -33,8 +33,11 @@ package mcpaggregate
 //         caller's bearer; an org-owned provider through its Transport, which
 //         carries a delegated token instead and never the caller's bearer
 //         (see discovery.go for what is cached and for how long)
-//      b. for each tool, register a proxy tool "<provider>__<original>" whose
-//         handler POSTs tools/call back to {MCPURL} the same way
+//      b. each tool enters the code-mode catalog as "<provider>__<original>"
+//         (codemode.go): visible to `search`, invoked by `railgrid.call`
+//         inside `execute`, which POSTs tools/call back to {MCPURL} the same
+//         way. A tool whose declared action requires consent is instead
+//         registered directly as a proxy tool (registerOneProxyTool).
 //   4. name collisions across providers are prevented by the slug prefix, and
 //      within one Org by shadowing: an org's own provider replaces the
 //      platform provider of the same name, so at most one of them is listed.
@@ -51,7 +54,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -105,7 +107,7 @@ var providerDiscoveryTimeout = 8 * time.Second
 
 const (
 	// providerMCPDiscoveryTimeout bounds an individual provider MCP request
-	// used for discovery. registerProviderTools also applies the shorter
+	// used for discovery. The discovery cache also applies the shorter
 	// providerDiscoveryTimeout per-provider deadline around discovery, while
 	// this bound protects direct callers such as FederatedInstructions.
 	providerMCPDiscoveryTimeout = 15 * time.Second
@@ -282,34 +284,6 @@ func (c *providerMCPClient) fetchInstructions(ctx context.Context, mcpURL string
 	return out.Instructions
 }
 
-// registerProviderTools registers the discovered tools on srv as proxies.
-// Registration runs sequentially, in the original provider order, so the
-// aggregate tool list is deterministic across requests. AddTool on a shared
-// server is not guaranteed goroutine-safe, so it stays on one goroutine.
-func registerProviderTools(ctx context.Context, srv *mcp.Server, log logr.Logger, found []*providerTools, readSlots chan struct{}) {
-	for _, r := range found {
-		if r == nil || len(r.tools) == 0 {
-			continue
-		}
-		registerAppResources(ctx, srv, r, log, readSlots)
-		log.V(1).Info("provider federation: registering tools", "provider", r.provider.Name, "count", len(r.tools))
-		for _, t := range r.tools {
-			if !appToolModelVisible(t) {
-				log.V(1).Info("provider federation: skipping app-only or invalid-visibility tool", "provider", r.provider.Name, "tool", t.Name)
-				continue
-			}
-			func() {
-				defer func() {
-					if rec := recover(); rec != nil {
-						log.Info("provider federation: AddTool panic recovered", "provider", r.provider.Name, "tool", t.Name, "panic", fmt.Sprint(rec))
-					}
-				}()
-				registerOneProxyTool(srv, r.client, r.provider, t)
-			}()
-		}
-	}
-}
-
 // mergedInstructions joins the discovered providers' instructions, in
 // provider order, in the same shape FederatedInstructions returns.
 func mergedInstructions(found []*providerTools) string {
@@ -344,8 +318,8 @@ type providerTools struct {
 }
 
 // registerOneProxyTool installs a single proxy tool on srv, named
-// "<provider>__<original>" so a model browsing tools/list can see which
-// provider owns which tool.
+// "<provider>__<original>". Code mode uses it only for consent-gated tools
+// (see registerDirectTools); everything else is reached through execute.
 func registerOneProxyTool(srv *mcp.Server, cli *providerMCPClient, p ProviderTarget, t discoveredTool) {
 	proxyName := p.Name + "__" + t.Name
 

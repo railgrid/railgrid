@@ -280,22 +280,12 @@ func mcpCall(t *testing.T, h http.Handler, bearer, method, params string) json.R
 	return env.Result
 }
 
+// toolNames is the federated catalog as bearer sees it through `search`:
+// what execute may call. The aggregate's own tools/list is search, execute
+// and the consent-gated proxies only.
 func toolNames(t *testing.T, h http.Handler, bearer string) []string {
 	t.Helper()
-	var out struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(mcpCall(t, h, bearer, "tools/list", `{}`), &out); err != nil {
-		t.Fatalf("decode tools/list: %v", err)
-	}
-	names := make([]string, 0, len(out.Tools))
-	for _, tl := range out.Tools {
-		names = append(names, tl.Name)
-	}
-	sort.Strings(names)
-	return names
+	return catalogNames(t, h, bearer)
 }
 
 func assertTools(t *testing.T, got []string, want ...string) {
@@ -380,8 +370,8 @@ func TestOrgMemberFederatesOwnProvidersOverEdge(t *testing.T) {
 		}
 	}
 
-	// tools/call on the shadowing copy goes the same way.
-	result := mcpCall(t, f.handler, "alice-a", "tools/call", `{"name":"infrastructure__provision","arguments":{}}`)
+	// A call on the shadowing copy (through execute) goes the same way.
+	result := callViaExecute(t, f.handler, "alice-a", "infrastructure__provision", `{}`)
 	if !strings.Contains(string(result), "called provision on org-a-infrastructure") {
 		t.Fatalf("tools/call did not reach the org's own copy: %s", result)
 	}

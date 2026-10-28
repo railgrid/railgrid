@@ -24,14 +24,20 @@ ID — the same `/clusters/<id>` segment your kubeconfig server URL carries.)
   bearer also needs the cluster's workspace path
   resolved after TokenReview: an unknown cluster is 403, a lookup outage is
   503 (fails closed rather than guessing the platform catalog).
-- Server identity `railgrid-mcpserver`; instructions tell the model tools are
-  namespaced `<provider>__<tool>` and append each provider's own
-  instructions under "Provider guidance". One resource: `railgrid://about`.
+- Server identity `railgrid-mcpserver`. The endpoint serves **code mode**:
+  two tools, `search` (JavaScript against `spec`, the catalog of every
+  federated tool and declared capability) and `execute` (JavaScript calling
+  tools with `railgrid.call("<provider>__<tool>", {args})`), plus a direct
+  proxy for any tool whose declared action needs human consent. Instructions
+  explain this and append each provider's own instructions under "Provider
+  guidance". Resources: `railgrid://about`, `railgrid://providers/capabilities`.
+  Programs: `provider-sdk/mcpcode` writes the one-line call for Go callers;
+  SKILL.md section 0's `fmcp` does it from a shell.
 - Federation: every Ready provider in the verified caller's Org catalog
   (`ListForOrg`: platform providers plus that Org's own) whose backend
   answers `POST /mcp` `tools/list` (8 s to reach a provider, 15 s for its
-  discovery, 90 s per call). Tools are
-  re-registered as `<provider>__<tool>` in deterministic order. A provider
+  discovery, 90 s per call). Tools enter the catalog (`spec.tools`) as
+  `<provider>__<tool>` in deterministic order. A provider
   returning 404 or 405 on `/mcp` is silently dropped (this is how App Studio
   and quickstart, which serve no `/mcp`, are excluded). Provider responses are
   capped at 96 MiB; over the cap is an error

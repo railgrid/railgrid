@@ -55,7 +55,7 @@ func TestMCPAppFederationScopesResourcesAndPreservesCaller(t *testing.T) {
 			h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget {
 				return []ProviderTarget{{Name: "reports", MCPURL: upstream.URL}}
 			}, Verifier: allowAll})
-			raw, _ := jsonrpc(t, h, "tools/list", `{}`)
+			raw := searchJS(t, h, "test-token", `() => ({tools: spec.tools.map(t => ({name: t.name, _meta: t._meta}))})`)
 			var listing struct {
 				Tools []struct {
 					Name string         `json:"name"`
@@ -108,6 +108,9 @@ func TestMCPAppFederationScopesResourcesAndPreservesCaller(t *testing.T) {
 			_, rpcError = appRPC(t, h, "tools/call", `{"name":"reports__private","arguments":{}}`)
 			if !strings.Contains(rpcError, "unknown tool") {
 				t.Fatalf("app-only calls must be unsupported: %q", rpcError)
+			}
+			if got := string(callViaExecute(t, h, "test-token", "reports__private", `{}`)); !strings.Contains(got, "unknown tool") {
+				t.Fatalf("app-only tool reachable through execute: %s", got)
 			}
 
 		})

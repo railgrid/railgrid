@@ -19,6 +19,7 @@ package edgesconn
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -26,12 +27,14 @@ import (
 
 	gosdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/railgrid/provider-sdk/mcpcode"
+
 	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // assertMCPAggregateListsKubeTools connects to the hub's MCP aggregate for the
 // tenant's default MCPServer and asserts the edges provider's kube toolset is
-// federated in (tools/list). Proves the decoupled provider's /mcp endpoint is
+// federated in (the search catalog). Proves the decoupled provider's /mcp endpoint is
 // discovered + proxied by the hub aggregate. Requires a connected
 // KubernetesCluster edge in the tenant workspace.
 func assertMCPAggregateListsKubeTools(t *testing.T, tenantWS string) {
@@ -60,12 +63,22 @@ func assertMCPAggregateListsKubeTools(t *testing.T, tenantWS string) {
 			return false, "connect: " + err.Error()
 		}
 		defer func() { _ = session.Close() }()
-		res, err := session.ListTools(ctx, &gosdk.ListToolsParams{})
+		// The aggregate serves code mode: its tools/list is search and
+		// execute, and the federated catalog is read through search.
+		res, err := session.CallTool(ctx, &gosdk.CallToolParams{Name: mcpcode.ToolSearch, Arguments: map[string]any{"code": mcpcode.CatalogCode}})
 		if err != nil {
-			return false, "list tools: " + err.Error()
+			return false, "search catalog: " + err.Error()
+		}
+		raw, err := json.Marshal(res)
+		if err != nil {
+			return false, "encode search result: " + err.Error()
+		}
+		catalog, err := mcpcode.DecodeCatalog(raw)
+		if err != nil {
+			return false, "decode catalog: " + err.Error()
 		}
 		names = names[:0]
-		for _, tool := range res.Tools {
+		for _, tool := range catalog {
 			names = append(names, tool.Name)
 		}
 		return containsKubeTool(names), "tools=" + strings.Join(names, ",")

@@ -25,7 +25,7 @@ class CheckoutTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'ROOT', Path(tmp)):
             root = Path(tmp)
             (root / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': c.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': c.PORTS}
             child = Mock(pid=1234)
             child.wait.side_effect = subprocess.TimeoutExpired("make", 3)
             with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value=config), patch.object(c, 'manifests', return_value={}), patch.object(c, 'check_ports'), patch.object(c, 'process_identity', return_value='birth'), patch.object(c.signal, 'signal'), patch.object(c.subprocess, 'Popen', return_value=child) as launch, patch.object(c.sys, 'argv', ['tilt-checkout.py']):
@@ -52,7 +52,7 @@ spec = importlib.util.spec_from_file_location('checkout', {script!r})
 c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 c.ROOT = Path({tmp!r})
-c.settings = lambda: {{'root': {tmp!r}, 'key': 'test', 'legacy': False, 'ports': c.PORTS}}
+c.settings = lambda: {{'root': {tmp!r}, 'key': 'test', 'ports': c.PORTS}}
 c.manifests = lambda config: {{}}
 c.check_ports = lambda config: None
 c.tilt_settings_directory = lambda: {tmp!r}
@@ -76,17 +76,10 @@ c.main()
                         except ProcessLookupError:
                             pass
 
-    def test_detached_launch_refuses_shared_stack(self):
-        c = m
-        with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value={'legacy': True}), patch.object(c, 'environment', return_value={}), patch.object(c, 'manifests', return_value={}), patch.object(c.sys, 'argv', ['tilt-checkout.py']), patch.object(c.subprocess, 'Popen') as launch:
-            with self.assertRaisesRegex(ValueError, 'isolated checkout'):
-                c.main()
-            launch.assert_not_called()
-
     def test_detached_launch_reports_early_exit(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
             (Path(tmp) / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
             child = Mock(pid=1234, returncode=2)
             with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(m, 'settings', return_value=config), patch.object(m, 'manifests', return_value={}), patch.object(m, 'check_ports'), patch.object(m, 'process_identity', return_value='birth'), patch.object(m.signal, 'signal'), patch.object(m.subprocess, 'Popen', return_value=child), patch.object(m.sys, 'argv', ['tilt-checkout.py']):
                 with self.assertRaisesRegex(ValueError, 'status 2'):
@@ -127,16 +120,9 @@ c.main()
             with self.assertRaisesRegex(ValueError, 'outside the host ephemeral range'):
                 m.settings(Path(root))
 
-    def test_legacy_checks_hub_port_without_requiring_stopped_provider_databases(self):
-        with m.socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            with patch.dict(m.os.environ, {'HUB_PORT': str(listener.getsockname()[1]), 'TILT_PORT': '0'}):
-                with self.assertRaisesRegex(ValueError, 'HUB_PORT port .* unavailable'):
-                    m.check_ports({'legacy': True, 'ports': m.PORTS})
-
     def test_buildvcs_override_only_applies_to_worktrees(self):
         with tempfile.TemporaryDirectory() as root:
-            config = {'legacy': False, 'root': root, 'key': 'abc', 'ports': m.PORTS}
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
             self.assertNotIn('GOFLAGS', m.environment(config))
             (Path(root) / '.git').write_text('gitdir: /example')
             with patch.dict(m.os.environ, {'GOFLAGS': '-mod=readonly'}):
@@ -154,7 +140,7 @@ c.main()
             self.assertEqual(before, {p: p.stat().st_mtime_ns for p in root.rglob('*')})
 
     def test_dns_missing_or_ambiguous_networks_fail_clearly(self):
-        config = {'legacy': False, 'root': '/checkout', 'key': 'abc'}
+        config = {'root': '/checkout', 'key': 'abc'}
         for networks in ({}, {'a': {'Gateway': '172.18.0.1'}, 'b': {'Gateway': '172.19.0.1'}}):
             with patch.object(m.subprocess, 'run') as run, \
                     patch.object(m.subprocess, 'check_output', return_value=json.dumps([{'NetworkSettings': {'Networks': networks}}])), \
@@ -169,16 +155,17 @@ c.main()
                 m.cli()
             self.assertEqual(str(raised.exception), str(error))
 
-    def test_make_preserves_legacy_startup_and_scopes_edge_cleanup(self):
+    def test_make_prepares_cluster_and_pins_context_and_scopes_edge_cleanup(self):
         def dryrun(*args):
             return m.subprocess.check_output(['make', '-n', *args], cwd=m.ROOT, text=True)
-        legacy = dryrun('tilt-start', 'RAILGRID_TILT_CHECKOUT=', 'EXTERNAL_PROVIDERS_DIR=')
-        self.assertIn('require_service_not_running kcp', legacy)
-        self.assertNotIn('kind get clusters', legacy)
-        self.assertNotIn('--context', legacy)
-        isolated = dryrun('tilt-start', 'RAILGRID_TILT_CHECKOUT=abc', 'EXTERNAL_PROVIDERS_DIR=')
-        self.assertIn('kind get clusters', isolated)
-        self.assertIn('tilt-checkout.py dns', isolated)
+        for checkout in ('', 'abc'):
+            start = dryrun('tilt-start', 'RAILGRID_TILT_CHECKOUT=' + checkout, 'EXTERNAL_PROVIDERS_DIR=')
+            self.assertIn('kind get clusters', start)
+            self.assertIn('tilt-checkout.py dns', start)
+            # Never inherit the developer's current kube context: Tilt refuses
+            # local() under one it considers production.
+            self.assertIn('--context "kind-railgrid-kro"', start)
+            self.assertNotIn('require_service_not_running', start)
         cleanup = dryrun('dev-edge-clean-credentials', 'TYPE=server', 'RAILGRID_TILT_CHECKOUT=abc')
         self.assertIn('agent-dev-edge-server-1-abc.kubeconfig', cleanup)
         self.assertNotIn('agent-dev-edge-kube', cleanup)
@@ -201,12 +188,12 @@ c.main()
     def test_occupied_saved_port_is_reported(self):
         with m.socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
-            config = {'legacy': False, 'ports': {'HUB_PORT': listener.getsockname()[1]}}
+            config = {'ports': {'HUB_PORT': listener.getsockname()[1]}}
             with self.assertRaisesRegex(ValueError, 'HUB_PORT port .* unavailable'):
                 m.check_ports(config)
 
     def test_dns_uses_cluster_gateway_and_is_idempotent(self):
-        config = {'legacy': False, 'key': 'abc', 'root': '/checkout'}
+        config = {'key': 'abc', 'root': '/checkout'}
         cm = {'data': {'Corefile': '.:53 {\n    forward . /etc/resolv.conf\n}\n'}}
         inspect = [{'NetworkSettings': {'Networks': {'custom-network': {'Gateway': '172.18.0.1'}}}}]
         def output(args, **kwargs):
@@ -225,20 +212,22 @@ c.main()
             self.assertFalse(any('patch' in c.args[0] for c in run.call_args_list))
 
     def test_environment_is_idempotent(self):
-        config = {'legacy': False, 'root': '/example', 'key': 'abc', 'ports': m.PORTS}
+        config = {'root': '/example', 'key': 'abc', 'ports': m.PORTS}
         first = m.environment(config)
         with patch.dict(m.os.environ, first):
             self.assertEqual(first, m.environment(config))
 
-    def test_legacy_install_keeps_existing_runtime(self):
+    def test_existing_runtime_state_does_not_opt_out_of_isolation(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             (root / '.kcp').mkdir()
             (root / '.kcp/admin.kubeconfig').touch()
-            config = m.settings(root)
-            self.assertTrue(config['legacy'])
-            self.assertEqual(set(m.environment(config)), {'DEV_STATIC_TOKEN', 'DEV_STATIC_ADMIN'})
-            self.assertEqual(m.manifests(config), {})
+            with patch.object(m, 'allocate_ports', return_value={k: v + 1000 for k, v in m.PORTS.items()}) as allocate:
+                config = m.settings(root)
+            allocate.assert_called_once()
+            self.assertNotIn('legacy', config)
+            self.assertEqual(config['ports']['HUB_PORT'], m.PORTS['HUB_PORT'] + 1000)
+            self.assertIn('KRO_KIND_NAME', m.environment(config))
 
     def test_copied_runtime_state_is_not_silently_reused(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

@@ -45,8 +45,7 @@ Factory and Code; this bootstrap command does not install that pipeline.
 `make dev-browser-down` stops the process group recorded by the checkout's Tilt
 launcher and deletes only its recorded, checkout-specific kind clusters and
 containers. It validates process birth identity before signalling a PID. It
-preserves checkout data, logs and screenshots. Existing legacy/shared stacks
-are deliberately not eligible for automatic bootstrap or deletion. Interrupted
+preserves checkout data, logs and screenshots. Interrupted
 or failed startup retains an ownership record so cleanup can remove partial
 resources. A failed cleanup retains the record for retry.
 
@@ -118,8 +117,7 @@ For a warm UI stack, use `make tilt TILT_DETACHED=1`, then run
 early startup failure, and returns while the stack runs independently of the
 agent terminal. Readiness is still verified by the second command. Logs append
 to private `.kcp/tilt.log` so previous failure evidence survives a restart.
-Detached launch requires an isolated checkout; foreground `make tilt` is
-unchanged. Stop it with `make dev-browser-down`. Readiness checks report a
+Foreground `make tilt` is unchanged. Stop it with `make dev-browser-down`. Readiness checks report a
 stopped or replaced owned process with restart instructions.
 
 A warm checkout lives below the runner's `worktrees/.environments/` directory.

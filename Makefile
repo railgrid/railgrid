@@ -1183,7 +1183,7 @@ tilt: ## Run the dev stack with automatic checkout-specific ports and resource n
 
 # Browser setup leaves navigation and evidence selection to the coding agent.
 .PHONY: dev-browser-ready dev-browser-down test-dev-browser
-dev-browser-ready: ## Prepare the running isolated stack for agent-driven browser inspection
+dev-browser-ready: ## Prepare this checkout's running stack for agent-driven browser inspection
 	python3 hack/scripts/dev-browser.py ready
 dev-browser-down: ## Stop only this checkout's owned dev resources, retaining evidence
 	python3 hack/scripts/dev-browser.py down
@@ -1198,13 +1198,14 @@ tilt-status: ## Print this checkout's persisted dev ports and identity
 test-tilt-checkout: test-dev-browser
 	python3 hack/scripts/tilt-checkout.test.py
 
-# Internal target: the launcher has selected the Tilt API port before startup.
+# Internal target: the launcher has selected the Tilt API port and checked every
+# allocated port before startup. The checkout's kind cluster is created here,
+# before `tilt up`, and Tilt is pinned to its context: Tilt caches its deploy
+# client at startup, and it refuses `local()` under whatever context it would
+# otherwise inherit if that looks like production (e.g. the `railgrid` context
+# the CLI login writes).
 tilt-start:
-ifeq ($(RAILGRID_TILT_CHECKOUT),)
-	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-endif
 	@mkdir -p "$(TILT_TMPDIR)"
-ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
 	@python3 hack/scripts/write-kind-kubeconfig.py "$(KRO_KIND_NAME)" "$(KRO_KIND_KUBECONFIG)"
 	python3 hack/scripts/tilt-checkout.py dns
@@ -1212,10 +1213,6 @@ ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 		tilt up -f Tiltfile --port "$(TILT_PORT)" --context "kind-$(KRO_KIND_NAME)" -- \
 		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)" \
 		--kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-
-else
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile --port "$(TILT_PORT)" -- --kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)

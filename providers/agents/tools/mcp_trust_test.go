@@ -22,6 +22,8 @@ import (
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/railgrid/provider-agents/internal/mcpfake"
 )
 
 type initializeCapabilitiesTransport struct {
@@ -72,6 +74,7 @@ func TestMCPAppsAreNegotiatedOnlyForExplicitHubAggregate(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := mcp.NewServer(&mcp.Implementation{Name: "aggregate-test", Version: "1.0.0"}, nil)
+			mcpfake.Register(server)
 			httpServer := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
 			t.Cleanup(httpServer.Close)
 			transport := &initializeCapabilitiesTransport{base: http.DefaultTransport}
@@ -148,14 +151,14 @@ func TestTrustedHubAggregateReadsNamespacedMCPAppResource(t *testing.T) {
 		"access": []any{map[string]any{"version": "v1", "resource": "reports", "name": "current", "verb": "get"}},
 	}
 	server := mcp.NewServer(&mcp.Implementation{Name: "trusted-aggregate", Version: "1.0.0"}, nil)
-	server.AddTool(&mcp.Tool{
+	mcpfake.Register(server, mcpfake.Tool{Tool: &mcp.Tool{
 		Name: "query", InputSchema: map[string]any{"type": "object"},
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": resourceURI}},
-	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	}, Handler: func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "exact query result"}}, Meta: mcp.Meta{
 			"railgrid": map[string]any{"sources": []any{source}, "presentation": map[string]any{"version": 1, "title": "Current report"}},
 		}}, nil
-	})
+	}})
 	server.AddResource(&mcp.Resource{URI: resourceURI, Name: "report app", MIMEType: mcpAppMIMEType}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: resourceURI, MIMEType: mcpAppMIMEType, Text: "<main>current report</main>"}}}, nil
 	})

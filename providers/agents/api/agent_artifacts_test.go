@@ -32,6 +32,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/backend"
+	"github.com/railgrid/provider-agents/internal/mcpfake"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -223,12 +224,12 @@ func TestArtifactCaptureRehydratesOnlyCurrentApprovedMCPApp(t *testing.T) {
 	pin := hex.EncodeToString(digest[:])
 	resourceURI := "ui://railgrid-provider/reports/dWk6Ly9yZXBvcnRzL3JlcG9ydA"
 	hub := mcp.NewServer(&mcp.Implementation{Name: "aggregate", Version: "1.0.0"}, nil)
-	hub.AddTool(&mcp.Tool{
+	mcpfake.Register(hub, mcpfake.Tool{Tool: &mcp.Tool{
 		Name: "report", InputSchema: map[string]any{"type": "object"},
 		Meta: mcp.Meta{"ui": map[string]any{"resourceUri": resourceURI}},
-	}, func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	}, Handler: func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "report data"}}}, nil
-	})
+	}})
 	hub.AddResource(&mcp.Resource{URI: resourceURI, Name: "report app", MIMEType: store.MCPAppMIMEType}, func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
 		return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: resourceURI, MIMEType: store.MCPAppMIMEType, Text: currentHTML.Load().(string)}}}, nil
 	})

@@ -20,59 +20,68 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"net/http"
+	"errors"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
+	"github.com/railgrid/provider-sdk/mcpcode/mcpcodetest"
 )
 
 func TestMCPCallAndList(t *testing.T) {
-	var gotName string
-	var gotArgs json.RawMessage
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var msg struct {
-			ID     json.RawMessage `json:"id"`
-			Method string          `json:"method"`
-			Params struct {
-				Name      string          `json:"name"`
-				Arguments json.RawMessage `json:"arguments"`
-			} `json:"params"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&msg)
-		w.Header().Set("Content-Type", "application/json")
-		switch msg.Method {
-		case "tools/list":
-			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"code__build_status","description":"Read the latest run.\nMore."},{"name":"infrastructure__dev_sync","description":"Push files."}]}}`))
-		case "tools/call":
-			gotName, gotArgs = msg.Params.Name, msg.Params.Arguments
-			switch msg.Params.Name {
-			case "structured":
-				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"ignored"}],"structuredContent":{"found":true,"conclusion":"success"}}}`))
-			case "texty":
-				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"plain words"}]}}`))
-			default:
-				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"template \"database\" not found"}]}}`))
-			}
-		}
-	}))
+	inner := func(result string) func(json.RawMessage) (json.RawMessage, error) {
+		return func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(result), nil }
+	}
+	fake := &mcpcodetest.Server{Tools: []mcpcodetest.Tool{
+		{CatalogTool: mcpcode.CatalogTool{Name: "code__build_status", Description: "Read the latest run.\nMore."}},
+		{CatalogTool: mcpcode.CatalogTool{Name: "infrastructure__dev_sync", Description: "Push files."}},
+		{CatalogTool: mcpcode.CatalogTool{Name: "structured"}, Call: inner(`{"content":[{"type":"text","text":"ignored"}],"structuredContent":{"found":true,"conclusion":"success"}}`)},
+		{CatalogTool: mcpcode.CatalogTool{Name: "texty"}, Call: inner(`{"content":[{"type":"text","text":"plain words"}]}`)},
+		{CatalogTool: mcpcode.CatalogTool{Name: "broken"}, Call: inner(`{"isError":true,"content":[{"type":"text","text":"template \"database\" not found"}]}`)},
+		{CatalogTool: mcpcode.CatalogTool{Name: "code__branches", ConsentRequired: true}, Call: inner(`{"content":[{"type":"text","text":"main"}]}`)},
+	}}
+	srv := httptest.NewServer(fake)
 	defer srv.Close()
 	resolve := staticTarget(srv)
-	call := func(tool string, args string) (string, error) {
+	oneShot := func(request any) []byte {
 		var out, errOut bytes.Buffer
 		p := newMCPProxy(resolve, &out, &errOut)
-		line, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": json.RawMessage(args)}})
+		line, _ := json.Marshal(request)
 		if err := p.run(context.Background(), bytes.NewReader(append(line, '\n'))); err != nil {
-			return "", err
+			t.Fatal(err)
 		}
-		result, err := parseMCPToolResult(out.Bytes())
+		return out.Bytes()
+	}
+	// call mirrors runMCPCall: execute first, the direct tool only on a
+	// consent refusal.
+	call := func(tool string, args string) (string, error) {
+		params, err := mcpcode.CallParams(tool, json.RawMessage(args))
 		if err != nil {
 			return "", err
 		}
-		return string(result), nil
+		reply, err := mcpReplyResult(oneShot(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": params}))
+		if err != nil {
+			return "", err
+		}
+		res, err := mcpcode.DecodeCallResult(reply)
+		var refused *mcpcode.CallError
+		if errors.As(err, &refused) && refused.ConsentRequired() {
+			direct, err := parseMCPToolResult(oneShot(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": map[string]any{"name": tool, "arguments": json.RawMessage(args)}}))
+			return string(direct), err
+		}
+		if err != nil {
+			return "", err
+		}
+		result, err := toolResultOutput(res.ToolResultJSON())
+		return string(result), err
 	}
 	res, err := call("structured", `{"repositoryRef":"shop"}`)
-	if err != nil || gotName != "structured" || string(gotArgs) != `{"repositoryRef":"shop"}` || !strings.Contains(res, `"conclusion":"success"`) {
-		t.Fatalf("structured: res=%s err=%v name=%s args=%s", res, err, gotName, gotArgs)
+	if err != nil || !strings.Contains(res, `"conclusion":"success"`) {
+		t.Fatalf("structured: res=%s err=%v", res, err)
+	}
+	if inv := fake.Invocations(); len(inv) != 1 || inv[0].Method != "execute" || inv[0].Tool != "structured" || string(inv[0].Args) != `{"repositoryRef":"shop"}` {
+		t.Fatalf("aggregate saw %+v, want one execute of structured with the arguments", inv)
 	}
 	res, err = call("texty", `{}`)
 	if err != nil || res != `"plain words"` {
@@ -81,15 +90,17 @@ func TestMCPCallAndList(t *testing.T) {
 	if _, err := call("broken", `{}`); err == nil || !strings.Contains(err.Error(), `template "database" not found`) {
 		t.Fatalf("isError not surfaced: %v", err)
 	}
-
-	// tools/list through the fake endpoint (never the kubeconfig's hub).
-	var out, errOut bytes.Buffer
-	p := newMCPProxy(resolve, &out, &errOut)
-	line, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-	if err := p.run(context.Background(), bytes.NewReader(append(line, '\n'))); err != nil {
-		t.Fatal(err)
+	res, err = call("code__branches", `{}`)
+	if err != nil || res != `"main"` {
+		t.Fatalf("consent-gated tool via direct fallback: res=%s err=%v", res, err)
 	}
-	if !strings.Contains(out.String(), `"code__build_status"`) {
-		t.Fatalf("tools/list reply = %q", out.String())
+	if inv := fake.Invocations(); inv[len(inv)-1].Method != "direct" || inv[len(inv)-1].Tool != "code__branches" {
+		t.Fatalf("consent fallback did not go direct: %+v", inv[len(inv)-1])
+	}
+
+	// The catalog through the fake endpoint (never the kubeconfig's hub).
+	out := oneShot(map[string]any{"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": mcpcode.CatalogParams()})
+	if !strings.Contains(string(out), `code__build_status`) {
+		t.Fatalf("catalog reply = %q", out)
 	}
 }

@@ -88,12 +88,7 @@ def allocate_ports(root, saved=None):
 
 
 def check_ports(config):
-    ports = config['ports']
-    if config['legacy']:
-        # Preserve the original launch guards; provider DBs may already run.
-        ports = {key: int(os.environ.get(key, PORTS[key]))
-                 for key in ['TILT_PORT', 'HUB_PORT', 'KCP_PORT']}
-    for name, port in ports.items():
+    for name, port in config['ports'].items():
         with socket.socket() as sock:
             try:
                 sock.bind(('127.0.0.1', port))
@@ -111,15 +106,11 @@ def settings(root=ROOT):
             config = json.loads(path.read_text())
             if config['root'] != str(root):
                 raise ValueError('Copied Tilt state belongs to another checkout; remove the copied .kcp before starting')
-            if not config['legacy']:
-                allocate_ports(root, config['ports'])
+            allocate_ports(root, config['ports'])
             return config
-        # Existing dev installations retain their ports, names, and state.
-        # Fresh checkouts always get independent resources, even if dev is down.
-        legacy = (state / 'admin.kubeconfig').exists()
+        # Every checkout gets independent resources, even if dev is down.
         key = hashlib.sha256(str(root).encode()).hexdigest()[:12]
-        config = {'root': str(root), 'legacy': legacy, 'key': key,
-                  'ports': PORTS if legacy else allocate_ports(root)}
+        config = {'root': str(root), 'key': key, 'ports': allocate_ports(root)}
         path.write_text(json.dumps(config, indent=2) + '\n')
         path.chmod(0o600)
         return config
@@ -129,8 +120,6 @@ def environment(config):
     # One static development identity shared by Tilt and browser bootstrap.
     token = 'dev-token'
     auth = {'DEV_STATIC_TOKEN': token, 'DEV_STATIC_ADMIN': 'railgrid:static:' + hashlib.sha256(('static-token/' + token).encode()).hexdigest()[:16]}
-    if config['legacy']:
-        return auth
     root = Path(config['root'])
     key = config['key']
     p = config['ports']
@@ -168,8 +157,6 @@ def environment(config):
 
 
 def manifests(config, write=True):
-    if config['legacy']:
-        return {}
     root = Path(config['root'])
     directory = root / '.kcp/tilt-manifests'
     if write:
@@ -194,8 +181,6 @@ def manifests(config, write=True):
 
 
 def configure_host_dns(config):
-    if config['legacy']:
-        return
     if os.environ.get('KIND_EXPERIMENTAL_PROVIDER', 'docker') != 'docker':
         raise ValueError('Checkout Tilt DNS setup requires the Docker kind provider')
     node = 'railgrid-kro-' + config['key'] + '-control-plane'
@@ -262,8 +247,6 @@ def stop_owned(config):
     record_path = root / '.kcp/tilt-owner.json'
     if not record_path.exists():
         return
-    if config['legacy']:
-        raise ValueError('Refusing cleanup of a shared legacy Tilt stack')
     # Serialize with startup, including the full cleanup, so a new generation
     # cannot start between stopping processes and removing containers.
     with (root / '.kcp/tilt-owner.lock').open('a') as lock:
@@ -336,8 +319,6 @@ def main():
         print(json.dumps(env))
         return
     detached = os.environ.get('TILT_DETACHED') == '1'
-    if detached and config['legacy']:
-        raise ValueError('Detached Tilt requires an isolated checkout')
     with (ROOT / '.kcp/tilt-run.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -346,9 +327,6 @@ def main():
         check_ports(config)
         process_env = dict(os.environ, **env)
         command = ['make', 'tilt-start']
-        if config['legacy']:
-            result = subprocess.run(command, cwd=ROOT, env=process_env)
-            sys.exit(result.returncode)
         with (ROOT / '.kcp/tilt-owner.lock').open('a') as owner_lock:
             fcntl.flock(owner_lock, fcntl.LOCK_EX)
             record_path = ROOT / '.kcp/tilt-owner.json'

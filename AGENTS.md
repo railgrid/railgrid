@@ -797,16 +797,18 @@ local ports. Framework helpers live in `test/e2e/framework/`.
 
 ### Local dev loop (Tilt)
 ```bash
-make tilt    # portal (Vite :3000) + hub (HTTPS :9443, embedded kcp, static auth)
+make tilt           # portal (Vite) + hub (HTTPS, embedded kcp, static auth)
+make tilt-status    # this checkout's allocated ports and hub URL
 tilt down
-curl -k https://localhost:9443/healthz
 ```
-`make tilt TILT_DETACHED=1` (isolated checkouts only) launches independently
+Every checkout gets its own ports (20000-29999), kind cluster and container
+names; the hub URL is `console-<key>.127.0.0.1.sslip.io:<HUB_PORT>` from
+`make tilt-status`. `make tilt TILT_DETACHED=1` launches independently
 of the terminal and logs to `.kcp/tilt.log`; run `make dev-browser-ready` to
 verify readiness and `make dev-browser-down` to stop it.
 
-`make tilt` wraps `tilt up -f Tiltfile` with the port/kcp conflict checks; plain
-`tilt up` still works. `Tiltfile.cluster` / `make tilt-cluster` brings up the
+`make tilt` wraps `tilt up -f Tiltfile` with the port allocation, kind cluster
+preparation and context pinning; a bare `tilt up` skips all of that. `Tiltfile.cluster` / `make tilt-cluster` brings up the
 operator-deployed multi-shard stack used by the `tiltcluster` e2e suite. Run one
 or the other — both bind `:9443` and share `.kcp/`.
 

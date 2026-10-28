@@ -23,6 +23,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -327,7 +328,8 @@ func jsonrpc(t *testing.T, h http.Handler, method string, params string) (json.R
 }
 
 // TestAlwaysOnEmptyAggregate is the core guarantee: with zero providers the
-// endpoint still initializes and serves an (empty) tools/list — never 501.
+// endpoint still initializes and serves tools/list — the code-mode pair over
+// an empty catalog — never 501.
 func TestAlwaysOnEmptyAggregate(t *testing.T) {
 	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget { return nil }, Verifier: allowAll})
 
@@ -347,8 +349,16 @@ func TestAlwaysOnEmptyAggregate(t *testing.T) {
 	if err := json.Unmarshal(result, &out); err != nil {
 		t.Fatalf("decode tools/list: %v", err)
 	}
-	if len(out.Tools) != 0 {
-		t.Fatalf("empty aggregate returned %d tools, want 0", len(out.Tools))
+	var names []string
+	for _, tl := range out.Tools {
+		names = append(names, tl.Name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "execute,search" {
+		t.Fatalf("empty aggregate tools = %v, want the code-mode pair only", names)
+	}
+	if got := catalogNames(t, h, "test-token"); len(got) != 0 {
+		t.Fatalf("empty aggregate catalog = %v, want none", got)
 	}
 }
 
@@ -410,22 +420,22 @@ func TestFederatesReadyProvider(t *testing.T) {
 	if err := json.Unmarshal(result, &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	found := false
+	var names []string
 	for _, tl := range out.Tools {
-		if tl.Name == "infra__provision" {
-			found = true
-		}
+		names = append(names, tl.Name)
 	}
-	if !found {
-		t.Fatalf("federated tool infra__provision not in aggregate; got %+v", out.Tools)
+	sort.Strings(names)
+	if strings.Join(names, ",") != "execute,search" {
+		t.Fatalf("aggregate tools = %v, want the code-mode pair only", names)
 	}
 
-	callResult, code := jsonrpc(t, h, "tools/call", `{"name":"infra__provision","arguments":{}}`)
-	if code != http.StatusOK {
-		t.Fatalf("tools/call status = %d", code)
+	// The provider's tool is in the catalog and callable through execute.
+	if got := catalogNames(t, h, "test-token"); strings.Join(got, ",") != "infra__provision" {
+		t.Fatalf("catalog = %v, want infra__provision", got)
 	}
+	callResult := callViaExecute(t, h, "test-token", "infra__provision", `{}`)
 	if !strings.Contains(string(callResult), "provisioned") {
-		t.Fatalf("tools/call did not proxy through; got %s", callResult)
+		t.Fatalf("execute did not proxy through; got %s", callResult)
 	}
 }
 

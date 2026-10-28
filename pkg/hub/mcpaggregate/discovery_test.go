@@ -165,8 +165,8 @@ func TestDiscoveryCachedAcrossRequests(t *testing.T) {
 	if got := string(mcpCall(t, h, "alice", "initialize", `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}`)); !strings.Contains(got, "guide-v1") {
 		t.Fatalf("initialize lost the provider's instructions: %s", got)
 	}
-	if got := string(mcpCall(t, h, "alice", "tools/call", `{"name":"infra__provision","arguments":{}}`)); !strings.Contains(got, "done") {
-		t.Fatalf("tools/call did not proxy through: %s", got)
+	if got := string(callViaExecute(t, h, "alice", "infra__provision", `{}`)); !strings.Contains(got, "done") {
+		t.Fatalf("execute did not proxy the call through: %s", got)
 	}
 	if got := p.count("tools/list"); got != 1 {
 		t.Fatalf("provider tools/list calls = %d, want 1", got)

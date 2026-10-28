@@ -284,8 +284,8 @@ def main():
             raise ValueError('Start make tilt in this checkout first; no checkout configuration appeared within 60 seconds')
         time.sleep(1)
     config = json.loads(path.read_text())
-    if config.get('root') != str(ROOT) or config.get('legacy'):
-        raise ValueError('Browser setup/cleanup requires a fresh isolated checkout; shared legacy stacks are not managed')
+    if config.get('root') != str(ROOT):
+        raise ValueError('Checkout configuration belongs to another checkout; remove the copied .kcp before starting')
     if sys.argv[1:] == ['down']:
         # Stop resources even when setup is still polling readiness. Setup
         # creates tenant records only; it cannot restart deployment processes.

@@ -136,3 +136,4 @@ hack/provider-sdk-cutover.sh
 /.railgrid-cleanup.log
 
 /.railgrid-prepare.log
+hack/scripts/__pycache__/

@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -321,24 +322,22 @@ func capNames(doc capabilitiesDoc) string {
 }
 
 // toolMeta returns the _meta of one aggregate tool, or nil.
+// toolMetaOf is the _meta of one catalog tool as `search` shows it — the same
+// value a proxy tool for it carries.
 func toolMetaOf(t *testing.T, h http.Handler, bearer, name string) map[string]any {
 	t.Helper()
+	code := `() => { const t = spec.tools.find(t => t.name === ` + strconv.Quote(name) + `); return t ? {found: true, meta: t._meta || {}} : {found: false} }`
 	var out struct {
-		Tools []struct {
-			Name string         `json:"name"`
-			Meta map[string]any `json:"_meta"`
-		} `json:"tools"`
+		Found bool           `json:"found"`
+		Meta  map[string]any `json:"meta"`
 	}
-	if err := json.Unmarshal(mcpCall(t, h, bearer, "tools/list", `{}`), &out); err != nil {
-		t.Fatalf("decode tools/list: %v", err)
+	if err := json.Unmarshal(searchJS(t, h, bearer, code), &out); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	for _, tl := range out.Tools {
-		if tl.Name == name {
-			return tl.Meta
-		}
+	if !out.Found {
+		t.Fatalf("tool %q not in the aggregate catalog", name)
 	}
-	t.Fatalf("tool %q not in aggregate tool list", name)
-	return nil
+	return out.Meta
 }
 
 func TestFederatedToolCarriesDeclaredActionMeta(t *testing.T) {

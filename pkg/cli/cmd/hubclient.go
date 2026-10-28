@@ -21,6 +21,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,8 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/transport"
+
+	"github.com/railgrid/provider-sdk/mcpcode"
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	pkgversion "github.com/railgrid/railgrid/pkg/version"
@@ -512,20 +515,51 @@ func (s *hubSession) newMCPClient(ctx context.Context) (*mcpClient, error) {
 	return &mcpClient{endpoint: info.EndpointURL, token: info.Token, http: s.plain}, nil
 }
 
-// callTool issues a JSON-RPC tools/call and returns the tool's result JSON.
-// The aggregate answers statelessly, so no initialize handshake is needed.
+// callTool invokes one federated tool and returns its result JSON. The
+// aggregate serves two tools, search and execute (code mode); a named tool is
+// reached by sending execute the one-line program mcpcode writes. A tool whose
+// declared action needs human consent is the exception: the aggregate lists
+// it directly and refuses it inside a script, so that refusal falls back to a
+// plain tools/call. The aggregate answers statelessly, so no initialize
+// handshake is needed.
 func (c *mcpClient) callTool(ctx context.Context, name string, args any) (json.RawMessage, error) {
 	if args == nil {
 		args = map[string]any{}
 	}
+	params, err := mcpcode.CallParams(name, args)
+	if err != nil {
+		return nil, fmt.Errorf("encoding %s arguments: %w", name, err)
+	}
+	result, err := c.toolsCall(ctx, name, params)
+	if err != nil {
+		return nil, err
+	}
+	call, err := mcpcode.DecodeCallResult(result)
+	var refused *mcpcode.CallError
+	if errors.As(err, &refused) && refused.ConsentRequired() {
+		result, err = c.toolsCall(ctx, name, map[string]any{"name": name, "arguments": args})
+		if err != nil {
+			return nil, err
+		}
+		return toolResultOutput(result)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return toolResultOutput(call.ToolResultJSON())
+}
+
+// toolsCall POSTs one tools/call with params and returns the raw result
+// object; name only labels errors.
+func (c *mcpClient) toolsCall(ctx context.Context, name string, params any) (json.RawMessage, error) {
 	body, err := json.Marshal(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tools/call",
-		"params":  map[string]any{"name": name, "arguments": args},
+		"params":  params,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("encoding %s arguments: %w", name, err)
+		return nil, fmt.Errorf("encoding %s request: %w", name, err)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -547,44 +581,34 @@ func (c *mcpClient) callTool(ctx context.Context, name string, args any) (json.R
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, decodeAPIError(http.MethodPost, req.URL.Path, resp.StatusCode, reply)
 	}
-	out, err := parseMCPToolResult(reply)
+	result, err := mcpReplyResult(reply)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	return out, nil
+	return result, nil
 }
 
 type jsonRPCReply struct {
 	ID     json.RawMessage `json:"id"`
-	Result *struct {
-		IsError           bool            `json:"isError"`
-		StructuredContent json.RawMessage `json:"structuredContent"`
-		Content           []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	} `json:"result"`
-	Error *struct {
+	Result json.RawMessage `json:"result"`
+	Error  *struct {
 		Code    int             `json:"code"`
 		Message string          `json:"message"`
 		Data    json.RawMessage `json:"data"`
 	} `json:"error"`
 }
 
-// parseMCPToolResult extracts a tool result from a tools/call reply, which is
-// either a JSON body or an SSE stream whose data events carry JSON-RPC
-// messages. A failing tool is still HTTP 200 with result.isError, so that is
-// turned into an error carrying the tool's text. The result is the
-// structuredContent when present, else content[0].text (verbatim when it is
-// JSON, JSON-quoted otherwise).
-func parseMCPToolResult(body []byte) (json.RawMessage, error) {
+// mcpReplyResult extracts the JSON-RPC result object from a reply body, which
+// is either a JSON document or an SSE stream whose data events carry JSON-RPC
+// messages. A JSON-RPC error becomes a Go error.
+func mcpReplyResult(body []byte) (json.RawMessage, error) {
 	var msg *jsonRPCReply
 	for _, payload := range jsonRPCPayloads(body) {
 		var r jsonRPCReply
 		if err := json.Unmarshal(payload, &r); err != nil {
 			continue
 		}
-		if r.Result != nil || r.Error != nil {
+		if len(r.Result) > 0 || r.Error != nil {
 			msg = &r
 		}
 	}
@@ -598,19 +622,38 @@ func parseMCPToolResult(body []byte) (json.RawMessage, error) {
 	if msg.Error != nil {
 		return nil, fmt.Errorf("MCP error %d: %s", msg.Error.Code, msg.Error.Message)
 	}
+	return msg.Result, nil
+}
+
+// toolResultOutput renders a tools/call result object for the CLI. A failing
+// tool is still HTTP 200 with isError, so that is turned into an error
+// carrying the tool's text. The output is the structuredContent when present,
+// else content[0].text (verbatim when it is JSON, JSON-quoted otherwise).
+func toolResultOutput(result json.RawMessage) (json.RawMessage, error) {
+	var r struct {
+		IsError           bool            `json:"isError"`
+		StructuredContent json.RawMessage `json:"structuredContent"`
+		Content           []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(result, &r); err != nil {
+		return nil, fmt.Errorf("decoding tool result: %w", err)
+	}
 	var texts []string
-	for _, c := range msg.Result.Content {
+	for _, c := range r.Content {
 		if c.Text != "" {
 			texts = append(texts, c.Text)
 		}
 	}
-	if msg.Result.IsError {
+	if r.IsError {
 		if len(texts) == 0 {
 			return nil, fmt.Errorf("tool reported an error")
 		}
 		return nil, fmt.Errorf("%s", strings.Join(texts, "\n"))
 	}
-	if sc := bytes.TrimSpace(msg.Result.StructuredContent); len(sc) > 0 && !bytes.Equal(sc, []byte("null")) {
+	if sc := bytes.TrimSpace(r.StructuredContent); len(sc) > 0 && !bytes.Equal(sc, []byte("null")) {
 		return json.RawMessage(sc), nil
 	}
 	if len(texts) == 0 {
@@ -621,6 +664,16 @@ func parseMCPToolResult(body []byte) (json.RawMessage, error) {
 	}
 	quoted, _ := json.Marshal(texts[0])
 	return json.RawMessage(quoted), nil
+}
+
+// parseMCPToolResult is mcpReplyResult followed by toolResultOutput: the raw
+// reply of a direct tools/call rendered for the CLI.
+func parseMCPToolResult(body []byte) (json.RawMessage, error) {
+	result, err := mcpReplyResult(body)
+	if err != nil {
+		return nil, err
+	}
+	return toolResultOutput(result)
 }
 
 // jsonRPCPayloads returns the JSON documents in body: each SSE event's joined

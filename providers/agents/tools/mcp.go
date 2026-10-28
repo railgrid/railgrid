@@ -33,6 +33,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/resulttypes"
+	"github.com/railgrid/provider-sdk/mcpcode"
 )
 
 // githubMCPEndpoint is the hosted GitHub MCP server; a github Connection with
@@ -191,7 +192,7 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 		return nil, fmt.Errorf("connecting to MCP server %q: %w", prefix, err)
 	}
 
-	listed, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+	listed, err := listSessionTools(ctx, session, hubAggregate)
 	if err != nil {
 		_ = session.Close()
 		return nil, fmt.Errorf("listing tools on %q: %w", prefix, err)
@@ -202,7 +203,7 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 		out.Instructions = strings.TrimSpace(ir.Instructions)
 	}
 	conn := struct{ Name string }{Name: prefix}
-	for _, t := range listed.Tools {
+	for _, t := range listed {
 		if hubAggregate && !mcpToolVisibleToAgent(t.Meta) {
 			continue
 		}
@@ -230,7 +231,7 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 				if err != nil {
 					return engine.Observation{}, fmt.Errorf("invalid arguments: %w", err)
 				}
-				res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: toolName, Arguments: args})
+				res, err := callSessionTool(ctx, session, toolName, args, hubAggregate)
 				if err != nil {
 					return engine.Observation{}, err
 				}
@@ -278,6 +279,100 @@ func connectMCPEndpointWithClient(ctx context.Context, endpoint string, httpClie
 		})
 	}
 	return out, nil
+}
+
+// sessionTool is one tool an MCP session offers, from tools/list on an
+// ordinary server or from the code-mode catalog on the Hub aggregate.
+type sessionTool struct {
+	Name        string
+	Description string
+	InputSchema any
+	Meta        mcp.Meta
+}
+
+// listSessionTools returns the tools a session offers. The Hub aggregate
+// serves code mode — its tools/list is search, execute and the consent-gated
+// tools — so its federated catalog is read through search with
+// mcpcode.CatalogCode; the entries carry the same name, schema and _meta a
+// directly listed tool would, so visibility and MCP App identity checks apply
+// unchanged. An ordinary MCP server is listed as before.
+func listSessionTools(ctx context.Context, session *mcp.ClientSession, hubAggregate bool) ([]sessionTool, error) {
+	if !hubAggregate {
+		listed, err := session.ListTools(ctx, &mcp.ListToolsParams{})
+		if err != nil {
+			return nil, err
+		}
+		out := make([]sessionTool, 0, len(listed.Tools))
+		for _, t := range listed.Tools {
+			out = append(out, sessionTool{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema, Meta: t.Meta})
+		}
+		return out, nil
+	}
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: mcpcode.ToolSearch, Arguments: map[string]any{"code": mcpcode.CatalogCode}})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+	catalog, err := mcpcode.DecodeCatalog(raw)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]sessionTool, 0, len(catalog))
+	for _, t := range catalog {
+		st := sessionTool{Name: t.Name, Description: t.Description}
+		if len(t.InputSchema) > 0 {
+			var schema any
+			if json.Unmarshal(t.InputSchema, &schema) == nil {
+				st.InputSchema = schema
+			}
+		}
+		if len(t.Meta) > 0 {
+			st.Meta = mcp.Meta(t.Meta)
+		}
+		out = append(out, st)
+	}
+	return out, nil
+}
+
+// callSessionTool invokes one tool. On the Hub aggregate that is the execute
+// tool running the one-line program mcpcode writes; the aggregate's answer is
+// unwrapped back into the tool's own result (content, structured content and
+// _meta intact, structured bytes exact). A tool whose declared action needs
+// human consent is refused inside a script and listed directly instead, so
+// that refusal falls back to a plain tools/call, where the agent's own
+// approval gate has already run.
+func callSessionTool(ctx context.Context, session *mcp.ClientSession, name string, args map[string]any, hubAggregate bool) (*mcp.CallToolResult, error) {
+	if !hubAggregate {
+		return session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	}
+	code, err := mcpcode.CallCode(name, args)
+	if err != nil {
+		return nil, err
+	}
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: mcpcode.ToolExecute, Arguments: map[string]any{"code": code}})
+	if err != nil {
+		return nil, err
+	}
+	raw, err := json.Marshal(res)
+	if err != nil {
+		return nil, err
+	}
+	call, err := mcpcode.DecodeCallResult(raw)
+	var refused *mcpcode.CallError
+	if errors.As(err, &refused) && refused.ConsentRequired() {
+		return session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out mcp.CallToolResult
+	if err := json.Unmarshal(call.ToolResultJSON(), &out); err != nil {
+		return nil, fmt.Errorf("decoding aggregate call result: %w", err)
+	}
+	return &out, nil
 }
 
 // ReadHubAggregateMCPAppResource reopens only a resource advertised by the
