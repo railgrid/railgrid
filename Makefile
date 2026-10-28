@@ -679,6 +679,7 @@ sync-portalkit: ## Vendor the shared portalkit UI kits into provider portals
 
 verify-portalkit: ## Verify vendored portalkit copies are in sync with the canonical source
 	@hack/sync-portalkit.sh --verify
+	@node --test provider-sdk/portalkit-vue/ResourceTimestamp.behavior.test.mjs
 	@node --test provider-sdk/portalkit/dashboardtile.conformance.test.mjs provider-sdk/portalkit/kube.behavior.test.mjs provider-sdk/portalkit-vue/ActionMenu.conformance.test.mjs
 	@$(MAKE) verify-agentkit
 

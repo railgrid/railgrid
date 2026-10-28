@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.components.resource-table","title":"ResourceTable and filtering contract","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourceTable preserves native table semantics, truthful read states, independently configured queryable or explicit simple modes, and opt-in controlled row selection and sorting."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table.md#resourcetable-and-filtering-contract","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableFilter.vue","role":"implementation"},{"path":"provider-sdk/portalkit/resource-table-filter.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/table.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit-vue/ResourceTable.sorting.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing"},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"passing","evidence":"Organization workspaces bulk-selection and deletion fixtures passed in Chromium light/dark at 1440px and 390px, covering keyboard and checked/mixed states, page/query behavior, confirmation, partial-failure retry, and navigation cancellation. Fixture evidence covers this flow, not every provider consumer."},{"kind":"browser","ref":"2026-10-05 live Tilt Agents table overflow","status":"passing","evidence":"Agents Activity at 390px used a 300px scroll viewport over a 740px table, with visible directional guidance, a named focusable region, and a resolving aria-describedby. The hint changed at the right edge. Evidence: .kcp/agents-design-conformance/access-pass1/tilt-matrix.json."},{"kind":"browser","ref":"Shared inactive filter contrast fixture","status":"passing","evidence":"Chromium 145 rendered the canonical inactive filter at 1280x800 and 390x844 in light and dark with host tokens and fonts. The Any value measured 4.92:1 light and 4.96:1 dark, with no viewport overflow."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
+{"schema":1,"id":"design.components.resource-table","title":"ResourceTable and filtering contract","kind":"component","status":"active","authority":{"design":"normative","implementation":"canonical"},"implementation":{"state":"shipped","notes":"ResourceTable preserves native table semantics, truthful read states, independently configured queryable or explicit simple modes, and opt-in controlled row selection and sorting."},"appliesTo":["portal","provider-portals","portalkit"],"owner":"design-system","canonicalSource":[{"path":"docs/design/components/resource-table.md#resourcetable-and-filtering-contract","role":"design"},{"path":"provider-sdk/portalkit-vue/ResourceTable.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTableFilter.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTimestamp.vue","role":"implementation"},{"path":"provider-sdk/portalkit-vue/timestamp.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/timestampClock.ts","role":"implementation"},{"path":"provider-sdk/portalkit/resource-table-filter.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/table.ts","role":"implementation"},{"path":"provider-sdk/portalkit-vue/ResourceTable.selection.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit-vue/ResourceTable.sorting.test.mjs","role":"reference"},{"path":"provider-sdk/portalkit/railgrid-ui.css","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"command","ref":"make verify-portalkit","status":"passing","evidence":"Byte-for-byte PortalKit copy and manifest parity passed; this does not verify rendered or interactive behavior."},{"kind":"test","ref":"provider-sdk/portalkit-vue/ResourceTimestamp.behavior.test.mjs","status":"pending","evidence":"Timestamp formatting, DST timezone labels, chronological values, and mounted shared-clock lifecycle have not yet been run."},{"kind":"command","ref":"make verify-ui-conformance","status":"passing"},{"kind":"browser","ref":"PortalKit rendered and interaction audit","status":"passing","evidence":"Organization workspaces bulk-selection and deletion fixtures passed in Chromium light/dark at 1440px and 390px, covering keyboard and checked/mixed states, page/query behavior, confirmation, partial-failure retry, and navigation cancellation. Fixture evidence covers this flow, not every provider consumer."},{"kind":"browser","ref":"2026-10-05 live Tilt Agents table overflow","status":"passing","evidence":"Agents Activity at 390px used a 300px scroll viewport over a 740px table, with visible directional guidance, a named focusable region, and a resolving aria-describedby. The hint changed at the right edge. Evidence: .kcp/agents-design-conformance/access-pass1/tilt-matrix.json."},{"kind":"browser","ref":"Shared inactive filter contrast fixture","status":"passing","evidence":"Chromium 145 rendered the canonical inactive filter at 1280x800 and 390x844 in light and dark with host tokens and fonts. The Any value measured 4.92:1 light and 4.96:1 dark, with no viewport overflow."}]},"relatedDocuments":[{"id":"design.patterns.resource-reads","relation":"implements","path":"docs/design/patterns/resource-reads.md"},{"id":"design.patterns.controls","relation":"see-also","path":"docs/design/patterns/controls.md"},{"id":"design.accessibility.interaction","relation":"see-also","path":"docs/design/accessibility/interaction.md"},{"id":"design.quality.review-checklist","relation":"see-also","path":"docs/design/quality/review-checklist.md"}]}
 ---
 
 # ResourceTable and filtering contract
@@ -78,6 +78,19 @@ sort. `ResourceTableChange.sort` is optional so existing consumers that do not
 configure sorting keep their prior payload shape. Cursor pager helpers preserve
 the optional sort across query/filter changes and reset page/cursor history when
 the sort itself changes.
+
+Timestamp cells use the shared Vue `ResourceTimestamp` component with an absolute
+RFC3339 timestamp (including a timezone). Invalid calendar dates and timestamps
+without a timezone are unavailable, rather than guessed or normalized. It presents
+relative time while retaining the source instant in a semantic `<time>`, and
+shows the caller-selected localized date and time, including seconds and time
+zone, through `ResourceTableActionTooltip` on hover or focus. Clicking toggles
+that full value inline. Missing or invalid values render as an em dash without
+a button. `timestampSortValue(value)` returns epoch milliseconds or `null` for
+missing or invalid values; use it as a sortable column's `sortValue` so rows
+sort by instant and the table's existing missing-value rule keeps invalid dates
+last in either direction. Mounted timestamp cells share one clock that stops
+when the last consumer unmounts; the server render does not start a timer.
 
 Row selection is an explicit `selectable` opt-in. Bind `selected-keys` as the
 controlled `string | number` keys for selected resources and handle
@@ -207,6 +220,12 @@ Only the active header exposes `aria-sort="ascending"` or `"descending"`.
 Each button's accessible name describes the direction its next activation will
 apply, and its Lucide icon is decorative.
 
+`ResourceTimestamp` keeps `<time datetime="…">` semantics inside a keyboard
+button. Its accessible name includes the caller's label, relative value, and
+exact localized date and time. Hover or focus shows the caller's label and that
+exact value in the shared viewport-clamped tooltip; Enter, Space, or click
+toggles the exact value inline, and the click is isolated from row activation.
+
 When enabled, selection keeps a native checkbox column before the primary
 column. On mouse-driven desktops, row checkboxes and their help controls appear
 on row hover or keyboard focus. Once any resource is selected, every row's
@@ -242,9 +261,13 @@ checkbox, or the table region when the checkbox is disabled.
 Canonical implementations are `provider-sdk/portalkit-vue/ResourceTable.vue`,
 `provider-sdk/portalkit-vue/ResourceTableFilter.vue`,
 `provider-sdk/portalkit/resource-table-filter.ts`,
+`provider-sdk/portalkit-vue/ResourceTimestamp.vue`,
+`provider-sdk/portalkit-vue/timestamp.ts`,
+`provider-sdk/portalkit-vue/timestampClock.ts`,
 `provider-sdk/portalkit-vue/table.ts` (including the focused
 `ResourceTable.selection.test.mjs` and `ResourceTable.sorting.test.mjs`
-contracts), and
+contracts, plus `ResourceTimestamp.behavior.test.mjs` for timestamp formatting
+and mounted-clock behavior), and
 `provider-sdk/portalkit/railgrid-ui.css`. Verify with `make verify-portalkit` and
 `make verify-ui-conformance`.
 

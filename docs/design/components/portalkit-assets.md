@@ -51,6 +51,9 @@ Vue portals because the SFC kit owns those contracts there.
 | `ResourceTable.vue` | [resource table](resource-table.md) |
 | `ResourceTableFilter.vue` | [resource table](resource-table.md) |
 | `table.ts` | [resource table](resource-table.md) |
+| `ResourceTimestamp.vue` | [resource table](resource-table.md) |
+| `timestamp.ts` | [resource table](resource-table.md) |
+| `timestampClock.ts` | [resource table](resource-table.md) |
 | `ResourceTableActionButton.vue` | [resource table actions](resource-table-actions.md) |
 | `ResourceTableDeleteButton.vue` | [resource table actions](resource-table-actions.md) |
 | `ResourceTableEditButton.vue` | [resource table actions](resource-table-actions.md) |
