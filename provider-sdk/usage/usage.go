@@ -28,6 +28,10 @@ limitations under the License.
 // workspace with objects is re-stated every window even when nothing
 // changed, as the contract requires for a level; a workspace that reaches
 // zero is stated as zero once and then left alone until something is created.
+// The record is an inbox message: metering writes its sample to its store
+// and deletes it, so a provider workspace holds records only for the ingest
+// lag, and a re-statement after that is a create of the same name, which is
+// why the write is an apply rather than an update.
 //
 // The metering API is a feature of the installation, not of the provider:
 // the hub binds the metering-provider export into the provider workspace

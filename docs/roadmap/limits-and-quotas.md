@@ -187,7 +187,16 @@ that checkout:
   from membership cardinality), entitlement projection into member
   workspaces through the user export, flush to backends (`noop`, `openmeter`,
   `stripe`, fan-out), GORM persistence, GC, retention, optional
-  `billing` WorkspaceType mixin with initializer and terminator.
+  `billing` WorkspaceType mixin with initializer and terminator. Since 29
+  October **kcp is the inbox and the store is the ledger**: `--db-dsn` is
+  required, the usage reconciler writes each record's sample to the store
+  synchronously and then deletes the record (resourceVersion precondition,
+  so a concurrent re-statement wins), and a record stays in kcp only while
+  it cannot be consumed (unknown subject, store down). The arithmetic that
+  forced it: 100 organizations with 3 workspaces and 3 meters each emitting
+  hourly is 648,000 objects at 30 days, about 1.3 GB of etcd and the whole
+  of the controller's informer memory; the audit sink's per-minute records
+  alone are 1.4 million. As a buffer the object count is the ingest lag.
 - **Enforcement webhook** (`cmd/metering-webhook`, `pkg/webhook`): serves
   `/validate`; refreshes MeteringConfigs and Entitlements on an interval;
   resolves the account from the object's `kcp.io/cluster` through the
@@ -800,10 +809,11 @@ entitlement reconciler close the two gaps.
    shared between a user's personal org and the orgs they create.
 5. **Who pays for a personal org** when a team org is on Stripe, and
    whether trials are a Stripe trial or a plan.
-6. **Window granularity vs. storage.** One-minute Level windows for every
-   capped kind multiplies UsageRecords; confirm the GC and retention
-   settings hold at a few thousand workspaces, or emit Level records only on
-   change plus a heartbeat.
+6. **Window granularity vs. storage.** Settled 29 October by making kcp a
+   buffer: records are deleted once their sample is in the store, so window
+   count no longer multiplies kcp objects. Granularity now only sets the
+   store's row rate (hourly counters for 100 organizations are 21,600 rows a
+   day) and how promptly a level is re-stated.
 7. **Webhook identity exemption.** The webhook denies kcp-admin too. That is
    wanted for the Enable gate but may bite hub bootstrap writes (default
    bindings, MCP server objects) if those groups are ever added to the
