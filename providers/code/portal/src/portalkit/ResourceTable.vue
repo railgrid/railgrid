@@ -1,7 +1,7 @@
 <!-- CANONICAL SOURCE — provider-sdk/portalkit-vue. Do not edit vendored copies under providers/*/portal/src/portalkit/; edit here and run `make sync-portalkit`. -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
-import { AlertCircle, ChevronLeft, ChevronRight, Inbox, Info, MoveHorizontal, MoveLeft, Search, X } from 'lucide-vue-next'
+import { AlertCircle, ArrowDown, ArrowUp, ArrowUpDown, ChevronLeft, ChevronRight, Inbox, Info, MoveHorizontal, MoveLeft, Search, X } from 'lucide-vue-next'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import {
   cursorPageRange,
@@ -20,6 +20,10 @@ import {
   type TableFilterState,
   type TablePageInfo,
   type TablePaginationMode,
+  sortTableRows,
+  type TableSort,
+  type TableSortDirection,
+  type TableSortValue,
 } from './table'
 import ResourceTableFilter from './ResourceTableFilter.vue'
 import { useDelayedLoading } from './useDelayedLoading'
@@ -33,6 +37,12 @@ type ResourceTableColumn = {
   fullValue?: (row: Record<string, unknown>) => string
   /** Logical cell/header alignment. Defaults to start. */
   align?: 'start' | 'center' | 'end'
+  /** Opt in to a native sortable header button. */
+  sortable?: boolean
+  /** Optional typed key when the row's raw column value is not the desired sort value. */
+  sortValue?: (row: Record<string, unknown>) => TableSortValue
+  /** Initial direction used when this column becomes active. Defaults to ascending. */
+  sortDefaultDirection?: TableSortDirection
   /** Receives the table's remaining width and hosts row actions. */
   primary?: boolean
   /**
@@ -93,6 +103,10 @@ const props = withDefaults(defineProps<{
   filterValues?: TableFilterState
   /** Cursor used to fetch the controlled page. Values are opaque. */
   cursor?: string | null
+  /** Controlled active sort. Pass null to control an initially unsorted table. */
+  sort?: TableSort | null
+  /** Initial sort for an uncontrolled table. Clicking a column toggles its direction. */
+  defaultSort?: TableSort | null
   /** Metadata for the supplied server page; total is optional. */
   pageInfo?: TablePageInfo | null
   /** Accessible name for an interactive row. A function can derive it from the row. */
@@ -146,6 +160,7 @@ const query = ref('')
 const page = ref(1)
 const selectedPageSize = ref(normalizePageSize(props.pageSize))
 const selectedFilters = reactive<Record<string, string>>({})
+const localSort = ref<TableSort | null>(cloneTableSort(props.defaultSort))
 
 // `undefined` means that no request cursor for that page has been saved yet;
 // null is a real, known first-page cursor. This distinction keeps Previous
@@ -160,6 +175,10 @@ const isServerPagination = computed(() => props.paginationMode === 'server')
 const paginationEnabled = computed(() => props.variant === 'queryable' && (props.paginated || isServerPagination.value))
 const currentPage = computed(() => normalizePage(props.page ?? page.value))
 const currentPageSize = computed(() => normalizePageSize(selectedPageSize.value))
+const currentSort = computed(() => props.sort === undefined ? localSort.value : props.sort)
+const sortingConfigured = computed(() => props.sort !== undefined
+  || props.defaultSort !== undefined
+  || props.columns.some(column => column.sortable))
 const currentQuery = computed(() => props.variant === 'simple'
   ? ''
   : props.query === undefined ? query.value : props.query)
@@ -246,11 +265,17 @@ const filteredRows = computed(() => {
     deferredFilters.value,
   )
 })
+const sortedRows = computed(() => {
+  const sort = currentSort.value
+  const column = sort && props.columns.find(candidate => candidate.key === sort.key && candidate.key !== 'actions' && candidate.sortable)
+  if (isServerPagination.value || !sort || !column) return filteredRows.value
+  return sortTableRows(filteredRows.value, sort, row => column.sortValue ? column.sortValue(row) : row[column.key])
+})
 const visibleRows = computed(() => isServerPagination.value
   ? props.rows
   : paginationEnabled.value
-    ? paginateTableRows(filteredRows.value, currentPage.value, currentPageSize.value)
-    : filteredRows.value,
+    ? paginateTableRows(sortedRows.value, currentPage.value, currentPageSize.value)
+    : sortedRows.value,
 )
 const eligiblePageKeys = computed(() => uniqueSelectionKeys(visibleRows.value.flatMap(row => {
   const state = rowSelectionState(row)
@@ -369,6 +394,7 @@ const emit = defineEmits<{
   retry: []
   /** One typed state event covers page changes and query-shape resets. */
   change: [change: ResourceTableChange]
+  'update:sort': [sort: TableSort | null]
   'update:page': [page: number]
   'update:pageSize': [pageSize: number]
   'update:query': [query: string]
@@ -447,6 +473,14 @@ watch(() => props.filters.map(filter => filter.key), keys => {
 watch([currentPage, () => props.cursor], ([nextPage, cursor]) => {
   if (cursor !== undefined) rememberCursor(nextPage, cursor)
 }, { immediate: true })
+watch(() => currentSort.value ? `${currentSort.value.key}\u0000${currentSort.value.direction}` : currentSort.value,
+  (nextSort, previousSort) => {
+    if (nextSort === previousSort) return
+    if (props.page === undefined) page.value = 1
+    resetCursorHistory()
+  },
+  { flush: 'sync' },
+)
 
 function normalizePage(value: number | undefined): number {
   return Number.isFinite(value) && (value ?? 0) > 0 ? Math.floor(value as number) : 1
@@ -459,6 +493,10 @@ function normalizePageSize(value: number | undefined): number {
 function normalizeTotal(value: number | null | undefined): number | null {
   if (value === null || value === undefined) return null
   return Number.isFinite(value) && value >= 0 ? Math.floor(value) : null
+}
+
+function cloneTableSort(sort: TableSort | null | undefined): TableSort | null {
+  return sort ? { ...sort } : null
 }
 
 function rememberCursor(nextPage: number, cursor: string | null) {
@@ -476,12 +514,33 @@ function snapshotFilters(): TableFilterState {
   return { ...currentFilters.value }
 }
 
+function snapshotSort(): TableSort | null {
+  return cloneTableSort(currentSort.value)
+}
+
+function nextSortDirection(column: ResourceTableColumn): TableSortDirection {
+  if (currentSort.value?.key === column.key) return currentSort.value.direction === 'asc' ? 'desc' : 'asc'
+  return column.sortDefaultDirection ?? 'asc'
+}
+
+function sortActionLabel(column: ResourceTableColumn): string {
+  const label = column.ariaLabel || column.label || column.key
+  const direction = nextSortDirection(column)
+  return `Sort by ${label} ${direction === 'asc' ? 'ascending' : 'descending'}`
+}
+
+function sortAriaValue(column: ResourceTableColumn): 'ascending' | 'descending' | undefined {
+  if (!column.sortable || currentSort.value?.key !== column.key) return undefined
+  return currentSort.value.direction === 'asc' ? 'ascending' : 'descending'
+}
+
 function emitChange(
   reason: ResourceTableChange['reason'],
   nextPage: number,
   cursor: string | null,
-  overrides: Partial<Pick<ResourceTableChange, 'query' | 'filters'>> = {},
+  overrides: Partial<Pick<ResourceTableChange, 'query' | 'filters' | 'sort'>> = {},
 ) {
+  const sort = overrides.sort === undefined ? snapshotSort() : cloneTableSort(overrides.sort)
   emit('change', {
     reason,
     page: nextPage,
@@ -489,7 +548,23 @@ function emitChange(
     query: overrides.query ?? currentQuery.value,
     filters: overrides.filters ?? snapshotFilters(),
     cursor,
+    ...(sortingConfigured.value ? { sort } : {}),
   })
+}
+
+function setSort(nextSort: TableSort) {
+  const sort = { ...nextSort }
+  if (props.sort === undefined) localSort.value = sort
+  if (props.page === undefined) page.value = 1
+  resetCursorHistory()
+  emit('update:sort', sort)
+  emit('update:page', 1)
+  emitChange('sort', 1, null, { sort })
+}
+
+function toggleSort(column: ResourceTableColumn) {
+  if (!column.sortable) return
+  setSort({ key: column.key, direction: nextSortDirection(column) })
 }
 
 function setPage(nextPage: number, cursor: string | null) {
@@ -1148,7 +1223,24 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 >
               </label>
             </th>
-            <th v-for="col in visibleColumns" :key="col.key" class="k-table__heading" :class="[`k-table__heading--${col.align ?? 'start'}`, { 'k-table__heading--primary': col.key === primaryColumnKey }]" :aria-label="col.ariaLabel || col.label || col.key">{{ col.label }}</th>
+            <th v-for="col in visibleColumns" :key="col.key" scope="col" class="k-table__heading" :class="[`k-table__heading--${col.align ?? 'start'}`, { 'k-table__heading--primary': col.key === primaryColumnKey }]" :aria-label="col.ariaLabel || col.label || col.key" :aria-sort="sortAriaValue(col)">
+              <button
+                v-if="col.sortable"
+                type="button"
+                class="k-table__sort-button"
+                :class="{ 'k-table__sort-button--active': currentSort?.key === col.key }"
+                :aria-label="sortActionLabel(col)"
+                @click="toggleSort(col)"
+              >
+                <span>{{ col.label }}</span>
+                <component
+                  :is="currentSort?.key !== col.key ? ArrowUpDown : currentSort.direction === 'asc' ? ArrowUp : ArrowDown"
+                  class="k-table__sort-icon"
+                  aria-hidden="true"
+                />
+              </button>
+              <template v-else>{{ col.label }}</template>
+            </th>
           </tr></thead>
           <tbody>
             <template v-for="(row, i) in visibleRows" :key="rowIdentity(row, i)">

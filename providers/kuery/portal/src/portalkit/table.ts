@@ -21,6 +21,17 @@ export type TableFilterState = Record<string, string>
 /** Client pagination is the default; server mode renders one supplied page. */
 export type TablePaginationMode = 'client' | 'server'
 
+export type TableSortDirection = 'asc' | 'desc'
+
+/** One active column sort. A null sort value means that no column is active. */
+export interface TableSort {
+  key: string
+  direction: TableSortDirection
+}
+
+/** Values that can participate in a ResourceTable column sort. */
+export type TableSortValue = string | number | boolean | Date | null | undefined
+
 /** Primitive stable key used by ResourceTable's opt-in row selection. */
 export type TableSelectionKey = string | number
 
@@ -113,6 +124,8 @@ export interface CursorPagerState<Filters extends TableFilterState = TableFilter
   pageSize: number
   query: string
   filters: Filters
+  /** Optional server sort. Omitted when the table has not configured sorting. */
+  sort?: TableSort | null
   cursor: string | null
   nextCursor: string | null
   /** Undefined entries mean that page has not been reached and saved yet. */
@@ -126,10 +139,12 @@ export interface CursorPagerRequest<Filters extends TableFilterState = TableFilt
   pageSize: number
   query: string
   filters: Filters
+  /** Optional server sort. Omitted when the table has not configured sorting. */
+  sort?: TableSort | null
   cursor: string | null
 }
 
-export type TableChangeReason = 'page' | 'page-size' | 'query' | 'filter'
+export type TableChangeReason = 'page' | 'page-size' | 'query' | 'filter' | 'sort'
 
 export interface ResourceTableChange<Filters extends TableFilterState = TableFilterState> {
   reason: TableChangeReason
@@ -138,6 +153,8 @@ export interface ResourceTableChange<Filters extends TableFilterState = TableFil
   query: string
   filters: Filters
   cursor: string | null
+  /** Present when the table has configured sorting. */
+  sort?: TableSort | null
 }
 
 function safePageSize(pageSize: number): number {
@@ -155,6 +172,66 @@ function safeTotal(total: number | null | undefined): number | null {
 
 function copyFilters<Filters extends TableFilterState>(filters: Filters): Filters {
   return { ...filters } as Filters
+}
+
+function copySort(sort: TableSort | null | undefined): TableSort | null | undefined {
+  return sort === undefined ? undefined : sort === null ? null : { ...sort }
+}
+
+function sameSort(left: TableSort | null | undefined, right: TableSort | null | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right
+  if (left === null || right === null) return left === right
+  return left?.key === right?.key && left?.direction === right?.direction
+}
+
+type NormalizedSortValue = number | string
+
+function normalizeSortValue(value: unknown): NormalizedSortValue | null {
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'boolean') return Number(value)
+  if (value instanceof Date) {
+    const timestamp = value.getTime()
+    return Number.isFinite(timestamp) ? timestamp : null
+  }
+  return null
+}
+
+function compareNormalizedSortValues(
+  left: NormalizedSortValue,
+  right: NormalizedSortValue,
+  collator: Intl.Collator,
+): number {
+  if (typeof left === 'number' && typeof right === 'number') {
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+  if (typeof left !== typeof right) return typeof left === 'number' ? -1 : 1
+  return collator.compare(String(left), String(right))
+}
+
+/** Sort a copy of rows stably; missing and invalid values remain last in either direction. */
+export function sortTableRows<T>(
+  rows: readonly T[],
+  sort: TableSort | null | undefined,
+  valueForRow: (row: T) => unknown,
+): T[] {
+  if (!sort) return [...rows]
+  const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' })
+  return rows
+    .map((row, index) => {
+      const value = valueForRow(row)
+      return { row, index, normalized: normalizeSortValue(value) }
+    })
+    .sort((left, right) => {
+      if (left.normalized === null || right.normalized === null) {
+        if (left.normalized === null && right.normalized !== null) return 1
+        if (left.normalized !== null && right.normalized === null) return -1
+        return left.index - right.index
+      }
+      const comparison = compareNormalizedSortValues(left.normalized, right.normalized, collator)
+      return comparison === 0 ? left.index - right.index : (sort.direction === 'desc' ? -comparison : comparison)
+    })
+    .map(entry => entry.row)
 }
 
 function sameFilterState(left: TableFilterState, right: TableFilterState): boolean {
@@ -181,6 +258,7 @@ export function createCursorPager<Filters extends TableFilterState = TableFilter
     pageSize: safePageSize(initial.pageSize ?? 10),
     query: initial.query ?? '',
     filters: copyFilters((initial.filters ?? {}) as Filters),
+    ...(initial.sort === undefined ? {} : { sort: copySort(initial.sort) }),
     cursor,
     nextCursor: initial.nextCursor ?? null,
     pageCursors,
@@ -198,6 +276,7 @@ export function cursorPagerRequest<Filters extends TableFilterState = TableFilte
     pageSize: safePageSize(state.pageSize),
     query: state.query,
     filters: copyFilters(state.filters),
+    ...(state.sort === undefined ? {} : { sort: copySort(state.sort) }),
     cursor: state.cursor ?? null,
   }
 }
@@ -205,14 +284,16 @@ export function cursorPagerRequest<Filters extends TableFilterState = TableFilte
 /** Reset page and all saved cursors after a query-shape change. */
 export function resetCursorPager<Filters extends TableFilterState = TableFilterState>(
   state: CursorPagerState<Filters>,
-  changes: Partial<Pick<CursorPagerState<Filters>, 'pageSize' | 'query' | 'filters'>> = {},
+  changes: Partial<Pick<CursorPagerState<Filters>, 'pageSize' | 'query' | 'filters' | 'sort'>> = {},
 ): CursorPagerState<Filters> {
+  const sort = changes.sort === undefined ? state.sort : changes.sort
   return {
     ...state,
     page: 1,
     pageSize: safePageSize(changes.pageSize ?? state.pageSize),
     query: changes.query ?? state.query,
     filters: copyFilters((changes.filters ?? state.filters) as Filters),
+    ...(sort === undefined ? {} : { sort: copySort(sort) }),
     cursor: null,
     nextCursor: null,
     pageCursors: [null],
@@ -221,18 +302,25 @@ export function resetCursorPager<Filters extends TableFilterState = TableFilterS
   }
 }
 
-/** Apply controlled values; page-size, query, and filters always reset cursors. */
+/** Apply controlled values; page-size, query, filters, and sort reset cursors. */
 export function updateCursorPager<Filters extends TableFilterState = TableFilterState>(
   state: CursorPagerState<Filters>,
-  changes: Partial<Pick<CursorPagerState<Filters>, 'page' | 'pageSize' | 'query' | 'filters' | 'cursor'>>,
+  changes: Partial<Pick<CursorPagerState<Filters>, 'page' | 'pageSize' | 'query' | 'filters' | 'sort' | 'cursor'>>,
 ): CursorPagerState<Filters> {
   const nextPageSize = safePageSize(changes.pageSize ?? state.pageSize)
   const nextQuery = changes.query ?? state.query
   const nextFilters = (changes.filters ?? state.filters) as Filters
+  const nextSort = changes.sort === undefined ? state.sort : changes.sort
   const reset = nextPageSize !== state.pageSize
     || nextQuery !== state.query
     || !sameFilterState(state.filters, nextFilters)
-  if (reset) return resetCursorPager(state, { pageSize: nextPageSize, query: nextQuery, filters: nextFilters })
+    || (changes.sort !== undefined && !sameSort(state.sort, nextSort))
+  if (reset) return resetCursorPager(state, {
+    pageSize: nextPageSize,
+    query: nextQuery,
+    filters: nextFilters,
+    ...(changes.sort === undefined ? {} : { sort: nextSort }),
+  })
 
   if (changes.page === undefined && changes.cursor === undefined) {
     return { ...state, pageSize: nextPageSize, query: nextQuery, filters: copyFilters(nextFilters) }
@@ -249,6 +337,7 @@ export function updateCursorPager<Filters extends TableFilterState = TableFilter
     pageSize: nextPageSize,
     query: nextQuery,
     filters: copyFilters(nextFilters),
+    ...(state.sort === undefined ? {} : { sort: copySort(state.sort) }),
     cursor,
     nextCursor: null,
     hasNext: false,

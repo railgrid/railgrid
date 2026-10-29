@@ -217,7 +217,13 @@ import {
 import { withRequestTimeout } from './requestTimeout'
 import NewProjectWizard from './NewProjectWizard.vue'
 import FirstTimeSetup from './FirstTimeSetup.vue'
-import GitConnectionSettings from './GitConnectionSettings.vue'
+// Repository settings are optional; keep their form out of the initial page bundle.
+const GitConnectionSettings = defineAsyncComponent({
+  loader: () => import('./GitConnectionSettings.vue'),
+  delay: 0,
+  loadingComponent: { render: () => h('div', { role: 'status' }, 'Loading repository settings…') },
+  errorComponent: { render: () => h('div', { role: 'alert' }, 'Could not load repository settings. Reload this page to retry.') },
+})
 const ProjectAuthentication = defineAsyncComponent({
   loader: () => import('./ProjectAuthentication.vue'),
   delay: 0,
