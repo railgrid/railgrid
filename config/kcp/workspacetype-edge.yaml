@@ -3,7 +3,7 @@ kind: WorkspaceType
 metadata:
   name: edge
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   # An `edge` workspace is a pure mount point: its content is proxied to the
   # remote edge cluster through the Edge's mount reference (see

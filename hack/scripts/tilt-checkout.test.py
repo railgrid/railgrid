@@ -20,78 +20,123 @@ spec.loader.exec_module(m)
 
 
 class CheckoutTest(unittest.TestCase):
-    def test_detached_launch_returns_with_private_log_and_durable_owner(self):
-        c = m
-        with tempfile.TemporaryDirectory() as tmp, patch.object(c, 'ROOT', Path(tmp)):
+    def test_attached_launch_runs_tilt_in_the_terminal_session_and_cleans_up(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
             root = Path(tmp)
             (root / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': c.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
+            child = Mock(pid=1234)
+            child.wait.return_value = 3
+            with patch.object(m, 'settings', return_value=config), patch.object(m, 'manifests', return_value={}), \
+                    patch.object(m, 'check_ports'), patch.object(m, 'process_identity', return_value='birth'), \
+                    patch.object(m.signal, 'signal'), patch.object(m, 'release_checkout') as release, \
+                    patch.object(m.subprocess, 'Popen', return_value=child) as launch, \
+                    patch.object(m.sys, 'argv', ['tilt-checkout.py']):
+                with self.assertRaises(SystemExit) as raised:
+                    m.main()
+            self.assertEqual(raised.exception.code, 3)
+            args = launch.call_args.kwargs
+            # Tilt's HUD needs the controlling terminal and Ctrl-C must reach it:
+            # no new session, no redirected stdio.
+            self.assertNotIn('start_new_session', args)
+            self.assertNotIn('stdin', args)
+            # Owner was recorded before launch, then cleanup ran after exit.
+            release.assert_called_once_with(config, root / '.kcp/tilt-owner.json')
+
+    def test_detached_launch_returns_with_private_log_and_durable_owner(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
             child = Mock(pid=1234)
             child.wait.side_effect = subprocess.TimeoutExpired("make", 3)
-            with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value=config), patch.object(c, 'manifests', return_value={}), patch.object(c, 'check_ports'), patch.object(c, 'process_identity', return_value='birth'), patch.object(c.signal, 'signal'), patch.object(c.subprocess, 'Popen', return_value=child) as launch, patch.object(c.sys, 'argv', ['tilt-checkout.py']):
-                c.main()
+            with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(m, 'settings', return_value=config), \
+                    patch.object(m, 'manifests', return_value={}), patch.object(m, 'check_ports'), \
+                    patch.object(m, 'process_identity', return_value='birth'), patch.object(m.signal, 'signal'), \
+                    patch.object(m, 'release_checkout') as release, \
+                    patch.object(m.subprocess, 'Popen', return_value=child) as launch, patch.object(m.sys, 'argv', ['tilt-checkout.py']):
+                m.main()
             child.wait.assert_called_once_with(timeout=3)
             args = launch.call_args.kwargs
             self.assertTrue(args['start_new_session'])
-            self.assertEqual(args['stdin'], c.subprocess.DEVNULL)
-            self.assertEqual(args['stderr'], c.subprocess.STDOUT)
+            self.assertEqual(args['stdin'], m.subprocess.DEVNULL)
+            self.assertEqual(args['stderr'], m.subprocess.STDOUT)
             self.assertEqual((root / '.kcp/tilt.log').stat().st_mode & 0o777, 0o600)
             owner = json.loads((root / '.kcp/tilt-owner.json').read_text())
             self.assertEqual((owner['pid'], owner['birth']), (1234, 'birth'))
-
-    def test_detached_process_survives_launcher_exit(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / '.kcp').mkdir()
-            (root / 'Makefile').write_text('tilt-start:\n\t@exec sleep 120\n')
-            script = str(Path(__file__).with_name('tilt-checkout.py').resolve())
-            code = f"""
-import importlib.util, os
-from pathlib import Path
-spec = importlib.util.spec_from_file_location('checkout', {script!r})
-c = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(c)
-c.ROOT = Path({tmp!r})
-c.settings = lambda: {{'root': {tmp!r}, 'key': 'test', 'legacy': False, 'ports': c.PORTS}}
-c.manifests = lambda config: {{}}
-c.check_ports = lambda config: None
-c.tilt_settings_directory = lambda: {tmp!r}
-os.environ['TILT_DETACHED'] = '1'
-c.main()
-"""
-            owner_path = root / '.kcp/tilt-owner.json'
-            try:
-                subprocess.run([sys.executable, '-B', '-c', code], check=True, capture_output=True,
-                               start_new_session=True, timeout=10)
-                owner = json.loads(owner_path.read_text())
-                os.kill(owner['pid'], 0)
-                self.assertEqual(os.getsid(owner['pid']), owner['pid'])
-                self.assertEqual(m.process_identity(owner['pid']), owner['birth'])
-            finally:
-                if owner_path.exists():
-                    owner = json.loads(owner_path.read_text())
-                    if owner.get('pid') and m.process_identity(owner['pid']) == owner.get('birth'):
-                        try:
-                            os.killpg(owner['pid'], signal.SIGTERM)
-                        except ProcessLookupError:
-                            pass
-
-    def test_detached_launch_refuses_shared_stack(self):
-        c = m
-        with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(c, 'settings', return_value={'legacy': True}), patch.object(c, 'environment', return_value={}), patch.object(c, 'manifests', return_value={}), patch.object(c.sys, 'argv', ['tilt-checkout.py']), patch.object(c.subprocess, 'Popen') as launch:
-            with self.assertRaisesRegex(ValueError, 'isolated checkout'):
-                c.main()
-            launch.assert_not_called()
+            # A detached stack is not cleaned by the launcher that returns.
+            release.assert_not_called()
 
     def test_detached_launch_reports_early_exit(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
             (Path(tmp) / '.kcp').mkdir()
-            config = {'root': tmp, 'key': 'first', 'legacy': False, 'ports': m.PORTS}
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
             child = Mock(pid=1234, returncode=2)
             with patch.dict(os.environ, {'TILT_DETACHED': '1'}), patch.object(m, 'settings', return_value=config), patch.object(m, 'manifests', return_value={}), patch.object(m, 'check_ports'), patch.object(m, 'process_identity', return_value='birth'), patch.object(m.signal, 'signal'), patch.object(m.subprocess, 'Popen', return_value=child), patch.object(m.sys, 'argv', ['tilt-checkout.py']):
                 with self.assertRaisesRegex(ValueError, 'status 2'):
                     m.main()
             self.assertTrue((Path(tmp) / '.kcp/tilt-owner.json').exists())
+
+    def test_leftovers_of_a_stopped_stack_are_reaped_before_the_port_check(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
+            record = root / '.kcp/tilt-owner.json'
+            record.write_text(json.dumps({'root': tmp, 'pid': 4321, 'birth': 'gone',
+                                          'resources': m.owned_resources(config)}))
+            order = []
+            child = Mock(pid=1234)
+            child.wait.return_value = 0
+            identities = {4321: None, 1234: 'birth'}
+            with patch.object(m, 'settings', return_value=config), patch.object(m, 'manifests', return_value={}), \
+                    patch.object(m, 'check_ports', side_effect=lambda c: order.append('check')), \
+                    patch.object(m, 'process_identity', side_effect=lambda pid: identities.get(pid)), \
+                    patch.object(m.signal, 'signal'), \
+                    patch.object(m, 'release_checkout', side_effect=lambda *a, **k: order.append('release')), \
+                    patch.object(m.subprocess, 'Popen', return_value=child), patch.object(m.sys, 'argv', ['tilt-checkout.py']):
+                with self.assertRaises(SystemExit):
+                    m.main()
+            # Stale record reaped first, then the port check, then exit cleanup.
+            self.assertEqual(order, ['release', 'check', 'release'])
+
+    def test_release_removes_owned_containers_and_stack_listeners_only(self):
+        config = {'root': '/checkout', 'key': 'abc', 'ports': {k: 20000 + i for i, k in enumerate(m.PORTS)}}
+        ssh = m.owned_resources(config)['containers'][1]
+        removed, killed = [], []
+        def run(args, **kwargs):
+            if args[:3] == ['docker', 'rm', '-f']:
+                removed.append(args[3])
+            return Mock(returncode=0, stdout='')
+        listeners = {config['ports']['HUB_PORT']: {4242, 4343}}
+        with tempfile.TemporaryDirectory() as tmp:
+            record = Path(tmp) / 'tilt-owner.json'
+            record.write_text('{}')
+            with patch.object(m.subprocess, 'check_output', return_value=ssh + '\nother\n'), \
+                    patch.object(m.subprocess, 'run', side_effect=run), \
+                    patch.object(m, 'port_listeners', side_effect=lambda port: listeners.get(port, set())), \
+                    patch.object(m, 'is_container_runtime', side_effect=lambda pid: pid == 4343), \
+                    patch.object(m, 'process_identity', return_value=None), \
+                    patch.object(m.os, 'kill', side_effect=lambda pid, sig: killed.append((pid, sig))):
+                m.release_checkout(config, record)
+            self.assertEqual(removed, [ssh])
+            self.assertEqual(killed, [(4242, m.signal.SIGTERM)])
+            self.assertFalse(record.exists())
+
+    def test_existing_claim_is_kept_and_new_keys_filled(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(m, 'ephemeral_range', return_value=(20000, 20009)):
+            registry = m.registry_directory() / 'tilt-ports.json'
+            registry.parent.mkdir(parents=True, exist_ok=True)
+            # A checkout that predates per-checkout allocation keeps its fixed
+            # ports: its URLs must not move under it.
+            fixed = {k: v for k, v in m.PORTS.items() if not k.startswith('METERING_')}
+            registry.write_text(json.dumps({root: fixed}))
+            ports = m.allocate_ports(Path(root))
+            self.assertEqual({k: ports[k] for k in fixed}, fixed)
+            for key in ('METERING_PORT', 'METERING_WEBHOOK_PORT', 'METERING_AUDIT_PORT'):
+                self.assertIn(key, ports)
+                self.assertNotIn(ports[key], fixed.values())
+            self.assertEqual(m.allocate_ports(Path(root)), ports)
 
     def setUp(self):
         self.registry_directory = m.registry_directory
@@ -127,16 +172,9 @@ c.main()
             with self.assertRaisesRegex(ValueError, 'outside the host ephemeral range'):
                 m.settings(Path(root))
 
-    def test_legacy_checks_hub_port_without_requiring_stopped_provider_databases(self):
-        with m.socket.socket() as listener:
-            listener.bind(('127.0.0.1', 0))
-            with patch.dict(m.os.environ, {'HUB_PORT': str(listener.getsockname()[1]), 'TILT_PORT': '0'}):
-                with self.assertRaisesRegex(ValueError, 'HUB_PORT port .* unavailable'):
-                    m.check_ports({'legacy': True, 'ports': m.PORTS})
-
     def test_buildvcs_override_only_applies_to_worktrees(self):
         with tempfile.TemporaryDirectory() as root:
-            config = {'legacy': False, 'root': root, 'key': 'abc', 'ports': m.PORTS}
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
             self.assertNotIn('GOFLAGS', m.environment(config))
             (Path(root) / '.git').write_text('gitdir: /example')
             with patch.dict(m.os.environ, {'GOFLAGS': '-mod=readonly'}):
@@ -154,7 +192,7 @@ c.main()
             self.assertEqual(before, {p: p.stat().st_mtime_ns for p in root.rglob('*')})
 
     def test_dns_missing_or_ambiguous_networks_fail_clearly(self):
-        config = {'legacy': False, 'root': '/checkout', 'key': 'abc'}
+        config = {'root': '/checkout', 'key': 'abc'}
         for networks in ({}, {'a': {'Gateway': '172.18.0.1'}, 'b': {'Gateway': '172.19.0.1'}}):
             with patch.object(m.subprocess, 'run') as run, \
                     patch.object(m.subprocess, 'check_output', return_value=json.dumps([{'NetworkSettings': {'Networks': networks}}])), \
@@ -169,16 +207,13 @@ c.main()
                 m.cli()
             self.assertEqual(str(raised.exception), str(error))
 
-    def test_make_preserves_legacy_startup_and_scopes_edge_cleanup(self):
+    def test_make_prepares_checkout_cluster_and_scopes_edge_cleanup(self):
         def dryrun(*args):
             return m.subprocess.check_output(['make', '-n', *args], cwd=m.ROOT, text=True)
-        legacy = dryrun('tilt-start', 'RAILGRID_TILT_CHECKOUT=', 'EXTERNAL_PROVIDERS_DIR=')
-        self.assertIn('require_service_not_running kcp', legacy)
-        self.assertNotIn('kind get clusters', legacy)
-        self.assertNotIn('--context', legacy)
         isolated = dryrun('tilt-start', 'RAILGRID_TILT_CHECKOUT=abc', 'EXTERNAL_PROVIDERS_DIR=')
         self.assertIn('kind get clusters', isolated)
         self.assertIn('tilt-checkout.py dns', isolated)
+        self.assertIn('--context', isolated)
         cleanup = dryrun('dev-edge-clean-credentials', 'TYPE=server', 'RAILGRID_TILT_CHECKOUT=abc')
         self.assertIn('agent-dev-edge-server-1-abc.kubeconfig', cleanup)
         self.assertNotIn('agent-dev-edge-kube', cleanup)
@@ -201,12 +236,13 @@ c.main()
     def test_occupied_saved_port_is_reported(self):
         with m.socket.socket() as listener:
             listener.bind(('127.0.0.1', 0))
-            config = {'legacy': False, 'ports': {'HUB_PORT': listener.getsockname()[1]}}
+            listener.listen(1)
+            config = {'ports': {'HUB_PORT': listener.getsockname()[1]}}
             with self.assertRaisesRegex(ValueError, 'HUB_PORT port .* unavailable'):
                 m.check_ports(config)
 
     def test_dns_uses_cluster_gateway_and_is_idempotent(self):
-        config = {'legacy': False, 'key': 'abc', 'root': '/checkout'}
+        config = {'key': 'abc', 'root': '/checkout'}
         cm = {'data': {'Corefile': '.:53 {\n    forward . /etc/resolv.conf\n}\n'}}
         inspect = [{'NetworkSettings': {'Networks': {'custom-network': {'Gateway': '172.18.0.1'}}}}]
         def output(args, **kwargs):
@@ -225,20 +261,20 @@ c.main()
             self.assertFalse(any('patch' in c.args[0] for c in run.call_args_list))
 
     def test_environment_is_idempotent(self):
-        config = {'legacy': False, 'root': '/example', 'key': 'abc', 'ports': m.PORTS}
+        config = {'root': '/example', 'key': 'abc', 'ports': m.PORTS}
         first = m.environment(config)
         with patch.dict(m.os.environ, first):
             self.assertEqual(first, m.environment(config))
 
-    def test_legacy_install_keeps_existing_runtime(self):
-        with tempfile.TemporaryDirectory() as d:
+    def test_existing_runtime_state_still_gets_isolated_resources(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(m, 'ephemeral_range', return_value=(20000, 20009)):
             root = Path(d)
             (root / '.kcp').mkdir()
             (root / '.kcp/admin.kubeconfig').touch()
             config = m.settings(root)
-            self.assertTrue(config['legacy'])
-            self.assertEqual(set(m.environment(config)), {'DEV_STATIC_TOKEN', 'DEV_STATIC_ADMIN'})
-            self.assertEqual(m.manifests(config), {})
+            self.assertNotIn('legacy', config)
+            self.assertTrue(all(20010 <= port < 30000 for port in config['ports'].values()))
+            self.assertEqual(m.environment(config)['KRO_KIND_NAME'], 'railgrid-kro-' + config['key'])
 
     def test_copied_runtime_state_is_not_silently_reused(self):
         with tempfile.TemporaryDirectory() as a, tempfile.TemporaryDirectory() as b:

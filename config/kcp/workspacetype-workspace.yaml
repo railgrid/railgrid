@@ -3,7 +3,7 @@ kind: WorkspaceType
 metadata:
   name: workspace
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   # Workspaces ("team" workspaces) hold APIBindings, edges, mcp instances,
   # and any other tenant work. The ONLY child type they may host is `edge`:

@@ -287,6 +287,11 @@ func providerClusterRoleRules() []any {
 		// Leader election (provider-sdk/leaderelection, kuery engagement
 		// claims, the edges tunnel registry).
 		rule([]string{"coordination.k8s.io"}, []string{"leases"}, readWrite),
+		// Usage reporting: the hub binds metering's provider export into every
+		// provider workspace once metering is installed
+		// (pkg/hub/metering.ProviderReconciler), and the provider writes its
+		// UsageRecords and MeteringConfigs through that binding.
+		rule([]string{"metering.contrib.kcp.io"}, []string{"usagerecords", "meteringconfigs"}, readWrite),
 		// Providers that authenticate their own data-plane callers delegate the
 		// decision back to kcp rather than parsing JWTs.
 		rule([]string{"authentication.k8s.io"}, []string{"tokenreviews"}, []string{"create"}),

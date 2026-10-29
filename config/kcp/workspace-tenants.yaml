@@ -3,7 +3,7 @@ kind: Workspace
 metadata:
   name: tenants
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   # Parent of every tenant (Organization) workspace. Each Organization gets a
   # child workspace at root:railgrid:tenants:{uuid} of type `organization` (see

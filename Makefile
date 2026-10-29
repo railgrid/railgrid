@@ -937,8 +937,12 @@ run-dex: $(DEX) certs ## Run Dex OIDC server
 		service_start dex $$DEX_PID; \
 		wait $$DEX_PID)
 
+# Foreground, --rm and no restart policy on purpose: Tilt stops this serve
+# command with a signal, which docker proxies into the container, so the
+# container exits and is removed with the resource. A restart policy would
+# have dockerd bring it straight back, detached from Tilt, holding the port.
 dev-run-ssh-server:
-	docker run \
+	docker run --rm \
   --name=$(DEV_SSH_CONTAINER) \
   -e PUID=1000 \
   -e PGID=1000 \
@@ -947,7 +951,6 @@ dev-run-ssh-server:
   -e USER_PASSWORD=password \
   -e USER_NAME=railgrid \
   -p $(DEV_SSH_PORT):2222 \
-  --restart unless-stopped \
   lscr.io/linuxserver/openssh-server:latest
 
 ## --- kube edge agent, in-cluster (dev) --------------------------------------
@@ -1137,6 +1140,10 @@ run-hub-standalone: build-hub certs
 #   make tilt-cluster TILT_KCP_DIR=/path/to/kcp
 #   make tilt-cluster KCP_DIR=/path/to/kcp
 TILT_KCP_DIR ?= $(or $(KCP_DIR),$(HOME)/go/src/github.com/kcp-dev/kcp)
+# The kcp image tilt-cluster runs: a git ref in TILT_KCP_DIR or a working
+# tree, built by hack/scripts/build-kcp-image.sh. Empty builds the fork commit
+# go.mod pins (see Tiltfile.cluster).
+KCP_BUILD ?=
 # Tilt's KIND image loader stages a full `docker save` tarball in TMPDIR. Keep
 # that payload off capacity-limited /tmp tmpfs mounts used by development hosts.
 # Both stacks load images into kind (the agent image, and in cluster mode the
@@ -1200,11 +1207,7 @@ test-tilt-checkout: test-dev-browser
 
 # Internal target: the launcher has selected the Tilt API port before startup.
 tilt-start:
-ifeq ($(RAILGRID_TILT_CHECKOUT),)
-	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-endif
 	@mkdir -p "$(TILT_TMPDIR)"
-ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 	@kind get clusters 2>/dev/null | grep -qx "$(KRO_KIND_NAME)" || kind create cluster --name "$(KRO_KIND_NAME)" --kubeconfig "$(KRO_KIND_KUBECONFIG)"
 	@python3 hack/scripts/write-kind-kubeconfig.py "$(KRO_KIND_NAME)" "$(KRO_KIND_KUBECONFIG)"
 	python3 hack/scripts/tilt-checkout.py dns
@@ -1212,10 +1215,6 @@ ifneq ($(strip $(RAILGRID_TILT_CHECKOUT)$(EXTERNAL_PROVIDERS_DIR)),)
 		tilt up -f Tiltfile --port "$(TILT_PORT)" --context "kind-$(KRO_KIND_NAME)" -- \
 		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)" \
 		--kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-
-else
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile --port "$(TILT_PORT)" -- --kcp-image="$(KCP_IMAGE)" --code-bundle-store="$(CODE_BUNDLE_STORE)"
-endif
 
 ## Full multi-shard kcp in a kind cluster + railgrid-hub in-cluster, against a local kcp checkout
 tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TILT_KCP_DIR=... or KCP_DIR=...)
@@ -1228,7 +1227,7 @@ tilt-cluster: ## Run Tiltfile.cluster against a local kcp tree (override with TI
 	@kind get clusters 2>/dev/null | grep -qx kcp-tilt || kind create cluster --name kcp-tilt
 	@kind export kubeconfig --name kcp-tilt
 	@mkdir -p "$(TILT_TMPDIR)"
-	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)" --replicas="$(REPLICA_COUNT)" \
+	TMPDIR="$(TILT_TMPDIR)" tilt up -f Tiltfile.cluster -- --kcp-dir="$(TILT_KCP_DIR)" --kcp-build="$(KCP_BUILD)" --replicas="$(REPLICA_COUNT)" \
 		--external-providers-dir="$(EXTERNAL_PROVIDERS_DIR)" --external-providers="$(EXTERNAL_PROVIDERS)"
 
 # --- Provider quickstart (local dev) ---

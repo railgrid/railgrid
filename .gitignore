@@ -95,6 +95,8 @@ dex.db
 .hooks/
 
 .kubeconfig-railgrid-agent
+# Per-checkout variant written by hack/scripts/tilt-checkout.py (HA_KUBECONFIG)
+.kubeconfig-railgrid-agent-*
 docs/Gemfile.lock
 edge-kubeconfig
 *.kubeconfig
@@ -136,3 +138,6 @@ hack/provider-sdk-cutover.sh
 /.railgrid-cleanup.log
 
 /.railgrid-prepare.log
+
+# Python bytecode from hack/scripts tests
+__pycache__/
