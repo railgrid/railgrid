@@ -64,3 +64,11 @@ the adjusted total ceilings leave 8,031 B raw / 3,095 B gzip.
 
 Bootstrap and authentication settings limits remain unchanged. Larger growth
 requires investigating its module costs, not automatically moving the ceilings.
+
+With PortalKit column sorting, repository connection settings load on demand
+and the production minifier runs three compression passes. The measured page
+path is 1,215,445 B raw / 331,358 B gzip; total assets are 1,328,399 B raw /
+367,745 B gzip. These retain the existing ceilings, including the total asset
+gate that accounts for the additional lazy chunk. Loading and failure messages
+remain available while repository settings load. These are local bundle
+measurements, not live browser performance evidence.

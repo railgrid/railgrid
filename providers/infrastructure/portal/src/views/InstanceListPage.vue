@@ -21,7 +21,7 @@ import {
 import { isCurrentInstanceListRequest, type InstanceListRequest } from '../instanceListRequest'
 import { resolve, type ResolvedValue } from '../view'
 import type { Instance, TemplateView, ViewColumn } from '../types'
-import { isCompleteFirstCursorPage, type TableFilterDefinition, type TableFilterState } from '../portalkit/table'
+import { isCompleteFirstCursorPage, type ResourceTableChange, type TableFilterDefinition, type TableFilterState } from '../portalkit/table'
 
 const emit = defineEmits<{
   (e: 'navigate', view: string): void
@@ -305,14 +305,7 @@ function resetToFirstServerPage() {
   cursor.value = null
 }
 
-function handleTableChange(change: {
-  reason: 'page' | 'page-size' | 'query' | 'filter'
-  page: number
-  pageSize: number
-  query: string
-  filters: TableFilterState
-  cursor: string | null
-}) {
+function handleTableChange(change: ResourceTableChange) {
   const wasClientMode = paginationMode.value === 'client'
   const canReuseCurrentServerPage = paginationMode.value === 'server' && isCompleteFirstCursorPage({
     page: page.value,

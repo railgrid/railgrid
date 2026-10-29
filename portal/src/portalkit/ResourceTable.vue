@@ -1233,9 +1233,11 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 @click="toggleSort(col)"
               >
                 <span>{{ col.label }}</span>
-                <ArrowUp v-if="currentSort?.key === col.key && currentSort.direction === 'asc'" class="k-table__sort-icon" aria-hidden="true" />
-                <ArrowDown v-else-if="currentSort?.key === col.key && currentSort.direction === 'desc'" class="k-table__sort-icon" aria-hidden="true" />
-                <ArrowUpDown v-else class="k-table__sort-icon" aria-hidden="true" />
+                <component
+                  :is="currentSort?.key !== col.key ? ArrowUpDown : currentSort.direction === 'asc' ? ArrowUp : ArrowDown"
+                  class="k-table__sort-icon"
+                  aria-hidden="true"
+                />
               </button>
               <template v-else>{{ col.label }}</template>
             </th>

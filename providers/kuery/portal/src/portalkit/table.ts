@@ -184,15 +184,15 @@ function sameSort(left: TableSort | null | undefined, right: TableSort | null | 
   return left?.key === right?.key && left?.direction === right?.direction
 }
 
-type NormalizedSortValue = { kind: 'number'; value: number } | { kind: 'string'; value: string }
+type NormalizedSortValue = number | string
 
 function normalizeSortValue(value: unknown): NormalizedSortValue | null {
-  if (typeof value === 'string') return { kind: 'string', value }
-  if (typeof value === 'number') return Number.isFinite(value) ? { kind: 'number', value } : null
-  if (typeof value === 'boolean') return { kind: 'number', value: value ? 1 : 0 }
+  if (typeof value === 'string') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null
+  if (typeof value === 'boolean') return Number(value)
   if (value instanceof Date) {
     const timestamp = value.getTime()
-    return Number.isFinite(timestamp) ? { kind: 'number', value: timestamp } : null
+    return Number.isFinite(timestamp) ? timestamp : null
   }
   return null
 }
@@ -202,11 +202,11 @@ function compareNormalizedSortValues(
   right: NormalizedSortValue,
   collator: Intl.Collator,
 ): number {
-  if (left.kind === 'number' && right.kind === 'number') {
-    return left.value < right.value ? -1 : left.value > right.value ? 1 : 0
+  if (typeof left === 'number' && typeof right === 'number') {
+    return left < right ? -1 : left > right ? 1 : 0
   }
-  if (left.kind !== right.kind) return left.kind === 'number' ? -1 : 1
-  return collator.compare(String(left.value), String(right.value))
+  if (typeof left !== typeof right) return typeof left === 'number' ? -1 : 1
+  return collator.compare(String(left), String(right))
 }
 
 /** Sort a copy of rows stably; missing and invalid values remain last in either direction. */
@@ -223,9 +223,9 @@ export function sortTableRows<T>(
       return { row, index, normalized: normalizeSortValue(value) }
     })
     .sort((left, right) => {
-      if (!left.normalized || !right.normalized) {
-        if (!left.normalized && right.normalized) return 1
-        if (left.normalized && !right.normalized) return -1
+      if (left.normalized === null || right.normalized === null) {
+        if (left.normalized === null && right.normalized !== null) return 1
+        if (left.normalized !== null && right.normalized === null) return -1
         return left.index - right.index
       }
       const comparison = compareNormalizedSortValues(left.normalized, right.normalized, collator)
