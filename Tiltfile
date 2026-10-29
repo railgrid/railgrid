@@ -7,6 +7,15 @@
 # before Tiltfile evaluation; use `make tilt` when another Tilt is running.
 for provider in ['quickstart', 'infrastructure', 'code', 'kuery', 'app-studio', 'agents', 'edges']:
     watch_file('providers/' + provider + '/manifest.yaml')
+# Nothing below deploys to the current kube context: the hub, portal and
+# providers are local_resources, and the one k8s deploy path (external
+# provider charts) refuses any context other than the kro kind cluster before
+# calling allow_k8s_contexts for it. `make tilt` starts Tilt on the checkout's
+# kind context, but a bare `tilt up` runs on the shell's context, and Tilt
+# refuses local() when that looks non-local (`kubectl ws` leaves
+# workspace.kcp.io/current selected), so allow whatever is current for the
+# local commands only.
+allow_k8s_contexts(k8s_context())
 checkout_env = decode_json(str(local(['python3', 'hack/scripts/tilt-checkout.py', 'prepare-env'], quiet=True)))
 for key, value in checkout_env.items():
     os.putenv(key, value)
@@ -54,6 +63,38 @@ config.define_string('kcp-image')
 #   make tilt CODE_BUNDLE_STORE=s3
 config.define_string('code-bundle-store', usage='Code provider transient store: file (default) or s3 (adds a local MinIO resource)')
 cfg = config.parse()
+
+# ---------------------------------------------------------------------------
+# External provider checkouts (loaded fully further down, once the hub is
+# defined) may need the kcp SHARD configured at startup: an admission
+# configuration (the global validating webhook the metering provider's
+# enforcer sits behind) and an audit backend. Those are hub flags, so they
+# are collected here, before the hub command is built. A checkout opts in by
+# exporting `railgrid_shard_config(host_ports, kcp_loopback_proxy)` from its
+# hack/tilt/providers.tilt, returning a dict with any of
+# admission_config_file, audit_policy_file, audit_webhook_config_file. The
+# function must only write files and must not define Tilt resources.
+# ---------------------------------------------------------------------------
+_shard_providers_dirs = cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')
+external_shard_flags = ''
+for _shard_dir in _shard_providers_dirs.split(','):
+    _shard_dir = _shard_dir.strip()
+    if not _shard_dir:
+        continue
+    _shard_lib = os.path.join(os.path.abspath(_shard_dir), 'hack', 'tilt', 'providers.tilt')
+    if not os.path.exists(_shard_lib):
+        continue
+    _shard_symbols = load_dynamic(_shard_lib)
+    if 'railgrid_shard_config' not in _shard_symbols:
+        continue
+    _shard = _shard_symbols['railgrid_shard_config'](host_ports=True, kcp_loopback_proxy='host.docker.internal:%s' % hub_port) or {}
+    for _key, _flag in [('admission_config_file', '--kcp-admission-config-file'),
+                        ('audit_policy_file', '--kcp-audit-policy-file'),
+                        ('audit_webhook_config_file', '--kcp-audit-webhook-config-file')]:
+        if _shard.get(_key):
+            external_shard_flags += ' %s=%s' % (_flag, _shard[_key])
+    if external_shard_flags:
+        print('  external shard config: %s (from %s)' % (external_shard_flags.strip(), _shard_dir))
 
 code_bundle_store = (
     (cfg.get('code-bundle-store', '') or '').strip().lower()
@@ -158,7 +199,7 @@ if kcp_image:
     kcp_server_flags = '  --external-kcp-kubeconfig=' + kcp_external_kubeconfig
     hub_deps = ['portal', 'kcp']
 else:
-    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380))
+    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380)) + external_shard_flags
     hub_deps = ['portal']
 
 # ---------------------------------------------------------------------------

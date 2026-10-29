@@ -43,10 +43,8 @@ programs can still occupy a saved port.
 Do not copy `.kcp` between checkouts. An occupied saved port fails startup with
 its name and number; stop the process using it before restarting.
 
-Existing checkouts with `.kcp/admin.kubeconfig` keep their previous defaults,
-kcp/port conflict checks, and conditional cluster preparation (only when
-external providers are configured). Fresh isolated checkouts always prepare
-their own kind cluster, so they cannot inherit another checkout's context.
+Every checkout prepares its own kind cluster and starts Tilt on that
+cluster's context, so a stack never inherits the shell's current kube context.
 The Go VCS-stamping workaround applies only to Git worktrees (`.git` is a file);
 ordinary clones keep normal Go build stamping.
 
@@ -161,3 +159,40 @@ lifecycle job derives from it therefore works from the provider pods.
 
 The reference implementation is `hack/tilt/providers.tilt` in
 railgrid/providers, together with its `hack/tilt/test_runtime.py` tests.
+
+### Optional: shard configuration for the embedded kcp
+
+A provider that needs the kcp **shard** configured at startup (an admission
+configuration for the global validating webhook, an audit backend) exports a
+second function from the same library:
+
+```python
+def railgrid_shard_config(host_ports=True, kcp_loopback_proxy='', mount_path=''):
+    ...
+    return {'admission_config_file': path,          # any subset
+            'audit_policy_file': path,
+            'audit_webhook_config_file': path,
+            'files': {'admission.yaml': local_path, ...}}  # every file it wrote
+```
+
+Both stacks call it right after `config.parse()`, before kcp is configured,
+and both pass the result on as kcp flags: `--admission-control-config-file`,
+`--audit-policy-file` and `--audit-webhook-config-file`. The function may only
+write files (certificates, the configuration itself) and must not define Tilt
+resources; `railgrid_providers` is still called later for those. The two
+stacks differ in where kcp runs, which decides the URLs inside the files and
+the paths the shard reads them at:
+
+| | `make tilt` | `make tilt-cluster` |
+| --- | --- | --- |
+| `host_ports` | `True`: the embedded kcp runs on the host and reaches the pods through Tilt's port forwards, so URLs are host ports (the checkout allocator exports `METERING_PORT`, `METERING_WEBHOOK_PORT` and `METERING_AUDIT_PORT` for contrib-metering) | `False`: kcp runs in the kind cluster under the kcp-operator, so URLs are the in-cluster Services |
+| `mount_path` | unset: the returned paths are the files themselves, which the hub hands to its embedded kcp (`--kcp-admission-config-file`, `--kcp-audit-policy-file`, `--kcp-audit-webhook-config-file`) | `/etc/kcp/railgrid`: `Tiltfile.cluster` publishes `files` as the Secret `kcp-shard-config` and mounts it there in the root shard and every other shard, so the returned paths point into the mount |
+
+`Tiltfile.cluster` reaches the operator CRs through the `KCP_SHARD_CONFIG_FILE`
+hook of kcp's `contrib/tilt/Tiltfile.static` (a YAML file with `extraArgs`,
+`extraVolumes` and `extraVolumeMounts`, applied to all shards by
+`deploy_kcp`). The kcp checkout `--kcp-dir` points at must carry that hook;
+the stack fails at parse time with the file name if it does not, rather than
+starting shards without enforcement. The kcp image itself is built from the
+fork commit `go.mod` pins (`hack/scripts/build-kcp-image.sh`), because the
+global validating webhook only exists there.

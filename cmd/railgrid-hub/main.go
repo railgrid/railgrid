@@ -108,6 +108,11 @@ func main() {
 	cmd.Flags().StringVar(&opts.KCPBatteriesInclude, "kcp-batteries-include", opts.KCPBatteriesInclude, "Comma-separated list of kcp batteries to include")
 	cmd.Flags().StringVar(&opts.KCPTLSCertFile, "kcp-tls-cert-file", "", "TLS certificate file for embedded kcp API server")
 	cmd.Flags().StringVar(&opts.KCPTLSKeyFile, "kcp-tls-key-file", "", "TLS key file for embedded kcp API server")
+	cmd.Flags().StringVar(&opts.KCPAdmissionConfigFile, "kcp-admission-config-file", "", "AdmissionConfiguration file for the embedded kcp shard (kcp's --admission-control-config-file); carries the apis.kcp.io/GlobalValidatingWebhook section that wires the metering provider's enforcement webhook into every workspace")
+	cmd.Flags().StringVar(&opts.KCPAuditPolicyFile, "kcp-audit-policy-file", "", "Audit policy file for the embedded kcp shard (kcp's --audit-policy-file); set together with --kcp-audit-webhook-config-file")
+	cmd.Flags().StringVar(&opts.KCPAuditWebhookConfigFile, "kcp-audit-webhook-config-file", "", "Audit webhook kubeconfig for the embedded kcp shard (kcp's --audit-webhook-config-file, batch mode); the metering audit sink")
+	cmd.Flags().StringVar(&opts.MeteringWorkspace, "metering-workspace", "root:railgrid:system:metering", "kcp workspace the contrib-metering deployment owns; the hub discovers metering from the endpoints it publishes there and surfaces it in the admin area. Empty disables discovery.")
+	cmd.Flags().StringVar(&opts.MeteringDefaultPlan, "metering-default-plan", "free", "Metering Plan every organization is placed on when its Entitlement is first created; never changed by the hub afterwards")
 
 	cmd.AddCommand(newAppIdentityKeyRotationCommand())
 

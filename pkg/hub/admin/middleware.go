@@ -49,6 +49,14 @@ func (f AdminCheckerFunc) IsAdmin(ctx context.Context, userName string) bool { r
 
 type adminCtxKey struct{}
 
+// UserFromContext returns the admin identity Middleware stamped on the
+// request, or "" outside a gated request. Handlers mounted behind the
+// middleware use it to attribute their writes in logs.
+func UserFromContext(ctx context.Context) string {
+	name, _ := ctx.Value(adminCtxKey{}).(string)
+	return name
+}
+
 // Middleware gates a subrouter so only platform admins reach it: 401 when no
 // identity resolves, 403 when the caller is authenticated but not an admin.
 func Middleware(resolver UserResolver, checker AdminChecker) func(http.Handler) http.Handler {

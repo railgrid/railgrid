@@ -191,6 +191,33 @@ type Options struct {
 	// status.endpoints[]. For a single-shard embedded dev setup both want
 	// the same value.
 	KCPShardVirtualWorkspaceURL string
+	// KCPAdmissionConfigFile is an apiserver AdmissionConfiguration handed to
+	// the embedded kcp shard (kcp's --admission-control-config-file). Its
+	// use today is the apis.kcp.io/GlobalValidatingWebhook plugin section: a
+	// ValidatingWebhookConfiguration the shard fires in EVERY logical
+	// cluster, which is how the metering provider's enforcement webhook is
+	// wired without a per-workspace object. Empty leaves admission as kcp
+	// ships it. An external kcp takes the same flag on its shards.
+	KCPAdmissionConfigFile string
+	// KCPAuditPolicyFile and KCPAuditWebhookConfigFile are kcp's
+	// --audit-policy-file and --audit-webhook-config-file for the embedded
+	// shard: the audit backend (batch mode) that feeds the metering
+	// provider's request-cost meter. Both or neither.
+	KCPAuditPolicyFile        string
+	KCPAuditWebhookConfigFile string
+
+	// MeteringWorkspace is the kcp workspace the contrib-metering deployment
+	// owns. The hub discovers metering by reading two objects it publishes
+	// there (ConfigMap default/metering-endpoints, Secret
+	// default/metering-admin): present means installed, and the admin area
+	// then surfaces its data through /api/admin/metering. Empty disables
+	// discovery.
+	MeteringWorkspace string
+	// MeteringDefaultPlan is the metering Plan every Organization's
+	// Entitlement is created on. The hub only creates that Entitlement;
+	// changing an organization's plan afterwards is an admin (later a
+	// billing) action the hub never undoes.
+	MeteringDefaultPlan string
 }
 
 // NewOptions returns default Options.

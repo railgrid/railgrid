@@ -3,7 +3,7 @@ kind: Workspace
 metadata:
   name: tenants
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   type:
     name: universal

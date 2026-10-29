@@ -30,6 +30,7 @@
 config.define_string('kcp-dir')
 config.define_string('kcp-image-tag')
 config.define_string('kcp-image-repo')
+config.define_string('kcp-build', usage='kcp to build the image from: a git ref in --kcp-dir or a working tree (default: the fork commit go.mod pins)')
 # Opt-in SSO for the local stack: `tilt up -f Tiltfile.cluster -- --sso` wires
 # the hub to the local Dex (username/password login, browser SSO for private
 # published apps). Default OFF: the hub runs token-login only, exactly the
@@ -65,29 +66,33 @@ default_kcp_dir = os.path.join(os.getenv('HOME', ''), 'go', 'src', 'github.com',
 kcp_dir = cfg.get('kcp-dir', os.getenv('KCP_DIR', default_kcp_dir))
 cluster_name = 'kcp-tilt'
 
-# Optional: pin every kcp component (RootShard, Shard, FrontProxy + proxy) to a
-# specific image tag, keeping the kcp-operator's default repositories. The
-# included Tiltfile.static reads KCP_IMAGE_TAG and injects spec.image.tag into
-# the operator CRs. Unset → operator's version-matched defaults.
-# Defaults to the kcp v0.33.0 release (the kcp-operator v0.10.0 default), which
-# carries delegated authn/authz for APIExport providers (kcp#4280 —
-# TokenReview/SubjectAccessReview on the APIExport VW). That is what lets the
-# edges provider's authorize() validate consumer tokens against the consumer
-# workspace instead of 404ing. To try a PR build, override on the CLI:
-#   tilt up -f Tiltfile.cluster -- --kcp-image-repo=ghcr.io/kcp-dev/kcp-prs --kcp-image-tag=pr-XXXX-<sha>
-#   tilt up -f Tiltfile.cluster -- --kcp-image-repo= --kcp-image-tag=          # operator defaults
+# The kcp image. railgrid runs the kcp FORK its hub links (the
+# github.com/kcp-dev/kcp replace in go.mod), not an upstream release: the fork
+# carries the global validating admission webhook
+# (apis.kcp.io/GlobalValidatingWebhook) the metering enforcer sits behind. By
+# default the pinned commit is built from the kcp checkout's git objects by
+# hack/scripts/build-kcp-image.sh (cached per commit, loaded into kind) once
+# the kind cluster exists below, and every kcp component (RootShard, Shard,
+# FrontProxy + proxy) runs it: the included Tiltfile.static reads
+# KCP_IMAGE_REPO/KCP_IMAGE_TAG and injects spec.image into the operator CRs.
 #
-# NOTE: the override comes ONLY from the --kcp-image-* flags (or the literal
-# defaults below) — deliberately NOT os.getenv(). Tilt re-executes this file in
-# one long-lived process, and the os.putenv() below persists across re-parses;
-# reading the same var back via os.getenv() would make the FIRST tag sticky and
-# silently shadow any later edit to the default here. The putenv is one-way:
-# parent (this file) → child (the included Tiltfile.static, which reads the env).
+#   tilt up -f Tiltfile.cluster -- --kcp-build=<ref>          # another commit/branch of the fork
+#   tilt up -f Tiltfile.cluster -- --kcp-build=/path/to/kcp   # a working tree, while changing kcp itself
+#   tilt up -f Tiltfile.cluster -- --kcp-image-repo=ghcr.io/kcp-dev/kcp-prs --kcp-image-tag=pr-XXXX-<sha>
+#   tilt up -f Tiltfile.cluster -- --kcp-image-tag=v0.33.0    # an upstream release: no enforcement
+#
+# An explicit --kcp-image-* skips the build and goes to the operator as is
+# (an empty repo keeps the operator's default repositories).
+#
+# NOTE: the values come ONLY from the flags or the build below — deliberately
+# NOT os.getenv(). Tilt re-executes this file in one long-lived process, and
+# the os.putenv() persists across re-parses; reading the same var back via
+# os.getenv() would make the FIRST value sticky and silently shadow a later
+# change. The putenv is one-way: parent (this file) → child (the included
+# Tiltfile.static, which reads the env).
 kcp_image_repo = cfg.get('kcp-image-repo', '')
-kcp_image_tag = cfg.get('kcp-image-tag', 'v0.33.0')
-# Always export (even empty) so an explicit '' override clears any inherited env.
-os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
-os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
+kcp_image_tag = cfg.get('kcp-image-tag', '')
+kcp_build = cfg.get('kcp-build', '')
 
 # Static-token auth: tell the included Tiltfile.static to wire
 # spec.auth.tokenAuthFile (operator-native, kcp-operator PR #240) into the root
@@ -104,6 +109,73 @@ os.putenv('KCP_PORTAL_ENABLED', 'false')
 kcp_tilt = os.path.join(kcp_dir, 'contrib', 'tilt', 'Tiltfile.static')
 if not os.path.exists(kcp_tilt):
     fail('expected upstream kcp Tiltfile at %s — is --kcp-dir pointing at a kcp checkout?' % kcp_tilt)
+
+# Checkouts of providers developed in other repositories (loaded fully further
+# down, once the hub is defined; docs/external-providers-tilt.md).
+# Comma-separated; spaces inside a path are preserved, blanks ignored, repeats
+# loaded once.
+external_providers_dirs = []
+for _dir in (cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')).split(','):
+    _dir = _dir.strip()
+    if _dir and os.path.abspath(_dir) not in external_providers_dirs:
+        external_providers_dirs.append(os.path.abspath(_dir))
+
+# A checkout may need every kcp SHARD configured at startup: an admission
+# configuration (the global validating webhook contrib-metering's enforcer
+# sits behind) and an audit backend. It opts in by exporting
+# `railgrid_shard_config(host_ports, kcp_loopback_proxy, mount_path)` from its
+# hack/tilt/providers.tilt. Here kcp runs in the cluster under the
+# kcp-operator, so the function is called with host_ports=False (in-cluster
+# Service URLs), the files it returns are published as one Secret the operator
+# mounts into the root shard and every other shard at KCP_SHARD_CONFIG_MOUNT,
+# and the flags that read them ride along — through the included
+# Tiltfile.static's KCP_SHARD_CONFIG_FILE hook (the operator CRs' extraArgs,
+# extraVolumes and extraVolumeMounts). The function only writes files; its
+# Tilt resources come from railgrid_providers below.
+KCP_SHARD_CONFIG_MOUNT = '/etc/kcp/railgrid'
+kcp_shard_files = {}
+kcp_shard_args = []
+for _shard_dir in external_providers_dirs:
+    _shard_lib = os.path.join(_shard_dir, 'hack', 'tilt', 'providers.tilt')
+    if not os.path.exists(_shard_lib):
+        continue
+    _shard_symbols = load_dynamic(_shard_lib)
+    if 'railgrid_shard_config' not in _shard_symbols:
+        continue
+    _shard = _shard_symbols['railgrid_shard_config'](host_ports=False, mount_path=KCP_SHARD_CONFIG_MOUNT) or {}
+    for _name, _path in _shard.get('files', {}).items():
+        if _name in kcp_shard_files:
+            fail('shard config file %s is written by more than one external provider checkout (%s)' % (_name, _shard_dir))
+        # cat, not read_file: the library rewrites these on every parse, and a
+        # watched file that every parse rewrites re-parses forever.
+        kcp_shard_files[_name] = str(local(['cat', _path], quiet=True, echo_off=True))
+    _flags = []
+    for _key, _flag in [('admission_config_file', '--admission-control-config-file'),
+                        ('audit_policy_file', '--audit-policy-file'),
+                        ('audit_webhook_config_file', '--audit-webhook-config-file')]:
+        if _shard.get(_key):
+            _flags.append('%s=%s' % (_flag, _shard[_key]))
+    kcp_shard_args += _flags
+    if _flags:
+        print('  external shard config: %s (from %s)' % (' '.join(_flags), _shard_dir))
+if kcp_shard_args:
+    if 'KCP_SHARD_CONFIG_FILE' not in str(read_file(kcp_tilt)):
+        fail('%s does not read KCP_SHARD_CONFIG_FILE, so the shard configuration above cannot reach the kcp-operator CRs; point --kcp-dir at a kcp checkout with that hook (the fork railgrid links has it)' % kcp_tilt)
+    k8s_yaml(encode_yaml({
+        'apiVersion': 'v1', 'kind': 'Secret',
+        'metadata': {'name': 'kcp-shard-config', 'namespace': 'default'},
+        'stringData': kcp_shard_files,
+    }))
+    k8s_resource(new_name='kcp-shard-config', objects=['kcp-shard-config:secret'], labels=['kcp'])
+    kcp_shard_config_file = os.path.abspath('.kcp/tilt-kcp-shard-config.yaml')
+    local(['sh', '-c', 'mkdir -p "$(dirname "$1")" && cat > "$1"', 'sh', kcp_shard_config_file], stdin=str(encode_yaml({
+        'extraArgs': kcp_shard_args,
+        'extraVolumes': [{'name': 'railgrid-shard-config', 'secret': {'secretName': 'kcp-shard-config'}}],
+        'extraVolumeMounts': [{'name': 'railgrid-shard-config', 'mountPath': KCP_SHARD_CONFIG_MOUNT, 'readOnly': True}],
+    })), quiet=True, echo_off=True)
+    os.putenv('KCP_SHARD_CONFIG_FILE', kcp_shard_config_file)
+else:
+    os.putenv('KCP_SHARD_CONFIG_FILE', '')
 
 # NOTE: no global GOOS override. Tiltfile.static deploys upstream prebuilt kcp
 # images (no in-cluster `go build`). The hub binary IS cross-compiled for linux,
@@ -148,6 +220,32 @@ local('kind get kubeconfig --name %s > %s' % (cluster_name, KIND_HOST_KUBECONFIG
 local('kind export kubeconfig --name %s' % cluster_name, quiet=False)
 
 allow_k8s_contexts('kind-%s' % cluster_name)
+
+def _pinned_kcp_commit():
+    # The kcp commit the hub links: the pseudo-version of go.mod's
+    # `replace github.com/kcp-dev/kcp => <module> <version>` ends in the
+    # commit's 12-hex prefix. Returns (module, commit).
+    for line in str(read_file('go.mod')).split('\n'):
+        fields = line.split()
+        if len(fields) == 5 and fields[0] == 'replace' and fields[1] == 'github.com/kcp-dev/kcp' and fields[2] == '=>':
+            return fields[3], fields[4].split('-')[-1]
+    fail('go.mod has no `replace github.com/kcp-dev/kcp => <module> <version>` line to build the kcp image from; pass --kcp-build or --kcp-image-repo/--kcp-image-tag')
+
+# The kcp image (see the flags up top): built and loaded into the kind cluster
+# created above, unless --kcp-image-* names one.
+if not kcp_image_repo and not kcp_image_tag:
+    kcp_module, kcp_source = _pinned_kcp_commit()
+    if kcp_build:
+        kcp_source = kcp_build
+    kcp_image_repo = 'railgrid-kcp'
+    kcp_image_tag = str(local(
+        ['hack/scripts/build-kcp-image.sh', kcp_dir, kcp_source, cluster_name, kcp_image_repo, 'https://' + kcp_module],
+        quiet=False,
+        echo_off=True,
+    )).strip()
+# Always export (even empty) so an explicit '' override clears any inherited env.
+os.putenv('KCP_IMAGE_REPO', kcp_image_repo)
+os.putenv('KCP_IMAGE_TAG', kcp_image_tag)
 
 print('')
 print('Deploying upstream kcp into kind cluster %s' % cluster_name)
@@ -2226,17 +2324,9 @@ local_resource(
 # only hands over what the stack knows: the hosting context, the in-cluster hub,
 # the kcp admin kubeconfig for register/init, and the resources to wait for.
 # ---------------------------------------------------------------------------
-# Comma-separated checkout roots; preserve spaces inside individual paths.
-external_providers_dirs = cfg.get('external-providers-dir', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS_DIR', '')
-external_providers_seen = []
-for external_providers_dir in external_providers_dirs.split(','):
-    external_providers_dir = external_providers_dir.strip()
-    if not external_providers_dir:
-        continue
-    external_providers_dir = os.path.abspath(external_providers_dir)
-    if external_providers_dir in external_providers_seen:
-        continue
-    external_providers_seen.append(external_providers_dir)
+# The checkout roots were parsed up top (external_providers_dirs), where the
+# shard configuration a checkout exports went into the kcp-operator CRs.
+for external_providers_dir in external_providers_dirs:
     external_providers_lib = os.path.join(external_providers_dir, 'hack', 'tilt', 'providers.tilt')
     if not os.path.exists(external_providers_lib):
         fail('--external-providers-dir %s has no hack/tilt/providers.tilt; see docs/external-providers-tilt.md' % external_providers_dir)

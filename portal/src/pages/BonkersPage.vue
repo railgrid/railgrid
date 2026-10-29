@@ -2,7 +2,7 @@
 import { computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import {
-  ShieldAlert, AlertCircle, RefreshCw, Puzzle, Building2, Users,
+  ShieldAlert, AlertCircle, RefreshCw, Puzzle, Building2, Users, Gauge,
   Hexagon, ArrowLeft, LogOut, PanelLeftClose, PanelLeftOpen, Tag,
 } from 'lucide-vue-next'
 
@@ -23,6 +23,7 @@ const sections = [
   { to: '/bonkers/providers', label: 'Providers', icon: Puzzle },
   { to: '/bonkers/organizations', label: 'Organizations', icon: Building2 },
   { to: '/bonkers/users', label: 'Users', icon: Users },
+  { to: '/bonkers/metering', label: 'Metering', icon: Gauge },
 ]
 
 onMounted(() => admin.refresh())

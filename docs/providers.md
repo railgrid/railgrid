@@ -769,7 +769,7 @@ reconcile:
 
 1. **Sub-workspace**: ensure `root:railgrid:providers:{name}` exists. Use
    the existing kcp tenancy client. Created with type `universal`,
-   `bootstrap.kcp.io/create-only: "true"`.
+   `bootstrap.railgrid.ai/create-only: "true"`.
 2. **Provider ServiceAccount**: ensure a `ServiceAccount` named
    `provider` exists in that workspace, bound to `cluster-admin` on the
    workspace (admin within its own sandbox, nothing outside).

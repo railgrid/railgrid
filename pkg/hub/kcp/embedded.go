@@ -97,6 +97,19 @@ type EmbeddedKCPOptions struct {
 	OIDCUsernamePrefix string
 	OIDCGroupsClaim    string
 	OIDCGroupsPrefix   string
+
+	// AdmissionConfigFile is kcp's --admission-control-config-file: an
+	// AdmissionConfiguration whose per-plugin sections configure admission
+	// plugins at startup. The apis.kcp.io/GlobalValidatingWebhook section is
+	// a ValidatingWebhookConfiguration the shard fires in every logical
+	// cluster (the metering provider's enforcement webhook). Empty keeps
+	// kcp's defaults.
+	AdmissionConfigFile string
+	// AuditPolicyFile and AuditWebhookConfigFile are kcp's --audit-policy-file
+	// and --audit-webhook-config-file (batch mode): the audit backend that
+	// feeds the metering provider's request-cost meter. Set both or neither.
+	AuditPolicyFile        string
+	AuditWebhookConfigFile string
 }
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
@@ -253,6 +266,32 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 			"clientID", e.opts.OIDCClientID,
 			"usernameClaim", oidcOpts.UsernameClaim,
 			"usernamePrefix", oidcOpts.UsernamePrefix)
+	}
+
+	// Admission configuration: the one way to configure the global
+	// validating webhook, which has no per-workspace object by design.
+	if e.opts.AdmissionConfigFile != "" {
+		if _, err := os.Stat(e.opts.AdmissionConfigFile); err != nil {
+			return fmt.Errorf("kcp admission config file: %w", err)
+		}
+		kcpOpts.GenericControlPlane.Admission.GenericAdmission.ConfigFile = e.opts.AdmissionConfigFile
+		logger.Info("kcp admission configuration file set", "path", e.opts.AdmissionConfigFile)
+	}
+
+	// Audit backend. kube's audit webhook defaults to batch mode, which is
+	// what a metering sink wants: never block a request on the sink.
+	if (e.opts.AuditPolicyFile == "") != (e.opts.AuditWebhookConfigFile == "") {
+		return fmt.Errorf("kcp audit: --kcp-audit-policy-file and --kcp-audit-webhook-config-file must be set together")
+	}
+	if e.opts.AuditPolicyFile != "" {
+		for _, p := range []string{e.opts.AuditPolicyFile, e.opts.AuditWebhookConfigFile} {
+			if _, err := os.Stat(p); err != nil {
+				return fmt.Errorf("kcp audit file: %w", err)
+			}
+		}
+		kcpOpts.GenericControlPlane.Audit.PolicyFile = e.opts.AuditPolicyFile
+		kcpOpts.GenericControlPlane.Audit.WebhookOptions.ConfigFile = e.opts.AuditWebhookConfigFile
+		logger.Info("kcp audit webhook configured", "policy", e.opts.AuditPolicyFile, "webhookConfig", e.opts.AuditWebhookConfigFile)
 	}
 
 	// Configure batteries.

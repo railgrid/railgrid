@@ -3,7 +3,7 @@ kind: WorkspaceType
 metadata:
   name: provider
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   # A `provider` workspace (root:railgrid:providers:<name>) hosts a single
   # extension provider: its own APIExport + APIResourceSchemas (created by the

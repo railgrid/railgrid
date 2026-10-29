@@ -26,7 +26,10 @@ PORTS = {'TILT_PORT': 10350, 'HUB_PORT': 9443, 'KCP_PORT': 6443,
          'CODE_REPLICA_PORT': 18083, 'KUERY_REPLICA_PORT': 18084,
          'EDGES_REPLICA_PORT': 18088, 'EDGES_REPLICA_INTERNAL_PORT': 18090,
          'DEV_SSH_PORT': 2222, 'HA_FORWARD_PORT': 8123,
-         'PLANNER_PORT': 18091, 'FACTORY_PORT': 18092, 'DATABRICKS_PORT': 18093}
+         'PLANNER_PORT': 18091, 'FACTORY_PORT': 18092, 'DATABRICKS_PORT': 18093,
+         # External metering provider (railgrid/contrib-metering): the hub-facing
+         # controller port, and the webhook and audit ports the embedded kcp dials.
+         'METERING_PORT': 18094, 'METERING_WEBHOOK_PORT': 19443, 'METERING_AUDIT_PORT': 19444}
 
 
 def ephemeral_range():
@@ -58,27 +61,31 @@ def allocate_ports(root, saved=None):
         entries = {owner: ports for owner, ports in entries.items() if Path(owner).exists()}
         claimed = {port for owner, ports in entries.items() if owner != str(root)
                    for port in ports.values()}
-        ports = saved or entries.get(str(root))
-        if ports:
-            if claimed.intersection(ports.values()):
-                raise ValueError('Saved Tilt ports conflict with another checkout in ' + str(registry))
-        else:
-            first, last = ephemeral_range()
-            ports = {}
-            for key in PORTS:
-                for candidate in range(20000, 30000):
-                    if candidate in claimed or first <= candidate <= last:
+        # A checkout keeps the claim it has, including the fixed ports a
+        # checkout that predates per-checkout allocation holds (hub 9443, kcp
+        # 6443, ...): its URLs and kubeconfigs stay stable across restarts.
+        ports = dict(saved or entries.get(str(root)) or {})
+        if claimed.intersection(ports.values()):
+            raise ValueError('Saved Tilt ports conflict with another checkout in ' + str(registry))
+        first, last = ephemeral_range()
+        # Keys added to PORTS after a checkout's claim was recorded are
+        # allocated on the next start; the rest of the claim is kept.
+        for key in PORTS:
+            if key in ports:
+                continue
+            for candidate in range(20000, 30000):
+                if candidate in claimed or candidate in ports.values() or first <= candidate <= last:
+                    continue
+                with socket.socket() as sock:
+                    try:
+                        sock.bind(('127.0.0.1', candidate))
+                    except OSError:
                         continue
-                    with socket.socket() as sock:
-                        try:
-                            sock.bind(('127.0.0.1', candidate))
-                        except OSError:
-                            continue
-                    ports[key] = candidate
-                    claimed.add(candidate)
-                    break
-                else:
-                    raise ValueError('No free Tilt port in 20000-29999 outside the host ephemeral range')
+                ports[key] = candidate
+                claimed.add(candidate)
+                break
+            else:
+                raise ValueError('No free Tilt port in 20000-29999 outside the host ephemeral range')
         entries[str(root)] = ports
         temporary = registry.with_suffix('.tmp')
         temporary.write_text(json.dumps(entries, indent=2) + '\n')
@@ -88,17 +95,13 @@ def allocate_ports(root, saved=None):
 
 
 def check_ports(config):
-    ports = config['ports']
-    if config['legacy']:
-        # Preserve the original launch guards; provider DBs may already run.
-        ports = {key: int(os.environ.get(key, PORTS[key]))
-                 for key in ['TILT_PORT', 'HUB_PORT', 'KCP_PORT']}
-    for name, port in ports.items():
+    for name, port in config['ports'].items():
+        # A bind() probe also fails on TIME_WAIT sockets a just-stopped Tilt or
+        # hub leaves behind for 2*MSL; only a listener answers a connect().
         with socket.socket() as sock:
-            try:
-                sock.bind(('127.0.0.1', port))
-            except OSError as error:
-                raise ValueError(f'{name} port {port} is unavailable for this checkout: {error}') from None
+            sock.settimeout(1)
+            if sock.connect_ex(('127.0.0.1', port)) == 0:
+                raise ValueError(f'{name} port {port} is unavailable for this checkout: a process is listening on it')
 
 
 def settings(root=ROOT):
@@ -111,15 +114,11 @@ def settings(root=ROOT):
             config = json.loads(path.read_text())
             if config['root'] != str(root):
                 raise ValueError('Copied Tilt state belongs to another checkout; remove the copied .kcp before starting')
-            if not config['legacy']:
-                allocate_ports(root, config['ports'])
+            allocate_ports(root, config['ports'])
             return config
-        # Existing dev installations retain their ports, names, and state.
-        # Fresh checkouts always get independent resources, even if dev is down.
-        legacy = (state / 'admin.kubeconfig').exists()
+        # Every checkout gets independent ports, names, and state.
         key = hashlib.sha256(str(root).encode()).hexdigest()[:12]
-        config = {'root': str(root), 'legacy': legacy, 'key': key,
-                  'ports': PORTS if legacy else allocate_ports(root)}
+        config = {'root': str(root), 'key': key, 'ports': allocate_ports(root)}
         path.write_text(json.dumps(config, indent=2) + '\n')
         path.chmod(0o600)
         return config
@@ -129,8 +128,6 @@ def environment(config):
     # One static development identity shared by Tilt and browser bootstrap.
     token = 'dev-token'
     auth = {'DEV_STATIC_TOKEN': token, 'DEV_STATIC_ADMIN': 'railgrid:static:' + hashlib.sha256(('static-token/' + token).encode()).hexdigest()[:16]}
-    if config['legacy']:
-        return auth
     root = Path(config['root'])
     key = config['key']
     p = config['ports']
@@ -168,8 +165,6 @@ def environment(config):
 
 
 def manifests(config, write=True):
-    if config['legacy']:
-        return {}
     root = Path(config['root'])
     directory = root / '.kcp/tilt-manifests'
     if write:
@@ -194,8 +189,6 @@ def manifests(config, write=True):
 
 
 def configure_host_dns(config):
-    if config['legacy']:
-        return
     if os.environ.get('KIND_EXPERIMENTAL_PROVIDER', 'docker') != 'docker':
         raise ValueError('Checkout Tilt DNS setup requires the Docker kind provider')
     node = 'railgrid-kro-' + config['key'] + '-control-plane'
@@ -262,8 +255,6 @@ def stop_owned(config):
     record_path = root / '.kcp/tilt-owner.json'
     if not record_path.exists():
         return
-    if config['legacy']:
-        raise ValueError('Refusing cleanup of a shared legacy Tilt stack')
     # Serialize with startup, including the full cleanup, so a new generation
     # cannot start between stopping processes and removing containers.
     with (root / '.kcp/tilt-owner.lock').open('a') as lock:
@@ -273,14 +264,19 @@ def stop_owned(config):
             raise ValueError('Tilt ownership record does not match this checkout')
         pid = record.get('pid')
         if pid and process_identity(pid) is not None:
-            if process_identity(pid) != record.get('birth') or os.getpgid(pid) != pid:
+            if process_identity(pid) != record.get('birth'):
                 raise ValueError('Tilt process identity changed; refusing to signal it')
-            os.killpg(pid, signal.SIGTERM)
+            stop = os.killpg if os.getpgid(pid) == pid else os.kill
+            stop(pid, signal.SIGTERM)
             deadline = time.monotonic() + 30
             while process_identity(pid) == record['birth'] and time.monotonic() < deadline:
                 time.sleep(0.2)
             if process_identity(pid) == record['birth']:
-                os.killpg(pid, signal.SIGKILL)
+                stop(pid, signal.SIGKILL)
+        # Tilt runs every serve command in a process group of its own, so a
+        # Tilt that died hard leaves them behind; they are stopped by the
+        # ports they hold, before the clusters and containers go.
+        stop_listeners(config)
         env = dict(os.environ, **environment(config))
         # An explicit private kubeconfig prevents kind from editing the user's
         # default kubeconfig, even after the original launcher has exited.
@@ -304,6 +300,76 @@ def stop_owned(config):
         if failures:
             raise ValueError('Cleanup incomplete; retry make dev-browser-down: ' + ', '.join(failures))
         record_path.unlink()
+
+
+def release_checkout(config, record_path, keep_record=False):
+    """What make tilt does once Tilt has exited, however it exited: stop what
+    it left behind so the next make tilt starts clean. That is every process
+    still listening on one of this checkout's ports (a serve_cmd Tilt could not
+    stop) and this checkout's own containers. The kind clusters stay, because
+    tilt-start reuses them; make dev-browser-down deletes them."""
+    env = dict(os.environ, **environment(config))
+    env['KUBECONFIG'] = str(Path(config['root']) / '.kcp/tilt-client.kubeconfig')
+    failures = []
+    try:
+        existing = subprocess.check_output(['docker', 'ps', '-a', '--format', '{{.Names}}'], env=env, text=True, timeout=30).splitlines()
+    except (OSError, subprocess.SubprocessError):
+        existing = []
+        failures.append('Docker container discovery')
+    for name in owned_resources(config)['containers']:
+        if name in existing:
+            try:
+                subprocess.run(['docker', 'rm', '-f', name], env=env, check=True, timeout=60,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                failures.append('container ' + name)
+    # Containers first: a published port is held by the container runtime,
+    # which must never be signalled. What is left listening on a port this
+    # checkout allocated is a process of this stack.
+    stop_listeners(config)
+    if record_path.exists() and not keep_record:
+        record_path.unlink()
+    if failures:
+        print('Cleanup incomplete; retry with make dev-browser-down: ' + ', '.join(failures), file=sys.stderr)
+
+
+def stop_listeners(config):
+    """Stop every process still listening on a port this checkout allocated:
+    Tilt starts each serve command in its own process group, so a Tilt that
+    died hard (SIGKILL, a crash) leaves them running. The container runtime,
+    which holds published ports on a container's behalf, is never signalled."""
+    for name, port in sorted(config['ports'].items()):
+        for pid in port_listeners(port):
+            if pid == os.getpid() or is_container_runtime(pid):
+                continue
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+            deadline = time.monotonic() + 5
+            while process_identity(pid) is not None and time.monotonic() < deadline:
+                time.sleep(0.2)
+            if process_identity(pid) is not None:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def port_listeners(port):
+    try:
+        out = subprocess.run(['lsof', '-tiTCP:%d' % port, '-sTCP:LISTEN'], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    return {int(pid) for pid in out.split() if pid.isdigit()}
+
+
+def is_container_runtime(pid):
+    try:
+        comm = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True, text=True, timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return any(marker in comm.lower() for marker in ('orbstack', 'docker', 'vpnkit', 'colima', 'podman'))
 
 
 def tilt_settings_directory():
@@ -335,45 +401,50 @@ def main():
     if sys.argv[1:] == ['prepare-env']:
         print(json.dumps(env))
         return
-    detached = os.environ.get('TILT_DETACHED') == '1'
-    if detached and config['legacy']:
-        raise ValueError('Detached Tilt requires an isolated checkout')
     with (ROOT / '.kcp/tilt-run.lock').open('w') as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError('Tilt is already running for this checkout') from None
-        check_ports(config)
+        detached = os.environ.get('TILT_DETACHED') == '1'
         process_env = dict(os.environ, **env)
         command = ['make', 'tilt-start']
-        if config['legacy']:
-            result = subprocess.run(command, cwd=ROOT, env=process_env)
-            sys.exit(result.returncode)
+        record_path = ROOT / '.kcp/tilt-owner.json'
         with (ROOT / '.kcp/tilt-owner.lock').open('a') as owner_lock:
             fcntl.flock(owner_lock, fcntl.LOCK_EX)
-            record_path = ROOT / '.kcp/tilt-owner.json'
             if record_path.exists():
                 old = json.loads(record_path.read_text())
                 if old.get('pid') and process_identity(old['pid']) is not None:
                     raise ValueError('Recorded Tilt process is still running; run make dev-browser-down first')
+                # The previous stack is gone but its record is: it exited
+                # without the launcher's cleanup (a detached stack, or a
+                # launcher that was killed). Reap its leftovers now so they
+                # cannot fail the port check below.
+                if old.get('root') == str(ROOT) and old.get('resources') == owned_resources(config):
+                    print('Removing leftovers of the previous Tilt stack')
+                    release_checkout(config, record_path)
+            check_ports(config)
             # Record intended names before launch, including partially created
             # resources when startup fails. Every name is checkout-specific.
             process_env['TILT_DEV_DIR'] = tilt_settings_directory()
             record = {'root': str(ROOT), 'resources': owned_resources(config),
                       'tiltDevDir': process_env['TILT_DEV_DIR']}
             write_owner(record_path, record)
+            # A stop that arrives while Tilt is being launched is held until
+            # the owner record is durable, then forwarded as a plain SIGTERM.
             pending = []
             child = None
             def terminate(signum, frame):
                 if child is None:
                     pending.append(signum)
                 elif child.poll() is None:
-                    os.killpg(child.pid, signum)
+                    child.send_signal(signal.SIGTERM)
             signal.signal(signal.SIGTERM, terminate)
             signal.signal(signal.SIGINT, terminate)
             if detached:
-                # The stack outlives the agent's terminal. Its recorded process
-                # group remains owned by dev-browser-down, including on expiry.
+                # The stack outlives this terminal: its own session, stdio on a
+                # private log. It is stopped by make dev-browser-down, and
+                # whatever it leaves behind is reaped by the next make tilt.
                 log_path = ROOT / '.kcp/tilt.log'
                 fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
                 with os.fdopen(fd, 'ab') as log:
@@ -382,7 +453,10 @@ def main():
                                              start_new_session=True, stdin=subprocess.DEVNULL,
                                              stdout=log, stderr=subprocess.STDOUT)
             else:
-                child = subprocess.Popen(command, cwd=ROOT, env=process_env, start_new_session=True)
+                # Attached: Tilt runs in this terminal's session and foreground
+                # process group, so its HUD has the controlling tty and Ctrl-C
+                # reaches it directly.
+                child = subprocess.Popen(command, cwd=ROOT, env=process_env)
             record.update(pid=child.pid, birth=process_identity(child.pid))
             write_owner(record_path, record)
             for signum in pending:
@@ -394,7 +468,15 @@ def main():
                 print('Launched owned Tilt stack; run make dev-browser-ready to verify readiness; logs: .kcp/tilt.log; stop: make dev-browser-down')
                 return
             raise ValueError(f'Tilt exited during startup (status {child.returncode}); inspect .kcp/tilt.log')
-        sys.exit(child.wait())
+        # From here the terminal delivers Ctrl-C to the whole foreground group,
+        # Tilt included, so the launcher ignores it and only waits. Set after
+        # the fork: a child inherits an ignored disposition across exec.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            status = child.wait()
+        finally:
+            release_checkout(config, record_path)
+        sys.exit(status)
 
 
 def cli():

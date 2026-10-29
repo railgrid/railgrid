@@ -3,7 +3,7 @@ kind: WorkspaceType
 metadata:
   name: organization
   annotations:
-    bootstrap.kcp.io/create-only: "true"
+    bootstrap.railgrid.ai/create-only: "true"
 spec:
   # Extend root:universal so Organization workspaces inherit the
   # universal initializer that bootstraps the "default" namespace.

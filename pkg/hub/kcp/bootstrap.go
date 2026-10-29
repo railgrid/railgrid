@@ -114,9 +114,10 @@ func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
 func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
 	logger.Info("Bootstrapping kcp workspace hierarchy")
+	cfg := b.config
 
 	// 1. Clients targeting root workspace.
-	rootDynamic, rootDiscovery, err := newClients(b.config)
+	rootDynamic, rootDiscovery, err := newClients(cfg)
 	if err != nil {
 		return fmt.Errorf("creating root clients: %w", err)
 	}
@@ -131,7 +132,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	}
 
 	// 3. Bootstrap child workspaces: providers, tenants, users.
-	railgridConfig := configForPath(b.config, "root:railgrid")
+	railgridConfig := configForPath(cfg, "root:railgrid")
 	railgridDynamic, railgridDiscovery, err := newClients(railgridConfig)
 	if err != nil {
 		return fmt.Errorf("creating railgrid clients: %w", err)
@@ -150,7 +151,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	// 3b. Bootstrap the system sub-workspaces: controllers (all platform
 	//     APIExports), providers (Provider/CatalogEntry objects), tenants
 	//     (User/Organization/Membership objects).
-	systemConfig := configForPath(b.config, kcppaths.System)
+	systemConfig := configForPath(cfg, kcppaths.System)
 	systemDynamic, systemDiscovery, err := newClients(systemConfig)
 	if err != nil {
 		return fmt.Errorf("creating system clients: %w", err)
@@ -191,7 +192,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 
 	// Preserve legacy initial-workspace requests while the old tenant API
 	// schema still exposes them. Updating the export below prunes that field.
-	tenantMigrationClient, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemTenants))
+	tenantMigrationClient, err := dynamic.NewForConfig(configForPath(cfg, kcppaths.SystemTenants))
 	if err != nil {
 		return fmt.Errorf("creating tenant migration client: %w", err)
 	}
@@ -203,7 +204,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	//    root:railgrid:system:controllers — the single home for platform exports.
 	//    The __TENANCY_IDENTITY_HASH__ placeholder in the APIExport YAML is
 	//    replaced with the actual identity hash from step 4.
-	controllersConfig := configForPath(b.config, kcppaths.SystemControllers)
+	controllersConfig := configForPath(cfg, kcppaths.SystemControllers)
 	controllersDynamic, controllersDiscovery, err := newClients(controllersConfig)
 	if err != nil {
 		return fmt.Errorf("creating system:controllers clients: %w", err)
@@ -227,7 +228,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 	//     tenants.railgrid.ai (User/Organization/Membership). All FROM
 	//     system:controllers. These exports are excluded from tenant-bound
 	//     core.railgrid.ai — see hack/gen-core-apiexport/main.go excludedAPIExports.
-	systemProvidersDynamic, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.SystemProviders))
+	systemProvidersDynamic, err := dynamic.NewForConfig(configForPath(cfg, kcppaths.SystemProviders))
 	if err != nil {
 		return fmt.Errorf("creating system:providers client: %w", err)
 	}

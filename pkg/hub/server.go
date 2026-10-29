@@ -62,6 +62,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
+	"github.com/railgrid/railgrid/pkg/hub/metering"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/restapi"
@@ -144,6 +145,9 @@ func (s *Server) Run(ctx context.Context) error {
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
 	var embeddedKCP *kcp.EmbeddedKCP
+	// meteringDiscovery is set once kcp is up and --metering-workspace is
+	// configured; the admin proxy and the organization reconciler share it.
+	var meteringDiscovery *metering.Discovery
 
 	// kcpErrCh receives errors from the embedded kcp server goroutine.
 	kcpErrCh := make(chan error, 1)
@@ -192,6 +196,10 @@ func (s *Server) Run(ctx context.Context) error {
 			OIDCIssuerURL: s.opts.IDPIssuerURL,
 			OIDCClientID:  s.opts.IDPClientID,
 			OIDCCAFile:    s.opts.IDPCAFile,
+
+			AdmissionConfigFile:    s.opts.KCPAdmissionConfigFile,
+			AuditPolicyFile:        s.opts.KCPAuditPolicyFile,
+			AuditWebhookConfigFile: s.opts.KCPAuditWebhookConfigFile,
 		})
 
 		// Start kcp in a goroutine. It will block until context is cancelled
@@ -1050,6 +1058,21 @@ func (s *Server) Run(ctx context.Context) error {
 
 			logger.Info("REST routes registered (Org/Workspace/Membership/User + ServiceAccount)")
 
+			// Metering is a standalone deployment discovered through kcp, not
+			// a provider: the hub learns where it is from the endpoints it
+			// publishes in its workspace, gives every organization its billing
+			// objects there, and lets the admin area read it.
+			if s.opts.MeteringWorkspace != "" {
+				d, err := metering.NewDiscovery(kcpConfig, s.opts.MeteringWorkspace, logger)
+				if err != nil {
+					logger.Error(err, "Metering discovery not started")
+				} else {
+					meteringDiscovery = d
+					go meteringDiscovery.Run(ctx)
+					logger.Info("Metering discovery enabled", "workspace", s.opts.MeteringWorkspace, "defaultPlan", s.opts.MeteringDefaultPlan)
+				}
+			}
+
 			// Platform-admin surface (/api/admin/*, portal /bonkers). Only
 			// wired when --admin-users is set; gated so only allowlisted
 			// identities pass. Onboards providers (workspace + SA + kubeconfig)
@@ -1079,6 +1102,18 @@ func (s *Server) Run(ctx context.Context) error {
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
 				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
+				// The admin area reads metering through this proxy.
+				if meteringDiscovery != nil {
+					h := metering.NewHandler(meteringDiscovery)
+					// Plan and entitlement edits are written straight into
+					// the metering workspace as kcp-admin.
+					if c, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
+						logger.Error(err, "Metering admin writes disabled")
+					} else {
+						h.WithWriter(metering.NewWriter(c, s.opts.MeteringDefaultPlan, admin.UserFromContext, logger.WithName("metering-admin")))
+					}
+					h.Register(adminSub)
+				}
 				// The fleet-wide provider-claims migration is the twin of the
 				// per-workspace Enable flow, so it lives with it in restapi and
 				// only borrows this subrouter's admin gate. See
@@ -1237,6 +1272,19 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Setting up provider provisioning controller failed")
 				return
 			}
+			// Every platform provider workspace gets a binding to metering's
+			// provider export, so the provider can emit UsageRecords; gated on
+			// metering being discovered, a no-op until then.
+			if meteringDiscovery != nil {
+				if err := metering.SetupProviderReconciler(adminMgr, metering.ProviderOptions{
+					Discovery:  meteringDiscovery,
+					Workspaces: metering.WorkspaceClients(kcpConfig),
+					Logger:     logger.WithName("metering-provider-binding"),
+				}); err != nil {
+					logger.Error(err, "Setting up metering provider binding controller failed")
+					return
+				}
+			}
 
 			// Organization bootstrap controller — runs against root:railgrid:users
 			// where the User and (companion) Organization CRs live. This is a
@@ -1250,6 +1298,26 @@ func (s *Server) Run(ctx context.Context) error {
 			if err := organization.SetupWithManager(orgMgr, bootstrapper); err != nil {
 				logger.Error(err, "Setting up organization bootstrap controller failed")
 				return
+			}
+			// Every organization gets its billing objects in the metering
+			// workspace (Account, Entitlement on the default plan,
+			// MembershipReport); nothing happens until metering is discovered.
+			if meteringDiscovery != nil {
+				meteringClient, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace)
+				if err != nil {
+					logger.Error(err, "Creating metering workspace client failed")
+					return
+				}
+				if err := metering.SetupOrganizationReconciler(orgMgr, metering.OrganizationOptions{
+					Discovery:   meteringDiscovery,
+					Metering:    meteringClient,
+					Workspaces:  metering.WorkspaceClients(kcpConfig),
+					DefaultPlan: s.opts.MeteringDefaultPlan,
+					Logger:      logger.WithName("metering-organization"),
+				}); err != nil {
+					logger.Error(err, "Setting up metering organization controller failed")
+					return
+				}
 			}
 
 			// Soft-delete reconciler — roadmap step 8 (docs/organizations.md

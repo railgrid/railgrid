@@ -53,7 +53,7 @@ replace cloud.google.com/go => cloud.google.com/go v0.116.0
 
 // kcp pkg/cache/server imports apimachinery/v2/pkg/util/crypto, which only
 // exists from v2.32.0. Keep this in lock-step with the kcp release.
-replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/apimachinery/v2 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/apimachinery/v2 v2.0.0-20261028080645-9790f69ef65f
 
 // KCP kubernetes forks - required for cluster-aware API machinery
 replace (
@@ -114,11 +114,13 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/chai2010/gettext-go v1.0.3 // indirect
-	github.com/charmbracelet/colorprofile v0.3.2 // indirect
-	github.com/charmbracelet/x/ansi v0.10.1 // indirect
-	github.com/charmbracelet/x/cellbuf v0.0.13 // indirect
-	github.com/charmbracelet/x/term v0.2.1 // indirect
-	github.com/clipperhouse/uax29/v2 v2.2.0 // indirect
+	github.com/charmbracelet/colorprofile v0.3.3 // indirect
+	github.com/charmbracelet/x/ansi v0.11.0 // indirect
+	github.com/charmbracelet/x/cellbuf v0.0.14 // indirect
+	github.com/charmbracelet/x/term v0.2.2 // indirect
+	github.com/clipperhouse/displaywidth v0.4.1 // indirect
+	github.com/clipperhouse/stringish v0.1.1 // indirect
+	github.com/clipperhouse/uax29/v2 v2.3.0 // indirect
 	github.com/containerd/containerd v1.7.36 // indirect
 	github.com/containerd/errdefs v1.0.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
@@ -323,14 +325,14 @@ replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/mu
 
 // kcp v0.33.0 requires code-generator/v3 at a placeholder version (it is a
 // staging module replaced locally upstream); pin the matching release.
-replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/cli => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/cli v0.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/cli => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/cli v0.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/client-go => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/client-go v0.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20260926054725-20f1d300ccbe
+replace github.com/kcp-dev/virtual-workspace-framework => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/virtual-workspace-framework v0.0.0-20261028080645-9790f69ef65f

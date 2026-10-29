@@ -698,6 +698,26 @@ func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.Gro
 	if err != nil {
 		return err
 	}
+	// This is a replace, so metadata written by others must be carried over:
+	// kcp stamps internal.kcp.io/replicate on bind ClusterRoles, and its
+	// reserved-metadata admission rejects an update that drops that key from a
+	// non-system identity. Keys the desired object sets win.
+	labels := existing.GetLabels()
+	for k, v := range desired.GetLabels() {
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[k] = v
+	}
+	annotations := existing.GetAnnotations()
+	for k, v := range desired.GetAnnotations() {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[k] = v
+	}
+	desired.SetLabels(labels)
+	desired.SetAnnotations(annotations)
 	desired.SetResourceVersion(existing.GetResourceVersion())
 	_, err = cl.Resource(gvr).Update(ctx, desired, metav1.UpdateOptions{})
 	return err

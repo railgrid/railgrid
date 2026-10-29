@@ -84,7 +84,22 @@ func ReplaceOption(pairs ...string) Option {
 	}
 }
 
-const annotationCreateOnly = "bootstrap.kcp.io/create-only"
+// annotationCreateOnly marks a manifest Bootstrap creates once and never
+// updates, so an operator's later edits to the object survive a restart. It
+// is railgrid's own key, read only by this helper: kcp's bootstrap.kcp.io/
+// keys are reserved for kcp's system identities by its reserved-metadata
+// admission, so a platform applying manifests as a kcp admin (every external
+// kcp) cannot set them.
+const annotationCreateOnly = "bootstrap.railgrid.ai/create-only"
+
+// annotationCreateOnlyKCP is the key the manifests carried before the rename,
+// which is also what kcp's own bootstrap helper uses. Objects created under
+// it keep it for good: it is system-reserved, so no kcp admin can remove it,
+// and an update that dropped it (or the internal.tenancy.kcp.io/* keys kcp
+// stamps on a Workspace) would be refused outright. Those objects were
+// created once by bootstrap, which is exactly what the key says, so they are
+// skipped the same way.
+const annotationCreateOnlyKCP = "bootstrap.kcp.io/create-only"
 
 // Bootstrap reads all YAML files from an embed.FS and applies them to the
 // cluster using a discovery-based REST mapper. It retries continuously until
@@ -236,7 +251,7 @@ func upsertResource(ctx context.Context, client dynamic.Interface, mapper meta.R
 		return err
 	}
 
-	if _, exists := existing.GetAnnotations()[annotationCreateOnly]; exists {
+	if createOnly(existing) {
 		logger.V(4).Info("Skipping update of create-only resource", "kind", gvk.Kind, "name", u.GetName())
 		return nil
 	}
@@ -247,4 +262,13 @@ func upsertResource(ctx context.Context, client dynamic.Interface, mapper meta.R
 	}
 	logger.V(2).Info("Updated resource", "kind", gvk.Kind, "name", u.GetName())
 	return nil
+}
+
+// createOnly reports whether an existing object was created by a bootstrap
+// that never updates it, under either key (see annotationCreateOnlyKCP).
+func createOnly(existing *unstructured.Unstructured) bool {
+	annotations := existing.GetAnnotations()
+	_, railgrid := annotations[annotationCreateOnly]
+	_, kcp := annotations[annotationCreateOnlyKCP]
+	return railgrid || kcp
 }
