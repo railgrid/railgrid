@@ -264,6 +264,11 @@ func New(cfg Config) (*Controller, error) {
 // lease for the same cluster.
 func (c *Controller) LocalManager() manager.Manager { return c.mgr.GetLocalManager() }
 
+// Manager is the multicluster manager over the engaged tenant workspaces,
+// for controllers that count or watch tenant objects alongside the Instance
+// reconciler (the usage emitter) without a second manager or lease.
+func (c *Controller) Manager() mcmanager.Manager { return c.mgr }
+
 // RuntimeCache is the cache over the kro runtime cluster this controller runs
 // (started with the manager). The Template controller watches the RGDs the kro
 // backend authors there through the same cache.

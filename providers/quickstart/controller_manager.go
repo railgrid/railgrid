@@ -128,6 +128,10 @@ func runControllerManager(ctx context.Context, config *rest.Config, ready *vwhea
 		return fmt.Errorf("greeting controller: %w", err)
 	}
 
+	if err := setupUsage(mgr, config); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
+
 	log.Printf("quickstart controller manager starting (endpointSlice=%s)", endpointSliceName)
 	return mgr.Start(ctx)
 }

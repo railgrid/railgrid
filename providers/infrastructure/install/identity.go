@@ -287,6 +287,15 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 				Resources: []string{"leases"},
 				Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
 			},
+			// Usage reporting (provider-sdk/usage): the hub binds metering's
+			// provider export into this workspace once metering is
+			// installed, and the Instance counter writes its UsageRecords
+			// here as this identity. Harmless while nothing is bound.
+			{
+				APIGroups: []string{"metering.contrib.kcp.io"},
+				Resources: []string{"usagerecords"},
+				Verbs:     []string{"get", "list", "watch", "create", "update", "patch"},
+			},
 		},
 	}
 	// API discovery non-resource URLs. Required for the kcp-apiexport

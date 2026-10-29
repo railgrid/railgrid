@@ -621,21 +621,39 @@ portal pages reading hub REST, which reads the store as kcp-admin.
 
 ## 9. Provider changes
 
-- **`provider-sdk/usage`** (new): `usage.NewLevelEmitter(mgr, gvk, meter,
-  opts)` registers a multicluster-runtime watch on the provider's own kind
-  through its export virtual workspace, keeps a per-cluster count, and
-  upserts one `UsageRecord` per `(subjectCluster, meter, window)` into the
-  provider's own workspace on the grid (`--window-granularity` matched to the
-  controller), named deterministically, with `--reporter-id` from the pod
-  name. Consumption meters get `usage.NewConsumptionEmitter` for USD
-  ledgers. The binding to `metering-provider` is provisioned by the hub
-  (section 8), so a provider declares nothing in `spec.requires`.
-- **agents** emits `agents` and `agents_usd`; **edges** emits `edges` (sum
-  of the three edge kinds) and later `services`; **app-studio** emits
-  `projects` and `app_studio_usd`; **infrastructure** emits `instances`;
-  **code** emits `repositories`.
-- A contract test per provider asserts the meters it emits are declared in
-  `config/metering/` (same spirit as `TestDataPlaneVerbsMatchManifest`).
+- **`provider-sdk/usage`** (landed 29 Oct, uncommitted): `usage.Setup(mgr,
+  usage.Options{Meters, Provider, Granularity})` on the provider's
+  leader-elected multicluster manager registers one watch-driven reconciler
+  per resource-counter meter. Any change to a counted object in a tenant
+  workspace re-counts that workspace from the manager's cache (the sum of
+  the meter's kinds, typed or unstructured) and server-side-applies one
+  `UsageRecord` for the current grid window (hourly by default) into the
+  provider's own workspace, named with the contract's deterministic
+  formula (`usage.RecordName`, pinned by test against contrib-metering's
+  `UsageRecordName`) and labelled `usage.railgrid.ai/meter` and
+  `usage.railgrid.ai/subject`. Workspaces with objects are re-stated every
+  window; zero is stated once. The **feature gate** is the API itself: the
+  emitter probes for `usagerecords` in the provider workspace and pauses,
+  re-checking every minute and logging the state change once, while the
+  resource is not served (`metering-provider` not bound) or not permitted
+  for the provider's identity; a provider carries no flag and no metering
+  dependency. Consumption meters (USD ledgers) are still to build. The
+  binding to `metering-provider` is provisioned by the hub (section 8), so
+  a provider declares nothing in `spec.requires`.
+- Emitted today, each from a `usage.go` next to the provider's controller
+  manager: **agents** → `agents`; **app-studio** → `projects`; **code** →
+  `repositories`; **edges** → `edges` (sum of KubernetesCluster, LinuxServer,
+  MacOSServer) and `services`; **infrastructure** → `instances` (counted
+  unstructured, sharing the instance controller's informer; its
+  `infrastructure-runtime` role gained the `usagerecords` rule); **kuery** →
+  `savedviews`; **quickstart** → `greetings` as the reference. Still to
+  emit: `agents_usd`, `app_studio_usd`. Verified live under Tilt on 29 Oct:
+  code and edges stated `repositories`, `edges` and `services` for the dev
+  workspace within a minute of rebuilding.
+- Each provider's `TestUsageMetersMatchScheme` runs `usage.Validate` against
+  the scheme its manager uses, so a kind missing from the scheme fails the
+  build rather than the first leadership term. A declaration of the meters
+  in `config/metering/` is still to come with the config applier.
 - Spend enforcement reads the projected Entitlement (5.4) once the
   `requires` semantics for platform providers exist; until then unchanged.
 

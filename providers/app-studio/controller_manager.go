@@ -300,6 +300,10 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		return fmt.Errorf("studio controller: %w", err)
 	}
 
+	if err := setupUsage(mgr, config); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
+
 	log.Printf("app-studio controller manager starting (endpointSlice=%s)", endpointSliceName)
 	return mgr.Start(ctx)
 }

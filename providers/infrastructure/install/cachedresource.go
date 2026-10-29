@@ -110,8 +110,12 @@ func PlatformCachedResources(ctx context.Context, config *rest.Config) error {
 
 	// Spec drift is the only reason to update; the kcp cache
 	// machinery reacts to changes there, and we want the platform
-	// to own the desired spec.
+	// to own the desired spec. This is a replace, so metadata kcp
+	// stamped on the live object (cache.kcp.io/resource-kind and
+	// friends are system-reserved: an update that drops them is
+	// rejected) is carried over; keys the desired object sets win.
 	obj.SetResourceVersion(existing.GetResourceVersion())
+	carryOverMetadata(existing, obj)
 	_, err = dyn.Resource(cachedResourceGVR).Update(ctx, obj, metav1.UpdateOptions{})
 	if err != nil {
 		return fmt.Errorf("update CachedResource: %w", err)
@@ -135,4 +139,25 @@ func cachedResourceToUnstructured(cr *cachev1alpha1.ClusterCachedResource) (*uns
 	out.SetAPIVersion(cachev1alpha1.SchemeGroupVersion.String())
 	out.SetKind("ClusterCachedResource")
 	return out, nil
+}
+
+// carryOverMetadata copies the live object's labels and annotations onto
+// desired, keeping desired's own values where both set a key.
+func carryOverMetadata(existing, desired *unstructured.Unstructured) {
+	labels := existing.GetLabels()
+	for k, v := range desired.GetLabels() {
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[k] = v
+	}
+	annotations := existing.GetAnnotations()
+	for k, v := range desired.GetAnnotations() {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[k] = v
+	}
+	desired.SetLabels(labels)
+	desired.SetAnnotations(annotations)
 }
