@@ -2256,10 +2256,14 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 	}
 	firstStream := &testBrowserEventStreamErrorBody{started: make(chan struct{})}
 	var initializeCalls, toolCalls, deleteCalls int
+	var callsMu sync.Mutex
 	server.sandboxDataPlaneClientFactory = func(time.Duration) *http.Client {
 		return &http.Client{Transport: sandboxRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 			if request.Method == http.MethodGet {
-				if initializeCalls == 1 {
+				callsMu.Lock()
+				firstInitialize := initializeCalls == 1
+				callsMu.Unlock()
+				if firstInitialize {
 					return &http.Response{
 						StatusCode: http.StatusOK,
 						Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -2269,7 +2273,9 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 				return browserMCPTestEventStreamResponse(request), nil
 			}
 			if request.Method == http.MethodDelete {
+				callsMu.Lock()
 				deleteCalls++
+				callsMu.Unlock()
 				recorder := httptest.NewRecorder()
 				recorder.WriteHeader(http.StatusNoContent)
 				return recorder.Result(), nil
@@ -2282,19 +2288,25 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 			recorder.Header().Set("Content-Type", "application/json")
 			switch envelope.Method {
 			case "initialize":
+				callsMu.Lock()
 				initializeCalls++
-				recorder.Header().Set("Mcp-Session-Id", fmt.Sprintf("eof-session-%d", initializeCalls))
-				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": initializeCalls, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
+				initializeCall := initializeCalls
+				callsMu.Unlock()
+				recorder.Header().Set("Mcp-Session-Id", fmt.Sprintf("eof-session-%d", initializeCall))
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": initializeCall, "result": map[string]any{"protocolVersion": browserMCPProtocolVersion}})
 			case "notifications/initialized":
 				recorder.WriteHeader(http.StatusAccepted)
 			case "tools/call":
+				callsMu.Lock()
 				toolCalls++
+				toolCall := toolCalls
+				callsMu.Unlock()
 				content := "- 0: https://demo.preview.example/"
 				switch envelope.Params.Name {
 				case browserMCPToolNavigate, browserMCPToolSnapshot:
 					content = "- Page URL: https://demo.preview.example/\n- Page Snapshot:\n- generic [ref=e1]:"
 				}
-				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": toolCalls, "result": map[string]any{"isError": false, "content": []map[string]string{{"type": "text", "text": content}}}})
+				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": toolCall, "result": map[string]any{"isError": false, "content": []map[string]string{{"type": "text", "text": content}}}})
 			default:
 				_ = json.NewEncoder(recorder).Encode(map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{}})
 			}
@@ -2325,11 +2337,14 @@ func TestProjectAssistantNativeBrowserReadRetriesAfterUnexpectedEventStreamEOF(t
 	if err != nil || result == "" {
 		t.Fatalf("EOF-invalidated read retry result = %q, err = %v", result, err)
 	}
-	if initializeCalls != 2 || toolCalls != 3 {
-		t.Fatalf("EOF read retry calls = initialize %d, tools/call %d; want 2/3 (fresh preview navigation, snapshot, safety tabs)", initializeCalls, toolCalls)
+	callsMu.Lock()
+	gotInitializes, gotToolCalls, gotDeletes := initializeCalls, toolCalls, deleteCalls
+	callsMu.Unlock()
+	if gotInitializes != 2 || gotToolCalls != 3 {
+		t.Fatalf("EOF read retry calls = initialize %d, tools/call %d; want 2/3 (fresh preview navigation, snapshot, safety tabs)", gotInitializes, gotToolCalls)
 	}
-	if deleteCalls != 1 {
-		t.Fatalf("EOF-invalidated session DELETE calls before cleanup = %d, want one", deleteCalls)
+	if gotDeletes != 1 {
+		t.Fatalf("EOF-invalidated session DELETE calls before cleanup = %d, want one", gotDeletes)
 	}
 }
 
