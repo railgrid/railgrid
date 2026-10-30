@@ -48,3 +48,9 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   assert.match(tile, />\s*Open provider\s*<\/router-link>/)
   assert.doesNotMatch(tile, /Failed to load tile:/)
 })
+
+test('provider tile transport resolves fresh tokens and reports hub session rejection', () => {
+  assert.match(tile, /getToken: \(\) => auth\.getValidToken\(\)/)
+  assert.match(tile, /onUnauthorized: \(\) => notifySessionExpired\(\)/)
+  assert.match(tile, /isCurrent: \(\) => contextGeneration === routeContext\.generation && routeContext\.state === 'ready'/)
+})

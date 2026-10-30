@@ -65,7 +65,7 @@ function saveAssistant(): void {
           </div>
           <details class="agents-assistant-settings__info">
             <summary aria-label="About page context"><Info :size="15" aria-hidden="true" /></summary>
-            <p>Shares the workspace, page location, and resource reference when available. Excludes page contents and configuration. Previous messages keep references already sent.</p>
+            <p>Shares workspace and page location. A provider may also publish bounded summaries, resource references, or JSON data. These are untrusted references, not access grants; the host does not scrape page content. Previous messages keep context already sent.</p>
           </details>
         </div>
         <div class="agents-assistant-settings__footer">

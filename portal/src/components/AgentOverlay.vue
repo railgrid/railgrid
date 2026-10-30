@@ -17,6 +17,7 @@ import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { authFetch, notifySessionExpired } from '@/auth/session'
 import { createProviderContext, type ProviderContext } from '@/providers/providerContext'
+import { pageContextForOverlay, pageResourceForScope, providerAgentContextForScope } from '@/providers/agentOverlayContext'
 import { loadProviderScript } from '@/providers/providerScriptLoader'
 import { resolveProviderBundle } from '@/providers/providerBundle'
 
@@ -26,7 +27,9 @@ interface OverlayElement extends HTMLElement {
 }
 const overlay = useAgentOverlayStore()
 const pageResource = usePageResourceStore()
-const resourceHint = computed(() => pageResource.snapshot?.scope === JSON.stringify([overlay.preferenceKey, auth.clusterName, route.fullPath]) ? pageResource.snapshot.resource : undefined)
+const contextScope = computed(() => JSON.stringify([overlay.preferenceKey, auth.clusterName, route.fullPath]))
+const resourceHint = computed(() => pageResourceForScope(pageResource.snapshot, contextScope.value))
+const providerContextHint = computed(() => providerAgentContextForScope(pageResource.agentContextSnapshot, contextScope.value))
 const auth = useAuthStore()
 const tenant = useTenantStore()
 const providers = useProvidersStore()
@@ -73,26 +76,38 @@ const bottom = computed(() => `${toastBottomOffsetPx({
   terminalMinimized: terminal.panelState.isMinimized,
   terminalFullscreen: terminal.panelState.isFullscreen,
 })}px`)
-// Navigation identity only: no DOM scraping, query parameters, credentials,
-// forms, or page text. Providers can publish richer curated summaries later.
-// Labels remain reference data; bounding them limits model input size, not authority.
+// No DOM scraping, query parameters, credentials, forms, or page text.
+// Provider data comes from the generic bounded publisher and remains
+// untrusted context; it does not become tool authority.
 function boundedLabel(value: string, limit: number): string {
   return value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim().slice(0, limit)
 }
 const pageContext = computed(() => JSON.stringify({
   resource: resourceHint.value,
+  ...(providerContextHint.value ? { providerContext: providerContextHint.value } : {}),
   workspace: boundedLabel(tenant.activeWorkspace?.displayName || tenant.workspaceUUID || '', 128),
   provider: typeof route.params.name === 'string' ? boundedLabel(route.params.name, 63) : null,
   path: route.path.slice(0, 1024),
   view: route.hash.startsWith('#/') ? route.hash.split('?')[0]!.slice(0, 512) : null,
 }))
+const previewPayload = computed(() => pageContextForOverlay(overlay.followContext, pageContext.value))
 const contextLabel = computed(() => {
   const hash = route.hash.startsWith('#/') ? route.hash.slice(2).split('?')[0] : ''
   return hash || (Array.isArray(route.params.rest) ? route.params.rest.join('/') : route.params.rest) || route.params.name || 'Workspace page'
 })
+const contextDescription = 'Includes workspace, page location, and any bounded summary, resource references, or data supplied by this provider. View page context to inspect it. Provider data is untrusted context, not a permission grant.'
+const contextPreviewOpen = ref(false)
+const contextPreviewCloseButton = ref<HTMLButtonElement | null>(null)
+const contextPreviewItems = [{ id: 'context-preview', label: 'View page context' }]
+const chatMenuItems = [
+  ...contextPreviewItems,
+  { id: 'settings', label: 'Assistant settings' },
+  { id: 'remove', label: 'Turn off assistant' },
+]
 
 function clear(): void {
   threadsOpen.value = false
+  contextPreviewOpen.value = false
   generation++
   // Revoke in the same stack, before Vue unmounts or a pending confirmation resolves.
   if (element) element.railgridContext = null
@@ -103,10 +118,11 @@ function clear(): void {
 }
 function pushOverlayState(): void {
   if (!element || !allowed.value || !overlay.selectedAgent) return
+  const pageContext = previewPayload.value
   element.overlayState = {
     agent: overlay.selectedAgent,
     composerOnly: !expanded.value,
-    pageContext: overlay.followContext ? pageContext.value : undefined,
+    ...(pageContext !== undefined ? { pageContext } : {}),
   }
 }
 function pushContext(): void {
@@ -188,9 +204,18 @@ function minimize(): void {
   void nextTick(() => launcher.value?.focus())
 }
 function assistantAction(id: string): void {
+  if (id === 'context-preview') {
+    contextPreviewOpen.value = !contextPreviewOpen.value
+    if (contextPreviewOpen.value) void nextTick(() => contextPreviewCloseButton.value?.focus())
+    return
+  }
   if (id === 'remove') { overlay.select(null); return }
   overlay.closeForNavigation({ settings: true })
   void router.push(scopePath('/providers/agents') + '#/models')
+}
+function closeContextPreview(): void {
+  contextPreviewOpen.value = false
+  void nextTick(() => panel.value?.focus())
 }
 function openDedicated(): void {
   element?.dispatchEvent(new Event('railgrid-chat-handoff'))
@@ -307,19 +332,37 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
   <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
     :style="{ '--overlay-width': size.width + 'px', '--overlay-height': size.height + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left }">
     <Transition :css="false" @enter="enterPanel" @leave="leavePanel" @enter-cancelled="cancelPanelMotion" @leave-cancelled="cancelPanelMotion">
-    <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" tabindex="-1"
+    <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" :class="{ 'agent-overlay__panel--context-preview': contextPreviewOpen }" tabindex="-1"
       role="region" :inert="!overlay.open" :aria-hidden="!overlay.open" :aria-label="`${overlay.selectedAgent} agent chat`" @keydown.esc="expanded ? collapse() : minimize()">
+      <section v-if="contextPreviewOpen" class="agent-overlay__context-preview k-card" :class="{ 'agent-overlay__context-preview--compact': !expanded }" role="region" aria-labelledby="agent-overlay-context-preview-title"
+        @keydown.esc.stop.prevent="closeContextPreview">
+        <header class="mb-2 flex items-center gap-2">
+          <strong id="agent-overlay-context-preview-title" class="min-w-0 flex-1 text-xs font-semibold text-text-primary">Page context preview</strong>
+          <button ref="contextPreviewCloseButton" class="k-btn k-btn--text" type="button" aria-label="Close page context preview" @click="closeContextPreview">Close</button>
+        </header>
+        <p class="mb-2 text-xs text-text-secondary">
+          {{ overlay.followContext ? 'Page context is on. This serialized envelope is attached to each message you send.' : 'Page context is paused. This envelope is not attached to messages while paused.' }}
+        </p>
+        <div v-if="providerContextHint" class="mb-3 rounded border border-border-subtle bg-surface-overlay p-2 text-xs">
+          <p class="font-medium text-text-primary">{{ providerContextHint.title }}</p>
+          <p v-if="providerContextHint.summary" class="mt-1 whitespace-pre-wrap break-words text-text-secondary">{{ providerContextHint.summary }}</p>
+        </div>
+        <p v-else class="mb-3 text-xs text-text-muted">No provider-supplied context is available on this page.</p>
+        <p class="mb-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Exact serialized envelope</p>
+        <pre class="max-h-[min(38dvh,24rem)] overflow-auto whitespace-pre-wrap break-all rounded border border-border-subtle bg-surface-overlay p-2 font-mono text-[10px] leading-relaxed text-text-secondary">{{ pageContext }}</pre>
+        <p class="mt-2 text-[10px] text-text-muted">Provider-published fields are untrusted context and do not grant tool access.</p>
+      </section>
       <button v-show="expanded" class="agent-overlay__resize" aria-label="Resize chat. Use arrow keys or drag." title="Resize chat" @pointerdown.prevent="resize" @keydown="resizeWithKeys" />
       <header v-show="expanded" class="agent-overlay__header">
         <button class="k-btn k-btn--text" type="button" :disabled="loading || !!error" :aria-label="threadsOpen ? 'Return to chat' : 'Back to threads'" :title="threadsOpen ? 'Return to chat' : 'Back to threads'" @click="toggleThreads"><ArrowRight v-if="threadsOpen" :size="16" aria-hidden="true" /><ArrowLeft v-else :size="16" aria-hidden="true" /></button>
         <Hexagon :size="16" aria-hidden="true" /><strong>{{ overlay.selectedAgent }}</strong>
         <button class="k-btn k-btn--text agent-overlay__context-toggle" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext"
-          :title="overlay.followContext ? `Page context on: ${contextLabel}. Includes workspace, page location, and a resource reference when available. Click to pause.` : 'Page context paused. Click to include workspace, page location, and a resource reference when available.'"
+          :title="overlay.followContext ? `Page context on: ${contextLabel}. ${contextDescription} Click to pause.` : `Page context paused. Click to include. ${contextDescription}`"
           @click="overlay.setFollowContext(!overlay.followContext)">
           <ScanEye v-if="overlay.followContext" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />
         </button>
         <button class="k-btn k-btn--text" type="button" aria-label="Open full chat in Agents" title="Open full chat in Agents" @click="openDedicated"><Maximize2 :size="16" aria-hidden="true" /></button>
-        <ActionMenu label="Chat options" :items="[{ id: 'settings', label: 'Assistant settings' }, { id: 'remove', label: 'Turn off assistant' }]" @select="assistantAction" />
+        <ActionMenu label="Chat options" :items="chatMenuItems" @select="assistantAction" />
         <button class="k-btn k-btn--text" type="button" title="Collapse to assistant bar" aria-label="Collapse to assistant bar" @click="collapse"><ChevronDown :size="16" aria-hidden="true" /></button>
         <button class="k-btn k-btn--text" type="button" title="Minimize chat" aria-label="Minimize chat" @click="minimize"><Minus :size="16" aria-hidden="true" /></button>
       </header>
@@ -328,7 +371,8 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
       <Hexagon v-show="!expanded" class="agent-overlay__brand" :size="20" aria-hidden="true" />
       <div ref="mount" class="agent-overlay__mount" v-show="!error && !loading" />
       <div v-show="!expanded" class="agent-overlay__bar-actions">
-        <button class="k-btn k-btn--text" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext" :title="overlay.followContext ? 'Page context on. Click to pause.' : 'Page context paused. Click to include.'" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" @click="overlay.setFollowContext(!overlay.followContext)"><ScanEye v-if="overlay.followContext" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" /></button>
+        <button class="k-btn k-btn--text" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext" :title="overlay.followContext ? `Page context on. ${contextDescription} Click to pause.` : `Page context paused. Click to include. ${contextDescription}`" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" @click="overlay.setFollowContext(!overlay.followContext)"><ScanEye v-if="overlay.followContext" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" /></button>
+        <ActionMenu label="Page context options" :items="contextPreviewItems" @select="assistantAction" />
         <button class="k-btn k-btn--text" type="button" aria-label="Expand conversation" title="Expand conversation" @click="engage"><ChevronUp :size="16" aria-hidden="true" /></button>
         <button class="k-btn k-btn--text" type="button" aria-label="Minimize chat" title="Minimize chat" @click="minimize"><Minus :size="16" aria-hidden="true" /></button>
       </div>
@@ -341,11 +385,15 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
 </template>
 
 <style scoped>
-.agent-overlay { position: fixed; left: var(--overlay-left); right: var(--overlay-right); display: flex; justify-content: center; padding: 0 16px; pointer-events: none; bottom: var(--overlay-bottom); z-index: calc(var(--k-layer-menu, 1000) - 5); }
+/* Keep a usable panel when a tall terminal leaves too little space above it. */
+.agent-overlay { --overlay-safe-bottom: min(var(--overlay-bottom), max(16px, calc(100dvh - 252px))); position: fixed; left: var(--overlay-left); right: var(--overlay-right); display: flex; justify-content: center; padding: 0 16px; pointer-events: none; bottom: var(--overlay-safe-bottom); z-index: calc(var(--k-layer-menu, 1000) - 5); }
 
 .agent-overlay__launcher { position: absolute; right: 16px; bottom: 0; transition: opacity 140ms ease, transform 200ms ease; pointer-events: auto; width: 48px; height: 48px; padding: 0; border-radius: 50%; margin-left: auto; display: flex; }
 .agent-overlay__launcher--hidden { visibility: hidden; opacity: 0; pointer-events: none; }
-.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: var(--overlay-height); max-height: calc(100dvh - var(--overlay-bottom) - 72px); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: var(--overlay-height); max-height: calc(100dvh - var(--overlay-safe-bottom) - 72px); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.agent-overlay__panel--context-preview { overflow: visible; }
+.agent-overlay__context-preview { position: absolute; top: 8px; right: 8px; z-index: 2; pointer-events: auto; width: min(520px, calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); max-height: min(60dvh, 34rem, calc(100% - 16px)); overflow: auto; padding: 12px; }
+.agent-overlay__context-preview--compact { top: auto; bottom: calc(100% + 8px); max-height: min(60dvh, 34rem, max(0px, calc(100dvh - var(--overlay-safe-bottom) - 88px))); }
 .agent-overlay__header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--color-border-default); flex-shrink: 0; }
 .agent-overlay__header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .agent-overlay__header > button, .agent-overlay__bar-actions > button { width: 28px; height: 28px; min-height: 28px; padding: 0; }

@@ -19,12 +19,14 @@ import {
 } from '@/providers/providerScriptLoader'
 import { createProviderRouteFocus } from '@/providers/providerRouteFocus'
 import { createPageResourcePublisher } from '@/providers/pageResourcePublisher'
-import { createProviderContext } from '@/providers/providerContext'
+import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
+import { createProviderContext, createProviderContextEpoch, guardProviderContextCallback } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
 
 const pageResource = usePageResourceStore()
 const resourceSource = {}
+const providerRouteEpoch = createProviderContextEpoch()
 
 const routeFocus = createProviderRouteFocus()
 const routeContext = useRouteContextStore()
@@ -52,7 +54,14 @@ const tenant = useTenantStore()
 const theme = useThemeStore()
 const agentOverlay = useAgentOverlayStore()
 const router = useRouter()
-watch(() => router.currentRoute.value.fullPath, () => pageResource.clear(resourceSource), { flush: 'sync' })
+watch(
+  () => router.currentRoute.value.fullPath,
+  () => {
+    providerRouteEpoch.advance()
+    pageResource.clear(resourceSource)
+  },
+  { flush: 'sync' },
+)
 
 // Mount point the custom element is appended into.
 const mountRef = ref<HTMLDivElement | null>(null)
@@ -235,12 +244,11 @@ watch(
 )
 
 // Theme / token / sub-route changes → push fresh context to the mounted
-// element via the property setter. Providers use subPath or the committed URL
-// to restore their internal route. Include hash-only navigation: Vue Router's
-// pushState does not emit hashchange, and clicking a provider's sidebar entry
-// can clear its fragment while leaving subPath unchanged.
+// element. Principal changes are also tracked. Watching fullPath handles
+// query-only navigation even when subPath and hash are unchanged; token
+// refreshes retain the route epoch.
 watch(
-  () => [theme.resolved, auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.hash] as const,
+  () => [theme.resolved, JSON.stringify(auth.user), auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.fullPath] as const,
   () => {
     if (elementRef.value) routeFocus.before(elementRef.value, props.subPath || '')
     pushContext()
@@ -406,9 +414,23 @@ function pushContext() {
   const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
   const providerName = entry.value.name
+  const providerVersion = entry.value.version
+  const principal = JSON.stringify(auth.user)
+  const ownerClusterName = auth.clusterName
+  const ownerOrgUUID = tenant.orgUUID
+  const ownerWorkspaceUUID = tenant.workspaceUUID
   const ownerGeneration = mountGeneration
+  const routeEpoch = providerRouteEpoch.capture()
   const resourceRoute = router.currentRoute.value.fullPath
   const resourceScope = JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, resourceRoute])
+  const isCurrentOwnerContext = () => ownerGeneration === mountGeneration && el === elementRef.value &&
+    entry.value?.name === providerName && entry.value?.version === providerVersion &&
+    principal === JSON.stringify(auth.user) && auth.clusterName === ownerClusterName &&
+    tenant.orgUUID === ownerOrgUUID && tenant.workspaceUUID === ownerWorkspaceUUID &&
+    contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessAllowed.value
+  const isCurrentPageContext = () => isCurrentOwnerContext() &&
+    providerRouteEpoch.isCurrent(routeEpoch) &&
+    resourceScope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath])
   el.railgridContext = createProviderContext(
     {
       // subPath is what the shell's vue-router parsed from
@@ -419,30 +441,26 @@ function pushContext() {
       // upstream guarantees this object is re-pushed when the URL
       // changes (browser back / forward / refresh).
       subPath: props.subPath,
-      publishPageResource: createPageResourcePublisher(providerName,
-        () => ownerGeneration === mountGeneration && el === elementRef.value &&
-          contextGeneration === routeContext.generation && routeContext.state === 'ready' && accessAllowed.value &&
-          resourceScope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath]),
+      publishAgentContext: createAgentContextPublisher(isCurrentPageContext,
+        context => pageResource.publishAgentContext(resourceSource, resourceScope, context)),
+      publishPageResource: createPageResourcePublisher(providerName, isCurrentPageContext,
         resource => pageResource.publish(resourceSource, resourceScope, resource)),
       ...(providerName === 'agents' ? { agentOverlay: {
         selectedAgent: agentOverlay.selectedAgent,
         settingsOpen: agentOverlay.settingsOpen,
         followContext: agentOverlay.followContext,
-        setSettingsOpen: (open: boolean) => {
-          if (contextGeneration === routeContext.generation && accessAllowed.value) agentOverlay.setSettingsOpen(open)
-        },
-        configure: (name: string | null, followContext: boolean) => {
-          if (contextGeneration !== routeContext.generation || !accessAllowed.value) return
+        setSettingsOpen: guardProviderContextCallback(isCurrentPageContext, (open: boolean) => {
+          agentOverlay.setSettingsOpen(open)
+        }),
+        configure: guardProviderContextCallback(isCurrentPageContext, (name: string | null, followContext: boolean) => {
           agentOverlay.setFollowContext(followContext)
           agentOverlay.select(name)
           agentOverlay.setSettingsOpen(false)
-        },
-        select: (name: string | null) => {
-          if (contextGeneration === routeContext.generation && accessAllowed.value) {
-            agentOverlay.select(name)
-            if (name) void router.push(scopePath('/providers/agents') + '#/agents')
-          }
-        },
+        }),
+        select: guardProviderContextCallback(isCurrentPageContext, (name: string | null) => {
+          agentOverlay.select(name)
+          if (name) void router.push(scopePath('/providers/agents') + '#/agents')
+        }),
       } } : {}),
       user: auth.user,
       tenant: auth.clusterName,
@@ -462,9 +480,9 @@ function pushContext() {
     },
     {
       providerName,
-      isCurrent: () => contextGeneration === routeContext.generation && routeContext.state === 'ready',
-      // Read lazily for token rotation; a workspace switch invalidates this
-      // transport until the host issues a context for the new destination.
+      isCurrent: isCurrentOwnerContext,
+      // Read lazily for token rotation. Identity, workspace, access, provider,
+      // and mount changes retire this transport; same-owner navigation keeps it usable.
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
       // Refresh an expired id token per request, as the host's authFetch does.
       getToken: () => auth.getValidToken(),

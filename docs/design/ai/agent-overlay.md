@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable compact chat and navigation to the actual Agents chat route. Context contains bounded navigation metadata and an optional Infrastructure instance reference; resource contents and background reasoning are not implemented."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"}],"verification":{"state":"verified","checks":[{"kind":"test","ref":"make build-agents-provider-portal","status":"passing","evidence":"718 Agents tests and production build passed after rebasing onto current main; the review revision also passes the shared UI and synchronization gates."},{"kind":"test","ref":"make test-portal","status":"passing","evidence":"389 host tests passed, including resource-publisher validation/fencing and overlay-store persistence regressions; host typecheck passed. PortalKit parity, UI conformance, and design-doc gates passed."},{"kind":"browser","ref":"Host portal and built Agents bundle with mocked APIs","status":"passing","evidence":"Re-run on the post-rebase review revision with real host/provider UI and mocked APIs: light/dark desktop (1440px) and touch mobile (390px), Models settings, disclosure, bar expansion/collapse, minimized reload, threads, draft preservation, repeated settings focus, and stable provider context/fetch identity across navigation. This browser run does not establish live model behavior."},{"kind":"browser","ref":"make test-agent-ui-browser","status":"passing","evidence":"Manual isolated Chromium fixtures cover compact-composer hit testing and native/custom controls at 390px/1280px in both themes, plus resize pointer tracking, min/max reversal, changed CSS/viewport limits during a drag, mobile/keyboard sizing, and capture cleanup. Requires portal npm dependencies and Playwright; not invoked by make verify or CI. Does not verify a live hub."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
+{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable compact chat and navigation to the actual Agents chat route. Context includes host provenance, an optional Infrastructure instance reference, and bounded provider-published JSON; it remains reference data and grants no authority."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/WorkspaceAssistantCard.vue","role":"implementation"},{"path":"portal/src/providers/agentContextPublisher.ts","role":"implementation"},{"path":"portal/src/providers/providerContext.ts","role":"implementation"},{"path":"portal/src/stores/pageResource.ts","role":"implementation"},{"path":"provider-sdk/portalkit/agent-context.ts","role":"implementation"},{"path":"providers/agents/portal/src/pageContext.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/ChatMessage.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"test","ref":"PR2 host portal tests and production build","status":"passing","evidence":"447 host portal tests passed; portal typecheck and Vite production build passed on the PR2 branch."},{"kind":"test","ref":"PR2 Agents portal tests, typecheck, and production build","status":"passing","evidence":"813 Agents portal tests passed; vue-tsc and the production Vite build passed on the PR2 branch."},{"kind":"command","ref":"make verify-design-docs, make verify-portalkit, and make verify-ui-conformance","status":"passing","evidence":"All three shared gates passed after syncing the canonical asset manifest and generated copies."},{"kind":"browser","ref":"hack/agent-overlay-resize-test.mjs desktop/mobile light/dark preview fixture","status":"passing","evidence":"Synthetic context preview fit and scrolling passed at 1280×800 desktop and 390×600 mobile in light and dark themes, for compact and expanded layouts at low and high bottom offsets. This fixture does not validate a live host or provider backend."},{"kind":"browser","ref":"Branch-built host and Agents portal with live backend","status":"pending","evidence":"No branch-specific live acceptance is claimed. Existing browser evidence predates PR2 and remains historical."},{"kind":"browser","ref":"Historical pre-PR2 host and Agents browser fixtures","status":"not-run","evidence":"Historical evidence from the earlier overlay revision is not current validation for the provider-context preview changes."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
 ---
 
 # Workspace agent overlay prototype
@@ -55,10 +55,40 @@ minimizing and changing pages within the same workspace do not.
 
 ## Context and authority
 
-The prototype attaches workspace label, provider name, pathname, and a provider route fragment. Infrastructure instance detail pages also publish a bounded resource hint: API version, kind, resource plural, name, UID, and the provider-local read tool `get_instance`. This is an identity for live investigation through the agent’s configured tools, not copied spec/status or permission to execute actions. The host exposes publishing only to Infrastructure and accepts only its Instance coordinates and optional `get_instance` tool hint. It also fences callbacks to their mounted provider, route, and workspace; failed reads and navigation clear the hint. Query parameters,
-DOM content, form values, credentials, logs, and secret values are excluded.
-Context is serialized and appended to the user message as labeled reference
-data at send time, using the provider's attended MCP chat tool. That tool supplies the caller-authorized aggregate MCP connection; the Kubernetes chat subresource does not carry a caller credential. The transcript renders this saved context as a compact context row beneath the message, with a page icon, readable label, and disclosure chevron. Expanding it reveals the workspace, full page label, exact location, and what was shared. The row has no separate card background; long labels truncate and remain available in the expanded details. Malformed references remain verbatim text. Browsing alone starts no model run.
+The host attaches its workspace label, provider name, pathname, and provider
+route fragment as provenance. A provider page may also publish one bounded
+`ProviderAgentContext` through `railgridContext.publishAgentContext`. The
+versioned contract accepts a title, optional summary, resource references, and
+bounded JSON data. The host copies and freezes that value, then scopes it to the
+current user, workspace, provider mount, and route epoch. Query-only navigation
+also retires the page publisher; returning from A to B to A cannot revive a
+callback from the first visit. Token refresh keeps a same-owner transport
+usable, while an identity, access, workspace, provider, or mount change retires
+it. The host constructs provenance outside the provider payload, so providers
+cannot claim another route or workspace through the publisher.
+
+The Infrastructure Instance resource pointer remains available on supported
+detail pages and may identify the provider-local `get_instance` read tool. It
+supports live investigation through the agent's configured tools; it does not
+copy spec or status, or authorize an action. The host provenance omits query
+parameters, DOM content, and form values. Provider-published JSON is normalized
+and size-bounded, but the host does not detect credentials, secrets, logs, or
+resource contents inside that JSON. Provider authors must publish only curated
+reference data and must not include those values or commands. Invalid or
+oversized provider input clears the current snapshot.
+
+The overlay offers an exact serialized-envelope preview from the chat menu and
+compact bar. It reports whether context is enabled for the next send and marks
+provider-published fields as untrusted reference data. Pausing context excludes
+the envelope from subsequent user messages while retaining earlier messages.
+When enabled, context is appended to the user message at send time using the
+provider's attended MCP chat tool. That tool supplies the caller-authorized
+aggregate MCP connection; the Kubernetes chat subresource does not carry a
+caller credential. The transcript renders saved context as a compact context
+row. Expanding it reveals host provenance, provider summary, resource
+references, and JSON data as escaped text. Malformed, oversized, or unknown
+experimental envelopes remain verbatim in the message. Browsing alone starts
+no model run.
 
 Pausing context excludes it from subsequent sends; it cannot erase earlier
 messages. Context is not system policy, a permission grant, or proof of the
@@ -73,8 +103,10 @@ configured tools and existing authorization rules.
   unsent drafts are not persisted across a workspace switch or browser reload.
 - The header back arrow opens a searchable list of the selected agent’s threads. Selecting a thread or starting a new chat returns to the conversation; returning directly preserves the current draft and stream.
 - Expansion navigates to the dedicated Agents chat view.
-- Context identifies the current page and, on Infrastructure instance details, the resource and read tool. Provider-published resource summaries,
-  selected rows, attachments, and background reasoning are future work.
+- Context identifies the current page and may include Infrastructure resource
+  coordinates or a bounded provider summary, resource list, and JSON data.
+  Selected rows, attachments, and background reasoning are outside this overlay
+  contract.
 - A missing/disabled provider hides the overlay. An incompatible bundle reports
   that an Agents update and page reload are needed. Resource loading, deletion,
   and denied reads retain the existing Agents read-state UI.

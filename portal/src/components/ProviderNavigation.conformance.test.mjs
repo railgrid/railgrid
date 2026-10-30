@@ -49,11 +49,11 @@ test('direct-registration provider failures require a page reload', () => {
   assert.match(tile, /canRetryInDocument \? 'Retry' : 'Reload page'/)
 })
 
-// Hash-based providers retain their element when the host sidebar clears a
-// fragment; that transition must publish context even when subPath is empty.
-test('provider context follows host hash-only navigation', () => {
-  const callback = frame.match(/props\.subPath, router\.currentRoute\.value\.hash\] as const,\s*\(\) => \{([\s\S]*?)\n  \},/)
-  assert.ok(callback, 'hash-only navigation must trigger the context watcher')
+// Hash- and query-based providers retain their element on host navigation;
+// every fullPath transition must publish current page context.
+test('provider context follows host query and hash navigation', () => {
+  const callback = frame.match(/props\.subPath, router\.currentRoute\.value\.fullPath\] as const,\s*\(\) => \{([\s\S]*?)\n  \},/)
+  assert.ok(callback, 'query- and hash-only navigation must trigger the context watcher')
   assert.match(callback[1], /routeFocus\.before\(elementRef\.value, props\.subPath \|\| ''\)/)
   assert.match(callback[1], /\n\s*pushContext\(\)\s*$/)
 })

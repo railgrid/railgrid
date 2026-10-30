@@ -9,6 +9,9 @@ the Vue toast files.
 
 - `icons.ts` — inline SVG icon set (`ic(name)` returns an `<svg class="k-icon">`
   string). Use in HTML template literals instead of emoji.
+- `agent-context.ts` — bounded, immutable JSON context that provider pages may
+  publish for the shared Agents overlay. It is reference data only and does not
+  grant tool authority.
 - `form-select.ts` — framework-neutral single-select combobox for forms. Set
   `options`, `value`, and optional `placeholder`, `labelledby`, and
   `describedby` properties; it emits one bubbling `change` event whose `detail`

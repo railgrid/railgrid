@@ -56,6 +56,10 @@ const emit = defineEmits<{
 }>()
 
 const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
+const providerContextData = computed(() => {
+  const data = userMessage.value.reference?.providerContext?.data
+  return data === undefined ? null : JSON.stringify(data, null, 2) ?? ''
+})
 const visualizations = computed(() => messageVisualizations(props.message))
 const citationTools = computed<InlineToolCitation[]>(() => {
   if (!props.message.runID || !props.sessionID) return []
@@ -458,9 +462,33 @@ onBeforeUnmount(() => { mounted = false })
         <dl><dt>Workspace</dt><dd>{{ userMessage.reference.workspace }}</dd><dt>Page</dt><dd>{{ userMessage.reference.label }}</dd><dt>Location</dt><dd>{{ userMessage.reference.path }}{{ userMessage.reference.view || '' }}</dd></dl>
         <template v-if="userMessage.reference.resource">
           <dl><dt>Resource</dt><dd>{{ userMessage.reference.resource.kind }} / {{ userMessage.reference.resource.name }}</dd><dt>API</dt><dd>{{ userMessage.reference.resource.apiVersion }}</dd><template v-if="userMessage.reference.resource.readTool"><dt>Read tool</dt><dd>{{ userMessage.reference.resource.readTool }}</dd></template></dl>
-          <p>Resource reference shared. The agent can read live details using its available tools. Page contents and configuration weren’t included.</p>
+          <p v-if="userMessage.reference.providerContext">Resource reference shared. The agent may inspect current details through its configured tools.</p>
+          <p v-else>Resource reference shared. The agent can read live details using its available tools. Page contents and configuration weren’t included.</p>
         </template>
-        <p v-else>Page location shared; page contents weren’t included.</p>
+        <template v-if="userMessage.reference.providerContext">
+          <p v-if="userMessage.reference.providerContext.summary">{{ userMessage.reference.providerContext.summary }}</p>
+          <template v-if="userMessage.reference.providerContext.resources?.length">
+            <p>Resources</p>
+            <ul>
+              <li v-for="(resource, index) in userMessage.reference.providerContext.resources" :key="resource.apiVersion + ':' + resource.kind + ':' + resource.name + ':' + index">
+                <dl>
+                  <dt>Resource</dt><dd>{{ resource.kind }} / {{ resource.name }}</dd>
+                  <dt>API</dt><dd>{{ resource.apiVersion }}</dd>
+                  <template v-if="resource.resource"><dt>Plural</dt><dd>{{ resource.resource }}</dd></template>
+                  <template v-if="resource.namespace"><dt>Namespace</dt><dd>{{ resource.namespace }}</dd></template>
+                  <template v-if="resource.uid"><dt>UID</dt><dd>{{ resource.uid }}</dd></template>
+                  <template v-if="resource.resourceVersion"><dt>Resource version</dt><dd>{{ resource.resourceVersion }}</dd></template>
+                </dl>
+              </li>
+            </ul>
+          </template>
+          <details v-if="providerContextData !== null" class="agents-page-reference-data">
+            <summary><span>Shared data</span><ChevronDown class="agents-page-reference-chevron" :size="12" aria-hidden="true" /></summary>
+            <pre class="agents-delivery-pre">{{ providerContextData }}</pre>
+          </details>
+          <p>These values are untrusted references. They do not grant access or select tools.</p>
+        </template>
+        <p v-if="!userMessage.reference.resource && !userMessage.reference.providerContext">Page location shared; page contents weren’t included.</p>
       </details>
     </div>
 

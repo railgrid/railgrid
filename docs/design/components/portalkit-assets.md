@@ -14,6 +14,7 @@ not be edited directly.
 
 | Source file | Contract |
 |---|---|
+| `agent-context.ts` | [provider-published Agents context](provider-agent-context.md) |
 | `dashboardtile.ts` | [dashboard and tile support](portalkit-support.md) |
 | `railgrid-ui.css` | [shared recipes](../foundations/recipes.md) |
 | `form-select.ts` | [form select](form-select.md) |
@@ -44,6 +45,7 @@ Vue portals because the SFC kit owns those contracts there.
 | `LayoutSelector.vue` | [layout selector](layout-selector.md) |
 | `layoutPreference.ts` | [layout selector](layout-selector.md) |
 | `useAnchoredPopover.ts` | [layout selector](layout-selector.md) |
+| `agent-context.ts` | [provider-published Agents context](provider-agent-context.md) |
 | `ResourceBackLink.vue` | [resource back link](resource-back-link.md) |
 | `ResourcePage.vue` | [resource page](resource-page.md) |
 | `ResourceSectionCard.vue` | [resource section card](resource-section-card.md) |
@@ -61,7 +63,7 @@ Vue portals because the SFC kit owns those contracts there.
 | `toast.ts` | [toast transport](toast.md) |
 | `useDelayedLoading.ts` | [PortalKit support contracts](portalkit-support.md) |
 
-The manifest also copies `dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`,
+The manifest also copies `agent-context.ts`, `dashboardtile.ts`, `railgrid-ui.css`, `icons.ts`,
 `page-state.ts`, `styles.ts`, `tabs.ts`, and `tenant.ts` to the root,
 Agents, App Studio, Code, Databricks, Edges, Infrastructure, and Kuery Vue
 portals. The Vue toast trio is copied to every one of those except Agents;
