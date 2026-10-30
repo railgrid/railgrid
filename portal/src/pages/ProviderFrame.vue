@@ -105,7 +105,12 @@ const catalogSettled = computed(() =>
   providers.loaded && !providers.loading && !providers.error && providers.catalogOrgUUID === tenant.orgUUID,
 )
 const catalogError = computed(() => providers.error)
-const catalogLoading = computed(() => !catalogError.value && !catalogSettled.value)
+const catalogRefreshing = computed(() =>
+  providers.loaded && providers.loading && providers.catalogOrgUUID === tenant.orgUUID,
+)
+const catalogLoading = computed(() =>
+  !catalogError.value && !catalogSettled.value && !catalogRefreshing.value,
+)
 const catalogMissing = computed(() => catalogSettled.value && !entry.value)
 const providerRoutePath = computed(() => props.subPath.split('/').filter(Boolean).join('/'))
 const isAppStudioLandingRoute = computed(() =>
@@ -593,12 +598,17 @@ onBeforeUnmount(() => {
       <div v-else-if="catalogLoading" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
         Loading provider catalog&hellip;
       </div>
+      <div v-else-if="catalogRefreshing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted" role="status" aria-live="polite" aria-busy="true">
+        Refreshing provider status&hellip;
+      </div>
       <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
         Provider <code class="font-mono text-text-secondary">{{ props.providerName }}</code> is not available in this catalog.
       </div>
       <div
         v-else-if="entry && !entry.ready"
         class="flex items-start gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted"
+        role="status"
+        aria-live="polite"
       >
         <AlertCircle class="h-4 w-4 mt-0.5 text-text-muted" :stroke-width="1.75" />
         <div>
@@ -606,6 +616,9 @@ onBeforeUnmount(() => {
           <div class="mt-1 text-xs">
             {{ entry.readinessMessage || `Waiting for ${entry.name} to report ready.` }}
           </div>
+          <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryCatalog">
+            Refresh provider status
+          </button>
         </div>
       </div>
       <div v-else-if="entry && !entry.serving?.ui" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">

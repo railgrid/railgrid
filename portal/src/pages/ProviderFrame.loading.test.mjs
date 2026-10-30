@@ -283,3 +283,30 @@ test('readiness labels distinguish degraded and disconnected providers', () => {
   assert.match(source, /case 'HeartbeatStale': return 'Disconnected'/)
   assert.match(source, /entry\.readinessMessage \|\| `Waiting for \$\{entry\.name\} to report ready\.`/)
 })
+
+test('provider status refresh is a same-scope catalog read with a distinct recovery state', () => {
+  const refreshingExpression = source.match(/const catalogRefreshing = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
+  const loadingExpression = source.match(/const catalogLoading = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1]
+  assert.ok(refreshingExpression)
+  assert.ok(loadingExpression)
+
+  const computed = getter => ({ get value() { return getter() } })
+  const stateFor = providers => {
+    const tenant = { orgUUID: 'org-a' }
+    const catalogError = { value: null }
+    const catalogSettled = { value: false }
+    const refreshing = new Function('computed', 'providers', 'tenant', `return computed(() => ${refreshingExpression})`)(computed, providers, tenant)
+    const loading = new Function('computed', 'catalogError', 'catalogSettled', 'catalogRefreshing', `return computed(() => ${loadingExpression})`)(computed, catalogError, catalogSettled, refreshing)
+    return { refreshing: refreshing.value, loading: loading.value }
+  }
+  assert.deepEqual(stateFor({ loaded: false, loading: true, catalogOrgUUID: 'org-a' }), { refreshing: false, loading: true })
+  assert.deepEqual(stateFor({ loaded: true, loading: true, catalogOrgUUID: 'org-a' }), { refreshing: true, loading: false })
+  assert.deepEqual(stateFor({ loaded: true, loading: true, catalogOrgUUID: 'org-b' }), { refreshing: false, loading: true })
+
+  const calls = []
+  const retryCatalog = new Function('providers', 'tenant', `return function () { ${functionBody('retryCatalog')} }`)({
+    load: orgUUID => { calls.push(orgUUID); return Promise.resolve() },
+  }, { orgUUID: 'org-a' })
+  retryCatalog()
+  assert.deepEqual(calls, ['org-a'])
+})
