@@ -60,7 +60,7 @@ const collections = [
   { key: 'accounts', label: 'Accounts', columns: [
     { key: 'name', label: 'Name', primary: true },
     { key: 'displayName', label: 'Display name' },
-    { key: 'memberCount', label: 'Members' },
+    { key: 'memberCount', label: 'Workspaces' },
     { key: 'usage', label: 'Usage' },
     { key: 'customerRef', label: 'Customer' },
   ] },
@@ -68,7 +68,7 @@ const collections = [
     { key: 'name', label: 'Name', primary: true },
     { key: 'account', label: 'Account' },
     { key: 'reporter', label: 'Reporter' },
-    { key: 'members', label: 'Members' },
+    { key: 'members', label: 'Workspaces' },
   ] },
   { key: 'meteringconfigs', label: 'Metering configs', columns: [
     { key: 'name', label: 'Name', primary: true },
