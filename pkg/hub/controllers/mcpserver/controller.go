@@ -31,7 +31,9 @@ import (
 	kcpclientset "github.com/kcp-dev/sdk/client/clientset/versioned"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -41,6 +43,7 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -89,7 +92,7 @@ func SetupWithManager(mgr mcmanager.Manager, kcpConfig *rest.Config, hubExternal
 	}
 	return mcbuilder.ControllerManagedBy(mgr).
 		Named("mcpserver").
-		For(&railgridv1alpha1.MCPServer{}).
+		For(&railgridv1alpha1.MCPServer{}, mcbuilder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 
@@ -113,6 +116,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 		return ctrl.Result{}, err
 	}
+
+	before := srv.DeepCopy()
+	refreshDue := toolsRefreshDelay(&srv, time.Now()) == 0
 
 	clusterRef := string(req.ClusterName)
 	clusterPath := lookupClusterPath(ctx, c)
@@ -165,12 +171,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// set reflects exactly what this server can reach (per-server targeted
 		// tooling). Best-effort: discovery failures leave the last snapshot and
 		// don't fail the reconcile.
-		srv.Status.FederatedProviders = r.discoverTools(ctx, string(req.ClusterName), statusCaller(tenantPath, srv.Name), token)
-		now := metav1.Now()
-		srv.Status.ToolsRefreshedTime = &now
+		if refreshDue {
+			srv.Status.FederatedProviders = r.discoverTools(ctx, string(req.ClusterName), statusCaller(tenantPath, srv.Name), token)
+			now := metav1.Now()
+			srv.Status.ToolsRefreshedTime = &now
+		}
 	}
 
-	if err := c.Status().Update(ctx, &srv); err != nil {
+	if err := updateStatusIfChanged(ctx, c, before, &srv); err != nil {
 		return ctrl.Result{}, fmt.Errorf("updating MCPServer status: %w", err)
 	}
 	if provErr != nil {
@@ -183,7 +191,26 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	}
 	// Ready: periodically re-discover so status reflects newly enabled providers
 	// / changed toolsets without a manual poke.
-	return ctrl.Result{RequeueAfter: toolsRefreshInterval}, nil
+	return ctrl.Result{RequeueAfter: max(time.Nanosecond, toolsRefreshDelay(&srv, time.Now()))}, nil
+}
+
+// toolsRefreshDelay recovers the discovery deadline from status after restarts.
+// A spec change or recovery from a non-ready state needs immediate discovery.
+func toolsRefreshDelay(srv *railgridv1alpha1.MCPServer, now time.Time) time.Duration {
+	ready := meta.FindStatusCondition(srv.Status.Conditions, "Ready")
+	if srv.Status.Phase != railgridv1alpha1.MCPServerPhaseReady || ready == nil ||
+		ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != srv.Generation ||
+		srv.Status.ToolsRefreshedTime == nil {
+		return 0
+	}
+	return max(0, srv.Status.ToolsRefreshedTime.Add(toolsRefreshInterval).Sub(now))
+}
+
+func updateStatusIfChanged(ctx context.Context, c client.Client, before, after *railgridv1alpha1.MCPServer) error {
+	if equality.Semantic.DeepEqual(before.Status, after.Status) {
+		return nil
+	}
+	return c.Status().Update(ctx, after)
 }
 
 // statusCaller is the caller status discovery enumerates for: the server's own
@@ -358,15 +385,8 @@ func directClusterPath(ctx context.Context, kcp kcpclientset.Interface) string {
 
 // setCondition upserts a condition by type.
 func setCondition(conditions *[]metav1.Condition, condType string, status metav1.ConditionStatus, reason, msg string, gen int64) {
-	cond := metav1.Condition{
+	meta.SetStatusCondition(conditions, metav1.Condition{
 		Type: condType, Status: status, Reason: reason, Message: msg,
-		ObservedGeneration: gen, LastTransitionTime: metav1.Now(),
-	}
-	for i := range *conditions {
-		if (*conditions)[i].Type == condType {
-			(*conditions)[i] = cond
-			return
-		}
-	}
-	*conditions = append(*conditions, cond)
+		ObservedGeneration: gen,
+	})
 }
