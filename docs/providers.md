@@ -1592,6 +1592,16 @@ A provider's controller (the kcp-talking part) MUST:
   and a full before/after is in
   `railgrid/providers/docs/reconciler-architecture-review.md`. See
   [AGENTS.md §5.8](../AGENTS.md#58-reconcilers-not-loops).
+- **Report its usage** through `provider-sdk/usage`: a `usage.go` beside the
+  controller manager declares the resource-counter meters (the kinds a Plan
+  limit may cap, such as `agents` or `edges`) and `usage.Setup` on the
+  leader-elected manager emits one `UsageRecord` per tenant workspace and
+  grid window into the provider's own workspace, re-counted on every change
+  and re-stated every window. The emitter gates itself on the metering API
+  being bound there (the hub binds `metering-provider` once metering is
+  installed) and otherwise stays silent, so the provider needs no flag and no
+  dependency on contrib-metering. The contract it writes against is
+  contrib-metering's `docs/usage-contract.md`.
 
 A provider's UI MUST:
 

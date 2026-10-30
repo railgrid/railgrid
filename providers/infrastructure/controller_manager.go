@@ -208,6 +208,9 @@ func runControllers(ctx context.Context, config *rest.Config, registry *backend.
 	}).SetupWithManager(c.LocalManager()); err != nil {
 		return fmt.Errorf("template controller: %w", err)
 	}
+	if err := setupUsage(c.Manager(), cfg.ProviderConfig); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
 
 	log.Printf("controllers: starting (apiExport=%s baseDomain=%q backends=%v)", cfg.APIExportName, cfg.BaseDomain, registry.Names())
 	return c.Start(ctx)

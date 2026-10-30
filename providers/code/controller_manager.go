@@ -173,6 +173,10 @@ func runControllerManager(ctx context.Context, config *rest.Config, registry *ba
 		return fmt.Errorf("pullrequest controller: %w", err)
 	}
 
+	if err := setupUsage(mgr, config); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
+
 	log.Printf("code controller manager starting (backends=%v, endpointSlice=%s)", registry.Names(), endpointSliceName)
 	// Orphan reclamation (file backend only) runs for the leadership term.
 	stores.runSweepers(ctx)

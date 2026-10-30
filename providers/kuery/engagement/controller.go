@@ -440,6 +440,9 @@ func (c *Controller) RunSingletons(ctx context.Context) error {
 	if err := setupEngagementReconciler(mgr.GetLocalManager(), c); err != nil {
 		return fmt.Errorf("registering engagement record reconciler: %w", err)
 	}
+	if err := setupUsage(mgr, c.cfg.ProviderConfig); err != nil {
+		return fmt.Errorf("registering usage emitters: %w", err)
+	}
 	return mgr.Start(ctx)
 }
 

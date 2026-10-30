@@ -288,6 +288,10 @@ func runEdgeControllerManager(ctx context.Context, config *rest.Config, tsrv *sd
 		return fmt.Errorf("EdgeService controllers: %w", err)
 	}
 
+	if err := setupUsage(mgr, config); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
+
 	log.Printf("edges controller manager starting (leader, endpointSlice=%s)", endpointSliceName)
 	if err := mgr.Start(ctx); err != nil {
 		return fmt.Errorf("manager: %w", err)

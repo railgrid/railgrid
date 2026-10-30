@@ -191,6 +191,10 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 		return fmt.Errorf("webhook controller: %w", err)
 	}
 
+	if err := setupUsage(mgr, deps.Config); err != nil {
+		return fmt.Errorf("usage emitters: %w", err)
+	}
+
 	log.Printf("agents controller manager starting (endpointSlice=%s)", endpointSliceName)
 	return mgr.Start(ctx)
 }

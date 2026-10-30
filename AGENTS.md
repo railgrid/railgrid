@@ -701,24 +701,34 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
    provider's readiness (`vwhealth.Readiness.Check`, the same gate as
    `/readyz`), or `RunHeartbeat` refuses to start. Anything that reacts to tenant objects is a multicluster-runtime
    reconciler under leader election, not a loop (§5.8).
-7. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
+7. Report usage with `provider-sdk/usage`: a `usage.go` beside the controller
+   manager declares the provider's resource-counter meters (`usage.Meter{Name,
+   Kinds}`, e.g. `agents` → `Agent`) and `usage.Setup(mgr, ...)` goes on the
+   leader-elected manager, with a `TestUsageMetersMatchScheme` running
+   `usage.Validate` against the manager's scheme. The emitter is gated on
+   the metering API being bound in the provider workspace (the hub binds it
+   once metering is installed), so it needs no flag and no dependency on
+   contrib-metering. A provider that runs as its own identity rather than the
+   hub-minted `provider` account must grant it `usagerecords` in
+   `metering.contrib.kcp.io` (infrastructure's `install/identity.go`).
+8. Add Makefile `build-{name}-provider[-portal]` + `run/install/uninstall`
    targets if standalone; add the module to `go.work`.
-8. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
+9. Add an e2e suite under `test/e2e/suites/` if it has tenant-isolation or
    provisioning behavior worth guarding, and run
    `dataplane.ConformanceTest` against the real handler.
-9. Write **two** READMEs: `providers/{name}/README.md` (what the provider is and
+10. Write **two** READMEs: `providers/{name}/README.md` (what the provider is and
    its APIs) and `providers/{name}/deploy/chart/README.md` (values reference).
    The chart README is user-facing: charts embed it into their CatalogEntry
    (`valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}`) and the portal
    renders it inline in the Self-Hosting flow. It is the answer to "what can I
    configure?" and must not go stale.
-10. Run `make verify-provider-contract` (it is in `make verify`). It checks
+11. Run `make verify-provider-contract` (it is in `make verify`). It checks
     manifest/chart parity, claims parity against the **generated** APIExport,
     that the chart's export copy is byte-identical, both READMEs, and that no
     `"/api/` route literal exists in `main.go`, `server/` or `api/`. An
     exception in `hack/provider-contract-exceptions.json` needs a reason — the
     file is currently empty, and it is meant to stay that way.
-11. To offer the provider for self-hosting, declare `spec.serving.selfHosting` in **both**
+12. To offer the provider for self-hosting, declare `spec.serving.selfHosting` in **both**
     `manifest.yaml` and `deploy/chart/templates/catalogentry.yaml` (chart
     coordinates, namespace, release name, `docsURL` → the chart README, and any
     `requiredValues`). Prefer placeholders — `{{hubURL}}`, `{{workspacePath}}`,
