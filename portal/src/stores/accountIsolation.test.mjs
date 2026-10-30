@@ -334,6 +334,23 @@ test('an old request returning 401 cannot expire the replacement account', async
   assert.equal(auth.user.userId, 'member')
 })
 
+test('a dead session logs out once however many provider requests resolve their bearer', async t => {
+  // Every provider request resolves its bearer through getValidToken. Once
+  // the session is dead (expired, no refresh token) the first call clears the
+  // session; the later ones must reject without another POST /auth/logout.
+  const { auth } = setup(t)
+  auth.loginFromOIDCResponse({ idToken: 'expired-token', expiresAt: 1, email: 'admin@example.test', userId: 'admin', clusterName: 'cluster-a' })
+  let expired = 0
+  window.dispatchEvent = () => { expired++ }
+  const logouts = []
+  globalThis.fetch = async (path, init) => { if (path === '/auth/logout') logouts.push(init?.method); return response({}) }
+  for (let i = 0; i < 4; i++) await assert.rejects(auth.getValidToken(), { message: 'Session expired' })
+  assert.deepEqual(logouts, ['POST'])
+  assert.equal(expired, 1)
+  assert.equal(auth.token, null)
+  assert.equal(auth.isAuthenticated, false)
+})
+
 test('normal OIDC refresh preserves the same account admin cache and returns a usable bearer', async t => {
   const { auth, admin } = setup(t)
   await seedAdmin(admin)

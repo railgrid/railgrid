@@ -55,6 +55,18 @@ export interface ProviderContextFields {
 interface ProviderContextOptions {
   providerName: string
   scope: () => ProviderFetchScope
+  // getToken is the refresh-aware bearer resolver (useAuthStore.getValidToken).
+  // Every mount point passes it so a provider request authenticates exactly
+  // like the host's own authFetch: an expired id token is refreshed in place
+  // instead of being sent stale.
+  getToken: () => Promise<string | null>
+  // onUnauthorized is notifySessionExpired at every mount point, so a 401
+  // from the hub's own REST surface through a provider bundle bounces to login
+  // like a 401 on the host's own authFetch calls (a provider backend's 401 is
+  // handed back to the bundle, see providerFetch.isHubAuthRejection). Both are
+  // required here, not defaulted, because this module is loaded alias-free by
+  // the tests and must not import the auth session.
+  onUnauthorized: (response: Response) => void
   isCurrent?: () => boolean
   fetchImpl?: typeof fetch
   origin?: string
@@ -74,7 +86,15 @@ export function createProviderContext(fields: ProviderContextFields, options: Pr
   })
   const ctx = {
     ...fields,
-    fetch: createProviderFetch({ providerName, scope, isCurrent: options.isCurrent, fetchImpl: options.fetchImpl, origin: options.origin }),
+    fetch: createProviderFetch({
+      providerName,
+      scope,
+      getToken: options.getToken,
+      onUnauthorized: options.onUnauthorized,
+      isCurrent: options.isCurrent,
+      fetchImpl: options.fetchImpl,
+      origin: options.origin,
+    }),
   } as ProviderContext
   Object.defineProperty(ctx, 'token', {
     enumerable: true,

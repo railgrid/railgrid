@@ -6,7 +6,7 @@ import { useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import { useProvidersStore } from '@/stores/providers'
 import { resolveProviderBundle } from '@/providers/providerBundle'
-import { authFetch } from '@/auth/session'
+import { authFetch, notifySessionExpired } from '@/auth/session'
 import { useAuthStore } from '@/stores/auth'
 import { useTenantStore } from '@/stores/tenant'
 import { usePageResourceStore } from '@/stores/pageResource'
@@ -466,6 +466,9 @@ function pushContext() {
       // Read lazily for token rotation; a workspace switch invalidates this
       // transport until the host issues a context for the new destination.
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+      // Refresh an expired id token per request, as the host's authFetch does.
+      getToken: () => auth.getValidToken(),
+      onUnauthorized: () => notifySessionExpired(),
     },
   )
 }

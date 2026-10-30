@@ -18,7 +18,7 @@ import {
 import { createProviderContext } from '@/providers/providerContext'
 import { resolveProviderBundle } from '@/providers/providerBundle'
 import { useProvidersStore } from '@/stores/providers'
-import { authFetch } from '@/auth/session'
+import { authFetch, notifySessionExpired } from '@/auth/session'
 import type { ProviderDTO } from '@/stores/providers'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import {
@@ -224,6 +224,8 @@ function pushContext() {
       providerName,
       isCurrent: () => contextGeneration === routeContext.generation && routeContext.state === 'ready',
       scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+      getToken: () => auth.getValidToken(),
+      onUnauthorized: () => notifySessionExpired(),
     },
   )
 }
