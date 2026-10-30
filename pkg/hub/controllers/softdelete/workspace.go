@@ -70,7 +70,7 @@ func (r *Reconciler) reconcileAllWorkspaces(ctx context.Context) error {
 				}
 				continue
 			}
-			if r.now().Before(gracePeriodFor(*requestedAt)) {
+			if r.now().Before(r.gracePeriodFor(*requestedAt)) {
 				if err := r.handleWorkspaceWithinGrace(ctx, state, orgUUID, wsUUID, *requestedAt); err != nil {
 					logger.Error(err, "Workspace within-grace sweep failed", "org", orgUUID, "workspace", wsUUID)
 				}

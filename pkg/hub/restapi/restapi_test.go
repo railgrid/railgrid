@@ -923,8 +923,8 @@ func TestDeleteWorkspace_RetriesUpdateConflictWithoutResettingTimestamp(t *testi
 }
 
 func TestUndeleteWorkspace_RejectsExpiredGraceWindow(t *testing.T) {
-	requestedAt := time.Now().UTC().Add(-workspaceGracePeriod - time.Hour)
 	mgr, ops, _ := newTestManager(t)
+	requestedAt := time.Now().UTC().Add(-mgr.SoftDeleteGracePeriod() - time.Hour)
 	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
 	key := wsKey{"org-a", "ws-1"}
 	ops.wsDeletionAnnos[key] = requestedAt

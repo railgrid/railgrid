@@ -1,4 +1,7 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+import { RotateCcw } from 'lucide-vue-next'
+
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import { useAdminStore, type AdminOrg } from '@/stores/admin'
 
@@ -9,6 +12,7 @@ const workspaceColumns = [
   { key: 'uuid', label: 'UUID' },
   { key: 'clusterName', label: 'Cluster' },
   { key: 'providers', label: 'Providers' },
+  { key: 'actions', label: '', ariaLabel: 'Actions' },
 ]
 
 const workspaceRows = (org: AdminOrg): Array<Record<string, unknown>> => org.workspaces.map((workspace) => ({
@@ -24,8 +28,60 @@ function providerNames(value: unknown): string[] {
     : []
 }
 
+function rowString(row: Record<string, unknown>, key: string): string {
+  const value = row[key]
+  return typeof value === 'string' ? value : ''
+}
+
+// purgeLabel renders the hub-reported purge deadline for a soft-deleted org
+// or workspace. The hub computes it from its own grace period, so the portal
+// never assumes a number of days.
+function purgeLabel(purgeAt: string | undefined): string {
+  if (!purgeAt) return ''
+  const at = new Date(purgeAt)
+  if (Number.isNaN(at.getTime())) return purgeAt
+  return at.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+}
+
+function restoreTitle(purgeAt: string | undefined): string {
+  const deadline = purgeLabel(purgeAt)
+  return deadline
+    ? `Cancel the pending deletion. Recoverable until ${deadline}; after that the hub removes it for good.`
+    : 'Cancel the pending deletion.'
+}
+
+const busy = ref(false)
+// restoringKey names the org or org/workspace whose Restore is in flight so
+// only that button shows the busy label.
+const restoringKey = ref<string | null>(null)
+const actionError = ref<string | null>(null)
+
 async function refresh() {
   await admin.refresh()
+}
+
+async function runRestore(key: string, action: () => Promise<void>) {
+  if (busy.value) return
+  busy.value = true
+  restoringKey.value = key
+  actionError.value = null
+  try {
+    await action()
+    await admin.refresh()
+  } catch (e) {
+    if ((e as Error).message !== 'forbidden') actionError.value = (e as Error).message
+  } finally {
+    restoringKey.value = null
+    busy.value = false
+  }
+}
+
+function restoreOrg(org: AdminOrg) {
+  return runRestore(org.name, () => admin.undeleteOrg(org.name))
+}
+
+function restoreWorkspace(org: AdminOrg, wsUUID: string) {
+  return runRestore(`${org.name}/${wsUUID}`, () => admin.undeleteWorkspace(org.name, wsUUID))
 }
 </script>
 
@@ -34,7 +90,11 @@ async function refresh() {
     <h2 class="mb-1 text-base font-semibold text-text-primary">Organizations</h2>
     <p class="mb-4 text-sm text-text-muted">
       All organizations registered on the hub, with their workspaces and enabled providers.
+      An organization or workspace marked <span class="k-badge k-badge--danger align-middle">deleting</span>
+      is inside its recovery window and can be restored here until the hub purges it.
     </p>
+
+    <p v-if="actionError" class="mb-2 text-sm text-danger" role="alert" aria-live="assertive">{{ actionError }}</p>
 
     <div v-if="admin.loading && !admin.loaded" class="text-sm text-text-muted" role="status" aria-live="polite">
       Loading organizations…
@@ -50,12 +110,34 @@ async function refresh() {
         :key="o.name"
         class="k-card p-4"
       >
-        <div class="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1">
           <span class="text-sm font-semibold text-text-primary">{{ o.displayName || '—' }}</span>
           <span class="font-mono text-[11px] text-text-muted">{{ o.name }}</span>
           <span v-if="o.workspacePath" class="font-mono text-[11px] text-text-muted">
             {{ o.workspacePath }}
           </span>
+          <template v-if="o.deletionRequestedAt">
+            <span
+              class="k-badge k-badge--danger"
+              :title="o.purgeAt ? `Purged ${purgeLabel(o.purgeAt)}` : undefined"
+            >
+              deleting
+            </span>
+            <span v-if="o.purgeAt" class="text-[11px] text-text-muted">
+              purged {{ purgeLabel(o.purgeAt) }}
+            </span>
+            <button
+              type="button"
+              class="k-btn k-btn--ghost ml-auto inline-flex items-center gap-1 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
+              :disabled="busy"
+              :title="restoreTitle(o.purgeAt)"
+              :aria-label="`Restore organization ${o.displayName || o.name}`"
+              @click="restoreOrg(o)"
+            >
+              <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" />
+              {{ restoringKey === o.name ? 'Restoring…' : 'Restore' }}
+            </button>
+          </template>
         </div>
 
         <ResourceTable
@@ -75,6 +157,7 @@ async function refresh() {
             <span
               v-if="row.deletionRequestedAt"
               class="k-badge k-badge--danger ml-1"
+              :title="rowString(row, 'purgeAt') ? `Purged ${purgeLabel(rowString(row, 'purgeAt'))}` : undefined"
             >
               deleting
             </span>
@@ -96,6 +179,24 @@ async function refresh() {
               </span>
             </div>
             <span v-else class="text-[11px] text-text-muted">—</span>
+          </template>
+          <template #actions="{ row }">
+            <div v-if="row.deletionRequestedAt" class="flex items-center justify-end gap-2">
+              <span v-if="rowString(row, 'purgeAt')" class="text-[11px] text-text-muted">
+                purged {{ purgeLabel(rowString(row, 'purgeAt')) }}
+              </span>
+              <button
+                type="button"
+                class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2 py-0.5 text-xs text-accent disabled:opacity-50"
+                :disabled="busy"
+                :title="restoreTitle(rowString(row, 'purgeAt'))"
+                :aria-label="`Restore workspace ${rowString(row, 'displayName') || rowString(row, 'uuid')}`"
+                @click="restoreWorkspace(o, rowString(row, 'uuid'))"
+              >
+                <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" />
+                {{ restoringKey === `${o.name}/${rowString(row, 'uuid')}` ? 'Restoring…' : 'Restore' }}
+              </button>
+            </div>
           </template>
         </ResourceTable>
       </div>

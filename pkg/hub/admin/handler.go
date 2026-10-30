@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -37,11 +38,33 @@ type Handler struct {
 	svc        *Service
 	userClient *railgridclient.Client
 	registry   *providers.Registry
+	// gracePeriod mirrors the hub's --soft-delete-grace-period: how long
+	// after a soft-delete the admin undelete routes still accept a
+	// restore, and the window the listing reports as purgeAt. Zero means
+	// softdelete.DefaultGracePeriod.
+	gracePeriod time.Duration
 }
 
 // NewHandler builds an admin Handler.
 func NewHandler(svc *Service, userClient *railgridclient.Client, registry *providers.Registry) *Handler {
 	return &Handler{svc: svc, userClient: userClient, registry: registry}
+}
+
+// WithSoftDeleteGracePeriod sets the recovery window the undelete routes
+// enforce and the listing reports. Wire it to the value the softdelete
+// reconciler runs with; non-positive keeps softdelete.DefaultGracePeriod.
+func (h *Handler) WithSoftDeleteGracePeriod(d time.Duration) *Handler {
+	h.gracePeriod = d
+	return h
+}
+
+// GracePeriod returns the configured recovery window, falling back to
+// softdelete.DefaultGracePeriod.
+func (h *Handler) GracePeriod() time.Duration {
+	if h.gracePeriod <= 0 {
+		return softdelete.DefaultGracePeriod
+	}
+	return h.gracePeriod
 }
 
 // Register mounts the admin routes on r (already gated by the admin Middleware).
@@ -52,6 +75,15 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/access", h.access).Methods(http.MethodGet)
 	r.HandleFunc("/users", h.listUsers).Methods(http.MethodGet)
 	r.HandleFunc("/organizations", h.listOrganizations).Methods(http.MethodGet)
+	// Undelete is the admin-side twin of POST /api/orgs/{org}/undelete and
+	// POST /api/orgs/{org}/workspaces/{ws}/undelete. Those require the
+	// caller to hold admin in the Org; a platform admin usually is not a
+	// member, so the admin area restores through kcp-admin credentials
+	// instead. Same rule as the tenant routes: only the recovery window is
+	// cancelled, nothing is rebuilt once the cascade has run, and a
+	// restore past the window is refused with 409.
+	r.HandleFunc("/organizations/{name}/undelete", h.undeleteOrganization).Methods(http.MethodPost)
+	r.HandleFunc("/organizations/{name}/workspaces/{ws}/undelete", h.undeleteOrgWorkspace).Methods(http.MethodPost)
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
 	// root:railgrid:system:providers drives the Provider reconciler
@@ -117,6 +149,11 @@ type orgDTO struct {
 	DisplayName   string         `json:"displayName"`
 	WorkspacePath string         `json:"workspacePath"`
 	Workspaces    []workspaceDTO `json:"workspaces"`
+	// DeletionRequestedAt is set while the Org is soft-deleted; PurgeAt is
+	// when its cascade runs (DeletionRequestedAt + the grace period) and so
+	// the last moment an undelete is accepted.
+	DeletionRequestedAt *string `json:"deletionRequestedAt,omitempty"`
+	PurgeAt             *string `json:"purgeAt,omitempty"`
 }
 
 type workspaceDTO struct {
@@ -125,6 +162,15 @@ type workspaceDTO struct {
 	ClusterName         string   `json:"clusterName"`
 	Providers           []string `json:"providers"`
 	DeletionRequestedAt *string  `json:"deletionRequestedAt,omitempty"`
+	PurgeAt             *string  `json:"purgeAt,omitempty"`
+}
+
+// softDeleteStamps renders a soft-delete timestamp and the matching purge
+// time for a DTO.
+func (h *Handler) softDeleteStamps(requestedAt time.Time) (requested, purge *string) {
+	r := requestedAt.UTC().Format(time.RFC3339)
+	p := requestedAt.Add(h.GracePeriod()).UTC().Format(time.RFC3339)
+	return &r, &p
 }
 
 func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
@@ -142,6 +188,9 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 			WorkspacePath: o.Status.WorkspacePath,
 			Workspaces:    []workspaceDTO{},
 		}
+		if o.Status.DeletionRequestedAt != nil {
+			dto.DeletionRequestedAt, dto.PurgeAt = h.softDeleteStamps(o.Status.DeletionRequestedAt.Time)
+		}
 		// Best-effort: enumerate the org's child workspaces and their
 		// enabled providers. An org whose workspace tree can't be read
 		// (e.g. mid-provisioning) still renders with an empty list.
@@ -157,8 +206,7 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 					wd.Providers = []string{}
 				}
 				if ws.DeletionRequestedAt != nil {
-					s := ws.DeletionRequestedAt.UTC().Format(time.RFC3339)
-					wd.DeletionRequestedAt = &s
+					wd.DeletionRequestedAt, wd.PurgeAt = h.softDeleteStamps(*ws.DeletionRequestedAt)
 				}
 				dto.Workspaces = append(dto.Workspaces, wd)
 			}
@@ -166,6 +214,81 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		items = append(items, dto)
 	}
 	writeJSON(w, map[string]any{"items": items})
+}
+
+// undeleteOrganization clears Organization.status.deletionRequestedAt while
+// the recovery window is open. 200 with the Org's current soft-delete state
+// (idempotent when it was never deleted), 409 once the window has elapsed:
+// the reconciler is cascading by then, and clearing the stamp under it
+// would leave a half-torn-down Org that looks alive.
+func (h *Handler) undeleteOrganization(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["name"]
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "organization name is required")
+		return
+	}
+	// The softdelete reconciler updates status concurrently (conditions,
+	// UMI stamps), so a plain get-then-update races it; re-read and retry
+	// on conflict, bounded.
+	const maxAttempts = 5
+	var lastErr error
+	for range maxAttempts {
+		org, err := h.userClient.Organizations().Get(r.Context(), name, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				writeError(w, http.StatusNotFound, fmt.Sprintf("organization %q not found", name))
+				return
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if org.Status.DeletionRequestedAt == nil {
+			writeJSON(w, map[string]any{"name": org.Name, "restored": false})
+			return
+		}
+		if !time.Now().UTC().Before(org.Status.DeletionRequestedAt.Add(h.GracePeriod())) {
+			writeError(w, http.StatusConflict, "organization deletion grace period has expired; the cascade has started")
+			return
+		}
+		org.Status.DeletionRequestedAt = nil
+		if _, err := h.userClient.Organizations().UpdateStatus(r.Context(), org, metav1.UpdateOptions{}); err != nil {
+			lastErr = err
+			if apierrors.IsConflict(err) {
+				continue
+			}
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"name": org.Name, "restored": true})
+		return
+	}
+	writeError(w, http.StatusConflict, fmt.Sprintf("organization %q changed while restoring; retry: %v", name, lastErr))
+}
+
+// undeleteOrgWorkspace clears the deletion-requested-at annotation on the
+// child Workspace while its recovery window is open. 204 on success or when
+// the workspace carries no soft-delete stamp (a workspace that does not
+// exist reads as unstamped, which is the same answer: nothing to restore),
+// 404 only if it vanished between the read and the clear, 409 once the
+// window has elapsed.
+func (h *Handler) undeleteOrgWorkspace(w http.ResponseWriter, r *http.Request) {
+	name := mux.Vars(r)["name"]
+	ws := mux.Vars(r)["ws"]
+	if name == "" || ws == "" {
+		writeError(w, http.StatusBadRequest, "organization name and workspace uuid are required")
+		return
+	}
+	err := h.svc.UndeleteOrgWorkspace(r.Context(), name, ws, h.GracePeriod())
+	switch {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, ErrGracePeriodExpired):
+		writeError(w, http.StatusConflict, "workspace deletion grace period has expired; the cascade has started")
+	case apierrors.IsNotFound(err):
+		writeError(w, http.StatusNotFound, fmt.Sprintf("workspace %q in organization %q not found", ws, name))
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
 }
 
 type adminProviderDTO struct {

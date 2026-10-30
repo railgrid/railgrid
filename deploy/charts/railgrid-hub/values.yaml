@@ -100,6 +100,15 @@ hub:
   # railgrid:static:<first 16 hex of sha256("static-token/<token>")>. Static-token
   # users have no email, so the token never appears in member lists.
   adminUsers: []
+  # How long a deleted user, organization or workspace stays recoverable
+  # before the hub cascades it away for good. A Go duration ("720h", "72h",
+  # "30m"); one window for every kind. Inside it the deleted object is hidden
+  # from switchers and can be restored from the portal's Settings page, the
+  # undelete API, or the admin area; after it the soft-delete reconciler
+  # removes the kcp workspace and everything in it. Empty leaves the binary
+  # default of 720h (30 days). Shortening it on an upgrade purges anything
+  # already deleted for longer than the new window on the next sweep.
+  softDeleteGracePeriod: ""
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []

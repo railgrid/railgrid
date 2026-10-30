@@ -17,6 +17,9 @@ limitations under the License.
 package hub
 
 import (
+	"time"
+
+	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -136,6 +139,14 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
+	// SoftDeleteGracePeriod is how long a soft-deleted User, Organization
+	// or Workspace stays recoverable before the softdelete reconciler
+	// cascades it away. One value for every kind (docs/organizations.md
+	// O-8 / O-13); the REST undelete handlers refuse a restore once it
+	// has elapsed. Zero or negative is rejected at startup. Defaults to
+	// softdelete.DefaultGracePeriod (30 days).
+	SoftDeleteGracePeriod time.Duration
+
 	// ProviderHeartbeatAuth is what the hub does with a provider heartbeat
 	// whose bearer token does not verify as that provider's own service
 	// account: "warn" logs and records the beat, "enforce" rejects it. The
@@ -230,6 +241,8 @@ func NewOptions() *Options {
 		KCPSecurePort:       6443,
 		KCPBindAddress:      "127.0.0.1",
 		KCPBatteriesInclude: "admin,user",
+
+		SoftDeleteGracePeriod: softdelete.DefaultGracePeriod,
 
 		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 		// Wide for this release; the next one defaults to false. See the field.

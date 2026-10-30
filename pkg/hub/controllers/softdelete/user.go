@@ -73,7 +73,7 @@ func (r *Reconciler) reconcileUser(ctx context.Context, req ctrl.Request) (ctrl.
 	}
 
 	requestedAt := user.Status.DeletionRequestedAt.Time
-	expiry := gracePeriodFor(requestedAt)
+	expiry := r.gracePeriodFor(requestedAt)
 	now := r.now()
 
 	if now.Before(expiry) {
@@ -135,7 +135,7 @@ func (r *Reconciler) reconcileUserWithinGrace(ctx context.Context, user *tenancy
 		Type:    tenancyv1alpha1.UserConditionDeletionInProgress,
 		Status:  metav1.ConditionTrue,
 		Reason:  reasonWithinGracePeriod,
-		Message: fmt.Sprintf("Soft-delete cascade scheduled at %s.", gracePeriodFor(requestedAt.Time).UTC().Format("2006-01-02T15:04:05Z")),
+		Message: fmt.Sprintf("Soft-delete cascade scheduled at %s.", r.gracePeriodFor(requestedAt.Time).UTC().Format("2006-01-02T15:04:05Z")),
 	}, user.Generation) {
 		if err := r.client.Status().Update(ctx, user); err != nil && !apierrors.IsConflict(err) {
 			return ctrl.Result{}, fmt.Errorf("setting DeletionInProgress condition on User %q: %w", user.Name, err)
