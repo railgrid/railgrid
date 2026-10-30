@@ -55,7 +55,7 @@ must remain byte-identical. `make verify-portalkit` checks the manifest, the
 host copy, every portal copy, and unexpected files. Standalone helpers call
 `ensureRailgridUIStyles()`: a computed `:root` marker
 `--railgrid-ui-canonical: 1` is accepted only when its `--railgrid-ui-core-version` is at
-least the bundle's required core version (currently 36, from
+least the bundle's required core version (currently 41, from
 `RAILGRID_UI_CORE_VERSION` in `styles.ts`). Otherwise the
 canonical CSS is imported with Vite's `?inline` loader, so the embedded
 fallback uses Vite's minified form of the canonical rules and is appended
@@ -105,6 +105,18 @@ remain independently interactive and do not activate the row. Do not assign
 `role="button"` to a table row. The shared edit/delete row actions remain
 keyboard-focusable and use the canonical confirmation dialog for destructive
 actions.
+
+Vue resource-table date cells use the canonical
+`provider-sdk/portalkit-vue/ResourceTimestamp.vue`, `timestamp.ts`, and
+`timestampClock.ts`. The component renders a relative label inside a semantic
+`<time>`, discloses a localized exact date and time with seconds and time zone
+on hover or focus, and toggles that exact value inline on click. It includes
+the caller's label and full value in the button's accessible name, isolates its
+click from interactive table rows, and renders missing or invalid values as an
+em dash without a button. All mounted timestamp cells share one one-second
+clock, which stops when the last consumer unmounts; SSR does not start it.
+`timestampSortValue(value)` returns epoch milliseconds or `null`, so sortable
+date columns compare chronologically and leave missing or invalid values last.
 
 ## Toasts
 

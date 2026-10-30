@@ -12,7 +12,7 @@ not render a standalone component:
   stale host styles untouched, and appends a versioned fallback when needed.
   The fallback imports canonical CSS through Vite's `?inline` loader, which
   embeds minified canonical rules; the authored stylesheet and synced source
-  copies remain byte-identical. The current core style version is 34, from
+  copies remain byte-identical. The current core style version is 41, from
   `RAILGRID_UI_CORE_VERSION` in `provider-sdk/portalkit/styles.ts`, and is read
   from `--railgrid-ui-core-version`. Existing style elements are never replaced.
   Optional AI styles load independently through `agentkit/styles.ts`, with

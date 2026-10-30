@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 40;
+  --railgrid-ui-core-version: 41;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2453,6 +2453,62 @@ railgrid-resource-table-filter { display: contents; }
   border-color: transparent;
   box-shadow: none;
   color: var(--color-accent-hover, #a18aff);
+}
+.k-resource-timestamp {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: bottom;
+}
+.k-resource-timestamp__button {
+  align-items: baseline;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  line-height: inherit;
+  max-width: 100%;
+  min-height: 24px;
+  min-width: 24px;
+  overflow: visible;
+  padding: 0;
+  text-align: start;
+  white-space: nowrap;
+}
+.k-resource-timestamp__button:hover {
+  background: transparent;
+  color: var(--color-text-primary, #e9e9f2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.k-resource-timestamp__button:focus-visible {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 2px;
+  position: relative;
+  z-index: 1;
+}
+.k-resource-timestamp__time {
+  display: block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-resource-timestamp__missing { color: var(--color-text-secondary, #8a8ca6); }
+.k-resource-timestamp__button[aria-pressed="true"] .k-resource-timestamp__time {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+.k-table__primary-value:has(.k-resource-timestamp__button:focus-visible) { overflow: visible; }
+@media (pointer: coarse), (any-pointer: coarse) {
+  .k-resource-timestamp__button { min-height: 44px; min-width: 44px; }
 }
 /* Tailwind preflight makes SVGs block-level. Table-cell icons are inline
  * content, so restore their intrinsic inline flow and keep link labels intact. */
