@@ -72,3 +72,11 @@ path is 1,215,445 B raw / 331,358 B gzip; total assets are 1,328,399 B raw /
 gate that accounts for the additional lazy chunk. Loading and failure messages
 remain available while repository settings load. These are local bundle
 measurements, not live browser performance evidence.
+
+With shared ResourceTimestamp styles, the local production build measures
+1,216,686 B raw / 331,515 B gzip on the page path and 1,329,640 B raw /
+367,900 B gzip across all assets. Compared with the post-sorting baseline,
+this adds 1,241 B raw / 157 B gzip to the page path and 1,241 B raw / 155 B
+gzip to all assets. The build passes the unchanged ceilings with 3,314 B raw /
+485 B gzip page headroom and 360 B raw / 100 B gzip total headroom. These are
+local bundle measurements, not live browser performance evidence.
