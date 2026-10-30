@@ -20,6 +20,7 @@ const { useAgentOverlayStore, overlayPreferenceKey } = await vite.ssrLoadModule(
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { usePageResourceStore } = await vite.ssrLoadModule('/src/stores/pageResource.ts')
+const { normalizeProviderAgentContext } = await vite.ssrLoadModule('/src/portalkit/agent-context.ts')
 test.after(() => vite.close())
 
 test('selection and context preference are isolated by user, organization and workspace', () => {
@@ -100,19 +101,40 @@ test('authority changes clear transient layout and settings state', () => {
   assert.equal(overlay.selectedAgent, null)
 })
 
-test('page resource snapshots allowlist metadata and ignore cleanup from a retired publisher', () => {
+test('generic context and legacy resource snapshots have independent owners and immutable copies', () => {
   setActivePinia(createPinia())
-  const store = usePageResourceStore(), oldOwner = {}, owner = {}
+  const store = usePageResourceStore(), resourceOwner = {}, contextOwner = {}
   const hint = { apiVersion: 'infrastructure.railgrid.ai/v1alpha1', kind: 'Instance', resource: 'instances', name: 'payments' }
-  store.publish(oldOwner, 'old-scope', hint)
-  store.publish(owner, 'new-scope', { ...hint, values: { password: 'must-not-share' } })
-  store.clear(oldOwner)
-  assert.deepEqual(store.snapshot, { scope: 'new-scope', resource: hint })
+  const providerContext = {
+    version: 1,
+    title: 'Purchase order',
+    summary: 'Current inventory record',
+    resources: [{ apiVersion: 'commerce.example.dev/v1alpha1', kind: 'PurchaseOrder', name: 'record-17' }],
+    data: { status: { state: 'Pending' }, labels: ['priority'] },
+  }
+  store.publish(resourceOwner, 'resource-scope', hint)
+  store.publishAgentContext(contextOwner, 'context-scope', providerContext)
+  store.clear(resourceOwner)
+  assert.equal(store.snapshot, null)
+  assert.deepEqual(store.agentContextSnapshot, { scope: 'context-scope', context: normalizeProviderAgentContext(providerContext) })
+
   hint.name = 'mutated-after-publication'
-  assert.equal(store.snapshot.resource.name, 'payments')
-  store.publish(owner, 'new-scope', { ...hint, name: 'x'.repeat(254) })
+  providerContext.data.status.state = 'mutated-after-publication'
+  providerContext.resources[0].name = 'mutated-after-publication'
+  assert.equal(store.agentContextSnapshot.context.data.status.state, 'Pending')
+  assert.equal(store.agentContextSnapshot.context.resources[0].name, 'record-17')
+  assert.equal(Object.isFrozen(store.agentContextSnapshot), true)
+  assert.equal(Object.isFrozen(store.agentContextSnapshot.context), true)
+
+  store.publishAgentContext(contextOwner, 'context-scope', { ...providerContext, provenance: 'external' })
+  assert.equal(store.agentContextSnapshot, null, 'malformed input clears the previous snapshot')
+  store.publishAgentContext(contextOwner, 'context-scope', providerContext)
+  store.publishAgentContext(contextOwner, 'context-scope', null)
+  assert.equal(store.agentContextSnapshot, null, 'null explicitly clears the snapshot')
+  store.publishAgentContext(contextOwner, 'context-scope', providerContext)
+  store.clear(resourceOwner)
+  assert.notEqual(store.agentContextSnapshot, null, 'another publisher cannot clear generic context')
+  store.clear(contextOwner)
   assert.equal(store.snapshot, null)
-  store.publish(owner, 'new-scope', hint)
-  store.clear(owner)
-  assert.equal(store.snapshot, null)
+  assert.equal(store.agentContextSnapshot, null)
 })

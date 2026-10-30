@@ -87,5 +87,36 @@ try {
   assert.equal(fromMinimum.width, 340)
   assert.equal(fromMinimum.height, 290)
   await page.mouse.up()
-  console.log('Pointer tracking, min/max reversal, mobile/keyboard resize, release, and capture-loss cleanup passed')
+  assert.ok(source.includes('agent-overlay__context-preview--compact'), 'context preview selector changed; update this fixture')
+  for (const theme of ['light', 'dark']) {
+    for (const [width, height, compact, panelHeight, bottom] of [
+      [1280, 800, false, 180, 32],
+      [1280, 800, true, 64, 400],
+      [1280, 800, true, 64, 752],
+      [1280, 800, false, 180, 752],
+      [390, 600, false, 180, 32],
+      [390, 600, true, 64, 260],
+      [390, 600, true, 64, 552],
+      [390, 600, false, 180, 552],
+    ]) {
+      await page.setViewportSize({ width, height })
+      await page.setContent(`<style>* { box-sizing: border-box } ${css}</style>
+        <div class="agent-overlay ${compact ? 'agent-overlay--ready' : ''}" style="--overlay-width:720px;--overlay-height:${panelHeight}px;--overlay-bottom:${bottom}px;--overlay-left:0px;--overlay-right:0px">
+          <section class="agent-overlay__panel agent-overlay__panel--context-preview">
+            <section class="agent-overlay__context-preview ${compact ? 'agent-overlay__context-preview--compact' : ''}">
+              <button>Close</button><pre style="white-space:pre-wrap">${'Shared provider context '.repeat(1000)}</pre>
+            </section>
+          </section>
+        </div>`)
+      await page.evaluate(theme => { document.documentElement.className = theme }, theme)
+      const preview = page.locator('.agent-overlay__context-preview')
+      const box = await preview.boundingBox()
+      assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height,
+        `context preview fits ${width}x${height}, ${theme}, compact=${compact}`)
+      assert.ok(await preview.evaluate(el => el.scrollHeight > el.clientHeight), 'long context scrolls inside the preview')
+      await preview.evaluate(el => { el.scrollTop = el.scrollHeight })
+      assert.ok(await preview.evaluate(el => el.scrollTop > 0), 'the final context fields remain reachable')
+    }
+  }
+  console.log('Resize handling and bounded context previews passed in desktop/mobile light/dark fixtures')
 } finally { await browser.close() }

@@ -18,7 +18,7 @@ const {
   isProviderFetchAllowed,
   providerFetchAllowedPrefixes,
 } = await vite.ssrLoadModule('/src/providers/providerFetch.ts')
-const { createProviderContext } = await vite.ssrLoadModule('/src/providers/providerContext.ts')
+const { createProviderContext, createProviderContextEpoch, guardProviderContextCallback } = await vite.ssrLoadModule('/src/providers/providerContext.ts')
 const { providerFetch: portalkitProviderFetch } = await vite.ssrLoadModule('/src/portalkit/tenant.ts')
 test.after(() => vite.close())
 
@@ -190,6 +190,25 @@ test('a workspace switch during a token refresh aborts the request before it is 
   assert.equal(calls, 0)
 })
 
+test('an owner or access change during token refresh aborts before sending the request', async () => {
+  let current = true
+  let release
+  let calls = 0
+  const providerFetch = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => ({ token: 'stored', orgUUID: ORG, workspaceUUID: 'ws' }),
+    isCurrent: () => current,
+    getToken: () => new Promise(resolve => { release = resolve }),
+    fetchImpl: async () => { calls++; return new Response() },
+  })
+  const pending = providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents', { method: 'POST' })
+  current = false
+  release('fresh')
+  await assert.rejects(pending, { name: 'AbortError' })
+  assert.equal(calls, 0)
+})
+
 test('the host fetch reports a hub REST 401 to onUnauthorized and still returns the response', async () => {
   let status = 401
   const unauthorized = []
@@ -253,6 +272,42 @@ test('the pushed context wires getToken into the fetch it exposes', async () => 
   )
   await ctx.fetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
   assert.equal(calls[0].init.headers.get('Authorization'), 'Bearer fresh-token')
+})
+
+test('provider context callbacks and deprecated credentials are fenced by owner lifetime', async () => {
+  let active = true
+  const calls = []
+  const callback = guardProviderContextCallback(() => active, value => calls.push(value))
+  callback('current')
+  active = false
+  callback('stale')
+  assert.deepEqual(calls, ['current'])
+
+  const context = createProviderContext(
+    { subPath: '', user: null, tenant: 'cluster', orgUUID: ORG, workspaceUUID: 'ws', theme: 'dark', basePath: '/ui/providers/agents' },
+    {
+      providerName: 'fenced-agent-test', origin: ORIGIN,
+      scope: () => ({ token: 'token-1', orgUUID: ORG, workspaceUUID: 'ws' }),
+      getToken: async () => 'fresh-token',
+      onUnauthorized: () => {},
+      isCurrent: () => active,
+      fetchImpl: async (input, init) => { calls.push(init); return new Response() },
+      warn() {},
+    },
+  )
+  assert.equal(context.token, null, 'retired contexts do not expose their stored token')
+  await assert.rejects(context.fetch('/services/providers/agents/mcp'), { name: 'AbortError' })
+  assert.deepEqual(calls, ['current'])
+})
+
+test('context epoch invalidates A-B-A callbacks without retiring the same-owner transport', () => {
+  const epoch = createProviderContextEpoch()
+  const capturedA = epoch.capture()
+  assert.equal(epoch.isCurrent(capturedA), true)
+  epoch.advance()
+  assert.equal(epoch.isCurrent(capturedA), false)
+  epoch.advance()
+  assert.equal(epoch.isCurrent(capturedA), false, 'returning to route A does not revive the old callback')
 })
 
 test('the host fetch keeps same-origin credentials whatever the provider passes', async () => {

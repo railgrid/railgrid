@@ -1,11 +1,12 @@
 import type { PublishPageResource } from '@/portalkit/page-context'
+import type { PublishAgentContext } from '@/portalkit/agent-context'
 import { createProviderFetch, type ProviderFetch, type ProviderFetchScope } from './providerFetch'
 
 // The railgridContext shape the host pushes onto a provider's custom element.
 // Both mount points (ProviderFrame.vue for the page, DashboardTile.vue for the
 // tile) build it through createProviderContext so the auth surface a bundle
-// sees is defined in exactly one place.
-// Injected only for the Agents provider, never other providers.
+// sees is defined in exactly one place. The overlay control is Agents-only;
+// page-context publishing is available to every provider page.
 export interface AgentOverlayControl {
   selectedAgent: string | null
   settingsOpen: boolean
@@ -17,6 +18,9 @@ export interface AgentOverlayControl {
 
 export interface ProviderContext {
   publishPageResource?: PublishPageResource
+  // Bounded provider-defined JSON for the shared Agents overlay. It is context
+  // only; it does not grant authority or trigger a request.
+  publishAgentContext?: PublishAgentContext
   agentOverlay?: AgentOverlayControl
   subPath?: string
   user: unknown
@@ -39,8 +43,33 @@ export interface ProviderContext {
   token: string | null
 }
 
+/** A monotonically increasing revision that prevents route A → B → A reuse. */
+export function createProviderContextEpoch(): {
+  capture: () => number
+  advance: () => number
+  isCurrent: (captured: number) => boolean
+} {
+  let revision = 0
+  return {
+    capture: () => revision,
+    advance: () => ++revision,
+    isCurrent: captured => captured === revision,
+  }
+}
+
+/** Keep callbacks handed to a provider inert after their host context expires. */
+export function guardProviderContextCallback<Arguments extends unknown[]>(
+  isCurrent: () => boolean,
+  callback: (...args: Arguments) => void,
+): (...args: Arguments) => void {
+  return (...args: Arguments) => {
+    if (isCurrent()) callback(...args)
+  }
+}
+
 export interface ProviderContextFields {
   publishPageResource?: PublishPageResource
+  publishAgentContext?: PublishAgentContext
   agentOverlay?: AgentOverlayControl
   subPath?: string
   user: unknown
@@ -107,7 +136,7 @@ export function createProviderContext(fields: ProviderContextFields, options: Pr
             'call railgridContext.fetch (portalkit providerFetch(ctx)) so the host injects credentials instead.',
         )
       }
-      return scope().token
+      return options.isCurrent?.() === false ? null : scope().token
     },
   })
   return ctx
