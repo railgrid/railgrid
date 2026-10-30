@@ -34,10 +34,10 @@ export interface ProviderFetchOptions {
   // transport sends scope().token as-is, and a provider mounted after the id
   // token expired keeps sending the stale bearer until the page reloads.
   getToken?: () => Promise<string | null>
-  // onUnauthorized is told about every 401 the hub returns through this
-  // transport so the host can treat it as a dead session (notifySessionExpired),
-  // exactly as its own authFetch does. The response is still returned to the
-  // provider.
+  // onUnauthorized is told about a 401 the hub's own REST surface returns
+  // through this transport (see isHubAuthRejection) so the host can treat it
+  // as a dead session (notifySessionExpired), exactly as its own authFetch
+  // does. The response is still returned to the provider.
   onUnauthorized?: (response: Response) => void
   isCurrent?: () => boolean
   // Defaults to window.location.origin. Injectable for tests.
@@ -142,6 +142,25 @@ export function isProviderFetchAllowed(
   return false
 }
 
+// isHubAuthRejection decides whether a 401 on this transport means the hub
+// rejected the caller's identity. Only the hub's own REST paths qualify: the
+// allow list admits /api/orgs/<orgUUID>/ and /api/providers, both answered by
+// the hub's tenant middleware, where a 401 is "this bearer is not a session".
+// A 401 on /clusters/ or /services/providers/<name>/ is not reported: a kcp
+// custom subresource is reverse-proxied to the provider, and provider backends
+// return 401 for reasons of their own (a missing caller gate, an unverifiable
+// workload identity, ...) that say nothing about the portal session. getToken
+// has already refreshed the bearer, and getBearerToken fires
+// notifySessionExpired itself when an expired token cannot be refreshed, so a
+// dead session is detected before the request leaves; a stale-but-unexpired
+// token is caught by the host's own authFetch calls. Logging the user out on a
+// provider's 401 would lose their work and fail the same way after re-login.
+export function isHubAuthRejection(url: URL, response: Response): boolean {
+  if (response.status !== 401) return false
+  const pathname = normalizedPathname(url)
+  return pathname !== null && pathname.startsWith('/api/')
+}
+
 function requestURL(input: RequestInfo | URL, origin: string): URL {
   if (typeof Request !== 'undefined' && input instanceof Request) return new URL(input.url, origin)
   if (input instanceof URL) return new URL(input.href, origin)
@@ -205,7 +224,8 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
       ? await fetchImpl(new Request(input as Request, nextInit))
       : await fetchImpl(url.toString(), nextInit)
     assertCurrent()
-    if (response.status === 401) onUnauthorized?.(response)
+    // Report only when the hub rejected the identity, not the provider's own 401.
+    if (isHubAuthRejection(url, response)) onUnauthorized?.(response)
     return response
   }
 }

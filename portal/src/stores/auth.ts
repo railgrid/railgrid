@@ -179,7 +179,11 @@ export const useAuthStore = defineStore('auth', () => {
       token.value = valid
       return valid
     }
-    logout()
+    // Every provider request resolves its bearer here, so a page that fans
+    // out N calls after the session died reaches this branch N times. Log
+    // out once: a second POST /auth/logout and a second clearAuth() would
+    // only duplicate what the first already did.
+    if (token.value !== null) logout()
     throw new Error('Session expired')
   }
 

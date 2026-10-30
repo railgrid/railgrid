@@ -190,7 +190,7 @@ test('a workspace switch during a token refresh aborts the request before it is 
   assert.equal(calls, 0)
 })
 
-test('the host fetch reports a 401 to onUnauthorized and still returns the response', async () => {
+test('the host fetch reports a hub REST 401 to onUnauthorized and still returns the response', async () => {
   let status = 401
   const unauthorized = []
   const providerFetch = createProviderFetch({
@@ -200,13 +200,41 @@ test('the host fetch reports a 401 to onUnauthorized and still returns the respo
     onUnauthorized: (response) => unauthorized.push(response.status),
     fetchImpl: async () => new Response('{}', { status }),
   })
-  const response = await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
+  const response = await providerFetch(`/api/orgs/${ORG}/workspaces/ws/providers/enabled`)
   assert.equal(response.status, 401)
   assert.deepEqual(unauthorized, [401])
+  await providerFetch('/api/providers')
+  assert.deepEqual(unauthorized, [401, 401])
   // 403 and 404 are ordinary answers for an authenticated user, never a dead
   // session (same rule as the host's authFetch).
-  for (status of [200, 403, 404, 500]) await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
-  assert.deepEqual(unauthorized, [401])
+  for (status of [200, 403, 404, 500]) await providerFetch(`/api/orgs/${ORG}/workspaces/ws/providers/enabled`)
+  assert.deepEqual(unauthorized, [401, 401])
+})
+
+test('a 401 from the provider backend or a kcp subresource is not a dead session', async () => {
+  // Provider backends return 401 for reasons of their own (agents: no caller
+  // gate on a route reached outside kcp; infrastructure: an unverifiable
+  // workload-identity bearer). Those must reach the bundle as responses, not
+  // log the user out: the bearer was refreshed by getToken a moment ago and
+  // the same click would fail the same way after a re-login.
+  const unauthorized = []
+  const providerFetch = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => ({ token: 't', orgUUID: ORG, workspaceUUID: 'ws' }),
+    onUnauthorized: (response) => unauthorized.push(response.status),
+    fetchImpl: async () => new Response('{"kind":"Status","code":401}', { status: 401 }),
+  })
+  for (const path of [
+    '/services/providers/agents/mcp',
+    '/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents',
+    '/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents/helper/evaluate',
+    '/ui/providers/agents/icon.svg',
+  ]) {
+    const response = await providerFetch(path, { method: 'POST' })
+    assert.equal(response.status, 401, path)
+  }
+  assert.deepEqual(unauthorized, [])
 })
 
 test('the pushed context wires getToken into the fetch it exposes', async () => {

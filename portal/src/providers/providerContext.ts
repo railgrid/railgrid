@@ -61,9 +61,11 @@ interface ProviderContextOptions {
   // instead of being sent stale.
   getToken: () => Promise<string | null>
   // onUnauthorized is notifySessionExpired at every mount point, so a 401
-  // through a provider bundle bounces to login like a 401 on the host's own
-  // REST calls. Both are required here, not defaulted, because this module is
-  // loaded alias-free by the tests and must not import the auth session.
+  // from the hub's own REST surface through a provider bundle bounces to login
+  // like a 401 on the host's own authFetch calls (a provider backend's 401 is
+  // handed back to the bundle, see providerFetch.isHubAuthRejection). Both are
+  // required here, not defaulted, because this module is loaded alias-free by
+  // the tests and must not import the auth session.
   onUnauthorized: (response: Response) => void
   isCurrent?: () => boolean
   fetchImpl?: typeof fetch
