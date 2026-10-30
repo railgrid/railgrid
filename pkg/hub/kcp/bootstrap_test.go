@@ -226,6 +226,9 @@ func TestWaitForTenancyDiscovery_FreshBinding(t *testing.T) {
 		if calls >= 3 {
 			resources = append(resources, metav1.APIResource{Name: "organizations", Kind: "Organization"}, metav1.APIResource{Name: "usermembershipindices", Kind: "UserMembershipIndex"})
 		}
+		if calls >= 4 {
+			resources = append(resources, metav1.APIResource{Name: "scopedidentities", Kind: "ScopedIdentity"})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(metav1.APIResourceList{GroupVersion: "tenants.railgrid.ai/v1alpha1", APIResources: resources})
 	}))
@@ -239,7 +242,7 @@ func TestWaitForTenancyDiscovery_FreshBinding(t *testing.T) {
 	if err := waitForTenancyDiscovery(ctx, client); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 {
+	if calls != 4 {
 		t.Fatalf("returned before complete discovery: %d requests", calls)
 	}
 }
@@ -278,7 +281,7 @@ func TestEnsureTenancyObjectsBinding_ExistingCustomName(t *testing.T) {
 			discovered = true
 			_ = json.NewEncoder(w).Encode(metav1.APIResourceList{
 				GroupVersion: "tenants.railgrid.ai/v1alpha1",
-				APIResources: []metav1.APIResource{{Name: "users"}, {Name: "organizations"}, {Name: "usermembershipindices"}},
+				APIResources: []metav1.APIResource{{Name: "users"}, {Name: "organizations"}, {Name: "usermembershipindices"}, {Name: "scopedidentities"}},
 			})
 		default:
 			// There is intentionally no canonical-name binding. Bootstrap must

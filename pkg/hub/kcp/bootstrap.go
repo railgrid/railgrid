@@ -357,7 +357,7 @@ func waitForTenancyDiscovery(ctx context.Context, client discovery.DiscoveryInte
 		for _, resource := range resources.APIResources {
 			found[resource.Name] = true
 		}
-		return found["users"] && found["organizations"] && found["usermembershipindices"], nil
+		return found["users"] && found["organizations"] && found["usermembershipindices"] && found["scopedidentities"], nil
 	})
 }
 
