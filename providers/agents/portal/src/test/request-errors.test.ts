@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient, ApiError } from '../api'
+import { admissionDenialSummary, parseAdmissionDenial, presentRequestFailure } from '../request-errors'
 import { Resources, ResourceError } from '../resources'
 import type { RailgridContext } from '../types'
 
@@ -75,6 +76,45 @@ describe('remote request errors', () => {
     expect(error.technicalDiagnostic).toContain('[redacted]')
     expect(error.technicalDiagnostic).not.toContain(SECRET)
     expect(error.technicalDiagnostic.length).toBeLessThan(4_100)
+  })
+
+  it('surfaces an admission webhook denial instead of the generic permission summary', async () => {
+    // Enforcement by contrib-metering: kcp reports the denial as 403 Forbidden,
+    // the same status as a missing RBAC grant, but the message is the point.
+    const denied = 'admission webhook "enforce.metering.railgrid.ai" denied the request: metering: agents limit exceeded for account b6dc5a8a-5cd2-4c9d-a2b6-c236d6c90c33 (limit 5)'
+    const resources = new Resources()
+    resources.setContext(contextWith(async () => new Response(JSON.stringify({
+      apiVersion: 'v1',
+      kind: 'Status',
+      status: 'Failure',
+      reason: 'Forbidden',
+      message: denied,
+      code: 403,
+    }), { status: 403 })))
+
+    const error = await rejected(resources.createAgent({ name: 'scout' }))
+
+    expect(error).toBeInstanceOf(ResourceError)
+    expect(error.status).toBe(403)
+    expect(error.reason).toBe('Forbidden')
+    expect(error.message).toBe("This workspace's plan allows up to 5 agents. Remove one, or ask a workspace administrator to raise the limit.")
+    expect(error.message).not.toContain('permission')
+    expect(error.technicalDiagnostic).toBe(denied)
+
+    // Any other webhook's reason is shown too, redacted and bounded, with the
+    // same framing; a 403 whose message merely mentions admission is not.
+    const other = presentRequestFailure(403, `admission webhook "policy.example" denied the request: images must come from the internal registry, token=${SECRET}`, 'Forbidden')
+    expect(other.message).toBe('The workspace refused this change: images must come from the internal registry, token=[redacted]')
+    expect(other.message).not.toContain(SECRET)
+    const long = presentRequestFailure(403, `admission webhook "policy.example" denied the request: ${'x'.repeat(1_000)}`, 'Forbidden')
+    expect(long.message.length).toBeLessThan(400)
+    expect(long.message.endsWith('…')).toBe(true)
+    expect(presentRequestFailure(403, 'admission response rejected', 'Forbidden').message).toContain('permission')
+    expect(parseAdmissionDenial('admission webhook "x" denied the request: ')).toBeNull()
+
+    // Meter names read as plural nouns; a limit of one is singular.
+    expect(admissionDenialSummary({ webhook: 'w', message: 'metering: edges limit exceeded for account org (limit 1)' })).toContain('up to 1 edge.')
+    expect(admissionDenialSummary({ webhook: 'w', message: 'metering: request_cost_rpm limit exceeded for account org (limit 600)' })).toContain('up to 600 request cost rpm.')
   })
 
   it('distinguishes an existing name from an edit conflict when presenting 409 responses', async () => {
