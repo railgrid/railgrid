@@ -97,6 +97,13 @@ export const useAuthStore = defineStore('auth', () => {
         try {
           const valid = await getBearerToken()
           if (valid) {
+            // getBearerToken refreshes an expired token into localStorage
+            // only; mirror it into the reactive ref so everything reading
+            // auth.token (provider contexts, the deprecated railgridContext.token)
+            // sees the fresh bearer instead of the one this store was seeded
+            // with before the refresh.
+            assertAuthSession(revision)
+            token.value = valid
             await bootstrapBrowserSession(valid)
             // A logout or new login may have replaced this session in flight.
             assertAuthSession(revision)

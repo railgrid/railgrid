@@ -15,7 +15,7 @@ import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useLayoutInsets } from '@/composables/useLayoutInsets'
 import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { authFetch } from '@/auth/session'
+import { authFetch, notifySessionExpired } from '@/auth/session'
 import { createProviderContext, type ProviderContext } from '@/providers/providerContext'
 import { loadProviderScript } from '@/providers/providerScriptLoader'
 import { resolveProviderBundle } from '@/providers/providerBundle'
@@ -122,6 +122,8 @@ function pushContext(): void {
     providerName: 'agents',
     isCurrent: () => owner === generation && key === authorityKey.value && allowed.value,
     scope: () => ({ token: auth.token, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+    getToken: () => auth.getValidToken(),
+    onUnauthorized: () => notifySessionExpired(),
   })
 }
 async function mountAgent(): Promise<void> {

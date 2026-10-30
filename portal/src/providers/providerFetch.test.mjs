@@ -123,6 +123,110 @@ test('the host fetch resolves relative URLs and injects the host credentials', a
 
 })
 
+test('the host fetch resolves the bearer through getToken, not the stored scope token', async () => {
+  // Regression: the scope token is whatever the host last stored and may be
+  // expired. A provider mounted after expiry used to send it as-is and get a
+  // 401 until the page reloaded, while the host's own authFetch refreshed.
+  const calls = []
+  let fresh = 'refreshed-1'
+  let getTokenCalls = 0
+  const providerFetch = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => ({ token: 'expired-token', orgUUID: ORG, workspaceUUID: 'ws' }),
+    getToken: async () => {
+      getTokenCalls += 1
+      return fresh
+    },
+    fetchImpl: async (input, init) => {
+      calls.push({ input, init })
+      return new Response('{}', { status: 200 })
+    },
+  })
+
+  await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents/a/sessions')
+  assert.equal(getTokenCalls, 1)
+  assert.equal(calls[0].init.headers.get('Authorization'), 'Bearer refreshed-1')
+
+  // Every request resolves the bearer again, so a rotation shows up at once.
+  fresh = 'refreshed-2'
+  await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents/a/sessions')
+  assert.equal(getTokenCalls, 2)
+  assert.equal(calls[1].init.headers.get('Authorization'), 'Bearer refreshed-2')
+
+  // No bearer at all: the header is dropped rather than sent empty.
+  fresh = null
+  await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents/a/sessions')
+  assert.equal(calls[2].init.headers.has('Authorization'), false)
+
+  // A getToken failure (dead session) rejects before any request is made.
+  const before = calls.length
+  const failing = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => ({ token: 'expired-token', orgUUID: ORG, workspaceUUID: 'ws' }),
+    getToken: async () => { throw new Error('Session expired') },
+    fetchImpl: async (input, init) => { calls.push({ input, init }); return new Response() },
+  })
+  await assert.rejects(failing('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents'), { message: 'Session expired' })
+  assert.equal(calls.length, before)
+})
+
+test('a workspace switch during a token refresh aborts the request before it is sent', async () => {
+  const scope = { token: 't', orgUUID: ORG, workspaceUUID: 'ws-1' }
+  let calls = 0
+  let release
+  const providerFetch = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => scope,
+    getToken: () => new Promise((resolve) => { release = resolve }),
+    fetchImpl: async () => { calls += 1; return new Response() },
+  })
+  const pending = providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents', { method: 'POST' })
+  scope.workspaceUUID = 'ws-2'
+  release('fresh')
+  await assert.rejects(pending, { name: 'AbortError' })
+  assert.equal(calls, 0)
+})
+
+test('the host fetch reports a 401 to onUnauthorized and still returns the response', async () => {
+  let status = 401
+  const unauthorized = []
+  const providerFetch = createProviderFetch({
+    providerName: 'agents',
+    origin: ORIGIN,
+    scope: () => ({ token: 't', orgUUID: ORG, workspaceUUID: 'ws' }),
+    onUnauthorized: (response) => unauthorized.push(response.status),
+    fetchImpl: async () => new Response('{}', { status }),
+  })
+  const response = await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
+  assert.equal(response.status, 401)
+  assert.deepEqual(unauthorized, [401])
+  // 403 and 404 are ordinary answers for an authenticated user, never a dead
+  // session (same rule as the host's authFetch).
+  for (status of [200, 403, 404, 500]) await providerFetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
+  assert.deepEqual(unauthorized, [401])
+})
+
+test('the pushed context wires getToken into the fetch it exposes', async () => {
+  const calls = []
+  const ctx = createProviderContext(
+    { subPath: '', user: null, tenant: 'cluster', orgUUID: ORG, workspaceUUID: 'ws', theme: 'dark', basePath: '/ui/providers/agents' },
+    {
+      providerName: 'agents',
+      origin: ORIGIN,
+      scope: () => ({ token: 'stored-token', orgUUID: ORG, workspaceUUID: 'ws' }),
+      getToken: async () => 'fresh-token',
+      onUnauthorized: () => {},
+      fetchImpl: async (input, init) => { calls.push({ input, init }); return new Response() },
+      warn: () => {},
+    },
+  )
+  await ctx.fetch('/clusters/2abc1/apis/agents.railgrid.ai/v1alpha1/agents')
+  assert.equal(calls[0].init.headers.get('Authorization'), 'Bearer fresh-token')
+})
+
 test('the host fetch keeps same-origin credentials whatever the provider passes', async () => {
   const calls = []
   const providerFetch = createProviderFetch({
@@ -205,6 +309,8 @@ test('the pushed context exposes fetch and warns once when the deprecated token 
       providerName: 'agents',
       origin: ORIGIN,
       scope: () => ({ token: 'id-token', orgUUID: ORG, workspaceUUID: 'ws' }),
+      getToken: async () => 'id-token',
+      onUnauthorized: () => {},
       warn: (message) => warnings.push(message),
     },
   )
@@ -233,6 +339,8 @@ test('obsolete context responses and A-B-A context reuse are rejected', async ()
     fetchImpl: () => { calls++; return new Promise((resolve) => { complete = resolve }) },
   })
   const response = transport('/services/providers/agents/mcp')
+  // The bearer resolves asynchronously before the request is issued.
+  await new Promise((resolve) => setImmediate(resolve))
   active = false
   complete(new Response('{}'))
   await assert.rejects(response, { name: 'AbortError' })

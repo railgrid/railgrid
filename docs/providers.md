@@ -1102,6 +1102,12 @@ outside the provider's allow list
 
 Everything else — another provider's backend, `/api/admin`, `/apis/*`, other
 origins — throws `ProviderFetchDeniedError` before any request is made.
+The bearer is resolved per request through the host's refresh-aware
+`getValidToken`, so an id token that expired while the tab sat idle is
+refreshed before the provider's call goes out, the same as for the host's own
+REST calls; a 401 that still comes back is reported to the host's
+session-expiry handler and the portal returns to login instead of leaving the
+provider showing a "session could not be verified" card.
 `portalkit/tenant.ts` exposes `providerFetch(ctx)`, which returns
 `ctx.fetch` when the host provides it and falls back to the global `fetch`
 plus `ctx.token` against an older host; every in-repo provider portal calls

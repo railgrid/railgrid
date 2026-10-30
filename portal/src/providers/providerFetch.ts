@@ -18,6 +18,9 @@ export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Pr
 // Tokens refresh within a context; a workspace switch invalidates the old
 // transport and requires a newly issued provider context.
 export interface ProviderFetchScope {
+  // token is the bearer the deprecated railgridContext.token getter returns and
+  // the Authorization fallback when no getToken is configured. It is whatever
+  // the host last stored, so it can be expired; a host passes getToken.
   token: string | null
   orgUUID: string | null
   workspaceUUID: string | null
@@ -26,6 +29,16 @@ export interface ProviderFetchScope {
 export interface ProviderFetchOptions {
   providerName: string
   scope: () => ProviderFetchScope
+  // getToken resolves the bearer for one request and may refresh an expired
+  // one first, the same way the host's own authFetch does. Without it the
+  // transport sends scope().token as-is, and a provider mounted after the id
+  // token expired keeps sending the stale bearer until the page reloads.
+  getToken?: () => Promise<string | null>
+  // onUnauthorized is told about every 401 the hub returns through this
+  // transport so the host can treat it as a dead session (notifySessionExpired),
+  // exactly as its own authFetch does. The response is still returned to the
+  // provider.
+  onUnauthorized?: (response: Response) => void
   isCurrent?: () => boolean
   // Defaults to window.location.origin. Injectable for tests.
   origin?: string
@@ -149,7 +162,8 @@ function requestMethod(input: RequestInfo | URL, init?: RequestInit): string {
 export function createProviderFetch(options: ProviderFetchOptions): ProviderFetch {
   const origin = options.origin ?? window.location.origin
   const fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
-  const { providerName, scope } = options
+  const { providerName, scope, onUnauthorized } = options
+  const getToken = options.getToken ?? (async () => scope().token)
   const owner = { ...scope() }
   const assertCurrent = () => {
     const current = scope()
@@ -167,9 +181,15 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
       throw new ProviderFetchDeniedError(providerName, url.toString())
     }
 
+    // Resolve (and possibly refresh) the bearer before building the request.
+    // A refresh is a network round trip, so the context is re-checked after
+    // it: a workspace switch during the refresh must not retarget this call.
+    const token = await getToken()
+    assertCurrent()
+
     const isRequest = typeof Request !== 'undefined' && input instanceof Request
     const headers = new Headers(init?.headers ?? (isRequest ? (input as Request).headers : undefined))
-    if (current.token) headers.set('Authorization', `Bearer ${current.token}`)
+    if (token) headers.set('Authorization', `Bearer ${token}`)
     else headers.delete('Authorization')
     if (current.orgUUID) headers.set('X-Railgrid-Org', current.orgUUID)
     else headers.delete('X-Railgrid-Org')
@@ -185,6 +205,7 @@ export function createProviderFetch(options: ProviderFetchOptions): ProviderFetc
       ? await fetchImpl(new Request(input as Request, nextInit))
       : await fetchImpl(url.toString(), nextInit)
     assertCurrent()
+    if (response.status === 401) onUnauthorized?.(response)
     return response
   }
 }
