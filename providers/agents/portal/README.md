@@ -41,6 +41,45 @@ localStorage copy is only a fallback.
 Navigation state lives in `location.hash` (`src/router.ts`), never in the host
 router.
 
+## Chat model and reasoning
+
+The conversation composer uses AgentKit's shared `AIModelReasoningPicker`, as
+App Studio does. Model and effort choices apply only to the current chat.
+`GET/PATCH agents/{name}/session/{sessionID}` reads and saves these preferences;
+it never patches the Agent or its ModelCredential. Each run pins the effective
+choice so approval resumes and recovery retain it. New chats, background runs,
+and spawned workers continue to use the Agent defaults. Explicit selections
+require access to the selected ModelCredential when saved and when a new chat
+run starts.
+
+Session reads wait for pending writes to that same chat, including across view
+remounts. An unsent chat with saved preferences remains selected after reload.
+Chats that inherit the Agent default refresh their model and effort options when
+that default changes; explicit chat choices stay fixed. Model selection is disabled while a
+preference request is pending, without closing the reasoning picker.
+
+Effort choices come from the shared server-side model capability catalog.
+Custom endpoints and unknown models show only model selection. Agents currently
+uses Chat Completions, so reasoning levels requiring the Responses transport
+are not offered. Effort is remembered separately for each credential in a chat.
+Switching back to a credential whose remembered effort is no longer supported
+resets that effort to model default; valid remembered choices are retained.
+
+The first user message also starts a separate metadata request to generate a
+thread title with the model selected for that chat. Title generation runs
+asynchronously and does not delay the reply. When the saved title arrives, the
+conversation header and thread rail update together; if generation fails, the
+existing first-message preview remains the label.
+The title attempt is one-shot: failures, timeouts, invalid output, or a temporary
+store error leave the preview in place, and later turns do not retry.
+
+Saved model preferences make an empty chat eligible for the thread list before
+its first message. The list shows the newest 100 conversations and newest 100
+empty chats independently; older entries remain stored. Deleting any one saved empty
+chat frees a preference slot. Reload after deleting visible drafts to reveal
+older drafts outside the displayed 100. Opening a new chat never silently evicts
+another chat’s saved choices.
+
 ## MCP Apps result views
 
 Successful tool results may include a provider-owned MCP App view. The portal

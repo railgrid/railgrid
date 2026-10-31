@@ -438,7 +438,12 @@ type taskRun struct {
 	// clone source it carries is dispatch data — held here for the turn and
 	// never persisted; a run rebuilt from its record carries none.
 	Repository      *repositoryAttempt
+	ModelSettings   *store.ModelSettings
 	HarnessSettings *store.HarnessSettings
+	// generateSessionTitle is set only by the live chat transport, so internal
+	// runTurn callers do not start metadata requests just because they share the
+	// chat trigger.
+	generateSessionTitle bool
 
 	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
 	// carries the constraints its parent imposed (depth, narrowed families,
@@ -585,6 +590,17 @@ const backendCancelTimeout = 30 * time.Second
 // way of starting work: a bug fixed here is fixed for all of them.
 func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (runResult, error) {
 	scope, agent := run.Scope, run.Agent
+	if err := s.resolveChatModelSettings(ctx, &run); err != nil {
+		return runResult{}, err
+	}
+	if run.ModelSettings != nil {
+		// Keep the conversation override scoped to this turn's chat model. The
+		// taskRun still carries the configured Agent: spawned workers inherit that
+		// Agent and resolve their background model from its defaults, and a
+		// resumed worker rebuilds the same purpose mapping from the Agent CR.
+		agent = agent.DeepCopy()
+		agent.Spec.SetModelCredential(llm.PurposeChat, run.ModelSettings.ModelCredential)
+	}
 	run.HarnessSettings = resolveHarnessSettings(agent, run.HarnessSettings)
 	// A status condition alone cannot enforce unsupported tool restrictions:
 	// direct API callers and background triggers may run before reconciliation.
@@ -643,13 +659,18 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			runID, agent.Name, resolved.Session.Turns, resolved.Harness, resolved.Service)
 	} else {
 		var chatModel einomodel.BaseChatModel
-		if chatModel, err = s.buildModelForPurpose(ctx, run.Creds, agent, purpose); err != nil {
+		if chatModel, err = s.buildModelForPurpose(ctx, run.Creds, agent, purpose, run.ModelSettings); err != nil {
 			return runResult{}, err
 		}
 		// Names the model that will actually be called, which is what prices the
 		// turn and sizes its context window.
 		modelName = s.modelNameForPurpose(ctx, run.Creds, agent, purpose)
-		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(run, sessionID, modelName))
+		// Compaction follows this turn's effective chat mapping when the Agent
+		// has no explicit compaction credential. Keep the original taskRun below
+		// so spawned workers still inherit the configured Agent defaults.
+		compactionRun := run
+		compactionRun.Agent = agent
+		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(compactionRun, sessionID, modelName))
 	}
 	brun := &backend.Run{ID: runID, SessionID: sessionID, Agent: agent.Name, Trigger: run.Trigger}
 	// Register for POST /api/runs/{id}/cancel and for the Run reconciler's
@@ -796,6 +817,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// What a repository run ran against, minus the credential.
 			Repository:      run.Repository.persisted(),
 			HarnessSettings: run.HarnessSettings,
+			ModelSettings:   run.ModelSettings,
 			// How many times this run was already handed back to the queue; the
 			// bound on retrying it again is counted from here.
 			Retries: run.Retries,
@@ -812,6 +834,23 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// The runner is an external process. Do not dispatch it unless its
 			// attempt coordinates and safe cancel target are already durable.
 			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+		}
+		var priorHistory []backend.Message
+		if len(msgs) > 0 {
+			// assembleTurnCtx leaves the current task as the final message. Use
+			// the history it already loaded to skip title work for established
+			// sessions; concurrent first turns still race through the store claim.
+			priorHistory = msgs[:len(msgs)-1]
+		}
+		if s.shouldGenerateSessionTitle(run, agent, cont, priorHistory) {
+			titleRun := run
+			titleRun.Agent = agent.DeepCopy()
+			titleRun.SessionID = sessionID
+			titleRun.ModelSettings = &store.ModelSettings{
+				ModelCredential: run.ModelSettings.ModelCredential,
+				ReasoningEffort: run.ModelSettings.ReasoningEffort,
+			}
+			s.startSessionTitleGeneration(titleRun, taskMessageID)
 		}
 		if run.OnRunStarted != nil {
 			run.OnRunStarted(startedAt)
@@ -1157,6 +1196,9 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 	tr.Agent = agent
 	access.applyTo(&tr)
 	tr.HarnessSettings = resolveHarnessSettings(agent, tr.HarnessSettings)
+	if err := s.resolveChatModelSettings(ctx, &tr); err != nil {
+		return runAdmission{}, err
+	}
 
 	if err := s.saveRun(ctx, scope, store.Run{
 		ID: runID, AgentName: agent.Name, SessionID: tr.SessionID, Trigger: tr.Trigger,
@@ -1166,6 +1208,7 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 		// write, and its spec is never rewritten afterwards.
 		Repository:      tr.Repository.persisted(),
 		HarnessSettings: tr.HarnessSettings,
+		ModelSettings:   tr.ModelSettings,
 		Phase:           store.RunPhasePending, Input: tr.Task, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		// The unique store key is the admission boundary. Concurrent requests

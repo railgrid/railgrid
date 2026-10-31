@@ -562,7 +562,7 @@ part.
 | `agents` | `chat` | POST | one assistant turn, streamed (SSE) |
 | `agents` | `run` | POST | start an unattended run |
 | `agents` | `sessions` | GET | list chat sessions |
-| `agents` | `session` | DELETE | `…/session/{sessionID}` — erase one transcript |
+| `agents` | `session` | GET, PATCH, DELETE | `…/session/{sessionID}` — read/update chat model preferences, or erase the transcript and preferences |
 | `agents` | `messages` | GET | one session's transcript |
 | `agents` | `usage` | GET | this agent's cost/token/latency rollups |
 | `agents` | `inbox` | GET | this agent's pending approvals and questions |
@@ -590,6 +590,32 @@ CatalogEntry — on the resource it is served on — in
 textually and both against the route table, because a verb that is served but
 not declared cannot be granted to a workload identity, and one that is declared
 but not served mints a capability whose calls 404.
+
+### Chat model preferences
+
+`GET agents/{name}/session/{sessionID}` returns `modelCredential` (empty means
+inherit the Agent default), `selectedCredential`, `reasoningEffortByModel`,
+`effortOptions`, and `defaultEffort`. The response exposes only the selected
+credential's remembered effort. An explicit credential requires the caller's
+`get` permission on that ModelCredential, in addition to access to the Agent.
+
+`PATCH` accepts, for example,
+`{"modelCredential":"fast-model","reasoningEffortByModel":{"fast-model":"low"}}`.
+Only the selected credential's submitted effort can change; other remembered
+values stay on the server and are restored when that credential is selected
+again. An empty effort uses the model default. Preferences belong to the exact
+organization, workspace, Agent, and session; they never update the Agent.
+Admitted runs pin their own model settings.
+
+A session may save preferences before its first message. The session list shows
+the newest 100 conversations and newest 100 empty chats independently. Older
+entries remain stored; after deleting visible drafts, reload to reveal older
+drafts outside the displayed 100. Deleting any one saved empty chat frees a slot,
+without silently evicting model choices from another open tab. Each scoped Agent can
+store preferences for at most 1,024 session IDs; at the limit, existing entries
+remain editable but new entries receive HTTP 429. Deleting a session removes
+its preferences and frees a slot. `DELETE agents/{name}/session/{sessionID}` also
+removes the transcript and generated title.
 
 ### Why the service-to-service route is gone
 

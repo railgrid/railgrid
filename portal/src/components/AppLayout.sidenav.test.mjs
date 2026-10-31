@@ -369,19 +369,16 @@ test('sidebar toggles own compact geometry over late provider button styles', ()
 })
 
 
-test('assistant overlay leaves full-bleed geometry unchanged and preserves scrolling-page clearance', () => {
+test('chat reserves content width without shrinking navigation or padding full-bleed workbenches', () => {
   const body = appLayout.match(/const mainStyle = computed\(\(\) => \{([\s\S]*?)\n}\)/)?.[1]
-  assert.ok(body, 'mainStyle computed body must be available')
+  assert.ok(body)
   const style = new Function('gettingStartedFocused', 'layoutProps', 'assistantOverlay', 'mainPaddingBottom', body)
-  const evaluate = (fullBleed, dockVisible, terminalPadding, focused = false) =>
-    style({ value: focused }, { fullBleed }, { dockVisible }, { value: terminalPadding })
-  for (const dockVisible of [false, true]) {
-    assert.equal(evaluate(true, dockVisible), undefined, 'opening the overlay must not shrink the workspace')
-    assert.equal(evaluate(true, dockVisible, '256px'), undefined)
-  }
-  assert.deepEqual(evaluate(false, true), { paddingBottom: 'calc(0px + 96px)' })
-  assert.deepEqual(evaluate(false, true, '256px'), { paddingBottom: 'calc(256px + 96px)' })
-  assert.deepEqual(evaluate(false, false, '256px'), { paddingBottom: '256px' })
-  assert.equal(evaluate(false, false), undefined)
-  assert.equal(evaluate(false, true, undefined, true), undefined)
+  const evaluate = (fullBleed, dockVisible, terminalPadding, width = 0, focused = false) =>
+    style({ value: focused }, { fullBleed }, { dockVisible, sidePanelWidth: width, sidePanelFullscreen: false }, { value: terminalPadding })
+  assert.deepEqual(evaluate(true, true, '256px', 440), { marginRight: '440px' })
+  assert.deepEqual(evaluate(true, true), { marginRight: '0px' })
+  assert.deepEqual(evaluate(false, true), { marginRight: '0px', paddingBottom: 'calc(0px + 96px)' })
+  assert.deepEqual(evaluate(false, true, '256px'), { marginRight: '0px', paddingBottom: 'calc(256px + 96px)' })
+  assert.deepEqual(evaluate(false, true, '256px', 440), { marginRight: '440px', paddingBottom: '256px' })
+  assert.equal(evaluate(false, true, undefined, 440, true), undefined)
 })

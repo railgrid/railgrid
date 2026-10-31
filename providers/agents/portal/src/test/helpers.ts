@@ -28,6 +28,8 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     listEdges: empty,
     listInbox: empty,
     listSessions: empty,
+    getSessionModel: async () => ({ selectedCredential: "openai", effortOptions: [], defaultEffort: "" }),
+    saveSessionModel: async (_agent: string, _session: string, prefs: unknown) => prefs,
     listMessagePage: async () => ({ items: [] }),
     agentTemplates: empty,
     oauthProviders: () => Promise.resolve({ providers: {} }),

@@ -890,6 +890,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 	// recovery sweep) while it sat in the queue; starting it now would
 	// resurrect a run the user already saw end.
 	var repository *repositoryAttempt
+	var modelSettings *store.ModelSettings
 	var harnessSettings *store.HarnessSettings
 	var retries int
 	if job.RunID != "" {
@@ -910,6 +911,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		// starting a workspace turn in its place.
 		repository = repositoryAttemptFromStored(stored.Repository)
 		harnessSettings = stored.HarnessSettings
+		modelSettings = stored.ModelSettings
 		// A run picked up for the second time carries how many times it
 		// was handed back, which is what bounds handing it back again.
 		retries = stored.Retries
@@ -925,6 +927,7 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		DeliveryKind:    string(job.Kind),
 		Repository:      repository,
 		HarnessSettings: harnessSettings,
+		ModelSettings:   modelSettings,
 		Retries:         retries,
 		MaxAttempts:     b.maxAttemptsFor(ctx, dyn, job),
 	}

@@ -25,6 +25,7 @@ async function mountOverlay() {
   document.body.appendChild(element)
   mounted.push(element)
   await settleVue(6)
+  vi.spyOn(element.api!, 'getSessionModel').mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' })
   vi.spyOn(element.api!, 'listSessions').mockResolvedValue([])
   vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: [] })
   vi.spyOn(element.api!, 'listRuns').mockResolvedValue({ items: [] })
@@ -68,28 +69,31 @@ describe('persistent agent overlay', () => {
     expect(input.value).toBe('Keep this draft')
   })
 
-  it('browses agent threads without remounting the chat or losing its draft', async () => {
+  it('shows only chat without mounting a thread rail or workbench', async () => {
     const element = await mountOverlay()
-    vi.mocked(element.api!.listSessions).mockResolvedValue([{ id: 'older', preview: 'Earlier investigation', messageCount: 2, createdAt: '', lastActivity: '' }])
-    const input = element.querySelector('textarea')!
-    input.value = 'Keep this draft'
-    input.dispatchEvent(new Event('input'))
-    const states: boolean[] = []
-    element.addEventListener('railgrid-overlay-threads-state', event => states.push((event as CustomEvent).detail.open))
-    element.dispatchEvent(new Event('railgrid-overlay-toggle-threads'))
-    await settleVue(10)
-    const picker = element.querySelector('.agents-overlay-threads')!
-    expect(picker.textContent).toContain('Earlier investigation')
-    expect(document.activeElement).toBe(picker.querySelector('input'))
-    expect(element.querySelector('textarea')).toBe(input)
-    ;(picker.querySelector('.agents-overlay-threads__item[title="Earlier investigation"]') as HTMLButtonElement).click()
-    await settleVue(10)
-    expect(element.api!.listMessagePage).toHaveBeenCalledWith('scout', 'older')
+    expect(element.querySelector('.agents-conversation-rail-shell')).toBeNull()
     expect(element.querySelector('.agents-overlay-threads')).toBeNull()
-    expect(element.querySelector('textarea')).toBe(input)
-    expect(input.value).toBe('Keep this draft')
-    expect(states).toEqual([true, false])
-    expect(location.hash).toBe('#/linuxservers/warehouse-west')
+    element.dispatchEvent(new Event('railgrid-overlay-toggle-threads'))
+    await settleVue()
+    expect(element.querySelector('.agents-overlay-threads')).toBeNull()
+    const input = element.querySelector('textarea')!
+    element.dispatchEvent(new Event('railgrid-overlay-focus-composer'))
+    await settleVue()
+    expect(document.activeElement).toBe(input)
+  })
+
+  it('opens the panel only for a valid send, never for focus or an empty submission', async () => {
+    vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* () {})
+    const element = await mountOverlay()
+    element.overlayState = { agent: 'scout', composerOnly: true }
+    await settleVue()
+    const engage = vi.fn()
+    element.addEventListener('railgrid-overlay-engage', engage)
+    element.querySelector('textarea')!.focus()
+    await send(element, '   ')
+    expect(engage).not.toHaveBeenCalled()
+    await send(element, 'Inspect this instance')
+    expect(engage).toHaveBeenCalledTimes(1)
   })
 
   it('keeps one composer and draft while collapsing to the assistant bar', async () => {
@@ -106,7 +110,7 @@ describe('persistent agent overlay', () => {
     expect(element.querySelector('textarea')).toBe(input)
     expect(input.value).toBe('Keep this draft')
     input.dispatchEvent(new Event('focus'))
-    expect(engage).toHaveBeenCalledTimes(1)
+    expect(engage).not.toHaveBeenCalled()
     element.overlayState = { agent: 'scout', composerOnly: false }
     await settleVue()
     expect(element.querySelector('.agents-chat-shell--bar')).toBeNull()

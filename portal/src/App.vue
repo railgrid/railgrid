@@ -16,6 +16,7 @@ import { useLayoutInsets } from '@/composables/useLayoutInsets'
 import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import ControlPlaneProvisioning from '@/components/ControlPlaneProvisioning.vue'
 import AgentOverlay from '@/components/AgentOverlay.vue'
+import { useAgentOverlayStore } from '@/stores/agentOverlay'
 import TerminalDock from '@/components/TerminalDock.vue'
 import PkConfirmDialog from '@/portalkit/ConfirmDialog.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
@@ -28,6 +29,7 @@ const providers = useProvidersStore()
 const tenant = useTenantStore()
 const terminal = useTerminalSessionsStore()
 const layoutInsets = useLayoutInsets()
+const assistantOverlay = useAgentOverlayStore()
 const route = useRoute()
 const scopeBlocked = computed(() => routeContext.blocksRoute(route.path, !!route.meta.public))
 const scopeKey = computed(() => `${route.params.orgID ?? ''}:${route.params.workspaceID ?? ''}`)
@@ -214,8 +216,10 @@ watch(
 </script>
 
 <template>
-  <RouteContextState v-if="scopeBlocked" />
-  <router-view v-else :key="scopeKey" />
+  <div class="railgrid-workspace-viewport">
+    <RouteContextState v-if="scopeBlocked" />
+    <router-view v-else :key="scopeKey" />
+  </div>
   <InlineNotification
     v-if="tenant.error && showTenantErrorInline"
     class="pointer-events-auto fixed inset-x-4 top-4 z-[2147483001] mx-auto max-w-[720px] shadow-xl"
@@ -229,7 +233,7 @@ watch(
        between pages never unmounts the dock. AppLayout (which every page renders)
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
-  <TerminalDock v-show="!gettingStartedFocused && !hideTerminalDock && !scopeBlocked" />
+  <TerminalDock :inert="assistantOverlay.sidePanelFullscreen" v-show="!gettingStartedFocused && !hideTerminalDock && !scopeBlocked" />
   <AgentOverlay v-show="!gettingStartedFocused" />
   <PkConfirmDialog />
   <ToastHost owner="primary" />

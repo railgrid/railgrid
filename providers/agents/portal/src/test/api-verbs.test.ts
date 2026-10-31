@@ -146,6 +146,27 @@ describe('verbs are kube paths', () => {
     expect(() => scoped.listSessions('')).toThrow('name is required')
   })
 
+  it('omits an unknown reasoning map when repairing the selected credential', async () => {
+    const { api, calls } = clientWithRecorder({ selectedCredential: 'openai', modelCredential: 'openai', effortOptions: [], defaultEffort: '' })
+    await api.saveSessionModel('scout', 's1', {
+      selectedCredential: 'openai', modelCredential: 'openai', effortOptions: [], defaultEffort: '',
+    })
+
+    expect(calls[0]).toEqual({ method: 'PATCH', url: `${KUBE}/agents/scout/session/s1` })
+    expect(bodies.get(0)).toEqual({ modelCredential: 'openai' })
+  })
+
+  it('sends the known selected-model reasoning preference', async () => {
+    const { api, calls } = clientWithRecorder({ selectedCredential: 'sol', modelCredential: 'sol', effortOptions: [], defaultEffort: '' })
+    await api.saveSessionModel('scout', 's1', {
+      selectedCredential: 'sol', modelCredential: 'sol', effortOptions: [], defaultEffort: '',
+      reasoningEffortByModel: { sol: 'high' },
+    })
+
+    expect(calls[0]).toEqual({ method: 'PATCH', url: `${KUBE}/agents/scout/session/s1` })
+    expect(bodies.get(0)).toEqual({ modelCredential: 'sol', reasoningEffortByModel: { sol: 'high' } })
+  })
+
   it('keeps only the OAuth probe on the hub service proxy', async () => {
     const { api, calls } = clientWithRecorder({ providers: {} })
     await api.oauthProviders()

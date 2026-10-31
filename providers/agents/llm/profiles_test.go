@@ -17,8 +17,10 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -146,5 +148,50 @@ func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("discovered %v, want %v (catalog-known first, then alphabetical)", got, want)
 		}
+	}
+}
+
+func TestSelectedReasoningCapabilities(t *testing.T) {
+	for _, tc := range []struct {
+		provider, endpoint, model, effort string
+		valid                             bool
+	}{
+		{"openai", "https://api.openai.com/v1", "gpt-6-luna", "max", true},
+		{"openai-compatible", "https://api.openai.com/v1", "o3", "high", true},
+		{"openai", "https://custom.example/v1", "gpt-6-luna", "high", false},
+		{"openai", "", "gpt-4o", "high", false},
+		{"openai", "", "gpt-5.6-luna", "high", false},
+		{"openai", "", "gpt-6-luna", "unknown", false},
+		{"openai", "", "unknown", "", true},
+	} {
+		if err := ValidateReasoningEffort(tc.provider, tc.endpoint, tc.model, tc.effort); (err == nil) != tc.valid {
+			t.Fatalf("%+v: %v", tc, err)
+		}
+	}
+}
+
+type reasoningTransport func(*http.Request) (*http.Response, error)
+
+func (f reasoningTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSelectedReasoningReachesModelRequest(t *testing.T) {
+	previous := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	var payload map[string]any
+	http.DefaultTransport = reasoningTransport(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))}, nil
+	})
+	m, err := BuildModel(context.Background(), Profile{Provider: "openai", BaseURL: "https://api.openai.com/v1", Model: "gpt-6-luna", APIKey: "test", ReasoningEffort: "high"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = m.Generate(context.Background(), []*schema.Message{schema.UserMessage("test")}); err != nil {
+		t.Fatal(err)
+	}
+	if payload["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning not forwarded: %v", payload["reasoning_effort"])
 	}
 }

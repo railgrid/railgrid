@@ -31,6 +31,7 @@ const props = withDefaults(defineProps<{
   effortOptions: EffortOption[]
   defaultEffortLabel?: string
   disabled?: boolean
+  modelSelectionDisabled?: boolean
   reasoningDisabled?: boolean
   saving?: boolean
   validationError?: string
@@ -40,6 +41,7 @@ const props = withDefaults(defineProps<{
 }>(), {
   defaultEffortLabel: '',
   disabled: false,
+  modelSelectionDisabled: false,
   reasoningDisabled: false,
   saving: false,
   validationError: '',
@@ -101,6 +103,7 @@ const showRecovery = computed(() => props.resetRequired || props.editModelRequir
 const showReasoning = computed(() => hasEffortChoices.value || showRecovery.value)
 const canReset = computed(() => Boolean(props.effort) || props.resetRequired)
 const lockedEffort = computed(() => props.disabled || props.saving)
+const lockedModelSelection = computed(() => props.disabled || props.modelSelectionDisabled)
 const sliderStopCount = computed(() => props.effortOptions.length + 1)
 
 const selectedEffortIndex = computed(() => {
@@ -162,7 +165,7 @@ function focusInitialControl(): void {
       resetButtonRef.value.focus({ preventScroll: true })
       return
     }
-    if (modelButtonRef.value && !props.disabled && props.models.length) {
+    if (modelButtonRef.value && !lockedModelSelection.value && props.models.length) {
       modelButtonRef.value.focus({ preventScroll: true })
       return
     }
@@ -181,7 +184,7 @@ function focusModelOrSlider(): void {
       sliderRef.value.focus({ preventScroll: true })
       return
     }
-    if (modelButtonRef.value && !props.disabled && props.models.length) {
+    if (modelButtonRef.value && !lockedModelSelection.value && props.models.length) {
       modelButtonRef.value.focus({ preventScroll: true })
       return
     }
@@ -208,7 +211,7 @@ function togglePicker(): void {
 }
 
 function openModelList(): void {
-  if (props.disabled || !props.models.length) return
+  if (lockedModelSelection.value || !props.models.length) return
   activeModelIndex.value = clampModelIndex(selectedModelIndex.value)
   view.value = 'models'
   void nextTick(() => {
@@ -223,7 +226,7 @@ function returnToEffort(): void {
 }
 
 function chooseModel(modelID: string): void {
-  if (props.disabled) return
+  if (lockedModelSelection.value) return
   view.value = 'effort'
   emit('select', modelID)
   focusModelOrSlider()
@@ -560,7 +563,7 @@ watch(open, isOpen => {
             type="button"
             class="k-ai-model-reasoning-picker__model-button"
             data-testid="reasoning-model-trigger"
-            :disabled="disabled || models.length === 0"
+            :disabled="lockedModelSelection || models.length === 0"
             :aria-label="`Choose model: ${selectedModel?.name || selectedID || 'No model selected'}`"
             :aria-controls="modelListID"
             aria-haspopup="listbox"
@@ -639,6 +642,7 @@ watch(open, isOpen => {
               :aria-selected="model.id === selectedID"
               class="k-ai-model-reasoning-picker__model-option"
               :class="{ 'is-active': activeModelIndex === index, 'is-selected': model.id === selectedID }"
+              :disabled="lockedModelSelection"
               @mousedown.prevent
               @mouseenter="activeModelIndex = index"
               @click="chooseModel(model.id)"

@@ -113,3 +113,39 @@ test('the sidebar inset survives a router-view swap between AppLayout pages', as
   app.unmount()
   assert.equal(listeners.size, 0, 'the dock removed every window listener it added')
 })
+
+test('chat width reserves terminal space and bounds floating navigation inside the workspace', async () => {
+  const panelWidth = ref(440)
+  let dock
+  const app = createApp({ setup() {
+    dock = useNavigationDock(ref(true), panelWidth)
+    return () => h('div')
+  } })
+  app.mount({})
+  await nextTick()
+  assert.equal(snapshot().right, 'calc(0px + 440px)')
+  dock.resetDockPos()
+  await nextTick()
+  assert.equal(dock.floatStyle.value.left, 'calc((100% - 440px) / 2)')
+  dock.dockState.value = { mode: 'right', x: -1, y: -1 }
+  await nextTick()
+  assert.equal(snapshot().right, 'calc(13rem + 440px)')
+  assert.equal(insets.useLayoutInsets().navigationRight, '13rem', 'chat sits inside the right nav')
+  dock.dockState.value = { mode: 'top', x: -1, y: -1 }
+  dock.dockedRef.value = { getBoundingClientRect: () => ({ height: 53, width: 208 }) }
+  await nextTick()
+  assert.equal(insets.useLayoutInsets().navigationTop, '53px', 'use the rendered nav height')
+  assert.equal(insets.useLayoutInsets().navigationRight, '0px')
+  dock.dockState.value = { mode: 'bottom', x: -1, y: -1 }
+  await nextTick()
+  assert.equal(insets.useLayoutInsets().navigationTop, '0px')
+  assert.equal(snapshot().bottom, '53px')
+  dock.dockState.value = { mode: 'right', x: -1, y: -1 }
+  await nextTick()
+  panelWidth.value = 0
+  await nextTick()
+  assert.equal(snapshot().right, '13rem')
+  assert.equal(insets.useLayoutInsets().navigationWidth, 208)
+  app.unmount()
+  assert.deepEqual(snapshot(), { left: '0px', right: '0px', bottom: '0px' })
+})

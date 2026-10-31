@@ -145,6 +145,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		// source does not, and a re-join does not need it.
 		Repository:      repositoryAttemptFromStored(run.Repository),
 		HarnessSettings: run.HarnessSettings,
+		ModelSettings:   run.ModelSettings,
 	}
 	access.applyTo(&tr)
 	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no

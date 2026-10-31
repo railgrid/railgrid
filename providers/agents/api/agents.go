@@ -490,8 +490,9 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	writeList(w, page.Items, map[string]any{"nextCursor": page.NextCursor})
 }
 
-// listSessions returns the agent's chat threads (most-recently-active first)
-// so the portal can list them and let the user resume one after a refresh.
+// listSessions returns up to 100 conversations and 100 saved empty chats,
+// each ordered by recent activity. Neither group can crowd the other out,
+// so users can resume conversations and reclaim unused draft preferences.
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {
@@ -619,6 +620,9 @@ type chatFrame struct {
 // carried the message; what differs between them is only the access the run
 // executes with (see runAccess).
 func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event string, data map[string]any)) chatFrame {
+	// Titles belong only to attended chat submissions; internal run triggers do
+	// not opt in to this presentation metadata.
+	run.generateSessionTitle = true
 	runID, sessionID := run.RunID, run.SessionID
 	run.OnRunStarted = func(startedAt time.Time) {
 		emit("run_started", map[string]any{
@@ -737,7 +741,7 @@ var errNoCredential = errors.New("this agent has no model credential assigned â€
 // workspace, whose spec.secretRef points at the Secret holding the key. A
 // purpose the agent did not map falls back to "chat", so mapping only "chat"
 // keeps working everywhere.
-func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
+func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string, settings ...*store.ModelSettings) (einomodel.BaseChatModel, error) {
 	primary := agent.Spec.ModelCredentialFor(purpose)
 	if primary == "" {
 		return nil, errNoCredential
@@ -762,6 +766,9 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if len(settings) > 0 && settings[0] != nil && name == settings[0].ModelCredential {
+			profile.ReasoningEffort = settings[0].ReasoningEffort
 		}
 		m, err := llm.BuildModel(ctx, profile)
 		if err != nil {

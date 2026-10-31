@@ -239,7 +239,10 @@ describe('inline provider app journey', () => {
   it('discards an authorized response after the thread changes', async () => {
     let resolve!: (value: { artifact: AgentArtifact }) => void
     const deferred = new Promise<{ artifact: AgentArtifact }>(done => { resolve = done })
-    const { view, getAgentArtifact } = await setup({ read: () => deferred }); await reveal(view, false)
+    const { view, getAgentArtifact } = await setup({ read: () => deferred })
+    // Thread navigation belongs to the dedicated chat, not the side panel.
+    await view.setProps({ compact: false })
+    await reveal(view, false)
     expect(getAgentArtifact).toHaveBeenCalledTimes(1)
     const newChat = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('New thread'))!
     newChat.click(); await settleVue(10); resolve({ artifact: authorized }); await settleVue(12)
