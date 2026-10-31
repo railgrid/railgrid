@@ -15,15 +15,10 @@ import (
 
 // Chat-capability curation.
 //
-// BuildModel speaks exactly one wire protocol: OpenAI Chat Completions
-// (POST {baseURL}/chat/completions). GET {baseURL}/models answers with
-// EVERYTHING the account can reach, which for OpenAI is ~130 ids — speech,
-// transcription, embeddings, images, realtime, moderation, the legacy
-// completion models, and the families that are served only on /v1/responses.
-// Offering that list raw is offering a trap: picking gpt-5.3-codex saves
-// cleanly, passes nothing, and fails on the first chat turn with the
-// upstream's 404 "This model is not supported in the v1/chat/completions
-// endpoint. Use the v1/responses endpoint instead."
+// BuildModel selects Eino's Responses adapter for GPT-6 and for earlier
+// models whose reasoning requires it, retaining Chat Completions for other
+// compatible models. GET {baseURL}/models still lists modalities and specialized
+// model families outside this agent interface, so discovery needs curation.
 //
 // So discovery is curated here, once, and DiscoverModels is the only caller —
 // which is what keeps ModelCredential.status.models (written by the
@@ -35,7 +30,7 @@ import (
 // removes ids whose name says what they are.
 
 // nonChatTokens are hyphen-delimited id tokens that mark a model as something
-// other than a Chat Completions chat model. Matching is delimiter-aware (see
+// other than a supported agent chat model. Matching is delimiter-aware (see
 // hasIDToken), so "tts" matches "tts-1" and "gpt-4o-mini-tts" but never the
 // middle of a longer word.
 //
@@ -127,8 +122,7 @@ func hasIDToken(id, tok string) bool {
 	return false
 }
 
-// ChatCapable reports whether a discovered model id can be used on the Chat
-// Completions endpoint this provider speaks.
+// ChatCapable reports whether a discovered model id is offered for agent chat.
 //
 // A curated catalog id (llm.Catalog(), matched exactly after normalization) is
 // always chat-capable: the catalog is the hand-written list of models this

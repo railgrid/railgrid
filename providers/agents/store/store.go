@@ -343,9 +343,10 @@ type SessionCheckpointMessage struct {
 
 // SessionCheckpointToolCall is the durable subset of a model tool call.
 type SessionCheckpointToolCall struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-	Args string `json:"args"`
+	ID    string            `json:"id"`
+	Name  string            `json:"name"`
+	Args  string            `json:"args"`
+	Extra map[string]string `json:"extra,omitempty"`
 }
 
 func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {

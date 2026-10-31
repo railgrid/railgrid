@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -236,7 +237,11 @@ func (s *Server) authorizeFreshChatModelCredential(ctx context.Context, run *tas
 		if !allowed {
 			return nil, sessionModelCredentialNotFound()
 		}
-		return nil, nil
+		object, err := gate.provider.Resource(agentsclient.ModelCredentialGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return fromU[agentsv1alpha1.ModelCredential](object)
 	}
 
 	// The only other fresh chat transport is MCP, where the client uses the
@@ -282,20 +287,43 @@ func (s *Server) resolveChatModelSettings(ctx context.Context, run *taskRun) err
 		}
 	}
 	effort := prefs.ReasoningEffortByModel[credential]
-	if effort != "" {
-		var profile llm.Profile
-		if selectedCredential != nil {
-			profile, err = llm.ProfileFor(ctx, run.Creds, selectedCredential)
+	if selectedCredential == nil && credential != "" {
+		if run.Creds != nil {
+			selectedCredential, err = run.Creds.GetModelCredential(ctx, credential)
+			if err != nil {
+				// Agent defaults have always been resolved by buildModelForPurpose,
+				// which skips an unreadable primary and tries its configured
+				// fallbacks. Keep that behavior while still pinning transport when
+				// the primary's metadata is available. An explicit chat choice is a
+				// separate capability and must remain fail-closed.
+				if strings.TrimSpace(prefs.ModelCredential) != "" || ctx.Err() != nil {
+					return err
+				}
+				selectedCredential = nil
+			}
 		} else {
-			profile, err = llm.LoadCredential(ctx, run.Creds, credential)
+			return llm.ErrNotConfigured
 		}
-		if err != nil {
-			return err
+	}
+	// Keep the selected preference attached to its credential even when its
+	// metadata read fails transiently. buildModelForPurpose applies settings
+	// only to this exact credential, where BuildModel validates the effort;
+	// configured fallbacks never inherit it.
+	settings := &store.ModelSettings{ModelCredential: credential, ReasoningEffort: effort}
+	if selectedCredential != nil {
+		// Admission needs the endpoint/model metadata, not the Secret. Pin
+		// before any Pending record is written so recovery retains the wire
+		// protocol even if the Agent or routing defaults change later.
+		profile := llm.Profile{
+			Provider: selectedCredential.Spec.Provider, BaseURL: selectedCredential.Spec.BaseURL,
+			Model: selectedCredential.Spec.Model, ReasoningEffort: effort,
 		}
 		if err := llm.ValidateReasoningEffort(profile.Provider, profile.BaseURL, profile.Model, effort); err != nil {
 			return err
 		}
+		settings.ReasoningEffort = llm.EffectiveReasoningEffort(profile)
+		settings.Transport = llm.ModelTransport(profile)
 	}
-	run.ModelSettings = &store.ModelSettings{ModelCredential: credential, ReasoningEffort: effort}
+	run.ModelSettings = settings
 	return nil
 }

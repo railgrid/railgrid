@@ -487,7 +487,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeList(w, page.Items, map[string]any{"nextCursor": page.NextCursor})
+	writeList(w, publicTranscriptMessages(page.Items), map[string]any{"nextCursor": page.NextCursor})
 }
 
 // listSessions returns up to 100 conversations and 100 saved empty chats,
@@ -769,6 +769,7 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 		}
 		if len(settings) > 0 && settings[0] != nil && name == settings[0].ModelCredential {
 			profile.ReasoningEffort = settings[0].ReasoningEffort
+			profile.Transport = settings[0].Transport
 		}
 		m, err := llm.BuildModel(ctx, profile)
 		if err != nil {

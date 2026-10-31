@@ -66,11 +66,12 @@ The subset matters. An endpoint answers `GET /models` with everything the
 account can reach — for OpenAI that is ~130 ids including speech,
 transcription, embeddings, images, realtime, moderation, the legacy completion
 models, and the families served only on `/v1/responses` (`*-codex`, `*-pro`,
-`*-deep-research`, `computer-use-*`). This engine speaks Chat Completions only,
-so picking one of those saves cleanly and then fails on the first turn with the
-provider's 404 "This model is not supported in the v1/chat/completions
-endpoint". `llm.ChatCapable` / `llm.FilterChatModels` (`llm/chatmodels.go`)
-remove them, inside `llm.DiscoverModels` so the reconciler's `status.models`
+`*-deep-research`, `computer-use-*`). Agents uses Eino’s native Responses
+adapter for GPT-6 models and for older models whose selected reasoning effort
+requires it; other models use Eino’s Chat Completions adapter. Discovery still
+excludes specialized model families outside this supported agent interface.
+`llm.ChatCapable` / `llm.FilterChatModels` (`llm/chatmodels.go`) apply that
+curation inside `llm.DiscoverModels` so the reconciler's `status.models`
 and the `discover` verb's answer are one list. Curated catalog ids come first,
 in catalog order, then the rest alphabetically; the portal groups on that split
 (**Recommended** / **Other models this endpoint serves**) and manual entry

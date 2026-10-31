@@ -1353,6 +1353,9 @@ func (k *turnSink) Assistant(message backend.AssistantMessage) {
 	if message.Complete && (message.HasToolCalls || len(message.ToolCalls) > 0) {
 		metadata := turnMetadata("commentary", "running", k.startedAt, 0, message.Duration.Milliseconds(), "")
 		metadata[historyToolCallsKey] = storedToolCalls(message.ToolCalls)
+		if continuation := storedResponsesContinuation(message.ToolCalls); continuation != nil {
+			metadata[historyResponsesContinuationKey] = continuation
+		}
 		metadata["modelOnly"] = strings.TrimSpace(message.Content) == ""
 		if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 			ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,

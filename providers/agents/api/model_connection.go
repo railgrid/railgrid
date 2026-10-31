@@ -172,7 +172,7 @@ func testModelOverride(w http.ResponseWriter, r *http.Request) (string, bool) {
 	// "verify" a model the picker would never have offered — which is exactly
 	// how gpt-5.3-codex was saved in the first place.
 	if !llm.ChatCapable(model) {
-		rejectTestRequest(w, "Model "+model+" is not usable for chat: this provider runs agents on the Chat Completions API and that model is not served there. Pick another model for this credential.")
+		rejectTestRequest(w, "Model "+model+" is not usable for chat with this provider. Pick another model for this credential.")
 		return "", false
 	}
 	return model, true

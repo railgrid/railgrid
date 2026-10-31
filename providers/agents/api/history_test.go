@@ -23,6 +23,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -446,15 +447,23 @@ func TestEngineMessagesFromHistoryDoesNotPairFutureOrEarlierResultsAcrossGroups(
 }
 
 func TestSessionCheckpointHistoryRoundTripsStructuredCalls(t *testing.T) {
+	callExtra := map[string]any{
+		llm.ResponsesToolItemIDExtraKey:    "fc_1",
+		llm.ResponsesToolReasoningExtraKey: `[{"id":"rs_1","encrypted_content":"opaque-signature"}]`,
+		llm.ResponsesToolOriginExtraKey:    "sha256:credential-fingerprint",
+	}
 	want := []engine.Message{
 		{Role: engine.RoleAssistant, Content: "Checking.", ID: "assistant-1", Sequence: 10,
-			ToolCalls: []schema.ToolCall{{ID: "call-1", Type: "function", Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`}}}},
+			ToolCalls: []schema.ToolCall{{ID: "call-1", Type: "function", Extra: callExtra, Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`}}}},
 		{Role: engine.RoleTool, Name: "read_file", ToolCallID: "call-1", Content: "contents", ID: "tool-1", Sequence: 11},
 	}
 
 	wire := checkpointHistoryFromEngineMessages(want)
 	if len(wire) != 2 || len(wire[0].ToolCalls) != 1 || wire[0].ToolCalls[0].Args != `{"path":"README.md"}` {
 		t.Fatalf("checkpoint history = %#v", wire)
+	}
+	if len(wire[0].ToolCalls[0].Extra) != len(callExtra) {
+		t.Fatalf("checkpoint lost Responses continuation metadata: %#v", wire[0].ToolCalls[0].Extra)
 	}
 	got, err := engineMessagesFromCheckpoint(wire)
 	if err != nil {
@@ -470,8 +479,54 @@ func TestSessionCheckpointHistoryRoundTripsStructuredCalls(t *testing.T) {
 	if !strings.Contains(string(encoded), `"id":"assistant-1"`) || !strings.Contains(string(encoded), `"sequence":10`) {
 		t.Fatalf("checkpoint wire lost exact source identities: %s", encoded)
 	}
+	if !strings.Contains(string(encoded), "opaque-signature") || strings.Contains(string(encoded), "private reasoning summary") {
+		t.Fatalf("checkpoint must retain only opaque reasoning metadata: %s", encoded)
+	}
 	if got[0].ID != want[0].ID || got[0].Sequence != want[0].Sequence || got[1].ID != want[1].ID || got[1].Sequence != want[1].Sequence {
 		t.Fatalf("checkpoint round trip lost source identities: %#v", got)
+	}
+}
+
+func TestResponsesContinuationHistoryIsInternalAndRestoresCalls(t *testing.T) {
+	call := schema.ToolCall{
+		ID: "call_1", Type: "function",
+		Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`},
+	}
+	state := map[string]map[string]string{"call_1": {
+		llm.ResponsesToolItemIDExtraKey:    "fc_1",
+		llm.ResponsesToolReasoningExtraKey: `[{"id":"rs_1","encrypted_content":"opaque-signature"}]`,
+		llm.ResponsesToolOriginExtraKey:    "sha256:credential-fingerprint",
+	}}
+	row := assistantCallRow("assistant-1", "run-1", call.ID, call.Function.Name, call.Function.Arguments, time.Now().UTC())
+	row.Metadata[historyResponsesContinuationKey] = state
+	modelHistory := engineMessagesFromHistory([]store.Message{row})
+	if len(modelHistory) != 2 || len(modelHistory[0].ToolCalls) != 1 {
+		t.Fatalf("model history = %#v, want assistant call and missing-result repair", modelHistory)
+	}
+	for key, value := range state[call.ID] {
+		if got := modelHistory[0].ToolCalls[0].Extra[key]; got != value {
+			t.Errorf("restored call metadata %q = %#v, want %q", key, got, value)
+		}
+	}
+	if _, ok := modelHistory[0].ToolCalls[0].Extra["private_reasoning_summary"]; ok {
+		t.Fatal("transcript replay included plaintext reasoning")
+	}
+
+	public := publicTranscriptMessages([]store.Message{row})
+	if len(public) != 1 || public[0].Metadata[historyToolCallsKey] == nil {
+		t.Fatalf("public transcript dropped the display tool call: %#v", public)
+	}
+	if _, leaked := public[0].Metadata[historyResponsesContinuationKey]; leaked {
+		t.Fatal("public transcript retained private continuation metadata")
+	}
+	encoded, err := json.Marshal(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"opaque-signature", "fc_1", "credential-fingerprint", historyResponsesContinuationKey, "private reasoning summary"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Errorf("public chat transcript exposed %q: %s", secret, encoded)
+		}
 	}
 }
 

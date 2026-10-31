@@ -21,6 +21,7 @@ import (
 	"fmt"
 
 	einomodel "github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/engine"
@@ -68,6 +69,9 @@ func (b *Backend) Continue(ctx context.Context, _ *backend.Run, answer backend.A
 	if err := json.Unmarshal(answer.State, &ck); err != nil {
 		return backend.Outcome{Status: backend.StatusFailed}, fmt.Errorf("reading the turn's resume state: %w", err)
 	}
+	if err := validateResponsesCheckpointOrigin(b.model, ck); err != nil {
+		return backend.Outcome{Status: backend.StatusFailed}, err
+	}
 	// The verdict, when there is one. An undecided resume is a run picked up
 	// after its process died: its state holds no gated call, so the engine has
 	// nothing to apply the (absent) decision to.
@@ -76,6 +80,50 @@ func (b *Backend) Continue(ctx context.Context, _ *backend.Run, answer backend.A
 	// The resumed loop's usage accumulator starts from the checkpoint, so what
 	// the run had already spent before it parked is the part not to bill again.
 	return b.outcome(ctx, res, err, ck.Usage)
+}
+
+// validateResponsesCheckpointOrigin makes credential mismatch a preflight
+// failure. ResumeTurnWithTools can execute an approved pending call before it
+// makes the next model request, so relying on the adapter's request guard alone
+// would allow a changed credential to run the side effect first.
+func validateResponsesCheckpointOrigin(model einomodel.BaseChatModel, checkpoint engine.Checkpoint) error {
+	for _, message := range checkpoint.Messages {
+		if message.Role != engine.RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if len(call.Extra) == 0 {
+				continue
+			}
+			continuation := false
+			for _, key := range []string{llm.ResponsesToolItemIDExtraKey, llm.ResponsesToolReasoningExtraKey, llm.ResponsesToolOriginExtraKey} {
+				if value, ok := call.Extra[key].(string); ok && value != "" {
+					continuation = true
+				}
+			}
+			if !continuation {
+				continue
+			}
+			origin, ok := call.Extra[llm.ResponsesToolOriginExtraKey].(string)
+			if !ok || origin == "" {
+				return fmt.Errorf("backend/model: active Responses continuation has no model origin")
+			}
+			if !modelHasResponsesOrigin(model, origin) {
+				return fmt.Errorf("backend/model: active Responses continuation cannot resume with a different model credential")
+			}
+		}
+	}
+	return nil
+}
+
+func modelHasResponsesOrigin(model einomodel.BaseChatModel, origin string) bool {
+	if provider, ok := model.(interface{ ResponsesOrigin() string }); ok {
+		return provider.ResponsesOrigin() == origin
+	}
+	if provider, ok := model.(interface{ HasResponsesOrigin(string) bool }); ok {
+		return provider.HasResponsesOrigin(origin)
+	}
+	return false
 }
 
 // Cancel is a no-op: this backend executes in the caller's process, so the run
@@ -163,10 +211,12 @@ func (b *Backend) turnConfig(l backend.Limits) engine.TurnConfig {
 // comment), so this is only about which name calls which.
 func callbacks(sink backend.EventSink) engine.Callbacks {
 	return engine.Callbacks{
-		OnDelta:            sink.Delta,
-		OnAssistantMessage: sink.Assistant,
-		OnToolStart:        sink.ToolStart,
-		OnTool:             sink.ToolEnd,
+		PrepareFreshHistory: prepareFreshResponsesHistory,
+		HydrateToolCalls:    llm.HydrateResponsesToolCalls,
+		OnDelta:             sink.Delta,
+		OnAssistantMessage:  sink.Assistant,
+		OnToolStart:         sink.ToolStart,
+		OnTool:              sink.ToolEnd,
 		OnCheckpoint: func(ck engine.Checkpoint) {
 			state, err := json.Marshal(ck)
 			if err != nil {
@@ -178,4 +228,145 @@ func callbacks(sink backend.EventSink) engine.Callbacks {
 		},
 		CheckAbort: sink.Aborted,
 	}
+}
+
+// prepareFreshResponsesHistory turns ordinary completed Responses exchanges
+// from earlier turns into untrusted evidence. Their encrypted reasoning and
+// function item IDs belong to the credential that produced them. A group with
+// a reference-only result stays structured, though: the result's identity must
+// survive compaction and checkpoints while its reopened bytes remain transient.
+func prepareFreshResponsesHistory(messages []backend.Message) []backend.Message {
+	responsesCallIDs := make(map[string]struct{})
+	preserveCallIDs := make(map[string]struct{})
+	protectedResultCallIDs := make(map[string]struct{})
+	for _, message := range messages {
+		if message.Role == backend.RoleTool && message.ToolCallID != "" && (message.ResultReference != nil || message.ResultUnavailable) {
+			protectedResultCallIDs[message.ToolCallID] = struct{}{}
+		}
+	}
+	for _, message := range messages {
+		if message.Role != backend.RoleAssistant {
+			continue
+		}
+		responsesGroup := false
+		for _, call := range message.ToolCalls {
+			if call.Extra[llm.ResponsesToolItemIDExtraKey] != nil ||
+				call.Extra[llm.ResponsesToolReasoningExtraKey] != nil ||
+				call.Extra[llm.ResponsesToolOriginExtraKey] != nil {
+				responsesGroup = true
+				break
+			}
+		}
+		if !responsesGroup {
+			continue
+		}
+		groupHasProtectedResult := false
+		for _, call := range message.ToolCalls {
+			if _, protected := protectedResultCallIDs[call.ID]; protected {
+				groupHasProtectedResult = true
+				break
+			}
+		}
+		for _, call := range message.ToolCalls {
+			if call.ID == "" {
+				continue
+			}
+			responsesCallIDs[call.ID] = struct{}{}
+			if groupHasProtectedResult {
+				preserveCallIDs[call.ID] = struct{}{}
+			}
+		}
+	}
+	if len(responsesCallIDs) == 0 {
+		return messages
+	}
+
+	out := append([]backend.Message(nil), messages...)
+	for index, message := range messages {
+		switch message.Role {
+		case backend.RoleAssistant:
+			responsesGroup, preserveGroup := false, false
+			calls := make([]struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}, 0, len(message.ToolCalls))
+			for _, call := range message.ToolCalls {
+				if _, included := responsesCallIDs[call.ID]; included {
+					responsesGroup = true
+				}
+				if _, preserved := preserveCallIDs[call.ID]; preserved {
+					preserveGroup = true
+				}
+				calls = append(calls, struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: call.Function.Name, Arguments: call.Function.Arguments})
+			}
+			if !responsesGroup {
+				continue
+			}
+			if preserveGroup {
+				cloned := append([]schema.ToolCall(nil), message.ToolCalls...)
+				for callIndex := range cloned {
+					if _, included := responsesCallIDs[cloned[callIndex].ID]; !included {
+						continue
+					}
+					cloned[callIndex].Extra = withoutResponsesContinuation(cloned[callIndex].Extra)
+				}
+				out[index].ToolCalls = cloned
+				continue
+			}
+			evidence, _ := json.Marshal(struct {
+				Type      string `json:"type"`
+				Content   string `json:"content,omitempty"`
+				ToolCalls any    `json:"toolCalls"`
+			}{Type: "assistant_tool_calls", Content: message.Content, ToolCalls: calls})
+			out[index] = backend.Message{
+				Role: backend.RoleUser, Content: "Untrusted earlier tool request evidence: " + string(evidence),
+				ID: message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
+			}
+		case backend.RoleTool:
+			if _, included := responsesCallIDs[message.ToolCallID]; !included {
+				continue
+			}
+			if _, preserved := preserveCallIDs[message.ToolCallID]; preserved {
+				continue
+			}
+			content := message.Content
+			if message.ResultReference != nil {
+				content = backend.ToolResultReferencePlaceholder
+			} else if message.ResultUnavailable {
+				content = backend.ToolResultUnavailablePlaceholder
+			}
+			evidence, _ := json.Marshal(struct {
+				Type    string `json:"type"`
+				Tool    string `json:"tool"`
+				Content string `json:"content"`
+			}{Type: "tool_result", Tool: message.Name, Content: content})
+			out[index] = backend.Message{
+				Role: backend.RoleUser, Content: "Untrusted earlier tool result evidence: " + string(evidence),
+				ID: message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
+			}
+		}
+	}
+	return out
+}
+
+func withoutResponsesContinuation(extra map[string]any) map[string]any {
+	if len(extra) == 0 {
+		return nil
+	}
+	clean := make(map[string]any, len(extra))
+	for key, value := range extra {
+		switch key {
+		case llm.ResponsesToolItemIDExtraKey, llm.ResponsesToolReasoningExtraKey, llm.ResponsesToolOriginExtraKey:
+			continue
+		default:
+			clean[key] = value
+		}
+	}
+	if len(clean) == 0 {
+		return nil
+	}
+	return clean
 }

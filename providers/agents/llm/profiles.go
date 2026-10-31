@@ -103,10 +103,13 @@ var ErrCredentialNotFound = errors.New("model credential not found")
 // It never leaves the process.
 type Profile struct {
 	ReasoningEffort string `json:"-"`
-	Provider        string `json:"provider,omitempty"`
-	BaseURL         string `json:"baseURL,omitempty"`
-	Model           string `json:"model,omitempty"`
-	APIKey          string `json:"apiKey,omitempty"`
+	// Transport pins the protocol of an admitted run. Empty selects it from
+	// the model and effort, using the same rules as App Studio.
+	Transport string `json:"-"`
+	Provider  string `json:"provider,omitempty"`
+	BaseURL   string `json:"baseURL,omitempty"`
+	Model     string `json:"model,omitempty"`
+	APIKey    string `json:"apiKey,omitempty"`
 }
 
 func (p Profile) normalized() Profile {
@@ -189,9 +192,8 @@ func LoadCredential(ctx context.Context, c CredentialResolver, name string) (Pro
 // wanted a chat model. Callers match on it rather than on the message.
 var ErrHarnessCredential = errors.New("this model credential is a coding-harness identity, not a chat endpoint")
 
-// BuildModel constructs an Eino chat model from a profile. Only the
-// OpenAI-compatible path is implemented; Gemini and other native providers are
-// added later.
+// BuildModel constructs an Eino chat model from a profile, using native Eino
+// Responses support for models that require it and Chat Completions otherwise.
 //
 // A harness identity is REFUSED before anything else, including the empty-key
 // and empty-model checks, because it is the one failure whose cause is not
@@ -214,15 +216,19 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 		if err := ValidateReasoningEffort(p.Provider, p.BaseURL, p.Model, p.ReasoningEffort); err != nil {
 			return nil, err
 		}
+		switch ModelTransport(p) {
+		case TransportResponses:
+			return NewResponsesModel(ctx, p)
+		case TransportChatCompletions:
+		default:
+			return nil, fmt.Errorf("unsupported model transport %q", p.Transport)
+		}
 		cfg := &openaimodel.ChatModelConfig{
 			APIKey:          p.APIKey,
 			BaseURL:         strings.TrimRight(p.BaseURL, "/"),
 			Model:           p.Model,
 			HTTPClient:      &http.Client{},
-			ReasoningEffort: modelReasoningEffort(p.Model),
-		}
-		if p.ReasoningEffort != "" {
-			cfg.ReasoningEffort = openaimodel.ReasoningEffortLevel(p.ReasoningEffort)
+			ReasoningEffort: openaimodel.ReasoningEffortLevel(EffectiveReasoningEffort(p)),
 		}
 		if modelSupportsTemperature(p.Model) {
 			t := float32(0.2)
@@ -236,6 +242,48 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 	default:
 		return nil, fmt.Errorf("provider %q is not supported yet (use %q)", p.Provider, ProviderOpenAICompatible)
 	}
+}
+
+const (
+	TransportChatCompletions = "chat-completions"
+	TransportResponses       = "responses"
+)
+
+// ModelTransport mirrors App Studio's model routing. GPT-6 models use
+// Responses for tool calling, including Luna with nonzero reasoning. Earlier
+// models keep Chat Completions unless their selected effort requires Responses.
+// A persisted protocol takes precedence when resuming an admitted run.
+func ModelTransport(p Profile) string {
+	if transport := strings.TrimSpace(p.Transport); transport != "" {
+		return transport
+	}
+	p = p.normalized()
+	if p.Provider != ProviderOpenAICompatible && p.Provider != ProviderOpenAI {
+		return TransportChatCompletions
+	}
+	model := normalizeModelID(p.Model)
+	for _, prefix := range []string{"gpt-6", "gpt6"} {
+		if model == prefix || strings.HasPrefix(model, prefix+"-") || strings.HasPrefix(model, prefix+".") {
+			return TransportResponses
+		}
+	}
+	if profile, ok := modelcatalog.ReasoningProfileForConnection(ProviderOpenAICompatible, p.BaseURL, p.Model); ok &&
+		profile.ResponsesForReasoning && p.ReasoningEffort != "" && p.ReasoningEffort != "none" {
+		return TransportResponses
+	}
+	return TransportChatCompletions
+}
+
+// EffectiveReasoningEffort includes legacy Chat Completions compatibility
+// defaults. Responses leaves an omitted effort to the model's own default.
+func EffectiveReasoningEffort(p Profile) string {
+	if p.ReasoningEffort != "" {
+		return p.ReasoningEffort
+	}
+	if ModelTransport(p) == TransportChatCompletions {
+		return string(modelReasoningEffort(p.Model))
+	}
+	return ""
 }
 
 // ---- discovery --------------------------------------------------------------
@@ -402,9 +450,6 @@ func ReasoningEfforts(provider, baseURL, model string) []string {
 	if !ok {
 		return []string{}
 	}
-	if profile.ResponsesForReasoning {
-		return []string{"none"}
-	}
 	return profile.Efforts
 }
 
@@ -420,4 +465,6 @@ func ValidateReasoningEffort(provider, baseURL, model, effort string) error {
 	return fmt.Errorf("reasoning effort %q is not supported by this model connection", effort)
 }
 
-func DefaultReasoningEffort(model string) string { return string(modelReasoningEffort(model)) }
+func DefaultReasoningEffort(model string) string {
+	return EffectiveReasoningEffort(Profile{Model: model})
+}

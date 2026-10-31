@@ -59,9 +59,12 @@ that default changes; explicit chat choices stay fixed. Model selection is disab
 preference request is pending, without closing the reasoning picker.
 
 Effort choices come from the shared server-side model capability catalog.
-Custom endpoints and unknown models show only model selection. Agents currently
-uses Chat Completions, so reasoning levels requiring the Responses transport
-are not offered. Effort is remembered separately for each credential in a chat.
+Custom endpoints and unknown models show only model selection. Agents uses Eino's
+native Responses model for GPT-6 models and for earlier models whose selected
+reasoning level requires Responses, matching App Studio's routing. Other models
+use Chat Completions. The run records its transport and effective reasoning
+effort for approval resumes and recovery. Effort is remembered separately for
+each credential in a chat.
 Switching back to a credential whose remembered effort is no longer supported
 resets that effort to model default; valid remembered choices are retained.
 
