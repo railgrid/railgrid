@@ -76,9 +76,7 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	// alice, the creator every org() names, exists; an org whose creator is
-	// gone is exercised by deleting her.
-	objs := []runtime.Object{&tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}}
+	objs := make([]runtime.Object, 0, len(orgs))
 	for _, o := range orgs {
 		objs = append(objs, o)
 	}
@@ -107,30 +105,58 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 	return r, meteringWS
 }
 
-// org is an Organization alice created, the common case: pooled into alice's
-// account unless spec.plan says otherwise.
+// org is an Organization alice created; on the default plan unless the test
+// sets spec.plan.
 func org(name string) *tenancyv1alpha1.Organization {
-	o := legacyOrg(name)
-	o.Labels = map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}
-	return o
-}
-
-// legacyOrg has no creator label and so keeps an account of its own.
-func legacyOrg(name string) *tenancyv1alpha1.Organization {
-	o := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	o := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{
+		Name:   name,
+		Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"},
+	}}
 	o.Spec.DisplayName = "Org One"
 	o.Status.WorkspacePath = "root:railgrid:tenants:" + name
 	return o
 }
 
-func planOf(t *testing.T, ws dynamic.Interface, entitlement string) string {
+func entitlementOf(t *testing.T, ws dynamic.Interface, name string) *unstructured.Unstructured {
 	t.Helper()
-	ent, err := ws.Resource(gvrEntitlements).Get(context.Background(), entitlement, metav1.GetOptions{})
+	ent, err := ws.Resource(gvrEntitlements).Get(context.Background(), name, metav1.GetOptions{})
 	if err != nil {
-		t.Fatalf("entitlement %s: %v", entitlement, err)
+		t.Fatalf("entitlement %s: %v", name, err)
 	}
-	plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	return ent
+}
+
+func planOf(t *testing.T, ws dynamic.Interface, name string) string {
+	t.Helper()
+	plan, _, _ := unstructured.NestedString(entitlementOf(t, ws, name).Object, "spec", "plan")
 	return plan
+}
+
+// setPlanDirectly is an admin editing the Entitlement's plan without going
+// through Organization.spec.plan.
+func setPlanDirectly(t *testing.T, ws dynamic.Interface, name, plan string) {
+	t.Helper()
+	ent := entitlementOf(t, ws, name)
+	_ = unstructured.SetNestedField(ent.Object, plan, "spec", "plan")
+	if _, err := ws.Resource(gvrEntitlements).Update(context.Background(), ent, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// addOverride is an admin adding a per-meter override to the Entitlement.
+func addOverride(t *testing.T, ws dynamic.Interface, name string) {
+	t.Helper()
+	ent := entitlementOf(t, ws, name)
+	_ = unstructured.SetNestedSlice(ent.Object, []any{map[string]any{"meter": "agents", "enforce": "Hard", "max": "9"}}, "spec", "overrides")
+	if _, err := ws.Resource(gvrEntitlements).Update(context.Background(), ent, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func overridesOf(t *testing.T, ws dynamic.Interface, name string) []any {
+	t.Helper()
+	overrides, _, _ := unstructured.NestedSlice(entitlementOf(t, ws, name).Object, "spec", "overrides")
+	return overrides
 }
 
 func reportAccount(t *testing.T, ws dynamic.Interface, orgName string) string {
@@ -159,18 +185,43 @@ func reconcile(t *testing.T, r *OrganizationReconciler, name string) ctrl.Result
 	return res
 }
 
-func TestNewOrganizationReportsIntoItsCreatorsAccount(t *testing.T) {
+func setSpecPlan(t *testing.T, r *OrganizationReconciler, o *tenancyv1alpha1.Organization, plan string) {
+	t.Helper()
+	o.Spec.Plan = plan
+	if err := r.Update(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewOrganizationGetsItsOwnAccountOnTheDefaultPlan(t *testing.T) {
 	r, ws := newFixture(t, org("org-1"))
 	res := reconcile(t, r, "org-1")
 	if res.RequeueAfter != membershipRefresh {
 		t.Fatalf("expected membership refresh requeue, got %+v", res)
 	}
 	ctx := context.Background()
-	// No per-org account or entitlement: alice's account pays.
-	absent(t, ws, gvrAccounts, "org-1")
-	absent(t, ws, gvrEntitlements, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
-		t.Fatalf("report account = %q, want %q", got, UserAccountName("alice"))
+	acct, err := ws.Resource(gvrAccounts).Get(ctx, "org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("account: %v", err)
+	}
+	if dn, _, _ := unstructured.NestedString(acct.Object, "spec", "displayName"); dn != "Org One" {
+		t.Fatalf("displayName = %q", dn)
+	}
+	if acct.GetLabels()[LabelOrganization] != "org-1" {
+		t.Fatalf("account labels = %v", acct.GetLabels())
+	}
+	ent := entitlementOf(t, ws, "org-1")
+	if plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); plan != "free" {
+		t.Fatalf("plan = %q, want free", plan)
+	}
+	if acc, _, _ := unstructured.NestedString(ent.Object, "spec", "account"); acc != "org-1" {
+		t.Fatalf("entitlement account = %q, want org-1", acc)
+	}
+	if ent.GetLabels()[LabelPlanFromSpec] != "" {
+		t.Fatalf("a default-plan entitlement must not claim to follow spec.plan: %v", ent.GetLabels())
+	}
+	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
+		t.Fatalf("report account = %q, want org-1", got)
 	}
 	rep, _ := ws.Resource(gvrMembershipReports).Get(ctx, Reporter+".org-1", metav1.GetOptions{})
 	members, _, _ := unstructured.NestedSlice(rep.Object, "spec", "members")
@@ -189,211 +240,114 @@ func TestNewOrganizationReportsIntoItsCreatorsAccount(t *testing.T) {
 	}
 }
 
-// An organization the hub previously gave its own default-plan account (the
-// pre-pooling layout) is folded into its creator's account on the next pass,
-// and the hub-created objects go away.
-func TestUncustomizedOwnAccountIsFoldedIntoTheCreator(t *testing.T) {
-	r, ws := newFixture(t, org("org-1"))
-	ctx := context.Background()
-	if err := applyAccountObject(ctx, ws, "org-1", "Org One", map[string]string{"railgrid.ai/organization": "org-1"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ensureEntitlementObject(ctx, ws, "org-1", "free", nil); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, "org-1")
-	absent(t, ws, gvrAccounts, "org-1")
-	absent(t, ws, gvrEntitlements, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
-		t.Fatalf("report account = %q", got)
-	}
-}
-
-// An admin-customized per-org entitlement is intent: the organization keeps
-// its own account even without spec.plan.
-func TestCustomizedOwnEntitlementIsKept(t *testing.T) {
-	r, ws := newFixture(t, org("org-1"))
-	ctx := context.Background()
-	if _, err := ensureEntitlementObject(ctx, ws, "org-1", "team", nil); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, "org-1")
-	if got := planOf(t, ws, "org-1"); got != "team" {
-		t.Fatalf("plan = %q, want team kept", got)
-	}
-	if _, err := ws.Resource(gvrAccounts).Get(ctx, "org-1", metav1.GetOptions{}); err != nil {
-		t.Fatalf("own account should exist: %v", err)
-	}
-	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
-		t.Fatalf("report account = %q, want org-1", got)
-	}
-}
-
-// spec.plan detaches the organization into its own account and keeps the
-// entitlement's plan in step while preserving overrides.
-func TestSpecPlanGivesTheOrganizationItsOwnAccount(t *testing.T) {
+// spec.plan is the plan: the Entitlement is created on it and follows every
+// change, and overrides an admin added on the way stay.
+func TestSpecPlanIsFollowedAndOverridesArePreserved(t *testing.T) {
 	o := org("org-1")
 	o.Spec.Plan = "team"
 	r, ws := newFixture(t, o)
 	reconcile(t, r, "org-1")
-	ctx := context.Background()
-	if _, err := ws.Resource(gvrAccounts).Get(ctx, "org-1", metav1.GetOptions{}); err != nil {
-		t.Fatalf("own account: %v", err)
-	}
 	if got := planOf(t, ws, "org-1"); got != "team" {
 		t.Fatalf("plan = %q, want team", got)
+	}
+	if entitlementOf(t, ws, "org-1").GetLabels()[LabelPlanFromSpec] != "true" {
+		t.Fatal("entitlement created from spec.plan must carry the label")
 	}
 	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
 		t.Fatalf("report account = %q, want org-1", got)
 	}
 
-	// Admin adds an override and the plan changes: the plan follows spec,
-	// the override stays.
-	ent, _ := ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
-	_ = unstructured.SetNestedSlice(ent.Object, []any{map[string]any{"meter": "agents", "enforce": "Hard", "max": "9"}}, "spec", "overrides")
-	if _, err := ws.Resource(gvrEntitlements).Update(ctx, ent, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	o.Spec.Plan = "enterprise"
-	if err := r.Update(ctx, o); err != nil {
-		t.Fatal(err)
-	}
+	addOverride(t, ws, "org-1")
+	setSpecPlan(t, r, o, "enterprise")
 	reconcile(t, r, "org-1")
 	if got := planOf(t, ws, "org-1"); got != "enterprise" {
 		t.Fatalf("plan = %q, want enterprise", got)
 	}
-	ent, _ = ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
-	if overrides, _, _ := unstructured.NestedSlice(ent.Object, "spec", "overrides"); len(overrides) != 1 {
-		t.Fatalf("overrides were not preserved: %v", overrides)
+	if got := overridesOf(t, ws, "org-1"); len(got) != 1 {
+		t.Fatalf("overrides were not preserved: %v", got)
 	}
 }
 
-// Clearing spec.plan pools the organization back: the Entitlement the hub
-// wrote from spec.plan is the hub's own, not an admin customization.
-func TestClearingSpecPlanPoolsTheOrganizationBack(t *testing.T) {
+// Clearing spec.plan returns the organization to the default plan when the
+// hub wrote the plan in the first place; the overrides stay.
+func TestClearingSpecPlanReturnsAHubWrittenPlanToTheDefault(t *testing.T) {
 	o := org("org-1")
 	o.Spec.Plan = "team"
 	r, ws := newFixture(t, o)
 	reconcile(t, r, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
-		t.Fatalf("detached: report account = %q", got)
-	}
-	ctx := context.Background()
-	o.Spec.Plan = ""
-	if err := r.Update(ctx, o); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
-		t.Fatalf("pooled back: report account = %q, want %q", got, UserAccountName("alice"))
-	}
-	absent(t, ws, gvrAccounts, "org-1")
-	absent(t, ws, gvrEntitlements, "org-1")
+	addOverride(t, ws, "org-1")
 
-	// With an admin override on the detached entitlement, clearing spec.plan
-	// keeps the org on its own account: the override is intent.
-	o.Spec.Plan = "team"
-	if err := r.Update(ctx, o); err != nil {
-		t.Fatal(err)
-	}
+	setSpecPlan(t, r, o, "")
 	reconcile(t, r, "org-1")
-	ent, _ := ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
-	_ = unstructured.SetNestedSlice(ent.Object, []any{map[string]any{"meter": "agents", "enforce": "Hard", "max": "9"}}, "spec", "overrides")
-	if _, err := ws.Resource(gvrEntitlements).Update(ctx, ent, metav1.UpdateOptions{}); err != nil {
-		t.Fatal(err)
+	if got := planOf(t, ws, "org-1"); got != "free" {
+		t.Fatalf("plan = %q, want free", got)
 	}
-	o.Spec.Plan = ""
-	if err := r.Update(ctx, o); err != nil {
-		t.Fatal(err)
+	if entitlementOf(t, ws, "org-1").GetLabels()[LabelPlanFromSpec] != "" {
+		t.Fatal("label must go with the plan the hub stopped writing")
 	}
-	reconcile(t, r, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
-		t.Fatalf("overridden entitlement: report account = %q, want org-1", got)
+	if got := overridesOf(t, ws, "org-1"); len(got) != 1 {
+		t.Fatalf("overrides were not preserved: %v", got)
 	}
 }
 
-// An organization whose creator was deleted must not report into an account
-// that no longer has an Entitlement (the webhook would treat that as
-// unlimited); it keeps an account of its own.
-func TestDeletedCreatorMovesTheOrganizationOntoItsOwnAccount(t *testing.T) {
+// A plan an admin set on the Entitlement directly is intent the hub does not
+// reset while spec.plan is empty; once spec.plan names a plan, it wins.
+func TestAdminSetPlanIsKeptUntilSpecPlanSpeaks(t *testing.T) {
+	o := org("org-1")
+	r, ws := newFixture(t, o)
+	reconcile(t, r, "org-1")
+	setPlanDirectly(t, ws, "org-1", "team")
+	reconcile(t, r, "org-1")
+	if got := planOf(t, ws, "org-1"); got != "team" {
+		t.Fatalf("an admin-set plan was reset to %q", got)
+	}
+
+	setSpecPlan(t, r, o, "enterprise")
+	reconcile(t, r, "org-1")
+	if got := planOf(t, ws, "org-1"); got != "enterprise" {
+		t.Fatalf("plan = %q, want enterprise from spec.plan", got)
+	}
+}
+
+// A report that names another account (the layout one hub release pooled
+// organizations into their creator's account) is rewritten onto the
+// organization's own account on the first pass, members unchanged.
+func TestReportLeftOnAnotherAccountIsRewritten(t *testing.T) {
 	r, ws := newFixture(t, org("org-1"))
-	reconcile(t, r, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
-		t.Fatalf("report account = %q", got)
-	}
-	if err := r.Delete(context.Background(), &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}); err != nil {
-		t.Fatal(err)
-	}
-	reconcile(t, r, "org-1")
-	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
-		t.Fatalf("report account = %q, want org-1", got)
-	}
-	if got := planOf(t, ws, "org-1"); got != "free" {
-		t.Fatalf("plan = %q, want free", got)
-	}
-}
-
-// A User event maps to every organization carrying its created-by label, and
-// nothing else, so a delete wakes exactly the organizations that must move.
-func TestUserEventsMapToTheUsersOrganizations(t *testing.T) {
-	other := org("org-bob")
-	other.Labels[tenancyv1alpha1.OrganizationCreatorLabel] = "bob"
-	r, _ := newFixture(t, org("org-1"), org("org-2"), other)
-	reqs := r.organizationsCreatedBy(context.Background(), &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}})
-	got := map[string]bool{}
-	for _, rq := range reqs {
-		got[rq.Name] = true
-	}
-	if len(got) != 2 || !got["org-1"] || !got["org-2"] {
-		t.Fatalf("mapped requests = %v, want org-1 and org-2", got)
-	}
-}
-
-// Without a creator label there is nobody to pool into; the organization
-// keeps an account of its own on the default plan, as before.
-func TestLegacyOrganizationWithoutCreatorKeepsItsOwnAccount(t *testing.T) {
-	r, ws := newFixture(t, legacyOrg("org-1"))
-	reconcile(t, r, "org-1")
-	if got := planOf(t, ws, "org-1"); got != "free" {
-		t.Fatalf("plan = %q, want free", got)
-	}
-	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
-		t.Fatalf("report account = %q, want org-1", got)
-	}
-}
-
-func TestExistingPlanIsNeverReset(t *testing.T) {
-	r, ws := newFixture(t, legacyOrg("org-1"))
-	reconcile(t, r, "org-1")
 	ctx := context.Background()
-	ent, _ := ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
-	_ = unstructured.SetNestedField(ent.Object, "team", "spec", "plan")
-	if _, err := ws.Resource(gvrEntitlements).Update(ctx, ent, metav1.UpdateOptions{}); err != nil {
+	rep := &unstructured.Unstructured{}
+	rep.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	rep.SetKind("MembershipReport")
+	rep.SetName(Reporter + ".org-1")
+	_ = unstructured.SetNestedField(rep.Object, map[string]any{
+		"account":  "user-alice",
+		"reporter": Reporter,
+		"members": []any{
+			map[string]any{"cluster": "lc-org", "path": "root:railgrid:tenants:org-1"},
+			map[string]any{"cluster": "lc-a", "path": "root:railgrid:tenants:org-1:ws-a"},
+			map[string]any{"cluster": "lc-b", "path": "root:railgrid:tenants:org-1:ws-b"},
+		},
+	}, "spec")
+	if _, err := ws.Resource(gvrMembershipReports).Create(ctx, rep, metav1.CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, "org-1")
-	ent, _ = ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
-	if plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); plan != "team" {
-		t.Fatalf("an admin-set plan was reset to %q", plan)
+	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
+		t.Fatalf("report account = %q, want org-1", got)
 	}
 }
 
 func TestDeletedOrganizationLosesItsObjects(t *testing.T) {
-	r, ws := newFixture(t, legacyOrg("org-1"))
+	r, ws := newFixture(t, org("org-1"))
 	reconcile(t, r, "org-1")
 	ctx := context.Background()
-	if err := r.Delete(ctx, legacyOrg("org-1")); err != nil {
+	if err := r.Delete(ctx, org("org-1")); err != nil {
 		t.Fatal(err)
 	}
 	reconcile(t, r, "org-1")
-	for _, gvr := range []schema.GroupVersionResource{gvrAccounts, gvrEntitlements} {
-		if _, err := ws.Resource(gvr).Get(ctx, "org-1", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-			t.Fatalf("%s still present after organization deletion: %v", gvr.Resource, err)
-		}
-	}
-	if _, err := ws.Resource(gvrMembershipReports).Get(ctx, Reporter+".org-1", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("membership report still present: %v", err)
-	}
+	absent(t, ws, gvrAccounts, "org-1")
+	absent(t, ws, gvrEntitlements, "org-1")
+	absent(t, ws, gvrMembershipReports, Reporter+".org-1")
 }
 
 func TestNothingHappensUntilMeteringIsInstalled(t *testing.T) {
@@ -403,7 +357,6 @@ func TestNothingHappensUntilMeteringIsInstalled(t *testing.T) {
 	if res.RequeueAfter != notInstalledRetry {
 		t.Fatalf("expected a retry while not installed, got %+v", res)
 	}
-	if _, err := ws.Resource(gvrEntitlements).Get(context.Background(), "org-1", metav1.GetOptions{}); !apierrors.IsNotFound(err) {
-		t.Fatalf("wrote an entitlement without metering: %v", err)
-	}
+	absent(t, ws, gvrEntitlements, "org-1")
+	absent(t, ws, gvrAccounts, "org-1")
 }

@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261031-783d1b7d.users.tenants.railgrid.ai
+  name: v261031-a6adbb41.users.tenants.railgrid.ai
 spec:
   group: tenants.railgrid.ai
   names:
@@ -76,6 +76,28 @@ spec:
                 - refreshToken
                 type: object
               type: array
+            quota:
+              description: |-
+                Quota overrides the hub-wide caps on the Organizations this User may
+                hold (docs/organizations.md O-5). Unset defers to the hub flags.
+                Settable only by a platform admin.
+              properties:
+                freeOrganizations:
+                  description: |-
+                    FreeOrganizations caps how many non-personal Organizations on the
+                    default (free) plan this User may administer at once (the hub's
+                    --free-orgs-per-user). Creating another needs a plan on one of them.
+                  format: int32
+                  minimum: 0
+                  type: integer
+                organizations:
+                  description: |-
+                    Organizations caps how many non-personal Organizations this User may
+                    create (the hub's --default-orgs-per-user).
+                  format: int32
+                  minimum: 0
+                  type: integer
+              type: object
             rbacIdentity:
               type: string
           required:

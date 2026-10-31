@@ -90,7 +90,8 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
     <h2 class="mb-1 text-base font-semibold text-text-primary">Organizations</h2>
     <p class="mb-4 text-sm text-text-muted">
       All organizations registered on the hub, with their workspaces, enabled providers and the
-      metering account that pays for them. An organization or workspace marked <span class="k-badge k-badge--danger align-middle">deleting</span>
+      metering plan a platform admin assigned (none means the default, free plan). An organization or
+      workspace marked <span class="k-badge k-badge--danger align-middle">deleting</span>
       is inside its recovery window and can be restored here until the hub purges it.
     </p>
 
@@ -117,13 +118,11 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
             {{ o.workspacePath }}
           </span>
           <span
-            v-if="o.account"
+            v-if="o.plan"
             class="k-badge k-badge--muted normal-case"
-            :title="o.ownAccount
-              ? `Own metering account${o.plan ? ` on plan ${o.plan}` : ''}`
-              : `Pooled into the metering account of ${o.createdBy || 'its creator'}; usage and limits are shared with their other organizations`"
+            title="Metering plan assigned by a platform admin; the organization's entitlement follows it"
           >
-            {{ o.ownAccount ? (o.plan ? `plan ${o.plan}` : 'own account') : `account ${o.account}` }}
+            plan {{ o.plan }}
           </span>
           <template v-if="o.deletionRequestedAt">
             <span

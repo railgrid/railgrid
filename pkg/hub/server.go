@@ -65,6 +65,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/metering"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/restapi"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/sharedstore"
@@ -534,6 +535,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.opts.DefaultOrgsPerUser <= 0 {
 		return fmt.Errorf("--default-orgs-per-user must be positive, got %d", s.opts.DefaultOrgsPerUser)
 	}
+	if s.opts.FreeOrgsPerUser < 0 {
+		return fmt.Errorf("--free-orgs-per-user must be zero or positive, got %d", s.opts.FreeOrgsPerUser)
+	}
 	var (
 		heartbeatRecorder      providers.HeartbeatRecorder
 		heartbeatAuthenticator providers.HeartbeatAuthenticator
@@ -962,11 +966,16 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("provider delegated tokens", "mode", delegationMode, "exclude", s.opts.ProviderDelegatedTokensExclude)
 
 			// Step 10: Org / Workspace / Membership / User REST
+			// O-5: the organization caps. The free-organizations cap has to
+			// know which plan is free, which only a hub with metering
+			// configured does; elsewhere it is off.
+			freePlan := ""
+			if s.opts.MeteringWorkspace != "" {
+				freePlan = s.opts.MeteringDefaultPlan
+			}
 			apiMgr := restapi.NewManager(userClient, bootstrapper).
 				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
-				// O-5: the hub default until metering discovery (below) swaps in
-				// the plan-backed policy.
-				WithOrgQuota(restapi.ConstOrgQuota(s.opts.DefaultOrgsPerUser))
+				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser}, freePlan)
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
@@ -1087,14 +1096,12 @@ func (s *Server) Run(ctx context.Context) error {
 					meteringDiscovery = d
 					go meteringDiscovery.Run(ctx)
 					logger.Info("Metering discovery enabled", "workspace", s.opts.MeteringWorkspace, "defaultPlan", s.opts.MeteringDefaultPlan)
-					// The organizations-per-user cap comes from the user's
-					// Entitlement once metering is installed; the admin plan
-					// route checks the plan it is handed exists.
+					// The admin plan route checks the plan it is handed
+					// exists in the metering workspace.
 					if store, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
-						logger.Error(err, "Creating metering workspace client failed; organization quota stays on the hub default")
+						logger.Error(err, "Creating metering workspace client failed; plan assignment is unavailable")
 					} else {
 						meteringStore = store
-						apiMgr.WithOrgQuota(metering.NewOrgQuota(meteringDiscovery, store, s.opts.DefaultOrgsPerUser, logger.WithName("metering-org-quota")))
 					}
 				}
 			}
@@ -1330,9 +1337,10 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Setting up organization bootstrap controller failed")
 				return
 			}
-			// Every organization gets its billing objects in the metering
-			// workspace (Account, Entitlement on the default plan,
-			// MembershipReport); nothing happens until metering is discovered.
+			// Every organization gets its own billing objects in the metering
+			// workspace (Account, Entitlement on spec.plan or the default
+			// plan, MembershipReport); nothing happens until metering is
+			// discovered.
 			if meteringDiscovery != nil {
 				meteringClient, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace)
 				if err != nil {
@@ -1347,18 +1355,6 @@ func (s *Server) Run(ctx context.Context) error {
 					Logger:      logger.WithName("metering-organization"),
 				}); err != nil {
 					logger.Error(err, "Setting up metering organization controller failed")
-					return
-				}
-				// Every User gets the Account their organizations pool into,
-				// with the Entitlement whose `organizations` row caps how many
-				// they may create.
-				if err := metering.SetupUserReconciler(orgMgr, metering.UserOptions{
-					Discovery:   meteringDiscovery,
-					Metering:    meteringClient,
-					DefaultPlan: s.opts.MeteringDefaultPlan,
-					Logger:      logger.WithName("metering-user"),
-				}); err != nil {
-					logger.Error(err, "Setting up metering user controller failed")
 					return
 				}
 			}
