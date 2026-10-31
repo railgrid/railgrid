@@ -31,21 +31,9 @@ func KCPDir() string {
 	return DefaultKCPDir
 }
 
-// APIExport loads the generated APIExport shell this provider applies at
-// bootstrap, with per-installation identity hashes stamped on.
-//
-// Unlike every other railgrid provider, infrastructure has no apigen output:
-// its APIResourceSchemas are minted at runtime from the embedded CRDs, and the
-// Templates entry uses CachedResource virtual storage that only exists once the
-// CachedResource has an identityHash. So the generated file carries an EMPTY
-// spec.resources and PlatformSchemaInAPIExport fills it in afterwards —
-// sdkinstall.ApplyAPIExport merges rather than clobbers, precisely so the two
-// writers can coexist.
-//
-// What the file does carry is the export's name and its permission claims,
-// taken from manifest.yaml by codegen. That is the whole point: a claim is
-// written in one place for this provider too, even though the resources are
-// not generated.
+// APIExport loads the generated export containing platform resources and claims.
+// Bootstrap selects Templates virtual storage before publication; the Template
+// controller adds per-template resources at runtime, preserved by the SDK merge.
 func APIExport(kcpDir string) (*unstructured.Unstructured, error) {
 	if kcpDir == "" {
 		kcpDir = KCPDir()

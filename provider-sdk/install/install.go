@@ -33,8 +33,8 @@ limitations under the License.
 // provider-sdk/cmd/apiexportgen from that manifest plus kcp apigen). Both, with
 // the APIResourceSchemas, travel in the chart's files/ directory, which the
 // image bakes at /etc/railgrid/kcp and init reads through Options.KCPDir.
-// Nothing about the export is assembled in Go: what a reviewer reads in the
-// diff is what lands in the workspace.
+// Runtime catalog projections may resolve storage references with VirtualStorage
+// before publication; schemas and permission claims remain generated.
 //
 // Every step is idempotent. No claim carries an identityHash: a first-party
 // claim is identity-agnostic and kcp resolves it per consumer workspace against
@@ -52,6 +52,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -148,6 +149,11 @@ type Options struct {
 	// custom subresource; a provider that declares none publishes no slice and
 	// is never asked for a URL.
 	DataPlaneURL string
+
+	// VirtualStorage resolves runtime catalog projections before publishing the
+	// export. Referenced endpoint slices must already exist. This avoids briefly
+	// exposing empty tenant-local CRD storage on every provider restart.
+	VirtualStorage map[schema.GroupResource]corev1.TypedLocalObjectReference
 }
 
 // Bootstrap runs the full provider workspace bootstrap idempotently:
@@ -205,6 +211,9 @@ func Bootstrap(ctx context.Context, opts Options) error {
 		if err := EnsureDataPlaneEndpointSlice(ctx, cl, opts.ExportName, dataPlaneURL); err != nil {
 			return fmt.Errorf("install: %w", err)
 		}
+	}
+	if err := configureVirtualStorage(export, opts.VirtualStorage); err != nil {
+		return err
 	}
 	if err := ApplyAPIExport(ctx, cl, export); err != nil {
 		return fmt.Errorf("install: apply APIExport: %w", err)
@@ -784,3 +793,33 @@ func toUnstructured(v any) (*unstructured.Unstructured, error) {
 }
 
 var _ = toUnstructured
+
+func configureVirtualStorage(export *unstructured.Unstructured, overrides map[schema.GroupResource]corev1.TypedLocalObjectReference) error {
+	if len(overrides) == 0 {
+		return nil
+	}
+	resources, _, err := unstructured.NestedSlice(export.Object, "spec", "resources")
+	if err != nil {
+		return err
+	}
+	for resource, reference := range overrides {
+		if reference.APIGroup == nil || *reference.APIGroup == "" || reference.Kind == "" || reference.Name == "" {
+			return fmt.Errorf("incomplete virtual storage reference for %s", resource)
+		}
+		found := false
+		for _, raw := range resources {
+			entry, ok := raw.(map[string]any)
+			if !ok || entry["group"] != resource.Group || entry["name"] != resource.Resource {
+				continue
+			}
+			entry["storage"] = map[string]any{"virtual": map[string]any{"reference": map[string]any{
+				"apiGroup": *reference.APIGroup, "kind": reference.Kind, "name": reference.Name,
+			}}}
+			found = true
+		}
+		if !found {
+			return fmt.Errorf("virtual storage resource %s is absent from generated APIExport", resource)
+		}
+	}
+	return unstructured.SetNestedSlice(export.Object, resources, "spec", "resources")
+}

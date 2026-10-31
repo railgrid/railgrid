@@ -13,6 +13,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, ChevronRight } from 'lucide-vue-next'
 import { listEdges, setHostFetch, setTenant, setToken } from './api'
 import type { Edge } from './types'
+import { edgeDetailPath } from './routes'
 import {
   TILE_ROWS,
   hasWorkspaceContext,
@@ -171,7 +172,7 @@ watch([() => props.context?.token, () => props.context?.fetch], () => {
               type="button"
               :class="tileClass.row"
               :aria-label="`Open edge ${edge.name}, ${edge.connected ? 'connected' : 'offline'}, last seen ${age(edge.lastHeartbeatTime)}`"
-              @click="navigateFromTile(rootRef, `${edge.name}?type=${edge.type}`)"
+              @click="navigateFromTile(rootRef, edgeDetailPath(edge.type, edge.name))"
             >
               <span
                 :class="[tileClass.rowDot, edge.connected ? 'bg-success' : 'bg-danger']"

@@ -157,3 +157,17 @@ func TestCreateRaceConfirmationFailures(t *testing.T) {
 		})
 	}
 }
+
+func TestRepositoryRejectsNamesBeforeExternalCreation(t *testing.T) {
+	for _, name := range []string{"E2E Invalid Name!", ".", "..", "", strings.Repeat("a", 101), "a/b"} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { t.Error("invalid name reached GitHub") }))
+			defer srv.Close()
+			conn := &code.Connection{Spec: code.ConnectionSpec{Owner: "team", BaseURL: srv.URL}}
+			_, err := New().EnsureRepository(context.Background(), conn, backend.Credential{Token: "test"}, &code.Repository{Spec: code.RepositorySpec{Name: name}})
+			if !errors.Is(err, backend.ErrInvalidRepositoryName) {
+				t.Fatalf("expected invalid name error, got %v", err)
+			}
+		})
+	}
+}

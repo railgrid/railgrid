@@ -42,6 +42,9 @@ type Credential struct {
 	Token string
 }
 
+// ErrInvalidRepositoryName is a permanent input error; retry only after a spec change.
+var ErrInvalidRepositoryName = errors.New("invalid repository name")
+
 // ErrRepositoryIdentityConflict means an existing remote cannot be proven to belong to this resource.
 var ErrRepositoryIdentityConflict = errors.New("repository identity conflict")
 

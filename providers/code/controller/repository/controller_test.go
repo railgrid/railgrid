@@ -234,3 +234,44 @@ func TestIdentityConflictStopsPollingUntilSpecChanges(t *testing.T) {
 		t.Fatal("spec change did not recover")
 	}
 }
+
+func TestInvalidNameStopsPollingUntilSpecChanges(t *testing.T) {
+	f := newRepositoryFixture(t, false)
+	var initial codev1alpha1.Repository
+	if err := f.c.Get(f.ctx, client.ObjectKey{Name: "demo"}, &initial); err != nil {
+		t.Fatal(err)
+	}
+	initial.Spec.Name = "invalid name!"
+	if err := f.c.Update(f.ctx, &initial); err != nil {
+		t.Fatal(err)
+	}
+	f.backend.ensureErr = fmt.Errorf("backend: %w", backend.ErrInvalidRepositoryName)
+	for i := 0; i < 3; i++ {
+		result, err := f.r.Reconcile(f.ctx, f.req)
+		if err != nil || result.RequeueAfter != 0 {
+			t.Fatalf("result=%+v error=%v", result, err)
+		}
+	}
+	if f.backend.ensureCalls != 1 {
+		t.Fatalf("GitHub calls=%d", f.backend.ensureCalls)
+	}
+	if f.ready(t).Reason != "InvalidRepositoryName" {
+		t.Fatal("missing terminal conflict")
+	}
+	var repo codev1alpha1.Repository
+	if err := f.c.Get(f.ctx, client.ObjectKey{Name: "demo"}, &repo); err != nil {
+		t.Fatal(err)
+	}
+	repo.Generation++
+	repo.Spec.Name = "new-name"
+	if err := f.c.Update(f.ctx, &repo); err != nil {
+		t.Fatal(err)
+	}
+	f.backend.ensureErr = nil
+	if _, err := f.r.Reconcile(f.ctx, f.req); err != nil {
+		t.Fatal(err)
+	}
+	if f.backend.ensureCalls != 2 || f.ready(t).Status != metav1.ConditionTrue {
+		t.Fatal("spec change did not recover")
+	}
+}

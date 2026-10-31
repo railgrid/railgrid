@@ -1,5 +1,6 @@
+import { compileScript, parse } from '@vue/compiler-sfc'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { createRenderer, createSSRApp, nextTick, type Component } from 'vue'
+import { compile, createRenderer, createSSRApp, nextTick, type Component } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 
 const api = vi.hoisted(() => ({
@@ -47,6 +48,7 @@ import Wizard from './Wizard.vue'
 import Detail from './Detail.vue'
 import HarnessCard from './HarnessCard.vue'
 import DashboardTile from './DashboardTile.vue'
+import dashboardSource from './DashboardTile.vue?raw'
 import ActionMenu, { type ActionMenuItem } from './portalkit/ActionMenu.vue'
 import { edgeConnectPath } from './routes'
 
@@ -274,6 +276,32 @@ afterEach(() => {
 })
 
 describe('edge dashboard read state', () => {
+  it('navigates a dashboard row to the typed, encoded edge route', async () => {
+    api.listEdges.mockResolvedValue([{ ...edge, type: 'kubernetes', name: 'cluster/one' }])
+    // Vitest's node transform supplies SSR output. Compile the real template
+    // for the host renderer so the test clicks the actual row handler.
+    const { descriptor } = parse(dashboardSource)
+    const render = compile(descriptor.template!.content, { prefixIdentifiers: true, bindingMetadata: compileScript(descriptor, { id: 'dashboard-click' }).bindings })
+    const mounted = await mount({ ...DashboardTile, render }, { context: { tenant: 'tenant-a', user: { userId: 'user-a' } } })
+    try {
+      await flush()
+      const dispatchEvent = vi.fn()
+      mounted.instance.setupState.rootRef = { dispatchEvent }
+      const visit = (node: HostNode): HostNode | undefined => {
+        if (node.type === 'button' && String(node.props['aria-label']).startsWith('Open edge cluster/one,')) return node
+        for (const child of node.children) { const found = visit(child); if (found) return found }
+      }
+      const row = visit(mounted.root)
+      expect(row).toBeDefined()
+      ;(row!.props.onClick as () => void)()
+      expect(dispatchEvent).toHaveBeenCalledOnce()
+      const event = dispatchEvent.mock.calls[0][0] as CustomEvent
+      expect(event.type).toBe('railgrid-navigate')
+      expect(event.detail).toEqual({ path: 'edges/kubernetes/cluster%2Fone' })
+      expect(event.bubbles).toBe(true)
+    } finally { mounted.unmount() }
+  })
+
   it.each([{ snapshot: [] }, { snapshot: [edge] }])('retains the authoritative snapshot through a failed background read', async ({ snapshot }) => {
     api.listEdges.mockResolvedValue(snapshot)
     const mounted = await mount(DashboardTile, { context: { tenant: 'tenant-a', user: { userId: 'user-a' } } })

@@ -49,10 +49,8 @@ var crdGVR = schema.GroupVersionResource{
 // preserved so the apiserver doesn't reject the update.
 //
 // Callers pass a rest.Config scoped to the provider's own kcp
-// workspace (root:railgrid:providers:infrastructure). The hub's catalog
-// controller has already created that workspace + the APIExport by
-// the time the provider binary runs; we just need to land our
-// platform CRDs inside it.
+// workspace (root:railgrid:providers:infrastructure). The hub provisions the
+// workspace; provider bootstrap installs CRDs before publishing its APIExport.
 func CRDs(ctx context.Context, config *rest.Config) error {
 	log := klog.FromContext(ctx).WithName("install.crds")
 

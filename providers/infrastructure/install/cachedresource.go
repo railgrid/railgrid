@@ -18,9 +18,8 @@ package install
 // then projects every Template into every tenant workspace that has
 // the binding — read-only, no extra controller required on our side.
 //
-// PR A took care of putting templates.infrastructure.railgrid.ai
-// into APIExport.spec.resources (via install/apiexport.go). This
-// file is the second half: the CachedResource itself.
+// The generated APIExport declares Templates; bootstrap selects its virtual
+// storage reference. This file creates the backing CachedResource.
 //
 // Lives in install/ because it's a one-shot startup task. Idempotent;
 // safe to re-apply on every binary boot.
@@ -61,7 +60,7 @@ const CachedResourceTemplatesName = "publish-templates"
 // to every APIBound tenant workspace.
 //
 // Idempotent. Errors mean "binary boot didn't complete" — same
-// failure semantics as install.CRDs and install.PlatformSchemaInAPIExport.
+// failure semantics as install.CRDs and SDK bootstrap.
 func PlatformCachedResources(ctx context.Context, config *rest.Config) error {
 	log := klog.FromContext(ctx).WithName("install.cachedresource")
 	dyn, err := dynamic.NewForConfig(config)
@@ -125,8 +124,7 @@ func PlatformCachedResources(ctx context.Context, config *rest.Config) error {
 }
 
 // cachedResourceToUnstructured marshalls a typed CachedResource into
-// the map shape the dynamic client expects. Same approach the
-// install/apiexport.go helpers use.
+// the map shape the dynamic client expects.
 func cachedResourceToUnstructured(cr *cachev1alpha1.ClusterCachedResource) (*unstructured.Unstructured, error) {
 	data, err := json.Marshal(cr)
 	if err != nil {
