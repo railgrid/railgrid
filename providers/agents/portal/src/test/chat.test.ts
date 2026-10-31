@@ -2139,6 +2139,191 @@ describe('conversation model picker', () => {
     expect(getSessionModel).toHaveBeenCalledTimes(2)
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
     expect(picker(el).getAttribute('aria-label')).not.toContain('could not be loaded')
+    expect(text(el)).toContain('Chat model could not be saved')
+  })
+
+  it('refreshes inherited metadata after a pending explicit save fails and preserves its retry', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'old')
+    const explicitSave = deferred<any>()
+    const staleInheritedRead = deferred<any>()
+    const inherited = (selectedCredential: string, effortOptions: string[], defaultEffort = '') => ({
+      selectedCredential, modelCredential: '', effortOptions, defaultEffort, reasoningEffortByModel: {},
+    })
+    let oldReads = 0
+    const getSessionModel = vi.fn(async (_name: string, id: string) => {
+      if (id !== 'old') return inherited('deepseek', ['low', 'high'], 'high')
+      oldReads += 1
+      if (oldReads === 1) return inherited('openai', ['low'], '')
+      if (oldReads === 2) return inherited('claude', [], '')
+      if (oldReads === 3) return staleInheritedRead.promise
+      return inherited('deepseek', ['low', 'medium', 'high'], 'high')
+    })
+    const saveSessionModel = vi.fn()
+      .mockImplementationOnce(() => explicitSave.promise)
+      .mockImplementationOnce(async (_name: string, _session: string, preferences: any) => ({
+        ...preferences, selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '',
+      }))
+    const pendingAgentSave = deferred<unknown>()
+    const patchAgent = vi.fn(() => pendingAgentSave.promise)
+    const listAgents = vi.fn(async () => [agentFixture('scout', { backend: modelBackend('claude') })])
+    const { el, api, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('old', 'Old chat'), session('new', 'New chat')],
+      getSessionModel, saveSessionModel, patchAgent, listAgents,
+    })
+    await configureModels(store)
+    store.credentials.data.push(
+      { name: 'claude', provider: 'anthropic', model: 'claude-model' },
+      { name: 'gemini', provider: 'google', model: 'gemini-model' },
+      { name: 'deepseek', provider: 'deepseek', model: 'deepseek-model' },
+    )
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    await chooseModel(el, 'sol')
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', 'old', expect.objectContaining({ modelCredential: 'sol' }))
+    const agentSave = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: 'claude' },
+      apply: spec => { spec.backend = modelBackend('claude') },
+      success: 'Saved model settings',
+    })
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledTimes(1)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    explicitSave.reject(new Error('save failed'))
+    await settle(6)
+    expect(text(el)).toContain('Chat model could not be saved')
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: {} })
+    await agentSave
+    await settle(8)
+    expect(getSessionModel.mock.calls.filter(([, id]) => id === 'old')).toHaveLength(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('claude')
+    picker(el).click()
+    await settle()
+    expect(document.querySelector('[data-testid="reasoning-effort-slider"]')).toBeNull()
+    expect(text(el)).toContain('Chat model could not be saved')
+
+    store.agents.data[0].spec.backend = modelBackend('gemini')
+    store.dispatchEvent(new Event('change'))
+    await settle(6)
+    expect(getSessionModel.mock.calls.filter(([, id]) => id === 'old')).toHaveLength(3)
+    store.agents.data[0].spec.backend = modelBackend('deepseek')
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    staleInheritedRead.resolve(inherited('gemini', ['low'], ''))
+    await settle(10)
+    expect(getSessionModel.mock.calls.filter(([, id]) => id === 'old')).toHaveLength(4)
+    expect(picker(el).getAttribute('aria-label')).toContain('deepseek')
+    expect(text(el)).toContain('Chat model could not be saved')
+    expect(patchAgent).toHaveBeenCalledTimes(1)
+
+    picker(el).click()
+    await settle()
+    const retry = [...document.querySelectorAll<HTMLButtonElement>('.k-ai-model-reasoning-picker__recovery-actions button')]
+      .find(button => text(button) === 'Retry')
+    expect(retry).toBeDefined()
+    retry!.click()
+    await settle(8)
+    expect(saveSessionModel).toHaveBeenNthCalledWith(2, 'scout', 'old', expect.objectContaining({
+      selectedCredential: 'sol', modelCredential: 'sol',
+    }))
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    expect(text(el)).not.toContain('Chat model could not be saved')
+
+    await chooseSession(el, 'New chat')
+    await settle(8)
+    expect(getSessionModel).toHaveBeenCalledWith('scout', 'new')
+    expect(picker(el).getAttribute('aria-label')).toContain('deepseek')
+    expect(saveSessionModel.mock.calls.map(([, id]) => id)).toEqual(['old', 'old'])
+  })
+
+  it('ignores a late failed model save after switching chats', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'first')
+    const pendingSave = deferred<any>()
+    const inherited = (selectedCredential: string) => ({
+      selectedCredential, modelCredential: '', effortOptions: [], defaultEffort: '', reasoningEffortByModel: {},
+    })
+    let defaultCredential = 'openai'
+    const getSessionModel = vi.fn(async () => inherited(defaultCredential))
+    const saveSessionModel = vi.fn(() => pendingSave.promise)
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('first', 'First chat'), session('second', 'Second chat')],
+      getSessionModel, saveSessionModel,
+    })
+    await configureModels(store)
+    store.credentials.data.push({ name: 'claude', provider: 'anthropic', model: 'claude-model' })
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    await chooseModel(el, 'sol')
+    defaultCredential = 'claude'
+    store.agents.data[0].spec.backend = modelBackend('claude')
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    await chooseSession(el, 'Second chat')
+    expect(picker(el).getAttribute('aria-label')).toContain('claude')
+    pendingSave.reject(new Error('old chat save failed'))
+    await settle(8)
+    expect(text(el)).not.toContain('Chat model could not be saved')
+    expect(picker(el).getAttribute('aria-label')).toContain('claude')
+    expect(saveSessionModel).toHaveBeenCalledTimes(1)
+
+    await chooseSession(el, 'First chat')
+    await settle(8)
+    expect(getSessionModel).toHaveBeenCalledWith('scout', 'first')
+    expect(picker(el).getAttribute('aria-label')).toContain('claude')
+    expect(saveSessionModel).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the failed explicit choice retryable when its inherited refresh also fails', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'old')
+    const explicitSave = deferred<any>()
+    const inherited = (selectedCredential: string) => ({
+      selectedCredential, modelCredential: '', effortOptions: [], defaultEffort: '', reasoningEffortByModel: {},
+    })
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce(inherited('openai'))
+      .mockRejectedValueOnce(new Error('refresh failed'))
+    const saveSessionModel = vi.fn()
+      .mockImplementationOnce(() => explicitSave.promise)
+      .mockImplementationOnce(async (_name: string, _session: string, preferences: any) => ({
+        ...preferences, selectedCredential: 'sol', modelCredential: 'sol', effortOptions: [], defaultEffort: '',
+      }))
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('old', 'Old chat')],
+      getSessionModel, saveSessionModel,
+    })
+    await configureModels(store)
+    store.credentials.data.push({ name: 'claude', provider: 'anthropic', model: 'claude-model' })
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    await chooseModel(el, 'sol')
+    store.agents.data[0].spec.backend = modelBackend('claude')
+    store.dispatchEvent(new Event('change'))
+    explicitSave.reject(new Error('save failed'))
+    await settle(8)
+
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('claude')
+    expect(text(el)).toContain('Chat model could not be saved')
+    const retry = [...el.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => text(button).includes('Chat model could not be saved'))
+    expect(retry).toBeDefined()
+    retry!.click()
+    await settle(8)
+
+    expect(saveSessionModel).toHaveBeenNthCalledWith(2, 'scout', 'old', expect.objectContaining({
+      selectedCredential: 'sol', modelCredential: 'sol',
+    }))
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
     expect(text(el)).not.toContain('Chat model could not be saved')
   })
 

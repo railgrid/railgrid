@@ -223,6 +223,64 @@ function modelRequestKey(name: string, session: string, api: ApiClient): string 
   }, name, session)
 }
 
+async function refreshInheritedModelPreferences(
+  name: string,
+  session: string,
+  authority: ReturnType<typeof captureAuthority>,
+  current: () => boolean,
+): Promise<void> {
+  // The failed explicit choice is still available through retryModelPreferences,
+  // while the displayed model follows the Agent's current inherited default.
+  modelPreferences.value = null
+  while (current()) {
+    const inheritedCredential = agentModelCredential(authority.store.agent(name))
+    const currentForDefault = () => current()
+      && agentModelCredential(authority.store.agent(name)) === inheritedCredential
+    let result: SessionModelPreferences | undefined
+    try {
+      result = await serializeChatModelRequest(
+        modelRequestKey(name, session, authority.api),
+        currentForDefault,
+        async () => {
+          await waitForAgentConfigSaves(authority.store, name)
+          return currentForDefault() ? authority.api.getSessionModel(name, session) : undefined
+        },
+      )
+    } catch {
+      if (!current()) return
+      if (!currentForDefault()) continue
+      return
+    }
+    if (!current()) return
+    if (!currentForDefault()) continue
+    if (result) modelPreferences.value = result
+    return
+  }
+}
+
+function hasFailedExplicitModelChoice(): boolean {
+  return Boolean(modelSaveError.value && retryModelPreferences?.modelCredential && !modelPreferences.value?.modelCredential)
+}
+
+function refreshFailedExplicitModelChoice(): Promise<void> {
+  const serial = ++modelSaveSerial
+  const authority = captureAuthority()
+  const name = props.name
+  const session = sessionID.value
+  const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
+  modelSaving.value = true
+  return (async () => {
+    try {
+      await refreshInheritedModelPreferences(name, session, authority, current)
+    } finally {
+      if (current()) {
+        modelSaving.value = false
+        maybeAutoSend()
+      }
+    }
+  })()
+}
+
 function hasStoredSessionModel(preferences: SessionModelPreferences): boolean {
   return Boolean(preferences.modelCredential) || Object.keys(preferences.reasoningEffortByModel || {}).length > 0
 }
@@ -232,6 +290,7 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
   const authority = captureAuthority()
   const name = props.name
   const session = sessionID.value
+  const inheritedCredentialAtRequest = agentModelCredential(authority.store.agent(name))
   if (!session || !isModelBackend.value) {
     modelPreferences.value = null
     modelSaving.value = false
@@ -265,6 +324,11 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
     if (current()) {
       modelPreferences.value = previousPreferences
       modelSaveError.value = preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+      const failedExplicitChoice = Boolean(preferences?.modelCredential && !previousPreferences?.modelCredential)
+      const inheritedCredentialNow = agentModelCredential(authority.store.agent(name))
+      if (failedExplicitChoice && inheritedCredentialNow !== inheritedCredentialAtRequest) {
+        await refreshInheritedModelPreferences(name, session, authority, current)
+      }
     }
   } finally {
     if (current()) {
@@ -282,6 +346,10 @@ watch([sessionID, isModelBackend, inheritedModelCredential], ([session, modelBac
     const preloaded = bootstrappedSessionModel
     if (preloaded && !preloaded.preferences.modelCredential && preloaded.inheritedCredential !== inheritedCredential) {
       bootstrappedSessionModel = null
+    }
+    if (hasFailedExplicitModelChoice()) {
+      if (session && modelBackend && !modelSaving.value) modelPending = refreshFailedExplicitModelChoice()
+      return
     }
     const hasExplicitChatModel = Boolean(modelPreferences.value?.modelCredential)
       || (modelSaving.value && Boolean(retryModelPreferences?.modelCredential))
