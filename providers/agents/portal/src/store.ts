@@ -60,13 +60,16 @@ const CREATE_COLLECTION_KEYS: CreateCollectionKey[] = ['agents', 'connections', 
 // ServerEvent mirrors one /api/events push. `run` and `inbox` carry an id;
 // `schedule` and `trigger` (a background job fired) carry the source's name and
 // the run it started; `webhook-delivery` carries the webhook, the sink row's id
-// and its rollup outcome, plus what each routed trigger made of it.
+// and its rollup outcome, plus what each routed trigger made of it. The
+// `session_title` event identifies the owning agent and session explicitly.
 export interface ServerEvent {
   type: string
   data: {
     id?: string
     name?: string
     agent?: string
+    sessionID?: string
+    title?: string
     phase?: string
     state?: string
     runID?: string

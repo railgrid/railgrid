@@ -20,8 +20,10 @@ import (
 // MemoryStore is a non-durable in-process Store for development and tests. It
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
+	sessionModels      map[string]memorySessionModel
 	mu                 sync.Mutex
 	messages           map[string][]Message         // key: scope|session
+	sessionTitles      map[string]sessionTitle      // key: scope|session
 	runs               map[string]Run               // key: scope|runID
 	memories           map[string]Memory            // key: scope|memoryID
 	inbox              map[string]InboxItem         // key: scope|itemID
@@ -40,10 +42,17 @@ type MemoryStore struct {
 	runScopes map[string]Scope // key: scope|runID
 }
 
+type memorySessionModel struct {
+	settings  SessionModelSettings
+	updatedAt time.Time
+}
+
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
+		sessionModels:      map[string]memorySessionModel{},
 		messages:           map[string][]Message{},
+		sessionTitles:      map[string]sessionTitle{},
 		runs:               map[string]Run{},
 		memories:           map[string]Memory{},
 		inbox:              map[string]InboxItem{},
@@ -212,6 +221,39 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		m.messages[target] = append(m.messages[target], rows...)
 		delete(m.messages, key)
 	}
+	for key, title := range m.sessionTitles {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		first, hasFirst := firstPersistedUserMessage(m.messages[target])
+		current, hasCurrent := m.sessionTitles[target]
+		if hasFirst {
+			switch {
+			case hasCurrent && current.FirstMessageID == first.ID:
+				if current.Title == "" && title.FirstMessageID == first.ID && title.Title != "" {
+					current.Title = title.Title
+					m.sessionTitles[target] = current
+				}
+			case title.FirstMessageID == first.ID:
+				m.sessionTitles[target] = title
+			case hasCurrent && current.FirstMessageID != first.ID:
+				delete(m.sessionTitles, target)
+			}
+		} else {
+			delete(m.sessionTitles, target)
+		}
+		delete(m.sessionTitles, key)
+	}
+	for key, title := range m.sessionTitles {
+		if !hasPrefix(key, toPrefix) {
+			continue
+		}
+		first, ok := firstPersistedUserMessage(m.messages[key])
+		if !ok || title.FirstMessageID != first.ID {
+			delete(m.sessionTitles, key)
+		}
+	}
 	for key, run := range m.runs {
 		if !hasPrefix(key, fromPrefix) {
 			continue
@@ -273,6 +315,16 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 			m.usage[target] = usage
 		}
 		delete(m.usage, key)
+	}
+	for key, settings := range m.sessionModels {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if _, ok := m.sessionModels[target]; !ok {
+			m.sessionModels[target] = settings
+		}
+		delete(m.sessionModels, key)
 	}
 	for key, summary := range m.summaries {
 		if !hasPrefix(key, fromPrefix) {
@@ -372,6 +424,16 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.usage {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionModels {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionTitles {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -658,14 +720,47 @@ func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([
 				break
 			}
 		}
+		if first, ok := firstPersistedUserMessage(cp); ok {
+			if title, exists := m.sessionTitles[k]; exists && title.FirstMessageID == first.ID {
+				s.Title = title.Title
+			}
+		}
 		out = append(out, s)
 	}
-	// Most-recently-active first, then apply the limit.
-	sort.Slice(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })
-	if len(out) > limit {
-		out = out[:limit]
+	for k, preference := range m.sessionModels {
+		if !strings.HasPrefix(k, prefix) || len(m.messages[k]) > 0 {
+			continue
+		}
+		updatedAt := preference.updatedAt.UTC()
+		out = append(out, Session{
+			ID:           strings.TrimPrefix(k, prefix),
+			CreatedAt:    updatedAt,
+			LastActivity: updatedAt,
+		})
 	}
-	return out, nil
+	// Bound transcript sessions and preference-only drafts independently so
+	// neither category can crowd the other out. Each category stays ordered by
+	// most recent activity, and transcript sessions are returned first.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastActivity.Equal(out[j].LastActivity) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].LastActivity.After(out[j].LastActivity)
+	})
+	transcripts := make([]Session, 0, limit)
+	drafts := make([]Session, 0, limit)
+	for _, session := range out {
+		if session.MessageCount == 0 {
+			if len(drafts) < limit {
+				drafts = append(drafts, session)
+			}
+			continue
+		}
+		if len(transcripts) < limit {
+			transcripts = append(transcripts, session)
+		}
+	}
+	return append(transcripts, drafts...), nil
 }
 
 func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID string) error {
@@ -677,9 +772,11 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	delete(m.messages, sessionKey(scope, sessionID))
+	delete(m.sessionTitles, sessionKey(scope, sessionID))
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.summaries, sessionKey(scope, sessionID))
+	delete(m.sessionModels, sessionKey(scope, sessionID))
 	// The harness session belongs to the conversation that was just wiped. A
 	// "/new" that kept it would chain the next turn onto a harness session
 	// holding the transcript the user asked to be rid of.
@@ -826,6 +923,13 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	}
 	if old, ok := m.runs[key]; ok && old.HarnessSettings != nil {
 		run.HarnessSettings = old.HarnessSettings
+	}
+	if old, ok := m.runs[key]; ok && old.ModelSettings != nil {
+		run.ModelSettings = old.ModelSettings
+	}
+	if run.ModelSettings != nil {
+		dup := *run.ModelSettings
+		run.ModelSettings = &dup
 	}
 	if run.HarnessSettings != nil {
 		dup := *run.HarnessSettings
@@ -1400,6 +1504,16 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.messages, k)
 		}
 	}
+	for k := range m.sessionModels {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionModels, k)
+		}
+	}
+	for k := range m.sessionTitles {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionTitles, k)
+		}
+	}
 	for k := range m.summaries {
 		if hasPrefix(k, msgPrefix) {
 			delete(m.summaries, k)
@@ -1475,6 +1589,19 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 			continue
 		}
 		m.messages[k] = kept
+	}
+	// A generated title is tied to the first persisted user row. If deleting
+	// this run removed that row, drop the claim so a reused session ID cannot
+	// keep the old title slot forever.
+	titlePrefix := tenantKey(scope) + "|" + scope.AgentName + "|"
+	for k, title := range m.sessionTitles {
+		if !hasPrefix(k, titlePrefix) {
+			continue
+		}
+		first, ok := firstPersistedUserMessage(m.messages[k])
+		if !ok || title.FirstMessageID != first.ID {
+			delete(m.sessionTitles, k)
+		}
 	}
 	for k, calls := range m.toolCalls {
 		kept := calls[:0]

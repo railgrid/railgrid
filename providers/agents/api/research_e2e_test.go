@@ -100,6 +100,9 @@ func newScriptedLLM(t *testing.T, subtasks []string) *scriptedLLM {
 		var kind string
 		var reply sseReply
 		switch {
+		case strings.Contains(text, compactionSystemPrompt):
+			kind = "compaction"
+			reply = textReply("The earlier conversation established the project context.")
 		case isWorker && s.workerNeverGivesUp:
 			kind = "worker-fetch"
 			reply = toolCallReply("wf", "web_fetch", `{"url":"http://127.0.0.1:9/blocked"}`)
@@ -369,6 +372,128 @@ func TestResearchRunEndToEnd(t *testing.T) {
 			t.Fatalf("the run took %s; a three-worker fan-out against a local server should be far faster", elapsed)
 		}
 	})
+}
+
+func TestChatModelOverrideDoesNotLeakIntoSpawnedWorkerOrResume(t *testing.T) {
+	ctx := context.Background()
+	model := newScriptedLLM(t, []string{"inspect the project"})
+	model.workerFetches = true
+
+	s := &Server{store: store.NewMemoryStore(), engine: engine.New(), events: newEventBus(), liveRuns: newRunRegistry()}
+	scope := store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "researcher"}
+	agent := researchAgent(true)
+	// There are no explicit background or compaction mappings. Workers use the
+	// configured chat credential A, while the chat and its compaction fallback
+	// use this conversation's override B.
+	agent.Spec.Backend.Model.Credentials = map[string]string{"chat": "original"}
+	agent.Spec.Autonomy = agentsv1alpha1.AutonomyAsk
+	agent.Spec.Tools.Interactive.RequireApproval = []string{"web_fetch"}
+	creds := credsFor(model.srv.URL, map[string]string{
+		"original": "gpt-4o",
+		"chosen":   "o4-mini",
+	})
+	// Put enough old transcript in the session to force compaction under B's
+	// context budget. A's smaller window cannot accept this as the compaction
+	// input, so resolving compaction from the original Agent would fail.
+	priorHistory := []struct{ role, content string }{
+		{role: "user", content: strings.Repeat("prior evidence ", 45000)},
+		{role: "assistant", content: "A prior answer."},
+		{role: "user", content: "A second earlier request."},
+		{role: "assistant", content: "A second earlier answer."},
+		{role: "user", content: "The most recent earlier request."},
+		{role: "assistant", content: "The most recent earlier answer."},
+	}
+	base := time.Now().UTC().Add(-time.Hour)
+	for i, message := range priorHistory {
+		if err := s.store.AppendMessage(ctx, scope, store.Message{
+			ID: fmt.Sprintf("history-%d", i), AgentName: agent.Name, SessionID: "chat",
+			Role: message.role, Content: message.content, CreatedAt: base.Add(time.Duration(i) * time.Minute),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.store.PutSessionModelSettings(ctx, scope, "chat", store.SessionModelSettings{ModelCredential: "chosen"}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := s.executeTask(ctx, taskRun{
+		Creds: creds, CR: fakeCR{}, Scope: scope, Agent: agent, HubToken: "test-user-token",
+		SessionID: "chat", Task: "Research the state of X thoroughly.",
+		Trigger: agentsv1alpha1.RunTriggerChat,
+	})
+	if err != nil {
+		t.Fatalf("research run failed: %v", err)
+	}
+	for _, kind := range []string{"parent-plan", "parent-join", "parent-final"} {
+		for _, got := range model.modelsFor(kind) {
+			if got != "o4-mini" {
+				t.Fatalf("parent %s call used %q, want chat override o4-mini", kind, got)
+			}
+		}
+	}
+	if got := model.modelsFor("compaction"); len(got) == 0 {
+		t.Fatal("parent did not compact its oversized session history")
+	} else {
+		for _, used := range got {
+			if used != "o4-mini" {
+				t.Fatalf("parent compaction model calls = %v, want chat override fallback o4-mini", got)
+			}
+		}
+	}
+	if got := model.modelsFor("worker-fetch"); len(got) != 1 || got[0] != "gpt-4o" {
+		t.Fatalf("fresh worker model calls = %v, want default credential A (gpt-4o)", got)
+	}
+
+	children, err := s.store.QueryRuns(ctx, scope, store.RunQuery{ParentRunID: result.RunID, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children.Items) != 1 {
+		t.Fatalf("child runs = %d, want one spawned worker", len(children.Items))
+	}
+	child, err := s.store.GetRun(ctx, scope, children.Items[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.Phase != store.RunPhasePendingApproval {
+		t.Fatalf("worker phase = %s, want its web_fetch approval checkpoint", child.Phase)
+	}
+	if child.ModelSettings != nil {
+		t.Fatalf("spawned worker inherited chat model settings: %+v", child.ModelSettings)
+	}
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(child.Checkpoint, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Worker == nil {
+		t.Fatal("worker checkpoint did not preserve its worker purpose and limits")
+	}
+
+	// Use the normal resume path, which reloads the configured Agent CR and the
+	// worker state from the checkpoint. Its background purpose must still resolve
+	// to credential A after the chat turn selected B.
+	s.resumeRun(ctx, scope, child.ID, runAccess{Creds: creds, CR: fixedAgentCR{agent: agent}}, resumeIntent{
+		Approval: true, Approve: true, FromPhase: store.RunPhasePendingApproval,
+	})
+	resumed, err := s.store.GetRun(ctx, scope, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Phase != store.RunPhaseSucceeded {
+		t.Fatalf("resumed worker phase = %s, want Succeeded", resumed.Phase)
+	}
+	if got := model.modelsFor("worker-final"); len(got) != 1 || got[0] != "gpt-4o" {
+		t.Fatalf("resumed worker model calls = %v, want original background default gpt-4o", got)
+	}
+}
+
+type fixedAgentCR struct {
+	fakeCR
+	agent *agentsv1alpha1.Agent
+}
+
+func (f fixedAgentCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) {
+	return f.agent.DeepCopy(), nil
 }
 
 // A worker whose tool call fails must still report, and the pass must still

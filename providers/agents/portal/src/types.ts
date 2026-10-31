@@ -952,13 +952,16 @@ export interface SavedCaptureCitation {
 // SessionMeta mirrors the backend store.Session summary for the session picker.
 export interface SessionMeta {
   id: string
+  /** Generated asynchronously from the first user message, when available. */
+  title?: string
   preview?: string
   messageCount: number
   createdAt: string
   lastActivity: string
 }
 
-export const sessionLabel = (s: SessionMeta): string => (s.preview && s.preview.trim()) || 'New chat'
+export const sessionLabel = (s: SessionMeta): string =>
+  s.title?.trim() || s.preview?.trim() || 'New chat'
 
 // ---- models dashboard ------------------------------------------------------
 

@@ -94,8 +94,11 @@ test('authority changes clear transient layout and settings state', () => {
   overlay.select('scout')
   overlay.setDockVisible(true)
   overlay.setSettingsOpen(true)
+  overlay.setSidePanel(440, true)
   tenant.workspaceUUID = 'workspace-b'
   assert.equal(overlay.dockVisible, false)
+  assert.equal(overlay.sidePanelWidth, 0)
+  assert.equal(overlay.sidePanelFullscreen, false)
   assert.equal(overlay.settingsOpen, false)
   assert.equal(overlay.open, false)
   assert.equal(overlay.selectedAgent, null)

@@ -160,12 +160,12 @@ const mainClass = computed(() => [
 
 const assistantOverlay = useAgentOverlayStore()
 const mainStyle = computed(() => {
-  // Full-bleed workbenches own their viewport; the assistant floats over them.
-  // Shell padding would shrink the workbench and expose a strip of shell background.
-  if (gettingStartedFocused.value || layoutProps.fullBleed) return undefined
-  if (assistantOverlay.dockVisible) return { paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
-  if (!mainPaddingBottom.value) return undefined
-  return { paddingBottom: mainPaddingBottom.value }
+  if (gettingStartedFocused.value) return undefined
+  // Reserve chat space only in the content track; navigation owns the outer edge.
+  const space = { marginRight: `${assistantOverlay.sidePanelWidth}px` }
+  if (layoutProps.fullBleed) return space
+  if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
+  return { ...space, paddingBottom: mainPaddingBottom.value }
 })
 
 const slotClass = computed(() => [
@@ -282,7 +282,7 @@ const {
   onDragStart,
   onDragHandleKeydown,
   resetDockPos,
-} = useNavigationDock(sidebarExpanded)
+} = useNavigationDock(sidebarExpanded, computed(() => gettingStartedFocused.value ? 0 : assistantOverlay.sidePanelWidth))
 
 const dockHintId = 'railgrid-dock-hint'
 const dockHintText = 'Drag to an edge · Shift+Arrow to dock · Enter to float'
@@ -401,16 +401,16 @@ const contextStatus = computed<ContextStatus>(() => {
     <span :id="dockHintId" class="sr-only">{{ dockHintText }}</span>
     <!-- Edge snap hint overlays -->
     <Transition name="fade">
-      <div v-if="!gettingStartedFocused && nearEdge === 'left'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 left-0 z-[60] rounded-r-xl bg-accent/10 border-r border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'left'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="absolute inset-y-0 left-0 z-[60] rounded-r-xl bg-accent/10 border-r border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="!gettingStartedFocused && nearEdge === 'right'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="fixed inset-y-0 right-0 z-[60] rounded-l-xl bg-accent/10 border-l border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'right'" :class="sidebarExpanded ? 'w-52' : 'w-14'" class="absolute inset-y-0 right-0 z-[60] rounded-l-xl bg-accent/10 border-l border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="!gettingStartedFocused && nearEdge === 'top'" class="fixed inset-x-0 top-0 z-[60] h-11 rounded-b-xl bg-accent/10 border-b border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'top'" class="absolute inset-x-0 top-0 z-[60] h-11 rounded-b-xl bg-accent/10 border-b border-accent/40" />
     </Transition>
     <Transition name="fade">
-      <div v-if="!gettingStartedFocused && nearEdge === 'bottom'" class="fixed inset-x-0 bottom-0 z-[60] h-11 rounded-t-xl bg-accent/10 border-t border-accent/40" />
+      <div v-if="!gettingStartedFocused && nearEdge === 'bottom'" class="absolute inset-x-0 bottom-0 z-[60] h-11 rounded-t-xl bg-accent/10 border-t border-accent/40" />
     </Transition>
 
     <!-- VERTICAL SIDEBAR (left or right) -->
@@ -951,6 +951,7 @@ const contextStatus = computed<ContextStatus>(() => {
     <!-- Main content -->
     <main
       class="railgrid-shell-main"
+      :inert="!gettingStartedFocused && assistantOverlay.sidePanelFullscreen"
       :class="mainClass"
       :style="mainStyle"
     >
@@ -1020,7 +1021,7 @@ const contextStatus = computed<ContextStatus>(() => {
       }"
       :style="floatStyle"
     >
-      <div role="navigation" aria-label="Primary navigation" class="shell-floating-chrome island flex min-w-0 max-w-[calc(100vw-2rem)] items-center gap-1 overflow-hidden rounded-xl px-2 py-1.5">
+      <div role="navigation" aria-label="Primary navigation" class="shell-floating-chrome island flex min-w-0 max-w-full items-center gap-1 overflow-hidden rounded-xl px-2 py-1.5">
         <button
           type="button"
           class="shell-drag-handle island-nav flex h-8 w-5 shrink-0 touch-none cursor-grab items-center justify-center rounded-lg border-0 bg-transparent p-0 text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"

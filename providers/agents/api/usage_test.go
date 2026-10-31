@@ -16,19 +16,22 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	dynamicfake "k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 
 	"github.com/railgrid/provider-sdk/dataplane"
-	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/store"
-	"github.com/railgrid/provider-agents/tenant/tenanttest"
 )
 
 func TestUsageRollupAttributesHarnessRunByModel(t *testing.T) {
@@ -111,15 +114,39 @@ func TestUsageRollupReportsUnpricedRuns(t *testing.T) {
 }
 
 func runUsageRollup(t *testing.T, backend map[string]any, supplied ...store.Run) usageResponse {
+	return runUsageRollupWithCredentialReview(t, backend, nil, supplied...)
+}
+
+func runUsageRollupWithCredentialReview(
+	t *testing.T,
+	backend map[string]any,
+	review func(name string) (bool, error),
+	supplied ...store.Run,
+) usageResponse {
 	t.Helper()
-	workspace := tenanttest.New()
-	workspace.Add(unstructuredAgent(backend))
-	workspaceServer := httptest.NewServer(workspace)
-	t.Cleanup(workspaceServer.Close)
-	provider, err := tenantaccess.NewDynamicClient(workspaceServer.URL, "c1", "provider-token", false)
-	if err != nil {
-		t.Fatalf("create provider client: %v", err)
-	}
+	provider := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), unstructuredAgent(backend))
+	provider.PrependReactor("create", "subjectaccessreviews", func(action ktesting.Action) (bool, runtime.Object, error) {
+		object, ok := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		if !ok {
+			return true, nil, errors.New("SAR request was not unstructured")
+		}
+		name, _, err := unstructured.NestedString(object.Object, "spec", "resourceAttributes", "name")
+		if err != nil {
+			return true, nil, err
+		}
+		allowed := true
+		if review != nil {
+			allowed, err = review(name)
+			if err != nil {
+				return true, nil, err
+			}
+		}
+		return true, &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "authorization.k8s.io/v1",
+			"kind":       "SubjectAccessReview",
+			"status":     map[string]any{"allowed": allowed},
+		}}, nil
+	})
 
 	scope := store.Scope{OrgUUID: "org1", WorkspaceUUID: "ws1", AgentName: "coder"}
 	st := store.NewMemoryStore()
@@ -129,13 +156,28 @@ func runUsageRollup(t *testing.T, backend map[string]any, supplied ...store.Run)
 		InputTokens: 12, OutputTokens: 34, USDMicros: 56,
 		CreatedAt: now, UpdatedAt: now, StartedAt: &now, FinishedAt: &now,
 	}
-	if len(supplied) > 0 {
-		run.InputTokens = supplied[0].InputTokens
-		run.OutputTokens = supplied[0].OutputTokens
-		run.USDMicros = supplied[0].USDMicros
+	if len(supplied) == 0 {
+		supplied = []store.Run{run}
 	}
-	if err := st.SaveRun(t.Context(), scope, run); err != nil {
-		t.Fatal(err)
+	for i, input := range supplied {
+		item := run
+		item.ID = "run-" + strconv.Itoa(i)
+		item.ModelSettings = input.ModelSettings
+		item.InputTokens = input.InputTokens
+		item.OutputTokens = input.OutputTokens
+		item.USDMicros = input.USDMicros
+		if input.Phase != "" {
+			item.Phase = input.Phase
+		}
+		if !input.CreatedAt.IsZero() {
+			item.CreatedAt = input.CreatedAt
+		}
+		if input.StartedAt != nil && input.FinishedAt != nil {
+			item.StartedAt, item.FinishedAt = input.StartedAt, input.FinishedAt
+		}
+		if err := st.SaveRun(t.Context(), scope, item); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	s := &Server{store: st}
@@ -166,4 +208,81 @@ func unstructuredAgent(backend map[string]any) *unstructured.Unstructured {
 		"metadata":   map[string]any{"name": "coder"},
 		"spec":       map[string]any{"backend": backend},
 	}}
+}
+
+func TestUsageRollupUsesPinnedChatModel(t *testing.T) {
+	backend := map[string]any{"type": "model", "model": map[string]any{"credentials": map[string]any{"chat": "default-a"}}}
+	start := time.Now().UTC()
+	finish := start.Add(2 * time.Second)
+	for _, test := range []struct {
+		name     string
+		settings *store.ModelSettings
+		want     string
+	}{
+		{name: "chat override", settings: &store.ModelSettings{ModelCredential: "chat-b"}, want: "chat-b"},
+		{name: "legacy run", want: "default-a"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := runUsageRollup(t, backend, store.Run{ModelSettings: test.settings, InputTokens: 12, OutputTokens: 34, StartedAt: &start, FinishedAt: &finish})
+			if len(got.ByModel) != 1 || got.ByModel[0].Key != test.want {
+				t.Fatalf("model buckets = %+v, want %s", got.ByModel, test.want)
+			}
+			bucket := got.ByModel[0]
+			if bucket.InputTokens != 12 || bucket.OutputTokens != 34 || bucket.LatencyP50MS != 2000 || bucket.LatencyP95MS != 2000 {
+				t.Fatalf("usage and latency must follow pinned model: %+v", bucket)
+			}
+		})
+	}
+}
+
+func TestUsageRollupHidesUnauthorizedPinnedCredentials(t *testing.T) {
+	backend := map[string]any{"type": "model", "model": map[string]any{"credentials": map[string]any{"chat": "default-a"}}}
+	var reviewCounts = map[string]int{}
+	got := runUsageRollupWithCredentialReview(t, backend, func(name string) (bool, error) {
+		reviewCounts[name]++
+		switch name {
+		case "chat-allowed":
+			return true, nil
+		case "chat-denied":
+			return false, nil
+		case "chat-review-error":
+			return false, errors.New("review service unavailable")
+		default:
+			return false, nil
+		}
+	},
+		store.Run{ModelSettings: &store.ModelSettings{ModelCredential: "chat-allowed"}, InputTokens: 1},
+		store.Run{ModelSettings: &store.ModelSettings{ModelCredential: "chat-denied"}, InputTokens: 2},
+		store.Run{ModelSettings: &store.ModelSettings{ModelCredential: "chat-denied"}, InputTokens: 3},
+		store.Run{ModelSettings: &store.ModelSettings{ModelCredential: "chat-review-error"}, InputTokens: 4},
+		store.Run{ModelSettings: &store.ModelSettings{ModelCredential: "default-a"}, InputTokens: 5},
+		store.Run{InputTokens: 6},
+	)
+
+	if got.Total.Runs != 6 || got.Total.InputTokens != 21 {
+		t.Fatalf("authorization filtering changed aggregate totals: %+v", got.Total)
+	}
+	byModel := map[string]usageBucket{}
+	for _, bucket := range got.ByModel {
+		byModel[bucket.Key] = bucket
+	}
+	if len(byModel) != 3 {
+		t.Fatalf("unexpected model buckets: %+v", got.ByModel)
+	}
+	if byModel["chat-allowed"].Runs != 1 || byModel["chat-allowed"].InputTokens != 1 {
+		t.Fatalf("allowed credential was not attributed by name: %+v", byModel["chat-allowed"])
+	}
+	if byModel["default-a"].Runs != 2 || byModel["default-a"].InputTokens != 11 {
+		t.Fatalf("Agent default and legacy runs should keep established attribution: %+v", byModel["default-a"])
+	}
+	restricted := byModel["(restricted model)"]
+	if restricted.Runs != 3 || restricted.InputTokens != 9 {
+		t.Fatalf("denied/error credentials should share a redacted bucket: %+v", restricted)
+	}
+	if reviewCounts["chat-allowed"] != 1 || reviewCounts["chat-denied"] != 1 || reviewCounts["chat-review-error"] != 1 {
+		t.Fatalf("credential SARs were not cached by credential: %v", reviewCounts)
+	}
+	if _, reviewed := reviewCounts["default-a"]; reviewed {
+		t.Fatalf("the Agent's configured default should not require a second credential review: %v", reviewCounts)
+	}
 }

@@ -31,6 +31,7 @@ import (
 	"sync"
 	"time"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
@@ -38,6 +39,7 @@ import (
 	"github.com/railgrid/provider-sdk/tenantaccess"
 
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
 	"github.com/railgrid/provider-agents/tools"
@@ -142,6 +144,10 @@ type Server struct {
 	// Nil without a hub URL; identity then carries no org/workspace scope.
 	workspaces workspaceLookup
 	started    time.Time
+	// sessionTitleModelFactory is a test seam for the isolated, tool-free
+	// metadata generation call. Production resolves the exact credential pinned
+	// in the chat run's ModelSettings snapshot.
+	sessionTitleModelFactory func(context.Context, llm.CredentialResolver, string) (einomodel.BaseChatModel, string, error)
 }
 
 // New constructs the server and opens the durable store: Postgres when a

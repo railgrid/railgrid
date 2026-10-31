@@ -88,6 +88,7 @@ describe('public shell authority rotation', () => {
     let streamSignal: AbortSignal | undefined
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
+    oldApi.getSessionModel = vi.fn().mockResolvedValue({ selectedCredential: 'main', effortOptions: [], defaultEffort: '' })
     oldApi.listSessions = vi.fn().mockResolvedValue([])
     oldApi.listMessagePage = vi.fn().mockResolvedValue({ items: [] })
     oldApi.listRuns = vi.fn().mockResolvedValue({ items: [], nextCursor: '' })

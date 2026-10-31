@@ -177,6 +177,7 @@ type Run struct {
 	// coordinates.
 	Backend         string           `json:"backend,omitempty"`
 	HarnessSettings *HarnessSettings `json:"harnessSettings,omitempty"`
+	ModelSettings   *ModelSettings   `json:"modelSettings,omitempty"`
 	// AttemptID is the runner attempt one harness-backed run IS. It is the run's
 	// own id today, but it is stored rather than assumed: the coordinate a
 	// cancel, an inspect and a resume all address must survive a change of that
@@ -725,6 +726,7 @@ type ScopedRun struct {
 // backs the portal's session picker.
 type Session struct {
 	ID           string    `json:"id"`
+	Title        string    `json:"title,omitempty"`
 	Preview      string    `json:"preview,omitempty"`
 	MessageCount int       `json:"messageCount"`
 	CreatedAt    time.Time `json:"createdAt"`
@@ -763,10 +765,19 @@ type Store interface {
 
 	// Transcript.
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
+	// ClaimSessionTitle grants the one title-generation attempt for a session,
+	// but only when firstUserMessageID is still its first persisted user message.
+	ClaimSessionTitle(ctx context.Context, scope Scope, sessionID, firstUserMessageID string) (bool, error)
+	// SetSessionTitleIfEmpty stores a generated title only for the matching live
+	// first-message claim. It never replaces an existing title.
+	SetSessionTitleIfEmpty(ctx context.Context, scope Scope, sessionID, firstUserMessageID, title string) (bool, error)
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
-	// ListSessions returns the agent's chat sessions, most-recently-active first.
+	// ListSessions returns up to limit transcript sessions followed by up to
+	// limit preference-only sessions, newest activity first within each group.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
+	GetSessionModelSettings(context.Context, Scope, string) (SessionModelSettings, error)
+	PutSessionModelSettings(context.Context, Scope, string, SessionModelSettings) error
 	// DeleteSession wipes one session's transcript (the "/new" channel command),
 	// including its summary and native harness session. It retains a harness
 	// epoch tombstone so reusing the user-facing ID cannot replay an attempt the

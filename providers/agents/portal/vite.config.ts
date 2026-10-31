@@ -13,6 +13,23 @@ import { createMcpAppProxyDocument } from './src/mcpAppHost'
 //   3. Place lazy chunks under /assets/ so the hub's UI proxy routes them here.
 export default defineConfig({
   plugins: [vue(), {
+    // The host loads only main.js. Include Vue SFC styles in that same
+    // integrity-pinned script, including styles for teleported popovers.
+    name: 'agents-inline-component-styles',
+    generateBundle: {
+      order: 'post',
+      handler(_options, bundle) {
+        const entry = bundle['main.js']
+        if (entry?.type !== 'chunk') return
+        const css = Object.values(bundle)
+          .filter(asset => asset.type === 'asset' && asset.fileName.endsWith('.css'))
+          .map(asset => asset.type === 'asset' ? String(asset.source) : '')
+          .join('\n')
+        if (!css) return
+        entry.code = `(()=>{const id='railgrid-agents-component-css';if(!document.getElementById(id)){const style=document.createElement('style');style.id=id;style.textContent=${JSON.stringify(css)};document.head.appendChild(style)}})();\n${entry.code}`
+      },
+    },
+  }, {
     name: 'agents-mcp-app-sandbox-document',
     generateBundle() {
       this.emitFile({ type: 'asset', fileName: 'mcp-app-sandbox.html', source: createMcpAppProxyDocument() })

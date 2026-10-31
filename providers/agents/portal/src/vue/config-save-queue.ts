@@ -15,6 +15,7 @@ interface ConfigSave {
 interface AgentSaveQueue {
   operations: ConfigSave[]
   processing: boolean
+  idleWaiters: Set<() => void>
 }
 
 // A Config route may unmount while its writes are still in flight, then mount
@@ -31,10 +32,17 @@ function queueFor(store: AppStore, name: string): AgentSaveQueue {
   }
   let queue = byAgent.get(name)
   if (!queue) {
-    queue = { operations: [], processing: false }
+    queue = { operations: [], processing: false, idleWaiters: new Set() }
     byAgent.set(name, queue)
   }
   return queue
+}
+
+/** Wait until this agent's queued writes and their authoritative reload settle. */
+export function waitForAgentConfigSaves(store: AppStore, name: string): Promise<void> {
+  const queue = queues.get(store)?.get(name)
+  if (!queue || (!queue.processing && queue.operations.length === 0)) return Promise.resolve()
+  return new Promise(resolve => queue.idleWaiters.add(resolve))
 }
 
 function cloneSpec(spec: Agent['spec']): Agent['spec'] {
@@ -55,13 +63,14 @@ export function queueAgentConfigSave(options: {
   if (!source) return Promise.resolve(false)
 
   const before = cloneSpec(source.spec)
-  apply(source.spec)
-  store.dispatchEvent(new Event('change'))
-
   const queue = queueFor(store, name)
   const result = new Promise<boolean>(resolve => {
     queue.operations.push({ api, patch, apply, before, success, resolve })
   })
+  // Publish the queue entry before the optimistic change. Synchronous store
+  // watchers can then wait for this save before reading server-derived state.
+  apply(source.spec)
+  store.dispatchEvent(new Event('change'))
   void drain(store, name, queue)
   return result
 }
@@ -124,7 +133,12 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
     }
   } finally {
     queue.processing = false
-    if (queue.operations.length) void drain(store, name, queue)
+    if (queue.operations.length) {
+      void drain(store, name, queue)
+    } else {
+      for (const resolve of queue.idleWaiters) resolve()
+      queue.idleWaiters.clear()
+    }
   }
 }
 

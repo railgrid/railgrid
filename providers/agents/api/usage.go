@@ -20,6 +20,7 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // usageBucket is one aggregated row (per agent, per model, or the grand total).
@@ -61,10 +62,9 @@ type usageResponse struct {
 // rollups over a rolling window (default 30 days, ?days= to override, capped at
 // 90). Everything is derived from the runs table — no separate telemetry store
 // — so it powers both the cost dashboard and the latency/error panel. Per-model
-// attribution uses the agent's CURRENT primary model
-// (spec.backend.model.credentials.chat), since
-// runs are recorded per agent; this is exact unless the agent's model changed
-// mid-window. Harness agents use their explicit harness model when set; a
+// attribution uses the run's pinned chat credential when available, falling back
+// to the Agent's current primary model for legacy runs. Harness agents use their
+// explicit harness model when set; a
 // harness that delegates model choice to its own default is attributed to its
 // configured credential identity.
 //
@@ -99,11 +99,18 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 	// agent → primary model, for per-model attribution. Best-effort: an agent
 	// with no assigned model is bucketed under "(unassigned)".
 	agentModel := map[string]string{}
+	agentDefaultCredential := map[string]string{}
 	harnessAgent := false
 	if a, aerr := c.Agents().Get(r.Context(), agentName, metav1.GetOptions{}); aerr == nil {
 		agentModel[a.Name] = usageModelKey(a)
+		if a.Spec.Harness() == nil {
+			agentDefaultCredential[a.Name] = strings.TrimSpace(a.Spec.ModelCredentialFor(llm.PurposeChat))
+		}
 		harnessAgent = a.Spec.Harness() != nil
 	}
+	gate, _ := gateFrom(r.Context())
+	caller, callerPresent := dataplane.ProxiedIdentityFrom(r.Context())
+	credentialVisibility := make(map[string]bool)
 
 	total := usageBucket{Key: "total"}
 	byAgent := map[string]*usageBucket{}
@@ -119,6 +126,32 @@ func (s *Server) usageRollup(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		modelKey := agentModel[run.AgentName]
+		if run.ModelSettings != nil && run.ModelSettings.ModelCredential != "" {
+			pinned := run.ModelSettings.ModelCredential
+			if pinned == agentDefaultCredential[run.AgentName] {
+				// Reading the Agent already exposes its configured default. Preserve
+				// that established behavior without an additional credential SAR.
+				modelKey = pinned
+			} else if gate != nil && gate.provider != nil && callerPresent && caller.User != "" {
+				allowed, reviewed := credentialVisibility[pinned]
+				if !reviewed {
+					allowed, _ = dataplane.Authorize(r.Context(), gate.provider, caller, dataplane.ResourceAttributes{
+						Group: agentsv1alpha1.GroupName, Version: agentsv1alpha1.Version,
+						Resource: "modelcredentials", Name: pinned, Verb: "get",
+					})
+					// An authorization error is treated like a denial for aggregation:
+					// totals remain available without exposing the credential name.
+					credentialVisibility[pinned] = allowed
+				}
+				if allowed {
+					modelKey = pinned
+				} else {
+					modelKey = "(restricted model)"
+				}
+			} else {
+				modelKey = "(restricted model)"
+			}
+		}
 		if modelKey == "" {
 			modelKey = "(unassigned)"
 		}

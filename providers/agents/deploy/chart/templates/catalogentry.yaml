@@ -47,7 +47,7 @@ spec:
             description: "List the agent's chat sessions."
             readOnly: true
           - name: session
-            description: "Delete one chat session's transcript."
+            description: "Read or update chat model preferences, or delete the session transcript."
           - name: messages
             description: "Read one chat session's transcript."
             readOnly: true

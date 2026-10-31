@@ -2,11 +2,10 @@
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
-import { ApiError, type ApiClient } from '../api'
+import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { ApiError, type ApiClient, type SessionModelPreferences } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
-import AIModelPicker from '../agentkit/AIModelPicker.vue'
-import { queueAgentConfigSave } from '../vue/config-save-queue'
+import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
 import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
@@ -26,6 +25,8 @@ import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentAr
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
 import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
 import { InlineAppLoadCoordinator } from '../vue/inline-app-loads'
+import { waitForAgentConfigSaves } from '../vue/config-save-queue'
+import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
 import McpAppViewer from '../components/McpAppViewer.vue'
@@ -73,6 +74,7 @@ const runtime = useAgentsRuntime()
 const inlineAppGeneration = ref(0)
 watch([() => props.store, () => props.api, () => props.name, () => runtime?.authorityEpoch.value], () => {
   clearArtifactState()
+  if (mounted) bindServer(props.store)
 }, { flush: 'sync' })
 const artifactPanelOpen = ref(false)
 watch(artifactPanelOpen, open => {
@@ -95,6 +97,9 @@ let artifactDetailSerial = 0
 const messages = ref<ChatMessage[]>([])
 const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
+// A title event can arrive while a session-list read is in flight. Keep the
+// latest event value over that read so an older snapshot cannot undo it.
+const sessionTitleOverrides = ref(new Map<string, string>())
 const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
@@ -122,28 +127,9 @@ watch(sessionID, () => {
 }, { flush: 'sync' })
 const draft = ref('')
 const chatHost = runtime?.host
-const compactThreadsOpen = ref(false)
-const threadQuery = ref('')
-const threadSearch = ref<HTMLInputElement | null>(null)
-const compactThreads = computed(() => conversationItems.value.filter(thread =>
-  (thread.title || 'New chat').toLocaleLowerCase().includes(threadQuery.value.trim().toLocaleLowerCase())))
-function setCompactThreads(open: boolean): void {
-  if (!props.compact) return
-  compactThreadsOpen.value = open
-  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open } }))
-  void nextTick(() => open ? threadSearch.value?.focus() : composer.value?.focus())
-}
+function focusComposer(): void { if (props.compact) void nextTick(() => composer.value?.focus()) }
 function engageOverlay(): void {
   if (props.compact) chatHost?.value?.dispatchEvent(new Event('railgrid-overlay-engage'))
-}
-watch(() => props.composerOnly, only => {
-  if (!only) return
-  compactThreadsOpen.value = false
-  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open: false } }))
-})
-function toggleCompactThreads(): void {
-  setCompactThreads(!compactThreadsOpen.value)
-  if (compactThreadsOpen.value) void loadSessions()
 }
 function handoffKey(): string {
   const authority = props.api.contextAuthority()
@@ -168,6 +154,9 @@ const composer = ref<HTMLTextAreaElement | null>(null)
 let mounted = false
 let initializedFor = ''
 let boundStore: AppStore | null = null
+let boundAuthority: ReturnType<typeof captureAuthority> | null = null
+let livenessEverConnected = props.store.live
+let firstConnectCatchupPending = false
 let abort: AbortController | null = null
 const detachedStarts = new Set<AbortController>()
 let liveRunID = ''
@@ -196,55 +185,240 @@ const agent = computed(() => {
   revision.value
   return props.store.agent(props.name)
 })
+const inheritedModelCredential = computed(() => {
+  revision.value
+  return agentModelCredential(agent.value)
+})
 // A harness-backed agent has no chat credential and needs none: its turns run
 // on the machine's harness, which brings its own model. "Can this agent answer?"
 // is therefore the backend question, not the credential one.
 const hasModel = computed(() => {
   revision.value
-  return agentHarnessBacked(agent.value) || Boolean(agentModelCredential(agent.value))
+  return agentHarnessBacked(agent.value) || Boolean(selectedModel.value)
 })
-// Changing this selection updates the agent, not just this conversation.
+// Preferences belong to the active conversation, never to the Agent spec.
 const modelSaving = ref(false)
 const modelSaveError = ref('')
+const modelPreferences = ref<SessionModelPreferences | null>(null)
 let modelSaveSerial = 0
+let modelPending: Promise<void> = Promise.resolve()
+let retryModelPreferences: SessionModelPreferences | undefined
+let bootstrappedSessionModel: { name: string; api: ApiClient; session: string; inheritedCredential: string; preferences: SessionModelPreferences } | null = null
 const isModelBackend = computed(() => {
   revision.value
   return Boolean(agent.value) && !agentHarnessBacked(agent.value)
 })
+const selectedModel = computed(() => modelPreferences.value?.selectedCredential ?? agentModelCredential(agent.value))
+const selectedEffort = computed(() => modelPreferences.value?.reasoningEffortByModel?.[selectedModel.value] || '')
+const effortLabel = (value: string) => value === 'xhigh' ? 'Extra high' : value ? value[0].toUpperCase() + value.slice(1) : ''
+const effortOptions = computed(() => (modelPreferences.value?.effortOptions || []).map(value => ({ value, label: effortLabel(value) })))
+const invalidEffort = computed(() => Boolean(selectedEffort.value && !effortOptions.value.some(option => option.value === selectedEffort.value)))
 const modelChoices = computed(() => {
   revision.value
   return props.store.chatCredentials().map(credential => ({
     id: credential.name, name: credential.name, model: credential.model || 'Provider default',
   }))
 })
-const modelSwitchDisabled = computed(() => modelSaving.value || streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
 
-async function selectModelCredential(credential: string): Promise<void> {
-  if (!isModelBackend.value || modelSwitchDisabled.value || credential === agentModelCredential(agent.value) || !modelChoices.value.some(model => model.id === credential)) return
-  const authority = captureAuthority()
-  const name = props.name
-  const serial = ++modelSaveSerial
-  modelSaving.value = true
-  modelSaveError.value = ''
-  const saved = await queueAgentConfigSave({
-    store: props.store, api: props.api, name,
-    patch: { modelCredential: credential },
-    apply: spec => {
-      const backend = spec.backend || (spec.backend = {})
-      backend.model = { ...backend.model, credentials: { ...backend.model?.credentials, chat: credential } }
-    },
-    success: 'Default model saved.',
-  })
-  if (!mounted || serial !== modelSaveSerial || props.name !== name || !authorityIsCurrent(authority)) return
-  modelSaving.value = false
-  if (!saved) modelSaveError.value = 'Model could not be saved. Try again.'
-  else maybeAutoSend()
+function modelRequestKey(name: string, session: string, api: ApiClient): string {
+  const scope = api.contextAuthority?.()
+  return chatModelRequestKey({
+    tenantKey: scope?.tenantKey ?? api.tenantKey(),
+    userKey: scope?.userKey ?? null,
+  }, name, session)
 }
 
+async function refreshInheritedModelPreferences(
+  name: string,
+  session: string,
+  authority: ReturnType<typeof captureAuthority>,
+  current: () => boolean,
+): Promise<void> {
+  // The failed explicit choice is still available through retryModelPreferences,
+  // while the displayed model follows the Agent's current inherited default.
+  modelPreferences.value = null
+  while (current()) {
+    const inheritedCredential = agentModelCredential(authority.store.agent(name))
+    const currentForDefault = () => current()
+      && agentModelCredential(authority.store.agent(name)) === inheritedCredential
+    let result: SessionModelPreferences | undefined
+    try {
+      result = await serializeChatModelRequest(
+        modelRequestKey(name, session, authority.api),
+        currentForDefault,
+        async () => {
+          await waitForAgentConfigSaves(authority.store, name)
+          return currentForDefault() ? authority.api.getSessionModel(name, session) : undefined
+        },
+      )
+    } catch {
+      if (!current()) return
+      if (!currentForDefault()) continue
+      return
+    }
+    if (!current()) return
+    if (!currentForDefault()) continue
+    if (result) modelPreferences.value = result
+    return
+  }
+}
+
+function hasFailedExplicitModelChoice(): boolean {
+  return Boolean(modelSaveError.value && retryModelPreferences?.modelCredential && !modelPreferences.value?.modelCredential)
+}
+
+function refreshFailedExplicitModelChoice(): Promise<void> {
+  const serial = ++modelSaveSerial
+  const authority = captureAuthority()
+  const name = props.name
+  const session = sessionID.value
+  const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
+  modelSaving.value = true
+  return (async () => {
+    try {
+      await refreshInheritedModelPreferences(name, session, authority, current)
+    } finally {
+      if (current()) {
+        modelSaving.value = false
+        maybeAutoSend()
+      }
+    }
+  })()
+}
+
+function hasStoredSessionModel(preferences: SessionModelPreferences): boolean {
+  return Boolean(preferences.modelCredential) || Object.keys(preferences.reasoningEffortByModel || {}).length > 0
+}
+
+async function updateChatModel(preferences?: SessionModelPreferences): Promise<void> {
+  const serial = ++modelSaveSerial
+  const authority = captureAuthority()
+  const name = props.name
+  const session = sessionID.value
+  const inheritedCredentialAtRequest = agentModelCredential(authority.store.agent(name))
+  if (!session || !isModelBackend.value) {
+    modelPreferences.value = null
+    modelSaving.value = false
+    modelSaveError.value = ''
+    return
+  }
+  const previousPreferences = modelPreferences.value
+  // Keep the selected effort visible while it is saved, as App Studio does.
+  // A model switch still waits for the server's capability metadata.
+  if (preferences && preferences.selectedCredential === previousPreferences?.selectedCredential) {
+    modelPreferences.value = preferences
+  }
+  modelSaving.value = true
+  modelSaveError.value = ''
+  retryModelPreferences = preferences
+  const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
+  const sessionListAuthorityIsCurrent = () => mounted && name === props.name && authorityIsCurrent(authority)
+  try {
+    const result = await serializeChatModelRequest(
+      modelRequestKey(name, session, authority.api),
+      current,
+      async () => {
+        if (preferences) return authority.api.saveSessionModel(name, session, preferences)
+        await waitForAgentConfigSaves(authority.store, name)
+        return current() ? authority.api.getSessionModel(name, session) : undefined
+      },
+    )
+    if (!result) return
+    if (!current()) {
+      // The preference write may have committed after the user moved to a new
+      // chat. Refresh this Agent's list under the captured authority so that
+      // preference-only sessions remain visible without changing the new
+      // chat's model state.
+      if (preferences && sessionListAuthorityIsCurrent()) void loadSessions(name, authority.api)
+      return
+    }
+    modelPreferences.value = result
+    retryModelPreferences = undefined
+    if (preferences) void loadSessions(name, authority.api)
+  } catch (error) {
+    const quotaReached = Boolean(preferences && error instanceof ApiError && error.status === 429)
+    if (quotaReached && sessionListAuthorityIsCurrent()) void loadSessions(name, authority.api)
+    if (current()) {
+      modelPreferences.value = previousPreferences
+      modelSaveError.value = quotaReached
+        ? 'Chat limit reached. Delete an unused chat, then retry.'
+        : preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+      const failedExplicitChoice = Boolean(preferences?.modelCredential && !previousPreferences?.modelCredential)
+      const inheritedCredentialNow = agentModelCredential(authority.store.agent(name))
+      if (failedExplicitChoice && inheritedCredentialNow !== inheritedCredentialAtRequest) {
+        await refreshInheritedModelPreferences(name, session, authority, current)
+      }
+    }
+  } finally {
+    if (current()) {
+      modelSaving.value = false
+      maybeAutoSend()
+    }
+  }
+}
+
+watch([sessionID, isModelBackend, inheritedModelCredential], ([session, modelBackend, inheritedCredential], [previousSession, previousModelBackend, previousInheritedCredential]) => {
+  const onlyInheritedDefaultChanged = session === previousSession
+    && modelBackend === previousModelBackend
+    && inheritedCredential !== previousInheritedCredential
+  if (onlyInheritedDefaultChanged) {
+    const preloaded = bootstrappedSessionModel
+    if (preloaded && !preloaded.preferences.modelCredential && preloaded.inheritedCredential !== inheritedCredential) {
+      bootstrappedSessionModel = null
+    }
+    if (hasFailedExplicitModelChoice()) {
+      if (session && modelBackend && !modelSaving.value) modelPending = refreshFailedExplicitModelChoice()
+      return
+    }
+    const hasExplicitChatModel = Boolean(modelPreferences.value?.modelCredential)
+      || (modelSaving.value && Boolean(retryModelPreferences?.modelCredential))
+    if (session && modelBackend && !hasExplicitChatModel) modelPending = updateChatModel()
+    return
+  }
+
+  const preloaded = bootstrappedSessionModel
+  const preloadedDefaultIsCurrent = Boolean(preloaded?.preferences.modelCredential)
+    || preloaded?.inheritedCredential === inheritedCredential
+  if (preloaded && preloadedDefaultIsCurrent && preloaded.name === props.name && preloaded.api === props.api && preloaded.session === sessionID.value) {
+    bootstrappedSessionModel = null
+    modelPreferences.value = preloaded.preferences
+    retryModelPreferences = undefined
+    modelPending = Promise.resolve()
+    return
+  }
+  bootstrappedSessionModel = null
+  modelPreferences.value = null
+  retryModelPreferences = undefined
+  modelPending = updateChatModel()
+}, { flush: 'sync' })
+
+function selectModelCredential(credential: string): void {
+  const canRepairUnloadedPreference = !modelPreferences.value || Boolean(modelSaveError.value)
+  if (!isModelBackend.value || modelSwitchDisabled.value || (credential === selectedModel.value && !canRepairUnloadedPreference) || !modelChoices.value.some(model => model.id === credential)) return
+  modelPending = updateChatModel({
+    ...modelPreferences.value, selectedCredential: credential, modelCredential: credential,
+    effortOptions: [], defaultEffort: '',
+  })
+}
+function selectReasoningEffort(effort: string): void {
+  if (modelSwitchDisabled.value || !modelPreferences.value) return
+  modelPending = updateChatModel({
+    ...modelPreferences.value,
+    reasoningEffortByModel: { ...modelPreferences.value.reasoningEffortByModel, [selectedModel.value]: effort },
+  })
+}
+function retryChatModel(): void { modelPending = updateChatModel(retryModelPreferences) }
+
 const sessionOptions = computed(() => {
-  const list = sessions.value.slice()
+  const list = sessions.value.map(session => {
+    const title = sessionTitleOverrides.value.get(session.id)
+    return title ? { ...session, title } : session
+  })
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
-    list.unshift({ id: sessionID.value, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
+    const title = sessionTitleOverrides.value.get(sessionID.value)
+    list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
   }
   return list
 })
@@ -761,6 +935,15 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
     return false
   } finally {
     if (serial === sessionReadSerial && contextIsCurrent(name, api)) sessionsLoading.value = false
+    if (serial === sessionReadSerial && firstConnectCatchupPending && mounted && boundStore === props.store && contextIsCurrent(name, api)) {
+      firstConnectCatchupPending = false
+      // The first stream connection opened during a session read. Refresh once
+      // after that snapshot settles because its response may predate the title
+      // commit that the non-replayable stream could not deliver.
+      queueMicrotask(() => {
+        if (mounted && boundStore === props.store && contextIsCurrent(name, api)) void loadSessions(name, api)
+      })
+    }
   }
 }
 
@@ -973,7 +1156,9 @@ async function openAgent(): Promise<void> {
   const api = props.api
   const serial = ++openSerial
   const ownership = chatOwnershipSerial
+  bootstrappedSessionModel = null
   initializedFor = ''
+  firstConnectCatchupPending = false
   clearDetachedStarts()
   invalidateStream()
   messageReadSerial += 1
@@ -981,6 +1166,7 @@ async function openAgent(): Promise<void> {
   messages.value = []
   messagesHasSnapshot.value = false
   sessions.value = []
+  sessionTitleOverrides.value = new Map()
   sessionsError.value = null
   sessionsHasSnapshot.value = false
   sessionsLoading.value = false
@@ -1004,8 +1190,46 @@ async function openAgent(): Promise<void> {
     initializedFor = name
     return
   }
-  if (!wanted || (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted))) {
+  if (!wanted) {
     wanted = sessions.value[0]?.id || newSessionID()
+  } else if (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted)) {
+    if (isModelBackend.value) {
+      const authority = captureAuthority()
+      const contextCurrent = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
+      let preferenceProbeComplete = false
+      while (!preferenceProbeComplete) {
+        if (!contextCurrent()) return
+        const inheritedCredential = agentModelCredential(props.store.agent(name))
+        const current = () => contextCurrent() && agentModelCredential(props.store.agent(name)) === inheritedCredential
+        try {
+          const preferences = await serializeChatModelRequest(
+            modelRequestKey(name, wanted, api),
+            current,
+            async () => {
+              await waitForAgentConfigSaves(authority.store, name)
+              return current() ? api.getSessionModel(name, wanted) : undefined
+            },
+          )
+          if (!contextCurrent()) return
+          if (!current()) continue
+          if (preferences && hasStoredSessionModel(preferences)) {
+            bootstrappedSessionModel = { name, api, session: wanted, inheritedCredential, preferences }
+          } else {
+            wanted = sessions.value[0]?.id || newSessionID()
+          }
+          preferenceProbeComplete = true
+        } catch {
+          if (!contextCurrent()) return
+          if (!current()) continue
+          // A failed preferences probe cannot prove that this remembered chat
+          // has no saved choices. Keep it selected; the regular hydration path
+          // retries and exposes its retry control if that read also fails.
+          preferenceProbeComplete = true
+        }
+      }
+    } else {
+      wanted = sessions.value[0]?.id || newSessionID()
+    }
   }
   sessionID.value = wanted
   remember(wanted, name, api)
@@ -1016,7 +1240,7 @@ async function openAgent(): Promise<void> {
 }
 
 function maybeAutoSend(): void {
-  if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value) return
+  if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value || modelSaveError.value) return
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
   resetApprovalRecovery()
@@ -1028,7 +1252,8 @@ function maybeAutoSend(): void {
   messagesHasSnapshot.value = true
   resetOrphanRead()
   draft.value = text
-  void send()
+  const session = sessionID.value
+  void modelPending.then(() => { if (sessionID.value === session) void send() })
 }
 
 function patchMessage(id: string, patch: Partial<ChatMessage>): void {
@@ -1154,9 +1379,9 @@ async function cancelLiveRun(
 }
 
 async function send(): Promise<void> {
-  engageOverlay()
   const draftText = draft.value.trim()
-  if (!draftText || streaming.value || modelSaving.value || !hasModel.value) return
+  if (!draftText || streaming.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value) return
+  engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
   // or authorization. Persisting it in the message keeps reloads auditable.
   const text = props.pageContext
@@ -1628,13 +1853,13 @@ function newChat(): void {
 
 function selectConversation(id: string): void {
   closeMobileRail()
-  setCompactThreads(false)
+  focusComposer()
   void switchSession(id)
 }
 
 function createConversation(): void {
   closeMobileRail()
-  setCompactThreads(false)
+  focusComposer()
   newChat()
 }
 
@@ -1675,6 +1900,9 @@ async function deleteSession(id = sessionID.value): Promise<void> {
     // the rail in its retrying state.
     sessionsLoading.value = false
     sessions.value = sessions.value.filter(session => session.id !== id)
+    const titleOverrides = new Map(sessionTitleOverrides.value)
+    titleOverrides.delete(id)
+    sessionTitleOverrides.value = titleOverrides
     if (sessionID.value !== id) return
     resetApprovalRecovery()
     messageReadSerial += 1
@@ -1691,8 +1919,44 @@ async function deleteSession(id = sessionID.value): Promise<void> {
   }
 }
 
+function applySessionTitleEvent(detail: ServerEvent): void {
+  const authority = boundAuthority
+  const eventAgent = detail.data.agent
+  const eventSessionID = detail.data.sessionID
+  const rawTitle = detail.data.title
+  const title = typeof rawTitle === 'string' ? rawTitle.trim() : ''
+  const runtimeAuthorityIsCurrent = !runtime || (
+    authority !== null &&
+    runtime.store.value === authority.store &&
+    runtime.api.value === authority.api &&
+    runtime.authorityEpoch.value === authority.epoch &&
+    runtime.host.value === authority.host &&
+    Boolean(authority.host?.isConnected)
+  )
+  if (
+    detail.type !== 'session_title' ||
+    typeof eventAgent !== 'string' || !eventAgent || eventAgent !== props.name ||
+    typeof eventSessionID !== 'string' || !eventSessionID || !title ||
+    boundStore !== props.store ||
+    !contextIsCurrent(eventAgent, props.api) ||
+    !authority || authority.store !== props.store || authority.api !== props.api || !runtimeAuthorityIsCurrent
+  ) return
+
+  // Events may arrive for another saved thread. If an event names a session
+  // that is not in this agent's list, only the active session's picker
+  // fallback is eligible for an update.
+  if (!sessions.value.some(session => session.id === eventSessionID) && sessionID.value !== eventSessionID) return
+  const overrides = new Map(sessionTitleOverrides.value)
+  overrides.set(eventSessionID, title)
+  sessionTitleOverrides.value = overrides
+}
+
 function onServerEvent(event: Event): void {
   const detail = (event as CustomEvent<ServerEvent>).detail
+  if (detail.type === 'session_title') {
+    applySessionTitleEvent(detail)
+    return
+  }
   if (detail.type !== 'run' || !detail.data.id) return
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
@@ -1753,9 +2017,13 @@ function onServerEvent(event: Event): void {
 }
 
 function bindServer(store: AppStore | null): void {
-  if (boundStore === store) return
+  if (boundStore === store) {
+    boundAuthority = store ? captureAuthority() : null
+    return
+  }
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = store
+  boundAuthority = store ? captureAuthority() : null
   boundStore?.addEventListener('server', onServerEvent as EventListener)
 }
 
@@ -1779,7 +2047,7 @@ function resizeComposer(): void {
     const element = composer.value
     if (!element) return
     element.style.height = 'auto'
-    element.style.height = `${Math.min(element.scrollHeight, 180)}px`
+    element.style.height = `${Math.min(element.scrollHeight, props.composerOnly ? 32 : 180)}px`
   })
 }
 
@@ -1803,6 +2071,35 @@ watch([() => props.store, () => props.api, () => props.name], () => {
   bindServer(props.store)
   void openAgent()
 }, { flush: 'post' })
+watch(
+  [
+    () => props.store,
+    () => {
+      revision.value
+      return props.store.live
+    },
+  ],
+  ([store, live], [previousStore, previousLive]) => {
+    if (store !== previousStore) {
+      livenessEverConnected = live
+      return
+    }
+    if (previousLive === false && live === true) {
+      const currentChatIsBound = mounted && initializedFor === props.name && boundStore === store
+      if (livenessEverConnected && currentChatIsBound) {
+        void loadSessions(props.name, props.api)
+      } else if (!livenessEverConnected && mounted && boundStore === store) {
+        // The event bus does not replay a title published before the first
+        // stream connection. Catch up from persistence whether the initial
+        // session snapshot has settled or is still in flight.
+        if (sessionsLoading.value) firstConnectCatchupPending = true
+        else if (initializedFor === props.name) void loadSessions(props.name, props.api)
+      }
+      livenessEverConnected = true
+    }
+  },
+  { flush: 'post' },
+)
 watch(() => conversationRail.value?.expanded, (expanded) => {
   if (expanded !== false || !mobileRailOpen.value || !isNarrowViewport()) return
   mobileRailOpen.value = false
@@ -1819,11 +2116,12 @@ watch(log, element => {
 }, { flush: 'post' })
 watch(messages, scrollToBottom)
 watch(draft, resizeComposer)
+watch(() => props.composerOnly, resizeComposer)
 
 onMounted(() => {
   mounted = true
   chatHost?.value?.addEventListener('railgrid-chat-handoff', offerDraft)
-  chatHost?.value?.addEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
+  chatHost?.value?.addEventListener('railgrid-overlay-focus-composer', focusComposer)
   bindServer(props.store)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
@@ -1832,7 +2130,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearArtifactState()
   chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
-  chatHost?.value?.removeEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
+  chatHost?.value?.removeEventListener('railgrid-overlay-focus-composer', focusComposer)
   logResizeObserver?.disconnect()
   clearDetachedStarts()
   mounted = false
@@ -1899,7 +2197,7 @@ defineExpose({
 
     <AIConversationLayout class="agents-chat" aria-label="Agent conversation">
       <div
-        v-show="!compact"
+        v-if="!compact"
         class="agents-conversation-rail-shell"
         :class="{ 'is-open': mobileRailOpen }"
         @keydown.capture.esc="handleRailShellEscape"
@@ -1928,24 +2226,7 @@ defineExpose({
         />
       </div>
 
-      <section v-if="compact && compactThreadsOpen" class="agents-overlay-threads" aria-label="Agent threads">
-        <header class="agents-overlay-threads__heading">
-          <h2>Threads</h2>
-          <button class="k-btn k-btn--primary agents-overlay-threads__new" type="button" :disabled="!!selectingSessionID" @click="createConversation"><SquarePen :size="14" aria-hidden="true" /> New chat</button>
-        </header>
-        <input ref="threadSearch" v-model="threadQuery" class="k-input" type="search" aria-label="Search threads" placeholder="Search threads" />
-        <div v-if="sessionsError" role="alert">Could not refresh threads. <button class="k-btn k-btn--text" type="button" :disabled="sessionsLoading" @click="loadSessions()">Retry</button></div>
-        <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading threads…</p>
-        <ul v-else-if="compactThreads.length" class="agents-overlay-threads__list">
-          <li v-for="thread in compactThreads" :key="thread.id">
-            <button class="k-btn k-btn--text agents-overlay-threads__item" type="button" :aria-current="thread.id === sessionID ? 'true' : undefined" :title="thread.title" :disabled="!!selectingSessionID" @click="selectConversation(thread.id)">
-              <MessageSquare :size="15" aria-hidden="true" /><span>{{ thread.title || 'New chat' }}</span><small v-if="thread.id === sessionID">Current</small>
-            </button>
-          </li>
-        </ul>
-        <p v-else>No threads match your search.</p>
-      </section>
-      <div v-show="!compactThreadsOpen" class="agents-chat-main">
+      <div class="agents-chat-main">
         <div class="agents-chat-workspace" :class="{ 'agents-chat-workspace--inspection': artifactPanelOpen }">
           <section class="agents-conversation-column" aria-label="Conversation and composer">
         <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
@@ -2080,7 +2361,7 @@ defineExpose({
         </div>
 
         <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
-          <AIComposer :compact="compact" class="agents-composer-surface" :disabled="!hasModel">
+          <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!hasModel">
             <template #editor>
               <textarea
                 ref="composer"
@@ -2091,7 +2372,6 @@ defineExpose({
                 :aria-describedby="domID('agents-composer-help')"
                 :title="composerHelp"
                 :placeholder="compact ? `Ask ${name}…` : `Message ${name}…`"
-                @focus="engageOverlay"
                 :disabled="!hasModel"
                 @input="resizeComposer"
                 @compositionstart="onCompositionStart"
@@ -2099,16 +2379,23 @@ defineExpose({
                 @keydown="onComposerKeydown"
               ></textarea>
               <div v-if="isModelBackend && !composerOnly" class="k-ai-composer__controls">
-                <div class="k-ai-composer__actions k-ai-composer__actions--fill">
-                  <AIModelPicker
+                <div class="k-ai-composer__actions">
+                  <AIModelReasoningPicker
                     class="agents-chat-model-picker"
-                    description="Sets the default model for this agent."
                     :models="modelChoices"
-                    :selectedID="agentModelCredential(agent)"
-                    :disabled="modelSwitchDisabled"
-                    require-selection
-                    contained
+                    :selectedID="selectedModel"
+                    :effort="selectedEffort"
+                    :effort-options="effortOptions"
+                    :default-effort-label="effortLabel(modelPreferences?.defaultEffort || '')"
+                    :disabled="modelInteractionLocked"
+                    :model-selection-disabled="modelSwitchDisabled"
+                    :saving="modelSaving"
+                    :save-error="modelSaveError"
+                    :reset-required="invalidEffort"
+                    :validation-error="invalidEffort ? 'This reasoning level is no longer supported. Reset to model default.' : ''"
                     @select="selectModelCredential"
+                    @update:effort="selectReasoningEffort"
+                    @retry="retryChatModel"
                   />
                 </div>
               </div>
@@ -2128,12 +2415,11 @@ defineExpose({
                 class="agents-composer-primary"
                 state="send"
                 type="submit"
-                :disabled="!hasModel || modelSaving || !draft.trim()"
+                :disabled="!hasModel || modelSaving || Boolean(modelSaveError) || invalidEffort || !draft.trim()"
               />
             </template>
-            <template v-if="isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
-              <span v-if="modelSaveError" role="alert">{{ modelSaveError }}</span>
-              <span v-else-if="modelSaving" role="status">Saving model…</span>
+            <template v-if="!composerOnly && isModelBackend && (modelSaveError || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
+              <button v-if="modelSaveError" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="retryChatModel">{{ modelSaveError }}</button>
               <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
               <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>

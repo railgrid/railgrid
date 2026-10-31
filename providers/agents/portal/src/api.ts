@@ -409,6 +409,15 @@ export class ApiClient {
 
   listSessions = (agent: string): Promise<SessionMeta[]> =>
     this.listVerb<SessionMeta>(this.verb(AGENTS, agent, 'sessions'))
+  getSessionModel = (agent: string, session: string): Promise<SessionModelPreferences> =>
+    this.getVerb(this.verbTail(this.verb(AGENTS, agent, 'session'), session))
+  saveSessionModel = (agent: string, session: string, preferences: SessionModelPreferences): Promise<SessionModelPreferences> =>
+    this.sendVerb('PATCH', this.verbTail(this.verb(AGENTS, agent, 'session'), session), {
+      modelCredential: preferences.modelCredential || '',
+      ...(preferences.reasoningEffortByModel !== undefined
+        ? { reasoningEffortByModel: preferences.reasoningEffortByModel }
+        : {}),
+    })
   deleteSession = (agent: string, session: string): Promise<void> =>
     this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))
   listMessagePage = async (agent: string, session: string, cursor = '', limit = 200): Promise<MessagePage> => {
@@ -1007,4 +1016,13 @@ export function chatFrameFromRPC(msg: unknown): SSEEvent | null {
 function chatRefusal(status: number, diagnostic: string, reason: string): ApiError {
   const failure = presentRequestFailure(status, diagnostic, reason)
   return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
+}
+
+
+export interface SessionModelPreferences {
+  modelCredential?: string
+  reasoningEffortByModel?: Record<string, string>
+  selectedCredential: string
+  effortOptions: string[]
+  defaultEffort: string
 }

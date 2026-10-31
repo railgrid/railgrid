@@ -186,7 +186,7 @@ func TestVerbMethodsAreEnforced(t *testing.T) {
 	for _, tc := range []struct{ method, path, allow string }{
 		{"GET", agents + "/chat", "POST"},
 		{"POST", agents + "/sessions", "GET"},
-		{"GET", agents + "/session/s1", "DELETE"},
+		{"POST", agents + "/session/s1", "GET, PATCH, DELETE"},
 		{"DELETE", verbBase(testCluster, "schedules", "x") + "/run", "POST"},
 	} {
 		rec := httptest.NewRecorder()
