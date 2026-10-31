@@ -754,7 +754,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("POST: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status: got %d, want 409", resp.StatusCode)
 	}
@@ -781,7 +781,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	defer cancel()
 	resp2, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err == nil {
-		defer resp2.Body.Close()
+		_ = resp2.Body.Close()
 		t.Fatalf("expected the create to be waiting on the controller, got %d", resp2.StatusCode)
 	}
 	// (The fake cannot list a tracker that mixes typed seeds with the
