@@ -80,7 +80,7 @@ export default defineConfig({
     minify: 'terser',
     terserOptions: {
       compress: {
-        passes: 3,
+        passes: 4,
       },
       format: {
         comments: /@license|@preserve|^!/i,

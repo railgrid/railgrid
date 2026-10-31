@@ -80,3 +80,13 @@ this adds 1,241 B raw / 157 B gzip to the page path and 1,241 B raw / 155 B
 gzip to all assets. The build passes the unchanged ceilings with 3,314 B raw /
 485 B gzip page headroom and 360 B raw / 100 B gzip total headroom. These are
 local bundle measurements, not live browser performance evidence.
+
+The portal workflow diagnostics reached 1,329,980 B raw / 368,013 B gzip total,
+exceeding the gzip ceiling by 13 B. A fourth minifier compression pass reduces
+the page path to 1,217,009 B raw / 331,620 B gzip and total assets to
+1,329,963 B raw / 367,991 B gzip without changing application code or copy.
+The existing ceilings remain enforced, with only 37 B raw / 9 B gzip total
+headroom. The focused `make test-ui-e2e-report-portal` target now includes the
+production build and its budget gate; tests and typechecking alone do not
+establish that the emitted bundle fits. These are local build measurements,
+not live browser performance evidence.

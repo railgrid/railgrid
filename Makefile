@@ -3195,6 +3195,7 @@ test-ui-e2e-report-portal: ## Portal regressions for the UI E2E findings
 	cd providers/code/portal && npm test -- src/api.test.ts && npm run typecheck
 	cd providers/edges/portal && npm test -- src/routes.test.ts src/views.behavior.test.ts && npm run typecheck
 	cd providers/app-studio/portal && node --test src/projectFiles.test.mjs
+	$(MAKE) build-app-studio-provider-portal
 
 fix-lint-ui-e2e-report: $(GOLANGCI_LINT)
 	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) fmt ./install
