@@ -28,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -487,9 +488,13 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 	var typedSeed []runtime.Object
 	var createSeed []runtime.Object
 	for _, obj := range objects {
-		if _, isUser := obj.(*tenancyv1alpha1.User); isUser {
+		switch obj.(type) {
+		case *tenancyv1alpha1.User, *tenancyv1alpha1.Organization:
+			// Organizations are typed too: the createOrg quota counter
+			// Lists them by label, which the fake can only serve for typed
+			// seeds.
 			typedSeed = append(typedSeed, obj)
-		} else {
+		default:
 			createSeed = append(createSeed, obj)
 		}
 	}
@@ -716,6 +721,175 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 	}
 	if len(ops.orgWorkspaces) != 0 || len(ops.orgMemberships) != 0 {
 		t.Fatal("REST creation must not write access concurrently with the controller")
+	}
+}
+
+// O-5: a user at their organizations cap gets a 409 before anything is
+// written. The cap comes from the Manager's policy; personal organizations do
+// not count, organizations inside their soft-delete window still do.
+func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
+	stamp := metav1.NewTime(time.Now().UTC())
+	owned := func(name string, personal bool, deleting bool) *tenancyv1alpha1.Organization {
+		o := &tenancyv1alpha1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}},
+			Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: name, Personal: personal},
+		}
+		if deleting {
+			o.Status.DeletionRequestedAt = &stamp
+		}
+		return o
+	}
+	mgr, _, _ := newTestManager(t,
+		owned("personal", true, false),
+		owned("org-a", false, false),
+		owned("org-b", false, false),
+		owned("org-gone", false, true),
+		&tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "someone-elses", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "bob"}}, Spec: tenancyv1alpha1.OrganizationSpec{DisplayName: "x"}},
+	)
+	// alice has org-a, org-b and org-gone (in its grace window): three.
+	mgr.WithOrgQuota(ConstOrgQuota(3))
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "third"})
+	resp, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+	var status map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	if status["reason"] != "QuotaExceeded" || !strings.Contains(status["message"].(string), "3 of 3") {
+		t.Fatalf("status body = %v", status)
+	}
+	list, err := mgr.client.Organizations().List(context.Background(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("list organizations: %v", err)
+	}
+	if len(list.Items) != 5 {
+		t.Fatalf("an organization was created despite the cap: %d items", len(list.Items))
+	}
+
+	// One more allowed raises the cap: the live count (3) is now under it.
+	mgr.WithOrgQuota(ConstOrgQuota(4))
+	// The create handler waits for controller conditions; the fake never sets
+	// them, so a short request timeout stands in for "got past the quota".
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs", jsonBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	resp2, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err == nil {
+		_ = resp2.Body.Close()
+		t.Fatalf("expected the create to be waiting on the controller, got %d", resp2.StatusCode)
+	}
+	// (The fake cannot list a tracker that mixes typed seeds with the
+	// unstructured object the handler just created, so the created object is
+	// not counted here; the timeout above is the evidence the cap passed.)
+}
+
+// Two concurrent creates at cap-1 must not both pass: the per-user lock
+// serializes the count and the Create, so exactly one organization is
+// written and the other request gets the 409. Run under -race.
+func TestCreateOrg_ConcurrentCreatesAtCapMinusOne(t *testing.T) {
+	mgr, _, dyn := newTestManager(t)
+	mgr.WithOrgQuota(ConstOrgQuota(1))
+	// The handler's quota count Lists Organizations through the typed client.
+	// Once a create has stored an unstructured object, neither the fake's
+	// List nor its tracker can convert the mixed contents, so record every
+	// created object here and serve the list from that record (the fake
+	// still applies the label selector afterwards). The test starts with no
+	// organizations, so the record is the whole population.
+	var mu sync.Mutex
+	var created []tenancyv1alpha1.Organization
+	fake := dyn.(*dynamicfake.FakeDynamicClient)
+	fake.PrependReactor("create", "organizations", func(action ktesting.Action) (bool, runtime.Object, error) {
+		u, ok := action.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		if !ok {
+			return true, nil, fmt.Errorf("unexpected create object %T", action.(ktesting.CreateAction).GetObject())
+		}
+		var o tenancyv1alpha1.Organization
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(u.Object, &o); err != nil {
+			return true, nil, err
+		}
+		mu.Lock()
+		created = append(created, o)
+		mu.Unlock()
+		return false, nil, nil
+	})
+	fake.PrependReactor("list", "organizations", func(ktesting.Action) (bool, runtime.Object, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		out := &tenancyv1alpha1.OrganizationList{Items: append([]tenancyv1alpha1.Organization(nil), created...)}
+		return true, out, nil
+	})
+	creates := func() int32 {
+		mu.Lock()
+		defer mu.Unlock()
+		return int32(len(created))
+	}
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+
+	const n = 4
+	var wg sync.WaitGroup
+	var conflicts atomic.Int32
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := json.Marshal(CreateOrgRequest{DisplayName: "race"})
+			req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs", jsonBody(body))
+			req.Header.Set("Content-Type", "application/json")
+			// The one request that passes the quota waits on controller
+			// conditions the fake never sets; cut it short.
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+			if err != nil {
+				return
+			}
+			defer func() { _ = resp.Body.Close() }()
+			if resp.StatusCode == http.StatusConflict {
+				conflicts.Add(1)
+			} else {
+				b, _ := io.ReadAll(resp.Body)
+				t.Logf("unexpected response %d: %s", resp.StatusCode, b)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := creates(); got != 1 {
+		t.Fatalf("organizations created = %d, want exactly 1", got)
+	}
+	if got := conflicts.Load(); got != n-1 {
+		t.Fatalf("409 responses = %d, want %d", got, n-1)
+	}
+}
+
+// A plan that resolves to 0 organizations denies the first create with its
+// own message, instead of silently falling back to the hub default.
+func TestCreateOrg_ZeroCapDenies(t *testing.T) {
+	mgr, _, _ := newTestManager(t)
+	mgr.WithOrgQuota(ConstOrgQuota(0))
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "first"})
+	resp, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+	var status map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	if status["reason"] != "QuotaExceeded" || !strings.Contains(status["message"].(string), "does not allow") {
+		t.Fatalf("status body = %v", status)
 	}
 }
 

@@ -31,6 +31,13 @@ export interface AdminOrg {
   workspaces: AdminWorkspace[]
   deletionRequestedAt?: string
   purgeAt?: string
+  // Metering: the Account this organization's usage pools into. ownAccount
+  // is false while it rides on its creator's account (the default) and true
+  // once an admin detached it onto a plan of its own (plan is then set).
+  account?: string
+  ownAccount?: boolean
+  plan?: string
+  createdBy?: string
 }
 export interface AdminProvider {
   name: string

@@ -848,7 +848,10 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
-      error.value = `failed to create org: ${resp.status}`
+      // A 409 QuotaExceeded carries the hub's own sentence (how many of how
+      // many); show that rather than a bare status.
+      const body = (await resp.json().catch(() => ({}))) as { message?: string }
+      error.value = body.message || `failed to create org: ${resp.status}`
       return null
     }
     const created = (await resp.json()) as OrgRow

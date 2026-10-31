@@ -187,13 +187,17 @@ type OrganizationSpec struct {
 	// +kubebuilder:validation:Enum=members;admin
 	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
 
-	// WorkspaceQuota caps the number of child Workspaces. 0 means use the
-	// platform default (50, see docs/organizations.md O-6). Platform admin
-	// may patch this to lift the cap for an Organization that needs more.
+	// Plan, when set, gives this Organization its own metering Account and
+	// Entitlement on the named Plan. Empty (the default) pools the
+	// Organization into the metering Account of the User who created it,
+	// so creating more organizations never multiplies that user's free
+	// allowances. Settable only by a platform admin
+	// (PUT /api/admin/organizations/{uuid}/plan); the hub's metering
+	// reconciler keeps the Entitlement's plan in step with it. See
+	// docs/organizations.md O-5.
 	//
 	// +optional
-	// +kubebuilder:validation:Minimum=0
-	WorkspaceQuota int32 `json:"workspaceQuota,omitempty"`
+	Plan string `json:"plan,omitempty"`
 }
 
 // OrganizationStatus defines the observed state of an Organization.

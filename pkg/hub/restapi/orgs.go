@@ -18,6 +18,8 @@ package restapi
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -29,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 )
 
 // CreateOrgRequest is the POST /api/orgs body.
@@ -44,7 +47,6 @@ type PatchOrgRequest struct {
 	DisplayName          string `json:"displayName,omitempty"`
 	WorkspaceCreation    string `json:"workspaceCreation,omitempty"`
 	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
-	WorkspaceQuota       *int32 `json:"workspaceQuota,omitempty"`
 }
 
 // listOrgs returns the orgs the caller is a member of, taken from
@@ -98,6 +100,13 @@ func (h *Handler) listOrgs(w http.ResponseWriter, r *http.Request) {
 // createOrg creates a new (non-personal) Organization. The org-scope
 // admin Membership is written into the new Org workspace; the caller's
 // UMI is updated to include the org-scope row.
+//
+// Before anything is written the caller's organizations-per-user cap (O-5)
+// is checked: the cap comes from Manager.OrgQuota (the user's metering
+// Entitlement when metering is installed, else the hub default) and the
+// count is the user's live, non-personal Organizations. The metering
+// webhook is the backstop for the same rule at the kcp shard; this check is
+// what turns it into a 409 with a message instead of an admission error.
 func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.requireUser(w, r)
 	if !ok {
@@ -109,6 +118,24 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DisplayName == "" {
 		writeError(w, newValidationError("displayName is required"))
+		return
+	}
+	// Hold the user's create lock from the quota check through the Create,
+	// so two requests at cap-1 do not both pass. The wait for the controller
+	// below runs unlocked.
+	unlock := h.orgCreate.Lock(user)
+	if err := h.checkOrgQuota(r.Context(), user); err != nil {
+		unlock()
+		var qe *quota.QuotaExceededError
+		if errors.As(err, &qe) {
+			if qe.Cap == 0 {
+				writeStatus(w, http.StatusConflict, "QuotaExceeded", "your plan does not allow creating organizations; ask a platform admin to raise your plan's limit")
+				return
+			}
+			writeStatus(w, http.StatusConflict, "QuotaExceeded", fmt.Sprintf("you already have %d of %d organizations (including ones awaiting deletion); a deleted organization frees its slot once its grace period ends, or ask a platform admin to raise your plan's limit", qe.Count, qe.Cap))
+			return
+		}
+		writeError(w, err)
 		return
 	}
 	wc := req.WorkspaceCreation
@@ -138,6 +165,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	created, err := h.mgr.client.Organizations().Create(r.Context(), org, metav1.CreateOptions{})
+	unlock()
 	if err != nil {
 		writeError(w, err)
 		return
@@ -192,7 +220,7 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if req.DisplayName == "" && req.WorkspaceCreation == "" && req.CatalogEntryCreation == "" && req.WorkspaceQuota == nil {
+	if req.DisplayName == "" && req.WorkspaceCreation == "" && req.CatalogEntryCreation == "" {
 		writeError(w, newValidationError("PATCH body must set at least one editable field"))
 		return
 	}
@@ -211,15 +239,42 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 	if req.CatalogEntryCreation != "" {
 		org.Spec.CatalogEntryCreation = req.CatalogEntryCreation
 	}
-	if req.WorkspaceQuota != nil {
-		org.Spec.WorkspaceQuota = *req.WorkspaceQuota
-	}
 	updated, err := h.mgr.client.Organizations().Update(r.Context(), org, metav1.UpdateOptions{})
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, projectOrg(updated))
+}
+
+// checkOrgQuota applies O-5 for user. The count excludes personal
+// Organizations (platform-created, one per user) but includes Organizations
+// inside their soft-delete window: they still exist and the metering webhook
+// counts them, so excluding them here would let the hub say there is room
+// and the shard refuse. Restoring or waiting out the cascade frees the slot.
+func (h *Handler) checkOrgQuota(ctx context.Context, user string) error {
+	cap, err := h.mgr.OrgQuota().Cap(ctx, user)
+	if err != nil {
+		return fmt.Errorf("resolving organization quota: %w", err)
+	}
+	counter := quota.CounterFunc(func(ctx context.Context) (int32, error) {
+		list, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
+			LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
+		})
+		if err != nil {
+			return 0, err
+		}
+		var n int32
+		for i := range list.Items {
+			o := &list.Items[i]
+			if o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
+				continue
+			}
+			n++
+		}
+		return n, nil
+	})
+	return quota.CheckOrgQuota(ctx, user, cap, counter)
 }
 
 // deleteOrg soft-deletes an Org by stamping

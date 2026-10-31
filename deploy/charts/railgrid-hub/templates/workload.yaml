@@ -130,6 +130,13 @@ spec:
             {{- end }}
             - --soft-delete-grace-period={{ . }}
             {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.hub.defaultOrgsPerUser)) (ne (toString .Values.hub.defaultOrgsPerUser) "") }}
+            {{- $orgs := toString .Values.hub.defaultOrgsPerUser }}
+            {{- if not (regexMatch "^[1-9][0-9]*$" $orgs) }}
+            {{- fail (printf "hub.defaultOrgsPerUser must be a positive integer, got %q" $orgs) }}
+            {{- end }}
+            - --default-orgs-per-user={{ $orgs }}
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
@@ -184,7 +191,7 @@ spec:
             refuse those so the modelled value stays the single source of
             truth. Keep this list in step with the flags rendered above.
             */}}
-            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
             {{- if has $flag $modelled }}
