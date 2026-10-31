@@ -19,7 +19,7 @@ while that agent's dedicated view is open.
 
 ## Bottom assistant bar
 
-The default presentation is a 64px composer centered within the available main
+The default presentation is a 64px composer (80px on touch devices) centered within the available main
 content width. Focusing or typing does not open the panel. A valid submission
 opens the conversation from the right; empty or disabled submissions do not.
 **Expand conversation** also reopens the retained chat without sending. Closing
@@ -30,8 +30,11 @@ Minimize retains the conversation behind the Railgrid launcher.
 
 On desktop the panel fills the height remaining between navigation docks and starts at 440px wide. Dragging
 its left edge or using Left/Right arrow keys resizes it; Home and End select its
-width limits. The minimum is 320px, and the maximum is 60% of the viewport while
-preserving at least 360px for the workspace. Reversing direction at either limit
+width limits. The usual minimum is 320px, and the maximum is 60% of the width
+remaining after navigation, while preserving at least 360px for main content.
+When those minima cannot both fit on desktop, the main-content floor takes
+precedence and the panel may be narrower than 320px. Navbar expansion and
+collapse recalculate the limit from its measured width. Reversing direction at either limit
 moves immediately. Pointer cancellation, lost capture, hiding, and unmounting
 end the gesture. Resizing the browser clamps the visible width.
 
@@ -49,7 +52,8 @@ One header holds agent identity, page-context toggle, options, and close.
 to the compact composer; hiding retains the conversation behind the launcher.
 The resize edge uses the same AgentKit pane-divider styling and multi-dot grip
 as the conversation/workbench divider. The expanded view uses the full AgentKit composer;
-the collapsed bar uses its compact geometry. Thread navigation and agent
+the collapsed bar uses its compact geometry. Model-help controls appear in the
+expanded chat so their extra row cannot clip the compact composer border. Thread navigation and agent
 configuration remain available in the dedicated Agents view. Context preview
 remains bounded and scrollable in both presentations.
 

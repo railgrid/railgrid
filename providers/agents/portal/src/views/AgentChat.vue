@@ -2095,7 +2095,7 @@ defineExpose({
                 :disabled="!hasModel || modelSaving || !draft.trim()"
               />
             </template>
-            <template v-if="isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
+            <template v-if="!composerOnly && isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
               <span v-if="modelSaveError" role="alert">{{ modelSaveError }}</span>
               <span v-else-if="modelSaving" role="status">Saving model…</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>

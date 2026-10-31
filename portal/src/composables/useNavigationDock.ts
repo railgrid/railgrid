@@ -336,12 +336,17 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
   }
 
   const dockHeight = ref(44)
+  const dockWidth = ref(0)
   let dockResizeObserver: ResizeObserver | null = null
   function observeDock(element: HTMLElement | null): void {
     dockResizeObserver?.disconnect()
     dockResizeObserver = null
     if (!element) return
-    const measure = () => { dockHeight.value = element.getBoundingClientRect().height }
+    const measure = () => {
+      const rect = element.getBoundingClientRect()
+      dockHeight.value = rect.height
+      dockWidth.value = rect.width
+    }
     measure()
     dockResizeObserver = new ResizeObserver(measure)
     dockResizeObserver.observe(element)
@@ -427,6 +432,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
       bottom: layoutInsetsStyle.value['--app-inset-bottom'],
       navigationTop: isHorizontalDock.value && dockState.value.mode === 'top' ? `${dockHeight.value}px` : '0px',
       navigationRight: layoutInsetsStyle.value['--app-inset-right'],
+      navigationWidth: isVerticalDock.value ? dockWidth.value : 0,
     })
   })
 

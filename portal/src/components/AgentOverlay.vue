@@ -226,7 +226,8 @@ function openDedicated(): void {
 }
 const viewportWidth = ref(window.innerWidth)
 const width = ref(440)
-const panelWidth = computed(() => viewportWidth.value < 768 ? viewportWidth.value : resizeSidePanel(width.value, 0, viewportWidth.value))
+const navigationWidth = computed(() => insets.navigationWidth ?? 0)
+const panelWidth = computed(() => resizeSidePanel(width.value, 0, viewportWidth.value, navigationWidth.value))
 function updateViewport(): void { viewportWidth.value = window.innerWidth }
 onMounted(() => window.addEventListener('resize', updateViewport))
 watch([visible, expanded, () => overlay.open, panelWidth, viewportWidth, gettingStartedFocused], () => {
@@ -247,12 +248,12 @@ function resize(event: PointerEvent): void {
   resizing.value = true
   const flush = () => {
     frame = 0
-    pending = resizeSidePanel(pending, 0, viewportWidth.value)
+    pending = resizeSidePanel(pending, 0, viewportWidth.value, navigationWidth.value)
     width.value = pending
   }
   const move = (e: PointerEvent) => {
     if (e.pointerId !== pointerID) return
-    pending = resizeSidePanel(pending, e.clientX - x, viewportWidth.value)
+    pending = resizeSidePanel(pending, e.clientX - x, viewportWidth.value, navigationWidth.value)
     x = e.clientX
     if (!frame) frame = requestAnimationFrame(flush)
   }
@@ -283,7 +284,7 @@ function resizeWithKeys(event: KeyboardEvent): void {
   if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
   const delta = event.key === 'Home' ? 10000 : event.key === 'End' ? -10000 : event.key === 'ArrowLeft' ? -16 : 16
-  width.value = resizeSidePanel(panelWidth.value, delta, viewportWidth.value)
+  width.value = resizeSidePanel(panelWidth.value, delta, viewportWidth.value, navigationWidth.value)
 }
 watch([expanded, () => overlay.open, visible], () => { stopResize?.() })
 onBeforeUnmount(() => {
@@ -377,6 +378,7 @@ onBeforeUnmount(() => {
 }
 .agent-overlay--ready .agent-overlay__panel { flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; height: 64px; min-height: 64px; }
 .agent-overlay--ready .agent-overlay__mount { height: 100%; }
+@media (pointer: coarse), (any-pointer: coarse) { .agent-overlay--ready .agent-overlay__panel { height: 80px; min-height: 80px; } }
 .agent-overlay__brand { flex-shrink: 0; color: var(--color-accent); }
 .agent-overlay__bar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 /* The panel is a sibling of the routed shell, never a provider overlay. */

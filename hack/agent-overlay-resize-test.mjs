@@ -20,7 +20,7 @@ try {
   await page.addScriptTag({ content: read('portal/node_modules/vue/dist/vue.global.js') })
   await page.addScriptTag({ content: `const {ref, watch, computed} = Vue;
     Vue.createApp({setup() {
-      const panel = ref(null), width = ref(440), viewportWidth = ref(innerWidth);
+      const panel = ref(null), width = ref(440), viewportWidth = ref(innerWidth), navigationWidth = ref(0);
       const expanded = ref(true), visible = ref(true), overlay = {open: true};
       const panelWidth = computed(() => resizeSidePanel(width.value, 0, viewportWidth.value));
       ${js}
