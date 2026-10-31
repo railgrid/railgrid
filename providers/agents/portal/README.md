@@ -75,7 +75,9 @@ store error leave the preview in place, and later turns do not retry.
 
 Saved model preferences make an empty chat visible in the thread list, even before
 its first message. Delete unused empty chats to free preference quota; opening
-a new chat never silently evicts another chat’s saved choices.
+a new chat never silently evicts another chat’s saved choices. The list retains
+up to 100 conversations and 100 empty chats independently, so drafts cannot
+displace the available conversation history and remain accessible for cleanup.
 
 ## MCP Apps result views
 

@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -231,6 +232,99 @@ func TestMemorySessionModelQuota(t *testing.T) {
 func TestPostgresSessionModelQuota(t *testing.T) {
 	s := openTestPostgres(t)
 	testSessionModelQuota(t, s, pgScope(t, s))
+}
+
+func testListSessionsPerCategoryLimit(t *testing.T, s Store, scope Scope) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	for _, entry := range []struct {
+		id string
+		at time.Time
+	}{
+		{id: "real-old", at: now.Add(time.Hour)},
+		{id: "real-new", at: now.Add(2 * time.Hour)},
+		{id: "real-tie-b", at: now.Add(3 * time.Hour)},
+		{id: "real-tie-a", at: now.Add(3 * time.Hour)},
+	} {
+		if err := s.AppendMessage(ctx, scope, Message{
+			ID: scope.OrgUUID + "-" + entry.id, AgentName: scope.AgentName,
+			SessionID: entry.id, Role: "user", Content: entry.id, CreatedAt: entry.at,
+		}); err != nil {
+			t.Fatalf("append %s: %v", entry.id, err)
+		}
+	}
+	for _, id := range []string{"draft-old", "draft-new"} {
+		if err := s.PutSessionModelSettings(ctx, scope, id, SessionModelSettings{ModelCredential: id}); err != nil {
+			t.Fatalf("save %s preference: %v", id, err)
+		}
+	}
+
+	foreignWorkspace := scope
+	foreignWorkspace.WorkspaceUUID += "-other"
+	foreignAgent := scope
+	foreignAgent.AgentName += "-other"
+	for i, foreign := range []Scope{foreignWorkspace, foreignAgent} {
+		id := fmt.Sprintf("foreign-%d", i)
+		if err := s.AppendMessage(ctx, foreign, Message{
+			ID: scope.OrgUUID + "-" + id, AgentName: foreign.AgentName,
+			SessionID: id, Role: "user", Content: id, CreatedAt: now.Add(3 * time.Hour),
+		}); err != nil {
+			t.Fatalf("append foreign transcript %s: %v", id, err)
+		}
+		if err := s.PutSessionModelSettings(ctx, foreign, id+"-draft", SessionModelSettings{ModelCredential: id}); err != nil {
+			t.Fatalf("save foreign draft %s: %v", id, err)
+		}
+	}
+
+	// A limit of one independently returns one transcript and one draft. The
+	// newer transcript must win within its group, and foreign scopes must not
+	// consume slots or appear in the result.
+	sessions, err := s.ListSessions(ctx, scope, 1)
+	if err != nil || len(sessions) != 2 {
+		t.Fatalf("ListSessions(limit=1) = %+v, err=%v; want one session per category", sessions, err)
+	}
+	if sessions[0].ID != "real-tie-a" || sessions[0].MessageCount != 1 {
+		t.Fatalf("transcript category = %+v; want newest transcript first with ID tie-break", sessions[0])
+	}
+	if sessions[1].MessageCount != 0 || (sessions[1].ID != "draft-old" && sessions[1].ID != "draft-new") {
+		t.Fatalf("draft category = %+v; want a scoped preference-only draft", sessions[1])
+	}
+	for _, session := range sessions {
+		if strings.HasPrefix(session.ID, "foreign-") {
+			t.Fatalf("foreign-scope session leaked: %+v", session)
+		}
+	}
+
+	// Larger groups still retain their independent limits instead of the
+	// transcript group consuming the full result budget.
+	sessions, err = s.ListSessions(ctx, scope, 2)
+	if err != nil || len(sessions) != 4 {
+		t.Fatalf("ListSessions(limit=2) = %+v, err=%v; want two sessions per category", sessions, err)
+	}
+	transcripts, drafts := 0, 0
+	for _, session := range sessions {
+		if session.MessageCount > 0 {
+			transcripts++
+		} else {
+			drafts++
+		}
+	}
+	if transcripts != 2 || drafts != 2 {
+		t.Fatalf("ListSessions(limit=2) returned %d transcripts and %d drafts; want two each", transcripts, drafts)
+	}
+	if sessions[0].ID != "real-tie-a" || sessions[1].ID != "real-tie-b" {
+		t.Fatalf("transcript tie order = %q, %q; want ascending session ID", sessions[0].ID, sessions[1].ID)
+	}
+}
+
+func TestMemoryListSessionsPerCategoryLimit(t *testing.T) {
+	testListSessionsPerCategoryLimit(t, NewMemoryStore(), testScope())
+}
+
+func TestPostgresListSessionsPerCategoryLimit(t *testing.T) {
+	s := openTestPostgres(t)
+	testListSessionsPerCategoryLimit(t, s, pgScope(t, s))
 }
 
 func testListSessionsTitlePreviewAcrossSessions(t *testing.T, s Store, scope Scope) {

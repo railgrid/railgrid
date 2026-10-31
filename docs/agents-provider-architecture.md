@@ -609,7 +609,9 @@ Admitted runs pin their own model settings.
 
 A session may save preferences before its first message. Such empty chats appear
 in the session list as deletable chats, so abandoned drafts can be removed
-without silently evicting model choices from another open tab. Each scoped Agent can
+without silently evicting model choices from another open tab. The list includes
+up to 100 conversations and 100 empty chats, independently capped so neither
+group hides the other. Each scoped Agent can
 store preferences for at most 1,024 session IDs; at the limit, existing entries
 remain editable but new entries receive HTTP 429. Deleting a session removes
 its preferences and frees a slot. `DELETE agents/{name}/session/{sessionID}` also

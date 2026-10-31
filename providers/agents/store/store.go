@@ -774,6 +774,8 @@ type Store interface {
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
 	// ListSessions returns the agent's chat sessions, most-recently-active first.
+	// ListSessions returns up to limit transcript sessions followed by up to
+	// limit preference-only sessions, newest activity first within each group.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
 	GetSessionModelSettings(context.Context, Scope, string) (SessionModelSettings, error)
 	PutSessionModelSettings(context.Context, Scope, string, SessionModelSettings) error

@@ -738,12 +738,29 @@ func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([
 			LastActivity: updatedAt,
 		})
 	}
-	// Most-recently-active first, then apply the limit.
-	sort.Slice(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })
-	if len(out) > limit {
-		out = out[:limit]
+	// Bound transcript sessions and preference-only drafts independently so
+	// neither category can crowd the other out. Each category stays ordered by
+	// most recent activity, and transcript sessions are returned first.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].LastActivity.Equal(out[j].LastActivity) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].LastActivity.After(out[j].LastActivity)
+	})
+	transcripts := make([]Session, 0, limit)
+	drafts := make([]Session, 0, limit)
+	for _, session := range out {
+		if session.MessageCount == 0 {
+			if len(drafts) < limit {
+				drafts = append(drafts, session)
+			}
+			continue
+		}
+		if len(transcripts) < limit {
+			transcripts = append(transcripts, session)
+		}
 	}
-	return out, nil
+	return append(transcripts, drafts...), nil
 }
 
 func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID string) error {

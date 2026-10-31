@@ -490,8 +490,9 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	writeList(w, page.Items, map[string]any{"nextCursor": page.NextCursor})
 }
 
-// listSessions returns the agent's chat threads (most-recently-active first)
-// so the portal can list them and let the user resume one after a refresh.
+// listSessions returns up to 100 conversations and 100 saved empty chats,
+// each ordered by recent activity. Neither group can crowd the other out,
+// so users can resume conversations and reclaim unused draft preferences.
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 	_, id, ok := s.requireClient(w, r)
 	if !ok {

@@ -547,6 +547,8 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 	}
 	// Compute the first user coordinate once per session. Title validity follows
 	// append order; preview selection retains its timestamp-and-ID ordering.
+	// Rank transcripts and preference-only drafts separately so each can fill
+	// the requested limit without either category crowding the other out.
 	rows, err := p.db.QueryContext(ctx, `
 		WITH sessions AS (
 			SELECT session_id, COUNT(*) AS message_count,
@@ -574,15 +576,23 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3
 				AND role='user' AND content_encrypted=FALSE
 			ORDER BY session_id, created_at ASC, id ASC
+		), ranked_sessions AS (
+			SELECT s.*,
+				ROW_NUMBER() OVER (
+					PARTITION BY (s.message_count = 0)
+					ORDER BY s.last_activity DESC, s.session_id ASC
+				) AS category_rank
+			FROM sessions s
 		)
 		SELECT s.session_id, s.message_count, s.created_at, s.last_activity,
 			p.content, COALESCE(t.title, '')
-		FROM sessions s
+		FROM ranked_sessions s
 		LEFT JOIN first_preview p ON p.session_id=s.session_id
 		LEFT JOIN first_user f ON f.session_id=s.session_id
 		LEFT JOIN agents_session_titles t ON t.org_uuid=$1 AND t.workspace_uuid=$2
 			AND t.agent_name=$3 AND t.session_id=s.session_id AND t.first_message_id=f.id
-		ORDER BY s.last_activity DESC LIMIT $4`,
+		WHERE s.category_rank <= $4
+		ORDER BY (s.message_count = 0) ASC, s.last_activity DESC, s.session_id ASC`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, limit)
 	if err != nil {
 		return nil, err
