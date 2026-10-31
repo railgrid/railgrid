@@ -14,16 +14,12 @@ package main
 //
 // Step list (each is idempotent):
 //
-//   1. Install platform CRDs into the provider workspace.
-//   2. Register the platform CRDs as APIExport.spec.resources entries.
-//   3. Apply the CachedResource that projects Templates to tenants.
-//   4. Create the ServiceAccount + Role + RoleBinding the runtime uses.
-//   5. Mint a TokenRequest bearer.
-//   6. Build a kubeconfig (in-cluster server URL + minted token) and
-//      write it to the path the serve subcommand reads.
-//   7. Apply the kro-cluster Secret in the kro Helm release's
-//      namespace so kro starts watching this APIExport's virtual
-//      workspace.
+//  1. Install CRDs and the Templates cache projection.
+//  2. Publish generated schemas, the APIExport with virtual Templates storage,
+//     endpoint slices, bind grant and optional CatalogEntry; await cache identity.
+//  3. Seed catalog Templates unless disabled.
+//  4. Mint the runtime ServiceAccount identity and write its kubeconfig locally
+//     and optionally to the host-cluster Secret.
 //
 // Exits on any step's error so a partial bootstrap is obvious.
 
@@ -57,24 +53,9 @@ func runInitCmd(ctx context.Context) error {
 		return fmt.Errorf("load admin kubeconfig: %w", err)
 	}
 
-	log.Printf("init: installing CRDs into provider workspace")
-	if err := install.CRDs(ctx, adminConfig); err != nil {
-		return fmt.Errorf("install CRDs: %w", err)
-	}
-
-	// The shipped APIResourceSchemas (instances, templates and one per
-	// instances/<verb> subresource, all from apigen), the DataPlaneEndpointSlice
-	// the subresource entries route through, the generated APIExport, its
-	// APIExportEndpointSlice and the bind grant — the same bootstrap every
-	// provider runs. The export is applied with templates on CRD storage; once
-	// the CachedResource identityHash is known, PlatformSchemaInAPIExport below
-	// re-points that one entry at virtual storage. The CatalogEntry is
-	// self-registered here too when RAILGRID_CATALOGENTRY_FILE names one (the
-	// chart's init container); the dev Makefile applies it through the admin
-	// path and leaves the variable unset.
 	workspacePath := os.Getenv("INFRASTRUCTURE_WORKSPACE_PATH")
 	log.Printf("init: bootstrapping schemas, APIExport %q, endpoint slices and bind grant", apiExportName)
-	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
+	if err := install.BootstrapWorkspace(ctx, sdkinstall.Options{
 		Config:           adminConfig,
 		ExportName:       apiExportName,
 		WorkspacePath:    workspacePath,
@@ -83,47 +64,6 @@ func runInitCmd(ctx context.Context) error {
 		DataPlaneURL:     strings.TrimSpace(os.Getenv("RAILGRID_DATAPLANE_URL")),
 	}); err != nil {
 		return fmt.Errorf("provider workspace bootstrap: %w", err)
-	}
-
-	// CachedResource MUST precede APIExport wiring: the APIExport's
-	// templates entry uses storage.virtual backed by an EndpointSlice
-	// over this CachedResource. Order = CachedResource → EndpointSlice
-	// → wait for IdentityHash → APIExport with the resolved hash.
-	log.Printf("init: applying CachedResource for Templates")
-	if err := install.PlatformCachedResources(ctx, adminConfig); err != nil {
-		return fmt.Errorf("install CachedResource: %w", err)
-	}
-
-	log.Printf("init: applying CachedResourceEndpointSlice for Templates")
-	if err := install.PlatformCachedResourceEndpointSlices(ctx, adminConfig); err != nil {
-		return fmt.Errorf("install EndpointSlice: %w", err)
-	}
-
-	// The slice MUST carry the provider workspace path so kcp can resolve the
-	// export's logical cluster and publish endpoint URLs — otherwise kro never
-	// discovers the VW and tenant instances go unreconciled. It is the
-	// kro-facing slice (named "infrastructure", what the kro chart is pointed
-	// at); the SDK bootstrap above wrote the export-named one beside it.
-	log.Printf("init: applying APIExportEndpointSlice (path=%q) for the provider's virtual-workspace controllers", workspacePath)
-	if err := install.PlatformAPIExportEndpointSlice(ctx, adminConfig, workspacePath); err != nil {
-		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
-	}
-
-	log.Printf("init: waiting for CachedResource identityHash")
-	// Templates MUST use the CachedResource virtual storage (so they project into
-	// tenant workspaces). Never fall back to CRD storage — fail so the init
-	// container retries until the identityHash is ready.
-	templatesIdentityHash, err := install.WaitForCachedResourceIdentity(ctx, adminConfig)
-	if err != nil {
-		return fmt.Errorf("CachedResource identityHash not ready (templates require virtual storage): %w", err)
-	}
-	if templatesIdentityHash == "" {
-		return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
-	}
-
-	log.Printf("init: re-pointing the templates entry at CachedResource virtual storage (storage=%s)", storageLabel(templatesIdentityHash))
-	if err := install.PlatformSchemaInAPIExport(ctx, adminConfig, templatesIdentityHash); err != nil {
-		return fmt.Errorf("register APIExport schemas: %w", err)
 	}
 
 	// Seed catalog Templates so a fresh workspace renders a non-empty
@@ -236,17 +176,6 @@ func loadHostConfig() (*rest.Config, error) {
 		return clientcmd.BuildConfigFromFlags("", p)
 	}
 	return rest.InClusterConfig()
-}
-
-// storageLabel renders the templates storage kind for a startup log
-// line — "virtual" when the CachedResource produced an identityHash,
-// "crd" when init fell back. Kept inline to avoid leaking the helper
-// from install/.
-func storageLabel(hash string) string {
-	if hash == "" {
-		return "crd"
-	}
-	return "virtual"
 }
 
 // retargetHostToWorkspace rewrites a kcp host URL so it terminates at

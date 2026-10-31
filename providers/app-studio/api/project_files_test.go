@@ -20,12 +20,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/mux"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -40,6 +43,7 @@ type projectFilesFixture struct {
 	scope      workspace.Scope
 	project    *aiv1alpha1.Project
 	syncs      atomic.Int32
+	root       string
 }
 
 func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
@@ -47,8 +51,10 @@ func newProjectFilesFixture(t *testing.T) *projectFilesFixture {
 	project := projectForPromoteWithRepository("shop", "repo-a")
 	project.UID = types.UID("project-uid")
 	client := newProjectBuildProvenanceClient(project, nil, nil)
+	root := t.TempDir()
 	fixture := &projectFilesFixture{
-		workspaces: workspace.NewFileStore(t.TempDir()),
+		root:       root,
+		workspaces: workspace.NewFileStore(root),
 		scope:      workspace.Scope{OrgUUID: "org-a", WorkspaceUUID: "workspace-a", ProjectName: "shop", ProjectUID: string(project.UID)},
 		project:    project,
 	}
@@ -87,6 +93,8 @@ func (f *projectFilesFixture) request(method, target string, body io.Reader, hea
 		f.server.deleteProjectFile(response, request)
 	case method == http.MethodPost:
 		f.server.uploadProjectFiles(response, request)
+	case strings.HasSuffix(target, "/files"):
+		f.server.listProjectFiles(response, request)
 	case strings.Contains(target, "/files/raw"):
 		f.server.readProjectFileRaw(response, request)
 	default:
@@ -459,5 +467,85 @@ func TestProjectFileUploadIsAtomicAndReportsChangedFiles(t *testing.T) {
 	current, err := f.workspaces.ReadFileBytes(ctx, f.scope, "uploads/existing.txt", 0)
 	if err != nil || string(current) != "before" {
 		t.Fatalf("existing path after rejected transaction = %q err=%v", current, err)
+	}
+}
+
+func TestProjectFilesMissingTreeDoesNotReportEmpty(t *testing.T) {
+	f := newProjectFilesFixture(t)
+	response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=qa-notes.txt", strings.NewReader(""), map[string]string{"If-None-Match": "*"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", response.Code, response.Body.String())
+	}
+	client, err := f.server.projectClientFor(identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Projects().Patch(context.Background(), "shop", types.MergePatchType, []byte(`{"spec":{"description":"Updated description"}}`), metav1.PatchOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "qa-notes.txt") {
+		t.Fatalf("list: %d %s", response.Code, response.Body.String())
+	}
+	// A replacement provider with an empty volume still sees the shared ledger.
+	f.server.workspaces = workspace.NewFileStore(t.TempDir())
+	response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "WorkspaceSourceUnavailable") {
+		t.Fatalf("lost tree: %d %s", response.Code, response.Body.String())
+	}
+}
+
+// A revision tag is a cache hint, not proof that the user's files disappeared.
+func TestProjectFilesPresentTreeWithoutCurrentTagRemainsReadable(t *testing.T) {
+	for _, tag := range []string{"missing", "corrupt", "stale"} {
+		t.Run(tag, func(t *testing.T) {
+			f := newProjectFilesFixture(t)
+			response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=notes.txt", strings.NewReader("saved"), map[string]string{"If-None-Match": "*"})
+			if response.Code != http.StatusCreated {
+				t.Fatalf("create: %d %s", response.Code, response.Body.String())
+			}
+			path := filepath.Join(f.root, ".assistant-snapshots", f.scope.OrgUUID, f.scope.WorkspaceUUID, f.scope.ProjectName, f.scope.ProjectUID, "tree-revision.json")
+			var err error
+			if tag == "missing" {
+				err = os.Remove(path)
+			} else {
+				data := []byte("corrupt")
+				if tag == "stale" {
+					data = []byte(`{"revision":1}`)
+				}
+				err = os.WriteFile(path, data, 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "notes.txt") {
+				t.Fatalf("list: %d %s", response.Code, response.Body.String())
+			}
+			response = f.request(http.MethodGet, "/api/projects/shop/files/content?path=notes.txt", nil, nil)
+			if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "saved") {
+				t.Fatalf("read: %d %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProjectFilesDeliberatelyEmptyTreeRemainsReadable(t *testing.T) {
+	f := newProjectFilesFixture(t)
+	response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=notes.txt", strings.NewReader("saved"), map[string]string{"If-None-Match": "*"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", response.Code, response.Body.String())
+	}
+	var created projectFileWriteResult
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	response = f.request(http.MethodDelete, "/api/projects/shop/files/content?path=notes.txt", nil, map[string]string{"If-Match": created.Version})
+	if response.Code != http.StatusOK && response.Code != http.StatusNoContent {
+		t.Fatalf("delete: %d %s", response.Code, response.Body.String())
+	}
+	response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "notes.txt") {
+		t.Fatalf("empty list: %d %s", response.Code, response.Body.String())
 	}
 }

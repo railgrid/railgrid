@@ -7,7 +7,7 @@ export const PROJECT_FILE_MAX_BYTES = 25 * 1024 * 1024
 
 const IMAGE_PREVIEW_EXTENSIONS = /\.(?:png|jpe?g|gif|webp|svg)$/iu
 
-export type ProjectFileErrorReason = 'busy' | 'exists' | 'changed' | 'too-large' | 'not-found' | 'invalid' | 'other'
+export type ProjectFileErrorReason = 'workspace-unavailable' | 'busy' | 'exists' | 'changed' | 'too-large' | 'not-found' | 'invalid' | 'other'
 
 export interface ProjectFileWriteIntent {
   /** PUT with If-None-Match: * (create only). */
@@ -121,6 +121,7 @@ export function classifyProjectFileError(
   conflict: { code?: string; changedFiles?: string[] } = {},
 ): ProjectFileErrorReason {
   const message = detail.toLowerCase()
+  if (conflict.code === 'workspace_conflict' && message.includes('workspace source is stale')) return 'workspace-unavailable'
   if (status === 413) return 'too-large'
   if (status === 404) return 'not-found'
   if (status === 400) return 'invalid'
@@ -146,6 +147,8 @@ export function classifyProjectFileError(
 
 export function projectFileErrorMessage(reason: ProjectFileErrorReason, detail: string): string {
   switch (reason) {
+    case 'workspace-unavailable':
+      return 'Project files are unavailable or out of date on this provider. Refresh the project and try again. If the problem persists, restore the workspace volume or recover saved files from Git before editing.'
     case 'busy':
       return 'The assistant is working on this project. Try again when the run finishes.'
     case 'exists':

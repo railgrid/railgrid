@@ -132,7 +132,7 @@ spec:
         type: integer
         default: 8080
         title: Port
-        description: "Port your app listens on. Defaults to 8080; in development, bind the dev server to this port and to 0.0.0.0."
+        description: "Port your app listens on. The nginx example uses 80; when omitted, this defaults to 8080. In development, bind the dev server to this port and to 0.0.0.0."
       replicas:
         type: integer
         default: 1

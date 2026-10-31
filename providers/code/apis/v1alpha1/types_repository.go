@@ -80,6 +80,8 @@ type RepositorySpec struct {
 	// +required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=100
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.-]+$`
+	// +kubebuilder:validation:XValidation:rule="self != '.' && self != '..'",message="repository name cannot be a dot segment"
 	Name string `json:"name"`
 
 	// Owner overrides the Connection's owner for this single repository
