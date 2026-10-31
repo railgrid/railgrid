@@ -313,3 +313,25 @@ func TestReplaceTreePreserveOmittedNeverDeletes(t *testing.T) {
 		t.Fatal("omitted path was deleted")
 	}
 }
+
+func TestEmptyFilePersistsAcrossStoreReload(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	scope := binaryTestScope()
+	first := NewFileStore(root)
+	ledger := NewMemoryLedger()
+	first.SetLedger(ledger)
+	result, err := first.PutFile(ctx, scope, PutOptions{Path: "qa-notes.txt", Data: []byte{}, CreateOnly: true})
+	if err != nil || !result.Created {
+		t.Fatalf("create: %+v %v", result, err)
+	}
+	second := NewFileStore(root)
+	second.SetLedger(ledger)
+	list, err := second.ListFiles(ctx, scope, ListOptions{})
+	if err != nil || len(list.Files) != 1 {
+		t.Fatalf("reload: %+v %v", list, err)
+	}
+	if _, err := second.PutFile(ctx, scope, PutOptions{Path: "qa-persistence-check.txt", Data: []byte{}, CreateOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+}

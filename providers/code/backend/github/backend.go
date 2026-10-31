@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -126,9 +127,15 @@ func (b *Backend) ValidateConnection(ctx context.Context, conn *codev1alpha1.Con
 	return login, parseScopes(resp), nil
 }
 
+var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
+
 // EnsureRepository creates the repository if absent and returns its host
 // identifiers. Create-only requests may only reuse the recorded remote identity.
 func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) (backend.RepositoryResult, error) {
+	// Refuse names GitHub would silently rewrite before making an external write.
+	if !repositoryNamePattern.MatchString(repo.Spec.Name) || repo.Spec.Name == "." || repo.Spec.Name == ".." {
+		return backend.RepositoryResult{}, errors.New("github: repository name must contain 1–100 letters, numbers, periods, underscores, or hyphens and cannot be a dot segment")
+	}
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {
 		return backend.RepositoryResult{}, err

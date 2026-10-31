@@ -87,7 +87,24 @@ func (s *Server) listProjectFiles(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "project workspace store is not configured")
 		return
 	}
-	list, err := s.workspaces.ListFiles(r.Context(), projectWorkspaceScope(id, project), workspace.ListOptions{})
+	scope := projectWorkspaceScope(id, project)
+	revision, err := s.workspaces.SourceRevision(r.Context(), scope)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if revision > 1 {
+		retained, err := s.workspaces.RetainsSource(r.Context(), scope)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		if !retained {
+			writeStatus(w, http.StatusServiceUnavailable, "WorkspaceSourceUnavailable", "Project files are unavailable on this provider. Restore the project workspace volume or recover saved files from Git before editing.")
+			return
+		}
+	}
+	list, err := s.workspaces.ListFiles(r.Context(), scope, workspace.ListOptions{})
 	if err != nil {
 		writeError(w, err)
 		return

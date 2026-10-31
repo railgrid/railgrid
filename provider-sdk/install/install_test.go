@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -283,5 +285,28 @@ func TestValidateClaimScopes(t *testing.T) {
 		"metadata": map[string]any{"name": "bare"}, "spec": map[string]any{},
 	}}); err != nil {
 		t.Errorf("ValidateClaimScopes on a claimless export: %v", err)
+	}
+}
+
+func TestConfigureVirtualStorageBeforePublishing(t *testing.T) {
+	export := &unstructured.Unstructured{Object: map[string]any{"spec": map[string]any{"resources": []any{
+		map[string]any{"group": "infrastructure.railgrid.ai", "name": "templates", "schema": "v1.templates", "storage": map[string]any{"crd": map[string]any{}}},
+	}}}}
+	group := "cache.kcp.io"
+	overrides := map[schema.GroupResource]corev1.TypedLocalObjectReference{
+		{Group: "infrastructure.railgrid.ai", Resource: "templates"}: {APIGroup: &group, Kind: "ClusterCachedResourceEndpointSlice", Name: "templates"},
+	}
+	if err := configureVirtualStorage(export, overrides); err != nil {
+		t.Fatal(err)
+	}
+	resources, _, _ := unstructured.NestedSlice(export.Object, "spec", "resources")
+	entry := resources[0].(map[string]any)
+	storage := entry["storage"].(map[string]any)
+	if storage["crd"] != nil || storage["virtual"] == nil || entry["schema"] != "v1.templates" {
+		t.Fatalf("entry = %#v", entry)
+	}
+	overrides[schema.GroupResource{Group: "missing", Resource: "missing"}] = overrides[schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "templates"}]
+	if err := configureVirtualStorage(export, overrides); err == nil {
+		t.Fatal("missing resource accepted")
 	}
 }

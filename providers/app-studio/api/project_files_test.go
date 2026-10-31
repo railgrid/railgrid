@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -87,6 +88,8 @@ func (f *projectFilesFixture) request(method, target string, body io.Reader, hea
 		f.server.deleteProjectFile(response, request)
 	case method == http.MethodPost:
 		f.server.uploadProjectFiles(response, request)
+	case strings.HasSuffix(target, "/files"):
+		f.server.listProjectFiles(response, request)
 	case strings.Contains(target, "/files/raw"):
 		f.server.readProjectFileRaw(response, request)
 	default:
@@ -459,5 +462,30 @@ func TestProjectFileUploadIsAtomicAndReportsChangedFiles(t *testing.T) {
 	current, err := f.workspaces.ReadFileBytes(ctx, f.scope, "uploads/existing.txt", 0)
 	if err != nil || string(current) != "before" {
 		t.Fatalf("existing path after rejected transaction = %q err=%v", current, err)
+	}
+}
+
+func TestProjectFilesMissingTreeDoesNotReportEmpty(t *testing.T) {
+	f := newProjectFilesFixture(t)
+	response := f.request(http.MethodPut, "/api/projects/shop/files/content?path=qa-notes.txt", strings.NewReader(""), map[string]string{"If-None-Match": "*"})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", response.Code, response.Body.String())
+	}
+	client, err := f.server.projectClientFor(identity{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Projects().Patch(context.Background(), "shop", types.MergePatchType, []byte(`{"spec":{"description":"Updated description"}}`), metav1.PatchOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "qa-notes.txt") {
+		t.Fatalf("list: %d %s", response.Code, response.Body.String())
+	}
+	// A replacement provider with an empty volume still sees the shared ledger.
+	f.server.workspaces = workspace.NewFileStore(t.TempDir())
+	response = f.request(http.MethodGet, "/api/projects/shop/files", nil, nil)
+	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), "WorkspaceSourceUnavailable") {
+		t.Fatalf("lost tree: %d %s", response.Code, response.Body.String())
 	}
 }

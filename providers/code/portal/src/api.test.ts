@@ -720,6 +720,17 @@ describe('repository registration', () => {
     expect(calls).toHaveLength(0)
   })
 
+  it('uses the reviewed Railgrid slug as the default GitHub name', async () => {
+    setAPIContext({ tenant: 'create-repo', token: 'test-token' })
+    const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })
+    await api.createRepository({ name: 'E2E Invalid Name!', connectionRef: 'pat' })
+    expect(calls[0].body).toMatchObject({ metadata: { name: 'e2e-invalid-name' }, spec: { name: 'e2e-invalid-name' } })
+    for (const repo of ['Invalid Name!', '.', '..', 'a'.repeat(101)]) {
+      await expect(api.createRepository({ name: 'valid', repo, connectionRef: 'pat' })).rejects.toThrow('GitHub name')
+    }
+    expect(calls).toHaveLength(1)
+  })
+
   it('marks new repositories create-only so a collision cannot adopt or delete an existing remote', async () => {
     setAPIContext({ tenant: 'create-repo', token: 'test-token' })
     const calls = stubFetch(call => { const body = call.body as { metadata: object }; return response({ ...body, metadata: { ...body.metadata, uid: 'repo-uid' } }) })

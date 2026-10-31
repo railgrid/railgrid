@@ -337,3 +337,14 @@ func apiResourceSchemaToUnstructured(s *apisv1alpha1.APIResourceSchema) (*unstru
 	out.SetKind("APIResourceSchema")
 	return out, nil
 }
+
+// TemplateVirtualStorage supplies the catalog projection to SDK bootstrap before
+// its first export write, so repeated init/operator passes never expose an empty
+// tenant-local templates CRD in between two export updates.
+func TemplateVirtualStorage() map[schema.GroupResource]corev1.TypedLocalObjectReference {
+	return map[schema.GroupResource]corev1.TypedLocalObjectReference{
+		{Group: infrav1alpha1.GroupName, Resource: "templates"}: {
+			APIGroup: ptrTo("cache.kcp.io"), Kind: "ClusterCachedResourceEndpointSlice", Name: EndpointSliceTemplatesName,
+		},
+	}
+}

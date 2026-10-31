@@ -17,7 +17,7 @@ spec:
   sampleValues:
     name: demo-job
     image: busybox:stable
-    schedule: "*/30 * * * *"
+    schedule: "0 * * * *"
   # Operational guidance for AI agents discovering this template over MCP.
   agent:
     usage: |

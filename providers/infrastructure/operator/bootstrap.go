@@ -62,34 +62,11 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 		return fmt.Errorf("install CRDs: %w", err)
 	}
 
-	kcpDir := opts.KCPDir
-	if kcpDir == "" {
-		kcpDir = install.KCPDir()
-	}
-	// The same bootstrap every provider runs: the shipped schemas (instances,
-	// templates and one per instances/<verb> subresource), the
-	// DataPlaneEndpointSlice, the generated APIExport, its endpoint slice, the
-	// bind grant and the CatalogEntry. Templates land on CRD storage first and
-	// are re-pointed at virtual storage below, once the identityHash is known.
-	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
-		Config:           providerCfg,
-		ExportName:       opts.APIExportName,
-		WorkspacePath:    opts.WorkspacePath,
-		KCPDir:           kcpDir,
-		CatalogEntryFile: opts.CatalogEntryFile,
-		DataPlaneURL:     opts.DataPlaneURL,
-	}); err != nil {
-		return fmt.Errorf("provider workspace bootstrap: %w", err)
-	}
-
 	if err := install.PlatformCachedResources(ctx, providerCfg); err != nil {
 		return fmt.Errorf("install CachedResource: %w", err)
 	}
 	if err := install.PlatformCachedResourceEndpointSlices(ctx, providerCfg); err != nil {
 		return fmt.Errorf("install CachedResourceEndpointSlice: %w", err)
-	}
-	if err := install.PlatformAPIExportEndpointSlice(ctx, providerCfg, opts.WorkspacePath); err != nil {
-		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
 	}
 
 	// Templates MUST be served via the CachedResource virtual storage so they
@@ -103,8 +80,29 @@ func Bootstrap(ctx context.Context, providerCfg *rest.Config, opts BootstrapOpti
 	if hash == "" {
 		return fmt.Errorf("CachedResource identityHash empty (templates require virtual storage)")
 	}
-	if err := install.PlatformSchemaInAPIExport(ctx, providerCfg, hash); err != nil {
-		return fmt.Errorf("register APIExport schemas: %w", err)
+	kcpDir := opts.KCPDir
+	if kcpDir == "" {
+		kcpDir = install.KCPDir()
+	}
+	// The same bootstrap every provider runs: the shipped schemas (instances,
+	// templates and one per instances/<verb> subresource), the
+	// DataPlaneEndpointSlice, the generated APIExport, its endpoint slice, the
+	// bind grant and the CatalogEntry. Templates use virtual storage on every
+	// write, including repeated operator reconciliations.
+	if err := sdkinstall.Bootstrap(ctx, sdkinstall.Options{
+		Config:           providerCfg,
+		ExportName:       opts.APIExportName,
+		WorkspacePath:    opts.WorkspacePath,
+		KCPDir:           kcpDir,
+		CatalogEntryFile: opts.CatalogEntryFile,
+		DataPlaneURL:     opts.DataPlaneURL,
+		VirtualStorage:   install.TemplateVirtualStorage(),
+	}); err != nil {
+		return fmt.Errorf("provider workspace bootstrap: %w", err)
+	}
+
+	if err := install.PlatformAPIExportEndpointSlice(ctx, providerCfg, opts.WorkspacePath); err != nil {
+		return fmt.Errorf("install APIExportEndpointSlice: %w", err)
 	}
 
 	if !opts.SkipSeedTemplates {

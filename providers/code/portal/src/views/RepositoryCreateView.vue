@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { REMOTE_REPOSITORY_PATTERN } from '../repositoryIdentity'
+import { REMOTE_REPOSITORY_PATTERN, REPOSITORY_NAME_PATTERN } from '../repositoryIdentity'
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ArrowLeft } from 'lucide-vue-next'
 import { api, normalizeResourceName } from '../api'
@@ -58,7 +58,7 @@ const connectionChoices = computed(() => connections.value.filter(connection => 
 const guidanceValues = computed(() => {
   const objectName = name.value.trim() ? normalizeResourceName(name.value) : ''
   const owner = connectionChoices.value.find(connection => connection.name === connectionRef.value)?.owner
-  const remoteName = repo.value.trim() || name.value.trim()
+  const remoteName = repo.value.trim() || objectName
   const remoteRepository = importing.value
     ? repo.value.trim()
     : owner && remoteName ? `${owner}/${remoteName}` : ''
@@ -124,6 +124,7 @@ function validateFields(): boolean {
   if (!name.value.trim()) errors.name = 'Enter a name for this repository in Railgrid.'
   if (importing.value && !REMOTE_REPOSITORY_PATTERN.test(repo.value.trim())) errors.repo = 'Enter the owner and repository, for example acme/my-service.'
   if (!importing.value && repo.value.includes('/')) errors.repo = 'Enter only the repository name. To add an existing repository, go back and choose Import repository.'
+  if (!importing.value && !errors.repo && !REPOSITORY_NAME_PATTERN.test(repo.value.trim() || normalizeResourceName(name.value))) errors.repo = 'Use 1–100 letters, numbers, periods, underscores, or hyphens for the GitHub name.'
   fieldErrors.value = errors
   const first = (['connection', 'name', 'repo'] as const).find(field => errors[field])
   if (first) focusField(first)
