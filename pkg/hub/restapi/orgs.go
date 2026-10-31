@@ -101,12 +101,13 @@ func (h *Handler) listOrgs(w http.ResponseWriter, r *http.Request) {
 // admin Membership is written into the new Org workspace; the caller's
 // UMI is updated to include the org-scope row.
 //
-// Before anything is written the caller's organizations-per-user cap (O-5)
-// is checked: the cap comes from Manager.OrgQuota (the user's metering
-// Entitlement when metering is installed, else the hub default) and the
-// count is the user's live, non-personal Organizations. The metering
-// webhook is the backstop for the same rule at the kcp shard; this check is
-// what turns it into a 409 with a message instead of an admission error.
+// Before anything is written the caller's organization caps (O-5) are
+// checked: how many Organizations they have created
+// (--default-orgs-per-user) and how many of the Organizations they
+// administer are on the free plan (--free-orgs-per-user), each overridable
+// per user by User.spec.quota. The hub is the only gate; the caps are soft
+// and exist to keep one person from multiplying free allowances by creating
+// organizations, not to secure anything.
 func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.requireUser(w, r)
 	if !ok {
@@ -128,11 +129,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		unlock()
 		var qe *quota.QuotaExceededError
 		if errors.As(err, &qe) {
-			if qe.Cap == 0 {
-				writeStatus(w, http.StatusConflict, "QuotaExceeded", "your plan does not allow creating organizations; ask a platform admin to raise your plan's limit")
-				return
-			}
-			writeStatus(w, http.StatusConflict, "QuotaExceeded", fmt.Sprintf("you already have %d of %d organizations (including ones awaiting deletion); a deleted organization frees its slot once its grace period ends, or ask a platform admin to raise your plan's limit", qe.Count, qe.Cap))
+			writeStatus(w, http.StatusConflict, "QuotaExceeded", quotaMessage(qe))
 			return
 		}
 		writeError(w, err)
@@ -247,34 +244,101 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projectOrg(updated))
 }
 
-// checkOrgQuota applies O-5 for user. The count excludes personal
-// Organizations (platform-created, one per user) but includes Organizations
-// inside their soft-delete window: they still exist and the metering webhook
-// counts them, so excluding them here would let the hub say there is room
-// and the shard refuse. Restoring or waiting out the cascade frees the slot.
+// checkOrgQuota applies O-5 for user: the organizations cap first, then,
+// when the hub knows which plan is free, the free-organizations cap. Both
+// counts exclude personal Organizations (platform-created, one per user)
+// and include Organizations inside their soft-delete window: those still
+// exist, with their metering account and every allowance on it, until the
+// cascade runs, so restoring or waiting out the grace period is what frees
+// the slot.
 func (h *Handler) checkOrgQuota(ctx context.Context, user string) error {
-	cap, err := h.mgr.OrgQuota().Cap(ctx, user)
-	if err != nil {
-		return fmt.Errorf("resolving organization quota: %w", err)
+	caps := h.mgr.OrgCaps()
+	if u, err := h.mgr.client.Users().Get(ctx, user, metav1.GetOptions{}); err == nil {
+		caps = caps.ForUser(u)
+	} else if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("resolving organization quota for %q: %w", user, err)
 	}
-	counter := quota.CounterFunc(func(ctx context.Context) (int32, error) {
-		list, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
-			LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
-		})
-		if err != nil {
-			return 0, err
+	if err := quota.CheckOrgQuota(ctx, user, caps.Organizations, quota.CounterFunc(func(ctx context.Context) (int32, error) {
+		return h.countCreatedOrgs(ctx, user)
+	})); err != nil {
+		return err
+	}
+	if h.mgr.freePlan == "" {
+		return nil
+	}
+	return quota.CheckFreeOrgQuota(ctx, user, caps.FreeOrganizations, quota.CounterFunc(func(ctx context.Context) (int32, error) {
+		return h.countFreeOrgsAdministered(ctx, user)
+	}))
+}
+
+// countCreatedOrgs is the number of live, non-personal Organizations
+// carrying the user's created-by label.
+func (h *Handler) countCreatedOrgs(ctx context.Context, user string) (int32, error) {
+	list, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
+		LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
+	})
+	if err != nil {
+		return 0, err
+	}
+	var n int32
+	for i := range list.Items {
+		o := &list.Items[i]
+		if o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
+			continue
 		}
-		var n int32
-		for i := range list.Items {
-			o := &list.Items[i]
-			if o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
+		n++
+	}
+	return n, nil
+}
+
+// countFreeOrgsAdministered is the number of live, non-personal
+// Organizations on the free plan in which the user holds the org-scope admin
+// role, read from their membership index. The free allowance follows who
+// runs an organization today rather than who clicked create: handing an
+// organization over frees the slot, and a creator who left is not charged
+// for it (docs/organizations.md O-5).
+func (h *Handler) countFreeOrgsAdministered(ctx context.Context, user string) (int32, error) {
+	idx, err := h.mgr.client.UserMembershipIndices().Get(ctx, user, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	seen := map[string]bool{}
+	var n int32
+	for _, e := range idx.Spec.Entries {
+		if e.WorkspaceUUID != "" || e.Role != tenancyv1alpha1.MembershipRoleAdmin || e.Personal || seen[e.OrgUUID] {
+			continue
+		}
+		seen[e.OrgUUID] = true
+		org, err := h.mgr.client.Organizations().Get(ctx, e.OrgUUID, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
 				continue
 			}
-			n++
+			return 0, err
 		}
-		return n, nil
-	})
-	return quota.CheckOrgQuota(ctx, user, cap, counter)
+		if org.Spec.Personal || !org.DeletionTimestamp.IsZero() || !quota.IsFree(org, h.mgr.freePlan) {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// quotaMessage is the sentence the portal shows for a 409 QuotaExceeded.
+func quotaMessage(qe *quota.QuotaExceededError) string {
+	switch {
+	case qe.Kind == quota.KindFreeOrganizations && qe.Cap == 0:
+		return "your account does not allow organizations on the free plan; ask a platform admin to raise your limit or to put the new organization on a plan"
+	case qe.Kind == quota.KindFreeOrganizations:
+		return fmt.Sprintf("you already administer %d of %d organizations on the free plan (including ones awaiting deletion); a deleted organization frees its slot once its grace period ends, or ask a platform admin to put one of them on a plan", qe.Count, qe.Cap)
+	case qe.Cap == 0:
+		return "your account does not allow creating organizations; ask a platform admin to raise your limit"
+	default:
+		return fmt.Sprintf("you already have %d of %d organizations (including ones awaiting deletion); a deleted organization frees its slot once its grace period ends, or ask a platform admin to raise your limit", qe.Count, qe.Cap)
+	}
 }
 
 // deleteOrg soft-deletes an Org by stamping

@@ -61,6 +61,33 @@ type UserSpec struct {
 	RBACIdentity   string         `json:"rbacIdentity"`
 	DefaultCluster string         `json:"defaultCluster,omitempty"`
 	OIDCProviders  []OIDCProvider `json:"oidcProviders,omitempty"`
+
+	// Quota overrides the hub-wide caps on the Organizations this User may
+	// hold (docs/organizations.md O-5). Unset defers to the hub flags.
+	// Settable only by a platform admin.
+	//
+	// +optional
+	Quota *UserQuota `json:"quota,omitempty"`
+}
+
+// UserQuota is a platform admin's per-user override of the hub's
+// organization caps. A nil field keeps the hub default for that cap; 0 is a
+// real cap of zero.
+type UserQuota struct {
+	// Organizations caps how many non-personal Organizations this User may
+	// create (the hub's --default-orgs-per-user).
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	Organizations *int32 `json:"organizations,omitempty"`
+
+	// FreeOrganizations caps how many non-personal Organizations on the
+	// default (free) plan this User may administer at once (the hub's
+	// --free-orgs-per-user). Creating another needs a plan on one of them.
+	//
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	FreeOrganizations *int32 `json:"freeOrganizations,omitempty"`
 }
 
 // OIDCProvider stores OIDC provider information for a user.

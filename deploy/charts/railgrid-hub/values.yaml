@@ -109,12 +109,17 @@ hub:
   # default of 720h (30 days). Shortening it on an upgrade purges anything
   # already deleted for longer than the new window on the next sweep.
   softDeleteGracePeriod: ""
-  # How many organizations one user may create when metering is not installed
-  # or their plan has no `organizations` limit. Personal organizations do not
-  # count. With metering installed the cap comes from the user's Entitlement
-  # (the plan's `organizations` row) and this is only the fallback. null leaves
-  # the binary default of 10.
+  # How many organizations one user may create. Personal organizations do not
+  # count; a platform admin can override it per user in User.spec.quota. null
+  # leaves the binary default of 10.
   defaultOrgsPerUser: null
+  # How many organizations on the default (free) metering plan one user may
+  # administer at once; creating another needs a plan on one of them
+  # (PUT /api/admin/organizations/{uuid}/plan). Personal organizations do not
+  # count, a platform admin can override it per user in User.spec.quota, and it
+  # applies only when metering is configured. 0 forbids free organizations
+  # beyond the personal one. null leaves the binary default of 1.
+  freeOrgsPerUser: null
   # Additional Content-Security-Policy frame-src entries allowed in the portal.
   # Use this for platform-owned preview hosts that are rendered inside the portal.
   portalFrameSources: []

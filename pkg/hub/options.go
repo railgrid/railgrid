@@ -140,11 +140,17 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
-	// DefaultOrgsPerUser is how many Organizations a User may create when
-	// metering is not installed or their plan carries no `organizations`
-	// limit (docs/organizations.md O-5). Personal organizations do not
-	// count. Must be positive.
+	// DefaultOrgsPerUser is how many Organizations a User may create
+	// (docs/organizations.md O-5); User.spec.quota.organizations overrides
+	// it per user. Personal organizations do not count. Must be positive.
 	DefaultOrgsPerUser int32
+	// FreeOrgsPerUser is how many non-personal Organizations on the default
+	// (free) metering plan a User may administer at once (O-5); creating
+	// another needs a plan on one of them. User.spec.quota.freeOrganizations
+	// overrides it per user. Applies only when metering is configured
+	// (MeteringWorkspace). Zero forbids free organizations beyond the
+	// personal one; must not be negative.
+	FreeOrgsPerUser int32
 
 	// SoftDeleteGracePeriod is how long a soft-deleted User, Organization
 	// or Workspace stays recoverable before the softdelete reconciler
@@ -251,6 +257,7 @@ func NewOptions() *Options {
 
 		SoftDeleteGracePeriod: softdelete.DefaultGracePeriod,
 		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,
+		FreeOrgsPerUser:       quota.DefaultFreeOrgsPerUser,
 
 		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 		// Wide for this release; the next one defaults to false. See the field.
