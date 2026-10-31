@@ -39,6 +39,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-sdk/modelcatalog"
 )
 
 // SecretGetter is the minimal tenant-Secret read surface this package needs.
@@ -101,10 +102,11 @@ var ErrCredentialNotFound = errors.New("model credential not found")
 // Profile is one resolved credential: the endpoint plus the key behind it.
 // It never leaves the process.
 type Profile struct {
-	Provider string `json:"provider,omitempty"`
-	BaseURL  string `json:"baseURL,omitempty"`
-	Model    string `json:"model,omitempty"`
-	APIKey   string `json:"apiKey,omitempty"`
+	ReasoningEffort string `json:"-"`
+	Provider        string `json:"provider,omitempty"`
+	BaseURL         string `json:"baseURL,omitempty"`
+	Model           string `json:"model,omitempty"`
+	APIKey          string `json:"apiKey,omitempty"`
 }
 
 func (p Profile) normalized() Profile {
@@ -209,12 +211,18 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 	}
 	switch p.Provider {
 	case ProviderOpenAICompatible, ProviderOpenAI, "":
+		if err := ValidateReasoningEffort(p.Provider, p.BaseURL, p.Model, p.ReasoningEffort); err != nil {
+			return nil, err
+		}
 		cfg := &openaimodel.ChatModelConfig{
 			APIKey:          p.APIKey,
 			BaseURL:         strings.TrimRight(p.BaseURL, "/"),
 			Model:           p.Model,
 			HTTPClient:      &http.Client{},
 			ReasoningEffort: modelReasoningEffort(p.Model),
+		}
+		if p.ReasoningEffort != "" {
+			cfg.ReasoningEffort = openaimodel.ReasoningEffortLevel(p.ReasoningEffort)
 		}
 		if modelSupportsTemperature(p.Model) {
 			t := float32(0.2)
@@ -384,3 +392,32 @@ func modelSupportsTemperature(model string) bool {
 	}
 	return true
 }
+
+// ReasoningEfforts exposes only efforts supported by the Agents transport.
+func ReasoningEfforts(provider, baseURL, model string) []string {
+	if provider == ProviderOpenAI {
+		provider = ProviderOpenAICompatible
+	}
+	profile, ok := modelcatalog.ReasoningProfileForConnection(provider, baseURL, model)
+	if !ok {
+		return []string{}
+	}
+	if profile.ResponsesForReasoning {
+		return []string{"none"}
+	}
+	return profile.Efforts
+}
+
+func ValidateReasoningEffort(provider, baseURL, model, effort string) error {
+	if effort == "" {
+		return nil
+	}
+	for _, supported := range ReasoningEfforts(provider, baseURL, model) {
+		if effort == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf("reasoning effort %q is not supported by this model connection", effort)
+}
+
+func DefaultReasoningEffort(model string) string { return string(modelReasoningEffort(model)) }

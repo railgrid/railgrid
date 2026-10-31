@@ -1,0 +1,94 @@
+// Copyright 2026 The Railgrid Authors.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+
+package store
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"maps"
+)
+
+// SessionModelSettings belongs to one conversation, never to its Agent.
+// An empty credential inherits the Agent's chat credential. Efforts are keyed
+// by credential so switching models cannot carry an incompatible effort over.
+type SessionModelSettings struct {
+	ModelCredential        string            `json:"modelCredential,omitempty"`
+	ReasoningEffortByModel map[string]string `json:"reasoningEffortByModel,omitempty"`
+}
+
+// ModelSettings pins the choices used by a run, including approval resumes.
+type ModelSettings struct {
+	ModelCredential string `json:"modelCredential"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+}
+
+func (m *MemoryStore) GetSessionModelSettings(_ context.Context, scope Scope, session string) (SessionModelSettings, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	if err := scope.withAgent(); err != nil {
+		return SessionModelSettings{}, err
+	}
+	settings := m.sessionModels[sessionKey(scope, session)]
+	settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
+	return settings, nil
+}
+
+func (m *MemoryStore) PutSessionModelSettings(_ context.Context, scope Scope, session string, settings SessionModelSettings) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
+	m.sessionModels[sessionKey(scope, session)] = settings
+	return nil
+}
+
+func (p *PostgresStore) GetSessionModelSettings(ctx context.Context, scope Scope, session string) (SessionModelSettings, error) {
+	scope = p.normalizeScope(ctx, scope)
+	if err := scope.withAgent(); err != nil {
+		return SessionModelSettings{}, err
+	}
+	var data []byte
+	err := p.db.QueryRowContext(ctx, `SELECT settings FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, session).Scan(&data)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SessionModelSettings{}, nil
+	}
+	if err != nil {
+		return SessionModelSettings{}, err
+	}
+	var settings SessionModelSettings
+	err = json.Unmarshal(data, &settings)
+	return settings, err
+}
+
+func (p *PostgresStore) PutSessionModelSettings(ctx context.Context, scope Scope, session string, settings SessionModelSettings) error {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return err
+	}
+	data, err := marshalJSONB(settings)
+	if err != nil {
+		return err
+	}
+	_, err = mutation.executor.ExecContext(ctx, `INSERT INTO agents_session_models (org_uuid,workspace_uuid,agent_name,session_id,settings) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (org_uuid,workspace_uuid,agent_name,session_id) DO UPDATE SET settings=EXCLUDED.settings, updated_at=NOW()`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, session, data)
+	if err != nil {
+		return err
+	}
+	return mutation.commit()
+}

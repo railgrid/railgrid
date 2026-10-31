@@ -737,7 +737,7 @@ var errNoCredential = errors.New("this agent has no model credential assigned â€
 // workspace, whose spec.secretRef points at the Secret holding the key. A
 // purpose the agent did not map falls back to "chat", so mapping only "chat"
 // keeps working everywhere.
-func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string) (einomodel.BaseChatModel, error) {
+func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialResolver, agent *agentsv1alpha1.Agent, purpose string, settings ...*store.ModelSettings) (einomodel.BaseChatModel, error) {
 	primary := agent.Spec.ModelCredentialFor(purpose)
 	if primary == "" {
 		return nil, errNoCredential
@@ -762,6 +762,9 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		if len(settings) > 0 && settings[0] != nil && name == settings[0].ModelCredential {
+			profile.ReasoningEffort = settings[0].ReasoningEffort
 		}
 		m, err := llm.BuildModel(ctx, profile)
 		if err != nil {

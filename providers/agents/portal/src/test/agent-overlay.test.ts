@@ -25,6 +25,7 @@ async function mountOverlay() {
   document.body.appendChild(element)
   mounted.push(element)
   await settleVue(6)
+  vi.spyOn(element.api!, 'getSessionModel').mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' })
   vi.spyOn(element.api!, 'listSessions').mockResolvedValue([])
   vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: [] })
   vi.spyOn(element.api!, 'listRuns').mockResolvedValue({ items: [] })

@@ -107,13 +107,13 @@ type resourceRoutes struct {
 func (s *Server) routes() map[string]resourceRoutes {
 	get := []string{http.MethodGet}
 	post := []string{http.MethodPost}
-	del := []string{http.MethodDelete}
+
 	return map[string]resourceRoutes{
 		"agents": {gvr: agentsclient.AgentGVR, verbs: map[string]verbRoute{
 			"chat":          {methods: post, handler: s.chat, stream: true},
 			"run":           {methods: post, handler: s.invokeAgentRun},
 			"sessions":      {methods: get, handler: s.listSessions, readOnly: true},
-			"session":       {methods: del, tail: tailRequired, handler: s.deleteSession},
+			"session":       {methods: []string{http.MethodGet, http.MethodPatch, http.MethodDelete}, tail: tailRequired, handler: s.sessionModelSettings},
 			"messages":      {methods: get, handler: s.listMessages, readOnly: true},
 			"usage":         {methods: get, handler: s.usageRollup, readOnly: true},
 			"inbox":         {methods: get, handler: s.listInboxItems, readOnly: true},

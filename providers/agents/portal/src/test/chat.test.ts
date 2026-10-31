@@ -2009,49 +2009,46 @@ describe('conversation model picker', () => {
     await settle()
   }
 
-  it('saves the selected credential, blocks sending until saved, and keeps the draft', async () => {
-    const pending = deferred<ReturnType<typeof agentFixture>>()
-    const saved = agentFixture('scout')
-    saved.spec.backend!.model!.credentials!.chat = 'sol'
-    const patchAgent = vi.fn(() => pending.promise)
+  const picker = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.k-ai-model-reasoning-picker__trigger')!
+  async function chooseModel(el: HTMLElement, name: string) {
+    picker(el).click()
+    await settle()
+    document.querySelector<HTMLButtonElement>('[aria-label^="Choose model:"]')?.click()
+    await settle()
+    const option = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(item => text(item).includes(name))!
+    option.click()
+    await settle()
+  }
+
+  it('saves only the current chat, blocks sending until saved, and keeps the draft', async () => {
+    const pending = deferred<any>()
+    const saveSessionModel = vi.fn(() => pending.promise)
+    const patchAgent = vi.fn()
     const chatStream = vi.fn(scripted([]))
-    const { el, store } = await mountChat(chatStream, { patchAgent, listAgents: async () => [saved] })
+    const { el, store } = await mountChat(chatStream, { saveSessionModel, patchAgent })
     await configureModels(store)
-    expect(el.querySelector('.k-ai-composer__editor .k-ai-composer__actions [role="combobox"]')).not.toBeNull()
-    expect(el.querySelector('.k-ai-composer__footer')).toBeNull()
-    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
-    expect(text(el)).not.toContain('default for future turns')
-    el.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
-    await settle()
-    expect(el.querySelectorAll('[role="option"]')).toHaveLength(2)
-    const choose = [...el.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => text(option).includes('sol'))!
-    choose.click()
-    await settle()
-    expect(patchAgent).toHaveBeenCalledWith('scout', { modelCredential: 'sol' })
-    expect(text(el)).toContain('Saving model')
+    await chooseModel(el, 'sol')
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({ modelCredential: 'sol' }))
+    expect(patchAgent).not.toHaveBeenCalled()
+    expect(document.querySelector('.k-ai-model-reasoning-picker__panel')).not.toBeNull()
     await send(el, 'Keep this draft')
     expect(chatStream).not.toHaveBeenCalled()
-    pending.resolve(saved)
+    pending.resolve({ selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '' })
     await settle(8)
     expect(el.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Keep this draft')
-    expect(el.querySelector('[role="combobox"]')!.getAttribute('aria-label')).toBe('Model: sol')
-    expect(text(el)).not.toContain('Saving model')
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    expect(store.agents.data[0].spec.backend!.model!.credentials!.chat).toBe('openai')
   })
 
-  it('rolls back a rejected save and exposes an error', async () => {
-    const original = agentFixture('scout')
+  it('rolls back a rejected save and exposes a retry', async () => {
     const { el, store } = await mountChat(scripted([]), {
-      patchAgent: async () => { throw new Error('denied') },
-      listAgents: async () => [original],
+      saveSessionModel: async () => { throw new Error('denied') },
     })
     await configureModels(store)
-    const trigger = el.querySelector<HTMLButtonElement>('[role="combobox"]')!
-    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
-    await settle()
-    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await chooseModel(el, 'sol')
     await settle(8)
-    expect(text(el)).toContain('Model could not be saved')
-    expect(trigger.getAttribute('aria-label')).toBe('Model: openai')
+    expect(text(el)).toContain('Chat model could not be saved')
+    expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
   })
 
   it('disables model switching during a running turn', async () => {
@@ -2059,10 +2056,33 @@ describe('conversation model picker', () => {
     const { el, store } = await mountChat(scripted([], gate.promise))
     await configureModels(store)
     await send(el, 'Start a turn')
-    expect(el.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(true)
+    expect(picker(el).disabled).toBe(true)
     gate.resolve()
     await settle(8)
-    expect(el.querySelector<HTMLButtonElement>('[role="combobox"]')!.disabled).toBe(false)
+    expect(picker(el).disabled).toBe(false)
+  })
+
+  it('restores reasoning per chat without patching the agent', async () => {
+    const saveSessionModel = vi.fn(async (_name: string, _session: string, prefs: any) => prefs)
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1', 'First'), session('s2', 'Second')],
+      getSessionModel: async (_name: string, id: string) => ({
+        selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '',
+        reasoningEffortByModel: { sol: id === 's1' ? 'low' : 'high' },
+      }),
+      saveSessionModel,
+    })
+    await configureModels(store)
+    expect(picker(el).getAttribute('aria-label')).toContain('Low')
+    await chooseSession(el, 'Second')
+    await settle(8)
+    expect(picker(el).getAttribute('aria-label')).toContain('High')
+    picker(el).click()
+    await settle()
+    document.querySelector<HTMLButtonElement>('[aria-label="Reset reasoning to model default"]')!.click()
+    await settle(8)
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', 's2', expect.objectContaining({ reasoningEffortByModel: { sol: '' } }))
+    expect(store.agents.data[0].spec.backend!.model!.credentials!.chat).toBe('openai')
   })
 
   it('omits the picker for harness execution', async () => {
@@ -2070,7 +2090,7 @@ describe('conversation model picker', () => {
     store.agents.data[0].spec.backend = { type: 'harness' }
     store.dispatchEvent(new Event('change'))
     await settle()
-    expect(el.querySelector('[role="combobox"]')).toBeNull()
+    expect(el.querySelector('.k-ai-model-reasoning-picker__trigger')).toBeNull()
     expect(text(el)).not.toContain('default for future turns')
   })
 })

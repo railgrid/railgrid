@@ -84,6 +84,10 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 func (p *PostgresStore) Close() error { return p.db.Close() }
 
 var agentsSchema = []string{
+	`CREATE TABLE IF NOT EXISTS agents_session_models (
+ org_uuid TEXT NOT NULL, workspace_uuid TEXT NOT NULL, agent_name TEXT NOT NULL,
+ session_id TEXT NOT NULL, settings JSONB NOT NULL, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+ PRIMARY KEY (org_uuid,workspace_uuid,agent_name,session_id))`,
 	`CREATE TABLE IF NOT EXISTS agents_messages (
 		id TEXT PRIMARY KEY,
 		append_sequence BIGSERIAL NOT NULL,
@@ -163,6 +167,7 @@ var agentsSchema = []string{
 	// Legacy NULL rows resolve live Agent settings on first harness execution;
 	// SaveRun preserves the first non-NULL snapshot, including empty settings.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS harness_settings JSONB`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS model_settings JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS result JSONB`,
 	// A run handed back to the queue after a transient refusal: how many times,
 	// and when it may be claimed again. Zero / NULL on every row written before
@@ -593,6 +598,9 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
 		return err
 	}
+	if _, err := mutation.executor.ExecContext(ctx, `DELETE FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+		return err
+	}
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	if _, err := mutation.executor.ExecContext(ctx, `
@@ -897,12 +905,20 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			return err
 		}
 	}
+	var modelSettings any
+	if run.ModelSettings != nil {
+		modelSettings, err = marshalJSONB(run.ModelSettings)
+		if err != nil {
+			return err
+		}
+	}
+
 	_, err = mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_runs
 			(id, org_uuid, workspace_uuid, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt,
 			 input, output, sources, idempotency_key, delivery, message, checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-			 backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32)
+			 backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings, model_settings)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)
 		ON CONFLICT (id) DO UPDATE SET
 			phase=EXCLUDED.phase, attempt=EXCLUDED.attempt, message=EXCLUDED.message,
 			retries=EXCLUDED.retries, retry_at=EXCLUDED.retry_at,
@@ -914,12 +930,13 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 			backend=EXCLUDED.backend, attempt_id=EXCLUDED.attempt_id,
 			harness_session_id=EXCLUDED.harness_session_id,
 			repository=EXCLUDED.repository, result=EXCLUDED.result,
-			harness_settings=COALESCE(agents_runs.harness_settings, EXCLUDED.harness_settings)`,
+			harness_settings=COALESCE(agents_runs.harness_settings, EXCLUDED.harness_settings),
+			model_settings=COALESCE(agents_runs.model_settings, EXCLUDED.model_settings)`,
 		run.ID, scope.OrgUUID, scope.WorkspaceUUID, run.AgentName, run.SessionID, run.Trigger, run.ParentRunID,
 		string(run.Phase), run.Attempt, run.Input, run.Output, sources, run.IdempotencyKey, delivery, run.Message, nullBytes(run.Checkpoint),
 		run.InputTokens, run.OutputTokens, run.USDMicros,
 		run.CreatedAt.UTC(), run.UpdatedAt.UTC(), nullTime(run.StartedAt), nullTime(run.FinishedAt), nullInt64(run.WorkedDurationMS),
-		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings)
+		run.Backend, run.AttemptID, run.HarnessSessionID, repository, result, run.Retries, nullTime(run.RetryAt), harnessSettings, modelSettings)
 	if err != nil {
 		return err
 	}
@@ -930,7 +947,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings`
+		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings, model_settings`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1178,6 +1195,7 @@ func scanRun(r rowScanner) (Run, error) { return scanScopedRun(r, nil) }
 // list, keeping one scanner for both.
 func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	var run Run
+	var modelSettings []byte
 	var phase string
 	var checkpoint, sources, delivery, repository, result, harnessSettings []byte
 	var started, finished, cancelAt, retryAt sql.NullTime
@@ -1189,7 +1207,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
 		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
-		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt, &harnessSettings)
+		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt, &harnessSettings, &modelSettings)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err
 	}
@@ -1211,6 +1229,11 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	if len(delivery) > 0 {
 		if err := json.Unmarshal(delivery, &run.Delivery); err != nil {
 			return Run{}, fmt.Errorf("decode run delivery: %w", err)
+		}
+	}
+	if len(modelSettings) > 0 {
+		if err := json.Unmarshal(modelSettings, &run.ModelSettings); err != nil {
+			return Run{}, fmt.Errorf("decode model settings: %w", err)
 		}
 	}
 	if len(harnessSettings) > 0 {
@@ -1899,6 +1922,7 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_inbox WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_tool_calls WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_usage WHERE org_uuid=$1 AND workspace_uuid=$2) OR
+			EXISTS (SELECT 1 FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
@@ -1910,6 +1934,16 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	if !hasSource {
 		return nil
 	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO agents_session_models (org_uuid,workspace_uuid,agent_name,session_id,settings,updated_at)
+ SELECT $3,$4,agent_name,session_id,settings,updated_at FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2
+ ON CONFLICT (org_uuid,workspace_uuid,agent_name,session_id) DO UPDATE SET settings=EXCLUDED.settings,updated_at=EXCLUDED.updated_at
+ WHERE EXCLUDED.updated_at>agents_session_models.updated_at`, fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
+		return err
+	}
+
 	// Pick one stable idempotency owner across both scopes before the rows meet
 	// under the destination key. Every Run row remains; retries resolve to the
 	// earliest-created run, with ID as a deterministic tie-breaker.
@@ -2214,7 +2248,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_models", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {

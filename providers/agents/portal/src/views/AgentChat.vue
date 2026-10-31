@@ -3,10 +3,9 @@ import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
-import { ApiError, type ApiClient } from '../api'
+import { ApiError, type ApiClient, type SessionModelPreferences } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
-import AIModelPicker from '../agentkit/AIModelPicker.vue'
-import { queueAgentConfigSave } from '../vue/config-save-queue'
+import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
 import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
@@ -182,45 +181,86 @@ const agent = computed(() => {
 // is therefore the backend question, not the credential one.
 const hasModel = computed(() => {
   revision.value
-  return agentHarnessBacked(agent.value) || Boolean(agentModelCredential(agent.value))
+  return agentHarnessBacked(agent.value) || Boolean(selectedModel.value)
 })
-// Changing this selection updates the agent, not just this conversation.
+// Preferences belong to the active conversation, never to the Agent spec.
 const modelSaving = ref(false)
 const modelSaveError = ref('')
+const modelPreferences = ref<SessionModelPreferences | null>(null)
 let modelSaveSerial = 0
+let modelPending: Promise<void> = Promise.resolve()
+let retryModelPreferences: SessionModelPreferences | undefined
 const isModelBackend = computed(() => {
   revision.value
   return Boolean(agent.value) && !agentHarnessBacked(agent.value)
 })
+const selectedModel = computed(() => modelPreferences.value?.selectedCredential ?? agentModelCredential(agent.value))
+const selectedEffort = computed(() => modelPreferences.value?.reasoningEffortByModel?.[selectedModel.value] || '')
+const effortLabel = (value: string) => value === 'xhigh' ? 'Extra high' : value ? value[0].toUpperCase() + value.slice(1) : ''
+const effortOptions = computed(() => (modelPreferences.value?.effortOptions || []).map(value => ({ value, label: effortLabel(value) })))
+const invalidEffort = computed(() => Boolean(selectedEffort.value && !effortOptions.value.some(option => option.value === selectedEffort.value)))
 const modelChoices = computed(() => {
   revision.value
   return props.store.chatCredentials().map(credential => ({
     id: credential.name, name: credential.name, model: credential.model || 'Provider default',
   }))
 })
-const modelSwitchDisabled = computed(() => modelSaving.value || streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
 
-async function selectModelCredential(credential: string): Promise<void> {
-  if (!isModelBackend.value || modelSwitchDisabled.value || credential === agentModelCredential(agent.value) || !modelChoices.value.some(model => model.id === credential)) return
+async function updateChatModel(preferences?: SessionModelPreferences): Promise<void> {
+  const serial = ++modelSaveSerial
   const authority = captureAuthority()
   const name = props.name
-  const serial = ++modelSaveSerial
+  const session = sessionID.value
+  if (!session || !isModelBackend.value) {
+    modelPreferences.value = null
+    modelSaving.value = false
+    modelSaveError.value = ''
+    return
+  }
   modelSaving.value = true
   modelSaveError.value = ''
-  const saved = await queueAgentConfigSave({
-    store: props.store, api: props.api, name,
-    patch: { modelCredential: credential },
-    apply: spec => {
-      const backend = spec.backend || (spec.backend = {})
-      backend.model = { ...backend.model, credentials: { ...backend.model?.credentials, chat: credential } }
-    },
-    success: 'Default model saved.',
-  })
-  if (!mounted || serial !== modelSaveSerial || props.name !== name || !authorityIsCurrent(authority)) return
-  modelSaving.value = false
-  if (!saved) modelSaveError.value = 'Model could not be saved. Try again.'
-  else maybeAutoSend()
+  retryModelPreferences = preferences
+  const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
+  try {
+    const result = preferences
+      ? await props.api.saveSessionModel(name, session, preferences)
+      : await props.api.getSessionModel(name, session)
+    if (!current()) return
+    modelPreferences.value = result
+    retryModelPreferences = undefined
+  } catch {
+    if (current()) modelSaveError.value = preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+  } finally {
+    if (current()) {
+      modelSaving.value = false
+      maybeAutoSend()
+    }
+  }
 }
+
+watch([sessionID, isModelBackend], () => {
+  modelPreferences.value = null
+  retryModelPreferences = undefined
+  modelPending = updateChatModel()
+}, { flush: 'sync' })
+
+function selectModelCredential(credential: string): void {
+  if (!isModelBackend.value || modelSwitchDisabled.value || credential === selectedModel.value || !modelChoices.value.some(model => model.id === credential)) return
+  modelPending = updateChatModel({
+    ...modelPreferences.value, selectedCredential: credential, modelCredential: credential,
+    effortOptions: [], defaultEffort: '',
+  })
+}
+function selectReasoningEffort(effort: string): void {
+  if (modelSwitchDisabled.value || !modelPreferences.value) return
+  modelPending = updateChatModel({
+    ...modelPreferences.value,
+    reasoningEffortByModel: { ...modelPreferences.value.reasoningEffortByModel, [selectedModel.value]: effort },
+  })
+}
+function retryChatModel(): void { modelPending = updateChatModel(retryModelPreferences) }
 
 const sessionOptions = computed(() => {
   const list = sessions.value.slice()
@@ -997,7 +1037,7 @@ async function openAgent(): Promise<void> {
 }
 
 function maybeAutoSend(): void {
-  if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value) return
+  if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value || modelSaveError.value) return
   const text = props.store.takePendingPrompt(props.name)
   if (!text) return
   resetApprovalRecovery()
@@ -1009,7 +1049,8 @@ function maybeAutoSend(): void {
   messagesHasSnapshot.value = true
   resetOrphanRead()
   draft.value = text
-  void send()
+  const session = sessionID.value
+  void modelPending.then(() => { if (sessionID.value === session) void send() })
 }
 
 function patchMessage(id: string, patch: Partial<ChatMessage>): void {
@@ -1136,7 +1177,7 @@ async function cancelLiveRun(
 
 async function send(): Promise<void> {
   const draftText = draft.value.trim()
-  if (!draftText || streaming.value || modelSaving.value || !hasModel.value) return
+  if (!draftText || streaming.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value) return
   engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
   // or authorization. Persisting it in the message keeps reloads auditable.
@@ -2064,15 +2105,21 @@ defineExpose({
               ></textarea>
               <div v-if="isModelBackend && !composerOnly" class="k-ai-composer__controls">
                 <div class="k-ai-composer__actions k-ai-composer__actions--fill">
-                  <AIModelPicker
+                  <AIModelReasoningPicker
                     class="agents-chat-model-picker"
-                    description="Sets the default model for this agent."
                     :models="modelChoices"
-                    :selectedID="agentModelCredential(agent)"
-                    :disabled="modelSwitchDisabled"
-                    require-selection
-                    contained
+                    :selectedID="selectedModel"
+                    :effort="selectedEffort"
+                    :effort-options="effortOptions"
+                    :default-effort-label="effortLabel(modelPreferences?.defaultEffort || '')"
+                    :disabled="modelInteractionLocked"
+                    :saving="modelSaving"
+                    :save-error="modelSaveError"
+                    :reset-required="invalidEffort"
+                    :validation-error="invalidEffort ? 'This reasoning level is no longer supported. Reset to model default.' : ''"
                     @select="selectModelCredential"
+                    @update:effort="selectReasoningEffort"
+                    @retry="retryChatModel"
                   />
                 </div>
               </div>
@@ -2092,11 +2139,11 @@ defineExpose({
                 class="agents-composer-primary"
                 state="send"
                 type="submit"
-                :disabled="!hasModel || modelSaving || !draft.trim()"
+                :disabled="!hasModel || modelSaving || Boolean(modelSaveError) || invalidEffort || !draft.trim()"
               />
             </template>
             <template v-if="!composerOnly && isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
-              <span v-if="modelSaveError" role="alert">{{ modelSaveError }}</span>
+              <button v-if="modelSaveError" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="retryChatModel">{{ modelSaveError }}</button>
               <span v-else-if="modelSaving" role="status">Saving model…</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>

@@ -20,6 +20,7 @@ import (
 // MemoryStore is a non-durable in-process Store for development and tests. It
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
+	sessionModels      map[string]SessionModelSettings
 	mu                 sync.Mutex
 	messages           map[string][]Message         // key: scope|session
 	runs               map[string]Run               // key: scope|runID
@@ -43,6 +44,7 @@ type MemoryStore struct {
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
+		sessionModels:      map[string]SessionModelSettings{},
 		messages:           map[string][]Message{},
 		runs:               map[string]Run{},
 		memories:           map[string]Memory{},
@@ -274,6 +276,16 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.usage, key)
 	}
+	for key, settings := range m.sessionModels {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if _, ok := m.sessionModels[target]; !ok {
+			m.sessionModels[target] = settings
+		}
+		delete(m.sessionModels, key)
+	}
 	for key, summary := range m.summaries {
 		if !hasPrefix(key, fromPrefix) {
 			continue
@@ -372,6 +384,11 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.usage {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionModels {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -680,6 +697,7 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.summaries, sessionKey(scope, sessionID))
+	delete(m.sessionModels, sessionKey(scope, sessionID))
 	// The harness session belongs to the conversation that was just wiped. A
 	// "/new" that kept it would chain the next turn onto a harness session
 	// holding the transcript the user asked to be rid of.
@@ -826,6 +844,13 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	}
 	if old, ok := m.runs[key]; ok && old.HarnessSettings != nil {
 		run.HarnessSettings = old.HarnessSettings
+	}
+	if old, ok := m.runs[key]; ok && old.ModelSettings != nil {
+		run.ModelSettings = old.ModelSettings
+	}
+	if run.ModelSettings != nil {
+		dup := *run.ModelSettings
+		run.ModelSettings = &dup
 	}
 	if run.HarnessSettings != nil {
 		dup := *run.HarnessSettings
@@ -1398,6 +1423,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	for k := range m.messages {
 		if len(k) >= len(msgPrefix) && k[:len(msgPrefix)] == msgPrefix {
 			delete(m.messages, k)
+		}
+	}
+	for k := range m.sessionModels {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionModels, k)
 		}
 	}
 	for k := range m.summaries {

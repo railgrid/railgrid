@@ -41,6 +41,20 @@ localStorage copy is only a fallback.
 Navigation state lives in `location.hash` (`src/router.ts`), never in the host
 router.
 
+## Chat model and reasoning
+
+The conversation composer uses AgentKit's shared `AIModelReasoningPicker`, as
+App Studio does. Model and effort choices apply only to the current chat.
+`GET/PATCH agents/{name}/session/{sessionID}` reads and saves these preferences;
+it never patches the Agent or its ModelCredential. Each run pins the effective
+choice so approval resumes and recovery retain it. New chats and background
+runs continue to use the Agent defaults.
+
+Effort choices come from the shared server-side model capability catalog.
+Custom endpoints and unknown models show only model selection. Agents currently
+uses Chat Completions, so reasoning levels requiring the Responses transport
+are not offered. Effort is remembered separately for each credential in a chat.
+
 ## MCP Apps result views
 
 Successful tool results may include a provider-owned MCP App view. The portal

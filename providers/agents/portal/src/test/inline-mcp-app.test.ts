@@ -115,7 +115,8 @@ describe('inline provider app journey', () => {
       },
     })
     await reveal()
-    expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull()
+    // Digest verification uses WebCrypto; wait for readiness rather than a fixed number of render ticks.
+    await vi.waitFor(() => expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull())
     view.element.querySelector<HTMLButtonElement>('[aria-label="Expand result"]')!.click()
     await settleVue(6)
 

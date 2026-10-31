@@ -177,6 +177,7 @@ type Run struct {
 	// coordinates.
 	Backend         string           `json:"backend,omitempty"`
 	HarnessSettings *HarnessSettings `json:"harnessSettings,omitempty"`
+	ModelSettings   *ModelSettings   `json:"modelSettings,omitempty"`
 	// AttemptID is the runner attempt one harness-backed run IS. It is the run's
 	// own id today, but it is stored rather than assumed: the coordinate a
 	// cancel, an inspect and a resume all address must survive a change of that
@@ -767,6 +768,8 @@ type Store interface {
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
 	// ListSessions returns the agent's chat sessions, most-recently-active first.
 	ListSessions(ctx context.Context, scope Scope, limit int) ([]Session, error)
+	GetSessionModelSettings(context.Context, Scope, string) (SessionModelSettings, error)
+	PutSessionModelSettings(context.Context, Scope, string, SessionModelSettings) error
 	// DeleteSession wipes one session's transcript (the "/new" channel command),
 	// including its summary and native harness session. It retains a harness
 	// epoch tombstone so reusing the user-facing ID cannot replay an attempt the
