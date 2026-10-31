@@ -73,11 +73,12 @@ existing first-message preview remains the label.
 The title attempt is one-shot: failures, timeouts, invalid output, or a temporary
 store error leave the preview in place, and later turns do not retry.
 
-Saved model preferences make an empty chat visible in the thread list, even before
-its first message. Delete unused empty chats to free preference quota; opening
-a new chat never silently evicts another chat’s saved choices. The list retains
-up to 100 conversations and 100 empty chats independently, so drafts cannot
-displace the available conversation history and remain accessible for cleanup.
+Saved model preferences make an empty chat eligible for the thread list before
+its first message. The list shows the newest 100 conversations and newest 100
+empty chats independently; older entries remain stored. Deleting any one saved empty
+chat frees a preference slot. Reload after deleting visible drafts to reveal
+older drafts outside the displayed 100. Opening a new chat never silently evicts
+another chat’s saved choices.
 
 ## MCP Apps result views
 

@@ -607,11 +607,11 @@ again. An empty effort uses the model default. Preferences belong to the exact
 organization, workspace, Agent, and session; they never update the Agent.
 Admitted runs pin their own model settings.
 
-A session may save preferences before its first message. Such empty chats appear
-in the session list as deletable chats, so abandoned drafts can be removed
-without silently evicting model choices from another open tab. The list includes
-up to 100 conversations and 100 empty chats, independently capped so neither
-group hides the other. Each scoped Agent can
+A session may save preferences before its first message. The session list shows
+the newest 100 conversations and newest 100 empty chats independently. Older
+entries remain stored; after deleting visible drafts, reload to reveal older
+drafts outside the displayed 100. Deleting any one saved empty chat frees a slot,
+without silently evicting model choices from another open tab. Each scoped Agent can
 store preferences for at most 1,024 session IDs; at the limit, existing entries
 remain editable but new entries receive HTTP 429. Deleting a session removes
 its preferences and frees a slot. `DELETE agents/{name}/session/{sessionID}` also
