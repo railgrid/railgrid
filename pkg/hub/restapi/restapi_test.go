@@ -789,6 +789,29 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	// not counted here; the timeout above is the evidence the cap passed.)
 }
 
+// A plan that resolves to 0 organizations denies the first create with its
+// own message, instead of silently falling back to the hub default.
+func TestCreateOrg_ZeroCapDenies(t *testing.T) {
+	mgr, _, _ := newTestManager(t)
+	mgr.WithOrgQuota(ConstOrgQuota(0))
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "first"})
+	resp, err := http.Post(srv.URL+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+	var status map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	if status["reason"] != "QuotaExceeded" || !strings.Contains(status["message"].(string), "does not allow") {
+		t.Fatalf("status body = %v", status)
+	}
+}
+
 func TestDeleteAndUndeleteOrg(t *testing.T) {
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},

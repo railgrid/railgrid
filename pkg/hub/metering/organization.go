@@ -173,6 +173,21 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	}
 	account, own := OwnerAccount(org)
 	if !own {
+		// The creator's account only exists while the User does. An
+		// organization whose creator was deleted (the User cascade removes
+		// the personal org, not the organizations they created) would
+		// otherwise report into an account with no Entitlement, which the
+		// webhook treats as unlimited; keep it on an account of its own.
+		exists, err := r.creatorExists(ctx, org)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if !exists {
+			logger.Info("organization keeps its own account: its creator no longer exists", "creator", org.Labels[tenancyv1alpha1.OrganizationCreatorLabel])
+			account, own = org.Name, true
+		}
+	}
+	if !own {
 		// A per-org Entitlement an admin has already customized is intent
 		// the hub must not discard: keep the org on its own account and ask
 		// for spec.plan to make it explicit.
@@ -219,9 +234,28 @@ func OwnerAccount(org *tenancyv1alpha1.Organization) (account string, own bool) 
 	return UserAccountName(creator), false
 }
 
+// creatorExists reports whether the User named by the creator label still
+// exists in the users workspace.
+func (r *OrganizationReconciler) creatorExists(ctx context.Context, org *tenancyv1alpha1.Organization) (bool, error) {
+	creator := org.Labels[tenancyv1alpha1.OrganizationCreatorLabel]
+	if err := r.Get(ctx, types.NamespacedName{Name: creator}, &tenancyv1alpha1.User{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("get creator %q: %w", creator, err)
+	}
+	return true, nil
+}
+
+// LabelPlanFromSpec marks a per-org Entitlement whose plan the hub wrote
+// from Organization.spec.plan. Clearing spec.plan later must pool the
+// organization back, so such an Entitlement is the hub's own, not an admin
+// customization, as long as it carries no overrides.
+const LabelPlanFromSpec = "railgrid.ai/plan-from-spec"
+
 // customizedOwnEntitlement reports whether a per-org Entitlement exists that
-// differs from what the hub itself would have created: a plan other than the
-// default, or overrides.
+// carries admin intent the hub must not discard: overrides, or a plan other
+// than the default that the hub did not itself write from spec.plan.
 func (r *OrganizationReconciler) customizedOwnEntitlement(ctx context.Context, orgName string) (bool, error) {
 	ent, err := r.opts.Metering.Resource(gvrEntitlements).Get(ctx, orgName, metav1.GetOptions{})
 	if err != nil {
@@ -230,9 +264,15 @@ func (r *OrganizationReconciler) customizedOwnEntitlement(ctx context.Context, o
 		}
 		return false, err
 	}
-	plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
 	overrides, _, _ := unstructured.NestedSlice(ent.Object, "spec", "overrides")
-	return plan != r.opts.DefaultPlan || len(overrides) > 0, nil
+	if len(overrides) > 0 {
+		return true, nil
+	}
+	if ent.GetLabels()[LabelPlanFromSpec] == "true" {
+		return false, nil
+	}
+	plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	return plan != r.opts.DefaultPlan, nil
 }
 
 // ensureOwnEntitlement creates the organization's own Entitlement and, when
@@ -241,10 +281,13 @@ func (r *OrganizationReconciler) customizedOwnEntitlement(ctx context.Context, o
 // default plan, as before.
 func (r *OrganizationReconciler) ensureOwnEntitlement(ctx context.Context, org *tenancyv1alpha1.Organization, logger klog.Logger) error {
 	plan := org.Spec.Plan
+	labels := map[string]string{"railgrid.ai/organization": org.Name}
 	if plan == "" {
 		plan = r.opts.DefaultPlan
+	} else {
+		labels[LabelPlanFromSpec] = "true"
 	}
-	created, err := ensureEntitlementObject(ctx, r.opts.Metering, org.Name, plan, map[string]string{"railgrid.ai/organization": org.Name})
+	created, err := ensureEntitlementObject(ctx, r.opts.Metering, org.Name, plan, labels)
 	if err != nil {
 		return err
 	}
@@ -260,12 +303,19 @@ func (r *OrganizationReconciler) ensureOwnEntitlement(ctx context.Context, org *
 	if err != nil {
 		return err
 	}
-	if current, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); current == org.Spec.Plan {
+	current, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	entLabels := ent.GetLabels()
+	if current == org.Spec.Plan && entLabels[LabelPlanFromSpec] == "true" {
 		return nil
 	}
 	if err := unstructured.SetNestedField(ent.Object, org.Spec.Plan, "spec", "plan"); err != nil {
 		return err
 	}
+	if entLabels == nil {
+		entLabels = map[string]string{}
+	}
+	entLabels[LabelPlanFromSpec] = "true"
+	ent.SetLabels(entLabels)
 	if _, err := res.Update(ctx, ent, metav1.UpdateOptions{FieldManager: FieldManager}); err != nil {
 		return err
 	}

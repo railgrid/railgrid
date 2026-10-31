@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -318,11 +319,39 @@ type Handler struct {
 	mgr *Manager
 	// userSearch rate-limits GET /api/users/search per caller.
 	userSearch *proxy.IPRateLimiter
+	// orgCreate serializes createOrg's count-then-create per user on this
+	// replica, so two concurrent creates at cap-1 cannot both pass the
+	// quota. Cross-replica, the metering webhook's `organizations` row is
+	// the backstop.
+	orgCreate keyedMutex
 }
 
 // NewHandler constructs a Handler.
 func NewHandler(mgr *Manager) *Handler {
 	return &Handler{mgr: mgr, userSearch: newUserSearchLimiter()}
+}
+
+// keyedMutex hands out one mutex per key. Entries are never evicted; keys
+// are user names, bounded by the user population.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// Lock locks key's mutex and returns its unlock.
+func (k *keyedMutex) Lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = map[string]*sync.Mutex{}
+	}
+	m, ok := k.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		k.locks[key] = m
+	}
+	k.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // RegisterUserOnly attaches the routes that only need the caller's

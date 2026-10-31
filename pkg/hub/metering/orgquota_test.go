@@ -51,6 +51,7 @@ func TestOrgQuotaCap(t *testing.T) {
 	}))
 	seed(entitlementWithLimits("user-bob", []any{map[string]any{"meter": "agents", "enforce": "Hard", "max": "3"}}))
 	seed(entitlementWithLimits("user-carol", []any{map[string]any{"meter": OrganizationsMeter, "enforce": "Meter"}}))
+	seed(entitlementWithLimits("user-erin", []any{map[string]any{"meter": OrganizationsMeter, "enforce": "Hard", "max": "0"}}))
 
 	q := NewOrgQuota(installed(true), store, 10, klog.Background())
 	cases := map[string]int32{
@@ -58,6 +59,7 @@ func TestOrgQuotaCap(t *testing.T) {
 		"bob":   10, // no organizations row: default
 		"carol": 10, // Meter-only row without max: default
 		"dave":  10, // no entitlement yet: default
+		"erin":  0,  // a real zero: no organizations, not the default
 	}
 	for user, want := range cases {
 		got, err := q.Cap(ctx, user)

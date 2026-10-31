@@ -75,7 +75,8 @@ func (q *OrgQuota) Cap(ctx context.Context, user string) (int32, error) {
 }
 
 // limitFromEntitlement reads the max of meter from status.effectiveLimits.
-// A row without a max (a Meter-only row) does not cap.
+// A row without a max (a Meter-only row) does not cap. A max of "0" is a
+// real cap of zero, which createOrg honours as "no organizations".
 func limitFromEntitlement(ent *unstructured.Unstructured, meter string) (int32, bool) {
 	limits, _, _ := unstructured.NestedSlice(ent.Object, "status", "effectiveLimits")
 	for _, raw := range limits {

@@ -33,8 +33,9 @@ func TestCheckOrgQuota(t *testing.T) {
 		{"under cap", 3, 2, false, 3},
 		{"at cap", 3, 3, true, 3},
 		{"over cap", 3, 7, true, 3},
-		{"zero cap falls back to the default", 0, DefaultOrgsPerUser - 1, false, DefaultOrgsPerUser},
-		{"zero cap default reached", 0, DefaultOrgsPerUser, true, DefaultOrgsPerUser},
+		{"zero cap denies even the first", 0, 0, true, 0},
+		{"negative cap falls back to the default", -1, DefaultOrgsPerUser - 1, false, DefaultOrgsPerUser},
+		{"negative cap default reached", -1, DefaultOrgsPerUser, true, DefaultOrgsPerUser},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

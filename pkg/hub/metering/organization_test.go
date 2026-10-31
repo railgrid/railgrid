@@ -76,7 +76,9 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
 	}
-	objs := make([]runtime.Object, 0, len(orgs))
+	// alice, the creator every org() names, exists; an org whose creator is
+	// gone is exercised by deleting her.
+	objs := []runtime.Object{&tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}}
 	for _, o := range orgs {
 		objs = append(objs, o)
 	}
@@ -263,6 +265,71 @@ func TestSpecPlanGivesTheOrganizationItsOwnAccount(t *testing.T) {
 	ent, _ = ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
 	if overrides, _, _ := unstructured.NestedSlice(ent.Object, "spec", "overrides"); len(overrides) != 1 {
 		t.Fatalf("overrides were not preserved: %v", overrides)
+	}
+}
+
+// Clearing spec.plan pools the organization back: the Entitlement the hub
+// wrote from spec.plan is the hub's own, not an admin customization.
+func TestClearingSpecPlanPoolsTheOrganizationBack(t *testing.T) {
+	o := org("org-1")
+	o.Spec.Plan = "team"
+	r, ws := newFixture(t, o)
+	reconcile(t, r, "org-1")
+	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
+		t.Fatalf("detached: report account = %q", got)
+	}
+	ctx := context.Background()
+	o.Spec.Plan = ""
+	if err := r.Update(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
+		t.Fatalf("pooled back: report account = %q, want %q", got, UserAccountName("alice"))
+	}
+	absent(t, ws, gvrAccounts, "org-1")
+	absent(t, ws, gvrEntitlements, "org-1")
+
+	// With an admin override on the detached entitlement, clearing spec.plan
+	// keeps the org on its own account: the override is intent.
+	o.Spec.Plan = "team"
+	if err := r.Update(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	ent, _ := ws.Resource(gvrEntitlements).Get(ctx, "org-1", metav1.GetOptions{})
+	_ = unstructured.SetNestedSlice(ent.Object, []any{map[string]any{"meter": "agents", "enforce": "Hard", "max": "9"}}, "spec", "overrides")
+	if _, err := ws.Resource(gvrEntitlements).Update(ctx, ent, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	o.Spec.Plan = ""
+	if err := r.Update(ctx, o); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
+		t.Fatalf("overridden entitlement: report account = %q, want org-1", got)
+	}
+}
+
+// An organization whose creator was deleted must not report into an account
+// that no longer has an Entitlement (the webhook would treat that as
+// unlimited); it keeps an account of its own.
+func TestDeletedCreatorMovesTheOrganizationOntoItsOwnAccount(t *testing.T) {
+	r, ws := newFixture(t, org("org-1"))
+	reconcile(t, r, "org-1")
+	if got := reportAccount(t, ws, "org-1"); got != UserAccountName("alice") {
+		t.Fatalf("report account = %q", got)
+	}
+	if err := r.Delete(context.Background(), &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
+		t.Fatalf("report account = %q, want org-1", got)
+	}
+	if got := planOf(t, ws, "org-1"); got != "free" {
+		t.Fatalf("plan = %q, want free", got)
 	}
 }
 

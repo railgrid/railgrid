@@ -75,14 +75,16 @@ func (e *QuotaExceededError) Error() string {
 //   - Returns a *QuotaExceededError when usage >= cap.
 //   - Returns the Counter's error verbatim on count failure.
 //
-// A non-positive cap selects DefaultOrgsPerUser, so a caller that could not
-// resolve a plan still enforces something. Personal Organizations are
-// expected to be excluded by the Counter implementation.
+// A cap of 0 denies: a plan or override may legitimately forbid creating
+// organizations, and the metering webhook enforces the same 0. A negative
+// cap means the caller could not resolve one and selects DefaultOrgsPerUser.
+// Personal Organizations are expected to be excluded by the Counter
+// implementation.
 func CheckOrgQuota(ctx context.Context, owner string, cap int32, counter Counter) error {
 	if counter == nil {
 		return fmt.Errorf("quota: counter is required")
 	}
-	if cap <= 0 {
+	if cap < 0 {
 		cap = DefaultOrgsPerUser
 	}
 	count, err := counter.Count(ctx)

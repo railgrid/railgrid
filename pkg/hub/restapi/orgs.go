@@ -120,9 +120,18 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("displayName is required"))
 		return
 	}
+	// Hold the user's create lock from the quota check through the Create,
+	// so two requests at cap-1 do not both pass. The wait for the controller
+	// below runs unlocked.
+	unlock := h.orgCreate.Lock(user)
 	if err := h.checkOrgQuota(r.Context(), user); err != nil {
+		unlock()
 		var qe *quota.QuotaExceededError
 		if errors.As(err, &qe) {
+			if qe.Cap == 0 {
+				writeStatus(w, http.StatusConflict, "QuotaExceeded", "your plan does not allow creating organizations; ask a platform admin to raise your plan's limit")
+				return
+			}
 			writeStatus(w, http.StatusConflict, "QuotaExceeded", fmt.Sprintf("you already have %d of %d organizations; delete one or ask a platform admin to raise your plan's limit", qe.Count, qe.Cap))
 			return
 		}
@@ -156,6 +165,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	created, err := h.mgr.client.Organizations().Create(r.Context(), org, metav1.CreateOptions{})
+	unlock()
 	if err != nil {
 		writeError(w, err)
 		return
