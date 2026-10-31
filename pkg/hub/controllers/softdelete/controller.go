@@ -149,7 +149,7 @@ func SetupWithManager(mgr manager.Manager, provisioner Provisioner, gracePeriod 
 		gracePeriod: gracePeriod,
 		now:         time.Now,
 	}
-	klog.Info("Registering soft-delete reconciler", "gracePeriod", r.GracePeriod().String())
+	klog.InfoS("Registering soft-delete reconciler", "gracePeriod", r.GracePeriod().String())
 
 	if err := builder.ControllerManagedBy(mgr).
 		Named(userControllerName).

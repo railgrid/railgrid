@@ -345,8 +345,10 @@ type Service struct {
 	kcpConfig *rest.Config
 	// bootstrapper walks the tenant workspace hierarchy with kcp-admin
 	// credentials so the admin surface can enumerate every org's child
-	// workspaces and their enabled provider bindings.
-	bootstrapper *kcp.Bootstrapper
+	// workspaces and their enabled provider bindings, and clear a
+	// workspace's soft-delete stamp. Production is *kcp.Bootstrapper;
+	// tests substitute a fake.
+	bootstrapper tenantWorkspaceOps
 	// hubExternalURL / hubInternalURL are the two addresses a downloaded
 	// provider kubeconfig can be pointed at. Provisioning itself no longer runs
 	// here (the Provider CR reconciler mints the Secret), but the download
@@ -354,6 +356,20 @@ type Service struct {
 	hubExternalURL string
 	hubInternalURL string
 }
+
+// tenantWorkspaceOps is the slice of kcp.Bootstrapper the admin surface
+// uses against tenant workspaces. Kept to what the Service calls so a test
+// can fake it without standing up kcp.
+type tenantWorkspaceOps interface {
+	ListChildTeamWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
+	GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
+	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error)
+}
+
+var _ tenantWorkspaceOps = (*kcp.Bootstrapper)(nil)
 
 // NewService returns an admin Service. hubExternalURL and hubInternalURL
 // are the hub's --hub-external-url and --hub-internal-url; they let the

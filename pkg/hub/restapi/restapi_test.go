@@ -757,6 +757,53 @@ func TestDeleteAndUndeleteOrg(t *testing.T) {
 	}
 }
 
+// Past the window the softdelete reconciler is cascading the Org; the
+// tenant undelete must refuse rather than clear the stamp under it. The
+// window is the Manager's, so a hub configured with a shorter one refuses
+// sooner than the 30-day default.
+func TestUndeleteOrg_RejectsExpiredGraceWindow(t *testing.T) {
+	stamp := metav1.NewTime(time.Now().UTC().Add(-48 * time.Hour))
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+		Status:     tenancyv1alpha1.OrganizationStatus{DeletionRequestedAt: &stamp},
+	}
+	mgr, _, _ := newTestManager(t, org)
+	mgr.WithSoftDeleteGracePeriod(24 * time.Hour)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", resp.StatusCode)
+	}
+	got, _ := mgr.client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if got.Status.DeletionRequestedAt == nil {
+		t.Error("DeletionRequestedAt was cleared despite the expired window")
+	}
+
+	// The same stamp is inside the default 30-day window.
+	mgr.WithSoftDeleteGracePeriod(0)
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/undelete", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete (default window): %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status (default window): got %d, want 200", resp.StatusCode)
+	}
+	got, _ = mgr.client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if got.Status.DeletionRequestedAt != nil {
+		t.Error("expected DeletionRequestedAt cleared inside the default window")
+	}
+}
+
 func TestDeleteOrg_RequiresAdmin(t *testing.T) {
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
@@ -1518,6 +1565,41 @@ func TestDeleteSelfUser_StampsTimestamp(t *testing.T) {
 	got, _ := mgr.client.Users().Get(context.Background(), "alice", metav1.GetOptions{})
 	if got.Status.DeletionRequestedAt == nil {
 		t.Error("DeletionRequestedAt not set")
+	}
+}
+
+func TestUndeleteSelfUser_ClearsWithinWindowRejectsPastIt(t *testing.T) {
+	stamp := metav1.NewTime(time.Now().UTC().Add(-48 * time.Hour))
+	u := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Status:     tenancyv1alpha1.UserStatus{DeletionRequestedAt: &stamp},
+	}
+	mgr, _, _ := newTestManager(t, u)
+	mgr.WithSoftDeleteGracePeriod(24 * time.Hour)
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/users/me/undelete", nil)
+	resp, _ := http.DefaultClient.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("expired: status got %d, want 409", resp.StatusCode)
+	}
+	got, _ := mgr.client.Users().Get(context.Background(), "alice", metav1.GetOptions{})
+	if got.Status.DeletionRequestedAt == nil {
+		t.Error("DeletionRequestedAt was cleared despite the expired window")
+	}
+
+	mgr.WithSoftDeleteGracePeriod(0) // default 30 days: 48h ago is inside
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/api/users/me/undelete", nil)
+	resp, _ = http.DefaultClient.Do(req)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Errorf("within window: status got %d, want 204", resp.StatusCode)
+	}
+	got, _ = mgr.client.Users().Get(context.Background(), "alice", metav1.GetOptions{})
+	if got.Status.DeletionRequestedAt != nil {
+		t.Error("expected DeletionRequestedAt cleared inside the window")
 	}
 }
 

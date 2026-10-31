@@ -124,6 +124,10 @@ spec:
             {{- if not (regexMatch "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" (toString .)) }}
             {{- fail (printf "hub.softDeleteGracePeriod must be a Go duration such as \"720h\" or \"72h\", got %q" (toString .)) }}
             {{- end }}
+            {{- /* The hub refuses a non-positive window at startup; catch "0s"-style values here instead of crash-looping the pod. */}}
+            {{- if regexMatch "^(0+(\\.0+)?(ns|us|µs|ms|s|m|h))+$" (toString .) }}
+            {{- fail (printf "hub.softDeleteGracePeriod must be positive, got %q" (toString .)) }}
+            {{- end }}
             - --soft-delete-grace-period={{ . }}
             {{- end }}
             {{- if .Values.hub.devMode }}

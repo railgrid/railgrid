@@ -205,7 +205,9 @@ func (h *Handler) deleteSelfUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// undeleteSelfUser clears status.deletionRequestedAt.
+// undeleteSelfUser clears status.deletionRequestedAt while the recovery
+// window (Manager.SoftDeleteGracePeriod) is still open; past it the User
+// cascade owns the account and the restore is refused with 409.
 func (h *Handler) undeleteSelfUser(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.requireUser(w, r)
 	if !ok {
@@ -224,6 +226,10 @@ func (h *Handler) undeleteSelfUser(w http.ResponseWriter, r *http.Request) {
 		}
 		if u.Status.DeletionRequestedAt == nil {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if !time.Now().UTC().Before(u.Status.DeletionRequestedAt.Add(h.mgr.SoftDeleteGracePeriod())) {
+			writeStatus(w, http.StatusConflict, "Conflict", "user deletion grace period has expired")
 			return
 		}
 		u.Status.DeletionRequestedAt = nil
