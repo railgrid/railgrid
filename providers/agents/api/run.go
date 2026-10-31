@@ -835,7 +835,14 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// attempt coordinates and safe cancel target are already durable.
 			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
 		}
-		if s.shouldGenerateSessionTitle(run, agent, cont) {
+		var priorHistory []backend.Message
+		if len(msgs) > 0 {
+			// assembleTurnCtx leaves the current task as the final message. Use
+			// the history it already loaded to skip title work for established
+			// sessions; concurrent first turns still race through the store claim.
+			priorHistory = msgs[:len(msgs)-1]
+		}
+		if s.shouldGenerateSessionTitle(run, agent, cont, priorHistory) {
 			titleRun := run
 			titleRun.Agent = agent.DeepCopy()
 			titleRun.SessionID = sessionID

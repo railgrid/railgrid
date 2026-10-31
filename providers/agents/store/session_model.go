@@ -13,8 +13,14 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
+	"strings"
 )
+
+const MaxSessionModelSettingsPerAgent = 1024
+
+var ErrSessionModelLimit = errors.New("session model preference limit reached")
 
 // SessionModelSettings belongs to one conversation, never to its Agent.
 // An empty credential inherits the Agent's chat credential. Efforts are keyed
@@ -49,8 +55,21 @@ func (m *MemoryStore) PutSessionModelSettings(_ context.Context, scope Scope, se
 	if err := scope.withAgent(); err != nil {
 		return err
 	}
+	key := sessionKey(scope, session)
+	if _, exists := m.sessionModels[key]; !exists {
+		prefix := tenantKey(scope) + "|" + scope.AgentName + "|"
+		count := 0
+		for existing := range m.sessionModels {
+			if strings.HasPrefix(existing, prefix) {
+				count++
+			}
+		}
+		if count >= MaxSessionModelSettingsPerAgent {
+			return ErrSessionModelLimit
+		}
+	}
 	settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
-	m.sessionModels[sessionKey(scope, session)] = settings
+	m.sessionModels[key] = settings
 	return nil
 }
 
@@ -81,6 +100,38 @@ func (p *PostgresStore) PutSessionModelSettings(ctx context.Context, scope Scope
 	scope = mutation.scope
 	if err := scope.withAgent(); err != nil {
 		return err
+	}
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin session model preference mutation: %w", err)
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
+	lockKey := fmt.Sprintf("agents-session-model-limit:%q:%q:%q", scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName)
+	if _, err := mutation.executor.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, lockKey); err != nil {
+		return fmt.Errorf("lock session model preference limit: %w", err)
+	}
+	var existingSession string
+	err = mutation.executor.QueryRowContext(ctx, `
+		SELECT session_id FROM agents_session_models
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+		FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, session).Scan(&existingSession)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if !exists {
+		var count int64
+		if err := mutation.executor.QueryRowContext(ctx, `
+			SELECT COUNT(*) FROM agents_session_models
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`,
+			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName).Scan(&count); err != nil {
+			return err
+		}
+		if count >= MaxSessionModelSettingsPerAgent {
+			return ErrSessionModelLimit
+		}
 	}
 	data, err := marshalJSONB(settings)
 	if err != nil {

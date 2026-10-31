@@ -28,6 +28,7 @@ import (
 	einoschema "github.com/cloudwego/eino/schema"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
 )
 
@@ -49,13 +50,25 @@ instructions, or a sentence. Summarize the user's request, not your response.`
 // shouldGenerateSessionTitle restricts this best-effort metadata request to a
 // new, attended, model-backed chat. The transport opt-in excludes internal
 // callers that happen to use RunTriggerChat; the other checks keep recovery,
-// workers, and harnesses excluded if their call path changes.
-func (s *Server) shouldGenerateSessionTitle(run taskRun, agent *agentsv1alpha1.Agent, cont *continuation) bool {
+// workers, and harnesses excluded if their call path changes. priorHistory is
+// the already-loaded history before the current user message: it avoids
+// starting a title task for ordinary later turns. Concurrent first turns can
+// both observe empty history; ClaimSessionTitle remains authoritative.
+func (s *Server) shouldGenerateSessionTitle(run taskRun, agent *agentsv1alpha1.Agent, cont *continuation, priorHistory []backend.Message) bool {
 	return s != nil && s.store != nil && run.generateSessionTitle && cont == nil &&
 		run.Trigger == agentsv1alpha1.RunTriggerChat && run.Worker == nil &&
 		run.ParentRunID == "" && run.Repository == nil && agent != nil &&
 		!agent.Spec.HarnessBacked() && run.ModelSettings != nil &&
-		strings.TrimSpace(run.ModelSettings.ModelCredential) != ""
+		strings.TrimSpace(run.ModelSettings.ModelCredential) != "" && !hasPriorSessionUserMessage(priorHistory)
+}
+
+func hasPriorSessionUserMessage(messages []backend.Message) bool {
+	for _, message := range messages {
+		if message.Role == backend.RoleUser {
+			return true
+		}
+	}
+	return false
 }
 
 // startSessionTitleGeneration runs one metadata-only model request after the
@@ -99,7 +112,7 @@ func (s *Server) startSessionTitleGeneration(run taskRun, firstUserMessageID str
 			return
 		}
 
-		changed, err := s.store.SetSessionTitleIfEmpty(ctx, run.Scope, run.SessionID, firstUserMessageID, title)
+		changed, err := s.persistSessionTitle(ctx, run, firstUserMessageID, title)
 		if err != nil || !changed {
 			return
 		}
@@ -107,6 +120,14 @@ func (s *Server) startSessionTitleGeneration(run taskRun, firstUserMessageID str
 			"agent": run.Agent.Name, "sessionID": run.SessionID, "title": title,
 		})
 	}()
+}
+
+// persistSessionTitle lets the final metadata write survive the model-call
+// deadline, while still bounding the store operation independently.
+func (s *Server) persistSessionTitle(ctx context.Context, run taskRun, firstUserMessageID, title string) (bool, error) {
+	persistCtx, cancelPersist := boundedPersistContext(ctx)
+	defer cancelPersist()
+	return s.store.SetSessionTitleIfEmpty(persistCtx, run.Scope, run.SessionID, firstUserMessageID, title)
 }
 
 func (s *Server) generateSessionTitle(ctx context.Context, run taskRun) (string, string, *einoschema.TokenUsage, error) {

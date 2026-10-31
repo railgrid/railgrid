@@ -545,27 +545,36 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	// One row per session: counts, activity bounds, and the first user message
-	// (via a correlated subquery) as a preview label.
-	rows, err := p.db.QueryContext(ctx, fmt.Sprintf(`
-		SELECT m.session_id, COUNT(*), MIN(m.created_at), MAX(m.created_at),
-			(SELECT f.content FROM agents_messages f
-			 WHERE f.org_uuid=m.org_uuid AND f.workspace_uuid=m.workspace_uuid
-				AND f.agent_name=m.agent_name AND f.session_id=m.session_id
-				AND f.role='user' AND f.content_encrypted=FALSE
-			 ORDER BY f.created_at ASC, f.id ASC LIMIT 1),
-			COALESCE(t.title, '')
-		FROM agents_messages m
-		LEFT JOIN agents_session_titles t ON t.org_uuid=m.org_uuid AND t.workspace_uuid=m.workspace_uuid
-			AND t.agent_name=m.agent_name AND t.session_id=m.session_id
-			AND t.first_message_id=(SELECT first_user.id FROM agents_messages first_user
-				WHERE first_user.org_uuid=m.org_uuid AND first_user.workspace_uuid=m.workspace_uuid
-					AND first_user.agent_name=m.agent_name AND first_user.session_id=m.session_id
-					AND first_user.role='user' ORDER BY first_user.append_sequence ASC LIMIT 1)
-		WHERE m.org_uuid=$1 AND m.workspace_uuid=$2 AND m.agent_name=$3
-		GROUP BY m.session_id, m.org_uuid, m.workspace_uuid, m.agent_name, t.title
-		ORDER BY MAX(m.created_at) DESC LIMIT %d`, limit),
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName)
+	// Compute the first user coordinate once per session. Title validity follows
+	// append order; preview selection retains its timestamp-and-ID ordering.
+	rows, err := p.db.QueryContext(ctx, `
+		WITH sessions AS (
+			SELECT session_id, COUNT(*) AS message_count,
+				MIN(created_at) AS created_at, MAX(created_at) AS last_activity
+			FROM agents_messages
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3
+			GROUP BY session_id
+		), first_user AS (
+			SELECT DISTINCT ON (session_id) session_id, id
+			FROM agents_messages
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND role='user'
+			ORDER BY session_id, append_sequence ASC
+		), first_preview AS (
+			SELECT DISTINCT ON (session_id) session_id, content
+			FROM agents_messages
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3
+				AND role='user' AND content_encrypted=FALSE
+			ORDER BY session_id, created_at ASC, id ASC
+		)
+		SELECT s.session_id, s.message_count, s.created_at, s.last_activity,
+			p.content, COALESCE(t.title, '')
+		FROM sessions s
+		LEFT JOIN first_preview p ON p.session_id=s.session_id
+		LEFT JOIN first_user f ON f.session_id=s.session_id
+		LEFT JOIN agents_session_titles t ON t.org_uuid=$1 AND t.workspace_uuid=$2
+			AND t.agent_name=$3 AND t.session_id=s.session_id AND t.first_message_id=f.id
+		ORDER BY s.last_activity DESC LIMIT $4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -25,6 +25,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -82,6 +83,15 @@ func (s *sessionTitleStore) SetSessionTitleIfEmpty(ctx context.Context, scope st
 	return changed, err
 }
 
+type contextCheckingSessionTitleStore struct{ store.Store }
+
+func (s contextCheckingSessionTitleStore) SetSessionTitleIfEmpty(ctx context.Context, scope store.Scope, sessionID, firstUserMessageID, title string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return s.Store.SetSessionTitleIfEmpty(ctx, scope, sessionID, firstUserMessageID, title)
+}
+
 func TestAgentSessionTitleRunsDetachedWithPinnedChatCredential(t *testing.T) {
 	ctx := context.Background()
 	base := store.NewMemoryStore()
@@ -119,7 +129,7 @@ func TestAgentSessionTitleRunsDetachedWithPinnedChatCredential(t *testing.T) {
 		Trigger: agentsv1alpha1.RunTriggerChat, generateSessionTitle: true,
 		ModelSettings: &store.ModelSettings{ModelCredential: "conversation-choice", ReasoningEffort: "high"},
 	}
-	if !s.shouldGenerateSessionTitle(run, agent, nil) {
+	if !s.shouldGenerateSessionTitle(run, agent, nil, nil) {
 		t.Fatal("fresh model-backed chat was not eligible for a title")
 	}
 
@@ -219,20 +229,116 @@ func TestAgentSessionTitleOnlyClaimsTheFirstUserMessage(t *testing.T) {
 			return &sessionTitleModel{reply: schema.AssistantMessage("Second User Message", nil)}, "test", nil
 		},
 	}
-	run := taskRun{Scope: scope, Agent: &agentsv1alpha1.Agent{}, SessionID: "chat", Task: "second", ModelSettings: &store.ModelSettings{ModelCredential: "selected"}}
-	s.startSessionTitleGeneration(run, "second")
+	run := taskRun{
+		Scope: scope, Agent: &agentsv1alpha1.Agent{}, SessionID: "chat", Task: "second",
+		Trigger: agentsv1alpha1.RunTriggerChat, generateSessionTitle: true,
+		ModelSettings: &store.ModelSettings{ModelCredential: "selected"},
+	}
+	priorHistory := []backend.Message{{Role: backend.RoleUser, Content: "first"}}
+	if s.shouldGenerateSessionTitle(run, run.Agent, nil, priorHistory) {
+		s.startSessionTitleGeneration(run, "second")
+	}
 	select {
 	case claimed := <-observed.claims:
-		if claimed {
-			t.Fatal("a later user message claimed the one-shot title slot")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("title task did not attempt its first-message claim")
+		t.Fatalf("later turn started a title claim (claimed=%v)", claimed)
+	case <-time.After(30 * time.Millisecond):
 	}
 	select {
 	case <-factoryCalls:
 		t.Fatal("a title model was called for a later user message")
 	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestConcurrentFirstTurnSessionTitlesUseTheStoreClaim(t *testing.T) {
+	ctx := context.Background()
+	base := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "scout"}
+	if err := base.AppendMessage(ctx, scope, store.Message{
+		ID: "first-user", AgentName: "scout", SessionID: "chat", Role: "user", Content: "Explain the rollout",
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	observed := &sessionTitleStore{Store: base, claims: make(chan bool, 2), sets: make(chan bool, 2)}
+	factoryCalls := make(chan struct{}, 2)
+	s := &Server{
+		store: observed,
+		sessionTitleModelFactory: func(context.Context, llm.CredentialResolver, string) (einomodel.BaseChatModel, string, error) {
+			factoryCalls <- struct{}{}
+			return &sessionTitleModel{reply: schema.AssistantMessage("Rollout Risk Summary", nil)}, "test", nil
+		},
+	}
+	run := taskRun{
+		Scope: scope, Agent: &agentsv1alpha1.Agent{ObjectMeta: metav1.ObjectMeta{Name: "scout"}},
+		SessionID: "chat", Task: "Explain the rollout", Trigger: agentsv1alpha1.RunTriggerChat,
+		generateSessionTitle: true, ModelSettings: &store.ModelSettings{ModelCredential: "selected"},
+	}
+	if !s.shouldGenerateSessionTitle(run, run.Agent, nil, nil) {
+		t.Fatal("concurrent first turns should both reach the authoritative store claim")
+	}
+	for i := 0; i < 2; i++ {
+		go s.startSessionTitleGeneration(run, "first-user")
+	}
+
+	twins := 0
+	for i := 0; i < 2; i++ {
+		select {
+		case claimed := <-observed.claims:
+			if claimed {
+				twins++
+			}
+		case <-time.After(time.Second):
+			t.Fatal("concurrent title attempt did not reach the store claim")
+		}
+	}
+	if twins != 1 {
+		t.Fatalf("concurrent first-turn claims won %d times, want exactly once", twins)
+	}
+	select {
+	case <-factoryCalls:
+	case <-time.After(time.Second):
+		t.Fatal("winning first-turn claim did not generate a title")
+	}
+	select {
+	case <-factoryCalls:
+		t.Fatal("losing first-turn claim also generated a title")
+	case <-time.After(30 * time.Millisecond):
+	}
+	select {
+	case changed := <-observed.sets:
+		if !changed {
+			t.Fatal("winning title was not persisted")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("winning title was not written")
+	}
+}
+
+func TestAgentSessionTitleWriteSurvivesModelDeadline(t *testing.T) {
+	ctx := context.Background()
+	base := store.NewMemoryStore()
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "workspace", AgentName: "scout"}
+	if err := base.AppendMessage(ctx, scope, store.Message{
+		ID: "first-user", AgentName: "scout", SessionID: "chat", Role: "user", Content: "Explain the rollout",
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if claimed, err := base.ClaimSessionTitle(ctx, scope, "chat", "first-user"); err != nil || !claimed {
+		t.Fatalf("claim first-user title slot = %t, err=%v", claimed, err)
+	}
+	writeStore := contextCheckingSessionTitleStore{Store: base}
+	s := &Server{store: writeStore}
+	modelCtx, cancelModel := context.WithCancel(ctx)
+	cancelModel() // The model deadline has elapsed before the final store write.
+	changed, err := s.persistSessionTitle(modelCtx, taskRun{Scope: scope, SessionID: "chat"}, "first-user", "Rollout Risk Summary")
+	if err != nil || !changed {
+		t.Fatalf("final write with expired model context = %t, err=%v; want bounded detached persistence", changed, err)
+	}
+	sessions, err := base.ListSessions(ctx, scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "Rollout Risk Summary" {
+		t.Fatalf("session after detached final write = %+v, err=%v", sessions, err)
 	}
 }
 
@@ -338,7 +444,7 @@ func TestAgentSessionTitleExcludesNonFreshChatRuns(t *testing.T) {
 	}
 	baseAgent := &agentsv1alpha1.Agent{}
 	s := &Server{store: store.NewMemoryStore()}
-	if !s.shouldGenerateSessionTitle(base, baseAgent, nil) {
+	if !s.shouldGenerateSessionTitle(base, baseAgent, nil, nil) {
 		t.Fatal("fresh model-backed chat should be eligible")
 	}
 	cases := []struct {
@@ -362,7 +468,7 @@ func TestAgentSessionTitleExcludesNonFreshChatRuns(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			run, agent, cont := base, baseAgent.DeepCopy(), (*continuation)(nil)
 			tc.edit(&run, agent, &cont)
-			if s.shouldGenerateSessionTitle(run, agent, cont) {
+			if s.shouldGenerateSessionTitle(run, agent, cont, nil) {
 				t.Fatal("ineligible run was allowed to generate a session title")
 			}
 		})

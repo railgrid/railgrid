@@ -70,6 +70,8 @@ thread title with the model selected for that chat. Title generation runs
 asynchronously and does not delay the reply. When the saved title arrives, the
 conversation header and thread rail update together; if generation fails, the
 existing first-message preview remains the label.
+The title attempt is one-shot: failures, timeouts, invalid output, or a temporary
+store error leave the preview in place, and later turns do not retry.
 
 ## MCP Apps result views
 

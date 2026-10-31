@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
 	"strings"
@@ -56,20 +57,26 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	previousSelected := strings.TrimSpace(settings.ModelCredential)
 	previousEfforts := maps.Clone(settings.ReasoningEffortByModel)
+	var patch struct {
+		ModelCredential        *string           `json:"modelCredential"`
+		ReasoningEffortByModel map[string]string `json:"reasoningEffortByModel"`
+	}
 	if r.Method == http.MethodPatch {
-		// Decode the patch into its own map. Keep an independent copy above so
-		// we can distinguish an unchanged remembered effort from a newly chosen
-		// invalid one if model metadata has changed since it was saved.
-		settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&settings); err != nil {
+		// Keep the submitted delta separate from the stored map. Callers may
+		// update only the selected credential's effort; non-selected values are
+		// retained from storage and never accepted from request payloads.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&patch); err != nil {
 			writeStatus(w, 400, "BadRequest", "invalid model preferences")
 			return
 		}
-		if len(settings.ModelCredential) > 253 || len(settings.ReasoningEffortByModel) > 64 {
+		if patch.ModelCredential != nil {
+			settings.ModelCredential = *patch.ModelCredential
+		}
+		if (patch.ModelCredential != nil && len(*patch.ModelCredential) > 253) || len(patch.ReasoningEffortByModel) > 64 {
 			writeStatus(w, 400, "BadRequest", "model preferences exceed limits")
 			return
 		}
-		for model, effort := range settings.ReasoningEffortByModel {
+		for model, effort := range patch.ReasoningEffortByModel {
 			if len(model) > 253 || len(effort) > 32 {
 				writeStatus(w, 400, "BadRequest", "invalid reasoning preference")
 				return
@@ -84,6 +91,23 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if selected == "" {
 		selected = agent.Spec.ModelCredentialFor(llm.PurposeChat)
+	}
+	if r.Method == http.MethodPatch && selected != "" {
+		if effort, submitted := patch.ReasoningEffortByModel[selected]; submitted {
+			settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
+			if effort == "" {
+				delete(settings.ReasoningEffortByModel, selected)
+			} else {
+				if settings.ReasoningEffortByModel == nil {
+					settings.ReasoningEffortByModel = make(map[string]string, 1)
+				}
+				settings.ReasoningEffortByModel[selected] = effort
+			}
+		}
+		if len(settings.ReasoningEffortByModel) > 64 {
+			writeStatus(w, 400, "BadRequest", "model preferences exceed limits")
+			return
+		}
 	}
 	options := []string{}
 	defaultEffort := ""
@@ -134,6 +158,10 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		settings.ModelCredential = strings.TrimSpace(settings.ModelCredential)
 		if err := s.store.PutSessionModelSettings(r.Context(), id.scope(name), session, settings); err != nil {
+			if errors.Is(err, store.ErrSessionModelLimit) {
+				writeStatus(w, http.StatusTooManyRequests, "TooManyRequests", "Chat model preference limit reached; delete an unused chat and try again")
+				return
+			}
 			writeStatus(w, 500, "InternalError", "Could not save chat model preferences")
 			return
 		}

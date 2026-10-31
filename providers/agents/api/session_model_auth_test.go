@@ -100,6 +100,12 @@ func serveSessionModelRequest(handler http.Handler, method, session, body string
 	return recorder
 }
 
+type sessionModelLimitStore struct{ store.Store }
+
+func (sessionModelLimitStore) PutSessionModelSettings(context.Context, store.Scope, string, store.SessionModelSettings) error {
+	return store.ErrSessionModelLimit
+}
+
 func TestSessionModelExplicitCredentialAuthorizationHidesAndDoesNotSave(t *testing.T) {
 	credential := sessionModelCredentialObject("visible-only-to-provider", "gpt-6-astra")
 	callers := &conformance.FakeCallers{
@@ -166,6 +172,31 @@ func TestSessionModelExplicitCredentialAuthorizationHidesAndDoesNotSave(t *testi
 	}
 }
 
+func TestSessionModelLimitReturnsTooManyRequests(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects:   []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		ListKinds: map[schema.GroupVersionResource]string{agentsclient.AgentGVR: "AgentList"},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Resource == "agents" && a.Name == conformanceAgent && a.Verb == "get"
+		},
+	}
+	s, handler, _ := sessionModelTestServer(t, callers)
+	s.store = sessionModelLimitStore{Store: s.store}
+
+	recorder := serveSessionModelRequest(handler, http.MethodPatch, "new-chat", `{}`)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("PATCH at session preference limit → %d, want 429: %s", recorder.Code, recorder.Body.String())
+	}
+	var response statusResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Reason != "TooManyRequests" || response.Message != "Chat model preference limit reached; delete an unused chat and try again" {
+		t.Fatalf("limit response = %+v", response)
+	}
+}
+
 func TestSessionModelExplicitCredentialAuthorizationAllowsGetAndSave(t *testing.T) {
 	credential := sessionModelCredentialObject("chat-model", "gpt-6-astra")
 	var reviewedCredential bool
@@ -186,7 +217,7 @@ func TestSessionModelExplicitCredentialAuthorizationAllowsGetAndSave(t *testing.
 	}
 	s, handler, scope := sessionModelTestServer(t, callers)
 
-	patch := `{"modelCredential":"chat-model"}`
+	patch := `{"modelCredential":"chat-model","reasoningEffortByModel":{"chat-model":"high"}}`
 	recorder := serveSessionModelRequest(handler, http.MethodPatch, "chat", patch)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("authorized PATCH → %d: %s", recorder.Code, recorder.Body.String())
@@ -198,8 +229,8 @@ func TestSessionModelExplicitCredentialAuthorizationAllowsGetAndSave(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if saved.ModelCredential != "chat-model" {
-		t.Fatalf("saved credential = %q, want chat-model", saved.ModelCredential)
+	if saved.ModelCredential != "chat-model" || !reflect.DeepEqual(saved.ReasoningEffortByModel, map[string]string{"chat-model": "high"}) {
+		t.Fatalf("saved preferences = %+v, want chat-model with high effort", saved)
 	}
 
 	recorder = serveSessionModelRequest(handler, http.MethodGet, "chat", "")
@@ -298,6 +329,69 @@ func TestSessionModelResponseOnlyExposesSelectedCredentialEffort(t *testing.T) {
 	}
 	if response.SelectedCredential != "A" || !reflect.DeepEqual(response.ReasoningEffortByModel, map[string]string{"A": "high"}) {
 		t.Fatalf("return to A did not recover its selected preference: %+v", response)
+	}
+}
+
+func TestSessionModelPatchOnlyMutatesSelectedCredentialEffort(t *testing.T) {
+	modelA := sessionModelCredentialObject("A", "gpt-6-astra")
+	modelB := sessionModelCredentialObject("B", "gpt-6-astra")
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent), modelA, modelB},
+		ListKinds: map[schema.GroupVersionResource]string{
+			agentsclient.AgentGVR: "AgentList", agentsclient.ModelCredentialGVR: "ModelCredentialList",
+		},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && ((a.Resource == "agents" && a.Name == conformanceAgent) || a.Resource == "modelcredentials")
+		},
+	}
+	s, handler, scope := sessionModelTestServer(t, callers)
+	initial := store.SessionModelSettings{
+		ModelCredential:        "A",
+		ReasoningEffortByModel: map[string]string{"A": "high", "B": "low", "other": "low"},
+	}
+	if err := s.store.PutSessionModelSettings(t.Context(), scope, "before-first-message", initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model selection and its preferences are persisted before any transcript
+	// exists. A client may submit stale known keys and arbitrary additions, but
+	// only the newly selected B entry is allowed to change.
+	patch := serveSessionModelRequest(handler, http.MethodPatch, "before-first-message", `{"modelCredential":"B","reasoningEffortByModel":{"A":"low","B":"medium","other":"high","unregistered":"max"}}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("select B → %d: %s", patch.Code, patch.Body.String())
+	}
+	settings, err := s.store.GetSessionModelSettings(t.Context(), scope, "before-first-message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{"A": "high", "B": "medium", "other": "low"}
+	if !reflect.DeepEqual(settings.ReasoningEffortByModel, want) {
+		t.Fatalf("selected B patch changed a non-selected preference: got %v, want %v", settings.ReasoningEffortByModel, want)
+	}
+
+	// When switching back, a stale B entry in the payload is ignored and A's
+	// remembered effort is restored from storage.
+	patch = serveSessionModelRequest(handler, http.MethodPatch, "before-first-message", `{"modelCredential":"A","reasoningEffortByModel":{"B":"high","unregistered":"low"}}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("return to A → %d: %s", patch.Code, patch.Body.String())
+	}
+	var response struct {
+		store.SessionModelSettings
+		SelectedCredential string `json:"selectedCredential"`
+	}
+	if err := json.Unmarshal(patch.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.SelectedCredential != "A" || !reflect.DeepEqual(response.ReasoningEffortByModel, map[string]string{"A": "high"}) {
+		t.Fatalf("switch back did not restore only A's remembered effort: %+v", response)
+	}
+	settings, err = s.store.GetSessionModelSettings(t.Context(), scope, "before-first-message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(settings.ReasoningEffortByModel, want) {
+		t.Fatalf("switching back mutated non-selected preferences: got %v, want %v", settings.ReasoningEffortByModel, want)
 	}
 }
 
