@@ -23,6 +23,7 @@ type MemoryStore struct {
 	sessionModels      map[string]SessionModelSettings
 	mu                 sync.Mutex
 	messages           map[string][]Message         // key: scope|session
+	sessionTitles      map[string]sessionTitle      // key: scope|session
 	runs               map[string]Run               // key: scope|runID
 	memories           map[string]Memory            // key: scope|memoryID
 	inbox              map[string]InboxItem         // key: scope|itemID
@@ -46,6 +47,7 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		sessionModels:      map[string]SessionModelSettings{},
 		messages:           map[string][]Message{},
+		sessionTitles:      map[string]sessionTitle{},
 		runs:               map[string]Run{},
 		memories:           map[string]Memory{},
 		inbox:              map[string]InboxItem{},
@@ -213,6 +215,39 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		target := moveKey(key)
 		m.messages[target] = append(m.messages[target], rows...)
 		delete(m.messages, key)
+	}
+	for key, title := range m.sessionTitles {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		first, hasFirst := firstPersistedUserMessage(m.messages[target])
+		current, hasCurrent := m.sessionTitles[target]
+		if hasFirst {
+			switch {
+			case hasCurrent && current.FirstMessageID == first.ID:
+				if current.Title == "" && title.FirstMessageID == first.ID && title.Title != "" {
+					current.Title = title.Title
+					m.sessionTitles[target] = current
+				}
+			case title.FirstMessageID == first.ID:
+				m.sessionTitles[target] = title
+			case hasCurrent && current.FirstMessageID != first.ID:
+				delete(m.sessionTitles, target)
+			}
+		} else {
+			delete(m.sessionTitles, target)
+		}
+		delete(m.sessionTitles, key)
+	}
+	for key, title := range m.sessionTitles {
+		if !hasPrefix(key, toPrefix) {
+			continue
+		}
+		first, ok := firstPersistedUserMessage(m.messages[key])
+		if !ok || title.FirstMessageID != first.ID {
+			delete(m.sessionTitles, key)
+		}
 	}
 	for key, run := range m.runs {
 		if !hasPrefix(key, fromPrefix) {
@@ -389,6 +424,11 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 		}
 	}
 	for key := range m.sessionModels {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.sessionTitles {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -675,6 +715,11 @@ func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([
 				break
 			}
 		}
+		if first, ok := firstPersistedUserMessage(cp); ok {
+			if title, exists := m.sessionTitles[k]; exists && title.FirstMessageID == first.ID {
+				s.Title = title.Title
+			}
+		}
 		out = append(out, s)
 	}
 	// Most-recently-active first, then apply the limit.
@@ -694,6 +739,7 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	delete(m.messages, sessionKey(scope, sessionID))
+	delete(m.sessionTitles, sessionKey(scope, sessionID))
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
 	delete(m.summaries, sessionKey(scope, sessionID))
@@ -1428,6 +1474,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 	for k := range m.sessionModels {
 		if hasPrefix(k, msgPrefix) {
 			delete(m.sessionModels, k)
+		}
+	}
+	for k := range m.sessionTitles {
+		if hasPrefix(k, msgPrefix) {
+			delete(m.sessionTitles, k)
 		}
 	}
 	for k := range m.summaries {

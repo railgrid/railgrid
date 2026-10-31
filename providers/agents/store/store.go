@@ -726,6 +726,7 @@ type ScopedRun struct {
 // backs the portal's session picker.
 type Session struct {
 	ID           string    `json:"id"`
+	Title        string    `json:"title,omitempty"`
 	Preview      string    `json:"preview,omitempty"`
 	MessageCount int       `json:"messageCount"`
 	CreatedAt    time.Time `json:"createdAt"`
@@ -764,6 +765,12 @@ type Store interface {
 
 	// Transcript.
 	AppendMessage(ctx context.Context, scope Scope, msg Message) error
+	// ClaimSessionTitle grants the one title-generation attempt for a session,
+	// but only when firstUserMessageID is still its first persisted user message.
+	ClaimSessionTitle(ctx context.Context, scope Scope, sessionID, firstUserMessageID string) (bool, error)
+	// SetSessionTitleIfEmpty stores a generated title only for the matching live
+	// first-message claim. It never replaces an existing title.
+	SetSessionTitleIfEmpty(ctx context.Context, scope Scope, sessionID, firstUserMessageID, title string) (bool, error)
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
 	// ListSessions returns the agent's chat sessions, most-recently-active first.

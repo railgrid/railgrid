@@ -8,7 +8,7 @@ import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
 import { ApiError, type SSEEvent } from '../api'
-import type { TranscriptMessage } from '../types'
+import type { SessionMeta, TranscriptMessage } from '../types'
 import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
@@ -108,6 +108,147 @@ async function chooseSession(el: HTMLElement, label: string): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('prefers an async generated title in the header and rail after the reply finishes', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
+    const preview = 'Investigate order 42'
+    const getSessionModel = vi.fn().mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' })
+    const saveSessionModel = vi.fn(async (_agent: string, _session: string, preferences: unknown) => preferences)
+    const { el, store } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'done', data: { runID: 'r1', content: 'The order failed during validation.' } },
+    ]), {
+      listSessions: () => Promise.resolve([session('s1', preview)]),
+      getSessionModel,
+      saveSessionModel,
+    })
+
+    await send(el, 'Investigate order 42')
+    const header = el.querySelector('.agents-chat-title')!
+    const railTitle = () => text(el.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))
+    expect(text(header)).toContain('Investigate order 42')
+    expect(railTitle()).toBe('Investigate order 42')
+
+    const preferenceReadCount = getSessionModel.mock.calls.length
+    store.applyServerEvent({
+      type: 'session_title',
+      data: { agent: 'scout', sessionID: 's1', title: '  Order 42 validation failure  ' },
+    })
+    await settle()
+
+    expect(text(header)).toContain('Order 42 validation failure')
+    expect(railTitle()).toBe('Order 42 validation failure')
+    expect(getSessionModel).toHaveBeenCalledTimes(preferenceReadCount)
+    expect(saveSessionModel).not.toHaveBeenCalled()
+  })
+
+  it('keeps the first-message preview when title generation produces no event', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'done', data: { runID: 'r1', content: 'Reply completed.' } },
+    ]), { listSessions: () => Promise.resolve([session('s1', 'Review the deployment')]) })
+
+    await send(el, 'Review the deployment')
+    await settle()
+
+    expect(text(el.querySelector('.agents-chat-title'))).toContain('Review the deployment')
+    expect(text(el.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))).toBe('Review the deployment')
+  })
+
+  it('reloads persisted titles after reconnect when the title event was missed', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
+    const initialSessions = deferred<SessionMeta[]>()
+    let persistedTitle = ''
+    const listSessions = vi.fn(async (_agent: string): Promise<SessionMeta[]> => [{
+      ...session('s1', 'Review the deployment'),
+      ...(persistedTitle ? { title: persistedTitle } : {}),
+    }])
+    listSessions.mockImplementationOnce(() => initialSessions.promise)
+    const api = stubApi({ listSessions })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    store.agents.loaded = store.agents.hasSnapshot = true
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(4)
+
+    expect(listSessions).toHaveBeenCalledTimes(1)
+    // The first connection becomes live while openAgent is still awaiting its
+    // initial list. It must not start a second read against that in-flight load.
+    store.live = true
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    expect(listSessions).toHaveBeenCalledTimes(1)
+
+    initialSessions.resolve([session('s1', 'Review the deployment')])
+    await settle(8)
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Review the deployment')
+
+    // A same-state store change is not a reconnect and does not reload the list.
+    store.applyServerEvent({ type: 'run', data: { id: 'unrelated', agent: 'scout', phase: 'Running' } })
+    await settle()
+    expect(listSessions).toHaveBeenCalledTimes(1)
+
+    // The title was persisted while the stream was down, so no push reached
+    // this store. Reopening the stream must rehydrate it from listSessions.
+    persistedTitle = 'Recovered deployment review'
+    store.live = false
+    store.dispatchEvent(new Event('change'))
+    await settle()
+    store.live = true
+    store.dispatchEvent(new Event('change'))
+    await settle(6)
+
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Recovered deployment review')
+    expect(text(view.element.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))).toBe('Recovered deployment review')
+  })
+
+  it('ignores title events from the previous workspace and another agent', async () => {
+    localStorage.removeItem('railgrid:agents:session:org-a:workspace-a:scout')
+    localStorage.removeItem('railgrid:agents:session:org-b:workspace-b:scout')
+    localStorage.removeItem('railgrid:agents:session:org-b:workspace-b:nova')
+    const workspaceAApi = stubApi({
+      tenant: () => ({ orgUUID: 'org-a', workspaceUUID: 'workspace-a' }),
+      listSessions: async (agent: string) => [session('shared-session', `${agent} workspace A preview`)],
+    })
+    const workspaceAStore = makeStore(workspaceAApi)
+    workspaceAStore.agents.data = [agentFixture('scout')]
+    workspaceAStore.agents.loaded = workspaceAStore.agents.hasSnapshot = true
+    const view = await mountVue(AgentChat, { store: workspaceAStore, api: workspaceAApi, name: 'scout' })
+    mounted.push(view)
+    await settle(6)
+
+    const workspaceBApi = stubApi({
+      tenant: () => ({ orgUUID: 'org-b', workspaceUUID: 'workspace-b' }),
+      listSessions: async (agent: string) => [session('shared-session', `${agent} workspace B preview`)],
+    })
+    const workspaceBStore = makeStore(workspaceBApi)
+    workspaceBStore.agents.data = [agentFixture('scout'), agentFixture('nova')]
+    workspaceBStore.agents.loaded = workspaceBStore.agents.hasSnapshot = true
+    await view.setProps({ store: workspaceBStore, api: workspaceBApi })
+    await settle(6)
+
+    workspaceAStore.applyServerEvent({
+      type: 'session_title',
+      data: { agent: 'scout', sessionID: 'shared-session', title: 'Old workspace title' },
+    })
+    await settle()
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('scout workspace B preview')
+    expect(text(view.element.querySelector('[data-thread-id="shared-session"] .k-ai-conversation-rail__item-title'))).toBe('scout workspace B preview')
+
+    await view.setProps({ name: 'nova' })
+    await settle(6)
+    workspaceBStore.applyServerEvent({
+      type: 'session_title',
+      data: { agent: 'scout', sessionID: 'shared-session', title: 'Another agent title' },
+    })
+    await settle()
+
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('nova workspace B preview')
+    expect(text(view.element.querySelector('[data-thread-id="shared-session"] .k-ai-conversation-rail__item-title'))).toBe('nova workspace B preview')
+  })
+
   it('rechecks native run activity after the delete confirmation', async () => {
     const deleteSession = vi.fn()
     let targetReads = 0

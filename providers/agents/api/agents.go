@@ -619,6 +619,9 @@ type chatFrame struct {
 // carried the message; what differs between them is only the access the run
 // executes with (see runAccess).
 func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event string, data map[string]any)) chatFrame {
+	// Titles belong only to attended chat submissions; internal run triggers do
+	// not opt in to this presentation metadata.
+	run.generateSessionTitle = true
 	runID, sessionID := run.RunID, run.SessionID
 	run.OnRunStarted = func(startedAt time.Time) {
 		emit("run_started", map[string]any{

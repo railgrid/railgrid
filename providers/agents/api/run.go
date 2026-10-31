@@ -440,6 +440,10 @@ type taskRun struct {
 	Repository      *repositoryAttempt
 	ModelSettings   *store.ModelSettings
 	HarnessSettings *store.HarnessSettings
+	// generateSessionTitle is set only by the live chat transport, so internal
+	// runTurn callers do not start metadata requests just because they share the
+	// chat trigger.
+	generateSessionTitle bool
 
 	// Worker, when non-nil, marks this run as a spawned sub-agent worker and
 	// carries the constraints its parent imposed (depth, narrowed families,
@@ -830,6 +834,16 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// The runner is an external process. Do not dispatch it unless its
 			// attempt coordinates and safe cancel target are already durable.
 			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+		}
+		if s.shouldGenerateSessionTitle(run, agent, cont) {
+			titleRun := run
+			titleRun.Agent = agent.DeepCopy()
+			titleRun.SessionID = sessionID
+			titleRun.ModelSettings = &store.ModelSettings{
+				ModelCredential: run.ModelSettings.ModelCredential,
+				ReasoningEffort: run.ModelSettings.ReasoningEffort,
+			}
+			s.startSessionTitleGeneration(titleRun, taskMessageID)
 		}
 		if run.OnRunStarted != nil {
 			run.OnRunStarted(startedAt)

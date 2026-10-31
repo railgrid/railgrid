@@ -65,6 +65,12 @@ are not offered. Effort is remembered separately for each credential in a chat.
 Switching back to a credential whose remembered effort is no longer supported
 resets that effort to model default; valid remembered choices are retained.
 
+The first user message also starts a separate metadata request to generate a
+thread title with the model selected for that chat. Title generation runs
+asynchronously and does not delay the reply. When the saved title arrives, the
+conversation header and thread rail update together; if generation fails, the
+existing first-message preview remains the label.
+
 ## MCP Apps result views
 
 Successful tool results may include a provider-owned MCP App view. The portal

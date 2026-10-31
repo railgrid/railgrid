@@ -42,6 +42,18 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 			t.Fatalf("append %s transcript: %v", entry.id, err)
 		}
 	}
+	if claimed, err := s.ClaimSessionTitle(ctx, fallback, "continuity", "legacy-user"); err != nil || !claimed {
+		t.Fatalf("claim legacy session title = %t, err=%v", claimed, err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, fallback, "continuity", "legacy-user", "Incident review"); err != nil || !written {
+		t.Fatalf("set legacy session title = %t, err=%v", written, err)
+	}
+	if claimed, err := s.ClaimSessionTitle(ctx, mapped, "continuity", "mapped-user"); err != nil || !claimed {
+		t.Fatalf("claim mapped session title = %t, err=%v", claimed, err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, mapped, "continuity", "mapped-user", "Later scope title"); err != nil || !written {
+		t.Fatalf("set mapped session title = %t, err=%v", written, err)
+	}
 	legacyCheckpoint := &SessionCheckpoint{Version: 1, ThroughSequence: 1, ReplacementHistory: []SessionCheckpointMessage{{Role: "user", Content: "legacy prefix"}}}
 	mappedCheckpoint := &SessionCheckpoint{Version: 1, ThroughSequence: 2, ReplacementHistory: []SessionCheckpointMessage{{Role: "user", Content: "merged prefix"}}}
 	if err := s.PutSessionSummary(ctx, fallback, SessionSummary{
@@ -154,6 +166,9 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 	page, err := s.ListMessages(ctx, mapped, "continuity", 20, "")
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("merged transcript = %d messages, err=%v; want both scopes' messages", len(page.Items), err)
+	}
+	if sessions, err := s.ListSessions(ctx, mapped, 10); err != nil || len(sessions) != 1 || sessions[0].Title != "Incident review" {
+		t.Fatalf("migrated title sessions = %+v, err=%v", sessions, err)
 	}
 	summary, ok, err := s.GetSessionSummary(ctx, mapped, "continuity")
 	if err != nil || !ok || summary.Summary != "mapped summary" || summary.MessageCount != 5 || summary.Checkpoint == nil || summary.Checkpoint.ThroughSequence != 2 {
@@ -274,7 +289,7 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	clusterID := "scope-migration-" + uuid.NewString()
 	t.Cleanup(func() {
 		for _, unmappedClusterID := range []string{clusterID, clusterID + "-destructive", clusterID + "-budget"} {
-			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_titles", "agents_harness_sessions"} {
 				_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 AND workspace_uuid=$2", UnmappedOrg, unmappedClusterID)
 			}
 			_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, unmappedClusterID)
@@ -284,20 +299,34 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	canonical.AgentName = "coder"
 	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "coder", ClusterID: clusterID}
 	now := time.Now().UTC().Truncate(time.Microsecond)
+	firstUserMessageID := "legacy-user-" + uuid.NewString()
+	mappedUserMessageID := "mapped-user-" + uuid.NewString()
 	for _, entry := range []struct {
 		scope Scope
 		id    string
 		text  string
 		at    time.Time
 	}{
-		{fallback, "legacy-user-" + uuid.NewString(), "legacy transcript", now},
-		{canonical, "mapped-user-" + uuid.NewString(), "mapped transcript", now.Add(time.Second)},
+		{fallback, firstUserMessageID, "legacy transcript", now},
+		{canonical, mappedUserMessageID, "mapped transcript", now.Add(time.Second)},
 	} {
 		if err := ps.AppendMessage(ctx, entry.scope, Message{
 			ID: entry.id, AgentName: "coder", SessionID: "continuity", Role: "user", Content: entry.text, CreatedAt: entry.at,
 		}); err != nil {
 			t.Fatalf("append transcript: %v", err)
 		}
+	}
+	if claimed, err := ps.ClaimSessionTitle(ctx, fallback, "continuity", firstUserMessageID); err != nil || !claimed {
+		t.Fatalf("claim legacy session title = %t, err=%v", claimed, err)
+	}
+	if written, err := ps.SetSessionTitleIfEmpty(ctx, fallback, "continuity", firstUserMessageID, "Incident review"); err != nil || !written {
+		t.Fatalf("set legacy session title = %t, err=%v", written, err)
+	}
+	if claimed, err := ps.ClaimSessionTitle(ctx, canonical, "continuity", mappedUserMessageID); err != nil || !claimed {
+		t.Fatalf("claim mapped session title = %t, err=%v", claimed, err)
+	}
+	if written, err := ps.SetSessionTitleIfEmpty(ctx, canonical, "continuity", mappedUserMessageID, "Later scope title"); err != nil || !written {
+		t.Fatalf("set mapped session title = %t, err=%v", written, err)
 	}
 	legacyCheckpoint := &SessionCheckpoint{Version: 1, ThroughSequence: 1, ReplacementHistory: []SessionCheckpointMessage{{Role: "user", Content: "legacy prefix"}}}
 	mappedCheckpoint := &SessionCheckpoint{Version: 1, ThroughSequence: 2, ReplacementHistory: []SessionCheckpointMessage{{Role: "user", Content: "mapped prefix"}}}
@@ -418,6 +447,9 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	page, err := ps.ListMessages(ctx, canonical, "continuity", 20, "")
 	if err != nil || len(page.Items) != 2 {
 		t.Fatalf("merged transcript = %d messages, err=%v", len(page.Items), err)
+	}
+	if sessions, err := ps.ListSessions(ctx, canonical, 10); err != nil || len(sessions) != 1 || sessions[0].Title != "Incident review" {
+		t.Fatalf("migrated title sessions = %+v, err=%v", sessions, err)
 	}
 	summary, ok, err := ps.GetSessionSummary(ctx, canonical, "continuity")
 	if err != nil || !ok || summary.MessageCount != 5 || summary.Checkpoint == nil || summary.Checkpoint.ThroughSequence != 2 {
@@ -543,7 +575,7 @@ func TestPostgresTenantMappingIsImmutable(t *testing.T) {
 	first := TenantRef{OrgUUID: "org-immutable-" + uuid.NewString(), WorkspaceUUID: "ws-immutable-" + uuid.NewString(), UpdatedAt: time.Now().UTC()}
 	second := TenantRef{OrgUUID: "org-other-" + uuid.NewString(), WorkspaceUUID: "ws-other-" + uuid.NewString(), UpdatedAt: time.Now().UTC()}
 	t.Cleanup(func() {
-		for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+		for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_titles", "agents_harness_sessions"} {
 			_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 OR (org_uuid=$2 AND workspace_uuid=$3)", first.OrgUUID, UnmappedOrg, clusterID)
 		}
 		_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, clusterID)
@@ -628,7 +660,7 @@ func TestPostgresFallbackMutationsFenceTenantMapping(t *testing.T) {
 	ref := TenantRef{OrgUUID: canonical.OrgUUID, WorkspaceUUID: canonical.WorkspaceUUID, UpdatedAt: time.Now().UTC()}
 	t.Cleanup(func() {
 		for _, unmappedClusterID := range []string{clusterID, clusterID + "-destructive"} {
-			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_harness_sessions"} {
+			for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_titles", "agents_harness_sessions"} {
 				_, _ = ps.db.ExecContext(context.Background(), "DELETE FROM "+table+" WHERE org_uuid=$1 AND workspace_uuid=$2", UnmappedOrg, unmappedClusterID)
 			}
 			_, _ = ps.db.ExecContext(context.Background(), `DELETE FROM agents_tenants WHERE cluster_id=$1`, unmappedClusterID)

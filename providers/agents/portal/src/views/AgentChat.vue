@@ -74,6 +74,7 @@ const runtime = useAgentsRuntime()
 const inlineAppGeneration = ref(0)
 watch([() => props.store, () => props.api, () => props.name, () => runtime?.authorityEpoch.value], () => {
   clearArtifactState()
+  if (mounted) bindServer(props.store)
 }, { flush: 'sync' })
 const artifactPanelOpen = ref(false)
 watch(artifactPanelOpen, open => {
@@ -96,6 +97,9 @@ let artifactDetailSerial = 0
 const messages = ref<ChatMessage[]>([])
 const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
+// A title event can arrive while a session-list read is in flight. Keep the
+// latest event value over that read so an older snapshot cannot undo it.
+const sessionTitleOverrides = ref(new Map<string, string>())
 const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
@@ -150,6 +154,8 @@ const composer = ref<HTMLTextAreaElement | null>(null)
 let mounted = false
 let initializedFor = ''
 let boundStore: AppStore | null = null
+let boundAuthority: ReturnType<typeof captureAuthority> | null = null
+let livenessEverConnected = props.store.live
 let abort: AbortController | null = null
 const detachedStarts = new Set<AbortController>()
 let liveRunID = ''
@@ -391,9 +397,13 @@ function selectReasoningEffort(effort: string): void {
 function retryChatModel(): void { modelPending = updateChatModel(retryModelPreferences) }
 
 const sessionOptions = computed(() => {
-  const list = sessions.value.slice()
+  const list = sessions.value.map(session => {
+    const title = sessionTitleOverrides.value.get(session.id)
+    return title ? { ...session, title } : session
+  })
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
-    list.unshift({ id: sessionID.value, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
+    const title = sessionTitleOverrides.value.get(sessionID.value)
+    list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
   }
   return list
 })
@@ -1131,6 +1141,7 @@ async function openAgent(): Promise<void> {
   messages.value = []
   messagesHasSnapshot.value = false
   sessions.value = []
+  sessionTitleOverrides.value = new Map()
   sessionsError.value = null
   sessionsHasSnapshot.value = false
   sessionsLoading.value = false
@@ -1864,6 +1875,9 @@ async function deleteSession(id = sessionID.value): Promise<void> {
     // the rail in its retrying state.
     sessionsLoading.value = false
     sessions.value = sessions.value.filter(session => session.id !== id)
+    const titleOverrides = new Map(sessionTitleOverrides.value)
+    titleOverrides.delete(id)
+    sessionTitleOverrides.value = titleOverrides
     if (sessionID.value !== id) return
     resetApprovalRecovery()
     messageReadSerial += 1
@@ -1880,8 +1894,44 @@ async function deleteSession(id = sessionID.value): Promise<void> {
   }
 }
 
+function applySessionTitleEvent(detail: ServerEvent): void {
+  const authority = boundAuthority
+  const eventAgent = detail.data.agent
+  const eventSessionID = detail.data.sessionID
+  const rawTitle = detail.data.title
+  const title = typeof rawTitle === 'string' ? rawTitle.trim() : ''
+  const runtimeAuthorityIsCurrent = !runtime || (
+    authority !== null &&
+    runtime.store.value === authority.store &&
+    runtime.api.value === authority.api &&
+    runtime.authorityEpoch.value === authority.epoch &&
+    runtime.host.value === authority.host &&
+    Boolean(authority.host?.isConnected)
+  )
+  if (
+    detail.type !== 'session_title' ||
+    typeof eventAgent !== 'string' || !eventAgent || eventAgent !== props.name ||
+    typeof eventSessionID !== 'string' || !eventSessionID || !title ||
+    boundStore !== props.store ||
+    !contextIsCurrent(eventAgent, props.api) ||
+    !authority || authority.store !== props.store || authority.api !== props.api || !runtimeAuthorityIsCurrent
+  ) return
+
+  // Events may arrive for another saved thread. If an event names a session
+  // that is not in this agent's list, only the active session's picker
+  // fallback is eligible for an update.
+  if (!sessions.value.some(session => session.id === eventSessionID) && sessionID.value !== eventSessionID) return
+  const overrides = new Map(sessionTitleOverrides.value)
+  overrides.set(eventSessionID, title)
+  sessionTitleOverrides.value = overrides
+}
+
 function onServerEvent(event: Event): void {
   const detail = (event as CustomEvent<ServerEvent>).detail
+  if (detail.type === 'session_title') {
+    applySessionTitleEvent(detail)
+    return
+  }
   if (detail.type !== 'run' || !detail.data.id) return
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
@@ -1942,9 +1992,13 @@ function onServerEvent(event: Event): void {
 }
 
 function bindServer(store: AppStore | null): void {
-  if (boundStore === store) return
+  if (boundStore === store) {
+    boundAuthority = store ? captureAuthority() : null
+    return
+  }
   boundStore?.removeEventListener('server', onServerEvent as EventListener)
   boundStore = store
+  boundAuthority = store ? captureAuthority() : null
   boundStore?.addEventListener('server', onServerEvent as EventListener)
 }
 
@@ -1992,6 +2046,28 @@ watch([() => props.store, () => props.api, () => props.name], () => {
   bindServer(props.store)
   void openAgent()
 }, { flush: 'post' })
+watch(
+  [
+    () => props.store,
+    () => {
+      revision.value
+      return props.store.live
+    },
+  ],
+  ([store, live], [previousStore, previousLive]) => {
+    if (store !== previousStore) {
+      livenessEverConnected = live
+      return
+    }
+    if (previousLive === false && live === true) {
+      if (livenessEverConnected && mounted && initializedFor === props.name && boundStore === store) {
+        void loadSessions(props.name, props.api)
+      }
+      livenessEverConnected = true
+    }
+  },
+  { flush: 'post' },
+)
 watch(() => conversationRail.value?.expanded, (expanded) => {
   if (expanded !== false || !mobileRailOpen.value || !isNarrowViewport()) return
   mobileRailOpen.value = false
