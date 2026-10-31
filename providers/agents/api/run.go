@@ -590,9 +590,12 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		return runResult{}, err
 	}
 	if run.ModelSettings != nil {
+		// Keep the conversation override scoped to this turn's chat model. The
+		// taskRun still carries the configured Agent: spawned workers inherit that
+		// Agent and resolve their background model from its defaults, and a
+		// resumed worker rebuilds the same purpose mapping from the Agent CR.
 		agent = agent.DeepCopy()
 		agent.Spec.SetModelCredential(llm.PurposeChat, run.ModelSettings.ModelCredential)
-		run.Agent = agent
 	}
 	run.HarnessSettings = resolveHarnessSettings(agent, run.HarnessSettings)
 	// A status condition alone cannot enforce unsupported tool restrictions:
@@ -658,7 +661,12 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// Names the model that will actually be called, which is what prices the
 		// turn and sizes its context window.
 		modelName = s.modelNameForPurpose(ctx, run.Creds, agent, purpose)
-		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(run, sessionID, modelName))
+		// Compaction follows this turn's effective chat mapping when the Agent
+		// has no explicit compaction credential. Keep the original taskRun below
+		// so spawned workers still inherit the configured Agent defaults.
+		compactionRun := run
+		compactionRun.Agent = agent
+		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(compactionRun, sessionID, modelName))
 	}
 	brun := &backend.Run{ID: runID, SessionID: sessionID, Agent: agent.Name, Trigger: run.Trigger}
 	// Register for POST /api/runs/{id}/cancel and for the Run reconciler's

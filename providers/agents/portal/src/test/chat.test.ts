@@ -1321,6 +1321,66 @@ describe('chat read ownership', () => {
     expect(text(view.element)).toContain('current reply')
   })
 
+  it('keeps a remembered preference-bearing empty chat when older chats exist', async () => {
+    const remembered = 'unsent-model-chat'
+    const key = 'railgrid:agents:session:org:ws:scout'
+    localStorage.setItem(key, remembered)
+    const getSessionModel = vi.fn(async (_name: string, id: string) => ({
+      selectedCredential: id === remembered ? 'sol' : 'openai',
+      modelCredential: id === remembered ? 'sol' : '',
+      effortOptions: ['low', 'high'],
+      defaultEffort: '',
+      reasoningEffortByModel: id === remembered ? { sol: 'high' } : {},
+    }))
+    const listMessagePage = vi.fn(async () => ({ items: [] }))
+    const api = stubApi({
+      listSessions: () => Promise.resolve([session('older', 'Older chat')]),
+      getSessionModel,
+      listMessagePage,
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(8)
+
+    expect(getSessionModel).toHaveBeenCalledWith('scout', remembered)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+    expect(listMessagePage).toHaveBeenCalledWith('scout', remembered)
+    expect(localStorage.getItem(key)).toBe(remembered)
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('New chat')
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('Older chat')
+  })
+
+  it('keeps the remembered empty chat when its preference probe transiently fails', async () => {
+    const remembered = 'unsent-model-chat'
+    const key = 'railgrid:agents:session:org:ws:scout'
+    localStorage.setItem(key, remembered)
+    const getSessionModel = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary read failure'))
+      .mockResolvedValueOnce({
+        selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '',
+        reasoningEffortByModel: { sol: 'high' },
+      })
+    const listMessagePage = vi.fn(async () => ({ items: [] }))
+    const api = stubApi({
+      listSessions: () => Promise.resolve([session('older', 'Older chat')]),
+      getSessionModel,
+      listMessagePage,
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(8)
+
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(getSessionModel.mock.calls.map(([, id]) => id)).toEqual([remembered, remembered])
+    expect(listMessagePage).toHaveBeenCalledWith('scout', remembered)
+    expect(localStorage.getItem(key)).toBe(remembered)
+    expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('New chat')
+  })
+
   it('does not let a late message read overwrite a newer session', async () => {
     const first = deferred<Array<{ id: string; role: string; content: string }>>()
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
@@ -2051,6 +2111,33 @@ describe('conversation model picker', () => {
     expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
   })
 
+  it('lets the user reselect the displayed default after saved-model access is denied', async () => {
+    const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => ({
+      ...preferences,
+      selectedCredential: preferences.modelCredential,
+      effortOptions: ['low', 'high'],
+      defaultEffort: '',
+    }))
+    const { el, store } = await mountChat(scripted([]), {
+      getSessionModel: async () => { throw new ApiError(403, 'Access denied', 'forbidden') },
+      saveSessionModel,
+    })
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-4o' }]
+    store.credentials.loaded = true
+    store.dispatchEvent(new Event('change'))
+    await settle(8)
+
+    expect(text(el)).toContain('Chat model could not be loaded')
+    expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
+    await chooseModel(el, 'openai')
+    await settle(8)
+
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({
+      modelCredential: 'openai',
+    }))
+    expect(text(el)).not.toContain('Chat model could not be loaded')
+  })
+
   it('keeps the chosen effort visible during saving and restores it on failure', async () => {
     const pending = deferred<any>()
     const { el, store } = await mountChat(scripted([]), {
@@ -2107,6 +2194,80 @@ describe('conversation model picker', () => {
     await settle(8)
     expect(saveSessionModel).toHaveBeenCalledWith('scout', 's2', expect.objectContaining({ reasoningEffortByModel: { sol: '' } }))
     expect(store.agents.data[0].spec.backend!.model!.credentials!.chat).toBe('openai')
+  })
+
+  it('waits for a pending save before reloading that same chat after switching away and back', async () => {
+    const pendingSave = deferred<any>()
+    const stored = new Map<string, any>([
+      ['first', { selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: '', reasoningEffortByModel: {} }],
+      ['second', { selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: '', reasoningEffortByModel: {} }],
+    ])
+    const getSessionModel = vi.fn(async (_name: string, id: string) => stored.get(id))
+    const saveSessionModel = vi.fn((_name: string, id: string, preferences: any) => {
+      if (id === 'first') return pendingSave.promise
+      stored.set(id, preferences)
+      return Promise.resolve(preferences)
+    })
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('first', 'First chat'), session('second', 'Second chat')],
+      getSessionModel,
+      saveSessionModel,
+    })
+    const firstSessionID = 'first'
+    await configureModels(store)
+    await chooseModel(el, 'sol')
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', firstSessionID, expect.objectContaining({ modelCredential: 'sol' }))
+
+    await chooseSession(el, 'Second chat')
+    await settle(6)
+    await chooseSession(el, 'First chat')
+    await settle(6)
+    expect(getSessionModel.mock.calls.filter(([, id]) => id === firstSessionID)).toHaveLength(1)
+
+    const saved = { ...stored.get(firstSessionID), selectedCredential: 'sol', modelCredential: 'sol' }
+    stored.set(firstSessionID, saved)
+    pendingSave.resolve(saved)
+    await settle(10)
+
+    expect(getSessionModel.mock.calls.filter(([, id]) => id === firstSessionID)).toHaveLength(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+  })
+
+  it('accepts a server-cleared stale effort while preserving other remembered efforts', async () => {
+    const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => {
+      const reasoningEffortByModel = { ...preferences.reasoningEffortByModel }
+      if (preferences.selectedCredential === 'sol') delete reasoningEffortByModel.sol
+      return {
+        ...preferences,
+        selectedCredential: preferences.selectedCredential,
+        reasoningEffortByModel,
+        effortOptions: ['low', 'high'],
+        defaultEffort: '',
+      }
+    })
+    const { el, store } = await mountChat(scripted([]), {
+      getSessionModel: async () => ({
+        selectedCredential: 'openai', modelCredential: 'openai', effortOptions: ['low', 'high'], defaultEffort: '',
+        reasoningEffortByModel: { openai: 'high', sol: 'max' },
+      }),
+      saveSessionModel,
+    })
+    await configureModels(store)
+
+    await chooseModel(el, 'sol')
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({
+      reasoningEffortByModel: { openai: 'high', sol: 'max' },
+    }))
+    expect(picker(el).getAttribute('aria-label')).toContain('Model default')
+
+    document.querySelector<HTMLButtonElement>('[aria-label^="Choose model:"]')!.click()
+    await settle()
+    const openai = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find(item => text(item).includes('openai'))
+    expect(openai).toBeDefined()
+    openai!.click()
+    await settle(8)
+    expect(picker(el).getAttribute('aria-label')).toContain('High')
   })
 
   it('omits the picker for harness execution', async () => {

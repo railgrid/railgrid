@@ -414,7 +414,9 @@ export class ApiClient {
   saveSessionModel = (agent: string, session: string, preferences: SessionModelPreferences): Promise<SessionModelPreferences> =>
     this.sendVerb('PATCH', this.verbTail(this.verb(AGENTS, agent, 'session'), session), {
       modelCredential: preferences.modelCredential || '',
-      reasoningEffortByModel: preferences.reasoningEffortByModel || {},
+      ...(preferences.reasoningEffortByModel !== undefined
+        ? { reasoningEffortByModel: preferences.reasoningEffortByModel }
+        : {}),
     })
   deleteSession = (agent: string, session: string): Promise<void> =>
     this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))

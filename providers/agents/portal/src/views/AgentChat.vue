@@ -25,6 +25,7 @@ import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentAr
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
 import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
 import { InlineAppLoadCoordinator } from '../vue/inline-app-loads'
+import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
 import McpAppViewer from '../components/McpAppViewer.vue'
@@ -190,6 +191,7 @@ const modelPreferences = ref<SessionModelPreferences | null>(null)
 let modelSaveSerial = 0
 let modelPending: Promise<void> = Promise.resolve()
 let retryModelPreferences: SessionModelPreferences | undefined
+let bootstrappedSessionModel: { name: string; api: ApiClient; session: string; preferences: SessionModelPreferences } | null = null
 const isModelBackend = computed(() => {
   revision.value
   return Boolean(agent.value) && !agentHarnessBacked(agent.value)
@@ -207,6 +209,18 @@ const modelChoices = computed(() => {
 })
 const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
 const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
+
+function modelRequestKey(name: string, session: string, api: ApiClient): string {
+  const scope = api.contextAuthority?.()
+  return chatModelRequestKey({
+    tenantKey: scope?.tenantKey ?? api.tenantKey(),
+    userKey: scope?.userKey ?? null,
+  }, name, session)
+}
+
+function hasStoredSessionModel(preferences: SessionModelPreferences): boolean {
+  return Boolean(preferences.modelCredential) || Object.keys(preferences.reasoningEffortByModel || {}).length > 0
+}
 
 async function updateChatModel(preferences?: SessionModelPreferences): Promise<void> {
   const serial = ++modelSaveSerial
@@ -230,10 +244,14 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
   retryModelPreferences = preferences
   const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
   try {
-    const result = preferences
-      ? await props.api.saveSessionModel(name, session, preferences)
-      : await props.api.getSessionModel(name, session)
-    if (!current()) return
+    const result = await serializeChatModelRequest(
+      modelRequestKey(name, session, authority.api),
+      current,
+      () => preferences
+        ? authority.api.saveSessionModel(name, session, preferences)
+        : authority.api.getSessionModel(name, session),
+    )
+    if (!current() || !result) return
     modelPreferences.value = result
     retryModelPreferences = undefined
   } catch {
@@ -250,13 +268,23 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
 }
 
 watch([sessionID, isModelBackend], () => {
+  const preloaded = bootstrappedSessionModel
+  if (preloaded && preloaded.name === props.name && preloaded.api === props.api && preloaded.session === sessionID.value) {
+    bootstrappedSessionModel = null
+    modelPreferences.value = preloaded.preferences
+    retryModelPreferences = undefined
+    modelPending = Promise.resolve()
+    return
+  }
+  bootstrappedSessionModel = null
   modelPreferences.value = null
   retryModelPreferences = undefined
   modelPending = updateChatModel()
 }, { flush: 'sync' })
 
 function selectModelCredential(credential: string): void {
-  if (!isModelBackend.value || modelSwitchDisabled.value || credential === selectedModel.value || !modelChoices.value.some(model => model.id === credential)) return
+  const canRepairUnloadedPreference = !modelPreferences.value || Boolean(modelSaveError.value)
+  if (!isModelBackend.value || modelSwitchDisabled.value || (credential === selectedModel.value && !canRepairUnloadedPreference) || !modelChoices.value.some(model => model.id === credential)) return
   modelPending = updateChatModel({
     ...modelPreferences.value, selectedCredential: credential, modelCredential: credential,
     effortOptions: [], defaultEffort: '',
@@ -1003,6 +1031,7 @@ async function openAgent(): Promise<void> {
   const api = props.api
   const serial = ++openSerial
   const ownership = chatOwnershipSerial
+  bootstrappedSessionModel = null
   initializedFor = ''
   clearDetachedStarts()
   invalidateStream()
@@ -1034,8 +1063,33 @@ async function openAgent(): Promise<void> {
     initializedFor = name
     return
   }
-  if (!wanted || (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted))) {
+  if (!wanted) {
     wanted = sessions.value[0]?.id || newSessionID()
+  } else if (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted)) {
+    if (isModelBackend.value) {
+      const authority = captureAuthority()
+      const current = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
+      try {
+        const preferences = await serializeChatModelRequest(
+          modelRequestKey(name, wanted, api),
+          current,
+          () => api.getSessionModel(name, wanted),
+        )
+        if (!current()) return
+        if (preferences && hasStoredSessionModel(preferences)) {
+          bootstrappedSessionModel = { name, api, session: wanted, preferences }
+        } else {
+          wanted = sessions.value[0]?.id || newSessionID()
+        }
+      } catch {
+        if (!current()) return
+        // A failed preferences probe cannot prove that this remembered chat
+        // has no saved choices. Keep it selected; the regular hydration path
+        // retries and exposes its retry control if that read also fails.
+      }
+    } else {
+      wanted = sessions.value[0]?.id || newSessionID()
+    }
   }
   sessionID.value = wanted
   remember(wanted, name, api)

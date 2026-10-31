@@ -47,13 +47,20 @@ The conversation composer uses AgentKit's shared `AIModelReasoningPicker`, as
 App Studio does. Model and effort choices apply only to the current chat.
 `GET/PATCH agents/{name}/session/{sessionID}` reads and saves these preferences;
 it never patches the Agent or its ModelCredential. Each run pins the effective
-choice so approval resumes and recovery retain it. New chats and background
-runs continue to use the Agent defaults.
+choice so approval resumes and recovery retain it. New chats, background runs,
+and spawned workers continue to use the Agent defaults. Explicit selections
+require access to the selected ModelCredential when saved and when a new chat
+run starts.
+
+Session reads wait for pending writes to that same chat, including across view
+remounts. An unsent chat with saved preferences remains selected after reload.
 
 Effort choices come from the shared server-side model capability catalog.
 Custom endpoints and unknown models show only model selection. Agents currently
 uses Chat Completions, so reasoning levels requiring the Responses transport
 are not offered. Effort is remembered separately for each credential in a chat.
+Switching back to a credential whose remembered effort is no longer supported
+resets that effort to model default; valid remembered choices are retained.
 
 ## MCP Apps result views
 

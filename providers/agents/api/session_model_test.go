@@ -26,7 +26,10 @@ func TestChatModelSettingsPinOnlyCurrentConversation(t *testing.T) {
 	if err := s.store.PutSessionModelSettings(ctx, scope, "one", store.SessionModelSettings{ModelCredential: "chosen"}); err != nil {
 		t.Fatal(err)
 	}
-	run := taskRun{Scope: scope, Agent: agent, SessionID: "one", Trigger: agentsv1alpha1.RunTriggerChat}
+	run := taskRun{
+		Creds: &sessionModelCredentialResolver{}, HubToken: "caller-token",
+		Scope: scope, Agent: agent, SessionID: "one", Trigger: agentsv1alpha1.RunTriggerChat,
+	}
 	if err := s.resolveChatModelSettings(ctx, &run); err != nil {
 		t.Fatal(err)
 	}
