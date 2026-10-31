@@ -165,8 +165,8 @@ func TestRepositoryRejectsNamesBeforeExternalCreation(t *testing.T) {
 			defer srv.Close()
 			conn := &code.Connection{Spec: code.ConnectionSpec{Owner: "team", BaseURL: srv.URL}}
 			_, err := New().EnsureRepository(context.Background(), conn, backend.Credential{Token: "test"}, &code.Repository{Spec: code.RepositorySpec{Name: name}})
-			if err == nil {
-				t.Fatal("expected invalid name error")
+			if !errors.Is(err, backend.ErrInvalidRepositoryName) {
+				t.Fatalf("expected invalid name error, got %v", err)
 			}
 		})
 	}

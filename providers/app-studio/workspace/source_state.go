@@ -92,6 +92,34 @@ func (s *FileStore) RetainsSource(ctx context.Context, scope Scope) (bool, error
 	return local >= revision, nil
 }
 
+// SourceTreeExists reports directory presence, including deliberately empty trees.
+// Unlike RetainsSource, this read-only check does not require a cache revision tag.
+func (s *FileStore) SourceTreeExists(ctx context.Context, scope Scope) (bool, error) {
+	if s == nil {
+		return false, errors.New("project workspace store is not configured")
+	}
+	s.mutationMu.Lock()
+	defer s.mutationMu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	dir, err := s.scopeDir(scope)
+	if err != nil {
+		return false, err
+	}
+	info, err := os.Stat(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("workspace source is not a directory")
+	}
+	return true, nil
+}
+
 // HasSourceTree reports whether this replica holds a materialized tree for the
 // project at all. It is the question the hydration path asks: a replica that
 // has no tree must rebuild it from the last commit plus the ledger's dirty

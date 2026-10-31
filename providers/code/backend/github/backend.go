@@ -134,7 +134,7 @@ var repositoryNamePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}$`)
 func (b *Backend) EnsureRepository(ctx context.Context, conn *codev1alpha1.Connection, cred backend.Credential, repo *codev1alpha1.Repository) (backend.RepositoryResult, error) {
 	// Refuse names GitHub would silently rewrite before making an external write.
 	if !repositoryNamePattern.MatchString(repo.Spec.Name) || repo.Spec.Name == "." || repo.Spec.Name == ".." {
-		return backend.RepositoryResult{}, errors.New("github: repository name must contain 1–100 letters, numbers, periods, underscores, or hyphens and cannot be a dot segment")
+		return backend.RepositoryResult{}, fmt.Errorf("%w: github repository name must contain 1–100 letters, numbers, periods, underscores, or hyphens and cannot be a dot segment", backend.ErrInvalidRepositoryName)
 	}
 	c, err := b.client(ctx, cred, conn.Spec.BaseURL)
 	if err != nil {

@@ -94,12 +94,12 @@ func (s *Server) listProjectFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if revision > 1 {
-		retained, err := s.workspaces.RetainsSource(r.Context(), scope)
+		exists, err := s.workspaces.SourceTreeExists(r.Context(), scope)
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		if !retained {
+		if !exists {
 			writeStatus(w, http.StatusServiceUnavailable, "WorkspaceSourceUnavailable", "Project files are unavailable on this provider. Restore the project workspace volume or recover saved files from Git before editing.")
 			return
 		}

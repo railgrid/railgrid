@@ -17,9 +17,8 @@ package install
 //
 // The set lives under install/templates/*.yaml and is embedded at
 // build time so init does not depend on a host kubectl + path. The
-// caller (init_cmd.go) invokes SeedTemplates after CRDs +
-// PlatformSchemaInAPIExport + PlatformCachedResources so the
-// Template CRD exists by the time we POST.
+// init and operator callers seed after CRDs, the catalog projection, and SDK
+// bootstrap, so the Template CRD exists by the time we POST.
 //
 // Operators who maintain their own catalog can disable seeding via
 // INFRASTRUCTURE_SKIP_SEED_TEMPLATES=1 — useful for production

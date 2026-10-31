@@ -148,7 +148,7 @@ export function classifyProjectFileError(
 export function projectFileErrorMessage(reason: ProjectFileErrorReason, detail: string): string {
   switch (reason) {
     case 'workspace-unavailable':
-      return 'Project files are unavailable on this provider. Restore the project workspace volume or recover saved files from Git before editing.'
+      return 'Project files are unavailable or out of date on this provider. Refresh the project and try again. If the problem persists, restore the workspace volume or recover saved files from Git before editing.'
     case 'busy':
       return 'The assistant is working on this project. Try again when the run finishes.'
     case 'exists':

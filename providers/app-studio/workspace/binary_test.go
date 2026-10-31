@@ -314,6 +314,7 @@ func TestReplaceTreePreserveOmittedNeverDeletes(t *testing.T) {
 	}
 }
 
+// Characterization coverage: empty files already persisted before the missing-tree diagnostic.
 func TestEmptyFilePersistsAcrossStoreReload(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

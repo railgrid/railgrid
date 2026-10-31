@@ -220,5 +220,6 @@ test('code explorer wires upload, drop, new file, delete, download, and binary p
 test('a stale workspace is not presented as an individual file conflict', () => {
   const reason = files.classifyProjectFileError(409, 'workspace source is stale; refresh the project before editing', { createOnly: true }, { code: 'workspace_conflict' })
   assert.equal(reason, 'workspace-unavailable')
+  assert.match(files.projectFileErrorMessage(reason, ''), /Refresh the project/)
   assert.match(files.projectFileErrorMessage(reason, ''), /workspace volume/)
 })

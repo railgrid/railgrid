@@ -919,7 +919,7 @@ export const api = {
     autoInit?: boolean
   }): Promise<Repository> {
     const name = normalizeResourceName(input.name)
-    const remote = input.repo?.trim() || (input.mode === 'import' ? input.name.trim() : name)
+    const remote = input.repo?.trim() || (input.mode === 'import' ? input.name.trim() : name.slice(0, 100))
     const importing = input.mode === 'import'
     if (importing && !REMOTE_REPOSITORY_PATTERN.test(remote)) throw new Error('Enter the repository as owner/repository.')
     if (!importing && remote.includes('/')) throw new Error('Choose Import existing repository to add owner/repository.')

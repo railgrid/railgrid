@@ -728,7 +728,9 @@ describe('repository registration', () => {
     for (const repo of ['Invalid Name!', '.', '..', 'a'.repeat(101)]) {
       await expect(api.createRepository({ name: 'valid', repo, connectionRef: 'pat' })).rejects.toThrow('GitHub name')
     }
-    expect(calls).toHaveLength(1)
+    await api.createRepository({ name: 'a'.repeat(120), connectionRef: 'pat' })
+    expect(calls[1].body).toMatchObject({ spec: { name: 'a'.repeat(100) } })
+    expect(calls).toHaveLength(2)
   })
 
   it('marks new repositories create-only so a collision cannot adopt or delete an existing remote', async () => {

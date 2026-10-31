@@ -3185,21 +3185,25 @@ test-agent-ui-browser: test-agents-composer-hit-test test-agent-overlay-resize #
 .PHONY: test-ui-e2e-report fix-lint-ui-e2e-report lint-ui-e2e-report
 test-ui-e2e-report: ## Regression coverage for the October 2026 UI E2E findings
 	cd provider-sdk && go test -count=1 ./install
-	cd providers/code && go test -count=1 ./backend/github
-	cd providers/infrastructure && go test -count=1 ./install && go test -run '^$$' . ./operator
+	cd providers/code && go test -count=1 ./backend/github ./controller/repository
+	cd providers/infrastructure && go test -count=1 ./install && go test -count=1 . ./operator
 	cd providers/app-studio && go test -count=1 ./workspace ./api -run 'TestEmptyFilePersistsAcrossStoreReload|TestProjectFile'
+	$(MAKE) test-ui-e2e-report-portal
+
+.PHONY: test-ui-e2e-report-portal
+test-ui-e2e-report-portal: ## Portal regressions for the UI E2E findings
 	cd providers/code/portal && npm test -- src/api.test.ts && npm run typecheck
-	cd providers/edges/portal && npm test -- src/routes.test.ts && npm run typecheck
+	cd providers/edges/portal && npm test -- src/routes.test.ts src/views.behavior.test.ts && npm run typecheck
 	cd providers/app-studio/portal && node --test src/projectFiles.test.mjs
 
 fix-lint-ui-e2e-report: $(GOLANGCI_LINT)
 	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) fmt ./install
-	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) fmt ./backend/github
+	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) fmt ./backend/github ./controller/repository
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) fmt . ./install ./operator
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) fmt ./api ./workspace
 
 lint-ui-e2e-report: $(GOLANGCI_LINT)
 	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run ./install
-	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) run ./backend/github
+	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) run ./backend/github ./controller/repository
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run . ./install ./operator
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./workspace

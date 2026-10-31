@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260609-fc69fa2.repositories.code.railgrid.ai
+  name: v261031-c205dcb4.repositories.code.railgrid.ai
 spec:
   group: code.railgrid.ai
   names:
@@ -91,7 +91,11 @@ spec:
                 the owner). DNS-ish; the host enforces its own rules.
               maxLength: 100
               minLength: 1
+              pattern: ^[A-Za-z0-9_.-]+$
               type: string
+              x-kubernetes-validations:
+              - message: repository name cannot be a dot segment
+                rule: self != '.' && self != '..'
             owner:
               description: |-
                 Owner overrides the Connection's owner for this single repository
