@@ -270,7 +270,7 @@ railgrid-provider-agents .agents-template-starters { display: flex; flex-directi
 railgrid-provider-agents .agents-template-starters-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8a8ca6); }
 railgrid-provider-agents .agents-template-starters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
 railgrid-provider-agents .agents-template-starter {
-  display: grid; gap: 2px; text-align: left; padding: 11px 13px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "t" "b"; align-content: start; gap: 2px; text-align: left; padding: 11px 13px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
   background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); color: inherit; box-shadow: none;
 }
 railgrid-provider-agents .agents-template-starter:hover,
