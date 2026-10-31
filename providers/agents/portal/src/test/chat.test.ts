@@ -155,6 +155,36 @@ describe('chat streaming', () => {
     expect(text(el.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))).toBe('Review the deployment')
   })
 
+  it('reloads persisted titles when the first event stream connection opens', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
+    let persistedTitle = ''
+    const listSessions = vi.fn(async (_agent: string): Promise<SessionMeta[]> => [{
+      ...session('s1', 'Review the deployment'),
+      ...(persistedTitle ? { title: persistedTitle } : {}),
+    }])
+    const api = stubApi({ listSessions })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout')]
+    store.agents.loaded = store.agents.hasSnapshot = true
+    const view = await mountVue(AgentChat, { store, api, name: 'scout' })
+    mounted.push(view)
+    await settle(6)
+
+    expect(listSessions).toHaveBeenCalledTimes(1)
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Review the deployment')
+
+    // The title event was published before the event stream had a subscriber.
+    // The first successful connection must catch up from the durable list.
+    persistedTitle = 'Recovered on first connection'
+    store.live = true
+    store.dispatchEvent(new Event('change'))
+    await settle(6)
+
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Recovered on first connection')
+    expect(text(view.element.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))).toBe('Recovered on first connection')
+  })
+
   it('reloads persisted titles after reconnect when the title event was missed', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const initialSessions = deferred<SessionMeta[]>()
@@ -173,8 +203,10 @@ describe('chat streaming', () => {
     await settle(4)
 
     expect(listSessions).toHaveBeenCalledTimes(1)
-    // The first connection becomes live while openAgent is still awaiting its
-    // initial list. It must not start a second read against that in-flight load.
+    // The title is durable by the time the first connection opens, but the
+    // initial request's snapshot predates it. Do not overlap that request;
+    // catch up once its stale result settles.
+    persistedTitle = 'Recovered deployment review'
     store.live = true
     store.dispatchEvent(new Event('change'))
     await settle()
@@ -182,16 +214,15 @@ describe('chat streaming', () => {
 
     initialSessions.resolve([session('s1', 'Review the deployment')])
     await settle(8)
-    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Review the deployment')
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Recovered deployment review')
 
     // A same-state store change is not a reconnect and does not reload the list.
     store.applyServerEvent({ type: 'run', data: { id: 'unrelated', agent: 'scout', phase: 'Running' } })
     await settle()
-    expect(listSessions).toHaveBeenCalledTimes(1)
+    expect(listSessions).toHaveBeenCalledTimes(2)
 
-    // The title was persisted while the stream was down, so no push reached
-    // this store. Reopening the stream must rehydrate it from listSessions.
-    persistedTitle = 'Recovered deployment review'
+    // Reopening the stream refreshes the durable session list again.
     store.live = false
     store.dispatchEvent(new Event('change'))
     await settle()
@@ -199,7 +230,7 @@ describe('chat streaming', () => {
     store.dispatchEvent(new Event('change'))
     await settle(6)
 
-    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(listSessions).toHaveBeenCalledTimes(3)
     expect(text(view.element.querySelector('.agents-chat-title'))).toContain('Recovered deployment review')
     expect(text(view.element.querySelector('[data-thread-id="s1"] .k-ai-conversation-rail__item-title'))).toBe('Recovered deployment review')
   })
@@ -2647,7 +2678,7 @@ describe('conversation model picker', () => {
       })
       .mockImplementationOnce(async (_name: string, _session: string) => ({
         selectedCredential: 'sol', modelCredential: '', effortOptions: ['low', 'medium', 'high'], defaultEffort: 'high',
-        reasoningEffortByModel: { openai: 'high' },
+        reasoningEffortByModel: {},
       }))
     const saveSessionModel = vi.fn((_name: string, _session: string, _preferences: any) => pendingEffortSave.promise)
     const { el, store } = await mountChat(scripted([]), { getSessionModel, saveSessionModel })
@@ -2685,7 +2716,7 @@ describe('conversation model picker', () => {
 
     expect(getSessionModel).toHaveBeenCalledTimes(2)
     await expect(getSessionModel.mock.results[1].value).resolves.toMatchObject({
-      selectedCredential: 'sol', reasoningEffortByModel: { openai: 'high' },
+      selectedCredential: 'sol', reasoningEffortByModel: {},
     })
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
     expect(document.querySelector('.k-ai-model-reasoning-picker__panel')).not.toBeNull()
@@ -2797,31 +2828,39 @@ describe('conversation model picker', () => {
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
   })
 
-  it('accepts a server-cleared stale effort while preserving other remembered efforts', async () => {
+  it('switches with selected-only responses without dropping hidden server-side efforts', async () => {
+    // The server stores both preferences, but only returns the selected
+    // credential's entry. Model the PATCH decoder merging an incoming JSON map
+    // into its cloned, non-nil stored map instead of replacing that map.
+    const storedEfforts: Record<string, string> = { openai: 'high', sol: 'max' }
+    const responseFor = (selectedCredential: string, preferences: any) => ({
+      ...preferences,
+      selectedCredential,
+      reasoningEffortByModel: storedEfforts[selectedCredential] === undefined
+        ? {}
+        : { [selectedCredential]: storedEfforts[selectedCredential] },
+      effortOptions: ['low', 'high'],
+      defaultEffort: '',
+    })
     const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => {
-      const reasoningEffortByModel = { ...preferences.reasoningEffortByModel }
-      if (preferences.selectedCredential === 'sol') delete reasoningEffortByModel.sol
-      return {
-        ...preferences,
-        selectedCredential: preferences.selectedCredential,
-        reasoningEffortByModel,
-        effortOptions: ['low', 'high'],
-        defaultEffort: '',
-      }
+      Object.assign(storedEfforts, preferences.reasoningEffortByModel ?? {})
+      const selectedCredential = preferences.modelCredential || preferences.selectedCredential
+      // The stored sol preference is stale under the current model metadata;
+      // the server clears that selected entry while retaining openai's entry.
+      if (selectedCredential === 'sol') delete storedEfforts.sol
+      return responseFor(selectedCredential, preferences)
     })
     const { el, store } = await mountChat(scripted([]), {
-      getSessionModel: async () => ({
-        selectedCredential: 'openai', modelCredential: 'openai', effortOptions: ['low', 'high'], defaultEffort: '',
-        reasoningEffortByModel: { openai: 'high', sol: 'max' },
-      }),
+      getSessionModel: async () => responseFor('openai', { modelCredential: 'openai' }),
       saveSessionModel,
     })
     await configureModels(store)
 
     await chooseModel(el, 'sol')
     expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({
-      reasoningEffortByModel: { openai: 'high', sol: 'max' },
+      reasoningEffortByModel: { openai: 'high' },
     }))
+    expect(storedEfforts).toEqual({ openai: 'high' })
     expect(picker(el).getAttribute('aria-label')).toContain('Model default')
 
     document.querySelector<HTMLButtonElement>('[aria-label^="Choose model:"]')!.click()
@@ -2831,6 +2870,10 @@ describe('conversation model picker', () => {
     expect(openai).toBeDefined()
     openai!.click()
     await settle(8)
+    expect(saveSessionModel).toHaveBeenNthCalledWith(2, 'scout', expect.any(String), expect.objectContaining({
+      reasoningEffortByModel: {},
+    }))
+    expect(storedEfforts).toEqual({ openai: 'high' })
     expect(picker(el).getAttribute('aria-label')).toContain('High')
   })
 

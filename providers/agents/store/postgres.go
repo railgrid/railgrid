@@ -2332,6 +2332,36 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 	if strings.TrimSpace(runID) == "" {
 		return fmt.Errorf("run ID is required")
 	}
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin run-data deletion: %w", err)
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
+	// Serialize this purge with transcript appends and title claim/writes. The
+	// run row is the durable session coordinate; messages are a fallback for an
+	// orphaned transcript whose run row was already removed.
+	var sessionID string
+	err = mutation.executor.QueryRowContext(ctx, `
+		SELECT session_id FROM agents_runs
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID).Scan(&sessionID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && strings.TrimSpace(sessionID) == "") {
+		err = mutation.executor.QueryRowContext(ctx, `
+			SELECT session_id FROM agents_messages
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4
+			ORDER BY append_sequence ASC LIMIT 1`,
+			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID).Scan(&sessionID)
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("find run transcript session: %w", err)
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		if err := lockTranscriptSession(ctx, mutation.executor, scope, sessionID); err != nil {
+			return err
+		}
+	}
 	// Messages, tool calls and artifacts first: a crash between statements
 	// must leave the run row behind as the thing that still points at them,
 	// never orphans nothing points at.
@@ -2340,6 +2370,21 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND run_id=$4`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
 			return err
+		}
+	}
+	if strings.TrimSpace(sessionID) != "" {
+		if _, err := mutation.executor.ExecContext(ctx, `
+			DELETE FROM agents_session_titles AS title_row
+			WHERE title_row.org_uuid=$1 AND title_row.workspace_uuid=$2
+				AND title_row.agent_name=$3 AND title_row.session_id=$4
+				AND title_row.first_message_id IS DISTINCT FROM (
+					SELECT first_user.id FROM agents_messages first_user
+					WHERE first_user.org_uuid=$1 AND first_user.workspace_uuid=$2
+						AND first_user.agent_name=$3 AND first_user.session_id=$4
+						AND first_user.role='user'
+					ORDER BY first_user.append_sequence ASC LIMIT 1
+				)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+			return fmt.Errorf("remove stale session title after run deletion: %w", err)
 		}
 	}
 	if _, err := mutation.executor.ExecContext(ctx,

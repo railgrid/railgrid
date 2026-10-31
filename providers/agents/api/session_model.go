@@ -138,12 +138,21 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The persisted map can contain preferences for several credentials, but
+	// this response is authorized only for the selected credential. Return a
+	// copy containing that entry alone; keep the complete map in settings for
+	// future authorized selections.
+	responseSettings := settings
+	responseSettings.ReasoningEffortByModel = make(map[string]string, 1)
+	if selectedEffort, exists := settings.ReasoningEffortByModel[selected]; exists {
+		responseSettings.ReasoningEffortByModel[selected] = selectedEffort
+	}
 	writeJSON(w, 200, struct {
 		store.SessionModelSettings
 		SelectedCredential string   `json:"selectedCredential"`
 		EffortOptions      []string `json:"effortOptions"`
 		DefaultEffort      string   `json:"defaultEffort"`
-	}{settings, selected, options, defaultEffort})
+	}{responseSettings, selected, options, defaultEffort})
 }
 
 // authorizeSessionModelCredential checks the current stamped caller's get

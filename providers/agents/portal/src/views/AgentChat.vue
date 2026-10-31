@@ -156,6 +156,7 @@ let initializedFor = ''
 let boundStore: AppStore | null = null
 let boundAuthority: ReturnType<typeof captureAuthority> | null = null
 let livenessEverConnected = props.store.live
+let firstConnectCatchupPending = false
 let abort: AbortController | null = null
 const detachedStarts = new Set<AbortController>()
 let liveRunID = ''
@@ -920,6 +921,15 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
     return false
   } finally {
     if (serial === sessionReadSerial && contextIsCurrent(name, api)) sessionsLoading.value = false
+    if (serial === sessionReadSerial && firstConnectCatchupPending && mounted && boundStore === props.store && contextIsCurrent(name, api)) {
+      firstConnectCatchupPending = false
+      // The first stream connection opened during a session read. Refresh once
+      // after that snapshot settles because its response may predate the title
+      // commit that the non-replayable stream could not deliver.
+      queueMicrotask(() => {
+        if (mounted && boundStore === props.store && contextIsCurrent(name, api)) void loadSessions(name, api)
+      })
+    }
   }
 }
 
@@ -1134,6 +1144,7 @@ async function openAgent(): Promise<void> {
   const ownership = chatOwnershipSerial
   bootstrappedSessionModel = null
   initializedFor = ''
+  firstConnectCatchupPending = false
   clearDetachedStarts()
   invalidateStream()
   messageReadSerial += 1
@@ -2060,8 +2071,15 @@ watch(
       return
     }
     if (previousLive === false && live === true) {
-      if (livenessEverConnected && mounted && initializedFor === props.name && boundStore === store) {
+      const currentChatIsBound = mounted && initializedFor === props.name && boundStore === store
+      if (livenessEverConnected && currentChatIsBound) {
         void loadSessions(props.name, props.api)
+      } else if (!livenessEverConnected && mounted && boundStore === store) {
+        // The event bus does not replay a title published before the first
+        // stream connection. Catch up from persistence whether the initial
+        // session snapshot has settled or is still in flight.
+        if (sessionsLoading.value) firstConnectCatchupPending = true
+        else if (initializedFor === props.name) void loadSessions(props.name, props.api)
       }
       livenessEverConnected = true
     }

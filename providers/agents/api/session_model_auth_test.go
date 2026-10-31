@@ -208,6 +208,99 @@ func TestSessionModelExplicitCredentialAuthorizationAllowsGetAndSave(t *testing.
 	}
 }
 
+func TestSessionModelResponseOnlyExposesSelectedCredentialEffort(t *testing.T) {
+	modelA := sessionModelCredentialObject("A", "gpt-6-astra")
+	modelB := sessionModelCredentialObject("B", "gpt-6-astra")
+	authorizedCredential := "B"
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{agentObject(conformanceAgent), modelA, modelB},
+		ListKinds: map[schema.GroupVersionResource]string{
+			agentsclient.AgentGVR: "AgentList", agentsclient.ModelCredentialGVR: "ModelCredentialList",
+		},
+		Allow: func(a conformance.Attributes) bool {
+			if a.Resource == "modelcredentials" {
+				return a.Verb == "get" && a.Name == authorizedCredential
+			}
+			return a.Resource == "agents" && a.Name == conformanceAgent && a.Verb == "get"
+		},
+	}
+	s, handler, scope := sessionModelTestServer(t, callers)
+	initial := store.SessionModelSettings{
+		ModelCredential:        "A",
+		ReasoningEffortByModel: map[string]string{"A": "high", "B": "low"},
+	}
+	if err := s.store.PutSessionModelSettings(t.Context(), scope, "chat", initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// The caller cannot inspect A while it is selected, then switches to B
+	// using only B's preference in the PATCH payload.
+	denied := serveSessionModelRequest(handler, http.MethodGet, "chat", "")
+	if denied.Code != http.StatusNotFound {
+		t.Fatalf("GET unauthorized A → %d, want 404: %s", denied.Code, denied.Body.String())
+	}
+	patch := serveSessionModelRequest(handler, http.MethodPatch, "chat", `{"modelCredential":"B","reasoningEffortByModel":{"B":"low"}}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("PATCH selected B → %d: %s", patch.Code, patch.Body.String())
+	}
+	if strings.Contains(patch.Body.String(), `"A"`) {
+		t.Fatalf("response exposed hidden credential A: %s", patch.Body.String())
+	}
+	var response struct {
+		store.SessionModelSettings
+		SelectedCredential string `json:"selectedCredential"`
+	}
+	if err := json.Unmarshal(patch.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.SelectedCredential != "B" || !reflect.DeepEqual(response.ReasoningEffortByModel, map[string]string{"B": "low"}) {
+		t.Fatalf("PATCH response exposed preferences outside selected B: %+v", response)
+	}
+
+	get := serveSessionModelRequest(handler, http.MethodGet, "chat", "")
+	if get.Code != http.StatusOK {
+		t.Fatalf("GET selected B → %d: %s", get.Code, get.Body.String())
+	}
+	if strings.Contains(get.Body.String(), `"A"`) {
+		t.Fatalf("GET response exposed hidden credential A: %s", get.Body.String())
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.SelectedCredential != "B" || !reflect.DeepEqual(response.ReasoningEffortByModel, map[string]string{"B": "low"}) {
+		t.Fatalf("GET response exposed preferences outside selected B: %+v", response)
+	}
+
+	// JSON unmarshalling the singleton B map into the cloned persisted map did
+	// not replace the hidden A entry. Once the caller is authorized for A again,
+	// selecting it recovers its remembered effort.
+	stored, err := s.store.GetSessionModelSettings(t.Context(), scope, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(stored.ReasoningEffortByModel, initial.ReasoningEffortByModel) {
+		t.Fatalf("PATCH with selected-only map dropped stored preferences: got %v, want %v", stored.ReasoningEffortByModel, initial.ReasoningEffortByModel)
+	}
+	authorizedCredential = "A"
+	patch = serveSessionModelRequest(handler, http.MethodPatch, "chat", `{"modelCredential":"A","reasoningEffortByModel":{"B":"low"}}`)
+	if patch.Code != http.StatusOK {
+		t.Fatalf("PATCH selected A after authorization → %d: %s", patch.Code, patch.Body.String())
+	}
+	// json.Unmarshal merges object keys into an existing non-nil map, so reset
+	// this response value before checking that only A was returned.
+	response = struct {
+		store.SessionModelSettings
+		SelectedCredential string `json:"selectedCredential"`
+	}{}
+	if err := json.Unmarshal(patch.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.SelectedCredential != "A" || !reflect.DeepEqual(response.ReasoningEffortByModel, map[string]string{"A": "high"}) {
+		t.Fatalf("return to A did not recover its selected preference: %+v", response)
+	}
+}
+
 func TestSessionModelInheritedAgentDefaultDoesNotRequireCredentialGet(t *testing.T) {
 	credential := sessionModelCredentialObject("agent-default", "gpt-6-astra")
 	credentialReviews := 0
@@ -355,11 +448,22 @@ func TestSessionModelSwitchClearsOnlyStaleRememberedEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Switching to B keeps its supported remembered value and the unrelated
-	// entries. The server's decode must not mutate the saved baseline map.
-	recorder := serveSessionModelRequest(handler, http.MethodPatch, "chat", `{"modelCredential":"B"}`)
+	// Switching to B keeps its supported remembered value. The request carries
+	// only B's selected preference; decoding into the cloned non-nil map merges
+	// that entry instead of dropping A or the unrelated entry.
+	recorder := serveSessionModelRequest(handler, http.MethodPatch, "chat", `{"modelCredential":"B","reasoningEffortByModel":{"B":"high"}}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("switch to B → %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var selectedB struct {
+		store.SessionModelSettings
+		SelectedCredential string `json:"selectedCredential"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &selectedB); err != nil {
+		t.Fatal(err)
+	}
+	if selectedB.SelectedCredential != "B" || !reflect.DeepEqual(selectedB.ReasoningEffortByModel, map[string]string{"B": "high"}) {
+		t.Fatalf("switch response should expose only B: %+v", selectedB)
 	}
 	settings, err := s.store.GetSessionModelSettings(t.Context(), scope, "chat")
 	if err != nil {
@@ -402,16 +506,20 @@ func TestSessionModelSwitchClearsOnlyStaleRememberedEffort(t *testing.T) {
 	if response.SelectedCredential != "A" || response.DefaultEffort != "" {
 		t.Fatalf("recovered response selected=%q default=%q: %+v", response.SelectedCredential, response.DefaultEffort, response)
 	}
-	if _, exists := response.ReasoningEffortByModel["A"]; exists {
-		t.Fatalf("stale selected effort should be omitted from response: %+v", response.ReasoningEffortByModel)
+	if len(response.ReasoningEffortByModel) != 0 {
+		t.Fatalf("response should omit all non-selected and cleared efforts: %+v", response.ReasoningEffortByModel)
 	}
-	if response.ReasoningEffortByModel["B"] != "high" || response.ReasoningEffortByModel["other"] != "low" {
-		t.Fatalf("recovery changed other remembered efforts: %+v", response.ReasoningEffortByModel)
+	settings, err = s.store.GetSessionModelSettings(t.Context(), scope, "chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.ReasoningEffortByModel["B"] != "high" || settings.ReasoningEffortByModel["other"] != "low" {
+		t.Fatalf("clearing stale A changed other stored efforts: %+v", settings.ReasoningEffortByModel)
 	}
 
 	// A different unsupported value is new user input, not a stale remembered
 	// preference, and remains a validation error without mutating the store.
-	before := response.SessionModelSettings
+	before := settings
 	recorder = serveSessionModelRequest(handler, http.MethodPatch, "chat", `{"modelCredential":"A","reasoningEffortByModel":{"A":"high"}}`)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("new unsupported effort → %d, want 400: %s", recorder.Code, recorder.Body.String())

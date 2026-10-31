@@ -27,6 +27,85 @@ func TestPostgresSessionTitleContract(t *testing.T) {
 	testSessionTitleContract(t, ps, pgScope(t, ps))
 }
 
+func TestMemoryRunPurgeClearsOnlyStaleSessionTitle(t *testing.T) {
+	testRunPurgeSessionTitleContract(t, NewMemoryStore(), testScope())
+}
+
+func TestPostgresRunPurgeClearsOnlyStaleSessionTitle(t *testing.T) {
+	ps := openTestPostgres(t)
+	testRunPurgeSessionTitleContract(t, ps, pgScope(t, ps))
+}
+
+func testRunPurgeSessionTitleContract(t *testing.T, s Store, scope Scope) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	sessionID := "title-purge-" + uuid.NewString()
+	firstRunID, laterRunID, nextRunID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	firstMessageID, laterMessageID, nextMessageID := uuid.NewString(), uuid.NewString(), uuid.NewString()
+	for i, entry := range []struct {
+		runID     string
+		messageID string
+		content   string
+	}{
+		{firstRunID, firstMessageID, "Original first request"},
+		{laterRunID, laterMessageID, "Later request"},
+	} {
+		at := now.Add(time.Duration(i) * time.Second)
+		if err := s.SaveRun(ctx, scope, Run{ID: entry.runID, AgentName: scope.AgentName, SessionID: sessionID,
+			Phase: RunPhaseSucceeded, CreatedAt: at, UpdatedAt: at}); err != nil {
+			t.Fatalf("save run %s: %v", entry.runID, err)
+		}
+		if err := s.AppendMessage(ctx, scope, Message{ID: entry.messageID, AgentName: scope.AgentName,
+			SessionID: sessionID, RunID: entry.runID, Role: "user", Content: entry.content, CreatedAt: at}); err != nil {
+			t.Fatalf("append message %s: %v", entry.messageID, err)
+		}
+	}
+	if claimed, err := s.ClaimSessionTitle(ctx, scope, sessionID, firstMessageID); err != nil || !claimed {
+		t.Fatalf("claim original title = %t, err=%v", claimed, err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, scope, sessionID, firstMessageID, "Original conversation title"); err != nil || !written {
+		t.Fatalf("write original title = %t, err=%v", written, err)
+	}
+
+	// Removing a later run leaves the first message and its title valid.
+	if err := s.DeleteRunData(ctx, scope, laterRunID); err != nil {
+		t.Fatalf("delete later run: %v", err)
+	}
+	sessions, err := s.ListSessions(ctx, scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "Original conversation title" {
+		t.Fatalf("session after later-run purge = %+v, err=%v; want original title retained", sessions, err)
+	}
+
+	// Add a surviving message from another run, then remove the run that owned
+	// the title's first-user coordinate. Its stale claim must be cleared so the
+	// same session ID can accept a new first message and title.
+	if err := s.SaveRun(ctx, scope, Run{ID: nextRunID, AgentName: scope.AgentName, SessionID: sessionID,
+		Phase: RunPhaseSucceeded, CreatedAt: now.Add(2 * time.Second), UpdatedAt: now.Add(2 * time.Second)}); err != nil {
+		t.Fatalf("save next run: %v", err)
+	}
+	if err := s.AppendMessage(ctx, scope, Message{ID: nextMessageID, AgentName: scope.AgentName,
+		SessionID: sessionID, RunID: nextRunID, Role: "user", Content: "Surviving request", CreatedAt: now.Add(2 * time.Second)}); err != nil {
+		t.Fatalf("append surviving message: %v", err)
+	}
+	if err := s.DeleteRunData(ctx, scope, firstRunID); err != nil {
+		t.Fatalf("delete first run: %v", err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, scope, sessionID, firstMessageID, "Late deleted-run title"); err != nil || written {
+		t.Fatalf("late title result after first-message purge = %t, err=%v; want false", written, err)
+	}
+	sessions, err = s.ListSessions(ctx, scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "" || sessions[0].Preview != "Surviving request" {
+		t.Fatalf("session after first-message purge = %+v, err=%v; want surviving preview and no stale title", sessions, err)
+	}
+	if claimed, err := s.ClaimSessionTitle(ctx, scope, sessionID, nextMessageID); err != nil || !claimed {
+		t.Fatalf("claim new first message after purge = %t, err=%v", claimed, err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, scope, sessionID, nextMessageID, "Surviving conversation title"); err != nil || !written {
+		t.Fatalf("write new title after purge = %t, err=%v", written, err)
+	}
+}
+
 func testSessionTitleContract(t *testing.T, s Store, scope Scope) {
 	t.Helper()
 	ctx := context.Background()

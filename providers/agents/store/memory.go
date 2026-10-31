@@ -1557,6 +1557,19 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 		}
 		m.messages[k] = kept
 	}
+	// A generated title is tied to the first persisted user row. If deleting
+	// this run removed that row, drop the claim so a reused session ID cannot
+	// keep the old title slot forever.
+	titlePrefix := tenantKey(scope) + "|" + scope.AgentName + "|"
+	for k, title := range m.sessionTitles {
+		if !hasPrefix(k, titlePrefix) {
+			continue
+		}
+		first, ok := firstPersistedUserMessage(m.messages[k])
+		if !ok || title.FirstMessageID != first.ID {
+			delete(m.sessionTitles, k)
+		}
+	}
 	for k, calls := range m.toolCalls {
 		kept := calls[:0]
 		for _, call := range calls {
