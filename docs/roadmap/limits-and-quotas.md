@@ -385,9 +385,29 @@ spec:
   `status.effectiveLimits`), written only through `/api/admin`. Per-workspace
   overrides do not exist: usage is pooled per account, which is what an org
   is.
-- `User.spec.orgQuota` stays hub-side (orgs per user is not a workspace
-  write kcp sees); `Organization.spec.workspaceQuota` is removed in favour of
-  the `workspaces` row, and `patchOrg` stops accepting it.
+- **The free Account belongs to the User, not the organization** (landed
+  31 October, uncommitted). The hub's user reconciler writes Account
+  `user-<name>` plus a default-plan Entitlement per User; every organization
+  the user creates reports its workspaces into that account
+  (`MembershipReport.spec.account`), so N organizations share one set of
+  allowances instead of multiplying them. `Organization.spec.plan` (admin
+  only, `PUT /api/admin/organizations/{uuid}/plan`) detaches an organization
+  onto its own Account and Entitlement, whose plan follows `spec.plan` while
+  overrides are preserved; an existing per-org Entitlement an admin already
+  customized is kept as-is and logged. `User.spec.orgQuota` and
+  `Organization.spec.workspaceQuota` are gone: per-user overrides are
+  `Entitlement.spec.overrides` on the user account, and workspaces are the
+  `workspaces` row.
+- **Orgs per user is the `organizations` meter** on the user's Entitlement.
+  Organizations are records in the shared users workspace, so the
+  MeteringConfig resolves the account with contrib-metering's `ObjectLabel`
+  strategy on the created-by label (`accountPrefix: user-`); personal
+  organizations weigh zero in the CEL quantity. The hub's `createOrg` reads
+  the row from `status.effectiveLimits` for the friendly 409
+  (`--default-orgs-per-user` when metering is absent or the plan has no row);
+  the webhook is the backstop at the shard, and it denies the hub's kcp-admin
+  write too, which is wanted here. Plans must keep `organizations` at 1 or
+  more or personal-org bootstrap is refused.
 - Which plan an org is on: `Organization.spec.plan` (manual, admin-only,
   wins), else `Organization.status.billing.entitledPlan` (Stripe, section
   10), else the default. The hub's billing reconciler resolves this and
@@ -620,7 +640,8 @@ cert-manager-issued CA bundles instead of the Tilt self-signed pair.
 | `provider-sdk/install` | `ApplyBindGrant` subject becomes the hub identity |
 | `pkg/hub/metering/admin.go` (landed 29 Oct, uncommitted) | the admin writes, straight into the metering workspace as kcp-admin behind the admin gate, each logged with the caller: `PUT /api/admin/metering/plans/{name}` (create or update displayName and limits; the backend meter mapping is preserved), `DELETE …/plans/{name}` (refused for the default plan and for a plan an entitlement still uses), `PUT /api/admin/metering/entitlements/{name}` (plan, which must exist, and overrides). Limits are validated against the PlanLimit schema plus the rule the CRD cannot say: Soft and Hard need a numeric max. `GET /api/admin/metering` reports `writable` and `defaultPlan`. The metering controller recomputes `effectiveLimits` on its sample interval (one minute); a Plan watch in its entitlement reconciler would make that immediate |
 | `pkg/hub/admin`, `pkg/hub/restapi` | still to build: `GET/PATCH /api/admin/organizations/{org}/entitlement` (suspended); `POST …/resync`; `GET /api/orgs/{org}/billing` (plan, effective limits, usage, membership count, subscription state); the O-5 check in `createOrg` wired to `pkg/hub/quota` at last |
-| `pkg/hub/quota` | keep O-5 only; delete O-6 (now the `workspaces` meter) |
+| `pkg/hub/quota` | O-5 only (landed 31 Oct): the cap is supplied by the caller, from `pkg/hub/metering.OrgQuota` (the user's Entitlement) or the hub default; O-6 deleted |
+| `pkg/hub/metering/user.go`, `orgquota.go`, `plans.go` (landed 31 Oct) | user reconciler (Account + Entitlement per User; removal waits for the user's organizations to move off the account, and a startup sweep over `railgrid.ai/user`-labelled Accounts re-enqueues users deleted while the hub was down), the Entitlement-backed `organizations` cap, plan existence check for the admin plan route |
 | portal | Bonkers **Metering** section (landed 29 Oct: status, endpoints, and the five collections as read-only tables through the proxy; "not installed" with the Helm hint otherwise). Plan and entitlement editors landed 29 Oct: new/edit/delete plan with a per-meter limits editor, and per entitlement a plan select plus overrides, through the write routes above. Still to build: **Billing** per org (plan, overrides editor, usage bars from `Entitlement.status`, members, conditions, suspend, Stripe state, resync); org settings **Plan and usage** page; `portalkit` "limit reached" mapping for the `metering:` 403 prefix and `N of M` hints next to create buttons |
 | `Makefile`, Tilt, charts | `install-provider-metering`, `init-provider-metering`; `METERING_ENABLED` through the external-providers contract; hub chart `metering.*` values that set the flags |
 | e2e | `test/e2e/suites/metering` (section 11) |
@@ -805,10 +826,12 @@ entitlement reconciler close the two gaps.
    report; confirm nothing capped is written there.
 3. **Downgrade grace.** Freeze immediately or after a grace window; and
    whether suspension needs the audit-telemetry notification path.
-4. **Personal organizations**: one entitlement per org as proposed, or
-   shared between a user's personal org and the orgs they create.
-5. **Who pays for a personal org** when a team org is on Stripe, and
-   whether trials are a Stripe trial or a plan.
+4. **Personal organizations**: settled 31 October. One Entitlement per
+   *user*; the personal org and every org the user creates share it until an
+   org is detached with `spec.plan`.
+5. **Who pays for a personal org** when a team org is on Stripe: the user's
+   own account, which stays free; the detached team org is the one on
+   Stripe. Whether trials are a Stripe trial or a plan is still open.
 6. **Window granularity vs. storage.** Settled 29 October by making kcp a
    buffer: records are deleted once their sample is in the store, so window
    count no longer multiplies kcp objects. Granularity now only sets the

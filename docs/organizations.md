@@ -49,8 +49,9 @@ Don't re-litigate; the doc body assumes these.
 | O-2 | **Migration = clean slate.** No existing prod data; existing `root:railgrid:users:{userId}` workspaces are dev noise that can be deleted. No migration code, no fallback flag. | No legacy users to preserve; lets us require `X-Railgrid-Org` / `X-Railgrid-Workspace` from day one. |
 | O-3 | **Membership index = separate `UserMembershipIndex` CRD** (one per User, owned by Membership controller). Not `User.status.memberships`. | Trivial RBAC (controller owns its own resource), easier to debug, schema can evolve without touching User. |
 | O-4 | **Switcher disambiguation = always show secondary line** (`created {date} by {first admin}`) under every Org row in the portal switcher. Not just when ambiguous. | Unambiguous always, no client-side "is this name a duplicate?" logic. The `UserMembershipIndex` carries the extra fields. |
-| O-5 | **Org quota = soft cap, admin-overridable per User.** Default 10 Orgs per User. `User.spec.orgQuota` overrides. 4xx on 11th create with a clear message. | Avoids accidental tree bloat; admins handle real edge cases by hand. |
-| O-6 | **Workspace quota = soft cap, admin-overridable per Org.** Default 50 Workspaces per Org. `Organization.spec.workspaceQuota` overrides. | Symmetric with O-5. Tunable when a real team hits it. |
+| O-5 | **Orgs per user is a plan limit, and a user's organizations pool into one metering account.** Every User gets a metering Account (`user-<name>`) with an Entitlement on the default plan; every Organization they create reports its workspaces into that account until a platform admin gives it a plan of its own (`Organization.spec.plan`, `PUT /api/admin/organizations/{uuid}/plan`). The `organizations` row on the user's Entitlement caps how many they may create (personal orgs do not count; orgs inside their soft-delete window still do, as the webhook counts them, and the 409 says that a deleted organization frees its slot only once its grace period ends); `createOrg` answers 409 `QuotaExceeded` with "N of M" before writing, reading the cap from the Entitlement and falling back to `--default-orgs-per-user` (default 10) when metering is not installed. The metering webhook enforces the same row on the Organization object through the `ObjectLabel` strategy on the created-by label. When a User is deleted, the account goes only after the user's organizations have moved onto accounts of their own, and a sweep at hub start enqueues any `user-<name>` Account whose User vanished while the hub was down, so a restart never leaks one. | Without pooling, N organizations were N copies of every free limit, which made the per-org quotas pointless. Pooling closes that regardless of the cap; the cap itself lives with every other limit in the plan instead of a hub-only field. |
+| O-5a | **Upgrade note for O-5.** `User.spec.orgQuota` and `Organization.spec.workspaceQuota` are removed without migration: the regenerated schemas prune them, so a per-user cap an admin had raised falls back to the plan's `organizations` row on upgrade. Re-apply such exceptions as `Entitlement.spec.overrides` on the user's `user-<name>` entitlement (Bonkers → Metering). The hub check serializes creates per user on one replica; across replicas the metering webhook's `organizations` row is the backstop, and only once the operator has applied the `organizations` MeteringConfig. | Reading a pruned field to convert it is not possible after the schema is live; stating it beats a silent half-migration. |
+| O-6 | **Retired.** Workspace counts are the `workspaces` meter on the owning metering account (see [limits-and-quotas](roadmap/limits-and-quotas.md)). | One enforcement path for object counts. |
 | O-7 | **CatalogEntry creation gating = configurable per Org**, `Organization.spec.catalogEntryCreation: members\|admin`, default `admin` (stricter than `workspaceCreation`; it was `members` until the September 2026 security review, and Organizations from before then were backfilled with an explicit `members`). Enforced at the **hub REST endpoint** (`POST /api/orgs/{uuid}/providers`), not via kcp RBAC — see O-10. | Registering a provider mints a cluster-admin credential and can shadow a platform provider for the whole Org; that is an admin decision. Orgs that trust members opt in. |
 | O-10 | **Org workspaces are hub-mediated only.** Tenants never receive a kubeconfig that targets `root:railgrid:orgs:{uuid}` directly. All Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) flow through hub REST endpoints. The railgrid kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths that resolve to a workspace of type `organization`. Child Workspaces (`root:railgrid:orgs:{org-uuid}:{ws-uuid}`) are user-facing as today. The companion `DefaultCluster` access gate this same proxy enforces — which today funnels user-token traffic to a single workspace and 403s the rest — is revisited in [hub-proxy-workspace-access.md](./hub-proxy-workspace-access.md). | Network-level enforcement of \"no APIBindings in Org workspace\" (see [provider-scoping.md](./provider-scoping.md) P-2). Removes the need for any kcp admission webhook or MaximalPermissionPolicy scoping. |
 | O-8 | **User delete = soft-delete with 30-day grace.** `User.status.deletionRequestedAt`; controller cascades personal Org + Memberships after the grace expires. Recoverable inside the window. | Protects against accidental delete; defers the "sole admin elsewhere" question until cascade time. |
@@ -267,11 +268,11 @@ type OrganizationSpec struct {
     // +kubebuilder:validation:Enum=members;admin
     CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
 
-    // WorkspaceQuota caps the number of child Workspaces. 0 means use
-    // the platform default (50). Platform admin can patch this to lift
-    // the cap for an Org that needs more.
+    // Plan, when set, gives this Organization its own metering Account
+    // and Entitlement on the named Plan. Empty pools it into the account
+    // of the User who created it (O-5). Admin-only.
     // +optional
-    WorkspaceQuota int32 `json:"workspaceQuota,omitempty"`
+    Plan string `json:"plan,omitempty"`
 }
 
 type OrganizationStatus struct {
@@ -725,18 +726,10 @@ completion belong to the same Organization controller used for every new org.
 Identity-related RBAC repair is separate from bootstrap and follows current
 memberships when a User gains an RBAC identity.
 
-The User CR gains:
+The User CR gains (per-user limits are not a User field: they are the
+overrides on the user's metering Entitlement, O-5):
 
 ```go
-type UserSpec struct {
-    // ... existing fields ...
-
-    // OrgQuota overrides the platform default (10) for this User.
-    // 0 means use the default. Settable only by platform admin.
-    // +optional
-    OrgQuota int32 `json:"orgQuota,omitempty"`
-}
-
 type UserStatus struct {
     // ... existing fields ...
 

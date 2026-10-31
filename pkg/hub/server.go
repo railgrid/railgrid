@@ -148,6 +148,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// meteringDiscovery is set once kcp is up and --metering-workspace is
 	// configured; the admin proxy and the organization reconciler share it.
 	var meteringDiscovery *metering.Discovery
+	// meteringStore is the kcp-admin client into the metering workspace, set
+	// with discovery; nil when metering is not configured.
+	var meteringStore dynamic.Interface
 
 	// kcpErrCh receives errors from the embedded kcp server goroutine.
 	kcpErrCh := make(chan error, 1)
@@ -527,6 +530,9 @@ func (s *Server) Run(ctx context.Context) error {
 	// it once here so every consumer below can trust it.
 	if s.opts.SoftDeleteGracePeriod <= 0 {
 		return fmt.Errorf("--soft-delete-grace-period must be positive, got %s", s.opts.SoftDeleteGracePeriod)
+	}
+	if s.opts.DefaultOrgsPerUser <= 0 {
+		return fmt.Errorf("--default-orgs-per-user must be positive, got %d", s.opts.DefaultOrgsPerUser)
 	}
 	var (
 		heartbeatRecorder      providers.HeartbeatRecorder
@@ -956,7 +962,11 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("provider delegated tokens", "mode", delegationMode, "exclude", s.opts.ProviderDelegatedTokensExclude)
 
 			// Step 10: Org / Workspace / Membership / User REST
-			apiMgr := restapi.NewManager(userClient, bootstrapper).WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
+			apiMgr := restapi.NewManager(userClient, bootstrapper).
+				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
+				// O-5: the hub default until metering discovery (below) swaps in
+				// the plan-backed policy.
+				WithOrgQuota(restapi.ConstOrgQuota(s.opts.DefaultOrgsPerUser))
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
@@ -1077,6 +1087,15 @@ func (s *Server) Run(ctx context.Context) error {
 					meteringDiscovery = d
 					go meteringDiscovery.Run(ctx)
 					logger.Info("Metering discovery enabled", "workspace", s.opts.MeteringWorkspace, "defaultPlan", s.opts.MeteringDefaultPlan)
+					// The organizations-per-user cap comes from the user's
+					// Entitlement once metering is installed; the admin plan
+					// route checks the plan it is handed exists.
+					if store, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
+						logger.Error(err, "Creating metering workspace client failed; organization quota stays on the hub default")
+					} else {
+						meteringStore = store
+						apiMgr.WithOrgQuota(metering.NewOrgQuota(meteringDiscovery, store, s.opts.DefaultOrgsPerUser, logger.WithName("metering-org-quota")))
+					}
 				}
 			}
 
@@ -1108,9 +1127,12 @@ func (s *Server) Run(ctx context.Context) error {
 				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.HubInternalURL, s.providerProvisionerOptions()...)
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
-				admin.NewHandler(adminSvc, userClient, providerRegistry).
-					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
-					Register(adminSub)
+				adminHandler := admin.NewHandler(adminSvc, userClient, providerRegistry).
+					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
+				if meteringStore != nil {
+					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore))
+				}
+				adminHandler.Register(adminSub)
 				// The admin area reads metering through this proxy.
 				if meteringDiscovery != nil {
 					h := metering.NewHandler(meteringDiscovery)
@@ -1325,6 +1347,18 @@ func (s *Server) Run(ctx context.Context) error {
 					Logger:      logger.WithName("metering-organization"),
 				}); err != nil {
 					logger.Error(err, "Setting up metering organization controller failed")
+					return
+				}
+				// Every User gets the Account their organizations pool into,
+				// with the Entitlement whose `organizations` row caps how many
+				// they may create.
+				if err := metering.SetupUserReconciler(orgMgr, metering.UserOptions{
+					Discovery:   meteringDiscovery,
+					Metering:    meteringClient,
+					DefaultPlan: s.opts.MeteringDefaultPlan,
+					Logger:      logger.WithName("metering-user"),
+				}); err != nil {
+					logger.Error(err, "Setting up metering user controller failed")
 					return
 				}
 			}

@@ -20,9 +20,8 @@ package install
 // binding to take effect), so we ensure the slice ourselves with both
 // references set.
 //
-// Once the slice is in place and the CachedResource reports a
-// populated status.identityHash, install/apiexport.go can flip the
-// templates entry from storage.crd to storage.virtual.
+// Bootstrap creates the slice before publishing the generated APIExport with
+// virtual Templates storage, then waits for the CachedResource identity.
 
 import (
 	"context"
@@ -237,10 +236,8 @@ func PlatformCachedResourceEndpointSlices(ctx context.Context, config *rest.Conf
 // CachedResourceTemplatesName until status.identityHash is non-empty
 // or the timeout expires. Returns the resolved hash on success.
 //
-// Required before flipping APIExport.spec.resources[templates].storage
-// from crd to virtual: kcp resolves the virtual resource by fingerprint
-// (APIExport identity + endpoint slice), and binding before the cached
-// resource has an identity leaves tenants without Templates.
+// Bootstrap checks this after publishing the export with virtual storage.
+// A missing identity delays readiness, never changes Templates to CRD storage.
 func WaitForCachedResourceIdentity(ctx context.Context, config *rest.Config) (string, error) {
 	dyn, err := dynamic.NewForConfig(config)
 	if err != nil {

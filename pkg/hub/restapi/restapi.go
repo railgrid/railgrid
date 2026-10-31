@@ -43,6 +43,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -57,6 +58,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
@@ -217,6 +219,36 @@ type Manager struct {
 	// window, or a restore would be accepted for a workspace whose
 	// cascade has already started.
 	softDeleteGracePeriod time.Duration
+	// orgQuota resolves a user's organizations-per-user cap (O-5). Nil means
+	// the hub default for everyone.
+	orgQuota OrgQuotaPolicy
+}
+
+// OrgQuotaPolicy answers how many Organizations a User may create. The
+// metering-backed implementation reads the `organizations` limit from the
+// user's Entitlement; the fallback is a constant.
+type OrgQuotaPolicy interface {
+	Cap(ctx context.Context, user string) (int32, error)
+}
+
+// ConstOrgQuota is an OrgQuotaPolicy with one cap for every user.
+type ConstOrgQuota int32
+
+// Cap implements OrgQuotaPolicy.
+func (c ConstOrgQuota) Cap(context.Context, string) (int32, error) { return int32(c), nil }
+
+// WithOrgQuota installs the organizations-per-user policy createOrg checks.
+func (m *Manager) WithOrgQuota(p OrgQuotaPolicy) *Manager {
+	m.orgQuota = p
+	return m
+}
+
+// OrgQuota returns the installed policy, or the hub default.
+func (m *Manager) OrgQuota() OrgQuotaPolicy {
+	if m.orgQuota == nil {
+		return ConstOrgQuota(quota.DefaultOrgsPerUser)
+	}
+	return m.orgQuota
 }
 
 // NewManager builds a Manager from the userClient (typed railgrid client
@@ -287,11 +319,39 @@ type Handler struct {
 	mgr *Manager
 	// userSearch rate-limits GET /api/users/search per caller.
 	userSearch *proxy.IPRateLimiter
+	// orgCreate serializes createOrg's count-then-create per user on this
+	// replica, so two concurrent creates at cap-1 cannot both pass the
+	// quota. Cross-replica, the metering webhook's `organizations` row is
+	// the backstop.
+	orgCreate keyedMutex
 }
 
 // NewHandler constructs a Handler.
 func NewHandler(mgr *Manager) *Handler {
 	return &Handler{mgr: mgr, userSearch: newUserSearchLimiter()}
+}
+
+// keyedMutex hands out one mutex per key. Entries are never evicted; keys
+// are user names, bounded by the user population.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+// Lock locks key's mutex and returns its unlock.
+func (k *keyedMutex) Lock(key string) func() {
+	k.mu.Lock()
+	if k.locks == nil {
+		k.locks = map[string]*sync.Mutex{}
+	}
+	m, ok := k.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		k.locks[key] = m
+	}
+	k.mu.Unlock()
+	m.Lock()
+	return m.Unlock
 }
 
 // RegisterUserOnly attaches the routes that only need the caller's
@@ -804,7 +864,6 @@ type OrgView struct {
 	Personal                bool       `json:"personal"`
 	WorkspaceCreation       string     `json:"workspaceCreation"`
 	CatalogEntryCreation    string     `json:"catalogEntryCreation"`
-	WorkspaceQuota          int32      `json:"workspaceQuota,omitempty"`
 	CreatedAt               time.Time  `json:"createdAt"`
 	DeletionRequestedAt     *time.Time `json:"deletionRequestedAt,omitempty"`
 	// Role is the CALLER's org-scope role ("admin" | "member") — what the
@@ -825,7 +884,6 @@ func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
 		Personal:                o.Spec.Personal,
 		WorkspaceCreation:       o.Spec.WorkspaceCreation,
 		CatalogEntryCreation:    o.Spec.CatalogEntryCreation,
-		WorkspaceQuota:          o.Spec.WorkspaceQuota,
 		CreatedAt:               o.CreationTimestamp.Time,
 	}
 	if o.Status.DeletionRequestedAt != nil {

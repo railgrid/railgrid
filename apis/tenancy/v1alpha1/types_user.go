@@ -61,14 +61,6 @@ type UserSpec struct {
 	RBACIdentity   string         `json:"rbacIdentity"`
 	DefaultCluster string         `json:"defaultCluster,omitempty"`
 	OIDCProviders  []OIDCProvider `json:"oidcProviders,omitempty"`
-
-	// OrgQuota overrides the platform default cap on how many Organizations
-	// this User may create (see docs/organizations.md O-5). 0 means use the
-	// platform default. Settable only by a platform admin.
-	//
-	// +optional
-	// +kubebuilder:validation:Minimum=0
-	OrgQuota int32 `json:"orgQuota,omitempty"`
 }
 
 // OIDCProvider stores OIDC provider information for a user.

@@ -203,7 +203,7 @@ own bearer instead).
 Identity-only (`/api`):
 
 ```
-GET    /api/orgs                       → {"items":[{uuid,displayName,personal,role,workspaceCreation,catalogEntryCreation,workspaceQuota,createdAt,deletionRequestedAt,initialWorkspacePending}]}
+GET    /api/orgs                       → {"items":[{uuid,displayName,personal,role,workspaceCreation,catalogEntryCreation,createdAt,deletionRequestedAt,initialWorkspacePending}]}
 POST   /api/orgs                       {"displayName":…,"workspaceCreation":…,"catalogEntryCreation":…}
 GET    /api/users/me                   → {user,email,displayName,rbacIdentity}
 GET    /api/users/search?q=<5..254 chars>   prefix match on email/name (or a static member id) → items[{user,memberId,email,displayName}]

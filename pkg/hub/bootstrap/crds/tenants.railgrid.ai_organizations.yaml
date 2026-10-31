@@ -98,6 +98,17 @@ spec:
                 x-kubernetes-validations:
                 - message: personal is immutable
                   rule: self == oldSelf
+              plan:
+                description: |-
+                  Plan, when set, gives this Organization its own metering Account and
+                  Entitlement on the named Plan. Empty (the default) pools the
+                  Organization into the metering Account of the User who created it,
+                  so creating more organizations never multiplies that user's free
+                  allowances. Settable only by a platform admin
+                  (PUT /api/admin/organizations/{uuid}/plan); the hub's metering
+                  reconciler keeps the Entitlement's plan in step with it. See
+                  docs/organizations.md O-5.
+                type: string
               workspaceCreation:
                 default: members
                 description: |-
@@ -108,14 +119,6 @@ spec:
                 - members
                 - admin
                 type: string
-              workspaceQuota:
-                description: |-
-                  WorkspaceQuota caps the number of child Workspaces. 0 means use the
-                  platform default (50, see docs/organizations.md O-6). Platform admin
-                  may patch this to lift the cap for an Organization that needs more.
-                format: int32
-                minimum: 0
-                type: integer
             required:
             - displayName
             type: object

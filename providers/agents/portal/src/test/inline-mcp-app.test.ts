@@ -48,7 +48,15 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
   view.element.querySelector('form.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(12)
   return { view, getAgentArtifact, captureAgentArtifact, chatStream }
 }
-async function reveal() { visible.forEach(callback => callback()); await settleVue(15, 10) }
+async function reveal(view: Awaited<ReturnType<typeof mountVue>>, waitForLoad = true) {
+  visible.forEach(callback => callback())
+  await settleVue()
+  // Receipt validation hashes bytes with Web Crypto. Vue ticks or a fixed delay
+  // do not guarantee that the digest has finished on a busy CI worker.
+  if (waitForLoad) {
+    await vi.waitFor(() => expect(view.element.querySelector('.agents-inline-app__body[aria-busy="true"]')).toBeNull())
+  }
+}
 
 describe('inline provider app journey', () => {
   it('loads an authorized receipt, opens one full viewer beside the conversation, and rechecks on return', async () => {
@@ -56,7 +64,7 @@ describe('inline provider app journey', () => {
     expect(view.element.querySelector('.agents-body .agents-tool-citation')).toBeNull()
     expect(view.element.querySelector('.agents-body .agents-tool-citation-unavailable')).toBeNull()
     expect(view.element.querySelector('.agents-body')?.textContent).not.toContain('[[tool:')
-    expect(captureAgentArtifact).not.toHaveBeenCalled(); await reveal()
+    expect(captureAgentArtifact).not.toHaveBeenCalled(); await reveal(view)
     expect(captureAgentArtifact).toHaveBeenCalledExactlyOnceWith({ agent: 'scout', runID: 'run-1', sessionID: 'session-1', toolCallID: 'call-1', title: 'Compile' }, expect.any(AbortSignal))
     expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1', expect.any(AbortSignal))
     expect(view.element.querySelector('.agents-log [data-live-mcp-viewer]')).not.toBeNull()
@@ -80,7 +88,7 @@ describe('inline provider app journey', () => {
     expect(panel.querySelector<HTMLDetailsElement>('.agents-artifact-panel__evidence')?.open).toBe(false)
     panel.querySelector<HTMLButtonElement>('[aria-label="Back to conversation"]')!.click(); await settleVue(15, 10)
     // A newly mounted lazy card gets a fresh observer; simulate it intersecting again.
-    await reveal()
+    await reveal(view)
     expect(view.element.querySelector('.agents-artifact-panel')).toBeNull()
     expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull()
     expect(getAgentArtifact).toHaveBeenCalledTimes(3)
@@ -90,14 +98,14 @@ describe('inline provider app journey', () => {
   })
   it('keeps raw data available but never mounts unpinned provider HTML', async () => {
     const { view } = await setup({ read: async () => ({ artifact: { ...authorized, appIdentity: undefined } }) })
-    await reveal()
+    await reveal(view)
     expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).toBeNull()
     expect(view.element.querySelector('.agents-inline-app__state')?.textContent).toContain('no available app view')
     expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
   })
   it('does not expose bytes when the reopened result digest is corrupt', async () => {
     const { view } = await setup({ read: async () => ({ artifact: { ...authorized, data: 'altered result bytes' } }) })
-    await reveal()
+    await reveal(view)
     expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).toBeNull()
     expect(view.element.querySelector<HTMLFormElement>('.agents-composer')).not.toBeNull()
     expect(view.element.textContent).not.toContain('altered result bytes')
@@ -114,9 +122,8 @@ describe('inline provider app journey', () => {
         return revokedRead
       },
     })
-    await reveal()
-    // Digest verification uses WebCrypto; wait for readiness rather than a fixed number of render ticks.
-    await vi.waitFor(() => expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull())
+    await reveal(view)
+    expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull()
     view.element.querySelector<HTMLButtonElement>('[aria-label="Expand result"]')!.click()
     await settleVue(6)
 
@@ -150,12 +157,13 @@ describe('inline provider app journey', () => {
       citation: selection,
       read: async () => ({ artifact: selectionArtifact }),
     })
-    await reveal()
+    await reveal(view)
     expect(view.element.querySelector('.agents-inline-app [data-live-mcp-viewer]')).not.toBeNull()
     view.element.querySelector<HTMLButtonElement>('[data-agent-saved-capture-citation="open-call-1"]')!.click()
     await settleVue(15, 10)
 
     const panel = view.element.querySelector<HTMLElement>('[role="region"][aria-label="Result details"]')!
+    await vi.waitFor(() => expect(panel.hasAttribute('aria-busy')).toBe(false))
     expect(getAgentArtifact).toHaveBeenCalledTimes(2)
     expect(panel.querySelector('.agents-artifact-panel__app')).toBeNull()
     expect(panel.querySelector('.agents-artifact-panel__data')).toBeNull()
@@ -172,7 +180,7 @@ describe('inline provider app journey', () => {
     { name: 'different session', artifact: { ...authorized, sessionID: 'session-other' } },
     { name: 'different agent', artifact: { ...authorized, agentUID: 'agent-other' } },
   ])('never mounts $name data', async ({ artifact }) => {
-    const { view } = await setup({ read: async () => ({ artifact }) }); await reveal()
+    const { view } = await setup({ read: async () => ({ artifact }) }); await reveal(view)
     expect(view.element.querySelector('[data-live-mcp-viewer]')).toBeNull()
     expect(view.element.textContent).toContain('Compiled successfully')
     expect(view.element.textContent).not.toContain('private-app-sentinel')
@@ -181,7 +189,7 @@ describe('inline provider app journey', () => {
     const { view, captureAgentArtifact } = await setup({
       hint: false,
       read: async () => ({ artifact: { ...authorized, providerPresentation: undefined } }),
-    }); await reveal()
+    }); await reveal(view)
     expect(view.element.querySelector('.agents-inline-app')).toBeNull(); expect(captureAgentArtifact).not.toHaveBeenCalled()
     const citation = view.element.querySelector<HTMLButtonElement>('.agents-body [data-agent-tool-citation]')!
     expect(citation.textContent).toContain('Source')
@@ -197,7 +205,7 @@ describe('inline provider app journey', () => {
       hint: false,
       capture: { ...base, agentUID: 'different-agent' },
     })
-    await reveal()
+    await reveal(view)
     const citation = view.element.querySelector<HTMLButtonElement>('.agents-body [data-agent-tool-citation]')!
     citation.click()
     await vi.waitFor(() => expect(document.querySelector('.k-toast--error')?.textContent)
@@ -208,20 +216,20 @@ describe('inline provider app journey', () => {
   })
   it.each(['run', 'session', 'tool'] as const)('refuses app and source affordances for a mismatched %s receipt', async mismatch => {
     const { view, captureAgentArtifact } = await setup({ mismatch })
-    await reveal()
+    await reveal(view)
     expect(view.element.querySelector('.agents-inline-app')).toBeNull()
     expect(view.element.querySelector('.agents-body .agents-tool-citation-unavailable')?.textContent).toBe('Source unavailable')
     expect(view.element.querySelector('.agents-body [data-agent-tool-citation]')).toBeNull()
     expect(captureAgentArtifact).not.toHaveBeenCalled()
   })
   it('restores the app from history without another model turn', async () => {
-    const { view, chatStream, getAgentArtifact } = await setup({ history: true }); await reveal()
+    const { view, chatStream, getAgentArtifact } = await setup({ history: true }); await reveal(view)
     expect(view.element.querySelector('.agents-log [data-live-mcp-viewer]')).not.toBeNull()
     expect(getAgentArtifact).toHaveBeenCalledExactlyOnceWith('scout', 'result-1', expect.any(AbortSignal))
     expect(chatStream).not.toHaveBeenCalled()
   })
   it('unmounts an open app when API authority changes', async () => {
-    const { view } = await setup(); await reveal()
+    const { view } = await setup(); await reveal(view)
     expect(view.element.querySelector('[data-live-mcp-viewer]')).not.toBeNull()
     await view.setProps({ api: stubApi({ listSessions: async () => [], listMessagePage: async () => ({ items: [] }), listRuns: async () => ({ items: [] }) }) })
     await settleVue(12)
@@ -234,7 +242,7 @@ describe('inline provider app journey', () => {
     const { view, getAgentArtifact } = await setup({ read: () => deferred })
     // Thread navigation belongs to the dedicated chat, not the side panel.
     await view.setProps({ compact: false })
-    await reveal()
+    await reveal(view, false)
     expect(getAgentArtifact).toHaveBeenCalledTimes(1)
     const newChat = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('New thread'))!
     newChat.click(); await settleVue(10); resolve({ artifact: authorized }); await settleVue(12)

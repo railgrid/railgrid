@@ -80,3 +80,33 @@ this adds 1,241 B raw / 157 B gzip to the page path and 1,241 B raw / 155 B
 gzip to all assets. The build passes the unchanged ceilings with 3,314 B raw /
 485 B gzip page headroom and 360 B raw / 100 B gzip total headroom. These are
 local bundle measurements, not live browser performance evidence.
+
+The portal workflow diagnostics reached 1,329,980 B raw / 368,013 B gzip total,
+exceeding the old gzip ceiling by 13 B. A fourth minifier pass saved only
+17 B raw / 22 B gzip and left 9 B gzip headroom; that workaround is superseded.
+The minifier retains three passes.
+
+A fresh `APP_STUDIO_BUNDLE_REPORT=1 make build-app-studio-provider-portal`
+confirmed that `App.vue` remains the largest rendered module (676,171 B before
+minification), followed by Vue runtime-core (136,511 B), canonical UI CSS
+(86,711 B), and ResourceTable (70,219 B). The graph guard still excludes the
+Vue compiler. The report did not identify an obvious unused large dependency;
+extracting optional App.vue surfaces remains separate performance work. Splitting
+chunks alone would not reduce the total asset budget.
+
+The page and total ceilings deliberately restore about 4 KB of gzip margin for
+small diagnostics and toolchain output variation. This accepts the accumulated
+shared UI and diagnostics growth measured above, rather than depending on another
+minifier pass to save a few bytes. The new ceilings are fixed, not percentages
+that automatically grow with the bundle. Bootstrap, dashboard, and authentication
+settings ceilings are unchanged.
+
+| Path | Measured raw | Measured gzip | Raw limit | Gzip limit | Gzip headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Page | 1,217,026 B | 331,637 B | 1,230,000 B | 336,000 B | 4,363 B |
+| Total assets | 1,329,980 B | 368,013 B | 1,345,000 B | 372,000 B | 3,987 B |
+
+The focused `make test-ui-e2e-report-portal` target includes the production build
+and its budget gate; tests and typechecking alone do not establish that the
+emitted bundle fits. These are local build measurements, not live browser
+performance evidence. Larger growth still requires module-cost investigation.

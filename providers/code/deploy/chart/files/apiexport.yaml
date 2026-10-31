@@ -72,7 +72,7 @@ spec:
       crd: {}
   - group: code.railgrid.ai
     name: repositories
-    schema: v260609-fc69fa2.repositories.code.railgrid.ai
+    schema: v261031-c205dcb4.repositories.code.railgrid.ai
     storage:
       crd: {}
   - group: code.railgrid.ai
