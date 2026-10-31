@@ -20,38 +20,43 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
-func TestCheckOrgQuota(t *testing.T) {
+func TestCheckQuotas(t *testing.T) {
 	cases := []struct {
 		name    string
 		cap     int32
 		count   int32
 		wantErr bool
-		wantCap int32
 	}{
-		{"under cap", 3, 2, false, 3},
-		{"at cap", 3, 3, true, 3},
-		{"over cap", 3, 7, true, 3},
-		{"zero cap denies even the first", 0, 0, true, 0},
-		{"negative cap falls back to the default", -1, DefaultOrgsPerUser - 1, false, DefaultOrgsPerUser},
-		{"negative cap default reached", -1, DefaultOrgsPerUser, true, DefaultOrgsPerUser},
+		{"under cap", 3, 2, false},
+		{"at cap", 3, 3, true},
+		{"over cap", 3, 7, true},
+		{"zero cap denies even the first", 0, 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := CheckOrgQuota(context.Background(), "alice", tc.cap, CounterFunc(func(context.Context) (int32, error) { return tc.count, nil }))
-			if !tc.wantErr {
-				if err != nil {
-					t.Fatalf("err = %v, want nil", err)
+			counter := CounterFunc(func(context.Context) (int32, error) { return tc.count, nil })
+			for kind, check := range map[string]func(context.Context, string, int32, Counter) error{
+				KindOrganizations:     CheckOrgQuota,
+				KindFreeOrganizations: CheckFreeOrgQuota,
+			} {
+				err := check(context.Background(), "alice", tc.cap, counter)
+				if !tc.wantErr {
+					if err != nil {
+						t.Fatalf("%s: err = %v, want nil", kind, err)
+					}
+					continue
 				}
-				return
-			}
-			var qe *QuotaExceededError
-			if !errors.As(err, &qe) {
-				t.Fatalf("err = %v, want *QuotaExceededError", err)
-			}
-			if qe.Kind != "Organization" || qe.Owner != "alice" || qe.Count != tc.count || qe.Cap != tc.wantCap {
-				t.Fatalf("got %+v", qe)
+				var qe *QuotaExceededError
+				if !errors.As(err, &qe) {
+					t.Fatalf("%s: err = %v, want *QuotaExceededError", kind, err)
+				}
+				if qe.Kind != kind || qe.Owner != "alice" || qe.Count != tc.count || qe.Cap != tc.cap {
+					t.Fatalf("%s: got %+v", kind, qe)
+				}
 			}
 		})
 	}
@@ -65,5 +70,41 @@ func TestCheckOrgQuota_CounterErrorAndNilCounter(t *testing.T) {
 	}
 	if err := CheckOrgQuota(context.Background(), "alice", 3, nil); err == nil {
 		t.Fatal("expected error for a nil counter")
+	}
+}
+
+func TestCapsForUser(t *testing.T) {
+	base := Caps{Organizations: 10, FreeOrganizations: 1}
+	if got := base.ForUser(nil); got != base {
+		t.Fatalf("nil user: %+v", got)
+	}
+	if got := base.ForUser(&tenancyv1alpha1.User{}); got != base {
+		t.Fatalf("no overrides: %+v", got)
+	}
+	zero, three := int32(0), int32(3)
+	u := &tenancyv1alpha1.User{}
+	u.Spec.Quota = &tenancyv1alpha1.UserQuota{Organizations: &three}
+	if got := base.ForUser(u); got != (Caps{Organizations: 3, FreeOrganizations: 1}) {
+		t.Fatalf("organizations override: %+v", got)
+	}
+	// A set 0 is a real cap of zero, not "use the default".
+	u.Spec.Quota = &tenancyv1alpha1.UserQuota{FreeOrganizations: &zero}
+	if got := base.ForUser(u); got != (Caps{Organizations: 10, FreeOrganizations: 0}) {
+		t.Fatalf("free organizations override: %+v", got)
+	}
+}
+
+func TestIsFree(t *testing.T) {
+	o := &tenancyv1alpha1.Organization{}
+	if !IsFree(o, "free") {
+		t.Fatal("empty spec.plan is the default plan")
+	}
+	o.Spec.Plan = "free"
+	if !IsFree(o, "free") {
+		t.Fatal("naming the default plan is free too")
+	}
+	o.Spec.Plan = "team"
+	if IsFree(o, "free") {
+		t.Fatal("another plan is not free")
 	}
 }

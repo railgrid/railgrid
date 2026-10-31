@@ -47,6 +47,7 @@ import (
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -725,8 +726,8 @@ func TestCreateOrg_ValidatesAndPersists(t *testing.T) {
 }
 
 // O-5: a user at their organizations cap gets a 409 before anything is
-// written. The cap comes from the Manager's policy; personal organizations do
-// not count, organizations inside their soft-delete window still do.
+// written. The cap is the Manager's; personal organizations do not count,
+// organizations inside their soft-delete window still do.
 func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	stamp := metav1.NewTime(time.Now().UTC())
 	owned := func(name string, personal bool, deleting bool) *tenancyv1alpha1.Organization {
@@ -747,7 +748,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 		&tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "someone-elses", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "bob"}}, Spec: tenancyv1alpha1.OrganizationSpec{DisplayName: "x"}},
 	)
 	// alice has org-a, org-b and org-gone (in its grace window): three.
-	mgr.WithOrgQuota(ConstOrgQuota(3))
+	mgr.WithOrgCaps(quota.Caps{Organizations: 3, FreeOrganizations: 99}, "")
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 
@@ -774,7 +775,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	}
 
 	// One more allowed raises the cap: the live count (3) is now under it.
-	mgr.WithOrgQuota(ConstOrgQuota(4))
+	mgr.WithOrgCaps(quota.Caps{Organizations: 4, FreeOrganizations: 99}, "")
 	// The create handler waits for controller conditions; the fake never sets
 	// them, so a short request timeout stands in for "got past the quota".
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs", jsonBody(body))
@@ -796,7 +797,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 // written and the other request gets the 409. Run under -race.
 func TestCreateOrg_ConcurrentCreatesAtCapMinusOne(t *testing.T) {
 	mgr, _, dyn := newTestManager(t)
-	mgr.WithOrgQuota(ConstOrgQuota(1))
+	mgr.WithOrgCaps(quota.Caps{Organizations: 1, FreeOrganizations: 99}, "")
 	// The handler's quota count Lists Organizations through the typed client.
 	// Once a create has stored an unstructured object, neither the fake's
 	// List nor its tracker can convert the mixed contents, so record every
@@ -870,11 +871,11 @@ func TestCreateOrg_ConcurrentCreatesAtCapMinusOne(t *testing.T) {
 	}
 }
 
-// A plan that resolves to 0 organizations denies the first create with its
-// own message, instead of silently falling back to the hub default.
+// A cap of 0 organizations denies the first create with its own message,
+// instead of silently falling back to the hub default.
 func TestCreateOrg_ZeroCapDenies(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	mgr.WithOrgQuota(ConstOrgQuota(0))
+	mgr.WithOrgCaps(quota.Caps{Organizations: 0, FreeOrganizations: 1}, "")
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "first"})
@@ -891,6 +892,147 @@ func TestCreateOrg_ZeroCapDenies(t *testing.T) {
 	if status["reason"] != "QuotaExceeded" || !strings.Contains(status["message"].(string), "does not allow") {
 		t.Fatalf("status body = %v", status)
 	}
+}
+
+// freeCapFixture seeds the organizations alice touches for the
+// free-organizations cap: she administers org-free (bob's, on the free plan)
+// and org-paid (on a plan), is only a member of org-member (with a workspace
+// admin role that must not count), and her index still names org-vanished,
+// whose Organization is gone. Her personal organization never counts.
+func freeCapFixture(t *testing.T, users ...runtime.Object) *Manager {
+	t.Helper()
+	orgOn := func(name, plan string, personal bool) *tenancyv1alpha1.Organization {
+		return &tenancyv1alpha1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "bob"}},
+			Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: name, Personal: personal, Plan: plan},
+		}
+	}
+	admin, member := tenancyv1alpha1.MembershipRoleAdmin, tenancyv1alpha1.MembershipRoleMember
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
+			{OrgUUID: "personal", Role: admin, Personal: true},
+			{OrgUUID: "org-free", Role: admin},
+			{OrgUUID: "org-free", WorkspaceUUID: "ws-1", Role: admin},
+			{OrgUUID: "org-paid", Role: admin},
+			{OrgUUID: "org-member", Role: member},
+			{OrgUUID: "org-member", WorkspaceUUID: "ws-2", Role: admin},
+			{OrgUUID: "org-vanished", Role: admin},
+		}},
+	}
+	objs := append([]runtime.Object{
+		orgOn("personal", "", true),
+		orgOn("org-free", "", false),
+		orgOn("org-paid", "team", false),
+		orgOn("org-member", "", false),
+		umi,
+	}, users...)
+	mgr, _, _ := newTestManager(t, objs...)
+	return mgr
+}
+
+// expectQuotaExceeded posts a create and checks the 409 carries fragments
+// of the hub's sentence.
+func expectQuotaExceeded(t *testing.T, url string, body []byte, fragments ...string) {
+	t.Helper()
+	resp, err := http.Post(url+"/api/orgs", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want 409: %s", resp.StatusCode, b)
+	}
+	var status map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	msg, _ := status["message"].(string)
+	if status["reason"] != "QuotaExceeded" {
+		t.Fatalf("status body = %v", status)
+	}
+	for _, f := range fragments {
+		if !strings.Contains(msg, f) {
+			t.Fatalf("message %q lacks %q", msg, f)
+		}
+	}
+}
+
+// expectPassedQuota posts a create and takes the handler waiting on controller
+// conditions the fake never sets as the evidence that the quota check passed;
+// a 409 would have come back at once. The fake cannot list a tracker that
+// mixes typed seeds with the object this creates, so it is a test's last
+// request.
+func expectPassedQuota(t *testing.T, url string, body []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url+"/api/orgs", jsonBody(body))
+	req.Header.Set("Content-Type", "application/json")
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
+	if err == nil {
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected the create to be waiting on the controller, got %d: %s", resp.StatusCode, b)
+	}
+}
+
+// O-5: the free-organizations cap counts the non-personal organizations on
+// the free plan the user administers today, from their membership index, not
+// the ones they created: an admin who was invited is charged for it, a
+// creator who handed the organization over is not.
+func TestCreateOrg_RefusesAtTheFreeOrganizationsCap(t *testing.T) {
+	mgr := freeCapFixture(t)
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}, "free")
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "second free"})
+	expectQuotaExceeded(t, srv.URL, body, "1 of 1", "free plan")
+
+	// One more allowed: alice is under the cap again.
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 2}, "free")
+	expectPassedQuota(t, srv.URL, body)
+}
+
+// Without metering the hub does not know which plan is free, and the
+// free-organizations cap does not apply.
+func TestCreateOrg_FreeOrganizationsCapIsOffWithoutMetering(t *testing.T) {
+	mgr := freeCapFixture(t)
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}, "")
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "second free"})
+	expectPassedQuota(t, srv.URL, body)
+}
+
+// User.spec.quota overrides the hub caps per user, a set 0 included.
+func TestCreateOrg_UserQuotaOverridesTheHubCaps(t *testing.T) {
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another"})
+	one, zero := int32(1), int32(0)
+
+	t.Run("organizations", func(t *testing.T) {
+		alice := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
+		alice.Spec.Quota = &tenancyv1alpha1.UserQuota{Organizations: &one}
+		created := &tenancyv1alpha1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Name: "org-a", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}},
+			Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+		}
+		mgr, _, _ := newTestManager(t, alice, created)
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 99}, "")
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		expectQuotaExceeded(t, srv.URL, body, "1 of 1 organizations (")
+	})
+
+	t.Run("free organizations", func(t *testing.T) {
+		alice := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
+		alice.Spec.Quota = &tenancyv1alpha1.UserQuota{FreeOrganizations: &zero}
+		mgr := freeCapFixture(t, alice)
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 5}, "free")
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		expectQuotaExceeded(t, srv.URL, body, "does not allow organizations on the free plan")
+	})
 }
 
 func TestDeleteAndUndeleteOrg(t *testing.T) {

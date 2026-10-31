@@ -137,6 +137,13 @@ spec:
             {{- end }}
             - --default-orgs-per-user={{ $orgs }}
             {{- end }}
+            {{- if and (not (kindIs "invalid" .Values.hub.freeOrgsPerUser)) (ne (toString .Values.hub.freeOrgsPerUser) "") }}
+            {{- $freeOrgs := toString .Values.hub.freeOrgsPerUser }}
+            {{- if not (regexMatch "^(0|[1-9][0-9]*)$" $freeOrgs) }}
+            {{- fail (printf "hub.freeOrgsPerUser must be a non-negative integer, got %q" $freeOrgs) }}
+            {{- end }}
+            - --free-orgs-per-user={{ $freeOrgs }}
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
@@ -191,7 +198,7 @@ spec:
             refuse those so the modelled value stays the single source of
             truth. Keep this list in step with the flags rendered above.
             */}}
-            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
             {{- if has $flag $modelled }}
