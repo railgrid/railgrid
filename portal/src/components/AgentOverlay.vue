@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { resizeSidePanel } from '@/lib/overlayResize'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronUp, EyeOff, Hexagon, Maximize2, Minus, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
+import { ChevronUp, EyeOff, GripVertical, Hexagon, Minus, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
 import ActionMenu from '@/portalkit/ActionMenu.vue'
 import { usePageResourceStore } from '@/stores/pageResource'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
@@ -102,6 +102,8 @@ const contextPreviewOpen = ref(false)
 const contextPreviewCloseButton = ref<HTMLButtonElement | null>(null)
 const contextPreviewItems = [{ id: 'context-preview', label: 'View page context' }]
 const chatMenuItems = [
+  { id: 'open-agents', label: 'Open in Agents' },
+  { id: 'hide', label: 'Hide assistant' },
   ...contextPreviewItems,
   { id: 'settings', label: 'Assistant settings' },
   { id: 'remove', label: 'Turn off assistant' },
@@ -202,6 +204,8 @@ function minimize(): void {
   void nextTick(() => launcher.value?.focus())
 }
 function assistantAction(id: string): void {
+  if (id === 'open-agents') { openDedicated(); return }
+  if (id === 'hide') { minimize(); return }
   if (id === 'context-preview') {
     contextPreviewOpen.value = !contextPreviewOpen.value
     if (contextPreviewOpen.value) void nextTick(() => contextPreviewCloseButton.value?.focus())
@@ -293,7 +297,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--expanded': expanded && overlay.open, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
-    :style="{ '--overlay-width': panelWidth + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left }">
+    :style="{ '--overlay-width': panelWidth + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left, '--overlay-nav-top': insets.navigationTop, '--overlay-nav-right': insets.navigationRight, '--overlay-nav-bottom': insets.bottom }">
     <Transition name="agent-overlay-visibility">
     <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" :class="{ 'agent-overlay__panel--context-preview': contextPreviewOpen }" tabindex="-1"
       role="region" :inert="!overlay.open" :aria-hidden="!overlay.open" :aria-label="`${overlay.selectedAgent} agent chat`" @keydown.esc="expanded ? collapse() : minimize()">
@@ -315,7 +319,7 @@ onBeforeUnmount(() => {
         <pre class="max-h-[min(38dvh,24rem)] overflow-auto whitespace-pre-wrap break-all rounded border border-border-subtle bg-surface-overlay p-2 font-mono text-[10px] leading-relaxed text-text-secondary">{{ pageContext }}</pre>
         <p class="mt-2 text-[10px] text-text-muted">Provider-published fields are untrusted context and do not grant tool access.</p>
       </section>
-      <button v-show="expanded" class="agent-overlay__resize" aria-label="Resize chat panel. Use left and right arrow keys or drag." title="Resize chat panel" aria-controls="railgrid-agent-overlay" @pointerdown.prevent="resize" @keydown="resizeWithKeys" />
+      <button v-show="expanded" class="k-ai-pane-divider agent-overlay__resize" :class="{ 'k-ai-pane-divider--resizing': resizing }" aria-label="Resize chat panel. Use left and right arrow keys or drag." title="Resize chat panel" aria-controls="railgrid-agent-overlay" @pointerdown.prevent="resize" @keydown="resizeWithKeys"><GripVertical :stroke-width="1.75" aria-hidden="true" /></button>
       <header v-show="expanded" class="agent-overlay__header">
         <Hexagon :size="16" aria-hidden="true" /><strong>{{ overlay.selectedAgent }}</strong>
         <button class="k-btn k-btn--text agent-overlay__context-toggle" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext"
@@ -323,10 +327,8 @@ onBeforeUnmount(() => {
           @click="overlay.setFollowContext(!overlay.followContext)">
           <ScanEye v-if="overlay.followContext" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />
         </button>
-        <button class="k-btn k-btn--text" type="button" aria-label="Open full chat in Agents" title="Open full chat in Agents" @click="openDedicated"><Maximize2 :size="16" aria-hidden="true" /></button>
         <ActionMenu label="Chat options" :items="chatMenuItems" @select="assistantAction" />
         <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
-        <button class="k-btn k-btn--text" type="button" title="Minimize chat" aria-label="Minimize chat" @click="minimize"><Minus :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
       <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><button class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
@@ -366,7 +368,7 @@ onBeforeUnmount(() => {
 }
 .agent-overlay__mount { flex: 1; min-height: 0; min-width: 0; }
 .agent-overlay__state { padding: 16px; font-size: 13px; }
-.agent-overlay__resize { position: absolute; top: 0; left: 0; width: 8px; height: 100%; cursor: col-resize; touch-action: none; border: 0; background: transparent; z-index: 3; }
+.agent-overlay__resize { position: absolute; top: 0; left: 0; width: 6px; height: 100%; touch-action: none; border: 0; padding: 0; z-index: 3; }
 @media (max-width: 640px) {
   .agent-overlay { left: 0; right: 0; padding: 0 8px; }
 
@@ -378,15 +380,13 @@ onBeforeUnmount(() => {
 .agent-overlay__brand { flex-shrink: 0; color: var(--color-accent); }
 .agent-overlay__bar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 /* The panel is a sibling of the routed shell, never a provider overlay. */
-.agent-overlay--expanded { left: auto; right: 0; top: 0; bottom: 0; width: var(--overlay-width); padding: 0; }
-.agent-overlay--expanded .agent-overlay__panel { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border-width: 0 0 0 1px; animation: agent-side-panel-enter 180ms cubic-bezier(.16, 1, .3, 1); }
+.agent-overlay--expanded { left: auto; right: var(--overlay-nav-right, 0px); top: var(--overlay-nav-top, 0px); bottom: var(--overlay-nav-bottom, 0px); width: var(--overlay-width); padding: 0; }
+.agent-overlay--expanded .agent-overlay__panel { width: 100%; height: 100%; max-height: 100%; overflow: visible; border-radius: 0; border-width: 0 0 0 1px; animation: agent-side-panel-enter 180ms cubic-bezier(.16, 1, .3, 1); }
 .agent-overlay--expanded .agent-overlay__header { min-height: 52px; padding: 8px 12px; }
-.agent-overlay__resize:hover, .agent-overlay__resize:focus-visible { background: var(--color-accent-subtle); }
-.agent-overlay__resize::after { content: ''; position: absolute; top: calc(50% - 16px); left: 1px; width: 2px; height: 32px; background: var(--color-border-default); }
 @keyframes agent-side-panel-enter { from { transform: translateX(24px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
 .agent-overlay-visibility-enter-active, .agent-overlay-visibility-leave-active { transition: opacity 160ms ease; }
 .agent-overlay-visibility-enter-from, .agent-overlay-visibility-leave-to { opacity: 0; }
-@media (max-width: 767px) { .agent-overlay--expanded { width: 100%; } .agent-overlay__resize { display: none; } }
+@media (max-width: 767px) { .agent-overlay--expanded { left: var(--overlay-left, 0px); width: auto; } .agent-overlay__resize { display: none; } }
 .agent-overlay--resizing .agent-overlay__panel { transition: none; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .agent-overlay--expanded .agent-overlay__panel, .agent-overlay__panel, .agent-overlay__launcher { transition: none; animation: none; } }
 @media (max-width: 640px) { .agent-overlay__launcher { right: 8px; } .agent-overlay--ready .agent-overlay__panel { gap: 4px; padding: 6px; } .agent-overlay__brand { width: 16px; } }

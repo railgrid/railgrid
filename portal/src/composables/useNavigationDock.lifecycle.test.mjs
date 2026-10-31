@@ -130,6 +130,18 @@ test('chat width reserves terminal space and bounds floating navigation inside t
   dock.dockState.value = { mode: 'right', x: -1, y: -1 }
   await nextTick()
   assert.equal(snapshot().right, 'calc(13rem + 440px)')
+  assert.equal(insets.useLayoutInsets().navigationRight, '13rem', 'chat sits inside the right nav')
+  dock.dockState.value = { mode: 'top', x: -1, y: -1 }
+  dock.dockedRef.value = { getBoundingClientRect: () => ({ height: 53 }) }
+  await nextTick()
+  assert.equal(insets.useLayoutInsets().navigationTop, '53px', 'use the rendered nav height')
+  assert.equal(insets.useLayoutInsets().navigationRight, '0px')
+  dock.dockState.value = { mode: 'bottom', x: -1, y: -1 }
+  await nextTick()
+  assert.equal(insets.useLayoutInsets().navigationTop, '0px')
+  assert.equal(snapshot().bottom, '53px')
+  dock.dockState.value = { mode: 'right', x: -1, y: -1 }
+  await nextTick()
   panelWidth.value = 0
   await nextTick()
   assert.equal(snapshot().right, '13rem')

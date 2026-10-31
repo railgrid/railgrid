@@ -13,7 +13,7 @@ The host mounts the existing Agents element above the router boundary. Its
 `overlayState` selects a chat-only presentation without owning browser history.
 The same conversation, composer draft, run, approvals, and tool results survive
 opening, closing, resizing, and navigation within a workspace. The panel has no
-thread rail or configuration workbench. **Open full chat in Agents** hands the
+thread rail or configuration workbench. **Open in Agents** hands the
 conversation and unsent draft to the ordinary agent route. The assistant hides
 while that agent's dedicated view is open.
 
@@ -28,21 +28,27 @@ Minimize retains the conversation behind the Railgrid launcher.
 
 ## Right side panel
 
-On desktop the panel fills the viewport height and starts at 440px wide. Dragging
+On desktop the panel fills the height remaining between navigation docks and starts at 440px wide. Dragging
 its left edge or using Left/Right arrow keys resizes it; Home and End select its
 width limits. The minimum is 320px, and the maximum is 60% of the viewport while
 preserving at least 360px for the workspace. Reversing direction at either limit
 moves immediately. Pointer cancellation, lost capture, hiding, and unmounting
 end the gesture. Resizing the browser clamps the visible width.
 
-The host reserves the panel's width around the entire routed shell, including
-its navigation and provider/frame mount. Full-bleed workbenches also shrink.
+The host reserves the panel's width in the main content track, including the
+provider/frame mount and full-bleed workbenches. Navigation owns the outer frame:
+top and bottom docks span the full width, and a right dock sits outside the chat.
+The panel follows the measured height of horizontal navigation.
 Floating navigation is centered and clamped within the remaining workspace;
 terminal insets include the panel. Below 768px the chat takes the full viewport
-width, with the background workspace and terminal inert until it closes.
+width remaining inside navigation, with the background content and terminal inert
+until it closes; navigation remains available.
 
-One header holds agent identity, page-context toggle, navigation to Agents,
-options, close, and minimize. The expanded view uses the full AgentKit composer;
+One header holds agent identity, page-context toggle, options, and close.
+**Open in Agents** and **Hide assistant** live in the options menu. Closing returns
+to the compact composer; hiding retains the conversation behind the launcher.
+The resize edge uses the same AgentKit pane-divider styling and multi-dot grip
+as the conversation/workbench divider. The expanded view uses the full AgentKit composer;
 the collapsed bar uses its compact geometry. Thread navigation and agent
 configuration remain available in the dedicated Agents view. Context preview
 remains bounded and scrollable in both presentations.
@@ -101,7 +107,7 @@ configured tools and existing authorization rules.
   Persisted sessions are recovered through the existing Agents session APIs;
   unsent drafts are not persisted across a workspace switch or browser reload.
 - The side panel contains only the current conversation; use the dedicated Agents view to select or create threads.
-- Expansion navigates to the dedicated Agents chat view.
+- **Open in Agents** in the options menu navigates to the dedicated Agents chat view.
 - Context identifies the current page and may include Infrastructure resource
   coordinates or a bounded provider summary, resource list, and JSON data.
   Selected rows, attachments, and background reasoning are outside this overlay

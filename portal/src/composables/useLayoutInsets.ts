@@ -26,6 +26,9 @@ export interface LayoutInsets {
   left: string
   right: string
   bottom: string
+  /** Navigation-only edges, excluding reserved chat width. */
+  navigationTop?: string
+  navigationRight?: string
 }
 
 export interface LayoutInsetsClaim {
@@ -35,7 +38,7 @@ export interface LayoutInsetsClaim {
   release(): void
 }
 
-const ZERO: LayoutInsets = { left: '0px', right: '0px', bottom: '0px' }
+const ZERO: LayoutInsets = { left: '0px', right: '0px', bottom: '0px', navigationTop: '0px', navigationRight: '0px' }
 
 const state = reactive<LayoutInsets>({ ...ZERO })
 
@@ -43,6 +46,8 @@ function assign(next: LayoutInsets) {
   state.left = next.left
   state.right = next.right
   state.bottom = next.bottom
+  state.navigationTop = next.navigationTop ?? '0px'
+  state.navigationRight = next.navigationRight ?? '0px'
 }
 
 let nextOwner = 0

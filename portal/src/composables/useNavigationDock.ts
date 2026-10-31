@@ -170,7 +170,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
     dragPos.value = { x, y }
 
     const distL = event.clientX
-    const distR = viewportWidth() - event.clientX
+    const distR = window.innerWidth - event.clientX
     const distT = event.clientY
     const distB = window.innerHeight - event.clientY
     const minDist = Math.min(distL, distR, distT, distB)
@@ -335,6 +335,18 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
     saveDockState()
   }
 
+  const dockHeight = ref(44)
+  let dockResizeObserver: ResizeObserver | null = null
+  function observeDock(element: HTMLElement | null): void {
+    dockResizeObserver?.disconnect()
+    dockResizeObserver = null
+    if (!element) return
+    const measure = () => { dockHeight.value = element.getBoundingClientRect().height }
+    measure()
+    dockResizeObserver = new ResizeObserver(measure)
+    dockResizeObserver.observe(element)
+  }
+  watch(dockedRef, observeDock)
   watch(floatRef, observeFloatingDock)
   watch(reservedRight, scheduleFloatingDockClamp)
 
@@ -361,6 +373,8 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
     window.removeEventListener('orientationchange', scheduleFloatingDockClamp)
     floatResizeObserver?.disconnect()
     floatResizeObserver = null
+    dockResizeObserver?.disconnect()
+    dockResizeObserver = null
     if (clampFrame !== null && typeof window.cancelAnimationFrame === 'function') {
       window.cancelAnimationFrame(clampFrame)
       clampFrame = null
@@ -395,7 +409,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
     const railWidth = sidebarExpanded.value ? '13rem' : '3.5rem'
     const left = isVerticalDock.value && dockState.value.mode === 'left' ? railWidth : '0px'
     const right = isVerticalDock.value && dockState.value.mode === 'right' ? railWidth : '0px'
-    const bottom = isHorizontalDock.value && dockState.value.mode === 'bottom' ? '44px' : '0px'
+    const bottom = isHorizontalDock.value && dockState.value.mode === 'bottom' ? `${dockHeight.value}px` : '0px'
     return {
       '--app-inset-left': left,
       '--app-inset-right': right,
@@ -411,6 +425,8 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: 
       left: layoutInsetsStyle.value['--app-inset-left'],
       right: reservedRight.value ? `calc(${layoutInsetsStyle.value['--app-inset-right']} + ${reservedRight.value}px)` : layoutInsetsStyle.value['--app-inset-right'],
       bottom: layoutInsetsStyle.value['--app-inset-bottom'],
+      navigationTop: isHorizontalDock.value && dockState.value.mode === 'top' ? `${dockHeight.value}px` : '0px',
+      navigationRight: layoutInsetsStyle.value['--app-inset-right'],
     })
   })
 

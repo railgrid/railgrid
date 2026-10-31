@@ -160,12 +160,12 @@ const mainClass = computed(() => [
 
 const assistantOverlay = useAgentOverlayStore()
 const mainStyle = computed(() => {
-  // Full-bleed workbenches own their viewport; only the compact bar floats.
-  // The side panel reserves width at the app root, including for workbenches.
-  if (gettingStartedFocused.value || layoutProps.fullBleed) return undefined
-  if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
-  if (!mainPaddingBottom.value) return undefined
-  return { paddingBottom: mainPaddingBottom.value }
+  if (gettingStartedFocused.value) return undefined
+  // Reserve chat space only in the content track; navigation owns the outer edge.
+  const space = { marginRight: `${assistantOverlay.sidePanelWidth}px` }
+  if (layoutProps.fullBleed) return space
+  if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
+  return { ...space, paddingBottom: mainPaddingBottom.value }
 })
 
 const slotClass = computed(() => [
@@ -951,6 +951,7 @@ const contextStatus = computed<ContextStatus>(() => {
     <!-- Main content -->
     <main
       class="railgrid-shell-main"
+      :inert="!gettingStartedFocused && assistantOverlay.sidePanelFullscreen"
       :class="mainClass"
       :style="mainStyle"
     >

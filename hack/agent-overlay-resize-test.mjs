@@ -16,7 +16,7 @@ assert.ok(css)
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROMIUM_EXECUTABLE ? { executablePath: process.env.CHROMIUM_EXECUTABLE } : {}) })
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
-  await page.setContent(`<style>* { box-sizing: border-box } ${css}</style><div id="app"></div>`)
+  await page.setContent(`<style>* { box-sizing: border-box } ${read('provider-sdk/agentkit/agent-ui.css')} ${css}</style><div id="app"></div>`)
   await page.addScriptTag({ content: read('portal/node_modules/vue/dist/vue.global.js') })
   await page.addScriptTag({ content: `const {ref, watch, computed} = Vue;
     Vue.createApp({setup() {
@@ -26,9 +26,11 @@ try {
       ${js}
       window.addEventListener('resize', () => viewportWidth.value = innerWidth);
       return {panel, panelWidth, resizing, resize, resizeWithKeys};
-    }, template: '<div class="agent-overlay agent-overlay--expanded" :class="{ \\'agent-overlay--resizing\\': resizing }" :style="{ \\'--overlay-width\\': panelWidth + \\'px\\' }"><section ref="panel" class="agent-overlay__panel"><button class="agent-overlay__resize" @pointerdown.prevent="resize" @keydown="resizeWithKeys" /></section></div>'}).mount('#app');` })
+    }, template: '<div class="agent-overlay agent-overlay--expanded" :class="{ \\'agent-overlay--resizing\\': resizing }" :style="{ \\'--overlay-width\\': panelWidth + \\'px\\' }"><section ref="panel" class="agent-overlay__panel"><button class="k-ai-pane-divider agent-overlay__resize" @pointerdown.prevent="resize" @keydown="resizeWithKeys" /></section></div>'}).mount('#app');` })
   const panel = page.locator('.agent-overlay__panel'), handle = page.locator('button')
   const frame = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await frame()
   const initial = await panel.boundingBox(), grip = await handle.boundingBox()
   await page.mouse.move(grip.x + 3, 300); await page.mouse.down()
   await page.mouse.move(grip.x - 47, 350); await frame()
@@ -43,13 +45,28 @@ try {
   assert.equal((await panel.boundingBox()).width, 320)
   await page.keyboard.press('ArrowLeft'); await frame()
   assert.equal((await panel.boundingBox()).width, 336)
+  for (const [top, bottom, right] of [[44,0,0],[0,53,0],[0,0,208]]) {
+    await page.locator('.agent-overlay').evaluate((el, values) => {
+      const [top,bottom,right] = values;
+      el.style.setProperty('--overlay-nav-top', top + 'px');
+      el.style.setProperty('--overlay-nav-bottom', bottom + 'px');
+      el.style.setProperty('--overlay-nav-right', right + 'px');
+    }, [top,bottom,right]);
+    const box = await panel.boundingBox();
+    assert.equal(box.y, top);
+    assert.equal(box.height, 900 - top - bottom);
+    assert.equal(box.x + box.width, 1280 - right);
+  }
+  await page.locator('.agent-overlay').evaluate(el => {
+    for (const edge of ['top','bottom','right']) el.style.setProperty('--overlay-nav-' + edge, '0px');
+  });
   await page.setViewportSize({width:390,height:600}); await frame()
   assert.equal((await panel.boundingBox()).width, 390)
   assert.equal(await handle.isVisible(), false)
   for (const theme of ['light','dark']) {
     for (const [width,height,compact,bottom] of [[1280,800,false,32],[1280,800,true,752],[390,600,false,32],[390,600,true,552]]) {
       await page.setViewportSize({width,height})
-      await page.setContent(`<style>*{box-sizing:border-box}${css}</style><div class="agent-overlay ${compact?'agent-overlay--ready':'agent-overlay--expanded'}" style="--overlay-width:${Math.min(width,440)}px;--overlay-bottom:${bottom}px;--overlay-left:0px;--overlay-right:0px"><section class="agent-overlay__panel agent-overlay__panel--context-preview"><section class="agent-overlay__context-preview ${compact?'agent-overlay__context-preview--compact':''}"><button>Close</button><pre style="white-space:pre-wrap">${'Shared provider context '.repeat(1000)}</pre></section></section></div>`)
+      await page.setContent(`<style>*{box-sizing:border-box}${read('provider-sdk/agentkit/agent-ui.css')} ${css}</style><div class="agent-overlay ${compact?'agent-overlay--ready':'agent-overlay--expanded'}" style="--overlay-width:${Math.min(width,440)}px;--overlay-bottom:${bottom}px;--overlay-left:0px;--overlay-right:0px"><section class="agent-overlay__panel agent-overlay__panel--context-preview"><section class="agent-overlay__context-preview ${compact?'agent-overlay__context-preview--compact':''}"><button>Close</button><pre style="white-space:pre-wrap">${'Shared provider context '.repeat(1000)}</pre></section></section></div>`)
       await page.evaluate(theme=>document.documentElement.className=theme,theme)
       const preview=page.locator('.agent-overlay__context-preview'),box=await preview.boundingBox()
       assert.ok(box.x>=0 && box.y>=0 && box.x+box.width<=width && box.y+box.height<=height)

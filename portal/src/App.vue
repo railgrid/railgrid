@@ -216,8 +216,7 @@ watch(
 </script>
 
 <template>
-  <div class="railgrid-workspace-viewport" :inert="!gettingStartedFocused && assistantOverlay.sidePanelFullscreen"
-    :style="{ width: `calc(100% - ${gettingStartedFocused ? 0 : assistantOverlay.sidePanelWidth}px)` }">
+  <div class="railgrid-workspace-viewport">
     <RouteContextState v-if="scopeBlocked" />
     <router-view v-else :key="scopeKey" />
   </div>
