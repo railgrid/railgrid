@@ -21,6 +21,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/quota"
 )
 
 // Options holds configuration for the hub server.
@@ -139,6 +140,12 @@ type Options struct {
 	// pkg/hub/kcp.builtinEntries[].Requires.
 	Providers []string
 
+	// DefaultOrgsPerUser is how many Organizations a User may create when
+	// metering is not installed or their plan carries no `organizations`
+	// limit (docs/organizations.md O-5). Personal organizations do not
+	// count. Must be positive.
+	DefaultOrgsPerUser int32
+
 	// SoftDeleteGracePeriod is how long a soft-deleted User, Organization
 	// or Workspace stays recoverable before the softdelete reconciler
 	// cascades it away. One value for every kind (docs/organizations.md
@@ -243,6 +250,7 @@ func NewOptions() *Options {
 		KCPBatteriesInclude: "admin,user",
 
 		SoftDeleteGracePeriod: softdelete.DefaultGracePeriod,
+		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,
 
 		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 		// Wide for this release; the next one defaults to false. See the field.

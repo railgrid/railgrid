@@ -58,6 +58,9 @@ const (
 	notInstalledRetry = time.Minute
 )
 
+// schemaGVR is the GVR type the hub-owned object helpers iterate over.
+type schemaGVR = schema.GroupVersionResource
+
 var (
 	gvrAccounts          = schema.GroupVersionResource{Group: "metering.contrib.kcp.io", Version: "v1alpha1", Resource: "accounts"}
 	gvrEntitlements      = schema.GroupVersionResource{Group: "metering.contrib.kcp.io", Version: "v1alpha1", Resource: "entitlements"}
@@ -85,12 +88,14 @@ type OrganizationOptions struct {
 	Logger      klog.Logger
 }
 
-// OrganizationReconciler gives every Organization its billing objects in the
-// metering workspace: an Account and a MembershipReport the hub owns and
-// keeps current, and an Entitlement on the default plan that the hub only
-// creates, because the plan an organization is on is changed by admins (and
-// later by billing) and must never be reset by a resync. When an
-// Organization is gone, its three objects go too.
+// OrganizationReconciler keeps every Organization's workspaces reported to
+// the metering Account that pays for them (OwnerAccount): by default the
+// Account of the User who created the organization, so one user's
+// organizations pool into one set of allowances; an Organization with
+// spec.plan set gets an Account and an Entitlement of its own, with the
+// Entitlement's plan kept in step with spec.plan while any overrides an admin
+// added are preserved. The MembershipReport is hub-owned and kept current.
+// When an Organization is gone, its report and any own objects go too.
 type OrganizationReconciler struct {
 	client.Client
 	opts OrganizationOptions
@@ -166,20 +171,127 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.applyAccount(ctx, org); err != nil {
-		return ctrl.Result{}, fmt.Errorf("account: %w", err)
+	account, own := OwnerAccount(org)
+	if !own {
+		// A per-org Entitlement an admin has already customized is intent
+		// the hub must not discard: keep the org on its own account and ask
+		// for spec.plan to make it explicit.
+		customized, err := r.customizedOwnEntitlement(ctx, org.Name)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("entitlement: %w", err)
+		}
+		if customized {
+			logger.Info("organization keeps its own account: its entitlement was customized by an admin; set spec.plan to make that explicit")
+			account, own = org.Name, true
+		}
 	}
-	created, err := r.ensureEntitlement(ctx, org.Name)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("entitlement: %w", err)
+	if own {
+		if err := r.applyAccount(ctx, org); err != nil {
+			return ctrl.Result{}, fmt.Errorf("account: %w", err)
+		}
+		if err := r.ensureOwnEntitlement(ctx, org, logger); err != nil {
+			return ctrl.Result{}, fmt.Errorf("entitlement: %w", err)
+		}
+	} else if err := r.dropOwnObjects(ctx, org.Name, logger); err != nil {
+		return ctrl.Result{}, err
 	}
-	if created {
-		logger.Info("organization placed on the default plan", "plan", r.opts.DefaultPlan)
-	}
-	if err := r.applyMembership(ctx, org.Name, members); err != nil {
+	if err := r.applyMembership(ctx, org.Name, account, members); err != nil {
 		return ctrl.Result{}, fmt.Errorf("membership report: %w", err)
 	}
 	return ctrl.Result{RequeueAfter: membershipRefresh}, nil
+}
+
+// OwnerAccount names the metering Account an Organization's usage is pooled
+// into and whether that account is the organization's own. An Organization
+// with spec.plan set owns its account. Otherwise it belongs to the User who
+// created it (the created-by label), which is also the account the metering
+// `organizations` meter attributes the Organization object to. An
+// Organization without a creator label cannot be attributed to anyone and
+// keeps an account of its own.
+func OwnerAccount(org *tenancyv1alpha1.Organization) (account string, own bool) {
+	if org.Spec.Plan != "" {
+		return org.Name, true
+	}
+	creator := org.Labels[tenancyv1alpha1.OrganizationCreatorLabel]
+	if creator == "" {
+		return org.Name, true
+	}
+	return UserAccountName(creator), false
+}
+
+// customizedOwnEntitlement reports whether a per-org Entitlement exists that
+// differs from what the hub itself would have created: a plan other than the
+// default, or overrides.
+func (r *OrganizationReconciler) customizedOwnEntitlement(ctx context.Context, orgName string) (bool, error) {
+	ent, err := r.opts.Metering.Resource(gvrEntitlements).Get(ctx, orgName, metav1.GetOptions{})
+	if err != nil {
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	overrides, _, _ := unstructured.NestedSlice(ent.Object, "spec", "overrides")
+	return plan != r.opts.DefaultPlan || len(overrides) > 0, nil
+}
+
+// ensureOwnEntitlement creates the organization's own Entitlement and, when
+// spec.plan names a plan, keeps the Entitlement's plan equal to it (overrides
+// are preserved). Without spec.plan the Entitlement is create-only on the
+// default plan, as before.
+func (r *OrganizationReconciler) ensureOwnEntitlement(ctx context.Context, org *tenancyv1alpha1.Organization, logger klog.Logger) error {
+	plan := org.Spec.Plan
+	if plan == "" {
+		plan = r.opts.DefaultPlan
+	}
+	created, err := ensureEntitlementObject(ctx, r.opts.Metering, org.Name, plan, map[string]string{"railgrid.ai/organization": org.Name})
+	if err != nil {
+		return err
+	}
+	if created {
+		logger.Info("organization placed on its own plan", "plan", plan)
+		return nil
+	}
+	if org.Spec.Plan == "" {
+		return nil
+	}
+	res := r.opts.Metering.Resource(gvrEntitlements)
+	ent, err := res.Get(ctx, org.Name, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	if current, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); current == org.Spec.Plan {
+		return nil
+	}
+	if err := unstructured.SetNestedField(ent.Object, org.Spec.Plan, "spec", "plan"); err != nil {
+		return err
+	}
+	if _, err := res.Update(ctx, ent, metav1.UpdateOptions{FieldManager: FieldManager}); err != nil {
+		return err
+	}
+	logger.Info("organization entitlement follows spec.plan", "plan", org.Spec.Plan)
+	return nil
+}
+
+// dropOwnObjects removes the per-org Account and Entitlement the hub created
+// for an organization that is now pooled into its creator's account. Only
+// uncustomized objects reach here (see customizedOwnEntitlement).
+func (r *OrganizationReconciler) dropOwnObjects(ctx context.Context, orgName string, logger klog.Logger) error {
+	if _, err := r.opts.Metering.Resource(gvrEntitlements).Get(ctx, orgName, metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			// Nothing to drop; the common case after the first pass.
+			if _, err := r.opts.Metering.Resource(gvrAccounts).Get(ctx, orgName, metav1.GetOptions{}); apierrors.IsNotFound(err) {
+				return nil
+			}
+		} else {
+			return fmt.Errorf("entitlement: %w", err)
+		}
+	}
+	if err := deleteAccountObjects(ctx, r.opts.Metering, orgName); err != nil {
+		return err
+	}
+	logger.Info("organization pooled into its creator's account; its own account and entitlement were removed")
+	return nil
 }
 
 // members lists the organization's workspace and every child workspace as
@@ -224,51 +336,23 @@ func (r *OrganizationReconciler) members(ctx context.Context, org *tenancyv1alph
 }
 
 func (r *OrganizationReconciler) applyAccount(ctx context.Context, org *tenancyv1alpha1.Organization) error {
-	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
-	u.SetKind("Account")
-	u.SetName(org.Name)
-	u.SetLabels(map[string]string{"railgrid.ai/organization": org.Name})
 	displayName := org.Spec.DisplayName
 	if displayName == "" {
 		displayName = org.Name
 	}
-	_ = unstructured.SetNestedMap(u.Object, map[string]any{"displayName": displayName}, "spec")
-	return applyObject(ctx, r.opts.Metering.Resource(gvrAccounts), u)
+	return applyAccountObject(ctx, r.opts.Metering, org.Name, displayName, map[string]string{"railgrid.ai/organization": org.Name})
 }
 
-// ensureEntitlement creates the Entitlement on the default plan when there is
-// none; an existing one is left exactly as it is. Returns whether it created.
-func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, orgName string) (bool, error) {
-	res := r.opts.Metering.Resource(gvrEntitlements)
-	if _, err := res.Get(ctx, orgName, metav1.GetOptions{}); err == nil {
-		return false, nil
-	} else if !apierrors.IsNotFound(err) {
-		return false, err
-	}
-	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
-	u.SetKind("Entitlement")
-	u.SetName(orgName)
-	u.SetLabels(map[string]string{"railgrid.ai/organization": orgName})
-	_ = unstructured.SetNestedMap(u.Object, map[string]any{"account": orgName, "plan": r.opts.DefaultPlan}, "spec")
-	if _, err := res.Create(ctx, u, metav1.CreateOptions{FieldManager: FieldManager}); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
-
-// applyMembership writes the hub's report for the organization, only when
-// the member set changed, so a resync is not a write.
-func (r *OrganizationReconciler) applyMembership(ctx context.Context, orgName string, members []map[string]any) error {
+// applyMembership writes the hub's report for the organization to account,
+// only when the account or the member set changed, so a resync is not a
+// write.
+func (r *OrganizationReconciler) applyMembership(ctx context.Context, orgName, account string, members []map[string]any) error {
 	res := r.opts.Metering.Resource(gvrMembershipReports)
 	name := Reporter + "." + orgName
 	if existing, err := res.Get(ctx, name, metav1.GetOptions{}); err == nil {
 		current, _, _ := unstructured.NestedSlice(existing.Object, "spec", "members")
-		if reflect.DeepEqual(normalize(current), normalize(toAny(members))) {
+		currentAccount, _, _ := unstructured.NestedString(existing.Object, "spec", "account")
+		if currentAccount == account && reflect.DeepEqual(normalize(current), normalize(toAny(members))) {
 			return nil
 		}
 	} else if !apierrors.IsNotFound(err) {
@@ -280,7 +364,7 @@ func (r *OrganizationReconciler) applyMembership(ctx context.Context, orgName st
 	u.SetName(name)
 	u.SetLabels(map[string]string{"railgrid.ai/organization": orgName})
 	_ = unstructured.SetNestedField(u.Object, map[string]any{
-		"account":    orgName,
+		"account":    account,
 		"reporter":   Reporter,
 		"observedAt": time.Now().UTC().Format(time.RFC3339),
 		"members":    toAny(members),
