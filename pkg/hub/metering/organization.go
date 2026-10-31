@@ -33,8 +33,12 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -114,7 +118,32 @@ func SetupOrganizationReconciler(mgr manager.Manager, opts OrganizationOptions) 
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("metering-organization").
 		For(&tenancyv1alpha1.Organization{}).
+		// A deleted User's organizations must move off the user's account
+		// right away, not on the next membership refresh: in between, their
+		// reports would name an account the user reconciler is about to
+		// remove.
+		Watches(&tenancyv1alpha1.User{}, handler.EnqueueRequestsFromMapFunc(r.organizationsCreatedBy),
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc:  func(event.CreateEvent) bool { return false },
+				UpdateFunc:  func(event.UpdateEvent) bool { return false },
+				GenericFunc: func(event.GenericEvent) bool { return false },
+			})).
 		Complete(r)
+}
+
+// organizationsCreatedBy maps a User event to every Organization carrying its
+// created-by label.
+func (r *OrganizationReconciler) organizationsCreatedBy(ctx context.Context, obj client.Object) []ctrl.Request {
+	orgs := &tenancyv1alpha1.OrganizationList{}
+	if err := r.List(ctx, orgs, client.MatchingLabels{tenancyv1alpha1.OrganizationCreatorLabel: obj.GetName()}); err != nil {
+		r.opts.Logger.Error(err, "listing organizations created by a deleted user", "user", obj.GetName())
+		return nil
+	}
+	out := make([]ctrl.Request, 0, len(orgs.Items))
+	for i := range orgs.Items {
+		out = append(out, ctrl.Request{NamespacedName: types.NamespacedName{Name: orgs.Items[i].Name}})
+	}
+	return out
 }
 
 // WorkspaceClients returns a Workspaces func over base, caching one dynamic

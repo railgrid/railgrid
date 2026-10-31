@@ -19,6 +19,7 @@ package metering
 import (
 	"context"
 	"fmt"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,6 +40,10 @@ const (
 	userAccountPrefix = "user-"
 	// LabelUser marks the hub-owned metering objects that belong to a User.
 	LabelUser = "railgrid.ai/user"
+	// accountRemovalRetry paces the wait for a deleted user's organizations
+	// to move off their account (the organization reconciler is woken by the
+	// User delete, so one retry normally suffices).
+	accountRemovalRetry = 30 * time.Second
 )
 
 // UserAccountName is the metering Account that pools everything a User owns:
@@ -96,7 +101,7 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	user := &tenancyv1alpha1.User{}
 	if err := r.Get(ctx, req.NamespacedName, user); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, r.remove(ctx, req.Name)
+			return r.remove(ctx, req.Name, logger)
 		}
 		return ctrl.Result{}, err
 	}
@@ -121,9 +126,24 @@ func (r *UserReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.
 	return ctrl.Result{}, nil
 }
 
-// remove deletes the user's objects; absence is success.
-func (r *UserReconciler) remove(ctx context.Context, user string) error {
-	return deleteAccountObjects(ctx, r.opts.Metering, UserAccountName(user))
+// remove deletes the user's objects; absence is success. While any
+// MembershipReport still names the user's account (an organization the user
+// created that the organization reconciler has not yet moved onto an account
+// of its own), the deletion waits: removing the Entitlement first would leave
+// those workspaces reporting into an account with no limits.
+func (r *UserReconciler) remove(ctx context.Context, user string, logger klog.Logger) (ctrl.Result, error) {
+	account := UserAccountName(user)
+	reports, err := r.opts.Metering.Resource(gvrMembershipReports).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("listing membership reports: %w", err)
+	}
+	for i := range reports.Items {
+		if acc, _, _ := unstructured.NestedString(reports.Items[i].Object, "spec", "account"); acc == account {
+			logger.Info("user account still paid for by organizations; deferring its removal", "report", reports.Items[i].GetName())
+			return ctrl.Result{RequeueAfter: accountRemovalRetry}, nil
+		}
+	}
+	return ctrl.Result{}, deleteAccountObjects(ctx, r.opts.Metering, account)
 }
 
 // applyAccountObject server-side-applies an Account.

@@ -248,8 +248,10 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkOrgQuota applies O-5 for user. The count excludes personal
-// Organizations (platform-created, one per user) and Organizations already
-// inside their soft-delete window, which are hidden and suspended.
+// Organizations (platform-created, one per user) but includes Organizations
+// inside their soft-delete window: they still exist and the metering webhook
+// counts them, so excluding them here would let the hub say there is room
+// and the shard refuse. Restoring or waiting out the cascade frees the slot.
 func (h *Handler) checkOrgQuota(ctx context.Context, user string) error {
 	cap, err := h.mgr.OrgQuota().Cap(ctx, user)
 	if err != nil {
@@ -265,7 +267,7 @@ func (h *Handler) checkOrgQuota(ctx context.Context, user string) error {
 		var n int32
 		for i := range list.Items {
 			o := &list.Items[i]
-			if o.Spec.Personal || o.Status.DeletionRequestedAt != nil || !o.DeletionTimestamp.IsZero() {
+			if o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
 				continue
 			}
 			n++

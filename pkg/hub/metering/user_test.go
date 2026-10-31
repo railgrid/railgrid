@@ -48,7 +48,7 @@ func newUserFixture(t *testing.T, users ...*tenancyv1alpha1.User) (*UserReconcil
 	}
 	c := ctrlfake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(objs...).Build()
 	store := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schemaGVR]string{
-		gvrAccounts: "AccountList", gvrEntitlements: "EntitlementList",
+		gvrAccounts: "AccountList", gvrEntitlements: "EntitlementList", gvrMembershipReports: "MembershipReportList",
 	})
 	return &UserReconciler{Client: c, opts: UserOptions{Discovery: installed(true), Metering: store, DefaultPlan: "free", Logger: klog.Background()}}, store
 }
@@ -114,6 +114,43 @@ func TestDeletedUserLosesItsObjects(t *testing.T) {
 		t.Fatal(err)
 	}
 	reconcileUser(t, r, "alice")
+	absent(t, store, gvrAccounts, "user-alice")
+	absent(t, store, gvrEntitlements, "user-alice")
+}
+
+// While an organization's report still names the deleted user's account, the
+// account and its Entitlement stay; the organization reconciler moves the
+// organization first, then the next pass removes them.
+func TestDeletedUserAccountWaitsForItsOrganizations(t *testing.T) {
+	r, store := newUserFixture(t, user("alice", "Alice"))
+	reconcileUser(t, r, "alice")
+	ctx := context.Background()
+	rep := &unstructured.Unstructured{}
+	rep.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	rep.SetKind("MembershipReport")
+	rep.SetName(Reporter + ".org-1")
+	_ = unstructured.SetNestedField(rep.Object, "user-alice", "spec", "account")
+	if _, err := store.Resource(gvrMembershipReports).Create(ctx, rep, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Delete(ctx, user("alice", "Alice")); err != nil {
+		t.Fatal(err)
+	}
+	if res := reconcileUser(t, r, "alice"); res.RequeueAfter != accountRemovalRetry {
+		t.Fatalf("expected a deferral while a report names the account, got %+v", res)
+	}
+	if _, err := store.Resource(gvrEntitlements).Get(ctx, "user-alice", metav1.GetOptions{}); err != nil {
+		t.Fatalf("entitlement removed while still paid for: %v", err)
+	}
+
+	// The organization moved onto its own account: now the user's go.
+	_ = unstructured.SetNestedField(rep.Object, "org-1", "spec", "account")
+	if _, err := store.Resource(gvrMembershipReports).Update(ctx, rep, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if res := reconcileUser(t, r, "alice"); res.RequeueAfter != 0 {
+		t.Fatalf("expected removal, got %+v", res)
+	}
 	absent(t, store, gvrAccounts, "user-alice")
 	absent(t, store, gvrEntitlements, "user-alice")
 }

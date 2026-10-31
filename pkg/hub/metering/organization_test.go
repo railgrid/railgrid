@@ -333,6 +333,22 @@ func TestDeletedCreatorMovesTheOrganizationOntoItsOwnAccount(t *testing.T) {
 	}
 }
 
+// A User event maps to every organization carrying its created-by label, and
+// nothing else, so a delete wakes exactly the organizations that must move.
+func TestUserEventsMapToTheUsersOrganizations(t *testing.T) {
+	other := org("org-bob")
+	other.Labels[tenancyv1alpha1.OrganizationCreatorLabel] = "bob"
+	r, _ := newFixture(t, org("org-1"), org("org-2"), other)
+	reqs := r.organizationsCreatedBy(context.Background(), &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}})
+	got := map[string]bool{}
+	for _, rq := range reqs {
+		got[rq.Name] = true
+	}
+	if len(got) != 2 || !got["org-1"] || !got["org-2"] {
+		t.Fatalf("mapped requests = %v, want org-1 and org-2", got)
+	}
+}
+
 // Without a creator label there is nobody to pool into; the organization
 // keeps an account of its own on the default plan, as before.
 func TestLegacyOrganizationWithoutCreatorKeepsItsOwnAccount(t *testing.T) {
