@@ -2051,6 +2051,30 @@ describe('conversation model picker', () => {
     expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
   })
 
+  it('keeps the chosen effort visible during saving and restores it on failure', async () => {
+    const pending = deferred<any>()
+    const { el, store } = await mountChat(scripted([]), {
+      getSessionModel: async () => ({ selectedCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '' }),
+      saveSessionModel: () => pending.promise,
+    })
+    await configureModels(store)
+    picker(el).click()
+    await settle()
+    const slider = document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')!
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    slider.value = '2'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    slider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(picker(el).getAttribute('aria-label')).toContain('High')
+    expect(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.textContent).toBe('High')
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
+    pending.reject(new Error('save failed'))
+    await settle(8)
+    expect(picker(el).getAttribute('aria-label')).toContain('Model default')
+    expect(text(el)).toContain('Chat model could not be saved')
+  })
+
   it('disables model switching during a running turn', async () => {
     const gate = deferred<void>()
     const { el, store } = await mountChat(scripted([], gate.promise))

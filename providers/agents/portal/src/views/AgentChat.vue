@@ -219,6 +219,12 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
     modelSaveError.value = ''
     return
   }
+  const previousPreferences = modelPreferences.value
+  // Keep the selected effort visible while it is saved, as App Studio does.
+  // A model switch still waits for the server's capability metadata.
+  if (preferences && preferences.selectedCredential === previousPreferences?.selectedCredential) {
+    modelPreferences.value = preferences
+  }
   modelSaving.value = true
   modelSaveError.value = ''
   retryModelPreferences = preferences
@@ -231,7 +237,10 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
     modelPreferences.value = result
     retryModelPreferences = undefined
   } catch {
-    if (current()) modelSaveError.value = preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+    if (current()) {
+      modelPreferences.value = previousPreferences
+      modelSaveError.value = preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+    }
   } finally {
     if (current()) {
       modelSaving.value = false
@@ -2086,7 +2095,7 @@ defineExpose({
         </div>
 
         <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
-          <AIComposer :compact="composerOnly" class="agents-composer-surface" :disabled="!hasModel">
+          <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!hasModel">
             <template #editor>
               <textarea
                 ref="composer"
@@ -2104,7 +2113,7 @@ defineExpose({
                 @keydown="onComposerKeydown"
               ></textarea>
               <div v-if="isModelBackend && !composerOnly" class="k-ai-composer__controls">
-                <div class="k-ai-composer__actions k-ai-composer__actions--fill">
+                <div class="k-ai-composer__actions">
                   <AIModelReasoningPicker
                     class="agents-chat-model-picker"
                     :models="modelChoices"
@@ -2142,9 +2151,8 @@ defineExpose({
                 :disabled="!hasModel || modelSaving || Boolean(modelSaveError) || invalidEffort || !draft.trim()"
               />
             </template>
-            <template v-if="!composerOnly && isModelBackend && (modelSaveError || modelSaving || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
+            <template v-if="!composerOnly && isModelBackend && (modelSaveError || store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
               <button v-if="modelSaveError" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="retryChatModel">{{ modelSaveError }}</button>
-              <span v-else-if="modelSaving" role="status">Saving model…</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
               <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>
