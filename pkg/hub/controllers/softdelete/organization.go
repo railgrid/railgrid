@@ -60,7 +60,7 @@ func (r *Reconciler) reconcileOrganization(ctx context.Context, req ctrl.Request
 	}
 
 	requestedAt := org.Status.DeletionRequestedAt.Time
-	expiry := gracePeriodFor(requestedAt)
+	expiry := r.gracePeriodFor(requestedAt)
 	now := r.now()
 
 	if now.Before(expiry) {
@@ -129,7 +129,7 @@ func (r *Reconciler) reconcileOrgWithinGrace(ctx context.Context, org *tenancyv1
 		Type:    tenancyv1alpha1.OrganizationConditionDeletionInProgress,
 		Status:  metav1.ConditionTrue,
 		Reason:  reasonWithinGracePeriod,
-		Message: fmt.Sprintf("Soft-delete cascade scheduled at %s.", gracePeriodFor(requestedAt.Time).UTC().Format("2006-01-02T15:04:05Z")),
+		Message: fmt.Sprintf("Soft-delete cascade scheduled at %s.", r.gracePeriodFor(requestedAt.Time).UTC().Format("2006-01-02T15:04:05Z")),
 	}, org.Generation) {
 		if err := r.client.Status().Update(ctx, org); err != nil && !apierrors.IsConflict(err) {
 			return ctrl.Result{}, fmt.Errorf("setting DeletionInProgress condition on Organization %q: %w", org.Name, err)

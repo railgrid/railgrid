@@ -521,6 +521,13 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("--provider-heartbeat-auth: %w", err)
 	}
+	// The soft-delete window is one number shared by the reconciler (when
+	// the cascade runs), the tenant REST undelete handlers (when a restore
+	// is refused) and the admin area (what it shows and restores). Validate
+	// it once here so every consumer below can trust it.
+	if s.opts.SoftDeleteGracePeriod <= 0 {
+		return fmt.Errorf("--soft-delete-grace-period must be positive, got %s", s.opts.SoftDeleteGracePeriod)
+	}
 	var (
 		heartbeatRecorder      providers.HeartbeatRecorder
 		heartbeatAuthenticator providers.HeartbeatAuthenticator
@@ -949,7 +956,7 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("provider delegated tokens", "mode", delegationMode, "exclude", s.opts.ProviderDelegatedTokensExclude)
 
 			// Step 10: Org / Workspace / Membership / User REST
-			apiMgr := restapi.NewManager(userClient, bootstrapper)
+			apiMgr := restapi.NewManager(userClient, bootstrapper).WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
@@ -1101,7 +1108,9 @@ func (s *Server) Run(ctx context.Context) error {
 				adminSvc := admin.NewService(kcpConfig, s.opts.HubExternalURL, s.opts.HubInternalURL, s.providerProvisionerOptions()...)
 				adminSub := router.PathPrefix("/api/admin").Subrouter()
 				adminSub.Use(admin.Middleware(adminResolver, adminChecker))
-				admin.NewHandler(adminSvc, userClient, providerRegistry).Register(adminSub)
+				admin.NewHandler(adminSvc, userClient, providerRegistry).
+					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
+					Register(adminSub)
 				// The admin area reads metering through this proxy.
 				if meteringDiscovery != nil {
 					h := metering.NewHandler(meteringDiscovery)
@@ -1328,7 +1337,7 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Creating soft-delete manager failed")
 				return
 			}
-			if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper); err != nil {
+			if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper, s.opts.SoftDeleteGracePeriod); err != nil {
 				logger.Error(err, "Setting up soft-delete reconciler failed")
 				return
 			}

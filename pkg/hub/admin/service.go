@@ -345,8 +345,10 @@ type Service struct {
 	kcpConfig *rest.Config
 	// bootstrapper walks the tenant workspace hierarchy with kcp-admin
 	// credentials so the admin surface can enumerate every org's child
-	// workspaces and their enabled provider bindings.
-	bootstrapper *kcp.Bootstrapper
+	// workspaces and their enabled provider bindings, and clear a
+	// workspace's soft-delete stamp. Production is *kcp.Bootstrapper;
+	// tests substitute a fake.
+	bootstrapper tenantWorkspaceOps
 	// hubExternalURL / hubInternalURL are the two addresses a downloaded
 	// provider kubeconfig can be pointed at. Provisioning itself no longer runs
 	// here (the Provider CR reconciler mints the Secret), but the download
@@ -354,6 +356,20 @@ type Service struct {
 	hubExternalURL string
 	hubInternalURL string
 }
+
+// tenantWorkspaceOps is the slice of kcp.Bootstrapper the admin surface
+// uses against tenant workspaces. Kept to what the Service calls so a test
+// can fake it without standing up kcp.
+type tenantWorkspaceOps interface {
+	ListChildTeamWorkspaces(ctx context.Context, orgUUID string) ([]string, error)
+	GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
+	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
+	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error)
+}
+
+var _ tenantWorkspaceOps = (*kcp.Bootstrapper)(nil)
 
 // NewService returns an admin Service. hubExternalURL and hubInternalURL
 // are the hub's --hub-external-url and --hub-internal-url; they let the
@@ -416,6 +432,57 @@ func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgW
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].UUID < out[j].UUID })
 	return out, nil
+}
+
+// ErrGracePeriodExpired is returned by UndeleteOrgWorkspace when the
+// workspace's soft-delete window has elapsed: the reconciler owns it now and
+// a restore would race the cascade.
+var ErrGracePeriodExpired = errors.New("soft-delete grace period has expired")
+
+// UndeleteOrgWorkspace clears the soft-delete annotation on the child
+// Workspace at root:railgrid:tenants:{orgUUID}:{wsUUID} while it is still
+// inside gracePeriod. Nil when the workspace was never soft-deleted (the
+// caller's intent already holds); ErrGracePeriodExpired once the window has
+// elapsed.
+//
+// The bootstrapper's clear is a single conditional update that hands kcp
+// conflicts back, so this mirrors the tenant REST handler: re-read after a
+// conflict, retry only while the same deletion stamp is still present, and
+// stop if a newer delete won the race and owns the recovery clock now.
+func (s *Service) UndeleteOrgWorkspace(ctx context.Context, orgUUID, wsUUID string, gracePeriod time.Duration) error {
+	const maxAttempts = 5
+	var lastErr error
+	for range maxAttempts {
+		requestedAt, found, err := s.bootstrapper.GetWorkspaceDeletionRequestedAt(ctx, orgUUID, wsUUID)
+		if err != nil {
+			return fmt.Errorf("reading soft-delete annotation on workspace %s/%s: %w", orgUUID, wsUUID, err)
+		}
+		if !found || requestedAt == nil {
+			return nil
+		}
+		if !time.Now().UTC().Before(requestedAt.Add(gracePeriod)) {
+			return ErrGracePeriodExpired
+		}
+		err = s.bootstrapper.ClearWorkspaceDeletionAnnotation(ctx, orgUUID, wsUUID)
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) {
+			return fmt.Errorf("clearing soft-delete annotation on workspace %s/%s: %w", orgUUID, wsUUID, err)
+		}
+		lastErr = err
+		latest, latestFound, readErr := s.bootstrapper.GetWorkspaceDeletionRequestedAt(ctx, orgUUID, wsUUID)
+		if readErr != nil {
+			return fmt.Errorf("re-reading soft-delete annotation on workspace %s/%s: %w", orgUUID, wsUUID, readErr)
+		}
+		if !latestFound || latest == nil {
+			return nil
+		}
+		if !latest.Equal(*requestedAt) {
+			return fmt.Errorf("workspace %s/%s deletion changed while restoring; retry: %w", orgUUID, wsUUID, lastErr)
+		}
+	}
+	return fmt.Errorf("clearing soft-delete annotation on workspace %s/%s: %w", orgUUID, wsUUID, lastErr)
 }
 
 // OnboardedWorkspace mirrors providers.OnboardedWorkspace for the admin API.

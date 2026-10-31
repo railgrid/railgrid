@@ -57,7 +57,7 @@ Don't re-litigate; the doc body assumes these.
 | O-9 | **Membership removal = block Org removal if user has child Workspace Memberships.** Admin must revoke (or transfer) each Workspace Membership first. UI offers a "remove from all" shortcut that does it as one call. | Explicit; avoids the "why does Bob still see acme/data?" surprise. |
 | O-11 | **Workspace initializers must be idempotent + self-healing.** Every initializer checks for existing CRs/RBAC before creating; a post-init reconciler verifies all expected state exists before treating the Org/Workspace as fully provisioned. Failed initializers retry forever; the reconciler is the safety net. | kcp initializers are async with no rollback (verified). Without this rule a partial init leaves silent breakage that surfaces only when a tenant hits 403. |
 | O-12 | **Self-leave Org + multiple admins via Membership.role PATCH.** `DELETE /api/orgs/{uuid}/memberships/me` lets a member remove themselves (O-9 sole-admin/child-Workspace blocks still apply, so they must hand off first). Any Org admin can PATCH another Membership.role between `member` and `admin`; multiple admins are allowed. No separate "transfer ownership" endpoint. | Matches GitHub Orgs. Promotion + sole-admin block together cover the handoff case. |
-| O-13 | **Soft delete with 30-day grace for both Org and Workspace** (symmetric with O-8). `DELETE /api/orgs/{uuid}` sets `Organization.status.deletionRequestedAt`; same for Workspace. Hidden from switchers immediately, recoverable inside the window via `POST .../undelete`. After grace expires the cascade controller removes child Workspaces/Memberships/CatalogEntries/APIBindings/edges/etc. | One number (30 days) for every soft-delete. Recovery for accidental deletes. Carries cost (state lingers) — acceptable. |
+| O-13 | **Soft delete with 30-day grace for both Org and Workspace** (symmetric with O-8). `DELETE /api/orgs/{uuid}` sets `Organization.status.deletionRequestedAt`; same for Workspace. Hidden from switchers immediately, recoverable inside the window via `POST .../undelete` (or by a platform admin from the admin area, `POST /api/admin/organizations/{uuid}/undelete` and `.../workspaces/{ws}/undelete`). After grace expires the cascade controller removes child Workspaces/Memberships/CatalogEntries/APIBindings/edges/etc. | One number for every soft-delete: 30 days by default, tunable per hub with `--soft-delete-grace-period` (chart value `hub.softDeleteGracePeriod`). Recovery for accidental deletes. Carries cost (state lingers) — acceptable. |
 | O-14 | **ServiceAccounts = native kube `core/v1.ServiceAccount`s in the child Workspace**, marked with railgrid annotations. No wrapping CRD. Admins create via `POST /api/orgs/{org}/workspaces/{ws}/serviceaccounts`; the hub writes the kube SA + a `ClusterRoleBinding` mapping `system:serviceaccount:default:<sa-name>` → `railgrid:workspace:admin` or `railgrid:workspace:member`. Tokens are minted via the kube TokenRequest API and returned once; revoke = delete the SA (kills all its tokens; CRB GCs via owner ref). Role is `admin` or `member`, same enum as `Membership.role`. Bot identities don't conflate with human Users. | Real platform users will run CI against Workspaces from day one; PATs on humans tie a person's lifecycle to a bot's. Reusing kube SAs avoids a custom JWT signing path, validates tokens natively, and lets the workspace cascade kill SAs for free. |
 | O-15 | **Org admin has implicit admin in every child Workspace.** No "private from Org admin" Workspace in v1. Document loudly in onboarding so users understand the privacy boundary is the Org, not the Workspace. | Simplest mental model, matches GitHub Orgs default, makes audit/compliance straightforward. Sensitive teams should use a separate Org, not a private Workspace. |
 
@@ -542,16 +542,19 @@ shape exists for Workspace memberships at
 
 ### Delete an Org (O-13)
 
-`DELETE /api/orgs/{org-uuid}` — soft-delete with 30-day grace,
-symmetric with User delete:
+`DELETE /api/orgs/{org-uuid}` — soft-delete with 30-day grace (the hub's
+`--soft-delete-grace-period`), symmetric with User delete:
 
 1. Hub sets `Organization.status.deletionRequestedAt = now()`.
    Requires caller is admin in the Org.
 2. The Org disappears from every member's switcher immediately;
    `GET /api/orgs/{uuid}/*` returns 404 except the undelete endpoint.
 3. Inside the window, `POST /api/orgs/{uuid}/undelete` (any prior
-   admin) clears the timestamp and rehydrates the switcher.
-4. After 30 days, the cascade controller removes all child Workspaces
+   admin) clears the timestamp and rehydrates the switcher. A platform
+   admin, who is usually not a member, restores from the admin area
+   instead (`POST /api/admin/organizations/{uuid}/undelete`); past the
+   window both answer 409 because the cascade owns the Org by then.
+4. After the grace period, the cascade controller removes all child Workspaces
    (each going through its own cascade per O-13), Memberships,
    CatalogEntries, then the kcp Workspace + Organization CR itself.
 
@@ -562,7 +565,7 @@ delete cascade (O-8).
 ### Delete a Workspace (O-13)
 
 `DELETE /api/orgs/{org-uuid}/workspaces/{ws-uuid}` — soft-delete with
-30-day grace.
+the same grace period as Orgs.
 
 1. Hub sets the
    `tenancy.railgrid.ai/deletion-requested-at` annotation (RFC3339)
@@ -571,8 +574,9 @@ delete cascade (O-8).
    admin or Org admin (O-15).
 2. The Workspace disappears from member switchers; existing
    exec-credentials targeting it stop being minted.
-3. Inside the window, `POST .../undelete` clears the annotation.
-4. After 30 days, the soft-delete reconciler
+3. Inside the window, `POST .../undelete` clears the annotation
+   (platform admins: `POST /api/admin/organizations/{org}/workspaces/{ws}/undelete`).
+4. After the grace period, the soft-delete reconciler
    ([pkg/hub/controllers/softdelete](../pkg/hub/controllers/softdelete))
    deletes the kcp Workspace — which cascades the namespace and
    everything inside it (APIBindings, tenant objects like edges /

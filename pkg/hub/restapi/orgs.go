@@ -254,7 +254,10 @@ func (h *Handler) deleteOrg(w http.ResponseWriter, r *http.Request) {
 // undeleteOrg clears status.deletionRequestedAt — the reconciler then
 // reverts conditions and UMI markers. Any admin (per O-13 wording —
 // "any prior admin") can invoke. No resources are restored from a
-// post-window cascade; only the window itself is cancelled.
+// post-window cascade; only the window itself is cancelled, and once the
+// window (Manager.SoftDeleteGracePeriod) has elapsed the restore is
+// refused with 409: the reconciler is cascading by then, and clearing the
+// stamp under it would leave a half-torn-down Org that looks alive.
 func (h *Handler) undeleteOrg(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireTenantContext(w, r, false, true); !ok {
 		return
@@ -276,6 +279,10 @@ func (h *Handler) undeleteOrg(w http.ResponseWriter, r *http.Request) {
 		}
 		if org.Status.DeletionRequestedAt == nil {
 			writeJSON(w, http.StatusOK, projectOrg(org))
+			return
+		}
+		if !time.Now().UTC().Before(org.Status.DeletionRequestedAt.Add(h.mgr.SoftDeleteGracePeriod())) {
+			writeStatus(w, http.StatusConflict, "Conflict", "organization deletion grace period has expired")
 			return
 		}
 		org.Status.DeletionRequestedAt = nil

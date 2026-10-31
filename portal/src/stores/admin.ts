@@ -18,13 +18,19 @@ export interface AdminWorkspace {
   displayName: string
   clusterName: string
   providers: string[]
+  // Set while the workspace is soft-deleted. purgeAt is when the hub's
+  // cascade runs (deletionRequestedAt + the hub's grace period) and so the
+  // last moment a restore is accepted.
   deletionRequestedAt?: string
+  purgeAt?: string
 }
 export interface AdminOrg {
   name: string
   displayName: string
   workspacePath: string
   workspaces: AdminWorkspace[]
+  deletionRequestedAt?: string
+  purgeAt?: string
 }
 export interface AdminProvider {
   name: string
@@ -193,6 +199,40 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
+  // undelete POSTs an admin undelete route. 403 flips `forbidden` like every
+  // other admin write; 409 means the grace period has already elapsed and the
+  // hub is cascading, which the caller surfaces verbatim from the hub's body.
+  async function undelete(path: string, what: string): Promise<void> {
+    const revision = identityRevision
+    const resp = await authFetch(path, { method: 'POST' })
+    assertIdentity(revision)
+    if (resp.status === 403) {
+      forbidden.value = true
+      throw new Error('forbidden')
+    }
+    if (!resp.ok) {
+      const body = (await resp.json().catch(() => ({}))) as { error?: string }
+      assertIdentity(revision)
+      throw new Error(body.error ?? `restore ${what}: ${resp.status} ${resp.statusText}`)
+    }
+  }
+
+  // undeleteOrg cancels a soft-deleted organization's recovery window through
+  // the admin surface (kcp-admin), which works even when the platform admin
+  // is not a member of the org. Only the window is cancelled; nothing is
+  // rebuilt once the cascade has run.
+  async function undeleteOrg(name: string): Promise<void> {
+    await undelete(`/api/admin/organizations/${encodeURIComponent(name)}/undelete`, `organization ${name}`)
+  }
+
+  // undeleteWorkspace is the same for a soft-deleted child workspace.
+  async function undeleteWorkspace(org: string, ws: string): Promise<void> {
+    await undelete(
+      `/api/admin/organizations/${encodeURIComponent(org)}/workspaces/${encodeURIComponent(ws)}/undelete`,
+      `workspace ${ws}`,
+    )
+  }
+
   // downloadProviderKubeconfig fetches the minted kubeconfig (read from the
   // Secret the Provider controller wrote into root:railgrid:system:providers) and
   // triggers a browser download.
@@ -228,5 +268,5 @@ export const useAdminStore = defineStore('admin', () => {
     URL.revokeObjectURL(url)
   }
 
-  return { users, orgs, providers, loading, loaded, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, downloadProviderKubeconfig }
+  return { users, orgs, providers, loading, loaded, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, undeleteOrg, undeleteWorkspace, downloadProviderKubeconfig }
 })

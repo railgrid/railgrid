@@ -29,8 +29,6 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
-const workspaceGracePeriod = 30 * 24 * time.Hour
-
 // CreateWorkspaceRequest is the POST body for creating a Workspace.
 type CreateWorkspaceRequest struct {
 	DisplayName string `json:"displayName"`
@@ -309,7 +307,7 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // undeleteWorkspace clears the deletion-requested-at annotation while the
-// 30-day recovery window is still open. The read/clear loop handles conflicts
+// recovery window (Manager.SoftDeleteGracePeriod) is still open. The read/clear loop handles conflicts
 // from the soft-delete reconciler (or a concurrent delete) without clearing a
 // newer request that won the race.
 func (h *Handler) undeleteWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -332,7 +330,7 @@ func (h *Handler) undeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		if !time.Now().UTC().Before(requestedAt.Add(workspaceGracePeriod)) {
+		if !time.Now().UTC().Before(requestedAt.Add(h.mgr.SoftDeleteGracePeriod())) {
 			writeStatus(w, http.StatusConflict, "Conflict", "workspace deletion grace period has expired")
 			return
 		}

@@ -53,6 +53,7 @@ import (
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
+	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
@@ -210,6 +211,12 @@ type Manager struct {
 	// enabled listing reports what the gate will actually allow.
 	hubAccess                *hubaccess.Store
 	hubAccessPlatformDefault bool
+	// softDeleteGracePeriod mirrors the hub's --soft-delete-grace-period:
+	// how long after DELETE an undelete is still accepted. Zero means
+	// softdelete.DefaultGracePeriod. It must agree with the reconciler's
+	// window, or a restore would be accepted for a workspace whose
+	// cascade has already started.
+	softDeleteGracePeriod time.Duration
 }
 
 // NewManager builds a Manager from the userClient (typed railgrid client
@@ -217,6 +224,23 @@ type Manager struct {
 // pass a kcp.Bootstrapper; tests pass a fake.
 func NewManager(client *railgridclient.Client, bootstrapper WorkspaceOps) *Manager {
 	return &Manager{client: client, bootstrapper: bootstrapper}
+}
+
+// WithSoftDeleteGracePeriod sets the recovery window the undelete handlers
+// enforce. Wire it to the same value the softdelete reconciler runs with.
+// Non-positive keeps softdelete.DefaultGracePeriod.
+func (m *Manager) WithSoftDeleteGracePeriod(d time.Duration) *Manager {
+	m.softDeleteGracePeriod = d
+	return m
+}
+
+// SoftDeleteGracePeriod returns the configured recovery window, falling
+// back to softdelete.DefaultGracePeriod.
+func (m *Manager) SoftDeleteGracePeriod() time.Duration {
+	if m.softDeleteGracePeriod <= 0 {
+		return softdelete.DefaultGracePeriod
+	}
+	return m.softDeleteGracePeriod
 }
 
 // WithKubeconfig sets the kubeconfig-download configuration. Optional —

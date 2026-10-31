@@ -70,10 +70,14 @@ import (
 )
 
 const (
-	// GracePeriod is the soft-delete window per O-8 / O-13. Hardcoded
-	// (not flag-tunable) so the contract surfaced to users is a single
-	// number; matches the wording in docs/organizations.md.
-	GracePeriod = 30 * 24 * time.Hour
+	// DefaultGracePeriod is the soft-delete window per O-8 / O-13 when
+	// the hub is not told otherwise. One number covers Users, Orgs and
+	// Workspaces alike; the hub's --soft-delete-grace-period flag (the
+	// chart's hub.softDeleteGracePeriod) overrides it for every kind at
+	// once, and the REST undelete handlers read the same value so a
+	// restore is refused exactly when the cascade would have started.
+	// Matches the wording in docs/organizations.md.
+	DefaultGracePeriod = 30 * 24 * time.Hour
 
 	// workspacePollInterval is how often the Workspace branch lists
 	// Org workspaces, then their child Workspaces, looking for the
@@ -122,6 +126,10 @@ const (
 type Reconciler struct {
 	client      client.Client
 	provisioner Provisioner
+	// gracePeriod is how long a soft-deleted User, Org or Workspace
+	// stays recoverable before the cascade runs. Zero means
+	// DefaultGracePeriod.
+	gracePeriod time.Duration
 	// now returns the current time; swappable for tests.
 	now func() time.Time
 }
@@ -131,13 +139,17 @@ type Reconciler struct {
 // branch needs the manager's lifecycle (it stops when the manager's
 // context cancels) which is why we run it as a Runnable instead of an
 // independent goroutine in server.go.
-func SetupWithManager(mgr manager.Manager, provisioner Provisioner) error {
+//
+// gracePeriod is the recovery window; a non-positive value selects
+// DefaultGracePeriod.
+func SetupWithManager(mgr manager.Manager, provisioner Provisioner, gracePeriod time.Duration) error {
 	r := &Reconciler{
 		client:      mgr.GetClient(),
 		provisioner: provisioner,
+		gracePeriod: gracePeriod,
 		now:         time.Now,
 	}
-	klog.Info("Registering soft-delete reconciler")
+	klog.InfoS("Registering soft-delete reconciler", "gracePeriod", r.GracePeriod().String())
 
 	if err := builder.ControllerManagedBy(mgr).
 		Named(userControllerName).
@@ -241,12 +253,19 @@ func removeCondition(conds *[]metav1.Condition, condType string) bool {
 	return false
 }
 
+// GracePeriod returns the configured recovery window, falling back to
+// DefaultGracePeriod when the reconciler was built without one.
+func (r *Reconciler) GracePeriod() time.Duration {
+	if r.gracePeriod <= 0 {
+		return DefaultGracePeriod
+	}
+	return r.gracePeriod
+}
+
 // gracePeriodFor returns the absolute time at which a soft-delete
-// initiated at t enters cascade. Centralised so tests can override
-// GracePeriod if we ever go that direction; today there's only one
-// call site.
-func gracePeriodFor(t time.Time) time.Time {
-	return t.Add(GracePeriod)
+// initiated at t enters cascade.
+func (r *Reconciler) gracePeriodFor(t time.Time) time.Time {
+	return t.Add(r.GracePeriod())
 }
 
 // fetchOrganization is a small wrapper around client.Get returning

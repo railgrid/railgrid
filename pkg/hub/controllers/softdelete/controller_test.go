@@ -168,7 +168,7 @@ func newReconciler(t *testing.T, prov Provisioner, objects ...client.Object) (*R
 		WithObjects(objects...).
 		WithStatusSubresource(&tenancyv1alpha1.User{}, &tenancyv1alpha1.Organization{}, &tenancyv1alpha1.UserMembershipIndex{}).
 		Build()
-	return &Reconciler{client: c, provisioner: prov, now: time.Now}, c
+	return &Reconciler{client: c, provisioner: prov, gracePeriod: DefaultGracePeriod, now: time.Now}, c
 }
 
 func newUserWithDeletion(name, orgUUID, wsUUID string, requestedAt time.Time) *tenancyv1alpha1.User {
@@ -247,8 +247,8 @@ func TestUserSoftDelete_WithinGrace_MarksUMI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcileUser: %v", err)
 	}
-	if res.RequeueAfter <= 0 || res.RequeueAfter > GracePeriod {
-		t.Errorf("RequeueAfter: got %v, want positive and ≤ GracePeriod", res.RequeueAfter)
+	if res.RequeueAfter <= 0 || res.RequeueAfter > DefaultGracePeriod {
+		t.Errorf("RequeueAfter: got %v, want positive and ≤ DefaultGracePeriod", res.RequeueAfter)
 	}
 
 	var got tenancyv1alpha1.User
@@ -604,8 +604,26 @@ func TestWorkspaceSoftDelete_Undelete_ClearsMarker(t *testing.T) {
 
 // ===== misc sanity =====
 
-func TestGracePeriodIsHardcoded(t *testing.T) {
-	if GracePeriod != 30*24*time.Hour {
-		t.Errorf("GracePeriod: got %v, want 30 days", GracePeriod)
+func TestDefaultGracePeriodIsThirtyDays(t *testing.T) {
+	if DefaultGracePeriod != 30*24*time.Hour {
+		t.Errorf("DefaultGracePeriod: got %v, want 30 days", DefaultGracePeriod)
+	}
+}
+
+// A reconciler built without an explicit window (zero) falls back to the
+// default; an explicit one is honoured for every branch through
+// gracePeriodFor.
+func TestGracePeriodFallsBackToDefault(t *testing.T) {
+	r := &Reconciler{}
+	if got := r.GracePeriod(); got != DefaultGracePeriod {
+		t.Errorf("zero gracePeriod: got %v, want %v", got, DefaultGracePeriod)
+	}
+	r = &Reconciler{gracePeriod: 48 * time.Hour}
+	if got := r.GracePeriod(); got != 48*time.Hour {
+		t.Errorf("explicit gracePeriod: got %v, want 48h", got)
+	}
+	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := r.gracePeriodFor(at); !got.Equal(at.Add(48 * time.Hour)) {
+		t.Errorf("gracePeriodFor: got %v, want %v", got, at.Add(48*time.Hour))
 	}
 }
