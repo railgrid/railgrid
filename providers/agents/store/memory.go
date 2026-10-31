@@ -20,7 +20,7 @@ import (
 // MemoryStore is a non-durable in-process Store for development and tests. It
 // is the fallback when no database URL is configured; production uses Postgres.
 type MemoryStore struct {
-	sessionModels      map[string]SessionModelSettings
+	sessionModels      map[string]memorySessionModel
 	mu                 sync.Mutex
 	messages           map[string][]Message         // key: scope|session
 	sessionTitles      map[string]sessionTitle      // key: scope|session
@@ -42,10 +42,15 @@ type MemoryStore struct {
 	runScopes map[string]Scope // key: scope|runID
 }
 
+type memorySessionModel struct {
+	settings  SessionModelSettings
+	updatedAt time.Time
+}
+
 // NewMemoryStore returns an empty in-memory store.
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessionModels:      map[string]SessionModelSettings{},
+		sessionModels:      map[string]memorySessionModel{},
 		messages:           map[string][]Message{},
 		sessionTitles:      map[string]sessionTitle{},
 		runs:               map[string]Run{},
@@ -721,6 +726,17 @@ func (m *MemoryStore) ListSessions(_ context.Context, scope Scope, limit int) ([
 			}
 		}
 		out = append(out, s)
+	}
+	for k, preference := range m.sessionModels {
+		if !strings.HasPrefix(k, prefix) || len(m.messages[k]) > 0 {
+			continue
+		}
+		updatedAt := preference.updatedAt.UTC()
+		out = append(out, Session{
+			ID:           strings.TrimPrefix(k, prefix),
+			CreatedAt:    updatedAt,
+			LastActivity: updatedAt,
+		})
 	}
 	// Most-recently-active first, then apply the limit.
 	sort.Slice(out, func(i, j int) bool { return out[i].LastActivity.After(out[j].LastActivity) })

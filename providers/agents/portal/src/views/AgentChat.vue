@@ -314,6 +314,7 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
   modelSaveError.value = ''
   retryModelPreferences = preferences
   const current = () => mounted && serial === modelSaveSerial && name === props.name && session === sessionID.value && authorityIsCurrent(authority)
+  const sessionListAuthorityIsCurrent = () => mounted && name === props.name && authorityIsCurrent(authority)
   try {
     const result = await serializeChatModelRequest(
       modelRequestKey(name, session, authority.api),
@@ -324,13 +325,26 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
         return current() ? authority.api.getSessionModel(name, session) : undefined
       },
     )
-    if (!current() || !result) return
+    if (!result) return
+    if (!current()) {
+      // The preference write may have committed after the user moved to a new
+      // chat. Refresh this Agent's list under the captured authority so that
+      // preference-only sessions remain visible without changing the new
+      // chat's model state.
+      if (preferences && sessionListAuthorityIsCurrent()) void loadSessions(name, authority.api)
+      return
+    }
     modelPreferences.value = result
     retryModelPreferences = undefined
-  } catch {
+    if (preferences) void loadSessions(name, authority.api)
+  } catch (error) {
+    const quotaReached = Boolean(preferences && error instanceof ApiError && error.status === 429)
+    if (quotaReached && sessionListAuthorityIsCurrent()) void loadSessions(name, authority.api)
     if (current()) {
       modelPreferences.value = previousPreferences
-      modelSaveError.value = preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
+      modelSaveError.value = quotaReached
+        ? 'Chat limit reached. Delete an unused chat, then retry.'
+        : preferences ? 'Chat model could not be saved. Try again.' : 'Chat model could not be loaded. Try again.'
       const failedExplicitChoice = Boolean(preferences?.modelCredential && !previousPreferences?.modelCredential)
       const inheritedCredentialNow = agentModelCredential(authority.store.agent(name))
       if (failedExplicitChoice && inheritedCredentialNow !== inheritedCredentialAtRequest) {

@@ -554,6 +554,15 @@ func (p *PostgresStore) ListSessions(ctx context.Context, scope Scope, limit int
 			FROM agents_messages
 			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3
 			GROUP BY session_id
+			UNION ALL
+			SELECT model.session_id, 0::bigint, model.updated_at, model.updated_at
+			FROM agents_session_models model
+			WHERE model.org_uuid=$1 AND model.workspace_uuid=$2 AND model.agent_name=$3
+				AND NOT EXISTS (
+					SELECT 1 FROM agents_messages message
+					WHERE message.org_uuid=$1 AND message.workspace_uuid=$2 AND message.agent_name=$3
+						AND message.session_id=model.session_id
+				)
 		), first_user AS (
 			SELECT DISTINCT ON (session_id) session_id, id
 			FROM agents_messages

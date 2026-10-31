@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"maps"
 	"strings"
+	"time"
 )
 
 const MaxSessionModelSettingsPerAgent = 1024
@@ -43,7 +44,7 @@ func (m *MemoryStore) GetSessionModelSettings(_ context.Context, scope Scope, se
 	if err := scope.withAgent(); err != nil {
 		return SessionModelSettings{}, err
 	}
-	settings := m.sessionModels[sessionKey(scope, session)]
+	settings := m.sessionModels[sessionKey(scope, session)].settings
 	settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
 	return settings, nil
 }
@@ -69,7 +70,7 @@ func (m *MemoryStore) PutSessionModelSettings(_ context.Context, scope Scope, se
 		}
 	}
 	settings.ReasoningEffortByModel = maps.Clone(settings.ReasoningEffortByModel)
-	m.sessionModels[key] = settings
+	m.sessionModels[key] = memorySessionModel{settings: settings, updatedAt: time.Now().UTC()}
 	return nil
 }
 

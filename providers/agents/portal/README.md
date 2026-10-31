@@ -73,6 +73,10 @@ existing first-message preview remains the label.
 The title attempt is one-shot: failures, timeouts, invalid output, or a temporary
 store error leave the preview in place, and later turns do not retry.
 
+Saved model preferences make an empty chat visible in the thread list, even before
+its first message. Delete unused empty chats to free preference quota; opening
+a new chat never silently evicts another chat’s saved choices.
+
 ## MCP Apps result views
 
 Successful tool results may include a provider-owned MCP App view. The portal

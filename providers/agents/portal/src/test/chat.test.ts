@@ -2273,6 +2273,106 @@ describe('conversation model picker', () => {
     expect(store.agents.data[0].spec.backend!.model!.credentials!.chat).toBe('openai')
   })
 
+  it('keeps a saved preference-only chat visible and deletable after starting a new thread', async () => {
+    const pendingSave = deferred<void>()
+    let savedSession: SessionMeta | null = null
+    const storedPreferences = new Map<string, any>()
+    const inherited = {
+      selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: 'high',
+      reasoningEffortByModel: {},
+    }
+    const listSessions = vi.fn(async () => savedSession ? [savedSession] : [])
+    const getSessionModel = vi.fn(async (_name: string, id: string) => storedPreferences.get(id) ?? inherited)
+    const saveSessionModel = vi.fn((_name: string, id: string, preferences: any) => pendingSave.promise.then(() => {
+      const saved = {
+        ...preferences,
+        selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '',
+      }
+      storedPreferences.set(id, saved)
+      savedSession = { id, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' }
+      return saved
+    }))
+    const deleteSession = vi.fn(async (_name: string, id: string) => {
+      if (savedSession?.id === id) savedSession = null
+      storedPreferences.delete(id)
+    })
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions, getSessionModel, saveSessionModel, deleteSession,
+    })
+    await configureModels(store)
+    await chooseModel(el, 'sol')
+
+    const savedDraftID = saveSessionModel.mock.calls[0][1]
+    expect(savedDraftID).toBeTruthy()
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle(6)
+    const newThreadID = localStorage.getItem('railgrid:agents:session:org:ws:scout')
+    expect(newThreadID).toBeTruthy()
+    expect(newThreadID).not.toBe(savedDraftID)
+
+    // The preference write completes after New thread has changed ownership of
+    // the editor. It must refresh only this Agent's list, without applying the
+    // old model result to the new thread.
+    pendingSave.resolve()
+    await settle(10)
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    const savedDraftButton = el.querySelector<HTMLButtonElement>(`[data-thread-id="${savedDraftID}"]`)
+    expect(savedDraftButton).not.toBeNull()
+    expect(savedDraftButton!.closest('.k-ai-conversation-rail__item')?.textContent).toContain('New chat')
+    expect(picker(el).getAttribute('aria-label')).toContain('openai')
+    expect(picker(el).getAttribute('aria-label')).not.toContain('sol')
+
+    savedDraftButton!.click()
+    await settle(8)
+    expect(getSessionModel).toHaveBeenCalledWith('scout', savedDraftID)
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+
+    // Keep the preference-only thread inactive so deletion exercises the row's
+    // own ID rather than whichever empty placeholder happens to be current.
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle(6)
+    const row = [...el.querySelectorAll<HTMLElement>('.k-ai-conversation-rail__item')]
+      .find(item => item.querySelector(`[data-thread-id="${savedDraftID}"]`))
+    expect(row).toBeDefined()
+    row!.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(2)
+    resolveConfirm(true)
+    await settle(8)
+
+    expect(deleteSession).toHaveBeenCalledWith('scout', savedDraftID)
+    expect(el.querySelector(`[data-thread-id="${savedDraftID}"]`)).toBeNull()
+    expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).not.toBe(savedDraftID)
+  })
+
+  it('refreshes empty chats and gives recovery guidance after a preference quota response', async () => {
+    const savedSession: SessionMeta = { id: 'unused-empty-chat', preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' }
+    const listSessions = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockImplementation(async () => [savedSession])
+    const deleteSession = vi.fn().mockResolvedValue(undefined)
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions,
+      deleteSession,
+      saveSessionModel: async () => { throw new ApiError(429, 'private backend detail', '', 'TooManyRequests') },
+    })
+    await configureModels(store)
+    await chooseModel(el, 'sol')
+    await settle(8)
+
+    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(text(el)).toContain('Chat limit reached. Delete an unused chat, then retry.')
+    expect(text(el)).not.toContain('private backend detail')
+    const emptyChat = el.querySelector(`[data-thread-id="${savedSession.id}"]`)
+    expect(emptyChat).not.toBeNull()
+
+    const row = emptyChat!.closest('.k-ai-conversation-rail__item')!
+    row.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')!.click()
+    await settle(2)
+    resolveConfirm(true)
+    await settle(8)
+    expect(deleteSession).toHaveBeenCalledWith('scout', savedSession.id)
+  })
+
   it('rolls back a rejected save and exposes a retry', async () => {
     const { el, store } = await mountChat(scripted([]), {
       saveSessionModel: async () => { throw new Error('denied') },

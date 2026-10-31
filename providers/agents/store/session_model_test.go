@@ -39,6 +39,9 @@ func testSessionModelIsolation(t *testing.T, s Store, sc Scope) {
 	if err != nil || got.ModelCredential != "chosen" || got.ReasoningEffortByModel["chosen"] != "high" {
 		t.Fatalf("preferences: %+v %v", got, err)
 	}
+	if sessions, err := s.ListSessions(ctx, sc, 10); err != nil || len(sessions) != 1 || sessions[0].ID != "one" || sessions[0].MessageCount != 0 || sessions[0].Preview != "" || sessions[0].Title != "" {
+		t.Fatalf("preference-only session list = %+v, err=%v", sessions, err)
+	}
 	now := time.Now()
 	run := Run{ID: "model-snapshot", AgentName: sc.AgentName, SessionID: "one", Phase: RunPhaseRunning, CreatedAt: now, UpdatedAt: now, ModelSettings: &ModelSettings{ModelCredential: "chosen", ReasoningEffort: "high"}}
 	if err := s.SaveRun(ctx, sc, run); err != nil {
@@ -68,6 +71,38 @@ func TestPostgresSessionModelIsolation(t *testing.T) {
 	testSessionModelIsolation(t, s, pgScope(t, s))
 }
 
+func TestMemorySessionModelPreferencesSurviveScopeMigration(t *testing.T) {
+	ctx := context.Background()
+	s := NewMemoryStore()
+	clusterID := fmt.Sprintf("session-model-migration-%d", time.Now().UnixNano())
+	fallback := Scope{OrgUUID: UnmappedOrg, WorkspaceUUID: clusterID, AgentName: "helper", ClusterID: clusterID}
+	mapped := Scope{OrgUUID: "org-" + clusterID, WorkspaceUUID: "workspace-" + clusterID, AgentName: fallback.AgentName, ClusterID: clusterID}
+	want := SessionModelSettings{ModelCredential: "draft-model", ReasoningEffortByModel: map[string]string{"draft-model": "high"}}
+	if err := s.PutSessionModelSettings(ctx, fallback, "unsent-draft", want); err != nil {
+		t.Fatalf("put fallback preference: %v", err)
+	}
+	before, err := s.ListSessions(ctx, fallback, 10)
+	if err != nil || len(before) != 1 || before[0].ID != "unsent-draft" || before[0].LastActivity.IsZero() {
+		t.Fatalf("fallback preference-only sessions = %+v, err=%v", before, err)
+	}
+	if err := s.SaveTenantRef(ctx, clusterID, TenantRef{OrgUUID: mapped.OrgUUID, WorkspaceUUID: mapped.WorkspaceUUID, UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("save tenant mapping: %v", err)
+	}
+	after, err := s.ListSessions(ctx, mapped, 10)
+	if err != nil || len(after) != 1 || after[0].ID != "unsent-draft" || after[0].MessageCount != 0 || !after[0].LastActivity.Equal(before[0].LastActivity) {
+		t.Fatalf("mapped preference-only sessions = %+v, err=%v; before=%+v", after, err, before)
+	}
+	if got, err := s.GetSessionModelSettings(ctx, mapped, "unsent-draft"); err != nil || got.ModelCredential != want.ModelCredential || got.ReasoningEffortByModel[want.ModelCredential] != "high" {
+		t.Fatalf("mapped preference = %+v, err=%v", got, err)
+	}
+	if err := s.DeleteSession(ctx, mapped, "unsent-draft"); err != nil {
+		t.Fatalf("delete migrated draft: %v", err)
+	}
+	if remaining, err := s.ListSessions(ctx, mapped, 10); err != nil || len(remaining) != 0 {
+		t.Fatalf("preference-only session remained after delete: %+v, err=%v", remaining, err)
+	}
+}
+
 func testSessionModelQuota(t *testing.T, s Store, scope Scope) {
 	t.Helper()
 	ctx := context.Background()
@@ -87,12 +122,19 @@ func testSessionModelQuota(t *testing.T, s Store, scope Scope) {
 	if got, err := s.GetSessionModelSettings(ctx, scope, "before-first-message"); err != nil || got.ModelCredential != beforeMessage.ModelCredential {
 		t.Fatalf("pre-message preference = %+v, err=%v", got, err)
 	}
+	drafts, err := s.ListSessions(ctx, scope, 10)
+	if err != nil || len(drafts) != 1 || drafts[0].ID != "before-first-message" || drafts[0].MessageCount != 0 || drafts[0].Preview != "" || drafts[0].Title != "" || drafts[0].LastActivity.IsZero() {
+		t.Fatalf("pre-message preference-only sessions = %+v, err=%v", drafts, err)
+	}
 
 	// A quota belongs to a single scoped Agent, not its workspace or sibling Agents.
 	otherAgent := scope
 	otherAgent.AgentName += "-sibling"
 	otherWorkspace := scope
 	otherWorkspace.WorkspaceUUID += "-other"
+	if leaked, err := s.ListSessions(ctx, otherWorkspace, 10); err != nil || len(leaked) != 0 {
+		t.Fatalf("preference-only session leaked across workspace: %+v, err=%v", leaked, err)
+	}
 	for _, other := range []Scope{otherAgent, otherWorkspace} {
 		if err := s.PutSessionModelSettings(ctx, other, "same-session", SessionModelSettings{ModelCredential: "independent"}); err != nil {
 			t.Fatalf("save scoped preference for %+v: %v", other, err)
@@ -145,9 +187,29 @@ func testSessionModelQuota(t *testing.T, s Store, scope Scope) {
 		t.Fatalf("updated preference = %+v, err=%v", got, err)
 	}
 
-	// DeleteSession removes the corresponding preference row and returns its slot.
-	if err := s.DeleteSession(ctx, scope, "before-first-message"); err != nil {
-		t.Fatalf("delete session at cap: %v", err)
+	// At the cap, a preference-only draft appears in ListSessions and can be
+	// explicitly deleted to return its slot without silently changing a choice.
+	draftsAtCap, err := s.ListSessions(ctx, scope, 100)
+	if err != nil || len(draftsAtCap) != 100 {
+		t.Fatalf("list preference-only sessions at cap = %d, err=%v; want 100 visible drafts", len(draftsAtCap), err)
+	}
+	for _, draft := range draftsAtCap {
+		if draft.MessageCount != 0 || draft.Preview != "" || draft.Title != "" {
+			t.Fatalf("preference-only session has transcript fields: %+v", draft)
+		}
+	}
+	deletedID := draftsAtCap[0].ID
+	if err := s.DeleteSession(ctx, scope, deletedID); err != nil {
+		t.Fatalf("delete listed session at cap: %v", err)
+	}
+	remaining, err := s.ListSessions(ctx, scope, 100)
+	if err != nil {
+		t.Fatalf("list sessions after deleting draft: %v", err)
+	}
+	for _, draft := range remaining {
+		if draft.ID == deletedID {
+			t.Fatalf("deleted preference-only session %q remained listed", deletedID)
+		}
 	}
 	if err := s.PutSessionModelSettings(ctx, scope, "after-delete", SessionModelSettings{ModelCredential: "reclaimed"}); err != nil {
 		t.Fatalf("use preference slot after DeleteSession: %v", err)
@@ -187,6 +249,11 @@ func testListSessionsTitlePreviewAcrossSessions(t *testing.T, s Store, scope Sco
 			t.Fatalf("append %s: %v", message.ID, err)
 		}
 	}
+	for _, session := range []string{"list-a", "list-c"} {
+		if err := s.PutSessionModelSettings(ctx, scope, session, SessionModelSettings{ModelCredential: "saved-choice"}); err != nil {
+			t.Fatalf("save preference for established session %s: %v", session, err)
+		}
+	}
 	for _, title := range []struct {
 		session string
 		firstID string
@@ -224,6 +291,12 @@ func testListSessionsTitlePreviewAcrossSessions(t *testing.T, s Store, scope Sco
 		if !ok || got.MessageCount != want.count || got.Title != want.title || got.Preview != want.preview {
 			t.Errorf("session %s = %+v, present=%t; want count/title/preview %d/%q/%q", id, got, ok, want.count, want.title, want.preview)
 		}
+	}
+	if len(sessions) != 3 || sessions[0].ID != "list-c" || sessions[1].ID != "list-b" || sessions[2].ID != "list-a" {
+		t.Fatalf("established session order changed after preferences: %+v", sessions)
+	}
+	if !byID["list-a"].LastActivity.Equal(now.Add(2 * time.Second)) {
+		t.Errorf("saved preference changed established session last activity: got %s, want %s", byID["list-a"].LastActivity, now.Add(2*time.Second))
 	}
 }
 
