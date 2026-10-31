@@ -1,5 +1,5 @@
 ---
-{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable compact chat and navigation to the actual Agents chat route. Context includes host provenance, an optional Infrastructure instance reference, and bounded provider-published JSON; it remains reference data and grants no authority."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/WorkspaceAssistantCard.vue","role":"implementation"},{"path":"portal/src/providers/agentContextPublisher.ts","role":"implementation"},{"path":"portal/src/providers/providerContext.ts","role":"implementation"},{"path":"portal/src/stores/pageResource.ts","role":"implementation"},{"path":"provider-sdk/portalkit/agent-context.ts","role":"implementation"},{"path":"providers/agents/portal/src/pageContext.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/ChatMessage.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"test","ref":"PR2 host portal tests and production build","status":"passing","evidence":"447 host portal tests passed; portal typecheck and Vite production build passed on the PR2 branch."},{"kind":"test","ref":"PR2 Agents portal tests, typecheck, and production build","status":"passing","evidence":"813 Agents portal tests passed; vue-tsc and the production Vite build passed on the PR2 branch."},{"kind":"command","ref":"make verify-design-docs, make verify-portalkit, and make verify-ui-conformance","status":"passing","evidence":"All three shared gates passed after syncing the canonical asset manifest and generated copies."},{"kind":"browser","ref":"hack/agent-overlay-resize-test.mjs desktop/mobile light/dark preview fixture","status":"passing","evidence":"Synthetic context preview fit and scrolling passed at 1280×800 desktop and 390×600 mobile in light and dark themes, for compact and expanded layouts at low and high bottom offsets. This fixture does not validate a live host or provider backend."},{"kind":"browser","ref":"Branch-built host and Agents portal with live backend","status":"pending","evidence":"No branch-specific live acceptance is claimed. Existing browser evidence predates PR2 and remains historical."},{"kind":"browser","ref":"Historical pre-PR2 host and Agents browser fixtures","status":"not-run","evidence":"Historical evidence from the earlier overlay revision is not current validation for the provider-context preview changes."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
+{"schema":1,"id":"design.ai.agent-overlay","title":"Workspace agent overlay prototype","kind":"pattern","status":"draft","authority":{"design":"informative","implementation":"reference"},"implementation":{"state":"partial","notes":"Opt-in personal browser preference with a resizable right-side chat panel and navigation to the actual Agents chat route. Context includes host provenance, an optional Infrastructure instance reference, and bounded provider-published JSON; it remains reference data and grants no authority."},"appliesTo":["portal","provider-portals"],"owner":"design-system","canonicalSource":[{"path":"docs/design/ai/agent-overlay.md#workspace-agent-overlay-prototype","role":"design"},{"path":"portal/src/components/AgentOverlay.vue","role":"implementation"},{"path":"portal/src/stores/agentOverlay.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentChat.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/AgentDetail.vue","role":"implementation"},{"path":"providers/agents/portal/src/views/WorkspaceAssistantCard.vue","role":"implementation"},{"path":"portal/src/providers/agentContextPublisher.ts","role":"implementation"},{"path":"portal/src/providers/providerContext.ts","role":"implementation"},{"path":"portal/src/stores/pageResource.ts","role":"implementation"},{"path":"provider-sdk/portalkit/agent-context.ts","role":"implementation"},{"path":"providers/agents/portal/src/pageContext.ts","role":"implementation"},{"path":"providers/agents/portal/src/views/ChatMessage.vue","role":"implementation"}],"verification":{"state":"partial","checks":[{"kind":"test","ref":"PR2 host portal tests and production build","status":"passing","evidence":"447 host portal tests passed; portal typecheck and Vite production build passed on the PR2 branch."},{"kind":"test","ref":"PR2 Agents portal tests, typecheck, and production build","status":"passing","evidence":"813 Agents portal tests passed; vue-tsc and the production Vite build passed on the PR2 branch."},{"kind":"command","ref":"make verify-design-docs, make verify-portalkit, and make verify-ui-conformance","status":"passing","evidence":"All three shared gates passed after syncing the canonical asset manifest and generated copies."},{"kind":"browser","ref":"hack/agent-overlay-resize-test.mjs desktop/mobile light/dark preview fixture","status":"passing","evidence":"Synthetic context preview fit and scrolling passed at 1280\u00d7800 desktop and 390\u00d7600 mobile in light and dark themes, for compact and expanded layouts at low and high bottom offsets. This fixture does not validate a live host or provider backend."},{"kind":"browser","ref":"Historical pre-PR2 host and Agents browser fixtures","status":"not-run","evidence":"Historical evidence from the earlier overlay revision is not current validation for the provider-context preview changes."},{"kind":"test","ref":"Side-panel host and Agents suites","status":"passing","evidence":"451 host tests and 814 Agents tests passed, with both production builds and typechecks."},{"kind":"command","ref":"Side-panel design and distribution checks","status":"passing","evidence":"make verify-design-docs, make verify-portalkit and make verify-ui-conformance passed with zero UI conformance violations."},{"kind":"browser","ref":"Live Tilt side-panel acceptance","status":"passing","evidence":"Live backend with temporary development agents: focus and typing stay compact; submit opens the panel; pointer and keyboard resize, draft retention, provider-route replacement, full-bleed layout, all navigation dock modes, minimize/reopen and reduced motion passed. Desktop and 390px mobile were checked in light and dark themes. Screenshots: artifacts/screenshots/agents-side-panel-{light,dark,mobile-light,mobile-dark}.png. No successful model response was exercised because this fresh workspace has no model connection."}]},"relatedDocuments":[{"id":"design.ai.agents-autonomy-and-runs","relation":"see-also","path":"docs/design/ai/agents-autonomy-and-runs.md"}]}
 ---
 
 # Workspace agent overlay prototype
@@ -10,48 +10,47 @@ in this browser, keyed by user, organization, and workspace; it does not change
 another user's experience or grant access to the agent.
 
 The host mounts the existing Agents element above the router boundary. Its
-`overlayState` property selects the compact conversation without owning browser
-history. The floating launcher minimizes and reopens the retained conversation.
-A top-left resize handle supports dragging and arrow keys; viewport limits keep
-it on screen. Dragging disables the height transition and batches updates with
-animation frames. Resize limits use the panel's computed CSS maximum/minimum
-height and current available width, refreshed during the gesture. Reversing at
-a limit responds immediately, without unwinding an oversized stored dimension.
-Pointer cancellation, lost capture, hiding, and unmounting end the gesture.
-**Open full chat in Agents** navigates to the ordinary provider
-chat route. The floating window and launcher are both hidden while that agent's dedicated view is open. There is no fullscreen overlay or embedded full-provider mode.
-The existing session is restored and active runs use the usual recovery path.
-An explicit, short-lived in-memory handoff carries an unsent draft to that same
-user, workspace, and agent. Saving Workspace assistant settings opens the bottom assistant bar.
+`overlayState` selects a chat-only presentation without owning browser history.
+The same conversation, composer draft, run, approvals, and tool results survive
+opening, closing, resizing, and navigation within a workspace. The panel has no
+thread rail or configuration workbench. **Open full chat in Agents** hands the
+conversation and unsent draft to the ordinary agent route. The assistant hides
+while that agent's dedicated view is open.
 
 ## Bottom assistant bar
 
-The default presentation is a 64px composer centered within the available main content width. Focusing the composer or choosing Expand grows the conversation upward; Collapse restores the bar using the same mounted composer and draft. Minimize shrinks the existing panel toward the Railgrid launcher in 240ms; reopening reverses the movement in 320ms. Reduced-motion users switch immediately. The chat stays mounted, and the minimized preference persists per user/workspace. The page reserves bottom clearance for the bar. On narrow screens the conversation becomes a bottom sheet. Expansion to Agents still navigates to the dedicated provider view.
+The default presentation is a 64px composer centered within the available main
+content width. Focusing or typing does not open the panel. A valid submission
+opens the conversation from the right; empty or disabled submissions do not.
+**Expand conversation** also reopens the retained chat without sending. Closing
+the panel restores the compact composer and focuses it without losing the draft.
+Minimize retains the conversation behind the Railgrid launcher.
 
-## Compact layout
+## Right side panel
 
-The floating surface uses one header with agent identity, navigation to the full
-chat, an overflow menu, and minimize. Assistant settings and Turn off assistant live in the shared
-ActionMenu. A single header icon toggles page context directly. Its pressed state and distinct on/off icons expose the state; a tooltip explains what is shared. The full explanation lives in Workspace assistant settings. The provider conversation header is omitted inside the overlay.
+On desktop the panel fills the viewport height and starts at 440px wide. Dragging
+its left edge or using Left/Right arrow keys resizes it; Home and End select its
+width limits. The minimum is 320px, and the maximum is 60% of the viewport while
+preserving at least 360px for the workspace. Reversing direction at either limit
+moves immediately. Pointer cancellation, lost capture, hiding, and unmounting
+end the gesture. Resizing the browser clamps the visible width.
 
-The shared AgentKit composer opts into compact geometry: a single line expands
-with the draft up to the existing height limit, with send/stop beside the editor.
-Empty compact-control positioning wrappers pass clicks through to the editor;
-native and custom interactive descendants remain clickable. This lets manual
-expansion accept a first click in the editor, without requiring focus in the bar.
-Touch targets retain the larger coarse-pointer dimensions. The dedicated Agents
-view keeps its existing conversation header and composer layout. After history loads while the overlay is hidden, opening it scrolls to the latest message once the transcript has measurable height. Subsequent resizing respects a user who scrolled to older messages.
+The host reserves the panel's width around the entire routed shell, including
+its navigation and provider/frame mount. Full-bleed workbenches also shrink.
+Floating navigation is centered and clamped within the remaining workspace;
+terminal insets include the panel. Below 768px the chat takes the full viewport
+width, with the background workspace and terminal inert until it closes.
 
-The host owns positioning, shell/terminal clearance, selection, and page context.
-On full-bleed workbenches, the assistant floats over the page without reserving
-space or moving the underlying controls, in both compact and expanded states.
-Overlap is intentional; minimize the assistant to access covered controls.
-Ordinary scrolling pages retain their bottom clearance.
-Agents owns conversation and run behavior. The bundle still loads through the
-shared provider resolver and integrity-aware loader. Requests use an
-Agents-scoped host transport with a synchronous authority fence. Workspace,
-identity, access, or selected-agent changes retire the old mounted client;
-minimizing and changing pages within the same workspace do not.
+One header holds agent identity, page-context toggle, navigation to Agents,
+options, close, and minimize. The expanded view uses the full AgentKit composer;
+the collapsed bar uses its compact geometry. Thread navigation and agent
+configuration remain available in the dedicated Agents view. Context preview
+remains bounded and scrollable in both presentations.
+
+The bundle loads through the shared provider resolver and integrity-aware loader.
+Its host transport retains the synchronous authority fence: workspace, identity,
+access, or selected-agent changes retire the mounted client. Presentation changes
+and page navigation do not replace the client or interrupt streaming.
 
 ## Context and authority
 
@@ -101,7 +100,7 @@ configured tools and existing authorization rules.
 - Workspace changes restore that workspace's selection and minimized preference, with the conversation collapsed to the bar when visible.
   Persisted sessions are recovered through the existing Agents session APIs;
   unsent drafts are not persisted across a workspace switch or browser reload.
-- The header back arrow opens a searchable list of the selected agent’s threads. Selecting a thread or starting a new chat returns to the conversation; returning directly preserves the current draft and stream.
+- The side panel contains only the current conversation; use the dedicated Agents view to select or create threads.
 - Expansion navigates to the dedicated Agents chat view.
 - Context identifies the current page and may include Infrastructure resource
   coordinates or a bounded provider summary, resource list, and JSON data.
@@ -110,13 +109,16 @@ configured tools and existing authorization rules.
 - A missing/disabled provider hides the overlay. An incompatible bundle reports
   that an Agents update and page reload are needed. Resource loading, deletion,
   and denied reads retain the existing Agents read-state UI.
-- Browser checks use mocked hub/model responses. They do not prove a live model
-  call, live kcp authorization, or a production deployment.
+- Historical fixtures use mocked responses. Current live Tilt checks exercise
+  real provider mounts and submission without a configured model. They do not
+  prove a successful model turn or a production deployment.
 
 ## Focused regression checks
 
 `make test-portal` includes fast unit coverage for resize deltas, minimum sizes,
-viewport limits, and reversing after an overshoot. `make test-agent-ui-browser`
+viewport limits, and reversing after an overshoot. Side-panel publication clears
+on authority changes, and navigation insets include its width.
+`make test-agent-ui-browser`
 groups the composer hit-test and resize browser fixtures as **manual evidence
 only**, not an automatic `make verify` or CI gate. Install the portal npm
 dependencies and Playwright/Chromium before running; `PLAYWRIGHT_MODULE` and

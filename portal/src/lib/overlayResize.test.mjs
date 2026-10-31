@@ -5,7 +5,7 @@ import ts from 'typescript'
 
 const source = readFileSync(new URL('./overlayResize.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.ESNext } })
-const { resizeOverlay } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
+const { resizeOverlay, resizeSidePanel } = await import(`data:text/javascript;base64,${Buffer.from(outputText).toString('base64')}`)
 const bounds = { width: 600, height: 500 }
 
 test('resize follows the centered horizontal edge and bottom-anchored vertical edge', () => {
@@ -24,4 +24,20 @@ test('viewport limits take precedence over minimum sizes and previously stored s
   assert.deepEqual(resizeOverlay({ width: 700, height: 600 }, 0, 0, bounds), bounds)
   assert.deepEqual(resizeOverlay({ width: 700, height: 600 }, 10, 10, bounds), { width: 580, height: 490 })
   assert.deepEqual(resizeOverlay({ width: 100, height: 100 }, 0, 0, { width: 304, height: 180 }), { width: 304, height: 180 })
+})
+
+
+test('side panel follows its left edge and immediately reverses at width limits', () => {
+  assert.equal(resizeSidePanel(440, -20, 1200), 460)
+  const maximum = resizeSidePanel(440, -1000, 1200)
+  assert.equal(maximum, 720)
+  assert.equal(resizeSidePanel(maximum, 20, 1200), 700)
+  const minimum = resizeSidePanel(440, 1000, 1200)
+  assert.equal(minimum, 320)
+  assert.equal(resizeSidePanel(minimum, -20, 1200), 340)
+})
+test('side panel reserves usable workspace space and fills mobile viewports', () => {
+  assert.equal(resizeSidePanel(700, 0, 800), 440)
+  assert.equal(resizeSidePanel(700, 0, 390), 390)
+  assert.equal(resizeSidePanel(700, 0, 0), 0)
 })

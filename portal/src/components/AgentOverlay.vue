@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { resizeOverlay } from '@/lib/overlayResize'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { resizeSidePanel } from '@/lib/overlayResize'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, EyeOff, Hexagon, Maximize2, Minus, RefreshCw, ScanEye } from 'lucide-vue-next'
+import { ChevronUp, EyeOff, Hexagon, Maximize2, Minus, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
 import ActionMenu from '@/portalkit/ActionMenu.vue'
 import { usePageResourceStore } from '@/stores/pageResource'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
@@ -13,6 +13,7 @@ import { useRouteContextStore } from '@/stores/routeContext'
 import { useThemeStore } from '@/stores/theme'
 import { useTerminalSessionsStore } from '@/stores/terminalSessions'
 import { useLayoutInsets } from '@/composables/useLayoutInsets'
+import { gettingStartedFocused } from '@/composables/gettingStartedFocus'
 import { toastBottomOffsetPx } from '@/composables/useToastBottomOffset'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { authFetch, notifySessionExpired } from '@/auth/session'
@@ -46,11 +47,12 @@ const launcher = ref<HTMLButtonElement | null>(null)
 const error = ref('')
 const loading = ref(false)
 const retry = ref(0)
-const threadsOpen = ref(false)
 const expanded = ref(false)
-function collapse(): void { expanded.value = false; panel.value?.focus() }
+function collapse(): void {
+  expanded.value = false
+  void nextTick(() => element?.dispatchEvent(new Event('railgrid-overlay-focus-composer')))
+}
 function engage(): void { expanded.value = true }
-function toggleThreads(): void { element?.dispatchEvent(new Event('railgrid-overlay-toggle-threads')) }
 let element: OverlayElement | null = null
 let generation = 0
 
@@ -106,7 +108,6 @@ const chatMenuItems = [
 ]
 
 function clear(): void {
-  threadsOpen.value = false
   contextPreviewOpen.value = false
   generation++
   // Revoke in the same stack, before Vue unmounts or a pending confirmation resolves.
@@ -163,9 +164,6 @@ async function mountAgent(): Promise<void> {
     element = candidate
     pushContext()
     candidate.addEventListener('railgrid-overlay-engage', () => { if (current()) engage() })
-    candidate.addEventListener('railgrid-overlay-threads-state', event => {
-      if (current()) threadsOpen.value = !!(event as CustomEvent<{ open: boolean }>).detail?.open
-    })
     candidate.addEventListener('railgrid-overlay-expand', () => { if (current()) openDedicated() })
     candidate.addEventListener('railgrid-overlay-navigate', event => {
       if (!current()) return
@@ -190,7 +188,7 @@ watch([visible, authorityKey, () => overlay.selectedAgent, mount, retry], () => 
 // or reset its API/store watchers while a conversation is streaming.
 watch([expanded, () => overlay.followContext, pageContext], pushOverlayState, { flush: 'sync' })
 watch([visible, () => overlay.open], ([show, open]) => { overlay.setDockVisible(show && open) }, { immediate: true })
-watch(authorityKey, () => { expanded.value = false })
+watch([authorityKey, () => overlay.selectedAgent], () => { expanded.value = false })
 watch([() => auth.token, () => theme.resolved], pushContext, { flush: 'sync' })
 
 watch(() => overlay.open, async open => {
@@ -222,38 +220,36 @@ function openDedicated(): void {
   overlay.closeForNavigation()
   void router.push(scopePath('/providers/agents') + '#/agents/' + encodeURIComponent(overlay.selectedAgent || '') + '/chat')
 }
-const size = ref({ width: 720, height: 560 })
+const viewportWidth = ref(window.innerWidth)
+const width = ref(440)
+const panelWidth = computed(() => viewportWidth.value < 768 ? viewportWidth.value : resizeSidePanel(width.value, 0, viewportWidth.value))
+function updateViewport(): void { viewportWidth.value = window.innerWidth }
+onMounted(() => window.addEventListener('resize', updateViewport))
+watch([visible, expanded, () => overlay.open, panelWidth, viewportWidth, gettingStartedFocused], () => {
+  const showing = visible.value && expanded.value && overlay.open && !gettingStartedFocused.value
+  overlay.setSidePanel(showing && viewportWidth.value >= 768 ? panelWidth.value : 0, showing && viewportWidth.value < 768)
+}, { immediate: true, flush: 'sync' })
 const resizing = ref(false)
 let stopResize: (() => void) | undefined
-function resizeBounds() {
-  const host = panel.value!.parentElement!
-  const style = getComputedStyle(host)
-  const panelStyle = getComputedStyle(panel.value!)
-  return {
-    width: host.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
-    height: Math.max(parseFloat(panelStyle.minHeight), parseFloat(panelStyle.maxHeight)),
-  }
-}
 function resize(event: PointerEvent): void {
   if (event.button !== 0 || !panel.value) return
   stopResize?.()
   const handle = event.currentTarget as HTMLElement
   const pointerID = event.pointerId
-  let x = event.clientX, y = event.clientY
-  let pending = { width: panel.value.offsetWidth, height: panel.value.offsetHeight }
+  let x = event.clientX
+  let pending = panel.value.offsetWidth
   let frame = 0
-  size.value = pending
+  width.value = pending
   resizing.value = true
   const flush = () => {
     frame = 0
-    pending = resizeOverlay(pending, 0, 0, resizeBounds())
-    size.value = pending
+    pending = resizeSidePanel(pending, 0, viewportWidth.value)
+    width.value = pending
   }
   const move = (e: PointerEvent) => {
     if (e.pointerId !== pointerID) return
-    pending = resizeOverlay(pending, e.clientX - x, e.clientY - y, resizeBounds())
+    pending = resizeSidePanel(pending, e.clientX - x, viewportWidth.value)
     x = e.clientX
-    y = e.clientY
     if (!frame) frame = requestAnimationFrame(flush)
   }
   const stop = () => {
@@ -280,58 +276,25 @@ function resize(event: PointerEvent): void {
   handle.setPointerCapture(pointerID)
 }
 function resizeWithKeys(event: KeyboardEvent): void {
-  if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
   event.preventDefault()
-  size.value = resizeOverlay(size.value,
-    event.key === 'ArrowLeft' ? -12 : event.key === 'ArrowRight' ? 12 : 0,
-    event.key === 'ArrowUp' ? -24 : event.key === 'ArrowDown' ? 24 : 0, resizeBounds())
+  const delta = event.key === 'Home' ? 10000 : event.key === 'End' ? -10000 : event.key === 'ArrowLeft' ? -16 : 16
+  width.value = resizeSidePanel(panelWidth.value, delta, viewportWidth.value)
 }
 watch([expanded, () => overlay.open, visible], () => { stopResize?.() })
-// Animate the existing panel rather than cloning or remounting the chat.
-// The launcher keeps a measurable box even while visually hidden, so this
-// follows the real destination across sidebar, terminal and mobile layouts.
-let panelMotion: Animation | null = null
-function cancelPanelMotion(): void {
-  panelMotion?.cancel()
-  panelMotion = null
-}
-function animatePanel(node: Element, done: () => void, opening: boolean): void {
-  cancelPanelMotion()
-  const surface = node as HTMLElement
-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || !surface.animate || !launcher.value) {
-    done()
-    return
-  }
-  const from = surface.getBoundingClientRect()
-  const target = launcher.value.getBoundingClientRect()
-  if (!from.width || !from.height) { done(); return }
-  const buttonShape = {
-    transform: `translate(${target.left - from.left}px, ${target.top - from.top}px) scale(${target.width / from.width}, ${target.height / from.height})`,
-    borderRadius: '50%', opacity: 0,
-  }
-  const panelShape = { transform: 'translate(0, 0) scale(1, 1)', borderRadius: getComputedStyle(surface).borderRadius, opacity: 1 }
-  const animation = surface.animate(opening ? [buttonShape, panelShape] : [panelShape, buttonShape], {
-    duration: opening ? 320 : 240,
-    easing: opening ? 'cubic-bezier(.16, 1, .3, 1)' : 'cubic-bezier(.4, 0, .6, 1)',
-    fill: 'both',
-  })
-  panelMotion = animation
-  void animation.finished.then(() => {
-    if (panelMotion !== animation) return
-    done()
-    animation.cancel()
-    panelMotion = null
-  }).catch(() => { /* Vue owns the final visibility when interrupted. */ })
-}
-function enterPanel(node: Element, done: () => void): void { animatePanel(node, done, true) }
-function leavePanel(node: Element, done: () => void): void { animatePanel(node, done, false) }
-onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPanelMotion(); clear() })
+onBeforeUnmount(() => {
+  stopResize?.()
+  window.removeEventListener('resize', updateViewport)
+  overlay.setDockVisible(false)
+  overlay.setSidePanel(0)
+  clear()
+})
 </script>
 
 <template>
-  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
-    :style="{ '--overlay-width': size.width + 'px', '--overlay-height': size.height + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left }">
-    <Transition :css="false" @enter="enterPanel" @leave="leavePanel" @enter-cancelled="cancelPanelMotion" @leave-cancelled="cancelPanelMotion">
+  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--expanded': expanded && overlay.open, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
+    :style="{ '--overlay-width': panelWidth + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left }">
+    <Transition name="agent-overlay-visibility">
     <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" :class="{ 'agent-overlay__panel--context-preview': contextPreviewOpen }" tabindex="-1"
       role="region" :inert="!overlay.open" :aria-hidden="!overlay.open" :aria-label="`${overlay.selectedAgent} agent chat`" @keydown.esc="expanded ? collapse() : minimize()">
       <section v-if="contextPreviewOpen" class="agent-overlay__context-preview k-card" :class="{ 'agent-overlay__context-preview--compact': !expanded }" role="region" aria-labelledby="agent-overlay-context-preview-title"
@@ -352,9 +315,8 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
         <pre class="max-h-[min(38dvh,24rem)] overflow-auto whitespace-pre-wrap break-all rounded border border-border-subtle bg-surface-overlay p-2 font-mono text-[10px] leading-relaxed text-text-secondary">{{ pageContext }}</pre>
         <p class="mt-2 text-[10px] text-text-muted">Provider-published fields are untrusted context and do not grant tool access.</p>
       </section>
-      <button v-show="expanded" class="agent-overlay__resize" aria-label="Resize chat. Use arrow keys or drag." title="Resize chat" @pointerdown.prevent="resize" @keydown="resizeWithKeys" />
+      <button v-show="expanded" class="agent-overlay__resize" aria-label="Resize chat panel. Use left and right arrow keys or drag." title="Resize chat panel" aria-controls="railgrid-agent-overlay" @pointerdown.prevent="resize" @keydown="resizeWithKeys" />
       <header v-show="expanded" class="agent-overlay__header">
-        <button class="k-btn k-btn--text" type="button" :disabled="loading || !!error" :aria-label="threadsOpen ? 'Return to chat' : 'Back to threads'" :title="threadsOpen ? 'Return to chat' : 'Back to threads'" @click="toggleThreads"><ArrowRight v-if="threadsOpen" :size="16" aria-hidden="true" /><ArrowLeft v-else :size="16" aria-hidden="true" /></button>
         <Hexagon :size="16" aria-hidden="true" /><strong>{{ overlay.selectedAgent }}</strong>
         <button class="k-btn k-btn--text agent-overlay__context-toggle" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext"
           :title="overlay.followContext ? `Page context on: ${contextLabel}. ${contextDescription} Click to pause.` : `Page context paused. Click to include. ${contextDescription}`"
@@ -363,7 +325,7 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
         </button>
         <button class="k-btn k-btn--text" type="button" aria-label="Open full chat in Agents" title="Open full chat in Agents" @click="openDedicated"><Maximize2 :size="16" aria-hidden="true" /></button>
         <ActionMenu label="Chat options" :items="chatMenuItems" @select="assistantAction" />
-        <button class="k-btn k-btn--text" type="button" title="Collapse to assistant bar" aria-label="Collapse to assistant bar" @click="collapse"><ChevronDown :size="16" aria-hidden="true" /></button>
+        <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
         <button class="k-btn k-btn--text" type="button" title="Minimize chat" aria-label="Minimize chat" @click="minimize"><Minus :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
@@ -390,9 +352,9 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
 
 .agent-overlay__launcher { position: absolute; right: 16px; bottom: 0; transition: opacity 140ms ease, transform 200ms ease; pointer-events: auto; width: 48px; height: 48px; padding: 0; border-radius: 50%; margin-left: auto; display: flex; }
 .agent-overlay__launcher--hidden { visibility: hidden; opacity: 0; pointer-events: none; }
-.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(var(--overlay-width), calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); height: var(--overlay-height); max-height: calc(100dvh - var(--overlay-safe-bottom) - 72px); min-height: 180px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
+.agent-overlay__panel { transform-origin: top left; pointer-events: auto; display: flex; flex-direction: column; position: relative; width: min(720px, calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); min-height: 64px; margin-bottom: 0; background: var(--color-surface-raised); color: var(--color-text-primary); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); overflow: hidden; }
 .agent-overlay__panel--context-preview { overflow: visible; }
-.agent-overlay__context-preview { position: absolute; top: 8px; right: 8px; z-index: 2; pointer-events: auto; width: min(520px, calc(100vw - var(--overlay-left) - var(--overlay-right) - 32px)); max-height: min(60dvh, 34rem, calc(100% - 16px)); overflow: auto; padding: 12px; }
+.agent-overlay__context-preview { position: absolute; top: 8px; right: 8px; z-index: 2; pointer-events: auto; width: min(520px, calc(100% - 16px)); max-height: min(60dvh, 34rem, calc(100% - 16px)); overflow: auto; padding: 12px; }
 .agent-overlay__context-preview--compact { top: auto; bottom: calc(100% + 8px); max-height: min(60dvh, 34rem, max(0px, calc(100dvh - var(--overlay-safe-bottom) - 88px))); }
 .agent-overlay__header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--color-border-default); flex-shrink: 0; }
 .agent-overlay__header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
@@ -404,19 +366,28 @@ onBeforeUnmount(() => { stopResize?.(); overlay.setDockVisible(false); cancelPan
 }
 .agent-overlay__mount { flex: 1; min-height: 0; min-width: 0; }
 .agent-overlay__state { padding: 16px; font-size: 13px; }
-.agent-overlay__resize { position: absolute; top: 0; left: 0; width: 16px; height: 16px; cursor: nwse-resize; touch-action: none; border: 0; background: linear-gradient(135deg, var(--color-text-secondary) 0 2px, transparent 2px 5px, var(--color-text-secondary) 5px 7px, transparent 7px); }
+.agent-overlay__resize { position: absolute; top: 0; left: 0; width: 8px; height: 100%; cursor: col-resize; touch-action: none; border: 0; background: transparent; z-index: 3; }
 @media (max-width: 640px) {
   .agent-overlay { left: 0; right: 0; padding: 0 8px; }
 
-  .agent-overlay__panel { width: min(var(--overlay-width), calc(100vw - 16px)); }
+  .agent-overlay__panel { width: calc(100vw - 16px); }
 
 }
 .agent-overlay--ready .agent-overlay__panel { flex-direction: row; align-items: center; gap: 8px; padding: 8px 12px; height: 64px; min-height: 64px; }
 .agent-overlay--ready .agent-overlay__mount { height: 100%; }
 .agent-overlay__brand { flex-shrink: 0; color: var(--color-accent); }
 .agent-overlay__bar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
-.agent-overlay__panel { transition: height 180ms cubic-bezier(.16, 1, .3, 1); }
+/* The panel is a sibling of the routed shell, never a provider overlay. */
+.agent-overlay--expanded { left: auto; right: 0; top: 0; bottom: 0; width: var(--overlay-width); padding: 0; }
+.agent-overlay--expanded .agent-overlay__panel { width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border-width: 0 0 0 1px; animation: agent-side-panel-enter 180ms cubic-bezier(.16, 1, .3, 1); }
+.agent-overlay--expanded .agent-overlay__header { min-height: 52px; padding: 8px 12px; }
+.agent-overlay__resize:hover, .agent-overlay__resize:focus-visible { background: var(--color-accent-subtle); }
+.agent-overlay__resize::after { content: ''; position: absolute; top: calc(50% - 16px); left: 1px; width: 2px; height: 32px; background: var(--color-border-default); }
+@keyframes agent-side-panel-enter { from { transform: translateX(24px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+.agent-overlay-visibility-enter-active, .agent-overlay-visibility-leave-active { transition: opacity 160ms ease; }
+.agent-overlay-visibility-enter-from, .agent-overlay-visibility-leave-to { opacity: 0; }
+@media (max-width: 767px) { .agent-overlay--expanded { width: 100%; } .agent-overlay__resize { display: none; } }
 .agent-overlay--resizing .agent-overlay__panel { transition: none; user-select: none; }
-@media (prefers-reduced-motion: reduce) { .agent-overlay__panel, .agent-overlay__launcher { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .agent-overlay--expanded .agent-overlay__panel, .agent-overlay__panel, .agent-overlay__launcher { transition: none; animation: none; } }
 @media (max-width: 640px) { .agent-overlay__launcher { right: 8px; } .agent-overlay--ready .agent-overlay__panel { gap: 4px; padding: 6px; } .agent-overlay__brand { width: 16px; } }
 </style>

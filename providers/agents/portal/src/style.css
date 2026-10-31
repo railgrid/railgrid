@@ -972,20 +972,6 @@ railgrid-provider-agents .agents-assistant-settings__action { padding: 5px 10px;
 }
 
 /* The overlay's thread picker replaces the transcript without remounting it. */
-.agents-overlay-threads { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
-.agents-overlay-threads__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.agents-overlay-threads__heading h2 { margin: 0; font-size: 14px; font-weight: 600; }
-.agents-overlay-threads__new { min-height: 30px; padding: 5px 10px; gap: 6px; font-size: 12px; line-height: 18px; white-space: nowrap; box-shadow: none; }
-.agents-overlay-threads__new:hover { box-shadow: none; }
-.agents-overlay-threads__new:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }
-.agents-overlay-threads__list { margin: 0; padding: 0; list-style: none; }
-.agents-overlay-threads__item { width: 100%; min-height: 36px; gap: 8px; justify-content: flex-start; text-align: left; }
-.agents-overlay-threads__item > span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agents-overlay-threads__item > svg { flex-shrink: 0; }
-.agents-overlay-threads__item > small { color: var(--color-text-muted); font-size: 11px; }
-.agents-overlay-threads__item[aria-current] { background: var(--color-accent-subtle); }
-@media (pointer: coarse) { .agents-overlay-threads__item, .agents-overlay-threads__new { min-height: 44px; } }
-
 railgrid-provider-agents .agents-chat-shell--bar .agents-chat-workspace { display: block; }
 railgrid-provider-agents .agents-chat-shell--bar .agents-conversation-column > :not(.agents-composer),
 railgrid-provider-agents .agents-chat-shell--bar .agents-artifact-panel { display: none; }

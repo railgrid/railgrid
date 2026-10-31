@@ -107,7 +107,8 @@ function loadDockState(): DockState {
   return { mode: 'left', x: -1, y: -1 }
 }
 
-export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock {
+export function useNavigationDock(sidebarExpanded: Ref<boolean>, reservedRight: Ref<number> = ref(0)): NavigationDock {
+  const viewportWidth = () => Math.max(0, window.innerWidth - reservedRight.value)
   const floatRef = ref<HTMLElement | null>(null)
   const dockedRef = ref<HTMLElement | null>(null)
   const isDragging = ref(false)
@@ -164,12 +165,12 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   function onDragMove(event: PointerEvent): void {
     if (!isDragging.value || (activePointerId !== null && event.pointerId !== activePointerId)) return
 
-    const x = Math.max(0, Math.min(window.innerWidth - dragSize.w, event.clientX - dragOffset.x))
+    const x = Math.max(0, Math.min(viewportWidth() - dragSize.w, event.clientX - dragOffset.x))
     const y = Math.max(0, Math.min(window.innerHeight - dragSize.h, event.clientY - dragOffset.y))
     dragPos.value = { x, y }
 
     const distL = event.clientX
-    const distR = window.innerWidth - event.clientX
+    const distR = viewportWidth() - event.clientX
     const distT = event.clientY
     const distB = window.innerHeight - event.clientY
     const minDist = Math.min(distL, distR, distT, distB)
@@ -202,7 +203,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   function clampFloatPosition(x: number, y: number): { x: number; y: number } {
     return clampDockPosition(
       { x, y },
-      { width: window.innerWidth, height: window.innerHeight },
+      { width: viewportWidth(), height: window.innerHeight },
       { width: dragSize.w, height: dragSize.h },
     )
   }
@@ -256,7 +257,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
     const rect = (dockedRef.value || floatRef.value)?.getBoundingClientRect()
     if (rect) return clampFloatPosition(rect.left, rect.top)
     return clampFloatPosition(
-      (window.innerWidth - dragSize.w) / 2,
+      (viewportWidth() - dragSize.w) / 2,
       window.innerHeight - dragSize.h - 16,
     )
   }
@@ -335,6 +336,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   }
 
   watch(floatRef, observeFloatingDock)
+  watch(reservedRight, scheduleFloatingDockClamp)
 
   // Claimed in setup so this instance is the live inset writer before the
   // outgoing page's deferred onUnmounted release runs (see useLayoutInsets).
@@ -376,12 +378,12 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
 
   const floatStyle = computed<StyleValue>(() => {
     if (isDragging.value) {
-      return { left: `${dragPos.value.x}px`, top: `${dragPos.value.y}px` }
+      return { left: `${dragPos.value.x}px`, top: `${dragPos.value.y}px`, maxWidth: `calc(100vw - ${reservedRight.value}px - 32px)` }
     }
     if (dockState.value.mode === 'float' && dockState.value.x >= 0) {
-      return { left: `${dockState.value.x}px`, top: `${dockState.value.y}px` }
+      return { left: `${dockState.value.x}px`, top: `${dockState.value.y}px`, maxWidth: `calc(100vw - ${reservedRight.value}px - 32px)` }
     }
-    return {}
+    return { left: `calc((100% - ${reservedRight.value}px) / 2)`, maxWidth: `calc(100vw - ${reservedRight.value}px - 32px)` }
   })
 
   const layoutClass = computed(() => {
@@ -407,7 +409,7 @@ export function useNavigationDock(sidebarExpanded: Ref<boolean>): NavigationDock
   watchEffect(() => {
     layoutInsets.set({
       left: layoutInsetsStyle.value['--app-inset-left'],
-      right: layoutInsetsStyle.value['--app-inset-right'],
+      right: reservedRight.value ? `calc(${layoutInsetsStyle.value['--app-inset-right']} + ${reservedRight.value}px)` : layoutInsetsStyle.value['--app-inset-right'],
       bottom: layoutInsetsStyle.value['--app-inset-bottom'],
     })
   })

@@ -2,7 +2,7 @@
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, SquarePen, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import AIModelPicker from '../agentkit/AIModelPicker.vue'
@@ -122,28 +122,9 @@ watch(sessionID, () => {
 }, { flush: 'sync' })
 const draft = ref('')
 const chatHost = runtime?.host
-const compactThreadsOpen = ref(false)
-const threadQuery = ref('')
-const threadSearch = ref<HTMLInputElement | null>(null)
-const compactThreads = computed(() => conversationItems.value.filter(thread =>
-  (thread.title || 'New chat').toLocaleLowerCase().includes(threadQuery.value.trim().toLocaleLowerCase())))
-function setCompactThreads(open: boolean): void {
-  if (!props.compact) return
-  compactThreadsOpen.value = open
-  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open } }))
-  void nextTick(() => open ? threadSearch.value?.focus() : composer.value?.focus())
-}
+function focusComposer(): void { if (props.compact) void nextTick(() => composer.value?.focus()) }
 function engageOverlay(): void {
   if (props.compact) chatHost?.value?.dispatchEvent(new Event('railgrid-overlay-engage'))
-}
-watch(() => props.composerOnly, only => {
-  if (!only) return
-  compactThreadsOpen.value = false
-  chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-threads-state', { detail: { open: false } }))
-})
-function toggleCompactThreads(): void {
-  setCompactThreads(!compactThreadsOpen.value)
-  if (compactThreadsOpen.value) void loadSessions()
 }
 function handoffKey(): string {
   const authority = props.api.contextAuthority()
@@ -1154,9 +1135,9 @@ async function cancelLiveRun(
 }
 
 async function send(): Promise<void> {
-  engageOverlay()
   const draftText = draft.value.trim()
   if (!draftText || streaming.value || modelSaving.value || !hasModel.value) return
+  engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
   // or authorization. Persisting it in the message keeps reloads auditable.
   const text = props.pageContext
@@ -1628,13 +1609,13 @@ function newChat(): void {
 
 function selectConversation(id: string): void {
   closeMobileRail()
-  setCompactThreads(false)
+  focusComposer()
   void switchSession(id)
 }
 
 function createConversation(): void {
   closeMobileRail()
-  setCompactThreads(false)
+  focusComposer()
   newChat()
 }
 
@@ -1779,7 +1760,7 @@ function resizeComposer(): void {
     const element = composer.value
     if (!element) return
     element.style.height = 'auto'
-    element.style.height = `${Math.min(element.scrollHeight, 180)}px`
+    element.style.height = `${Math.min(element.scrollHeight, props.composerOnly ? 32 : 180)}px`
   })
 }
 
@@ -1819,11 +1800,12 @@ watch(log, element => {
 }, { flush: 'post' })
 watch(messages, scrollToBottom)
 watch(draft, resizeComposer)
+watch(() => props.composerOnly, resizeComposer)
 
 onMounted(() => {
   mounted = true
   chatHost?.value?.addEventListener('railgrid-chat-handoff', offerDraft)
-  chatHost?.value?.addEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
+  chatHost?.value?.addEventListener('railgrid-overlay-focus-composer', focusComposer)
   bindServer(props.store)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
@@ -1832,7 +1814,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   clearArtifactState()
   chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
-  chatHost?.value?.removeEventListener('railgrid-overlay-toggle-threads', toggleCompactThreads)
+  chatHost?.value?.removeEventListener('railgrid-overlay-focus-composer', focusComposer)
   logResizeObserver?.disconnect()
   clearDetachedStarts()
   mounted = false
@@ -1899,7 +1881,7 @@ defineExpose({
 
     <AIConversationLayout class="agents-chat" aria-label="Agent conversation">
       <div
-        v-show="!compact"
+        v-if="!compact"
         class="agents-conversation-rail-shell"
         :class="{ 'is-open': mobileRailOpen }"
         @keydown.capture.esc="handleRailShellEscape"
@@ -1928,24 +1910,7 @@ defineExpose({
         />
       </div>
 
-      <section v-if="compact && compactThreadsOpen" class="agents-overlay-threads" aria-label="Agent threads">
-        <header class="agents-overlay-threads__heading">
-          <h2>Threads</h2>
-          <button class="k-btn k-btn--primary agents-overlay-threads__new" type="button" :disabled="!!selectingSessionID" @click="createConversation"><SquarePen :size="14" aria-hidden="true" /> New chat</button>
-        </header>
-        <input ref="threadSearch" v-model="threadQuery" class="k-input" type="search" aria-label="Search threads" placeholder="Search threads" />
-        <div v-if="sessionsError" role="alert">Could not refresh threads. <button class="k-btn k-btn--text" type="button" :disabled="sessionsLoading" @click="loadSessions()">Retry</button></div>
-        <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading threads…</p>
-        <ul v-else-if="compactThreads.length" class="agents-overlay-threads__list">
-          <li v-for="thread in compactThreads" :key="thread.id">
-            <button class="k-btn k-btn--text agents-overlay-threads__item" type="button" :aria-current="thread.id === sessionID ? 'true' : undefined" :title="thread.title" :disabled="!!selectingSessionID" @click="selectConversation(thread.id)">
-              <MessageSquare :size="15" aria-hidden="true" /><span>{{ thread.title || 'New chat' }}</span><small v-if="thread.id === sessionID">Current</small>
-            </button>
-          </li>
-        </ul>
-        <p v-else>No threads match your search.</p>
-      </section>
-      <div v-show="!compactThreadsOpen" class="agents-chat-main">
+      <div class="agents-chat-main">
         <div class="agents-chat-workspace" :class="{ 'agents-chat-workspace--inspection': artifactPanelOpen }">
           <section class="agents-conversation-column" aria-label="Conversation and composer">
         <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
@@ -2080,7 +2045,7 @@ defineExpose({
         </div>
 
         <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
-          <AIComposer :compact="compact" class="agents-composer-surface" :disabled="!hasModel">
+          <AIComposer :compact="composerOnly" class="agents-composer-surface" :disabled="!hasModel">
             <template #editor>
               <textarea
                 ref="composer"
@@ -2091,7 +2056,6 @@ defineExpose({
                 :aria-describedby="domID('agents-composer-help')"
                 :title="composerHelp"
                 :placeholder="compact ? `Ask ${name}…` : `Message ${name}…`"
-                @focus="engageOverlay"
                 :disabled="!hasModel"
                 @input="resizeComposer"
                 @compositionstart="onCompositionStart"
