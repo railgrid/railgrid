@@ -9,8 +9,9 @@ import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
 import { ApiError, type SSEEvent } from '../api'
 import type { TranscriptMessage } from '../types'
-import { agentFixture, makeStore, stubApi } from './helpers'
+import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
+import { queueAgentConfigSave } from '../vue/config-save-queue'
 
 const mounted: MountedVue[] = []
 afterEach(() => {
@@ -2111,6 +2112,36 @@ describe('conversation model picker', () => {
     expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
   })
 
+  it('refreshes inherited state after a failed explicit choice when the Agent default changes', async () => {
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce({
+        selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: '',
+        reasoningEffortByModel: {},
+      })
+      .mockResolvedValueOnce({
+        selectedCredential: 'sol', modelCredential: '', effortOptions: ['medium', 'high'], defaultEffort: 'high',
+        reasoningEffortByModel: {},
+      })
+    const { el, store } = await mountChat(scripted([]), {
+      getSessionModel,
+      saveSessionModel: async () => { throw new Error('denied') },
+    })
+    await configureModels(store)
+    await chooseModel(el, 'sol')
+    await settle(8)
+    expect(text(el)).toContain('Chat model could not be saved')
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    store.agents.data[0].spec.backend = modelBackend('sol')
+    store.dispatchEvent(new Event('change'))
+    await settle(10)
+
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    expect(picker(el).getAttribute('aria-label')).not.toContain('could not be loaded')
+    expect(text(el)).not.toContain('Chat model could not be saved')
+  })
+
   it('lets the user reselect the displayed default after saved-model access is denied', async () => {
     const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => ({
       ...preferences,
@@ -2160,6 +2191,213 @@ describe('conversation model picker', () => {
     await settle(8)
     expect(picker(el).getAttribute('aria-label')).toContain('Model default')
     expect(text(el)).toContain('Chat model could not be saved')
+  })
+
+  it('waits for an Agent default save and authoritative reload before refreshing inherited capabilities', async () => {
+    const pendingAgentSave = deferred<unknown>()
+    const order: string[] = []
+    const getSessionModel = vi.fn()
+      .mockImplementationOnce(async () => {
+        order.push('preferences')
+        return { selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: '' }
+      })
+      .mockImplementationOnce(async () => {
+        order.push('preferences')
+        return { selectedCredential: 'sol', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: 'high' }
+      })
+    const patchAgent = vi.fn(() => {
+      order.push('patch')
+      return pendingAgentSave.promise
+    })
+    const listAgents = vi.fn(async () => {
+      order.push('agents')
+      return [agentFixture('scout', { backend: modelBackend('sol') })]
+    })
+    const { el, api, store } = await mountChat(scripted([]), { getSessionModel, patchAgent, listAgents })
+    await configureModels(store)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    const save = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: 'sol' },
+      apply: spec => { spec.backend = modelBackend('sol') },
+      success: 'Saved model settings',
+    })
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledTimes(1)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: {} })
+    await save
+    await settle(10)
+
+    expect(listAgents).toHaveBeenCalledTimes(1)
+    expect(order.indexOf('agents')).toBeLessThan(order.lastIndexOf('preferences'))
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    picker(el).click()
+    await settle()
+    expect(document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')?.max).toBe('2')
+    expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading'))).toBe('Model default')
+    expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
+  })
+
+  it('refreshes the rolled-back inherited model after an Agent default save fails', async () => {
+    const pendingAgentSave = deferred<unknown>()
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce({ selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: '' })
+      .mockResolvedValueOnce({ selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: 'high' })
+    const patchAgent = vi.fn(() => pendingAgentSave.promise)
+    const listAgents = vi.fn(async () => [agentFixture('scout')])
+    const { el, api, store } = await mountChat(scripted([]), { getSessionModel, patchAgent, listAgents })
+    await configureModels(store)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    const save = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: 'sol' },
+      apply: spec => { spec.backend = modelBackend('sol') },
+      success: 'Saved model settings',
+    })
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledTimes(1)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    pendingAgentSave.reject(new Error('rejected'))
+    await expect(save).resolves.toBe(false)
+    await settle(10)
+
+    expect(listAgents).toHaveBeenCalledTimes(1)
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('openai')
+    picker(el).click()
+    await settle()
+    expect(document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')?.max).toBe('2')
+    expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
+  })
+
+  it('fences an inherited preference read when the Agent default changes in flight', async () => {
+    const staleRead = deferred<any>()
+    const getSessionModel = vi.fn()
+      .mockReturnValueOnce(staleRead.promise)
+      .mockResolvedValueOnce({
+        selectedCredential: 'sol', modelCredential: '', effortOptions: ['medium', 'high'], defaultEffort: 'high',
+        reasoningEffortByModel: {},
+      })
+    const { el, store } = await mountChat(scripted([]), { getSessionModel })
+    await configureModels(store)
+    await settle(6)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    store.agents.data[0].spec.backend = modelBackend('sol')
+    store.dispatchEvent(new Event('change'))
+    await settle(4)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    staleRead.resolve({
+      selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: 'low',
+      reasoningEffortByModel: {},
+    })
+    await settle(10)
+
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    picker(el).click()
+    await settle()
+    expect(document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')?.max).toBe('2')
+    expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
+  })
+
+  it('refreshes inherited capabilities after a pending effort save without closing the picker', async () => {
+    const pendingEffortSave = deferred<any>()
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce({
+        selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: '',
+        reasoningEffortByModel: {},
+      })
+      .mockImplementationOnce(async (_name: string, _session: string) => ({
+        selectedCredential: 'sol', modelCredential: '', effortOptions: ['low', 'medium', 'high'], defaultEffort: 'high',
+        reasoningEffortByModel: { openai: 'high' },
+      }))
+    const saveSessionModel = vi.fn((_name: string, _session: string, _preferences: any) => pendingEffortSave.promise)
+    const { el, store } = await mountChat(scripted([]), { getSessionModel, saveSessionModel })
+    await configureModels(store)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    picker(el).click()
+    await settle()
+    const slider = document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')!
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    slider.value = '2'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    slider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({
+      modelCredential: '', reasoningEffortByModel: { openai: 'high' },
+    }))
+    expect(document.querySelector('.k-ai-model-reasoning-picker__panel')).not.toBeNull()
+    expect(document.querySelector<HTMLButtonElement>('[data-testid="reasoning-model-trigger"]')?.disabled).toBe(true)
+    document.querySelector<HTMLButtonElement>('[data-testid="reasoning-model-trigger"]')!.click()
+    await settle()
+    expect(document.querySelector('[data-testid="reasoning-model-list"]')).toBeNull()
+
+    store.agents.data[0].spec.backend = modelBackend('sol')
+    store.dispatchEvent(new Event('change'))
+    await settle(4)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+
+    const saved = saveSessionModel.mock.calls[0][2]
+    pendingEffortSave.resolve({
+      ...saved,
+      selectedCredential: 'openai', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: '',
+    })
+    await settle(10)
+
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    await expect(getSessionModel.mock.results[1].value).resolves.toMatchObject({
+      selectedCredential: 'sol', reasoningEffortByModel: { openai: 'high' },
+    })
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    expect(document.querySelector('.k-ai-model-reasoning-picker__panel')).not.toBeNull()
+    expect(document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')?.max).toBe('3')
+    expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
+  })
+
+  it('preserves an explicit model and effort across Agent default changes without leaking them to a new chat', async () => {
+    const getSessionModel = vi.fn(async (_name: string, id: string) => id === 'explicit'
+      ? {
+          selectedCredential: 'openai', modelCredential: 'openai', effortOptions: ['low', 'high', 'max'], defaultEffort: '',
+          reasoningEffortByModel: { openai: 'max' },
+        }
+      : {
+          selectedCredential: 'sol', modelCredential: '', effortOptions: ['low', 'high'], defaultEffort: 'high',
+          reasoningEffortByModel: {},
+        })
+    const { el, store } = await mountChat(scripted([]), {
+      listSessions: async () => [session('explicit', 'Explicit chat'), session('new', 'New chat')],
+      getSessionModel,
+    })
+    await configureModels(store)
+    expect(getSessionModel).toHaveBeenCalledWith('scout', 'explicit')
+    expect(picker(el).getAttribute('aria-label')).toContain('openai')
+    expect(picker(el).getAttribute('aria-label')).toContain('Max')
+
+    store.agents.data[0].spec.backend = modelBackend('sol')
+    store.dispatchEvent(new Event('change'))
+    await settle(6)
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+    expect(picker(el).getAttribute('aria-label')).toContain('openai')
+    expect(picker(el).getAttribute('aria-label')).toContain('Max')
+
+    await chooseSession(el, 'New chat')
+    await settle(8)
+    expect(getSessionModel).toHaveBeenCalledWith('scout', 'new')
+    expect(picker(el).getAttribute('aria-label')).toContain('sol')
+    expect(picker(el).getAttribute('aria-label')).not.toContain('Max')
   })
 
   it('disables model switching during a running turn', async () => {

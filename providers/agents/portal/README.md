@@ -54,6 +54,9 @@ run starts.
 
 Session reads wait for pending writes to that same chat, including across view
 remounts. An unsent chat with saved preferences remains selected after reload.
+Chats that inherit the Agent default refresh their model and effort options when
+that default changes; explicit chat choices stay fixed. Model selection is disabled while a
+preference request is pending, without closing the reasoning picker.
 
 Effort choices come from the shared server-side model capability catalog.
 Custom endpoints and unknown models show only model selection. Agents currently

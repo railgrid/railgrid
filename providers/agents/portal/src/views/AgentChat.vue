@@ -25,6 +25,7 @@ import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentAr
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
 import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
 import { InlineAppLoadCoordinator } from '../vue/inline-app-loads'
+import { waitForAgentConfigSaves } from '../vue/config-save-queue'
 import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
@@ -177,6 +178,10 @@ const agent = computed(() => {
   revision.value
   return props.store.agent(props.name)
 })
+const inheritedModelCredential = computed(() => {
+  revision.value
+  return agentModelCredential(agent.value)
+})
 // A harness-backed agent has no chat credential and needs none: its turns run
 // on the machine's harness, which brings its own model. "Can this agent answer?"
 // is therefore the backend question, not the credential one.
@@ -191,7 +196,7 @@ const modelPreferences = ref<SessionModelPreferences | null>(null)
 let modelSaveSerial = 0
 let modelPending: Promise<void> = Promise.resolve()
 let retryModelPreferences: SessionModelPreferences | undefined
-let bootstrappedSessionModel: { name: string; api: ApiClient; session: string; preferences: SessionModelPreferences } | null = null
+let bootstrappedSessionModel: { name: string; api: ApiClient; session: string; inheritedCredential: string; preferences: SessionModelPreferences } | null = null
 const isModelBackend = computed(() => {
   revision.value
   return Boolean(agent.value) && !agentHarnessBacked(agent.value)
@@ -247,9 +252,11 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
     const result = await serializeChatModelRequest(
       modelRequestKey(name, session, authority.api),
       current,
-      () => preferences
-        ? authority.api.saveSessionModel(name, session, preferences)
-        : authority.api.getSessionModel(name, session),
+      async () => {
+        if (preferences) return authority.api.saveSessionModel(name, session, preferences)
+        await waitForAgentConfigSaves(authority.store, name)
+        return current() ? authority.api.getSessionModel(name, session) : undefined
+      },
     )
     if (!current() || !result) return
     modelPreferences.value = result
@@ -267,9 +274,25 @@ async function updateChatModel(preferences?: SessionModelPreferences): Promise<v
   }
 }
 
-watch([sessionID, isModelBackend], () => {
+watch([sessionID, isModelBackend, inheritedModelCredential], ([session, modelBackend, inheritedCredential], [previousSession, previousModelBackend, previousInheritedCredential]) => {
+  const onlyInheritedDefaultChanged = session === previousSession
+    && modelBackend === previousModelBackend
+    && inheritedCredential !== previousInheritedCredential
+  if (onlyInheritedDefaultChanged) {
+    const preloaded = bootstrappedSessionModel
+    if (preloaded && !preloaded.preferences.modelCredential && preloaded.inheritedCredential !== inheritedCredential) {
+      bootstrappedSessionModel = null
+    }
+    const hasExplicitChatModel = Boolean(modelPreferences.value?.modelCredential)
+      || (modelSaving.value && Boolean(retryModelPreferences?.modelCredential))
+    if (session && modelBackend && !hasExplicitChatModel) modelPending = updateChatModel()
+    return
+  }
+
   const preloaded = bootstrappedSessionModel
-  if (preloaded && preloaded.name === props.name && preloaded.api === props.api && preloaded.session === sessionID.value) {
+  const preloadedDefaultIsCurrent = Boolean(preloaded?.preferences.modelCredential)
+    || preloaded?.inheritedCredential === inheritedCredential
+  if (preloaded && preloadedDefaultIsCurrent && preloaded.name === props.name && preloaded.api === props.api && preloaded.session === sessionID.value) {
     bootstrappedSessionModel = null
     modelPreferences.value = preloaded.preferences
     retryModelPreferences = undefined
@@ -1068,24 +1091,37 @@ async function openAgent(): Promise<void> {
   } else if (sessions.value.length > 0 && !sessions.value.some(session => session.id === wanted)) {
     if (isModelBackend.value) {
       const authority = captureAuthority()
-      const current = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
-      try {
-        const preferences = await serializeChatModelRequest(
-          modelRequestKey(name, wanted, api),
-          current,
-          () => api.getSessionModel(name, wanted),
-        )
-        if (!current()) return
-        if (preferences && hasStoredSessionModel(preferences)) {
-          bootstrappedSessionModel = { name, api, session: wanted, preferences }
-        } else {
-          wanted = sessions.value[0]?.id || newSessionID()
+      const contextCurrent = () => serial === openSerial && ownership === chatOwnershipSerial && contextIsCurrent(name, api) && authorityIsCurrent(authority)
+      let preferenceProbeComplete = false
+      while (!preferenceProbeComplete) {
+        if (!contextCurrent()) return
+        const inheritedCredential = agentModelCredential(props.store.agent(name))
+        const current = () => contextCurrent() && agentModelCredential(props.store.agent(name)) === inheritedCredential
+        try {
+          const preferences = await serializeChatModelRequest(
+            modelRequestKey(name, wanted, api),
+            current,
+            async () => {
+              await waitForAgentConfigSaves(authority.store, name)
+              return current() ? api.getSessionModel(name, wanted) : undefined
+            },
+          )
+          if (!contextCurrent()) return
+          if (!current()) continue
+          if (preferences && hasStoredSessionModel(preferences)) {
+            bootstrappedSessionModel = { name, api, session: wanted, inheritedCredential, preferences }
+          } else {
+            wanted = sessions.value[0]?.id || newSessionID()
+          }
+          preferenceProbeComplete = true
+        } catch {
+          if (!contextCurrent()) return
+          if (!current()) continue
+          // A failed preferences probe cannot prove that this remembered chat
+          // has no saved choices. Keep it selected; the regular hydration path
+          // retries and exposes its retry control if that read also fails.
+          preferenceProbeComplete = true
         }
-      } catch {
-        if (!current()) return
-        // A failed preferences probe cannot prove that this remembered chat
-        // has no saved choices. Keep it selected; the regular hydration path
-        // retries and exposes its retry control if that read also fails.
       }
     } else {
       wanted = sessions.value[0]?.id || newSessionID()
@@ -2176,6 +2212,7 @@ defineExpose({
                     :effort-options="effortOptions"
                     :default-effort-label="effortLabel(modelPreferences?.defaultEffort || '')"
                     :disabled="modelInteractionLocked"
+                    :model-selection-disabled="modelSwitchDisabled"
                     :saving="modelSaving"
                     :save-error="modelSaveError"
                     :reset-required="invalidEffort"
