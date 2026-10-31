@@ -19,16 +19,21 @@ package metering
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -70,7 +75,14 @@ type UserOptions struct {
 // free allowances; the `organizations` limit on this Entitlement is what
 // caps how many they may create. The Entitlement is create-only: the plan an
 // admin or billing sets later is never reset. When a User is gone, both
-// objects go too.
+// objects go too, once the user's organizations have moved off the account.
+//
+// Removal must survive a restart: a User deleted while the hub is down, or
+// while its removal is parked in a requeue, produces no event once the hub
+// is back, because startup enqueues only the Users that exist. A one-shot
+// sweep at manager start therefore lists the Accounts the hub labelled with
+// LabelUser and enqueues every one whose User is gone; from there the
+// ordinary reconcile (NotFound → remove) takes over, with its own requeue.
 type UserReconciler struct {
 	client.Client
 	opts UserOptions
@@ -86,10 +98,77 @@ func SetupUserReconciler(mgr manager.Manager, opts UserOptions) error {
 		opts.DefaultPlan = "free"
 	}
 	r := &UserReconciler{Client: mgr.GetClient(), opts: opts}
-	return ctrl.NewControllerManagedBy(mgr).
+	orphans := make(chan event.TypedGenericEvent[client.Object])
+	if err := ctrl.NewControllerManagedBy(mgr).
 		Named("metering-user").
 		For(&tenancyv1alpha1.User{}).
-		Complete(r)
+		WatchesRawSource(source.Channel(orphans, &handler.EnqueueRequestForObject{})).
+		Complete(r); err != nil {
+		return err
+	}
+	// Leader-elected like the controller (a plain RunnableFunc joins the
+	// manager's leader-election group), and started only once the caches
+	// have synced, so the User lookups below see the current set.
+	return mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		return r.sweepOrphanedAccounts(ctx, orphans)
+	}))
+}
+
+// sweepOrphanedAccounts runs once per manager start: as soon as metering is
+// installed it enqueues, through the controller's channel source, every User
+// whose hub-labelled Account outlived it. It returns when the sweep is done
+// or ctx ends; the reconcile loop owns the removal from there.
+func (r *UserReconciler) sweepOrphanedAccounts(ctx context.Context, sink chan<- event.TypedGenericEvent[client.Object]) error {
+	for {
+		if _, ok := r.opts.Discovery.Current(); ok {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(notInstalledRetry):
+		}
+	}
+	orphans, err := r.orphanedUserAccounts(ctx)
+	if err != nil {
+		// Not fatal to the manager: the next restart sweeps again, and a
+		// User deleted while this hub runs is handled by its own event.
+		r.opts.Logger.Error(err, "sweeping orphaned user accounts failed")
+		return nil
+	}
+	for _, user := range orphans {
+		r.opts.Logger.Info("user account outlived its user; scheduling its removal", "user", user, "account", UserAccountName(user))
+		select {
+		case <-ctx.Done():
+			return nil
+		case sink <- event.TypedGenericEvent[client.Object]{Object: &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: user}}}:
+		}
+	}
+	return nil
+}
+
+// orphanedUserAccounts lists the Accounts the hub created for Users and
+// returns, sorted, the names of the Users that no longer exist.
+func (r *UserReconciler) orphanedUserAccounts(ctx context.Context) ([]string, error) {
+	accounts, err := r.opts.Metering.Resource(gvrAccounts).List(ctx, metav1.ListOptions{LabelSelector: LabelUser})
+	if err != nil {
+		return nil, fmt.Errorf("listing user accounts: %w", err)
+	}
+	var orphans []string
+	for i := range accounts.Items {
+		user := accounts.Items[i].GetLabels()[LabelUser]
+		if user == "" {
+			continue
+		}
+		if err := r.Get(ctx, types.NamespacedName{Name: user}, &tenancyv1alpha1.User{}); err == nil {
+			continue
+		} else if !apierrors.IsNotFound(err) {
+			return nil, fmt.Errorf("getting User %q: %w", user, err)
+		}
+		orphans = append(orphans, user)
+	}
+	sort.Strings(orphans)
+	return orphans, nil
 }
 
 // Reconcile is the per-User step.

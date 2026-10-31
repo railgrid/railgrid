@@ -132,7 +132,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 				writeStatus(w, http.StatusConflict, "QuotaExceeded", "your plan does not allow creating organizations; ask a platform admin to raise your plan's limit")
 				return
 			}
-			writeStatus(w, http.StatusConflict, "QuotaExceeded", fmt.Sprintf("you already have %d of %d organizations; delete one or ask a platform admin to raise your plan's limit", qe.Count, qe.Cap))
+			writeStatus(w, http.StatusConflict, "QuotaExceeded", fmt.Sprintf("you already have %d of %d organizations (including ones awaiting deletion); a deleted organization frees its slot once its grace period ends, or ask a platform admin to raise your plan's limit", qe.Count, qe.Cap))
 			return
 		}
 		writeError(w, err)

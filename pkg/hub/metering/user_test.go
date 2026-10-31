@@ -19,6 +19,7 @@ package metering
 import (
 	"context"
 	"testing"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -28,7 +29,9 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -162,4 +165,77 @@ func TestUserNothingHappensUntilMeteringIsInstalled(t *testing.T) {
 		t.Fatalf("expected a retry while not installed, got %+v", res)
 	}
 	absent(t, store, gvrAccounts, "user-alice")
+}
+
+func seedAccount(t *testing.T, store dynamic.Interface, name string, labels map[string]string) {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	u.SetKind("Account")
+	u.SetName(name)
+	u.SetLabels(labels)
+	if _, err := store.Resource(gvrAccounts).Create(context.Background(), u, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("seed account %s: %v", name, err)
+	}
+}
+
+// A User deleted while the hub was down produces no event on restart, so the
+// startup sweep has to find the Account it left behind and enqueue it; an
+// Account whose User is still there, or one the hub did not label for a
+// User, is left alone.
+func TestStartupSweepEnqueuesAccountsWhoseUserIsGone(t *testing.T) {
+	r, store := newUserFixture(t, user("alice", "Alice"))
+	seedAccount(t, store, "user-alice", map[string]string{LabelUser: "alice"})
+	seedAccount(t, store, "user-bob", map[string]string{LabelUser: "bob"})
+	seedAccount(t, store, "user-carol", map[string]string{LabelUser: "carol"})
+	seedAccount(t, store, "org-1", map[string]string{"railgrid.ai/organization": "org-1"})
+
+	orphans, err := r.orphanedUserAccounts(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(orphans) != 2 || orphans[0] != "bob" || orphans[1] != "carol" {
+		t.Fatalf("orphans = %v, want [bob carol]", orphans)
+	}
+
+	sink := make(chan event.TypedGenericEvent[client.Object], 4)
+	if err := r.sweepOrphanedAccounts(context.Background(), sink); err != nil {
+		t.Fatal(err)
+	}
+	close(sink)
+	var enqueued []string
+	for evt := range sink {
+		enqueued = append(enqueued, evt.Object.GetName())
+	}
+	if len(enqueued) != 2 || enqueued[0] != "bob" || enqueued[1] != "carol" {
+		t.Fatalf("enqueued = %v, want [bob carol]", enqueued)
+	}
+
+	// The enqueued request takes the ordinary NotFound path and removes the
+	// objects, exactly as a live User delete would.
+	if res := reconcileUser(t, r, "bob"); res.RequeueAfter != 0 {
+		t.Fatalf("unexpected requeue %v", res.RequeueAfter)
+	}
+	if _, err := store.Resource(gvrAccounts).Get(context.Background(), "user-bob", metav1.GetOptions{}); err == nil {
+		t.Fatal("user-bob account should be gone")
+	}
+	if _, err := store.Resource(gvrAccounts).Get(context.Background(), "user-alice", metav1.GetOptions{}); err != nil {
+		t.Fatalf("user-alice account should stay: %v", err)
+	}
+}
+
+// Until metering is installed the sweep has nothing to read; it waits on the
+// context rather than failing the manager.
+func TestStartupSweepWaitsForMetering(t *testing.T) {
+	r, _ := newUserFixture(t)
+	r.opts.Discovery = installed(false)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	sink := make(chan event.TypedGenericEvent[client.Object], 1)
+	if err := r.sweepOrphanedAccounts(ctx, sink); err != nil {
+		t.Fatal(err)
+	}
+	if len(sink) != 0 {
+		t.Fatal("nothing should be enqueued without metering")
+	}
 }
