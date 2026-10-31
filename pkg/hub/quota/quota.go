@@ -14,76 +14,35 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package quota implements the quota checks pinned by decisions O-5
-// (Org quota = soft cap, admin-overridable per User; default 10) and
-// O-6 (Workspace quota = soft cap, admin-overridable per Org; default 50)
-// in docs/organizations.md. The package is library-only: it exposes
-// constants, helpers, and a Counter interface so REST handlers
-// (roadmap step 10) and any future controller-side admission can run
-// the same check.
+// Package quota implements the organizations-per-user check pinned by
+// decision O-5 in docs/organizations.md. It is library-only: the REST
+// createOrg handler supplies the effective cap (from the user's metering
+// Entitlement when metering is installed, else the hub's
+// --default-orgs-per-user) and a Counter over the user's existing
+// Organizations, and this package compares the two.
 //
-// Quota counting deliberately ignores Organizations created by the
-// hub's personal-Org bootstrap (spec.personal=true). Those are
-// auto-provisioned per User and shouldn't burn the user's
-// admin-overridable cap.
+// Workspace counts are no longer a hub quota (the former O-6): they are the
+// `workspaces` meter on the owning metering Account, enforced by the
+// metering webhook at the kcp shard.
+//
+// Counting ignores Organizations created by the hub's personal-Org
+// bootstrap (spec.personal=true): those are auto-provisioned per User and
+// must not burn the user's cap.
 package quota
 
 import (
 	"context"
 	"fmt"
-
-	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
-const (
-	// DefaultOrgsPerUser is the platform-wide soft cap on the number
-	// of Organizations a single User may create. Per O-5; overridable
-	// per User via User.spec.orgQuota (0 means use this default).
-	DefaultOrgsPerUser int32 = 10
+// DefaultOrgsPerUser is the platform-wide cap on the number of
+// Organizations a single User may create when no plan says otherwise. Per
+// O-5; the hub's --default-orgs-per-user flag overrides it.
+const DefaultOrgsPerUser int32 = 10
 
-	// DefaultWorkspacesPerOrg is the platform-wide soft cap on the
-	// number of child Workspaces an Organization may hold. Per O-6;
-	// overridable per Org via Organization.spec.workspaceQuota (0
-	// means use this default).
-	DefaultWorkspacesPerOrg int32 = 50
-
-	// LabelCreatedBy records which User CR created a given Organization.
-	// Set at create time by the hub's Org-create endpoint (roadmap step 10)
-	// and by the personal-Org bootstrap controller (roadmap step 1+). Used
-	// here to count Orgs against the user's quota.
-	LabelCreatedBy = tenancyv1alpha1.OrganizationCreatorLabel
-)
-
-// EffectiveOrgsPerUser returns the effective Org quota for the given
-// User. spec.orgQuota of 0 (the zero value) defers to the platform
-// default; a non-zero value overrides it.
-func EffectiveOrgsPerUser(user *tenancyv1alpha1.User) int32 {
-	if user == nil || user.Spec.OrgQuota == 0 {
-		return DefaultOrgsPerUser
-	}
-	return user.Spec.OrgQuota
-}
-
-// EffectiveWorkspacesPerOrg returns the effective Workspace quota for
-// the given Organization. spec.workspaceQuota of 0 defers to the
-// platform default; a non-zero value overrides it.
-func EffectiveWorkspacesPerOrg(org *tenancyv1alpha1.Organization) int32 {
-	if org == nil || org.Spec.WorkspaceQuota == 0 {
-		return DefaultWorkspacesPerOrg
-	}
-	return org.Spec.WorkspaceQuota
-}
-
-// Counter is the minimal interface the quota checks consume. The
-// caller supplies a Counter whose Count method returns the current
-// usage; the quota check compares against the cap and returns
-// QuotaExceededError when usage >= cap.
-//
-// Pulling the count behind an interface keeps the package
-// dependency-free of the railgrid / kcp clientsets so the helpers can be
-// unit-tested with a literal fakeCounter (see quota_test.go) and the
-// production wiring picks the appropriate listing strategy at the
-// call site.
+// Counter is the minimal interface the quota check consumes. The caller
+// supplies a Counter whose Count method returns the current usage; the check
+// compares against the cap and returns QuotaExceededError when usage >= cap.
 type Counter interface {
 	Count(ctx context.Context) (int32, error)
 }
@@ -94,14 +53,9 @@ type CounterFunc func(ctx context.Context) (int32, error)
 // Count implements Counter.
 func (f CounterFunc) Count(ctx context.Context) (int32, error) { return f(ctx) }
 
-// QuotaExceededError is returned by the Check* helpers when the
-// supplied Counter reports usage at or above the effective cap. Carries
-// structured fields so REST handlers (roadmap step 10) can map it to
-// a 409 Conflict (or 4xx of choice) with a machine-readable hint.
-//
-// The kind field describes what is being capped ("Organization" or
-// "Workspace"). Owner identifies the parent (User name for Org quota;
-// Organization UUID for Workspace quota).
+// QuotaExceededError is returned by CheckOrgQuota when the supplied Counter
+// reports usage at or above the effective cap. Carries structured fields so
+// the REST handler can answer 409 with a machine-readable hint.
 type QuotaExceededError struct {
 	Kind  string
 	Owner string
@@ -114,66 +68,31 @@ func (e *QuotaExceededError) Error() string {
 	return fmt.Sprintf("quota exceeded: %s for %q at %d/%d", e.Kind, e.Owner, e.Count, e.Cap)
 }
 
-// CheckOrgQuota verifies the User has not reached their Org-creation
-// cap. It calls counter.Count(ctx) to read current usage, then
-// compares against EffectiveOrgsPerUser(user).
+// CheckOrgQuota verifies the User named owner has not reached cap. It calls
+// counter.Count(ctx) to read current usage.
 //
 //   - Returns nil when usage < cap.
 //   - Returns a *QuotaExceededError when usage >= cap.
 //   - Returns the Counter's error verbatim on count failure.
 //
-// Personal Organizations created by the bootstrap controller are
-// expected to be excluded by the Counter implementation (the Counter
-// caller filters by spec.personal=false). The package does not enforce
-// that filter on its own to keep the abstraction tight; the
-// "Organizations counted exclude spec.personal=true" rule is part of
-// the Counter contract.
-func CheckOrgQuota(ctx context.Context, user *tenancyv1alpha1.User, counter Counter) error {
+// A cap of 0 denies: a plan or override may legitimately forbid creating
+// organizations, and the metering webhook enforces the same 0. A negative
+// cap means the caller could not resolve one and selects DefaultOrgsPerUser.
+// Personal Organizations are expected to be excluded by the Counter
+// implementation.
+func CheckOrgQuota(ctx context.Context, owner string, cap int32, counter Counter) error {
 	if counter == nil {
 		return fmt.Errorf("quota: counter is required")
+	}
+	if cap < 0 {
+		cap = DefaultOrgsPerUser
 	}
 	count, err := counter.Count(ctx)
 	if err != nil {
 		return fmt.Errorf("quota: counting Organizations: %w", err)
 	}
-	cap := EffectiveOrgsPerUser(user)
 	if count >= cap {
-		ownerName := ""
-		if user != nil {
-			ownerName = user.Name
-		}
-		return &QuotaExceededError{
-			Kind:  "Organization",
-			Owner: ownerName,
-			Count: count,
-			Cap:   cap,
-		}
-	}
-	return nil
-}
-
-// CheckWorkspaceQuota verifies the Organization has not reached its
-// Workspace-creation cap. Same contract as CheckOrgQuota.
-func CheckWorkspaceQuota(ctx context.Context, org *tenancyv1alpha1.Organization, counter Counter) error {
-	if counter == nil {
-		return fmt.Errorf("quota: counter is required")
-	}
-	count, err := counter.Count(ctx)
-	if err != nil {
-		return fmt.Errorf("quota: counting Workspaces: %w", err)
-	}
-	cap := EffectiveWorkspacesPerOrg(org)
-	if count >= cap {
-		ownerName := ""
-		if org != nil {
-			ownerName = org.Name
-		}
-		return &QuotaExceededError{
-			Kind:  "Workspace",
-			Owner: ownerName,
-			Count: count,
-			Cap:   cap,
-		}
+		return &QuotaExceededError{Kind: "Organization", Owner: owner, Count: count, Cap: cap}
 	}
 	return nil
 }

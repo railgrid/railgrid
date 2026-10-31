@@ -81,14 +81,6 @@ spec:
                   - refreshToken
                   type: object
                 type: array
-              orgQuota:
-                description: |-
-                  OrgQuota overrides the platform default cap on how many Organizations
-                  this User may create (see docs/organizations.md O-5). 0 means use the
-                  platform default. Settable only by a platform admin.
-                format: int32
-                minimum: 0
-                type: integer
               rbacIdentity:
                 type: string
             required:
