@@ -62,12 +62,37 @@ can proceed independently. `PUT /api/projects/{project}/repository` accepts
 
 ## Reasoning effort
 
-For supported models on the official OpenAI endpoint, **Models** exposes a
-**Reasoning effort** default. **Automatic** preserves App Studio's existing
-behavior. The composer offers **Model default** and the selected model's
-supported levels. Explicit `none`, where supported, is different from inheriting
-a default. Other providers, gateways, and unknown model IDs keep their existing
-behavior.
+Reasoning controls are exposed only when the saved provider, exact official
+endpoint, and model ID have a catalog profile. On the official OpenAI endpoint,
+**Models** exposes the existing **Reasoning effort** choices. **Automatic**
+preserves App Studio's existing behavior. The composer offers **Model default**
+and the selected model's supported levels; explicit `none`, where supported, is
+different from inheriting a default. OpenAI-compatible Chat Completions and
+Gemini routing otherwise keep their existing behavior.
+
+For the exact official Anthropic endpoint (`https://api.anthropic.com/v1`),
+App Studio uses Anthropic's native Messages API and exposes these model-specific
+choices:
+
+- `claude-opus-5-5`: low, medium, high, xhigh, max; model default is medium.
+- `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`,
+  `claude-sonnet-5-5`, `claude-sonnet-5`, and `claude-haiku-5-5`: low, medium,
+  high, xhigh, max; model default is high except Haiku 5.5, which defaults to
+  medium.
+- `claude-opus-4-6` and `claude-sonnet-4-6`: low, medium, high, max; model
+  default is high.
+- `claude-opus-4-5-20251101` (alias `claude-opus-4-5`): low, medium, high;
+  model default is high.
+
+Haiku 4.5 and Sonnet 4.5 do not expose effort controls. Anthropic model IDs on
+custom gateways do not advertise these choices. An empty Anthropic effort uses
+the model default and leaves `output_config.effort` unset; explicit selections
+are sent through the native Messages transport.
+
+Opus, Sonnet, and Haiku 5.5 also use Anthropic's thinking-block binding
+controls. If the system prompt, tools, or earlier messages change, Anthropic
+may drop incompatible signed thinking from saved history and regenerate it to
+continue. That compatibility fallback can increase output tokens and latency.
 
 Conversation overrides are saved per thread and per saved model, so switching
 models restores that model's choice. If a later model edit makes a choice

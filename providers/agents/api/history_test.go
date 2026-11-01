@@ -22,6 +22,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
@@ -42,8 +43,9 @@ func TestRunCallbacksPersistStructuredToolHistoryWithoutTruncation(t *testing.T)
 		ID: "call-1", Type: "function",
 		Function: schema.FunctionCall{Name: "save_order", Arguments: args},
 	}
+	continuation := &backend.ContinuationMetadata{ReasoningSignature: "opaque-signature"}
 	sink.Assistant(engine.AssistantMessage{
-		HasToolCalls: true, ToolCalls: []schema.ToolCall{call}, Complete: true,
+		HasToolCalls: true, ToolCalls: []schema.ToolCall{call}, Continuation: continuation, Complete: true,
 	})
 	result := strings.Repeat("result-", 1500)
 	sink.ToolEnd(engine.ToolEvent{ID: "call-1", Name: "save_order", Args: args, Result: result})
@@ -57,6 +59,9 @@ func TestRunCallbacksPersistStructuredToolHistoryWithoutTruncation(t *testing.T)
 	}
 	if rows[0].Metadata["modelOnly"] != true {
 		t.Fatalf("empty assistant tool-call row metadata = %#v, want modelOnly", rows[0].Metadata)
+	}
+	if rows[0].Metadata[backend.ContinuationMetadataEnvelopeKey] == nil {
+		t.Fatalf("assistant tool-call row lost continuation envelope: %#v", rows[0].Metadata)
 	}
 	if len(rows[1].Content) != len(result) || rows[1].Content != result {
 		t.Fatalf("tool result length = %d, want full %d-byte result", len(rows[1].Content), len(result))
@@ -82,6 +87,13 @@ func TestRunCallbacksPersistStructuredToolHistoryWithoutTruncation(t *testing.T)
 	}
 	if modelHistory[0].ID != rows[0].ID || modelHistory[0].Sequence != rows[0].Sequence || modelHistory[1].ID != rows[1].ID || modelHistory[1].Sequence != rows[1].Sequence {
 		t.Fatalf("model history lost exact source identities: %#v", modelHistory)
+	}
+	if !modelHistory[0].Continuation.Equal(continuation) {
+		t.Fatalf("model history lost continuation metadata: %#v", modelHistory[0].Continuation)
+	}
+	public := publicContinuationTranscriptMessages(rows)
+	if _, leaked := public[0].Metadata[backend.ContinuationMetadataEnvelopeKey]; leaked {
+		t.Fatalf("public transcript exposed continuation metadata: %#v", public[0].Metadata)
 	}
 }
 
@@ -527,6 +539,63 @@ func TestResponsesContinuationHistoryIsInternalAndRestoresCalls(t *testing.T) {
 		if strings.Contains(string(encoded), secret) {
 			t.Errorf("public chat transcript exposed %q: %s", secret, encoded)
 		}
+	}
+}
+
+func TestClaudeContinuationMetadataSurvivesTranscriptAndCompactionReplay(t *testing.T) {
+	continuation := &backend.ContinuationMetadata{ReasoningSignature: "opaque-signature-for-omitted-thinking"}
+	at := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
+	assistant := assistantCallRow("assistant-claude", "run-claude", "call-claude", "read_file", `{}`, at)
+	assistant.Metadata[backend.ContinuationMetadataEnvelopeKey] = continuation.Clone()
+	rows := []store.Message{
+		assistant,
+		toolResultRow("tool-claude", "run-claude", "call-claude", "read_file", "contents", at.Add(time.Second)),
+	}
+
+	// PostgreSQL JSONB reads nested metadata as generic maps, so exercise the
+	// same serialization boundary before rebuilding model history.
+	encodedRows, err := json.Marshal(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedRows []store.Message
+	if err := json.Unmarshal(encodedRows, &persistedRows); err != nil {
+		t.Fatal(err)
+	}
+	history := engineMessagesFromHistory(persistedRows)
+	if len(history) != 2 || history[0].Continuation == nil ||
+		history[0].Continuation.ReasoningContent != "" ||
+		history[0].Continuation.ReasoningSignature != continuation.ReasoningSignature {
+		t.Fatalf("transcript replay lost signature-only continuation: %#v", history)
+	}
+
+	checkpoint := checkpointHistoryFromEngineMessages(history)
+	encodedCheckpoint, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persistedCheckpoint []store.SessionCheckpointMessage
+	if err := json.Unmarshal(encodedCheckpoint, &persistedCheckpoint); err != nil {
+		t.Fatal(err)
+	}
+	replayedCheckpoint, err := engineMessagesFromCheckpoint(persistedCheckpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(replayedCheckpoint) != 2 || replayedCheckpoint[0].Continuation == nil ||
+		!replayedCheckpoint[0].Continuation.Equal(continuation) {
+		t.Fatalf("compacted checkpoint replay lost signature-only continuation: %#v", replayedCheckpoint)
+	}
+
+	public := publicContinuationTranscriptMessages(persistedRows)
+	if _, leaked := public[0].Metadata[backend.ContinuationMetadataEnvelopeKey]; leaked {
+		t.Fatalf("public transcript exposed private continuation envelope: %#v", public[0].Metadata)
+	}
+	if public[0].Metadata[historyToolCallsKey] == nil {
+		t.Fatalf("stripping private continuation also removed tool-card metadata: %#v", public[0].Metadata)
+	}
+	if persistedRows[0].Metadata[backend.ContinuationMetadataEnvelopeKey] == nil {
+		t.Fatal("public response transformation mutated the store-owned metadata")
 	}
 }
 

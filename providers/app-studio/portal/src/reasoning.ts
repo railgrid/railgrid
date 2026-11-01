@@ -2,6 +2,8 @@ export interface ReasoningCatalogEntry {
   id: string
   aliases?: string[]
   efforts: string[]
+  defaultEffort?: string
+  anthropicMessages?: boolean
   responsesForReasoning?: boolean
 }
 
@@ -12,6 +14,7 @@ export interface ReasoningModelConnection {
 }
 
 export const OPENAI_API_BASE_URL = 'https://api.openai.com/v1'
+export const ANTHROPIC_MESSAGES_BASE_URL = 'https://api.anthropic.com/v1'
 
 function normalizedBaseURL(value: string | undefined): string {
   const raw = (value ?? '').trim() || OPENAI_API_BASE_URL
@@ -38,6 +41,31 @@ function normalizedBaseURL(value: string | undefined): string {
   return OPENAI_API_BASE_URL
 }
 
+function normalizedAnthropicBaseURL(value: string | undefined): string {
+  const raw = (value ?? '').trim()
+  if (!raw || /[?#]/.test(raw)) return ''
+  const authorityMatch = raw.match(/^https:\/\/([^/?#]*)/i)
+  const rawAuthority = authorityMatch?.[1] ?? ''
+  if (!/^(?:api\.anthropic\.com|api\.anthropic\.com:443)$/i.test(rawAuthority)) return ''
+  const rawPath = authorityMatch ? raw.slice(authorityMatch[0].length) || '/' : ''
+  if (rawPath !== '/v1' && rawPath !== '/v1/') return ''
+  let parsed: URL
+  try {
+    parsed = new URL(raw)
+  } catch {
+    return ''
+  }
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.hostname.toLowerCase() !== 'api.anthropic.com' ||
+    (parsed.port !== '' && parsed.port !== '443') ||
+    parsed.username !== '' || parsed.password !== '' ||
+    parsed.search !== '' || parsed.hash !== '' ||
+    (parsed.pathname !== '/v1' && parsed.pathname !== '/v1/')
+  ) return ''
+  return ANTHROPIC_MESSAGES_BASE_URL
+}
+
 export function normalizedReasoningModelID(value: string): string {
   return value.trim().toLowerCase()
 }
@@ -57,10 +85,25 @@ export function reasoningEffortsForConnection(
   catalog: readonly ReasoningCatalogEntry[],
 ): string[] {
   const provider = (connection.provider ?? '').trim().toLowerCase()
-  const baseURL = normalizedBaseURL(connection.baseURL || OPENAI_API_BASE_URL)
-  if ((provider && provider !== 'openai-compatible') || baseURL !== OPENAI_API_BASE_URL) return []
+  if (provider && provider !== 'openai-compatible' && provider !== 'openai') return []
   const entry = lookupReasoningModel(connection.model, catalog)
+  if (!entry) return []
+  const baseURL = entry.anthropicMessages
+    ? normalizedAnthropicBaseURL(connection.baseURL)
+    : normalizedBaseURL(connection.baseURL || OPENAI_API_BASE_URL)
+  if (entry.anthropicMessages ? baseURL !== ANTHROPIC_MESSAGES_BASE_URL : baseURL !== OPENAI_API_BASE_URL) return []
   return entry?.efforts.filter((effort) => typeof effort === 'string' && effort.trim() !== '') ?? []
+}
+
+export function reasoningDefaultEffortForConnection(
+  connection: ReasoningModelConnection,
+  catalog: readonly ReasoningCatalogEntry[],
+): string {
+  const entry = lookupReasoningModel(connection.model, catalog)
+  if (!entry?.anthropicMessages || !entry.defaultEffort) return ''
+  return reasoningEffortsForConnection(connection, catalog).includes(entry.defaultEffort)
+    ? entry.defaultEffort
+    : ''
 }
 
 export function isReasoningEffortSupported(effort: string, options: readonly string[]): boolean {

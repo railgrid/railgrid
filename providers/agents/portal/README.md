@@ -60,18 +60,21 @@ disabled while a preference request is pending, without closing the reasoning
 picker.
 
 Effort choices come from the shared server-side model capability catalog.
-Custom endpoints and unknown models show only model selection. Agents uses Eino's
-Automatic Responses routing is limited to the official OpenAI endpoint. There,
-Agents uses Eino's native Responses model for the GPT-6 family and for some
-earlier catalog models when a selected reasoning effort requires it. Custom
-gateways use Chat Completions by default unless a run resumes with a pinned
-protocol. This support does not extend to every model served only by Responses.
-Other supported models use Chat Completions. Unless a reasoning effort is
-explicitly selected, Responses requests omit the reasoning field. In
-particular, GPT-6 Luna no longer gets an implicit `none`; the model uses its own
-default. The run records its transport and effective reasoning effort for
-approval resumes and recovery. Effort is remembered separately for each
-credential in a chat.
+Custom endpoints and unknown models show only model selection. On the official
+OpenAI endpoint, Agents uses Eino's native Responses model for the GPT-6 family
+and for selected earlier catalog models when a reasoning choice requires it.
+Responses routing is limited to that endpoint; custom gateways use Chat
+Completions by default unless a run resumes with a pinned protocol. This support
+does not extend to every model served only by Responses. Other supported models
+use Chat Completions. Unless a reasoning effort is explicitly selected,
+Responses requests omit the reasoning field. In particular, GPT-6 Luna no
+longer gets an implicit `none`; the model uses its own default. The run records
+its transport and effective reasoning effort for approval resumes and recovery.
+
+Claude effort is available only for documented Claude model IDs on Anthropic's
+official Messages endpoint. Agents uses Anthropic's native
+`output_config.effort`, not the OpenAI-compatible `reasoning_effort` field.
+Effort is remembered separately for each credential in a chat.
 Switching back to a credential whose remembered effort is no longer supported
 resets that effort to model default; valid remembered choices are retained.
 

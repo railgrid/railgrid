@@ -93,11 +93,12 @@ func TestLoadCredentialFollowsSecretRef(t *testing.T) {
 				cred: &agentsv1alpha1.ModelCredential{
 					ObjectMeta: metav1.ObjectMeta{Name: "main"},
 					Spec: agentsv1alpha1.ModelCredentialSpec{
-						Provider:  llm.ProviderOpenAICompatible,
-						BaseURL:   "https://api.openai.com/v1",
-						Model:     "gpt-4o",
-						SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: tt.secretName},
-						SecretKey: tt.secretKey,
+						Provider:             llm.ProviderOpenAICompatible,
+						BaseURL:              "https://api.openai.com/v1",
+						Model:                "gpt-4o",
+						SecretRef:            agentsv1alpha1.ModelCredentialSecretRef{Name: tt.secretName},
+						SecretKey:            tt.secretKey,
+						AnthropicWorkspaceID: "wrkspc_team",
 					},
 				},
 				secrets: map[string]*corev1.Secret{},
@@ -111,6 +112,9 @@ func TestLoadCredentialFollowsSecretRef(t *testing.T) {
 			}
 			if tt.wantErr {
 				return
+			}
+			if got.AnthropicWorkspaceID != "wrkspc_team" {
+				t.Fatal("resolved profile lost the saved Anthropic workspace ID")
 			}
 			if got.APIKey != tt.wantKey {
 				t.Fatalf("api key = %q, want %q", got.APIKey, tt.wantKey)

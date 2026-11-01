@@ -309,11 +309,12 @@ type updateConnectionInput struct {
 }
 
 type saveCredentialInput struct {
-	Name     string `json:"name" jsonschema:"Credential name agents reference, e.g. anthropic-main"`
-	Model    string `json:"model" jsonschema:"Model id served by this endpoint, e.g. claude-sonnet-5"`
-	Provider string `json:"provider,omitempty" jsonschema:"Provider id; defaults to the OpenAI-compatible driver"`
-	BaseURL  string `json:"baseURL,omitempty" jsonschema:"API base URL; empty means the provider default"`
-	APIKey   string `json:"apiKey,omitempty" jsonschema:"The API key. Write-only: stored in a Secret and never returned. Omit to keep the existing key when updating"`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty" jsonschema:"Anthropic workspace ID (wrkspc_...), required for keys not scoped to a workspace; sent only to api.anthropic.com"`
+	Name                 string `json:"name" jsonschema:"Credential name agents reference, e.g. anthropic-main"`
+	Model                string `json:"model" jsonschema:"Model id served by this endpoint, e.g. claude-sonnet-5"`
+	Provider             string `json:"provider,omitempty" jsonschema:"Provider id; defaults to the OpenAI-compatible driver"`
+	BaseURL              string `json:"baseURL,omitempty" jsonschema:"API base URL; empty means the provider default"`
+	APIKey               string `json:"apiKey,omitempty" jsonschema:"The API key. Write-only: stored in a Secret and never returned. Omit to keep the existing key when updating"`
 }
 
 type testResultOutput struct {
@@ -804,7 +805,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, credentialSummary{}, err
 		}
-		req := modelCredential{Name: in.Name, Provider: in.Provider, BaseURL: in.BaseURL, Model: in.Model, APIKey: in.APIKey}
+		req := modelCredential{Name: in.Name, Provider: in.Provider, BaseURL: in.BaseURL, Model: in.Model, APIKey: in.APIKey, AnthropicWorkspaceID: in.AnthropicWorkspaceID}
 		cred, err := applyCredentialUpsert(ctx, c, &req)
 		if err != nil {
 			return nil, credentialSummary{}, err
@@ -812,7 +813,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		// Ready is deliberately absent here: the reconciler has not seen the
 		// object yet, and claiming readiness a moment before anything verified
 		// it is the mistake hasAPIKey used to make.
-		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, BaseURL: cred.BaseURL, Model: cred.Model}, nil
+		return nil, credentialSummary{Name: cred.Name, Provider: cred.Provider, BaseURL: cred.BaseURL, Model: cred.Model, AnthropicWorkspaceID: cred.AnthropicWorkspaceID}, nil
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
@@ -848,7 +849,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, testResultOutput{OK: false, Error: "credential not configured: " + err.Error()}, nil
 		}
-		models, latency, perr := llm.DiscoverModels(ctx, profile.BaseURL, profile.APIKey)
+		models, latency, perr := llm.DiscoverModels(ctx, profile)
 		if perr != nil {
 			return nil, testResultOutput{OK: false, LatencyMS: latency.Milliseconds(), Error: perr.Error()}, nil
 		}

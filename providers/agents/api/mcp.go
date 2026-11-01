@@ -194,10 +194,11 @@ type updateAgentInput struct {
 }
 
 type credentialSummary struct {
-	Name     string `json:"name"`
-	Provider string `json:"provider,omitempty"`
-	BaseURL  string `json:"baseURL,omitempty"`
-	Model    string `json:"model,omitempty"`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
+	Name                 string `json:"name"`
+	Provider             string `json:"provider,omitempty"`
+	BaseURL              string `json:"baseURL,omitempty"`
+	Model                string `json:"model,omitempty"`
 	// Ready mirrors the ModelCredential's Ready condition: its Secret
 	// resolved and its endpoint answered. It replaces the old hasAPIKey,
 	// which only said a key had been typed, never that it worked.
@@ -409,12 +410,13 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		for i := range list.Items {
 			cred := &list.Items[i]
 			out.Credentials = append(out.Credentials, credentialSummary{
-				Name:     cred.Name,
-				Provider: cred.Spec.Provider,
-				BaseURL:  cred.Spec.BaseURL,
-				Model:    cred.Spec.Model,
-				Ready:    meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady),
-				Models:   cred.Status.Models,
+				Name:                 cred.Name,
+				Provider:             cred.Spec.Provider,
+				BaseURL:              cred.Spec.BaseURL,
+				AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID,
+				Model:                cred.Spec.Model,
+				Ready:                meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady),
+				Models:               cred.Status.Models,
 			})
 		}
 		sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Name < out.Credentials[j].Name })

@@ -83,6 +83,10 @@ func TestModelTransportRespectsEndpointAndPersistedProtocol(t *testing.T) {
 		transport string
 		effort    string
 	}{
+		{"Haiku official default", Profile{BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-5-5"}, TransportAnthropicMessages, ""},
+		{"Haiku official explicit effort", Profile{Provider: ProviderOpenAI, BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-5-5", ReasoningEffort: "xhigh"}, TransportAnthropicMessages, "xhigh"},
+		{"Haiku gateway", Profile{BaseURL: "https://gateway.example/v1", Model: "claude-haiku-5-5"}, TransportChatCompletions, ""},
+		{"frozen Anthropic", Profile{BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-5-5", Transport: TransportAnthropicMessages}, TransportAnthropicMessages, ""},
 		{"Luna default", Profile{Model: "gpt-6-luna"}, TransportResponses, ""},
 		{"Luna low", Profile{Provider: ProviderOpenAI, Model: "gpt-6-luna", ReasoningEffort: "low"}, TransportResponses, "low"},
 		{"Luna none", Profile{Model: "gpt-6-luna", ReasoningEffort: "none"}, TransportResponses, "none"},

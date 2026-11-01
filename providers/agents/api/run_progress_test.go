@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -52,6 +53,35 @@ func TestTurnProgressTrackerKeepsFailedModelOutputUnclassified(t *testing.T) {
 	}
 	if got := tracker.partialText(); got != "" {
 		t.Fatalf("classified output left in partial buffer: %q", got)
+	}
+}
+
+func TestFinalTranscriptPersistsContinuationOutsideVisibleContent(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	s := &Server{store: st}
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "scout"}
+	startedAt := time.Date(2026, 9, 10, 10, 0, 0, 0, time.UTC)
+	continuation := &backend.ContinuationMetadata{ReasoningSignature: "opaque-signature"}
+	tracker := newTurnProgressTracker(0)
+	tracker.assistant(backend.AssistantMessage{Content: "answer", Complete: true, Continuation: continuation})
+	if err := s.appendTurnFinal(ctx, scope, taskRun{RunID: "run-1"}, "chat", startedAt, startedAt.Add(time.Second), tracker, "answer"); err != nil {
+		t.Fatal(err)
+	}
+	page, err := st.ListMessages(ctx, scope, "chat", 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Content != "answer" {
+		t.Fatalf("final transcript = %#v", page.Items)
+	}
+	replayed := engineMessagesFromHistory(page.Items)
+	if len(replayed) != 1 || replayed[0].Content != "answer" || !replayed[0].Continuation.Equal(continuation) {
+		t.Fatalf("final transcript replay lost continuation: %#v", replayed)
+	}
+	public := publicContinuationTranscriptMessages(page.Items)
+	if _, leaked := public[0].Metadata[backend.ContinuationMetadataEnvelopeKey]; leaked {
+		t.Fatalf("public final message exposed continuation: %#v", public[0].Metadata)
 	}
 }
 

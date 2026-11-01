@@ -100,8 +100,11 @@ type Message struct {
 	ToolCalls  []schema.ToolCall `json:"toolCalls,omitempty"`
 	ToolCallID string            `json:"toolCallID,omitempty"`
 	Name       string            `json:"name,omitempty"`
-	ID         string            `json:"id,omitempty"`
-	Sequence   int64             `json:"sequence,omitempty"`
+	// Continuation carries bounded model protocol state needed to continue a
+	// reasoning response. It is never rendered as transcript content.
+	Continuation *ContinuationMetadata `json:"-"`
+	ID           string                `json:"id,omitempty"`
+	Sequence     int64                 `json:"sequence,omitempty"`
 	// Ephemeral marks generated context that has no durable transcript identity,
 	// such as a tool-returned image follow-up. It must not become a durable user
 	// request or enter a session replacement checkpoint.
@@ -249,6 +252,9 @@ type AssistantMessage struct {
 	Content      string
 	HasToolCalls bool
 	ToolCalls    []schema.ToolCall
+	// Continuation is protocol state for the next model request, not prose for
+	// the user-facing transcript.
+	Continuation *ContinuationMetadata `json:"-"`
 	Complete     bool
 	Duration     time.Duration
 }

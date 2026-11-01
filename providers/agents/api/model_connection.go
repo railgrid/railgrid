@@ -213,7 +213,7 @@ func (s *Server) discoverModelCredential(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	models, latency, err := llm.DiscoverModels(r.Context(), profile.BaseURL, profile.APIKey)
+	models, latency, err := llm.DiscoverModels(r.Context(), profile)
 	result := credentialTestResult{OK: err == nil, Models: models, LatencyMS: latency.Milliseconds()}
 	if err != nil {
 		result.Error = "Could not find models. Check the endpoint and credential, or enter a model ID manually."

@@ -1,5 +1,124 @@
 [
   {
+    "id": "claude-haiku-5-5",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "medium",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-4-5-20251101",
+    "aliases": [
+      "claude-opus-4-5"
+    ],
+    "efforts": [
+      "low",
+      "medium",
+      "high"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-4-6",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-4-7",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-4-8",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-5",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-opus-5-5",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "medium",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-sonnet-4-6",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-sonnet-5",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
+    "id": "claude-sonnet-5-5",
+    "efforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ],
+    "defaultEffort": "high",
+    "anthropicMessages": true
+  },
+  {
     "id": "gpt-5",
     "aliases": [
       "gpt-5-2025-08-07"

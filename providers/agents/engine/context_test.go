@@ -50,6 +50,33 @@ func TestContextCompactionCannotDropRetainedToolContinuationMetadata(t *testing.
 	}
 }
 
+func TestContextCompactionCannotDropRetainedClaudeContinuationMetadata(t *testing.T) {
+	call := schema.ToolCall{
+		ID: "call-claude", Type: "function",
+		Function: schema.FunctionCall{Name: "read_file", Arguments: `{}`},
+	}
+	input := []*schema.Message{
+		schema.UserMessage("older"),
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{call}, Extra: map[string]any{
+			"_eino_claude_thinking":           "",
+			"_eino_claude_thinking_signature": "opaque-signature",
+		}},
+		schema.ToolMessage("contents", call.ID, schema.WithToolName(call.Function.Name)),
+		schema.UserMessage("latest request"),
+	}
+	_, _, _, err := compactBeforeRequest(context.Background(), input, nil, 0, &Message{Role: RoleUser, Content: "latest request"}, TurnConfig{
+		ContextBudgetTokens: 1,
+		ContextCompactor: func(_ context.Context, history []Message, _ ContextEstimate) ([]Message, error) {
+			assistant := history[1]
+			assistant.Continuation = nil
+			return []Message{assistant, history[2], history[3]}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed continuation metadata") {
+		t.Fatalf("compaction error = %v, want retained Claude continuation refusal", err)
+	}
+}
+
 func TestEstimateTokens(t *testing.T) {
 	if estimateTokens("") != 0 {
 		t.Fatal("the empty string is zero tokens")

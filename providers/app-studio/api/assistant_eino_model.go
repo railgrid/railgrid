@@ -31,6 +31,7 @@ import (
 	openaimodel "github.com/cloudwego/eino-ext/components/model/openai"
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	"google.golang.org/genai"
 )
@@ -41,6 +42,7 @@ const (
 	projectLLMTransportResponses       = "responses"
 	projectLLMTransportChatCompletions = "chat-completions"
 	projectLLMTransportGemini          = "gemini"
+	projectLLMTransportAnthropic       = "anthropic-messages"
 )
 
 func newProjectEinoAssistantModelFactory(server *Server) projectEinoAssistantModelFactory {
@@ -127,6 +129,8 @@ func newProjectEinoChatModel(ctx context.Context, settings projectLLMSettings) (
 		return newProjectEinoGeminiChatModel(ctx, settings)
 	case projectLLMTransportResponses:
 		return newProjectEinoResponsesModel(ctx, settings)
+	case projectLLMTransportAnthropic:
+		return newProjectEinoAnthropicChatModel(ctx, settings)
 	default:
 		return newProjectEinoOpenAIChatModel(ctx, settings)
 	}
@@ -145,6 +149,9 @@ func projectLLMTransport(settings projectLLMSettings) string {
 	}
 	if provider == projectLLMProviderGoogle {
 		return projectLLMTransportGemini
+	}
+	if (provider == defaultProjectLLMProvider || provider == "openai") && anthropicmodel.UsesEndpoint(settings.BaseURL) {
+		return projectLLMTransportAnthropic
 	}
 	if provider != defaultProjectLLMProvider {
 		return projectLLMTransportChatCompletions
@@ -177,6 +184,19 @@ func projectLLMEffectiveReasoningEffort(settings projectLLMSettings) string {
 		return string(projectLegacyChatReasoningEffort(settings.Model))
 	}
 	return ""
+}
+
+func newProjectEinoAnthropicChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
+	model, err := anthropicmodel.New(ctx, anthropicmodel.Config{
+		APIKey:  strings.TrimSpace(settings.APIKey),
+		BaseURL: strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
+		Model:   strings.TrimSpace(settings.Model),
+		Effort:  projectLLMEffectiveReasoningEffort(settings),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create native Eino Anthropic Messages model: %w", err)
+	}
+	return model, nil
 }
 
 // GPT-6 Astra and GPT-6.1 Sol require Responses for function calling. Use the
@@ -332,9 +352,12 @@ func projectModelSupportsTemperature(model string) bool {
 }
 
 // projectTemperatureOptions returns the per-call temperature option for the
-// given model, or nil when the model does not accept a custom temperature.
-func projectTemperatureOptions(model string, temperature float32) []einomodel.Option {
-	if !projectModelSupportsTemperature(model) {
+// configured model transport, or nil when it must not be sent. The native
+// Anthropic Messages adapter honors the caller's temperature option, but the
+// project preflight/title sampling default is not meaningful for Anthropic and
+// can conflict with model-specific reasoning defaults.
+func projectTemperatureOptions(settings projectLLMSettings, temperature float32) []einomodel.Option {
+	if projectLLMTransport(settings) == projectLLMTransportAnthropic || !projectModelSupportsTemperature(settings.Model) {
 		return nil
 	}
 	return []einomodel.Option{einomodel.WithTemperature(temperature)}

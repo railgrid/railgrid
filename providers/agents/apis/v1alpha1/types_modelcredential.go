@@ -147,6 +147,13 @@ type ModelCredentialSpec struct {
 	// +kubebuilder:validation:Pattern=`^(https?://[^\s]+)?$`
 	BaseURL string `json:"baseURL,omitempty"`
 
+	// AnthropicWorkspaceID selects the Anthropic workspace for API keys that
+	// are not scoped to one workspace. Sent only to api.anthropic.com.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^(wrkspc_[A-Za-z0-9]+)?$`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
+
 	// Model is the default model id runs use, e.g. gpt-4o. Optional so a
 	// credential can be saved before its endpoint has been asked what it
 	// serves; an agent cannot run on a credential without one.

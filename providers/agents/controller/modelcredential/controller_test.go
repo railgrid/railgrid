@@ -138,10 +138,10 @@ func condition(t *testing.T, cred *agentsv1alpha1.ModelCredential, typ string) m
 // before any agent exists.
 func TestReconcileReadyRecordsModels(t *testing.T) {
 	var sawKey string
-	probe := func(_ context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
-		sawKey = apiKey
-		if baseURL != "https://api.openai.com/v1" {
-			t.Errorf("probed %q, want the credential's baseURL", baseURL)
+	probe := func(_ context.Context, profile llm.Profile) ([]string, time.Duration, error) {
+		sawKey = profile.APIKey
+		if profile.BaseURL != "https://api.openai.com/v1" {
+			t.Errorf("probed %q, want the credential's baseURL", profile.BaseURL)
 		}
 		return []string{"gpt-4o", "gpt-5"}, 12 * time.Millisecond, nil
 	}
@@ -178,13 +178,30 @@ func TestReconcileReadyRecordsModels(t *testing.T) {
 	}
 }
 
+func TestReconcilePassesAnthropicWorkspace(t *testing.T) {
+	cred := credential()
+	cred.Spec.BaseURL = "https://api.anthropic.com/v1"
+	cred.Spec.AnthropicWorkspaceID = "wrkspc_team"
+	probe := func(_ context.Context, profile llm.Profile) ([]string, time.Duration, error) {
+		if profile.AnthropicWorkspaceID != "wrkspc_team" || profile.APIKey != "test-key" || profile.BaseURL != cred.Spec.BaseURL {
+			t.Errorf("discovery profile did not preserve the saved workspace, key and endpoint")
+		}
+		return []string{"claude-sonnet-4"}, 0, nil
+	}
+	r, c := newReconciler(t, probe, cred, secret(true, map[string][]byte{"apiKey": []byte("test-key")}))
+	reconcileOnce(t, r)
+	if got := condition(t, read(t, c), agentsv1alpha1.ConditionReady); got.Status != metav1.ConditionTrue {
+		t.Fatalf("not ready: %+v", got)
+	}
+}
+
 // A Secret with the key but without the owner label is the failure that used
 // to be invisible: the portal's own reads work (they run as the user), and
 // every unattended run goes blind, because the provider's claim is scoped to
 // that label.
 func TestReconcileUnlabelledSecretIsNotResolved(t *testing.T) {
 	probed := false
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probed = true
 		return nil, 0, nil
 	}
@@ -229,7 +246,7 @@ func TestReconcileSecretMissingAndIncomplete(t *testing.T) {
 // A refused key is Reachable=False with a bounded error, and the error never
 // carries the key — the upstream body can echo the header it travelled in.
 func TestReconcileProbeFailureIsBoundedAndKeyFree(t *testing.T) {
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return nil, 40 * time.Millisecond, &llm.ProbeError{Status: 401, Msg: strings.Repeat("secret-key-value ", 200)}
 	}
 	r, c := newReconciler(t, probe, credential(), secret(true, map[string][]byte{"apiKey": []byte("secret-key-value")}))
@@ -288,7 +305,7 @@ func TestReconcileBoundsDiscoveredModels(t *testing.T) {
 	for i := range many {
 		many[i] = "m"
 	}
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return many, time.Millisecond, nil
 	}
 	r, c := newReconciler(t, probe, credential(), secret(true, map[string][]byte{"apiKey": []byte("k")}))
@@ -301,7 +318,7 @@ func TestReconcileBoundsDiscoveredModels(t *testing.T) {
 // A second reconcile that found nothing new writes nothing, so a slow resync
 // does not churn resourceVersions across every tenant.
 func TestReconcileIsIdempotent(t *testing.T) {
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return []string{"gpt-4o"}, time.Millisecond, nil
 	}
 	r, c := newReconciler(t, probe, credential(), secret(true, map[string][]byte{"apiKey": []byte("k")}))
@@ -353,7 +370,7 @@ func TestReconcileSecretReadFailureIsNotAVerdict(t *testing.T) {
 // request back, and this status is durable and listable — a gateway that
 // echoed the Authorization header would otherwise put a live key in it.
 func TestReconcileNeverStoresTheUpstreamBody(t *testing.T) {
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return nil, time.Millisecond, &llm.ProbeError{
 			Status: 401,
 			Msg:    `{"error":{"message":"Incorrect API key provided: sk-live-do-not-store"}}`,
@@ -382,7 +399,7 @@ func TestReconcileAdoptsItsSecret(t *testing.T) {
 	cred.UID = "cred-uid-1"
 	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
 	sec.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: "other", UID: "other-uid"}}
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return []string{"gpt-4o"}, time.Millisecond, nil
 	}
 	r, c := newReconciler(t, probe, cred, sec)
@@ -414,7 +431,7 @@ func TestReconcileDoesNotAdoptAnUnlabelledSecret(t *testing.T) {
 	cred := credential()
 	cred.UID = "cred-uid-1"
 	sec := secret(false, map[string][]byte{"apiKey": []byte("k")})
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) { return nil, 0, nil }
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) { return nil, 0, nil }
 	r, c := newReconciler(t, probe, cred, sec)
 	reconcileOnce(t, r)
 	var got corev1.Secret
@@ -436,7 +453,7 @@ func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
 	cred.Spec.SecretRef.Name = "my-own-openai-key"
 	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
 	sec.Name = "my-own-openai-key"
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		return []string{"gpt-4o"}, time.Millisecond, nil
 	}
 	r, c := newReconciler(t, probe, cred, sec)

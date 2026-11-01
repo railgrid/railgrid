@@ -283,6 +283,39 @@ func TestProjectAssistantReasoningExplicitReplayComparesRequestPresence(t *testi
 	}
 }
 
+func TestProjectAssistantAnthropicReasoningSnapshotPreservesNativeTransport(t *testing.T) {
+	settings := projectLLMSettings{
+		Provider:        defaultProjectLLMProvider,
+		BaseURL:         "https://api.anthropic.com/v1",
+		Model:           "claude-haiku-5-5",
+		ReasoningEffort: "high",
+	}
+	snapshot, err := resolveProjectAssistantReasoningForTurn(&settings, nil, nil, "claude")
+	if err != nil {
+		t.Fatalf("resolve Anthropic reasoning: %v", err)
+	}
+	if snapshot.Transport != projectLLMTransportAnthropic || snapshot.EffectiveEffort != "high" {
+		t.Fatalf("Anthropic reasoning snapshot = %#v, want native Messages with high effort", snapshot)
+	}
+
+	run := store.AssistantRun{}
+	if err := bindProjectAssistantStartReasoningAudit(&run, snapshot); err != nil {
+		t.Fatalf("persist Anthropic reasoning snapshot: %v", err)
+	}
+	restored := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  "https://api.anthropic.com/v1",
+		Model:    "claude-haiku-5-5",
+	}
+	applyProjectAssistantReasoningSnapshot(&restored, run)
+	if got := projectLLMTransport(restored); got != projectLLMTransportAnthropic {
+		t.Fatalf("restored transport = %q, want %q", got, projectLLMTransportAnthropic)
+	}
+	if got := projectLLMEffectiveReasoningEffort(restored); got != "high" {
+		t.Fatalf("restored effort = %q, want high", got)
+	}
+}
+
 func reasoningEffortPointer(value string) *string { return &value }
 
 func sameOptionalString(left, right *string) bool {

@@ -150,7 +150,7 @@ func TestMarkedProbeWaitsForPersistedDeadlineAndRestartRecoversIt(t *testing.T) 
 	cred, secret := probePair(created, "", "credential-uid") // legacy probe, no expiry annotation
 	c := probeTestClient(t, cred, secret)
 	probeCalls := 0
-	probe := func(context.Context, string, string) ([]string, time.Duration, error) {
+	probe := func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probeCalls++
 		return nil, 0, errors.New("temporary credentials must skip readiness polling")
 	}
@@ -231,7 +231,7 @@ func TestExpiredProbeDeletesOnlyItsOwnedSecretFirstWithUIDAndResourceVersion(t *
 		},
 	})
 	probeCalls := 0
-	res, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, string, string) ([]string, time.Duration, error) {
+	res, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probeCalls++
 		return nil, 0, nil
 	}), testCluster)
@@ -259,7 +259,7 @@ func TestExpiredProbeWithMissingSecretCleansUpPartialCreate(t *testing.T) {
 	cred, _ := probePair(now.Add(-11*time.Minute), "", "credential-uid")
 	c := probeTestClient(t, cred)
 	probeCalls := 0
-	_, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, string, string) ([]string, time.Duration, error) {
+	_, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probeCalls++
 		return nil, 0, nil
 	}), testCluster)
@@ -279,7 +279,7 @@ func TestExpiredProbeRefusesMismatchedSecretAndRecordsSafeStatus(t *testing.T) {
 	secret.Annotations[credentialProbeIDAnnotation] = "other-probe"
 	c := probeTestClient(t, cred, secret)
 	probeCalls := 0
-	_, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, string, string) ([]string, time.Duration, error) {
+	_, err := reconcileProbe(t, probeReconciler(c, now, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probeCalls++
 		return nil, 0, nil
 	}), testCluster)
@@ -506,7 +506,7 @@ func TestUnmarkedOldCredentialStillUsesNormalReadinessProbe(t *testing.T) {
 	cred.Labels = map[string]string{claimscope.OwnerLabel: agentsclient.ProviderName}
 	c := probeTestClient(t, cred, secret(true, map[string][]byte{"apiKey": []byte("k")}))
 	probed := false
-	r := probeReconciler(c, now, func(context.Context, string, string) ([]string, time.Duration, error) {
+	r := probeReconciler(c, now, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
 		probed = true
 		return []string{"gpt-4o"}, time.Millisecond, nil
 	})

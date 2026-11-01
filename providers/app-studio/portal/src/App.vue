@@ -355,7 +355,7 @@ import { useProductionSettings } from './useProductionSettings'
 import { newestDeployableRelease, releaseHasPromotionEvidence } from './releaseSelection'
 import { reconcileHistorySelection, repositoryCommitSelectable, selectedHistoryCommit } from './sourceHistory'
 import reasoningCatalog from './generated/reasoning-catalog.json'
-import { reasoningEffortError, reasoningEffortLabel, reasoningEffortsForConnection, reasoningSelectionError, type ReasoningCatalogEntry } from './reasoning'
+import { reasoningDefaultEffortForConnection, reasoningEffortError, reasoningEffortLabel, reasoningEffortsForConnection, reasoningSelectionError, type ReasoningCatalogEntry } from './reasoning'
 import { initialReasoningEffortSnapshot, overlayThreadReasoningPreferenceDrafts, reasoningEffortsForDraftScope, supportedReasoningEffortSnapshot, threadReasoningEffort } from './threadReasoning'
 import type {
   DevelopmentTemplate,
@@ -2336,9 +2336,12 @@ const selectedReasoningEffortChoices = computed(() => selectedReasoningEffortOpt
   label: reasoningEffortLabel(effort),
 })))
 const selectedModelDefaultEffort = computed(() => selectedLLMModel.value?.reasoningEffort ?? '')
-const selectedModelDefaultEffortLabel = computed(() => selectedModelDefaultEffort.value
-  ? reasoningEffortLabel(selectedModelDefaultEffort.value)
-  : '')
+const selectedModelDefaultEffortLabel = computed(() => {
+  if (selectedModelDefaultEffort.value) return reasoningEffortLabel(selectedModelDefaultEffort.value)
+  if (!selectedLLMModel.value) return ''
+  const providerDefault = reasoningDefaultEffortForConnection(selectedLLMModel.value, reasoningCatalogEntries)
+  return providerDefault ? reasoningEffortLabel(providerDefault) : ''
+})
 const selectedModelDefaultEffortUnsupported = computed(() => Boolean(
   selectedModelDefaultEffort.value && reasoningEffortError(selectedModelDefaultEffort.value, selectedReasoningEffortOptions.value),
 ))

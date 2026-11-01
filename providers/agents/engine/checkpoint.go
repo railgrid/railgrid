@@ -10,6 +10,7 @@ package engine
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -72,6 +73,9 @@ type CheckpointMessage struct {
 	// ResultUnavailable marks a reference-only result that has no reference to
 	// reopen, such as a failed execution.
 	ResultUnavailable bool `json:"resultUnavailable,omitempty"`
+	// Continuation is allowlisted model protocol state. It is not rendered as
+	// transcript prose and is present only on assistant messages.
+	Continuation *backend.ContinuationMetadata `json:"continuation,omitempty"`
 }
 
 // CheckpointToolCall mirrors an assistant message's tool call.
@@ -107,6 +111,11 @@ func checkpointMessagesWithIdentities(in []*schema.Message, identities map[*sche
 			ToolCallID: m.ToolCallID,
 			ToolName:   m.ToolName,
 			Name:       m.Name,
+		}
+		if m.Role == schema.Assistant {
+			if continuation, err := backend.ContinuationMetadataFromExtra(m.Extra); err == nil {
+				cm.Continuation = continuation
+			}
 		}
 		if cm.Content == "" && (len(m.UserInputMultiContent) > 0 || len(m.MultiContent) > 0) {
 			cm.Content = "[multimodal content from tool calls omitted on resume]"
@@ -156,6 +165,9 @@ func restoreMessagesWithIdentities(in []CheckpointMessage) ([]*schema.Message, m
 			ToolName:   cm.ToolName,
 			Name:       cm.Name,
 		}
+		if m.Role == schema.Assistant && cm.Continuation != nil {
+			m.Extra = cm.Continuation.EinoExtra()
+		}
 		for _, tc := range cm.ToolCalls {
 			m.ToolCalls = append(m.ToolCalls, schema.ToolCall{
 				ID: tc.ID, Type: checkpointToolCallType(tc.Type),
@@ -177,6 +189,21 @@ func restoreMessagesWithIdentities(in []CheckpointMessage) ([]*schema.Message, m
 		out = append(out, m)
 	}
 	return out, identities
+}
+
+func validateCheckpointContinuations(in []CheckpointMessage) error {
+	for index, message := range in {
+		if message.Continuation == nil {
+			continue
+		}
+		if message.Role != string(schema.Assistant) {
+			return fmt.Errorf("checkpoint message %d has continuation metadata on role %q", index, message.Role)
+		}
+		if err := message.Continuation.Validate(); err != nil {
+			return fmt.Errorf("checkpoint message %d has invalid continuation metadata: %w", index, err)
+		}
+	}
+	return nil
 }
 
 func checkpointToolCallType(value string) string {

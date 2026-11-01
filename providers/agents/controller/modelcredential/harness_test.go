@@ -37,8 +37,8 @@ func harnessCredential(provider string) *agentsv1alpha1.ModelCredential {
 // no chat API would accept.
 func refuseProbe(t *testing.T) Prober {
 	t.Helper()
-	return func(_ context.Context, baseURL, _ string) ([]string, time.Duration, error) {
-		t.Errorf("the reconciler probed %q for a harness credential; harness identities have no endpoint", baseURL)
+	return func(_ context.Context, profile llm.Profile) ([]string, time.Duration, error) {
+		t.Errorf("the reconciler probed %q for a harness credential; harness identities have no endpoint", profile.BaseURL)
 		return nil, 0, nil
 	}
 }

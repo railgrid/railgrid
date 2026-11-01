@@ -174,6 +174,11 @@ func messagesFromEino(in []*schema.Message, identities map[*schema.Message]histo
 			Name:       messageName(m),
 			ToolCalls:  cloneToolCalls(m.ToolCalls),
 		}
+		if m.Role == schema.Assistant {
+			if continuation, err := backend.ContinuationMetadataFromExtra(m.Extra); err == nil {
+				msg.Continuation = continuation
+			}
+		}
 		if identity, ok := identities[m]; ok {
 			msg.ID = identity.id
 			msg.Sequence = identity.sequence
@@ -309,6 +314,9 @@ func compactBeforeRequest(
 	if err := validateReferenceOnlyCompaction(history, replacement); err != nil {
 		return nil, nil, false, err
 	}
+	if err := validateContinuationCompaction(history, replacement); err != nil {
+		return nil, nil, false, err
+	}
 	if err := ensureLatestUserMessageRetained(replacement, task); err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
@@ -359,6 +367,7 @@ func validateRetainedToolCallMetadata(source, replacement []Message) error {
 func redactReferenceOnlyForCompaction(messages []Message) []Message {
 	out := append([]Message(nil), messages...)
 	for i := range out {
+		out[i].Continuation = out[i].Continuation.Clone()
 		if out[i].ResultReference != nil {
 			ref := out[i].ResultReference.Clone()
 			out[i].ResultReference = &ref
@@ -368,6 +377,65 @@ func redactReferenceOnlyForCompaction(messages []Message) []Message {
 		}
 	}
 	return out
+}
+
+// validateContinuationCompaction prevents a compactor from changing metadata
+// required to replay a retained assistant turn. Whole assistant messages may
+// be folded away; if a message is retained, its allowlisted continuation pair
+// must remain byte-for-byte identical.
+func validateContinuationCompaction(source, replacement []Message) error {
+	want := make(map[string][]*backend.ContinuationMetadata)
+	for _, message := range source {
+		if message.Role != RoleAssistant {
+			continue
+		}
+		key := continuationMessageKey(message)
+		want[key] = append(want[key], message.Continuation.Clone())
+	}
+	used := make(map[string]int, len(want))
+	for _, message := range replacement {
+		if message.Role != RoleAssistant {
+			if message.Continuation != nil {
+				return fmt.Errorf("context compactor changed continuation metadata")
+			}
+			continue
+		}
+		if message.Continuation != nil {
+			if err := message.Continuation.Validate(); err != nil {
+				return fmt.Errorf("context compactor changed continuation metadata")
+			}
+		}
+		key := continuationMessageKey(message)
+		candidates, ok := want[key]
+		index := used[key]
+		if !ok || index >= len(candidates) {
+			if message.Continuation != nil {
+				return fmt.Errorf("context compactor changed continuation metadata")
+			}
+			continue
+		}
+		if !candidates[index].Equal(message.Continuation) {
+			return fmt.Errorf("context compactor changed continuation metadata")
+		}
+		used[key]++
+	}
+	return nil
+}
+
+func continuationMessageKey(message Message) string {
+	if message.ID != "" {
+		return fmt.Sprintf("id\x00%s\x00%d", message.ID, message.Sequence)
+	}
+	callIDs := make([]string, 0, len(message.ToolCalls))
+	for _, call := range message.ToolCalls {
+		callIDs = append(callIDs, call.ID)
+	}
+	encoded, _ := json.Marshal(struct {
+		Role    string   `json:"role"`
+		Content string   `json:"content"`
+		Calls   []string `json:"calls"`
+	}{Role: message.Role, Content: message.Content, Calls: callIDs})
+	return string(encoded)
 }
 
 // validateReferenceOnlyCompaction requires every reference-only receipt to

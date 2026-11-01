@@ -274,6 +274,9 @@ func (e *Engine) ResumeTurnWithTools(
 	if err != nil {
 		return Result{}, fmt.Errorf("engine: estimating tool schemas: %w", err)
 	}
+	if err := validateCheckpointContinuations(ck.Messages); err != nil {
+		return Result{}, err
+	}
 	in, identities := restoreMessagesWithIdentities(ck.Messages)
 	if len(in) == 0 {
 		return Result{}, errors.New("engine: checkpoint has no messages")
@@ -286,7 +289,8 @@ func (e *Engine) ResumeTurnWithTools(
 		checkpointHistory = append(checkpointHistory, Message{
 			Role: message.Role, Content: message.Content, ToolCallID: message.ToolCallID,
 			Name: checkpointMessageName(message), ToolCalls: checkpointToolCalls(message.ToolCalls),
-			ID: message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
+			Continuation: message.Continuation.Clone(),
+			ID:           message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
 		})
 	}
 	task := latestUserMessage(checkpointHistory)
@@ -421,9 +425,15 @@ func (e *Engine) loop(
 			if cb.HydrateToolCalls != nil && len(full.ToolCalls) > 0 {
 				full.ToolCalls = cloneToolCalls(cb.HydrateToolCalls(full))
 			}
+			continuation, err := backend.ContinuationMetadataFromExtra(full.Extra)
+			if err != nil {
+				cb.assistantMessage(AssistantMessage{Duration: time.Since(started)})
+				return Result{}, fmt.Errorf("engine: invalid model continuation metadata: %w", err)
+			}
 			cb.assistantMessage(AssistantMessage{
 				Content: full.Content, HasToolCalls: len(full.ToolCalls) > 0, ToolCalls: cloneToolCalls(full.ToolCalls),
-				Complete: true, Duration: time.Since(started),
+				Continuation: continuation.Clone(),
+				Complete:     true, Duration: time.Since(started),
 			})
 			if len(full.ToolCalls) == 0 {
 				return Result{Content: content.String(), FinalContent: full.Content, Usage: *usage}, nil
@@ -737,6 +747,9 @@ func toEinoWithIdentities(msgs []Message) ([]*schema.Message, map[*schema.Messag
 		message := &schema.Message{
 			Role: role, Content: m.Content, Name: m.Name,
 			ToolCalls: cloneToolCalls(m.ToolCalls), ToolCallID: m.ToolCallID,
+		}
+		if role == schema.Assistant {
+			message.Extra = m.Continuation.EinoExtra()
 		}
 		if role == schema.Tool {
 			message.ToolName = m.Name

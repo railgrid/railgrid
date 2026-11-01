@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/railgrid/provider-agents/backend"
 )
 
 // ErrSessionCheckpointStale indicates that a concurrent compaction already
@@ -332,13 +334,14 @@ type SessionCheckpoint struct {
 // checkpoint. Tool calls and their results remain structured so replay can
 // restore valid call/result pairing after restart.
 type SessionCheckpointMessage struct {
-	ID         string                      `json:"id,omitempty"`
-	Sequence   int64                       `json:"sequence,omitempty"`
-	Role       string                      `json:"role"`
-	Content    string                      `json:"content,omitempty"`
-	Name       string                      `json:"name,omitempty"`
-	ToolCallID string                      `json:"toolCallID,omitempty"`
-	ToolCalls  []SessionCheckpointToolCall `json:"toolCalls,omitempty"`
+	ID           string                        `json:"id,omitempty"`
+	Sequence     int64                         `json:"sequence,omitempty"`
+	Role         string                        `json:"role"`
+	Content      string                        `json:"content,omitempty"`
+	Name         string                        `json:"name,omitempty"`
+	ToolCallID   string                        `json:"toolCallID,omitempty"`
+	ToolCalls    []SessionCheckpointToolCall   `json:"toolCalls,omitempty"`
+	Continuation *backend.ContinuationMetadata `json:"continuation,omitempty"`
 }
 
 // SessionCheckpointToolCall is the durable subset of a model tool call.
@@ -367,6 +370,14 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 		case "system", "user", "assistant", "tool":
 		default:
 			return fmt.Errorf("session checkpoint message %d has unsupported role %q", i, message.Role)
+		}
+		if message.Continuation != nil {
+			if message.Role != "assistant" {
+				return fmt.Errorf("session checkpoint message %d has continuation metadata on role %q", i, message.Role)
+			}
+			if err := message.Continuation.Validate(); err != nil {
+				return fmt.Errorf("session checkpoint message %d has invalid continuation metadata: %w", i, err)
+			}
 		}
 	}
 	return nil

@@ -597,6 +597,22 @@ describe('model credentials', () => {
     })
   })
 
+  it('creates, reads, updates and clears the Anthropic workspace ID', async () => {
+    kcp.fail('GET /modelcredentials/claude', 404, 'NotFound')
+    await resources.saveCredential({ name: 'claude', baseURL: 'https://api.anthropic.com/v1', apiKey: 'test-key', anthropicWorkspaceID: 'wrkspc_team' })
+    expect((kcp.lastOf('POST').body as { spec: Record<string, unknown> }).spec.anthropicWorkspaceID).toBe('wrkspc_team')
+    kcp = new FakeKcp()
+    resources.setContext(contextWith(CLUSTER))
+    const object = { metadata: { name: 'claude' }, spec: { baseURL: 'https://api.anthropic.com/v1', secretRef: { name: 's' }, anthropicWorkspaceID: 'wrkspc_team' } }
+    kcp.reply('GET /modelcredentials/claude', object)
+    kcp.reply('GET /modelcredentials', { items: [object] })
+    expect((await resources.listCredentials())[0]?.anthropicWorkspaceID).toBe('wrkspc_team')
+    await resources.saveCredential({ name: 'claude', baseURL: object.spec.baseURL, anthropicWorkspaceID: 'wrkspc_other' })
+    expect((kcp.lastOf('PATCH').body as { spec: Record<string, unknown> }).spec.anthropicWorkspaceID).toBe('wrkspc_other')
+    await resources.saveCredential({ name: 'claude', baseURL: object.spec.baseURL, anthropicWorkspaceID: '' })
+    expect((kcp.lastOf('PATCH').body as { spec: Record<string, unknown> }).spec.anthropicWorkspaceID).toBeNull()
+  })
+
   it('follows the stored secretRef on an edit instead of recomputing the name', async () => {
     // A hand-written credential may point its key anywhere. An edit that
     // silently moved it onto this writer's default name would write the new

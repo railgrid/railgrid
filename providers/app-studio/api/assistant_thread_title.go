@@ -158,7 +158,7 @@ func (s *Server) generateAssistantThreadTitle(ctx context.Context, c *asclient.C
 	reply, err := model.Generate(ctx, []*einoschema.Message{
 		einoschema.SystemMessage(projectAssistantThreadTitleSystemPrompt),
 		einoschema.UserMessage(prompt),
-	}, projectTemperatureOptions(settings.Model, 0.1)...)
+	}, projectTemperatureOptions(settings, 0.1)...)
 	if err != nil {
 		return "", err
 	}
