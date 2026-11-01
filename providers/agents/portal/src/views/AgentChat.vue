@@ -10,6 +10,7 @@ import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
+import { readAssistantThreadPins, toggleAssistantThreadPin, removeAssistantThreadPin } from '../agentkit/threadPins'
 import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
 import AITranscript from '../agentkit/AITranscript.vue'
 import { toast } from '../portalkit/toast'
@@ -456,6 +457,12 @@ const sessionRailScope = computed(() => {
   const userKey = user?.sub || user?.userId || user?.email || ''
   return ['agents', tenant.orgUUID || '', tenant.workspaceUUID || '', userKey, props.name].join(':')
 })
+const pinnedSessionIDs = ref<string[]>([])
+watch(sessionRailScope, scope => { pinnedSessionIDs.value = readAssistantThreadPins(scope, []) }, { immediate: true })
+function toggleSessionPin(id: string): void {
+  if (!sessionOptions.value.some(session => session.id === id)) return
+  pinnedSessionIDs.value = toggleAssistantThreadPin(sessionRailScope.value, id, pinnedSessionIDs.value)
+}
 const activeSessionLabel = computed(() => {
   const active = sessionOptions.value.find(session => session.id === sessionID.value)
   return active ? sessionLabel(active) : 'New chat'
@@ -1893,6 +1900,8 @@ async function deleteSession(id = sessionID.value): Promise<void> {
     if (await blockedByLiveRun()) return
     await authority.api.deleteSession(name, id)
     if (!authorityIsCurrent(authority) || props.name !== name) return
+    removeAssistantThreadPin(sessionRailScope.value, id)
+    pinnedSessionIDs.value = pinnedSessionIDs.value.filter(candidate => candidate !== id)
     toast('ok', 'Chat deleted.')
     sessionReadSerial += 1
     // No replacement list read follows deletion. Clear the invalidated
@@ -2217,12 +2226,14 @@ defineExpose({
           :loading="sessionsLoading && !sessionsHasSnapshot"
           :selecting-thread-i-d="selectingSessionID"
           :actioning-thread-i-d="deletingSessionID"
-          :capabilities="{ create: true, delete: !streaming }"
+          :capabilities="{ create: true, pin: true, delete: !streaming }"
+          :pinned-thread-i-ds="pinnedSessionIDs"
           :storage-scope="sessionRailScope"
           delete-label="Delete chat"
           @select="selectConversation"
           @create="createConversation"
           @delete="deleteSession"
+          @toggle-pin="toggleSessionPin"
         />
       </div>
 

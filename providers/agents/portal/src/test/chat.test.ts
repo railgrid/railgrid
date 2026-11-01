@@ -108,6 +108,22 @@ async function chooseSession(el: HTMLElement, label: string): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('persists thread pins per agent and keeps delete available beside pin', async () => {
+    const listSessions = async () => [session('pinned', 'Pinned conversation')]
+    const first = await mountChat(scripted([]), { listSessions })
+    const row = first.el.querySelector('[data-thread-id="pinned"]')!.closest('.k-ai-conversation-rail__item')!
+    expect(row.querySelector('button[aria-label="Delete chat"]')).not.toBeNull()
+    row.querySelector<HTMLButtonElement>('button[aria-label="Pin thread"]')!.click()
+    await settle()
+    expect(first.el.querySelector('button[aria-label="Unpin thread"]')).not.toBeNull()
+    first.view.unmount()
+    const second = await mountChat(scripted([]), { listSessions })
+    expect(second.el.querySelector('button[aria-label="Unpin thread"]')).not.toBeNull()
+    await second.view.setProps({ name: 'another-agent' })
+    await settle()
+    expect(second.el.querySelector('button[aria-label="Unpin thread"]')).toBeNull()
+  })
+
   it('prefers an async generated title in the header and rail after the reply finishes', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const preview = 'Investigate order 42'
