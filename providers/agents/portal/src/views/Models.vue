@@ -197,6 +197,7 @@ function familyEndpoint(credential: Credential): string {
   return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
 }
 const providerConnections = computed(() => credentials.value.data.filter(item => item.isConnection))
+const showProviderFirstRun = computed(() => credentials.value.loaded && !providerConnections.value.length && (!credentials.value.error || credentials.value.hasSnapshot))
 const connectionRows = computed(() => providerConnections.value.map(credential => ({
   id: credential.name,
   name: credential.displayName || credential.name,
@@ -372,7 +373,7 @@ defineExpose({ loadCatalog, loadUsage })
           <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
           <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
         </div>
-        <button v-if="credentialView && (!showFirstRun || connectionView)" class="k-btn k-btn--primary" @click="connectionView ? openProvider() : beginModel()"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
+        <button v-if="credentialView && !(connectionView ? showProviderFirstRun : showFirstRun)" class="k-btn k-btn--primary" @click="connectionView ? openProvider() : beginModel()"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
       </header>
       <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
@@ -389,7 +390,10 @@ defineExpose({ loadCatalog, loadUsage })
       </template>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
         <header class="k-resource-page__header"><div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Each connection stores one key that its models reuse.</p></div></header>
+        <div v-if="showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
+        <FirstRunGuide v-if="showProviderFirstRun" title="No provider connections yet" description="Bring an API key to connect a provider once, then reuse its connection across models." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
         <ResourceTable
+          v-else
           :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'endpoint', label: 'Endpoint', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
           :rows="connectionRows"
           row-key="id"
