@@ -180,6 +180,116 @@ class CheckoutTest(unittest.TestCase):
             with patch.dict(m.os.environ, {'GOFLAGS': '-mod=readonly'}):
                 self.assertEqual(m.environment(config)['GOFLAGS'], '-mod=readonly -buildvcs=false')
 
+    def test_preview_settings_default_to_checkout_domain_and_gateway_port(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(m.os.environ, {}, clear=True):
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps-abc.127.0.0.1.sslip.io')
+            self.assertEqual(env['RAILGRID_APP_PUBLIC_PORT'], str(m.PORTS['PREVIEW_GATEWAY_PORT']))
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'default')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE'], 'default')
+
+    def test_preview_settings_use_shell_values_ahead_of_root_env(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            (Path(root) / '.env').write_text(
+                'RAILGRID_APP_BASE_DOMAIN=apps.file.example\n'
+                'RAILGRID_APP_PUBLIC_PORT=443\n'
+            )
+            with patch.dict(m.os.environ, {
+                    'RAILGRID_APP_BASE_DOMAIN': 'apps.shell.example',
+                    'RAILGRID_APP_PUBLIC_PORT': '',
+            }, clear=True):
+                env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps.shell.example')
+            self.assertEqual(env['RAILGRID_APP_PUBLIC_PORT'], '')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'environment')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE'], 'environment')
+
+    def test_preview_settings_read_root_env_and_preserve_empty_public_port(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            env_file = Path(root) / '.env'
+            env_file.write_text(
+                'RAILGRID_APP_BASE_DOMAIN=apps.dev.example\n'
+                'RAILGRID_APP_PUBLIC_PORT=\n'
+            )
+            with patch.dict(m.os.environ, {}, clear=True):
+                env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps.dev.example')
+            self.assertEqual(env['RAILGRID_APP_PUBLIC_PORT'], '')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'dotenv')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE'], 'dotenv')
+
+    def test_blank_preview_domain_falls_back_and_keeps_empty_port(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            env_file = Path(root) / '.env'
+            env_file.write_text(
+                'RAILGRID_APP_BASE_DOMAIN=apps.file.example\n'
+                'RAILGRID_APP_PUBLIC_PORT=\n'
+            )
+            for inherited in (
+                    {'RAILGRID_APP_BASE_DOMAIN': '  \t'},
+                    {'RAILGRID_APP_BASE_DOMAIN': '  \t',
+                     'RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE': 'environment'},
+            ):
+                with self.subTest(inherited=inherited), patch.dict(m.os.environ, inherited, clear=True):
+                    env = m.environment(config)
+                self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps.file.example')
+                self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'dotenv')
+                self.assertEqual(env['RAILGRID_APP_PUBLIC_PORT'], '')
+
+            env_file.write_text('RAILGRID_APP_BASE_DOMAIN=  \t\nRAILGRID_APP_PUBLIC_PORT=\n')
+            with patch.dict(m.os.environ, {'RAILGRID_APP_BASE_DOMAIN': '  \t'}, clear=True):
+                env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps-abc.127.0.0.1.sslip.io')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'default')
+            self.assertEqual(env['RAILGRID_APP_PUBLIC_PORT'], '')
+
+            with patch.dict(m.os.environ, {}, clear=True):
+                env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps-abc.127.0.0.1.sslip.io')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'default')
+
+    def test_preview_dotenv_and_default_values_are_reloaded_from_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            env_file = Path(root) / '.env'
+            env_file.write_text(
+                'RAILGRID_APP_BASE_DOMAIN=apps.first.example\n'
+                'RAILGRID_APP_PUBLIC_PORT=\n'
+            )
+            with patch.dict(m.os.environ, {}, clear=True):
+                first = m.environment(config)
+            with patch.dict(m.os.environ, first, clear=True):
+                same = m.environment(config)
+            self.assertEqual(same['RAILGRID_APP_BASE_DOMAIN'], 'apps.first.example')
+            self.assertEqual(same['RAILGRID_APP_PUBLIC_PORT'], '')
+
+            env_file.write_text('RAILGRID_APP_BASE_DOMAIN=apps.second.example\n')
+            with patch.dict(m.os.environ, first, clear=True):
+                changed = m.environment(config)
+            self.assertEqual(changed['RAILGRID_APP_BASE_DOMAIN'], 'apps.second.example')
+            self.assertEqual(changed['RAILGRID_APP_PUBLIC_PORT'], str(m.PORTS['PREVIEW_GATEWAY_PORT']))
+            self.assertEqual(changed['RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE'], 'default')
+
+            env_file.unlink()
+            with patch.dict(m.os.environ, changed, clear=True):
+                defaulted = m.environment(config)
+            self.assertEqual(defaulted['RAILGRID_APP_BASE_DOMAIN'], 'apps-abc.127.0.0.1.sslip.io')
+
+    def test_preview_dotenv_replaces_an_unmarked_inherited_checkout_default(self):
+        with tempfile.TemporaryDirectory() as root:
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            (Path(root) / '.env').write_text('RAILGRID_APP_BASE_DOMAIN=apps.dev.example\n')
+            with patch.dict(m.os.environ, {
+                    'RAILGRID_APP_BASE_DOMAIN': 'apps-abc.127.0.0.1.sslip.io',
+            }, clear=True):
+                env = m.environment(config)
+            self.assertEqual(env['RAILGRID_APP_BASE_DOMAIN'], 'apps.dev.example')
+            self.assertEqual(env['RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE'], 'dotenv')
+
     def test_env_does_not_generate_manifests_or_update_state(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -224,11 +334,20 @@ class CheckoutTest(unittest.TestCase):
                 ca = m.settings(Path(a))
             with patch.object(m, 'allocate_ports', return_value={k: v + 2000 for k, v in m.PORTS.items()}):
                 cb = m.settings(Path(b))
-            ea, eb = m.environment(ca), m.environment(cb)
-            for key in list(m.PORTS) + ['KRO_KIND_NAME', 'KUBECONFIG', 'DEV_AGENT_KIND',
-                                       'AGENTS_POSTGRES_CONTAINER', 'DEV_HUB_URL',
-                                       'DEV_SSH_CONTAINER', 'RAILGRID_APP_BASE_DOMAIN']:
-                self.assertNotEqual(ea[key], eb[key], key)
+            # This is a default-isolation fixture. The repository's root .env
+            # is exported by Make, so remove inherited preview overrides while
+            # keeping the checkout-specific domain assertion meaningful.
+            env = dict(m.os.environ)
+            for name in ('RAILGRID_APP_BASE_DOMAIN', 'RAILGRID_APP_PUBLIC_PORT',
+                         'RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE',
+                         'RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE'):
+                env.pop(name, None)
+            with patch.dict(m.os.environ, env, clear=True):
+                ea, eb = m.environment(ca), m.environment(cb)
+                for key in list(m.PORTS) + ['KRO_KIND_NAME', 'KUBECONFIG', 'DEV_AGENT_KIND',
+                                           'AGENTS_POSTGRES_CONTAINER', 'DEV_HUB_URL',
+                                           'DEV_SSH_CONTAINER', 'RAILGRID_APP_BASE_DOMAIN']:
+                    self.assertNotEqual(ea[key], eb[key], key)
             self.assertEqual(m.settings(Path(a)), ca)
             self.assertIn(ea['HUB_PORT'], ea['VITE_HUB_URL'])
             self.assertIn(ea['AGENTS_POSTGRES_PORT'], ea['AGENTS_DEV_DATABASE_URL'])

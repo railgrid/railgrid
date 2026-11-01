@@ -56,6 +56,21 @@ tilt down
 - The Tiltfile intentionally skips the slow provider-portal Vite builds (`make build-hub`) because `--portal-dev-url` proxies all UI traffic to the Vite dev server.
 - If port 3000 is already taken, kill the existing Vite process (`pkill -f vite`) before running `tilt up`.
 
+### Application preview domain
+
+Tilt generates a checkout-specific `apps-<checkout-key>.127.0.0.1.sslip.io`
+domain by default. To use a custom wildcard zone, copy [`.env.example`](.env.example)
+to the ignored root `.env` file and set `RAILGRID_APP_BASE_DOMAIN` to the base
+zone, such as `apps.example.com` (omit `*.`). The domain must resolve to the
+local preview listener or to a trusted front proxy that forwards to it.
+
+Tilt uses this one value for the Infrastructure provider's generated app hosts,
+the preview Gateway's wildcard listener and certificate, the in-cluster browser
+DNS override, and the host-side tunnel probe. Editing `.env` reloads and
+reconciles those resources. `RAILGRID_APP_PUBLIC_PORT` is optional; by default
+Tilt advertises its local preview port, and an explicitly empty value means
+standard HTTPS on port 443.
+
 ### Providers from other repositories
 
 If you develop an external provider, such as the private providers in

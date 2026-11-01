@@ -7,6 +7,12 @@
 # before Tiltfile evaluation; use `make tilt` when another Tilt is running.
 for provider in ['quickstart', 'infrastructure', 'code', 'kuery', 'app-studio', 'agents', 'edges']:
     watch_file('providers/' + provider + '/manifest.yaml')
+# The checkout launcher resolves root .env overrides before the Tilt graph is
+# evaluated. Reload the file itself so a changed preview zone is resolved
+# again and reconciled through the Gateway and Infrastructure provider.
+watch_file('.env')
+# Re-evaluate the resolved environment when its source changes too.
+watch_file('hack/scripts/tilt-checkout.py')
 # Nothing below deploys to the current kube context: the hub, portal and
 # providers are local_resources, and the one k8s deploy path (external
 # provider charts) refuses any context other than the kro kind cluster before
@@ -124,12 +130,14 @@ app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 kcp_external_root = '.kcp-external'
 kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 
-# Public URL overrides keep the default sslip.io local loop intact while
-# allowing a developer to put trusted DNS/TLS in front of the same dynamic
-# virtual-host routing. The public app port may be explicitly empty when the
-# external endpoint uses the normal HTTPS port.
+# `tilt-checkout.py prepare-env` resolves the app domain once: inherited user
+# setting, root .env, then checkout-specific sslip.io. Use that same value for
+# the provider, Gateway listener, browser DNS, and tunnel probe. The public app
+# port may be explicitly empty when the external endpoint uses normal HTTPS.
 railgrid_hub_external_url = os.getenv('RAILGRID_HUB_EXTERNAL_URL', os.getenv('DEV_HUB_URL', 'https://console.127.0.0.1.sslip.io:9443'))
-preview_app_base_domain = os.getenv('RAILGRID_APP_BASE_DOMAIN', 'apps.127.0.0.1.sslip.io')
+preview_app_base_domain = os.getenv('RAILGRID_APP_BASE_DOMAIN', '')
+if not preview_app_base_domain:
+    fail('Tilt setup did not resolve RAILGRID_APP_BASE_DOMAIN')
 preview_gateway_port = os.getenv('PREVIEW_GATEWAY_PORT', '10443')
 preview_app_public_port = os.getenv('RAILGRID_APP_PUBLIC_PORT', preview_gateway_port)
 preview_app_public_port_suffix = (':' + preview_app_public_port) if preview_app_public_port else ''
@@ -916,6 +924,8 @@ local_resource(
          )),
     deps=[
         'Makefile',
+        'Tiltfile',
+        '.env',
         'hack/scripts/configure-tilt-preview-gateway.sh',
         preview_kro_kubeconfig,
     ],
@@ -970,6 +980,7 @@ KUBECONFIG="$KRO_KUBECONFIG" \
     ),
     deps=[
         'Tiltfile',
+        '.env',
         'hack/scripts/configure-tilt-preview-dns.sh',
         preview_kro_kubeconfig,
     ],
@@ -1108,6 +1119,9 @@ make run-provider-infrastructure
         'providers/infrastructure/apps',
         'providers/infrastructure/portal/src',
         'providers/infrastructure/portal/package.json',
+        # The same root .env domain is used by preview-gateway-up. Reload this
+        # provider when it changes so emitted Application hosts stay aligned.
+        '.env',
         # Restart whenever init writes/updates the runtime kubeconfig:
         # serve refuses to start until RAILGRID_PROVIDER_KUBECONFIG resolves
         # to a real file (see the Makefile target), so the provider must be
@@ -1302,6 +1316,9 @@ done
         preview_gateway_port,
         preview_gateway_port,
     ),
+    # PROBE_HOST uses the resolved application domain; restart the tunnel when
+    # that shared config changes.
+    deps=['Tiltfile', '.env'],
     resource_deps=['preview-gateway-up'],
     readiness_probe=probe(
         period_secs=2,

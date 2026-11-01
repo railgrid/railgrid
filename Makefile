@@ -2636,11 +2636,15 @@ PREVIEW_GATEWAY_NAME ?= app-studio-preview
 PREVIEW_GATEWAY_CLASS ?= eg
 PREVIEW_GATEWAY_CONTROLLER ?= gateway.envoyproxy.io/gatewayclass-controller
 PREVIEW_GATEWAY_PROXY_CONFIG ?= app-studio-preview-proxy
-PREVIEW_GATEWAY_HOSTNAME ?= *.apps.127.0.0.1.sslip.io
+# Keep a manual Gateway reconcile on the same domain as the infrastructure
+# provider; Tilt supplies its checkout-specific domain when no override exists.
+PREVIEW_GATEWAY_HOSTNAME ?= *.$(if $(strip $(RAILGRID_APP_BASE_DOMAIN)),$(RAILGRID_APP_BASE_DOMAIN),apps.127.0.0.1.sslip.io)
 PREVIEW_GATEWAY_LISTENER_NAME ?= https
 PREVIEW_GATEWAY_TLS_SECRET ?= app-studio-preview-tls
 PREVIEW_GATEWAY_PORT ?= 10443
-PREVIEW_GATEWAY_SERVICE_PORT ?= $(PREVIEW_GATEWAY_PORT)
+# An explicitly empty public port means HTTPS 443, while an unset value uses
+# the local listener port. Match Tilt's in-cluster browser routing as well.
+PREVIEW_GATEWAY_SERVICE_PORT ?= $(if $(filter undefined,$(origin RAILGRID_APP_PUBLIC_PORT)),$(PREVIEW_GATEWAY_PORT),$(if $(strip $(RAILGRID_APP_PUBLIC_PORT)),$(RAILGRID_APP_PUBLIC_PORT),443))
 PREVIEW_GATEWAY_STATE_DIR ?= $(KCP_DATA_DIR)/tilt-preview-gateway-tls
 PREVIEW_GATEWAY_TIMEOUT ?= 5m
 PREVIEW_GATEWAY_UNINSTALL ?= false
