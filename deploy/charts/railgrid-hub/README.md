@@ -37,6 +37,8 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | `hub.hubExternalURL` | `""` | **Required.** External URL used for kubeconfig generation and OIDC callbacks (e.g. `https://railgrid.example.com`) |
 | `hub.internalURL` | `""` | Address in-cluster components use to reach the hub, baked into minted provider kubeconfigs. Defaults to `hub.hubExternalURL`, which routes provider→hub traffic out through the public hostname and back. Set to the in-cluster Service (`https://<release>-railgrid-hub.<namespace>.svc.cluster.local:9443`) to keep it inside the cluster. Leave empty when providers run outside the cluster. |
 | `hub.listenAddr` | `:9443` | Hub TLS listen address |
+| `metrics.enabled` | `true` | Serve Prometheus `/metrics` (controller-runtime reconcile, workqueue and client metrics of the hub's managers, Go runtime) on a separate plain-HTTP listener and annotate the pod for scraping (`prometheus.io/*`, `k8s.grafana.com/*`) |
+| `metrics.port` | `9090` | Port of the metrics listener (`--metrics-listen-addr`) |
 | `hub.devMode` | `false` | Enable development mode (verbose logging, relaxed security) |
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
 | `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token use its RBAC identity, `railgrid:static:<first 16 hex of sha256("static-token/<token>")>` (static-token users have no email, so the token never appears in member lists). |

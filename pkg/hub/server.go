@@ -33,6 +33,7 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/metrics"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -119,6 +120,9 @@ func (s *Server) Run(ctx context.Context) error {
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
 	)
+	// Prometheus metrics for every manager in this process, on their own
+	// cluster-internal listener (never the serving port).
+	go metrics.Serve(ctx, s.opts.MetricsListenAddr)
 	// Validate --providers BEFORE any expensive init (embedded kcp takes
 	// ~60s to bootstrap). A typo or dep violation should error in
 	// milliseconds, not after the user watches kcp boot.
