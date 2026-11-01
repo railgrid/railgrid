@@ -614,6 +614,20 @@ func (r *Registry) GetForOrg(orgUUID, name string) (Provider, bool) {
 	return cloneProvider(*p), true
 }
 
+// lookup returns the record stored under exactly (orgUUID, name), with no
+// fallback from an Org scope to the platform one. GetForOrg's fallback is
+// right for resolving a name a tenant used; it is wrong for asking whether
+// this particular record already exists.
+func (r *Registry) lookup(orgUUID, name string) (Provider, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.byKey[providerKey{Org: orgUUID, Name: name}]
+	if !ok {
+		return Provider{}, false
+	}
+	return cloneProvider(*p), true
+}
+
 // List returns a snapshot of every registered provider across all scopes.
 // Callers serving a tenant must use ListForOrg instead; this is for the
 // sweeper and admin surfaces that legitimately span orgs.
