@@ -774,20 +774,37 @@ func (b *Bootstrapper) DeleteOrgWorkspace(ctx context.Context, orgUUID string) e
 }
 
 // DeleteChildWorkspace removes the kcp Workspace at
-// root:railgrid:tenants:{orgUUID}:{wsUUID}. Idempotent on NotFound.
-func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error {
+// root:railgrid:tenants:{orgUUID}:{wsUUID}. Idempotent: a Workspace that is
+// gone, or that kcp's finalizers are still releasing, is left alone and
+// reported as not deleted by this call; only a live Workspace is asked to
+// go, and that is reported as true so a caller can treat it as the one
+// change the deletion makes.
+func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) (bool, error) {
 	if orgUUID == "" || wsUUID == "" {
-		return fmt.Errorf("DeleteChildWorkspace: orgUUID and wsUUID are required")
+		return false, fmt.Errorf("DeleteChildWorkspace: orgUUID and wsUUID are required")
 	}
 	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
 	orgClient, err := dynamic.NewForConfig(orgConfig)
 	if err != nil {
-		return fmt.Errorf("creating org workspace client: %w", err)
+		return false, fmt.Errorf("creating org workspace client: %w", err)
 	}
-	if err := orgClient.Resource(workspaceGVR).Delete(ctx, wsUUID, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-		return fmt.Errorf("deleting child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("reading child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
 	}
-	return nil
+	if ws.GetDeletionTimestamp() != nil {
+		return false, nil
+	}
+	if err := orgClient.Resource(workspaceGVR).Delete(ctx, wsUUID, metav1.DeleteOptions{}); err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("deleting child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	}
+	return true, nil
 }
 
 // ListChildWorkspaces returns the names of every child Workspace under

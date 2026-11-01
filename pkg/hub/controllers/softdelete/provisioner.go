@@ -35,7 +35,11 @@ type Provisioner interface {
 
 	// DeleteChildWorkspace removes the kcp Workspace at
 	// root:railgrid:orgs:{orgUUID}:{wsUUID}. Idempotent on NotFound.
-	DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
+	// It reports true when the Workspace was live and this call asked kcp
+	// to delete it, false when it was already terminating or gone, so a
+	// sweep that finds a workspace still held by its finalizers does not
+	// treat it as a fresh change.
+	DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID string) (deleted bool, err error)
 
 	// ListChildWorkspaces returns the names of every child Workspace
 	// inside the Org workspace at root:railgrid:orgs:{orgUUID}. Empty if
