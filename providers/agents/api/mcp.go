@@ -22,11 +22,9 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -402,34 +400,10 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		if err != nil {
 			return nil, listCredentialsOutput{}, err
 		}
-		list, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
+		out, err := listModelCredentialSummaries(ctx, c)
 		if err != nil {
 			return nil, listCredentialsOutput{}, err
 		}
-		out := listCredentialsOutput{Credentials: []credentialSummary{}}
-		for i := range list.Items {
-			cred := &list.Items[i]
-			if cred.Spec.Model == "" && !agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) {
-				continue
-			}
-			if cred.Spec.ConnectionRef != "" {
-				resolved, resolveErr := c.GetModelCredential(ctx, cred.Name)
-				if resolveErr != nil {
-					continue
-				}
-				cred = resolved
-			}
-			out.Credentials = append(out.Credentials, credentialSummary{
-				Name:                 cred.Name,
-				Provider:             cred.Spec.Provider,
-				BaseURL:              cred.Spec.BaseURL,
-				AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID,
-				Model:                cred.Spec.Model,
-				Ready:                meta.IsStatusConditionTrue(cred.Status.Conditions, agentsv1alpha1.ConditionReady),
-				Models:               cred.Status.Models,
-			})
-		}
-		sort.Slice(out.Credentials, func(i, j int) bool { return out.Credentials[i].Name < out.Credentials[j].Name })
 		return nil, out, nil
 	})
 

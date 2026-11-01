@@ -59,6 +59,9 @@ verbs: [get, use]
 When listing all connections is forbidden, the model list reads only the named
 connections referenced by visible models. A forbidden metadata read does not hide
 the model or replace its observed readiness. Neither path reads Secrets.
+MCP metadata listing likewise requires no `use` permission and keeps visible
+models when connection metadata is restricted. Generated writable MCPServer
+roles receive `use` for the first-party connection kind; read-only roles do not.
 
 Unattended Agents retain the existing delegation model: the provider executes
 the models configured on the Agent with its own tenant-scoped identity. Granting
@@ -80,10 +83,15 @@ resume finalization when the last reference is removed.
 Only provider-created Secrets owned by that exact connection UID are deleted.
 An externally supplied Secret is neither adopted nor deleted. Removing a
 finalizer manually is an administrative override of these lifecycle guarantees.
+If another connection, direct model, or owner still relies on the key, deleting
+a connection releases its ownership without deleting the shared Secret.
 
 Model deletion is idempotent: retrying an already deleted model never touches a
 connection key. Legacy direct-model cleanup deletes only a Secret exclusively
 owned by that exact ModelCredential UID, using deletion preconditions.
+The portal deletes only the ModelCredential with UID/resourceVersion
+preconditions and leaves Secret cleanup to Kubernetes ownership. It never
+deletes a key that migration has transferred to a connection.
 
 ## Migration
 

@@ -264,7 +264,27 @@ func (r *ProviderConnectionReconciler) finalizeConnection(ctx context.Context, c
 	if err := c.Get(ctx, types.NamespacedName{Namespace: llm.SecretNamespace, Name: connection.Spec.SecretRef.Name}, &secret); err == nil {
 		for _, owner := range secret.OwnerReferences {
 			if owner.UID == connection.UID && owner.Kind == "ModelProviderConnection" {
-				if err := c.Delete(ctx, &secret, client.Preconditions{UID: &secret.UID}); err != nil && !apierrors.IsNotFound(err) {
+				var connections agentsv1alpha1.ModelProviderConnectionList
+				if err := c.List(ctx, &connections); err != nil {
+					return err
+				}
+				shared := len(secret.OwnerReferences) > 1
+				for _, sibling := range connections.Items {
+					shared = shared || (sibling.UID != connection.UID && sibling.Spec.SecretRef.Name == secret.Name)
+				}
+				for _, model := range models.Items {
+					shared = shared || model.Spec.SecretRef.Name == secret.Name
+				}
+				if shared {
+					// Release ownership before removing the finalizer: otherwise GC
+					// could remove a key referenced by a sibling with no owner ref.
+					secret.OwnerReferences = slices.DeleteFunc(secret.OwnerReferences, func(ref metav1.OwnerReference) bool {
+						return ref.UID == connection.UID && ref.Kind == "ModelProviderConnection"
+					})
+					if err := c.Update(ctx, &secret); err != nil {
+						return err
+					}
+				} else if err := c.Delete(ctx, &secret, client.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}); err != nil && !apierrors.IsNotFound(err) {
 					return err
 				}
 				break

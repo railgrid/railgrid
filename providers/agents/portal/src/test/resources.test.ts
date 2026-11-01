@@ -793,22 +793,38 @@ describe('model credentials', () => {
     await expect(resources.saveCredential({ name: 'primary', apiKey: 'sk-x' })).rejects.toMatchObject({ status: 400 })
   })
 
-  it('deletes the object and the Secret it pointed at', async () => {
+  it('deletes legacy models with preconditions and leaves key cleanup to Kubernetes ownership', async () => {
     kcp.reply('GET /modelcredentials/primary', {
-      metadata: { name: 'primary' },
+      metadata: { name: 'primary', uid: 'model-uid', resourceVersion: '4' },
       spec: { baseURL: 'https://x/v1', secretRef: { name: 'team-shared-key' } },
     })
     kcp.reply('GET /modelcredentials', { items: [] })
     await resources.deleteCredential('primary')
-    expect(kcp.calls.filter((c) => c.method === 'DELETE').map((c) => c.url.split('/').pop())).toEqual([
-      'primary',
-      'team-shared-key',
-    ])
+    expect(kcp.calls.filter(c => c.method === 'DELETE').map(c => c.url.split('/').pop())).toEqual(['primary'])
+    expect(kcp.lastOf('DELETE').body).toMatchObject({ preconditions: { uid: 'model-uid', resourceVersion: '4' } })
+    expect(kcp.calls.some(c => c.url.includes('/secrets'))).toBe(false)
   })
 
-  it('tolerates a credential whose Secret was already removed', async () => {
+  it('preserves a connection-owned key when deleting an interrupted migration source', async () => {
+    kcp.reply('GET /modelcredentials/account', { metadata: { name: 'account', uid: 'source', resourceVersion: '7' }, spec: { model: 'one', secretRef: { name: 'shared-key' } } })
     kcp.reply('GET /modelcredentials', { items: [] })
-    kcp.fail('DELETE /secrets', 404, 'NotFound')
+    kcp.reply('GET /modelproviderconnections/account', { metadata: { name: 'account', uid: 'destination' }, spec: { secretRef: { name: 'shared-key' } } })
+    kcp.reply('GET /secrets/shared-key', { metadata: { name: 'shared-key', ownerReferences: [{ kind: 'ModelProviderConnection', uid: 'destination' }] } })
+    await resources.deleteCredential('account')
+    expect(kcp.calls.filter(c => c.method === 'DELETE').map(c => c.url.split('/').pop())).toEqual(['account'])
+    expect(kcp.calls.some(c => c.url.includes('/secrets'))).toBe(false)
+  })
+
+  it('does nothing when the model was already deleted', async () => {
+    kcp.fail('GET /modelcredentials/gone', 404, 'NotFound')
+    await resources.deleteCredential('gone')
+    expect(kcp.calls.some(c => c.method === 'DELETE')).toBe(false)
+  })
+
+  it('does not need Secret access to delete a legacy model', async () => {
+    kcp.reply('GET /modelcredentials/primary', { metadata: { name: 'primary', uid: 'source', resourceVersion: '2' }, spec: { secretRef: { name: 'gone-key' } } })
+    kcp.reply('GET /modelcredentials', { items: [] })
+    kcp.fail('GET /secrets', 403, 'Forbidden')
     await expect(resources.deleteCredential('primary')).resolves.toBeUndefined()
   })
 })

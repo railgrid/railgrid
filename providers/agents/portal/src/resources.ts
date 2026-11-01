@@ -1466,9 +1466,8 @@ export class Resources {
     })
 
   /**
-   * deleteCredential removes the object and the Secret it pointed at, in that
-   * order: an orphaned Secret is harmless, an object pointing at a key that is
-   * gone reports itself broken until someone deletes it.
+   * Connection deletion delegates key lifetime to the connection finalizer.
+   * Model deletion delegates Secret cleanup to Kubernetes owner references.
    */
   deleteProviderConnection = (name: string): Promise<void> =>
     this.run(async client => {
@@ -1479,22 +1478,18 @@ export class Resources {
 
   deleteCredential = (name: string): Promise<void> =>
     this.run(async (client) => {
-      let secretName = credentialSecretName(name)
-      try {
-        const existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
-        if (existing.spec?.connectionRef) { await client.delete(MODELCREDENTIALS, name); return }
+      let existing: KubeModelCredential & KubeObject
+      try { existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name) }
+      catch (error) { if (isKubeNotFound(error)) return; throw error }
+      if (!existing.spec?.connectionRef) {
         const credentials = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
         if (credentials.some(item => item.spec?.connectionRef === name)) throw validationError('Remove the models using this provider connection before deleting it.')
-        secretName = (existing.spec?.secretRef?.name ?? '').trim() || secretName
-      } catch (error) {
-        if (!isKubeNotFound(error)) throw error
       }
-      await client.delete(MODELCREDENTIALS, name)
-      try {
-        await client.delete(SECRETS, secretName, { namespace: SECRET_NAMESPACE })
-      } catch (error) {
-        if (!isKubeNotFound(error)) throw error
-      }
+      // Kubernetes owns Secret cleanup. In particular, an interrupted migration
+      // can leave a direct source whose key already belongs to the connection.
+      await client.delete(MODELCREDENTIALS, name, {
+        preconditions: { uid: existing.metadata.uid, resourceVersion: existing.metadata.resourceVersion },
+      })
     })
 }
 

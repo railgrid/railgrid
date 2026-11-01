@@ -281,3 +281,47 @@ func TestTerminatingPartialMigrationCanReleaseConnectionOnlySource(t *testing.T)
 		t.Fatal("terminating migration remained stuck", err)
 	}
 }
+
+func TestConnectionDeletionPreservesSharedSecrets(t *testing.T) {
+	for _, sharing := range []string{"connection", "other-owner", "direct-model"} {
+		t.Run(sharing, func(t *testing.T) {
+			connection := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account-a", UID: "a", Finalizers: []string{agentsv1alpha1.ModelProviderConnectionFinalizer}}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: "shared"}}}
+			key := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "shared", Namespace: llm.SecretNamespace, UID: "key", OwnerReferences: []metav1.OwnerReference{{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelProviderConnection", Name: connection.Name, UID: connection.UID}}}, Data: map[string][]byte{"apiKey": []byte("keep")}}
+			objects := []client.Object{connection, key}
+			switch sharing {
+			case "connection":
+				objects = append(objects, &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account-b", UID: "b"}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: key.Name}}}, &agentsv1alpha1.ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "model-b"}, Spec: agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "account-b", Model: "one"}})
+			case "other-owner":
+				key.OwnerReferences = append(key.OwnerReferences, metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "external", UID: "other"})
+			case "direct-model":
+				objects = append(objects, &agentsv1alpha1.ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "legacy"}, Spec: agentsv1alpha1.ModelCredentialSpec{SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: key.Name}, Model: "one"}})
+			}
+			c := migrationClient(objects...)
+			if err := c.Delete(t.Context(), connection); err != nil {
+				t.Fatal(err)
+			}
+			if err := c.Get(t.Context(), client.ObjectKeyFromObject(connection), connection); err != nil {
+				t.Fatal(err)
+			}
+			r := &ProviderConnectionReconciler{}
+			if err := r.finalizeConnection(t.Context(), c, connection); err != nil {
+				t.Fatal(err)
+			}
+			var stored corev1.Secret
+			if err := c.Get(t.Context(), client.ObjectKeyFromObject(key), &stored); err != nil {
+				t.Fatal("shared key deleted", err)
+			}
+			if string(stored.Data["apiKey"]) != "keep" {
+				t.Fatal("key changed")
+			}
+			for _, owner := range stored.OwnerReferences {
+				if owner.UID == connection.UID {
+					t.Fatal("departing connection still owns shared key")
+				}
+			}
+			if sharing == "other-owner" && len(stored.OwnerReferences) != 1 {
+				t.Fatal("external owner removed")
+			}
+		})
+	}
+}
