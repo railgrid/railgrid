@@ -229,3 +229,39 @@ test('the current comparison column uses effective allowances and candidates ret
   assert.equal(actual[1].limits[0].max, '20')
   assert.equal(catalog.limits[0].max, '1')
 })
+
+test('admin request drafts distinguish empty, populated, and unknown overrides', () => {
+  for (const overrides of [[], [planLimit('1')], undefined]) {
+    const context = {
+      billing: { value: { limits: [planLimit('1')], usage: { workspaces: '1' }, overrides } },
+      reviewPlan: { value: planOffer('small', '10') }, reviewLimits: { value: [planLimit('10')] },
+      reviewMeters: { value: ['workspaces'] }, focusedMeter: { value: null },
+      planLabel: { value: 'Free' }, props: { orgUuid: 'org-a' }, requestDraft: { value: '' },
+      overridesKnown: { value: overrides !== undefined }, limitsPending: { value: false },
+      quantity: (value) => value, meterLabel: (meter) => meter,
+      allowance: (limits, meter) => limits.find(limit => limit.meter === meter)?.max,
+    }
+    loadFunction('prepareRequest', context)()
+    assert.equal(context.requestDraft.value.includes('Existing organization overrides remain in effect.'), !!overrides?.length)
+    assert.equal(context.requestDraft.value.includes('This hub does not report organization overrides.'), overrides === undefined)
+  }
+})
+
+test('pending allowance changes suppress upgrade hints until the applied snapshot catches up', () => {
+  const proposedLimits = loadFunction('proposedLimits', { Map })
+  const allowancesPending = loadFunction('allowancesPending', { proposedLimits, JSON })
+  const value = { plans: [planOffer('free', '1', { current: true }), planOffer('small', '10')],
+    limits: [planLimit('0')], overrides: [], usage: { workspaces: '1' } }
+  // An override was removed, but effective limits still reflect that override.
+  assert.equal(allowancesPending(value), true)
+  const suggestion = loadFunction('suggestion', { billing: { value }, allowancesPending, recommendedPlan })
+  assert.equal(suggestion('workspaces'), null)
+  value.limits = [planLimit('1')]
+  assert.equal(allowancesPending(value), false)
+  assert.equal(suggestion('workspaces').name, 'small')
+  // An override was just added; the catalog-sized snapshot is now stale.
+  value.overrides = [planLimit('20')]
+  assert.equal(allowancesPending(value), true)
+  value.limits = [planLimit('20')]
+  assert.equal(allowancesPending(value), false)
+})

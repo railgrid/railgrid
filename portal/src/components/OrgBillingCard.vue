@@ -171,7 +171,7 @@ function upgradeHint(meter: string): string {
 
 function suggestion(meter: string): OrgBillingPlan | null {
   const value = billing.value
-  return value ? recommendedPlan(meter, value.plans, value.limits, value.usage, value.overrides) : null
+  return value && !allowancesPending(value) ? recommendedPlan(meter, value.plans, value.limits, value.usage, value.overrides) : null
 }
 
 const constraint = computed(() => billing.value?.limits.find((limit) => suggestion(limit.meter)) ?? null)
@@ -183,6 +183,17 @@ function proposedLimits(plan: OrgBillingPlan, overrides?: OrgBillingLimit[]): Or
   for (const limit of overrides ?? []) limits.set(limit.meter, limit)
   return [...limits.values()]
 }
+// The declaration changes immediately; metering applies it on its next sample.
+// Keep the enforced snapshot visible, but do not infer upgrades from mixed versions.
+function allowancesPending(value: OrgBilling): boolean {
+  const plan = value.plans.find((item) => item.current)
+  if (!plan || value.overrides === undefined) return false
+  const signature = (limits: OrgBillingLimit[]) => JSON.stringify(limits.map((limit) => ({
+    meter: limit.meter, shape: limit.shape || 'Consumption', enforce: limit.enforce, max: limit.max ?? '',
+  })).sort((a, b) => a.meter.localeCompare(b.meter)))
+  return signature(proposedLimits(plan, value.overrides)) !== signature(value.limits)
+}
+const limitsPending = computed(() => billing.value ? allowancesPending(billing.value) : false)
 const reviewLimits = computed(() => reviewPlan.value ? proposedLimits(reviewPlan.value, billing.value?.overrides) : [])
 const overridesKnown = computed(() => billing.value?.overrides !== undefined)
 const comparisonPlans = computed(() => [
@@ -195,7 +206,7 @@ const focusedResolved = computed(() => focusedMeter.value && reviewPlan.value ? 
 const canCheckout = computed(() => billing.value?.enabled && reviewPlan.value?.sellable && props.canManage && !managedByOperator.value)
 
 function suggestionForPlan(meter: string, plan: OrgBillingPlan): boolean {
-  return !!billing.value && !!recommendedPlan(meter, [plan], billing.value.limits, billing.value.usage, billing.value.overrides)
+  return !!billing.value && !limitsPending.value && !!recommendedPlan(meter, [plan], billing.value.limits, billing.value.usage, billing.value.overrides)
 }
 
 function allowance(limits: OrgBillingLimit[], meter: string): string {
@@ -241,7 +252,8 @@ function prepareRequest(): void {
   requestDraft.value = `Please review changing organization ${props.orgUuid} from ${planLabel.value} to ${reviewPlan.value.displayName || reviewPlan.value.name}.\n\n` +
     (focusedMeter.value ? `Reason: review capacity for ${meterLabel(focusedMeter.value)} (${focusedMeter.value}).\n\n` : '') +
     reviewMeters.value.map((meter) => `${meterLabel(meter)} (${meter}): ${value.usage[meter] === undefined ? 'usage unavailable' : quantity(value.usage[meter]) + ' measured'}; current allowance ${allowance(value.limits, meter)}; proposed allowance ${allowance(reviewLimits.value, meter)}.`).join('\n') +
-    (overridesKnown.value ? '\n\nExisting organization overrides remain in effect.' : '\n\nThis hub does not report organization overrides. Proposed catalog allowances are not confirmed effective limits.') +
+    (overridesKnown.value ? (value.overrides?.length ? '\n\nExisting organization overrides remain in effect.' : '') : '\n\nThis hub does not report organization overrides. Proposed catalog allowances are not confirmed effective limits.') +
+    (limitsPending.value ? '\n\nAllowances are updating. Refresh to confirm the current limits before changing plans.' : '') +
     '\nPlease confirm pricing, measurement periods, and all applicable allowances before assigning a plan.'
 }
 
@@ -343,6 +355,7 @@ async function manage(): Promise<void> {
       <p v-if="error && loaded" class="billing-description">Showing the last successfully fetched plan and usage.</p>
       <div v-if="loading && !loaded" class="text-sm text-text-muted" role="status" aria-live="polite">Loading plan and usage…</div>
       <template v-else-if="billing?.installed">
+        <InlineNotification v-if="limitsPending" tone="warning" title="Allowances are updating" message="Recent changes can take about a minute to apply. Refresh before you compare plans." action-label="Refresh" :action-busy="loading" @action="load" />
         <div v-if="suggested && constraint && !reviewOpen" class="upgrade-prompt">
           <div><h3>More room with {{ suggested.displayName || suggested.name }}</h3><p>{{ meterLabel(constraint.meter) }}: from {{ quantity(constraint.max) }} to {{ allowance(suggested.limits, constraint.meter) }}.</p><span>Compare each allowance before changing plans.</span></div>
           <button type="button" ref="exploreButton" class="billing-action k-btn k-btn--primary" @click="openReview(constraint.meter)">Explore upgrade<ArrowRight class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" /></button>
