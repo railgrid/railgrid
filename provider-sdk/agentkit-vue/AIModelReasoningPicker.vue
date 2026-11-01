@@ -29,6 +29,7 @@ const props = withDefaults(defineProps<{
   selectedID: string
   effort: string
   effortOptions: EffortOption[]
+  compact?: boolean
   defaultEffortLabel?: string
   disabled?: boolean
   modelSelectionDisabled?: boolean
@@ -39,6 +40,7 @@ const props = withDefaults(defineProps<{
   resetRequired?: boolean
   editModelRequired?: boolean
 }>(), {
+  compact: false,
   defaultEffortLabel: '',
   disabled: false,
   modelSelectionDisabled: false,
@@ -459,7 +461,7 @@ watch(open, isOpen => {
 </script>
 
 <template>
-  <div class="k-ai-model-reasoning-picker">
+  <div class="k-ai-model-reasoning-picker" :class="{ 'k-ai-model-reasoning-picker--compact': compact }">
     <button
       ref="triggerRef"
       type="button"
@@ -692,11 +694,11 @@ watch(open, isOpen => {
   max-width: 100%;
   min-height: 32px;
   align-items: center;
-  gap: 7px;
-  border: 1px solid var(--color-border-default);
+  gap: var(--picker-gap, 7px);
+  border: 1px solid var(--picker-border, var(--color-border-default));
   border-radius: 4px;
-  padding: 3px 8px;
-  background: var(--color-surface-overlay);
+  padding: 3px var(--picker-padding, 8px);
+  background: var(--picker-background, var(--color-surface-overlay));
   color: var(--color-text-secondary);
   text-align: left;
   cursor: pointer;
@@ -739,7 +741,15 @@ watch(open, isOpen => {
   min-width: 0;
 }
 
+.k-ai-model-reasoning-picker__trigger-copy {
+  display: var(--picker-copy-layout, grid);
+  align-items: baseline;
+  gap: var(--picker-gap, 0px);
+  overflow: hidden;
+}
+
 .k-ai-model-reasoning-picker__trigger-copy strong {
+  min-width: 0;
   overflow: hidden;
   color: var(--color-text-primary);
   font-size: 11px;
@@ -750,10 +760,11 @@ watch(open, isOpen => {
 }
 
 .k-ai-model-reasoning-picker__trigger-copy small {
+  min-width: 0;
   overflow: hidden;
   color: var(--color-text-muted);
-  font-size: 9px;
-  line-height: 11px;
+  font-size: var(--picker-effort-size, 9px);
+  line-height: var(--picker-effort-line, 11px);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1258,25 +1269,25 @@ watch(open, isOpen => {
     transition: none;
   }
 }
-/* The compact composer keeps model and effort on the same toolbar baseline. */
+/* Landing toolbars and narrow chat composers share the same inline treatment. */
+.k-ai-model-reasoning-picker--compact {
+  --picker-border: transparent;
+  --picker-background: transparent;
+  --picker-padding: 4px;
+  --picker-gap: 4px;
+  --picker-copy-layout: flex;
+  --picker-effort-size: 11px;
+  --picker-effort-line: 14px;
+}
 @container ai-composer (max-width: 560px) {
-  .k-ai-model-reasoning-picker__trigger {
-    border-color: transparent;
-    background: transparent;
-    padding-inline: 4px;
-    gap: 4px;
-  }
-  .k-ai-model-reasoning-picker__trigger-copy {
-    display: flex;
-    align-items: baseline;
-    gap: 4px;
-    overflow: hidden;
-  }
-  .k-ai-model-reasoning-picker__trigger-copy strong { min-width: 0; }
-  .k-ai-model-reasoning-picker__trigger-copy small {
-    min-width: 0;
-    font-size: 11px;
-    line-height: 14px;
+  .k-ai-model-reasoning-picker {
+    --picker-border: transparent;
+    --picker-background: transparent;
+    --picker-padding: 4px;
+    --picker-gap: 4px;
+    --picker-copy-layout: flex;
+    --picker-effort-size: 11px;
+    --picker-effort-line: 14px;
   }
 }
 </style>
