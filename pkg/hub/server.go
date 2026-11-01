@@ -145,10 +145,6 @@ func (s *Server) Run(ctx context.Context) error {
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
-	// workspaceEvents carries the child workspaces the hub itself creates and
-	// deletes to the metering organization reconciler, which keeps each
-	// organization's membership report current.
-	workspaceEvents := metering.NewWorkspaceNotifier()
 	var embeddedKCP *kcp.EmbeddedKCP
 	// meteringDiscovery is set once kcp is up and --metering-workspace is
 	// configured; the admin proxy and the organization reconciler share it.
@@ -355,9 +351,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Defaults to the base railgridClient; overridden to root:railgrid:users when kcp is configured.
 	userClient := railgridClient
 	if kcpConfig != nil {
-		bootstrapper = kcp.NewBootstrapper(kcpConfig).
-			WithEnabledProviders(s.opts.Providers).
-			WithChildWorkspaceObserver(workspaceEvents.Notify)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
 		// Retry for the same reason InstallCRDs does: sibling replicas bootstrap
 		// the same idempotent objects concurrently, so a lost write race is a
 		// transient condition, not a fatal one.
@@ -393,6 +387,15 @@ func (s *Server) Run(ctx context.Context) error {
 			return fmt.Errorf("creating user dynamic client: %w", err)
 		}
 		userClient = railgridclient.NewFromDynamic(userDynamic)
+
+		// The hub creates and deletes child workspaces on whichever replica
+		// serves the request or runs the cascade, but reconciles metering
+		// membership on the leader only. Each change is recorded on the
+		// Organization, which that reconciler watches, so the membership
+		// report follows at once from any replica.
+		if s.opts.MeteringWorkspace != "" {
+			bootstrapper.WithChildWorkspaceObserver(metering.NewWorkspaceNotifier(userDynamic, logger.WithName("metering-workspaces")).Notify)
+		}
 	}
 
 	// One process-wide store backs the host-only portal cookie, app-access SSO,
@@ -1377,12 +1380,11 @@ func (s *Server) Run(ctx context.Context) error {
 					return
 				}
 				if err := metering.SetupOrganizationReconciler(orgMgr, metering.OrganizationOptions{
-					Discovery:       meteringDiscovery,
-					Metering:        meteringClient,
-					Workspaces:      metering.WorkspaceClients(kcpConfig),
-					DefaultPlan:     s.opts.MeteringDefaultPlan,
-					WorkspaceEvents: workspaceEvents,
-					Logger:          logger.WithName("metering-organization"),
+					Discovery:   meteringDiscovery,
+					Metering:    meteringClient,
+					Workspaces:  metering.WorkspaceClients(kcpConfig),
+					DefaultPlan: s.opts.MeteringDefaultPlan,
+					Logger:      logger.WithName("metering-organization"),
 				}); err != nil {
 					logger.Error(err, "Setting up metering organization controller failed")
 					return

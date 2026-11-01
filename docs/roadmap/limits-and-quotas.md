@@ -818,11 +818,14 @@ the webhook attributes on a create: the organization's own workspace stays in
 the report so child creates resolve to the account, but it is not a workspace
 of the account, and `free` at `workspaces: 1` allows one workspace. And the
 hub's own child workspace creates and deletes reach the organization
-reconciler at once (`Bootstrapper.WithChildWorkspaceObserver` feeding
-`metering.WorkspaceNotifier`, a channel source on the reconciler), with a
-workspace the cascade has asked kcp to delete dropped from the report on that
-pass rather than when its finalizers let go; the 5-minute re-list remains only
-as the backstop for a Workspace changed outside the hub. Still open: a
+reconciler at once from any replica: `Bootstrapper.WithChildWorkspaceObserver`
+hands them to `metering.WorkspaceNotifier`, which stamps
+`metering.railgrid.ai/workspaces-changed-at` on the Organization, and the
+leader's reconciler (the only one that writes reports) sees the update through
+its watch on Organizations; a workspace the cascade has asked kcp to delete is
+dropped from the report on that pass rather than when its finalizers let go.
+The 5-minute re-list remains only as the backstop for a Workspace changed
+outside the hub. Still open: a
 `Watches(Plan)` in contrib-metering's entitlement reconciler, so a changed
 limit is judged before the next sample.
 

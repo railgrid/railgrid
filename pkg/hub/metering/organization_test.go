@@ -35,6 +35,7 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 type installed bool
@@ -402,39 +403,46 @@ func TestMembersSkipAWorkspaceBeingDeleted(t *testing.T) {
 	}
 }
 
-// The notifier is how the hub's own workspace writes reach the reconciler: a
-// Notify enqueues the organization, and a burst past the buffer is dropped
-// rather than blocking the caller, since the periodic re-list covers it.
-func TestWorkspaceNotifierEnqueuesTheOrganizationWithoutBlocking(t *testing.T) {
-	n := NewWorkspaceNotifier()
+// A workspace create or delete served on any replica is recorded on the
+// Organization, which the leader's reconciler watches: that is how the signal
+// crosses replicas. Every change is a distinct stamp; a missing organization,
+// an empty name and a nil notifier are no-ops.
+func TestWorkspaceNotifierStampsTheOrganization(t *testing.T) {
+	org := &unstructured.Unstructured{}
+	org.SetAPIVersion(railgridclient.OrganizationGVR.GroupVersion().String())
+	org.SetKind("Organization")
+	org.SetName("org-1")
+	users := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{railgridclient.OrganizationGVR: "OrganizationList"}, org)
+
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	n := NewWorkspaceNotifier(users, klog.Background())
+	n.now = func() time.Time { return now }
+
+	stamp := func() string {
+		t.Helper()
+		got, err := users.Resource(railgridclient.OrganizationGVR).Get(context.Background(), "org-1", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.GetAnnotations()[WorkspacesChangedAnnotation]
+	}
+
 	n.Notify("org-1")
-	select {
-	case ev := <-n.ch:
-		if ev.Object.GetName() != "org-1" {
-			t.Fatalf("enqueued %q, want org-1", ev.Object.GetName())
-		}
-	default:
-		t.Fatal("Notify enqueued nothing")
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("annotation = %q, want %q", got, now.Format(time.RFC3339Nano))
 	}
-	n.Notify("")
-	if len(n.ch) != 0 {
-		t.Fatal("an empty organization name must not be enqueued")
+	now = now.Add(time.Second)
+	n.Notify("org-1")
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("second change did not advance the stamp: %q", got)
 	}
-	done := make(chan struct{})
-	go func() {
-		for i := 0; i < cap(n.ch)+16; i++ {
-			n.Notify("org-2")
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Notify blocked on a full buffer")
-	}
-	if len(n.ch) != cap(n.ch) {
-		t.Fatalf("buffered %d events, want the full buffer %d", len(n.ch), cap(n.ch))
-	}
+
+	n.Notify("gone") // an organization that no longer exists: nothing to report into
+	n.Notify("")     // never a valid organization
 	var nilNotifier *WorkspaceNotifier
-	nilNotifier.Notify("org-3") // a hub without metering has no notifier; the hook stays safe
+	nilNotifier.Notify("org-1") // a hub without metering has no notifier; the hook stays safe
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("no-op notifies changed the stamp: %q", got)
+	}
 }
