@@ -5,7 +5,7 @@ import { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
 import type { Credential, RailgridContext } from '../types'
-import { agentFixture } from './helpers'
+import { agentFixture, modelBackend } from './helpers'
 import { settleVue } from './vue-helper'
 
 if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
@@ -19,7 +19,14 @@ beforeEach(() => {
   vi.spyOn(AppStore.prototype, 'connect').mockImplementation(() => undefined)
 })
 afterEach(() => { mounted.splice(0).forEach(element => element.remove()); vi.restoreAllMocks() })
-async function mountOverlay() {
+async function mountOverlay(options: {
+  defaultCredential?: string
+  credentials?: Credential[]
+  sessionModel?: any
+  saveSessionModel?: (name: string, session: string, preferences: any) => Promise<any>
+  sessions?: any[]
+  messages?: any[]
+} = {}) {
   history.replaceState(null, '', '#/linuxservers/warehouse-west')
   const element = document.createElement('railgrid-provider-agents') as AgentsElement
   element.overlayState = { agent: 'scout', pageContext: '{"resource":"warehouse-west"}' }
@@ -28,13 +35,14 @@ async function mountOverlay() {
   mounted.push(element)
   await settleVue(6)
   vi.spyOn(element.api!, 'canConfigureChatModel').mockResolvedValue(true)
-  element.store!.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  element.store!.credentials.data = options.credentials || [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
   element.store!.credentials.loaded = element.store!.credentials.hasSnapshot = true
-  vi.spyOn(element.api!, 'getSessionModel').mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' })
-  vi.spyOn(element.api!, 'listSessions').mockResolvedValue([])
-  vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: [] })
+  vi.spyOn(element.api!, 'getSessionModel').mockResolvedValue(options.sessionModel || { selectedCredential: 'openai', modelCredential: '', effortOptions: [], defaultEffort: '' })
+  vi.spyOn(element.api!, 'saveSessionModel').mockImplementation(options.saveSessionModel || (async (_name, _session, preferences) => preferences))
+  vi.spyOn(element.api!, 'listSessions').mockResolvedValue(options.sessions || [])
+  vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: options.messages || [] })
   vi.spyOn(element.api!, 'listRuns').mockResolvedValue({ items: [] })
-  element.store!.agents.data = [agentFixture()]
+  element.store!.agents.data = [agentFixture('scout', { backend: modelBackend(options.defaultCredential || 'openai') })]
   element.store!.agents.loaded = element.store!.agents.hasSnapshot = true
   element.store!.dispatchEvent(new Event('change'))
   await settleVue(12)
@@ -228,6 +236,81 @@ describe('overlay model recovery', () => {
     expect(save.mock.calls[0][2]).toMatchObject({ modelCredential: 'replacement' })
     expect(element.querySelector('.agents-model-recovery')).toBeNull()
     expect(element.querySelector('textarea')).toBeTruthy()
+  })
+  it('offers the current Agent default for a deleted explicit chat model without sending or replacing context', async () => {
+    const sessionID = 'existing-chat'
+    localStorage.setItem('railgrid:agents:session:org:workspace:scout', sessionID)
+    const defaultCredential = { value: 'openai' }
+    const saveSessionModel = vi.fn(async (_name: string, _session: string, preferences: any) => ({
+      ...preferences,
+      selectedCredential: preferences.modelCredential || defaultCredential.value,
+      modelCredential: preferences.modelCredential || '',
+      effortOptions: [],
+      defaultEffort: '',
+      reasoningEffortByModel: preferences.reasoningEffortByModel || {},
+    }))
+    const element = await mountOverlay({
+      defaultCredential: defaultCredential.value,
+      credentials: [
+        { name: 'openai', provider: 'openai', model: 'gpt-test' },
+        { name: 'deleted-haiku', provider: 'anthropic', model: 'claude-opus-5-5' },
+        { name: 'new-haiku', provider: 'anthropic', model: 'claude-haiku-5-5' },
+      ],
+      sessions: [{ id: sessionID, preview: 'Existing conversation', messageCount: 1, createdAt: '', lastActivity: '' }],
+      messages: [{ id: 'earlier-answer', role: 'assistant', content: 'Earlier answer', createdAt: '' }],
+      sessionModel: { selectedCredential: 'openai', modelCredential: '', effortOptions: [], defaultEffort: '', reasoningEffortByModel: {} },
+      saveSessionModel,
+    })
+    const stream = vi.spyOn(element.api!, 'chatStream')
+    const input = element.querySelector<HTMLTextAreaElement>('textarea')!
+    input.value = 'Keep this unsent draft'
+    input.dispatchEvent(new Event('input'))
+    await settleVue()
+    expect(element.textContent).toContain('Earlier answer')
+
+    element.querySelector<HTMLButtonElement>('.k-ai-model-reasoning-picker__trigger')!.click()
+    await settleVue()
+    document.querySelector<HTMLButtonElement>('[aria-label^="Choose model:"]')!.click()
+    await settleVue()
+    const deletedModel = [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find(option => option.textContent?.includes('deleted-haiku'))
+    expect(deletedModel).toBeDefined()
+    deletedModel!.click()
+    await settleVue(12)
+    expect(saveSessionModel).toHaveBeenCalledOnce()
+    expect(saveSessionModel.mock.calls[0]![2]).toMatchObject({ modelCredential: 'deleted-haiku' })
+
+    defaultCredential.value = 'new-haiku'
+    element.store!.credentials.data = [
+      { name: 'openai', provider: 'openai', model: 'gpt-test' },
+      { name: 'new-haiku', provider: 'anthropic', model: 'claude-haiku-5-5' },
+    ]
+    element.store!.agents.data[0]!.spec.backend = modelBackend(defaultCredential.value)
+    element.store!.dispatchEvent(new Event('change'))
+    await settleVue(12)
+
+    expect(element.textContent).toContain('Choose a model to continue')
+    expect(element.textContent).toContain('The agent’s default is new-haiku · claude-haiku-5-5')
+    const useDefault = [...element.querySelectorAll<HTMLButtonElement>('button')]
+      .find(button => button.textContent === 'Use agent default')
+    expect(useDefault?.getAttribute('aria-label')).toContain('Use agent default: new-haiku · claude-haiku-5-5')
+    expect(saveSessionModel).toHaveBeenCalledOnce()
+    element.store!.setPendingPrompt('scout', 'Do not send this queued prompt')
+
+    useDefault!.click()
+    await settleVue(12)
+
+    expect(saveSessionModel).toHaveBeenCalledTimes(2)
+    expect(saveSessionModel.mock.calls[1]).toEqual([
+      'scout', sessionID, expect.objectContaining({ modelCredential: '' }),
+    ])
+    expect(element.querySelector('.agents-model-recovery')).toBeNull()
+    expect(element.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(element.textContent).toContain('Earlier answer')
+    expect(element.querySelector('.k-ai-model-reasoning-picker__trigger')?.getAttribute('aria-label')).toContain('new-haiku')
+    expect(vi.mocked(element.api!.listMessagePage)).toHaveBeenCalledTimes(1)
+    expect(element.store!.takePendingPrompt('scout')).toBe('Do not send this queued prompt')
+    expect(stream).not.toHaveBeenCalled()
   })
   it('distinguishes loading from failure and retries the credential read', async () => {
     const element = await mountOverlay()

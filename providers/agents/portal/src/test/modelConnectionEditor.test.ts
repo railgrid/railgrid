@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import Models from '../views/Models.vue'
 import Editor from '../views/ModelConnectionEditor.vue'
 import { makeStore, stubApi } from './helpers'
+import type { Credential, CredentialWrite } from '../types'
 import { mountVue, settleVue } from './vue-helper'
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
@@ -310,20 +311,29 @@ describe('focused model connection editor', () => {
   expect(details.textContent).toContain(message)
  })
 
- it('creates one shared connection and its model after the single verify action', async () => {
-  const saved = { name: 'saved', baseURL: 'https://api.openai.com/v1', model: 'gpt-5', ready: true, secretResolved: true }
-  const saveCredential = vi.fn().mockResolvedValue(saved)
-  const api = stubApi({ saveCredential, probeCredentialDraft: () => Promise.resolve({ ok: true, models: ['gpt-5'], latencyMS: 4 }), listCredentials: () => Promise.resolve([saved]), catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
+ it('saves the provider first, then verifies its selected model with the saved key', async () => {
+  const saved: Credential[] = []
+  const saveCredential = vi.fn(async (body: CredentialWrite) => {
+    const { apiKey: _key, ...rest } = body
+    const result = { ...rest, ...(body.model === '' ? { isConnection: true, discovered: ['gpt-5'] } : {}), ready: true, secretResolved: true }
+    saved.push(result)
+    return result
+  })
+  const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+  const api = stubApi({ saveCredential, testProviderConnection, probeCredentialDraft: () => Promise.resolve({ ok: true, models: ['gpt-5'], latencyMS: 4 }), listCredentials: () => Promise.resolve([...saved]), catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
   const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
   button(el, 'Add model').click(); await settleVue()
   el.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click(); await settleVue()
   await input(el, 'apiKey', 'sk-first')
-  button(el, 'Continue').click(); await settleVue()
-  await selectModel(el, 'gpt-5')
-  expect(saveCredential).not.toHaveBeenCalled()
+  expect(el.querySelector('#model-id')).toBeNull()
   button(el, 'Verify & connect').click(); await settleVue(12)
-  expect(saveCredential).toHaveBeenCalledTimes(2)
+  expect(saveCredential).toHaveBeenCalledTimes(1)
   expect(saveCredential.mock.calls[0][0]).toMatchObject({ model: '', apiKey: 'sk-first' })
+  expect(el.querySelector('[name="apiKey"]')).toBeNull()
+  await selectModel(el, 'gpt-5')
+  button(el, 'Verify & connect').click(); await settleVue(12)
+  expect(testProviderConnection).toHaveBeenCalledWith(saved[0].name, 'gpt-5', expect.any(AbortSignal))
+  expect(saveCredential).toHaveBeenCalledTimes(2)
   expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: saveCredential.mock.calls[0][0].name, model: 'gpt-5' })
   expect(saveCredential.mock.calls[1][0]).not.toHaveProperty('apiKey')
   expect(el.querySelector('form')).toBeNull()

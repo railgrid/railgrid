@@ -162,6 +162,7 @@ export interface AgentBackend {
 
 /** KubeCondition is one metav1.Condition as kcp serves it. */
 export interface KubeCondition {
+  observedGeneration?: number
   type: string
   status: string
   reason?: string

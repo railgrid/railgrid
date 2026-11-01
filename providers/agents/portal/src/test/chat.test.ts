@@ -2753,6 +2753,81 @@ describe('conversation model picker', () => {
     expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
   })
 
+  it('recovers an inherited conversation after a saved default replaces its deleted model', async () => {
+    const sessionID = 'same-conversation'
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', sessionID)
+    const pendingAgentSave = deferred<unknown>()
+    const refreshedPreferences = deferred<any>()
+    const newDefault = 'claude-haiku-5-5'
+    const history = [{ id: 'existing-answer', role: 'assistant' as const, content: 'Earlier answer', createdAt: '' }]
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce({
+        selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: 'low',
+        reasoningEffortByModel: { openai: 'low' },
+      })
+      .mockReturnValueOnce(refreshedPreferences.promise)
+    const patchAgent = vi.fn(() => pendingAgentSave.promise)
+    const listAgents = vi.fn(async () => [agentFixture('scout', { backend: modelBackend(newDefault) })])
+    const chatStream = vi.fn(scripted([]))
+    const { el, api, store } = await mountChat(chatStream, {
+      listSessions: async () => [session(sessionID, 'Existing conversation')],
+      listMessagePage: async () => ({ items: history }),
+      getSessionModel,
+      patchAgent,
+      listAgents,
+    })
+    await configureModels(store)
+    const composer = el.querySelector<HTMLTextAreaElement>('textarea')!
+    composer.value = 'Keep this unsent draft'
+    composer.dispatchEvent(new Event('input'))
+    await settle()
+    expect(text(el)).toContain('Earlier answer')
+
+    // The old configured credential disappears before the replacement Agent
+    // default has finished saving. Chat must retain the same conversation and
+    // wait for that save before reading the inherited preference again.
+    store.credentials.data = [{ name: newDefault, provider: 'anthropic', model: 'claude-haiku-5-5' }]
+    store.dispatchEvent(new Event('change'))
+    await settle(8)
+    expect(text(el)).toContain('Choose a model to continue')
+    store.setPendingPrompt('scout', 'Do not send this queued prompt')
+
+    const save = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: newDefault },
+      apply: spec => { spec.backend = modelBackend(newDefault) },
+      success: 'Saved model settings',
+    })
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledOnce()
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+
+    pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: { backend: modelBackend(newDefault) } })
+    await save
+    await settle(8)
+    expect(listAgents).toHaveBeenCalledOnce()
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(getSessionModel).toHaveBeenNthCalledWith(2, 'scout', sessionID)
+    // While the fresh capability read is still outstanding, the effective
+    // choice follows the saved Agent default instead of the deleted name.
+    expect(picker(el).getAttribute('aria-label')).toContain(newDefault)
+    expect(text(el)).not.toContain('Choose a model to continue')
+
+    refreshedPreferences.resolve({
+      selectedCredential: newDefault, modelCredential: '', effortOptions: ['low', 'medium'], defaultEffort: 'medium',
+      reasoningEffortByModel: {},
+    })
+    await settle(10)
+    expect(text(el)).toContain('Earlier answer')
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).toBe(sessionID)
+    expect(store.takePendingPrompt('scout')).toBe('Do not send this queued prompt')
+    expect(chatStream).not.toHaveBeenCalled()
+  })
+
   it('refreshes the rolled-back inherited model after an Agent default save fails', async () => {
     const pendingAgentSave = deferred<unknown>()
     const getSessionModel = vi.fn()

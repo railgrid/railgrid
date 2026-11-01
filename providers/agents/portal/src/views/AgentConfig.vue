@@ -413,8 +413,18 @@ watch([needsModelSetup, () => props.api, () => props.store, () => props.name, ()
 
 const harnessStored = computed(() => agentHarnessBacked(agent.value))
 /** backendCondition is the reconciler's verdict on whether a turn can run. */
-const backendCondition = computed(() => agentCondition(agent.value, CONDITION_BACKEND_READY))
+const backendCondition = computed(() => {
+  revision.value
+  return agentCondition(agent.value, CONDITION_BACKEND_READY)
+})
+const backendReadinessSaving = computed(() => saveState.backend.status === 'pending' || saveState.model.status === 'pending')
+const backendReadinessStale = computed(() => {
+  revision.value
+  const generation = agent.value?.metadata.generation
+  return typeof generation === 'number' && (backendCondition.value?.observedGeneration ?? 0) < generation
+})
 const resolvedHarness = computed(() => {
+  revision.value
   const backend = agent.value?.status?.backend
   if (!backend?.harness?.name) return ''
   const version = backend.harness.version
@@ -1107,7 +1117,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
       <div class="agents-fieldset">
         <span class="agents-fieldset-legend">Saved backend readiness</span>
-        <div v-if="!backendCondition" class="agents-hint" role="status">Waiting for the backend readiness check.</div>
+        <div v-if="backendReadinessSaving" class="agents-hint" role="status">Saving backend changes…</div>
+        <div v-else-if="backendReadinessStale" class="agents-hint" role="status">Checking the saved backend configuration…</div>
+        <div v-else-if="!backendCondition" class="agents-hint" role="status">Waiting for the backend readiness check.</div>
         <template v-else-if="backendCondition.status === 'True'">
           <StatusBadge status="Backend ready" tone="success" />
           <span v-if="resolvedHarness" class="agents-hint">Turns will run on {{ resolvedHarness }}.</span>
@@ -1125,7 +1137,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
-    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" :heading-id="domID('agent-model-heading')" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
+    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" :heading-id="domID('agent-model-heading')" title="Model" description="The agent’s default model. Conversations can override it. Fallbacks are tried in order if the primary fails.">
       <div v-if="credentialSlice.errorStatus === 403" class="k-inline-notification k-inline-notification--warning" role="status">Model access is restricted. Ask a workspace administrator to restore access.</div>
       <div v-else-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
@@ -1141,7 +1153,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <span class="k-inline-notification__body"><strong>{{ credentialSlice.error ? 'Model availability could not be refreshed' : missingModel ? 'Selected model is unavailable' : 'Connect a model to continue' }}</strong><span class="k-inline-notification__message"><template v-if="credentialSlice.error">The configured model or fallback was not in the last loaded models. Retry loading models to check its current availability.</template><template v-else><template v-if="missingModel">The configured model <code>{{ modelCredential }}</code> is not available in this workspace. </template>{{ credentials.length ? 'Choose a replacement below to restore this agent.' : 'Connect a model to restore this agent.' }}</template></span></span>
         </div>
         <label v-if="credentials.length">
-          <span :id="domID('agent-model-credential-label')">Model credential</span>
+          <span :id="domID('agent-model-credential-label')">Default model</span>
           <FormSelect v-model="modelCredential" :options="credentialOptions" :invalid="missingModel" :labelledby="domID('agent-model-credential-label')" :describedby="missingModel ? domID('agent-model-unavailable') : undefined" />
         </label>
         <template v-else>

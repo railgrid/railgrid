@@ -125,6 +125,14 @@ model list and restores the expanded conversation and its draft. This flow does
 not automatically select a newly connected model, send a message, or change the
 Agent's workspace configuration.
 
+A conversation can explicitly override its agent's default model. If that
+conversation model disappears while the default remains available, recovery
+explains the difference and offers **Use agent default**. This action clears
+only the conversation override, retaining its history and draft. Inherited
+conversations follow an acknowledged default change without sending a message.
+Config distinguishes a saved change from backend readiness: a condition for an
+older resource generation is shown as checking rather than as a current failure.
+
 The compact assistant bar also keeps recovery visible: it shows a short status
 and Review setup, which expands the full recovery panel. The same recovery
 states replace the dedicated Agents chat composer. In Config, a missing primary

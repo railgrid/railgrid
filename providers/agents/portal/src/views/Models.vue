@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
+import { Play, ArrowLeft, Brain, Check, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -28,9 +28,10 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models' })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
 const emit = defineEmits<{
   navigate: [route: Route]
+  'connect-provider': [continueToModel: boolean]
   'create-success': [detail: CreateSuccessDetail & Fence]
   'create-cancel': [detail: Fence]
 }>()
@@ -72,6 +73,9 @@ const createBusy = ref(false)
 const editorGeneration = ref(0)
 const editor = ref<{ cancel: () => Promise<void>; locked: boolean } | null>(null)
 const editingCredential = ref<Credential>()
+const connectedProvider = ref<Credential | null>(null)
+const continueAddedProvider = ref(false)
+const savedProviderDiscovery = ref<{ connectionName: string; models: string[] } | null>(null)
 const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
 const showBreakdown = ref(false)
@@ -121,7 +125,7 @@ watch([() => props.store, () => props.api, windowDays], resetUsageRead)
 watch([() => props.store, () => props.api, windowDays, activeTab], () => {
   if (activeTab.value === 'usage') void loadUsage()
 }, { immediate: true })
-watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
+watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
 async function loadUsage(): Promise<void> {
   const generation = ++usageGeneration
@@ -281,6 +285,13 @@ function addModel(connectionName: string): void {
   initialConnection.value = connectionName
   editingCredential.value = undefined; editName.value = null; creating.value = true; editorFamily.value = 'chat'; saveError.value = null
 }
+function continueWithSavedProvider(connectionName: string): void {
+  connectedProvider.value = null
+  initialConnection.value = connectionName
+  selectingConnection.value = true
+  editingCredential.value = undefined; editName.value = null; creating.value = true; editorFamily.value = 'chat'; saveError.value = null
+  editorGeneration.value++
+}
 function toggleEdit(credential: Credential): void {
   if (credentialActions.value.size) return
   editingCredential.value = { ...credential }
@@ -293,8 +304,13 @@ function beginModel(): void {
   else { selectingConnection.value = true; creating.value = true }
 }
 function openProvider(): void {
-  if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model' })
+  const continueToModel = selectingConnection.value
+  if (props.routeOwned) {
+    emit('connect-provider', continueToModel)
+    emit('navigate', { kind: 'create', resource: 'model' })
+  }
   else {
+    continueAddedProvider.value = continueToModel
     selectingConnection.value = false; initialConnection.value = ''; editingCredential.value = undefined
     editName.value = null; saveError.value = null; editorGeneration.value++; creating.value = true
   }
@@ -305,6 +321,10 @@ function cancelCreate(): void {
   editingCredential.value = undefined
   editName.value = null
   creating.value = false
+  connectedProvider.value = null
+  continueAddedProvider.value = false
+  savedProviderDiscovery.value = null
+  selectingConnection.value = Boolean(props.selectConnection)
   editorFamily.value = 'chat'
   saveError.value = null
   if (props.createRoute) emit('create-cancel', { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession })
@@ -315,12 +335,14 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
   const authority = captureAuthority()
   const fence = { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession }
   const edited = !!editingCredential.value
+  const savingProviderConnection = !edited && !body.connectionRef && !body.newConnection && body.model === ''
   createBusy.value = true
   saveError.value = null
   invalidateProbe(body.name)
   try {
+    let savedConnection: Credential | undefined
     if (body.newConnection) {
-      await authority.api.saveCredential(body.newConnection)
+      savedConnection = await authority.api.saveCredential(body.newConnection)
       if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
     }
     const { newConnection: _newConnection, ...modelBody } = body
@@ -328,6 +350,34 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
     clearProbeState(body.name)
     if (probe) tested.value = setMap(tested.value, body.name, probe)
+    if (savingProviderConnection) {
+      const acknowledged = { ...result, ...(probe?.models ? { discovered: probe.models } : {}) }
+      // Start the refresh before adoption so AppStore's generation fence keeps
+      // this acknowledged connection (and discovery result) if its list read
+      // settles before the reconciler has published the same state.
+      void authority.store.load('credentials')
+      authority.store.adopt('credentials', acknowledged)
+      if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
+      if (probe?.models) savedProviderDiscovery.value = { connectionName: acknowledged.name, models: [...probe.models] }
+      toast('ok', 'Provider connected.')
+      if (props.continueAddModelAfterProviderConnect || continueAddedProvider.value) continueWithSavedProvider(acknowledged.name)
+      else connectedProvider.value = acknowledged
+      return
+    }
+    if (!edited) {
+      // A successful create response already contains the saved binding. Do
+      // not keep the editor (or its chat recovery handoff) waiting on a list
+      // request; reconcile in the background and immediately use the server
+      // acknowledgement as the local snapshot.
+      void authority.store.load('credentials')
+      if (savedConnection) authority.store.adopt('credentials', savedConnection)
+      authority.store.adopt('credentials', result)
+      if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
+      cancelEditorAfterSave()
+      toast('ok', isHarnessProvider(body.provider) ? 'Harness identity added.' : 'Model connected.')
+      if (props.routeOwned) emit('create-success', { resource: 'model', name: body.name, item: result, ...fence })
+      return
+    }
     await authority.store.load('credentials')
     if (!authorityIsCurrent(authority) || fence.createSession !== props.createSession) return
     cancelEditorAfterSave()
@@ -340,7 +390,7 @@ async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): P
     }
   } finally { if (authorityIsCurrent(authority) && fence.createSession === props.createSession) createBusy.value = false }
 }
-function cancelEditorAfterSave(): void { initialConnection.value = ''; editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = 'chat' }
+function cancelEditorAfterSave(): void { initialConnection.value = ''; editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; selectingConnection.value = Boolean(props.selectConnection); editorFamily.value = 'chat' }
 function sparkPoints(series: UsagePoint[]): string {
   const values = series.map(item => item.usdMicros); if (values.length < 2 || Math.max(...values) === 0) return ''
   const max = Math.max(...values); const step = 260 / (values.length - 1)
@@ -364,7 +414,12 @@ defineExpose({ loadCatalog, loadUsage })
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> {{ returnLabel }}</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
-      <ProviderConnectionEditor v-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :select-connection="selectingConnection" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" @connect-provider="openProvider" />
+      <section v-if="connectedProvider" class="k-card agents-provider-connected" aria-labelledby="provider-connected-title">
+        <div class="agents-provider-connected__mark"><Check :size="18" :stroke-width="2" aria-hidden="true" /></div>
+        <div class="agents-provider-connected__copy"><h2 id="provider-connected-title">Provider connected</h2><p role="status">{{ connectedProvider.displayName || connectedProvider.name }} is saved. Add a model now or later.</p></div>
+        <div class="agents-provider-connected__actions"><button type="button" class="k-btn k-btn--primary" @click="continueWithSavedProvider(connectedProvider.name)">Add model</button><button type="button" class="k-btn k-btn--ghost" @click="cancelCreate">Done</button></div>
+      </section>
+      <ProviderConnectionEditor v-else-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :select-connection="selectingConnection" :discovery-fallback="savedProviderDiscovery" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" @connect-provider="openProvider" />
       <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
@@ -481,3 +536,43 @@ defineExpose({ loadCatalog, loadUsage })
     </template>
   </div>
 </template>
+
+<style scoped>
+.agents-provider-connected {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px 16px;
+  width: min(100%, 760px);
+  padding: 24px;
+}
+.agents-provider-connected__mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--color-success, #2fd6a0);
+  background: color-mix(in srgb, var(--color-success, #2fd6a0) 14%, transparent);
+}
+.agents-provider-connected__copy h2 {
+  margin: 1px 0 6px;
+  font-size: 16px;
+  font-weight: 650;
+}
+.agents-provider-connected__copy p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}
+.agents-provider-connected__actions {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+@media (max-width: 560px) {
+  .agents-provider-connected { grid-template-columns: 28px minmax(0, 1fr); padding: 18px; }
+  .agents-provider-connected__mark { width: 28px; height: 28px; }
+  .agents-provider-connected__actions { grid-column: 1 / -1; }
+}
+</style>

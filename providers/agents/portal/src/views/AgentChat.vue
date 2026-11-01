@@ -221,6 +221,13 @@ const modelChoices = computed(() => {
     id: credential.name, name: credential.connectionRef ? `${credential.connectionName || credential.connectionRef} · ${credential.displayName || credential.model}` : credential.displayName || credential.name, model: credential.model || 'Provider default',
   }))
 })
+const inheritedModelChoice = computed(() => modelChoices.value.find(choice => choice.id === inheritedModelCredential.value) || null)
+const inheritedModelLabel = computed(() => {
+  const choice = inheritedModelChoice.value
+  if (!choice) return ''
+  const model = choice.model === 'Provider default' ? '' : choice.model
+  return model && !choice.name.toLowerCase().includes(model.toLowerCase()) ? `${choice.name} · ${model}` : choice.name
+})
 const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
 const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
 
@@ -236,6 +243,10 @@ const modelRecovery = computed(() => {
   if (!props.store.credentials.hasSnapshot) return 'loading'
   return modelChoices.value.length ? 'choose' : 'connect'
 })
+const canUseAgentDefault = computed(() => modelRecovery.value === 'choose'
+  && Boolean(modelPreferences.value?.modelCredential)
+  && Boolean(inheritedModelChoice.value)
+  && !modelChoices.value.some(choice => choice.id === selectedModel.value))
 const compactRecoveryTitle = computed(() => modelRecovery.value === 'loading' ? 'Loading models…'
   : modelRecovery.value === 'choose' ? 'Choose a model'
     : modelRecovery.value === 'connect' ? 'Model needed'
@@ -440,7 +451,13 @@ watch([sessionID, isModelBackend, inheritedModelCredential], ([session, modelBac
     }
     const hasExplicitChatModel = Boolean(modelPreferences.value?.modelCredential)
       || (modelSaving.value && Boolean(retryModelPreferences?.modelCredential))
-    if (session && modelBackend && !hasExplicitChatModel) modelPending = updateChatModel()
+    if (session && modelBackend && !hasExplicitChatModel) {
+      // The selectedCredential in an inherited response describes the old
+      // Agent default. Stop treating it as the active selection while the
+      // serialized read waits for any config save and reloads capabilities.
+      modelPreferences.value = null
+      modelPending = updateChatModel()
+    }
     return
   }
 
@@ -466,6 +483,20 @@ function selectModelCredential(credential: string): void {
   modelPending = updateChatModel({
     ...modelPreferences.value, selectedCredential: credential, modelCredential: credential,
     effortOptions: [], defaultEffort: '',
+  })
+}
+function useAgentDefaultModel(): void {
+  const choice = inheritedModelChoice.value
+  if (!canUseAgentDefault.value || modelSwitchDisabled.value || !choice || !modelPreferences.value) return
+  // Clearing the conversation override is a user choice. The server resolves
+  // the effective credential from the Agent's current default for this same
+  // session; history, draft, and any other per-model effort preferences stay.
+  modelPending = updateChatModel({
+    ...modelPreferences.value,
+    selectedCredential: choice.id,
+    modelCredential: '',
+    effortOptions: [],
+    defaultEffort: '',
   })
 }
 function selectReasoningEffort(effort: string): void {
@@ -2449,9 +2480,11 @@ defineExpose({
           <template v-if="!composerOnly">
             <p v-if="modelRecovery === 'inaccessible'">You don’t have access to the models this assistant needs. Ask a workspace administrator to restore access.</p>
             <p v-else-if="modelRecovery === 'error'">We couldn’t check which models are available. Retry to continue.</p>
+            <p v-else-if="canUseAgentDefault">This conversation uses a model that is no longer available. The agent’s default is {{ inheritedModelLabel }}. Your conversation and draft are kept here.</p>
             <p v-else-if="modelRecovery !== 'loading'">{{ selectedModel ? 'The selected model is unavailable.' : 'This assistant needs a model before it can reply.' }} Your conversation and draft are kept here.</p>
             <button v-if="modelRecovery === 'error'" type="button" class="k-btn k-btn--primary" :disabled="store.credentials.loading" @click="resumeOverlayModels">{{ store.credentials.loading ? 'Retrying…' : 'Retry' }}</button>
             <template v-else-if="modelRecovery === 'choose'">
+              <button v-if="canUseAgentDefault" type="button" class="k-btn k-btn--primary" :aria-label="`Use agent default: ${inheritedModelLabel}`" :disabled="modelSwitchDisabled" @click="useAgentDefaultModel">{{ modelSaving ? 'Switching…' : 'Use agent default' }}</button>
               <label :for="domID('recovery-model')">Available model</label>
               <select :id="domID('recovery-model')" v-model="replacementModel" class="k-input" :disabled="modelSwitchDisabled"><option disabled value="">Choose a model</option><option v-for="choice in modelChoices" :key="choice.id" :value="choice.id">{{ choice.name }} · {{ choice.model }}</option></select>
               <p v-if="modelSaveError" role="alert">{{ modelSaveError }}</p>

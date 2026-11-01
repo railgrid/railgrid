@@ -418,7 +418,7 @@ export class ApiClient {
 
   // Objects: kcp. See resources.ts — the CRs are bound in the tenant's own
   // workspace, so the provider backend has no business relaying CRUD for them.
-  listAgents = (): Promise<Agent[]> => this.resources.listAgents()
+  listAgents = (signal?: AbortSignal): Promise<Agent[]> => this.resources.listAgents(signal)
   createAgent = (body: AgentCreate): Promise<Agent> => this.resources.createAgent(body)
   createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
     this.resources.createAgentFromTemplate(agent, schedules)

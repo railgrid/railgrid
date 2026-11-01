@@ -21,25 +21,23 @@ describe('provider-first BYOK flow', () => {
     expect([...view.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(item => item.value)).toEqual(['openai', 'anthropic', 'openrouter', 'custom'])
     expect(view.element.querySelector('[name="name"]')).toBeNull()
     expect(view.element.querySelector('#model-id')).toBeNull()
-    expect(button(view.element, 'Continue').disabled).toBe(true)
+    expect(button(view.element, 'Verify & connect').disabled).toBe(true)
   })
 
-  it('discovers models then verifies and emits a connection and reference in one final action', async () => {
+  it('saves a provider connection after discovery without selecting or adding a model', async () => {
     const save = vi.fn()
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => Promise.resolve(discover ? { ok: true, latencyMS: 1, models: ['first-model'] } : { ok: true, latencyMS: 2 }))
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false, onSave: save })
     await input(view.element, '[name="apiKey"]', 'test-key')
-    button(view.element, 'Continue').click(); await settleVue()
-    expect(probeCredentialDraft).toHaveBeenCalledTimes(1)
-    expect(save).not.toHaveBeenCalled()
-    await choose(view.element, 'first-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(probeCredentialDraft).toHaveBeenCalledTimes(2)
+    expect(probeCredentialDraft).toHaveBeenCalledTimes(1)
+    expect(probeCredentialDraft.mock.calls[0][1]).toBe(true)
+    expect(view.element.querySelector('#model-id')).toBeNull()
+    expect(save).toHaveBeenCalledOnce()
     const body = save.mock.calls[0][0]
-    expect(body.newConnection).toMatchObject({ apiKey: 'test-key', model: '', baseURL: account.baseURL })
-    expect(body.connectionRef).toBe(body.newConnection.name)
-    expect(body.model).toBe('first-model')
-    expect(body.apiKey).toBeUndefined()
+    expect(body).toMatchObject({ apiKey: 'test-key', model: '', baseURL: account.baseURL })
+    expect(body).not.toHaveProperty('newConnection')
+    expect(body).not.toHaveProperty('connectionRef')
   })
 
   it('adds another model using the saved key without returning or rewriting it', async () => {
@@ -70,11 +68,13 @@ describe('provider-first BYOK flow', () => {
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => Promise.resolve(discover ? { ok: false, latencyMS: 0, error: 'Catalog unavailable' } : { ok: true, latencyMS: 1 }))
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false, onSave: save })
     await input(view.element, '[name="apiKey"]', 'test-key')
-    button(view.element, 'Continue').click(); await settleVue()
-    expect(view.element.textContent).toContain('manually')
+    button(view.element, 'Verify & connect').click(); await settleVue()
+    expect(view.element.textContent).toContain('Verification model (optional)')
     await choose(view.element, 'manual-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(save.mock.calls[0][0].model).toBe('manual-model')
+    expect(probeCredentialDraft.mock.calls.map(call => call[1])).toEqual([true, false])
+    expect(save.mock.calls[0][0].model).toBe('')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
   })
 
   it('verifies all configured models before updating a shared connection', async () => {
@@ -219,12 +219,13 @@ describe('bounded provider verification', () => {
   it('releases a stale verification when autofill changes the credential', async () => {
     let resolve!: (value: unknown) => void
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => discover
-      ? Promise.resolve({ ok: true, latencyMS: 1, models: ['first-model'] })
+      ? Promise.resolve({ ok: false, latencyMS: 0, error: 'Model listing unavailable' })
       : new Promise(done => { resolve = done }))
     const save = vi.fn()
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false, onSave: save })
     await input(view.element, '[name="apiKey"]', 'first-key')
-    button(view.element, 'Continue').click(); await settleVue(12)
+    button(view.element, 'Verify & connect').click(); await settleVue(12)
+    expect(view.element.textContent).toContain('Verification model (optional)')
     await choose(view.element, 'first-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
     const signal = probeCredentialDraft.mock.calls.at(-1)![2] as AbortSignal
@@ -235,14 +236,14 @@ describe('bounded provider verification', () => {
     expect(save).not.toHaveBeenCalled()
   })
 
-  it('allows stopping discovery and entering a model manually', async () => {
+  it('allows stopping provider access verification and retrying it', async () => {
     const probeCredentialDraft = vi.fn(() => new Promise(() => {}))
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false })
     await input(view.element, '[name="apiKey"]', 'test-key')
-    button(view.element, 'Continue').click(); await settleVue()
-    button(view.element, 'Stop loading').click(); await settleVue()
-    expect(view.element.textContent).toContain('Model loading stopped')
-    expect(view.element.querySelector<HTMLButtonElement>('#model-id')?.disabled).toBe(false)
+    button(view.element, 'Verify & connect').click(); await settleVue()
+    button(view.element, 'Stop verification').click(); await settleVue()
+    expect(view.element.textContent).toContain('Verification stopped')
+    expect(button(view.element, 'Verify & connect').disabled).toBe(false)
     expect((probeCredentialDraft.mock.calls[0] as unknown as [unknown, boolean, AbortSignal])[2].aborted).toBe(true)
   })
 })

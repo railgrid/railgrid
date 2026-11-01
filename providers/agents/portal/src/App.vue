@@ -43,6 +43,7 @@ const store = shallowRef(markRaw(new AppStore(api.value)))
 const route = ref<Route>(props.overlay ? { kind: 'agent', name: props.overlay.agent, tab: 'chat' } : parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
+const continueAddModelAfterProviderConnect = ref(false)
 const storeRevision = ref(0)
 const agentCreateDraft = shallowRef<AgentCreateDraft | null>(null)
 const agentCredentialSetup = shallowRef<{
@@ -166,6 +167,9 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
     return
   }
   const previous = route.value
+  if (continueAddModelAfterProviderConnect.value && !(isModelCreateRoute(previous) && isModelCreateRoute(next))) {
+    continueAddModelAfterProviderConnect.value = false
+  }
   if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
     modelCreateOwner = previous.kind === 'agent' || (previous.kind === 'menu' && previous.menu === 'models')
       ? previous : { kind: 'menu', menu: 'models' }
@@ -195,6 +199,7 @@ function restoreRoute(): void {
 function restoreRouteFromHash(normalize: boolean): void {
   const previous = route.value
   const next = parseHash()
+  if (!isModelCreateRoute(next)) continueAddModelAfterProviderConnect.value = false
   prepareAgentCreateRouteChange(previous, next)
   if (route.value.kind === 'edit' && next.kind === 'menu' && next.menu === 'connections') {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
@@ -287,7 +292,10 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   bindStore(nextStore)
   loadedTenant = null
   authority = nextApi.contextAuthority()
-  if (resetRoute) modelCreateOwner = { kind: 'menu', menu: 'models' }
+  if (resetRoute) {
+    modelCreateOwner = { kind: 'menu', menu: 'models' }
+    continueAddModelAfterProviderConnect.value = false
+  }
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
   if (authority.usable) {
@@ -343,6 +351,10 @@ watch([() => props.ctx?.agentOverlay?.settingsOpen, () => hashFor(route.value)],
 }, { immediate: true })
 
 type SourceDetail = Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>
+
+function rememberProviderConnectionOrigin(continueToModel: boolean): void {
+  continueAddModelAfterProviderConnect.value = continueToModel
+}
 
 function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): boolean {
   if (detail.store !== store.value) return false
@@ -419,6 +431,7 @@ function credentialMatchesFamily(credential: Credential | undefined, family: Age
 
 function onCreateSuccess(detail: CreateSuccessDetail): void {
   if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create' || detail.resource !== route.value.resource) return
+  if (detail.resource === 'model') continueAddModelAfterProviderConnect.value = false
   adoptCreateResult(detail)
   if (detail.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
     agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
@@ -438,6 +451,7 @@ function onCreateSuccess(detail: CreateSuccessDetail): void {
 
 function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>): void {
   if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create') return
+  if (route.value.resource === 'model') continueAddModelAfterProviderConnect.value = false
   if (route.value.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
     agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
     const returnRoute = agentCredentialSetup.value.returnRoute
@@ -587,6 +601,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
+        @connect-provider="rememberProviderConnectionOrigin"
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />
@@ -678,9 +693,11 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :create-route="true"
         :initial-family="route.type === 'harness' ? 'harness' : 'chat'"
         :select-connection="route.type === 'from-connection'"
+        :continue-add-model-after-provider-connect="continueAddModelAfterProviderConnect"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
+        @connect-provider="rememberProviderConnectionOrigin"
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />

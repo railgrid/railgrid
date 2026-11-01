@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest'
-import { Resources, ResourceError } from '../resources'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AGENT_PATCH_TIMEOUT_MS, Resources, ResourceError } from '../resources'
 import type { RailgridContext } from '../types'
 
 // The kube client is exercised for real — only the transport is faked, so these
@@ -118,6 +118,62 @@ describe('addressing', () => {
     const pending = resources.listAgents()
     resources.setContext(contextWith('another-cluster'))
     await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
+  })
+})
+
+describe('bounded Agent writes', () => {
+  it('times out an Agent PATCH when the host response body never arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      let requestSignal: AbortSignal | undefined
+      const responseBody = new Promise<string>(() => {})
+      resources.setContext({
+        ...contextWith(CLUSTER),
+        fetch: async (_input, init) => {
+          requestSignal = init?.signal ?? undefined
+          return { ok: true, status: 200, text: () => responseBody } as Response
+        },
+      })
+
+      const pending = resources.patchAgent('scout', { modelCredential: 'new-model' })
+      const rejected = expect(pending).rejects.toMatchObject({
+        name: 'ResourceError',
+        status: 504,
+        reason: 'Timeout',
+        message: 'Saving agent settings timed out. The change may still have been saved; refresh to confirm it.',
+      })
+      await vi.advanceTimersByTimeAsync(AGENT_PATCH_TIMEOUT_MS)
+      await rejected
+      expect(requestSignal?.aborted).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('aborts a reconciliation list and ignores a response arriving after its deadline', async () => {
+    let resolveResponse!: (response: Response) => void
+    let requestSignal: AbortSignal | undefined
+    const lateResponse = new Promise<Response>(resolve => { resolveResponse = resolve })
+    const controller = new AbortController()
+    resources.setContext({
+      ...contextWith(CLUSTER),
+      fetch: async (_input, init) => {
+        requestSignal = init?.signal ?? undefined
+        return lateResponse
+      },
+    })
+
+    const pending = resources.listAgents(controller.signal)
+    await Promise.resolve()
+    const error = new Error('Agent settings refresh timed out. The saved change may still be present; refresh to confirm it.')
+    error.name = 'TimeoutError'
+    controller.abort(error)
+    await expect(pending).rejects.toMatchObject({ status: 504, reason: 'Timeout', message: error.message })
+    expect(requestSignal?.aborted).toBe(true)
+
+    resolveResponse(jsonResponse(200, { items: [{ metadata: { name: 'stale' }, spec: {} }] }))
+    await Promise.resolve()
+    expect(kcp.calls).toHaveLength(0)
   })
 })
 

@@ -200,12 +200,19 @@ a new provider is not an option embedded in the saved-connection dropdown.
 
 The Agents create route offers only API provider presets. Harness logins retain
 the separate Add harness identity entry point and their existing form. The
-provider form asks for credentials before model selection, keeps fixed endpoints
-under Connection details, and displays custom URLs and Anthropic workspace
-settings only when applicable. Continue discovers models without inference;
-failed discovery preserves manual model entry. Connection names are optional
-human labels; resource names are generated. Verify & connect tests the exact
-selected model and persists only after success. Editing shared connection
+provider form keeps fixed endpoints under Connection details and displays custom
+URLs and Anthropic workspace settings only when applicable. Standalone Connect
+provider verifies access through discovery and saves the provider connection
+without requiring or adding a model. If discovery cannot verify access, an
+optional verification model can test inference without adding a binding.
+Connection names are optional human labels; resource names are generated.
+
+After standalone setup, Provider connected offers **Add model** and **Done**.
+Setup entered from Add model or chat recovery continues directly to Add model
+with the new connection selected, preserving the original return path. The
+acknowledged connection is available immediately; background collection refresh
+must not hold the success state or require key re-entry. Adding a model verifies
+the exact selected model before saving its binding. Editing shared connection
 details uses **Verify & save** to verify every configured binding, or discovery
 alone when none exist. An optional verification model is test-only; saving the
 connection never adds a model binding. Request cost is explained beside the

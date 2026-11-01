@@ -88,6 +88,34 @@ export interface ServerEvent {
 
 const POLL_MS = 30_000
 
+function requestAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  const error = new Error('The request was aborted.')
+  error.name = 'AbortError'
+  return error
+}
+
+function waitForRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
+  if (signal.aborted) return Promise.reject(requestAbortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const onAbort = () => {
+      cleanup()
+      reject(requestAbortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    request.then(
+      value => {
+        cleanup()
+        if (signal.aborted) reject(requestAbortError(signal))
+        else resolve(value)
+      },
+      error => { cleanup(); reject(error) },
+    )
+  })
+}
+
 export class AppStore extends EventTarget {
   agents = slice<Agent[]>([])
   connections = slice<Connection[]>([])
@@ -283,9 +311,10 @@ export class AppStore extends EventTarget {
 
   // load refreshes one slice. Errors land on the slice (never swallowed) and
   // the previous data stays visible so a transient failure doesn't blank the UI.
-  async load(key: SliceKey): Promise<void> {
+  async load(key: SliceKey, options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.retired) return
     if (!this.api.hasWorkspace()) return
+    if (options.signal?.aborted) return
     const s = this[key] as Slice<unknown[]>
     const loadID = ++this.nextLoadID
     const requestGeneration = this.collectionGeneration(key)
@@ -294,8 +323,8 @@ export class AppStore extends EventTarget {
     s.loading = true
     this.changed()
     try {
-      const rows = await LOADERS[key](this.api)
-      if (this.retired) return
+      const rows = await waitForRequest(LOADERS[key](this.api, options.signal), options.signal)
+      if (this.retired || options.signal?.aborted) return
       // A refresh started before a successful create may return a snapshot
       // that cannot contain the newly-created item yet. Only the latest load
       // may replace the slice; when that load predates an adoption, merge the
@@ -351,6 +380,12 @@ export class AppStore extends EventTarget {
   }
 
   private mergeLoadedRows(key: SliceKey, rows: unknown[], requestGeneration: number): unknown[] {
+    // An Agent PATCH response is authoritative as soon as it is acknowledged.
+    // A collection read that began before that write can still be the latest
+    // load by ID and return an older generation; keep the newer row until a
+    // read catches up. Preserve its object identity too, since a config queue
+    // may have a newer optimistic edit layered over the acknowledged spec.
+    if (key === 'agents') rows = this.mergeNewerAgentRows(rows)
     if (!isCreateCollectionKey(key)) return rows
     const newer = [...this.adoptedItems[key].entries()].filter(([, adopted]) => adopted.generation > requestGeneration)
     if (!newer.length) return rows
@@ -361,6 +396,26 @@ export class AppStore extends EventTarget {
       if (!present.has(id)) merged.push(adopted.item)
     }
     return merged
+  }
+
+  private mergeNewerAgentRows(rows: unknown[]): unknown[] {
+    const currentByName = new Map(this.agents.data.map((agent) => [agent.metadata.name, agent]))
+    return rows.map((row) => {
+      if (!row || typeof row !== 'object') return row
+      const incoming = row as Agent
+      const name = incoming.metadata?.name
+      if (!name) return row
+      const current = currentByName.get(name)
+      if (!current || current.metadata.uid !== incoming.metadata?.uid || !current.metadata.uid) return row
+      const currentGeneration = current.metadata.generation
+      const incomingGeneration = incoming.metadata?.generation
+      if (
+        typeof currentGeneration === 'number' && Number.isFinite(currentGeneration) &&
+        typeof incomingGeneration === 'number' && Number.isFinite(incomingGeneration) &&
+        currentGeneration > incomingGeneration
+      ) return current
+      return row
+    })
   }
 
   private pruneAdoptedItems(key: SliceKey): void {
@@ -499,8 +554,8 @@ function createCollectionItemID(key: CreateCollectionKey, item: unknown): string
   return typeof name === 'string' ? name : ''
 }
 
-const LOADERS: Record<SliceKey, (api: ApiClient) => Promise<unknown[]>> = {
-  agents: (a) => a.listAgents(),
+const LOADERS: Record<SliceKey, (api: ApiClient, signal?: AbortSignal) => Promise<unknown[]>> = {
+  agents: (a, signal) => a.listAgents(signal),
   connections: (a) => a.listConnections(),
   toolsets: (a) => a.listToolsets(),
   schedules: (a) => a.listSchedules(),

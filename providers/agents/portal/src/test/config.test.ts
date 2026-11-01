@@ -9,6 +9,8 @@ import { familiesForConns } from '../conn-defs'
 import { clearToasts, subscribeToasts } from '../ui/toast'
 import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
+import { queueAgentConfigSave } from '../vue/config-save-queue'
+import { AGENT_RECONCILE_TIMEOUT_MS } from '../resources'
 
 const mounted: MountedVue[] = []
 afterEach(() => {
@@ -26,7 +28,7 @@ async function mountConfig(
   status?: Agent['status'],
   credentialState: { loaded?: boolean; hasSnapshot?: boolean; loading?: boolean; error?: string | null } = {},
 ) {
-  const patchAgent = vi.fn().mockImplementation((_n: string, body: AgentPatch) => Promise.resolve({ metadata: { name: 'scout' }, spec: body }))
+  const patchAgent = vi.fn().mockImplementation(() => Promise.resolve(structuredClone(store.agent('scout'))))
   const api = stubApi({ patchAgent })
   const store = makeStore(api)
   store.agents.data = [{ ...agentFixture('scout', spec), ...(status ? { status } : {}) }]
@@ -495,7 +497,7 @@ describe('agent config', () => {
     const second = deferred<ReturnType<typeof agentFixture>>()
     // Resolve the second promise first. Serialization means it still cannot be
     // sent until the first write has settled.
-    second.resolve(agentFixture('scout'))
+    second.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'web', 'spawn'] } } }))
     const patchAgent = vi.fn()
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise)
@@ -525,7 +527,7 @@ describe('agent config', () => {
 
     expect(patchAgent).toHaveBeenCalledTimes(1)
     expect(store.agent('scout')?.spec.tools?.interactive?.families).toEqual(['core', 'web', 'spawn'])
-    first.resolve(agentFixture('scout'))
+    first.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'web'] } } }))
     await settle(6)
 
     expect(patchAgent).toHaveBeenCalledTimes(2)
@@ -581,7 +583,7 @@ describe('agent config', () => {
     const first = deferred<ReturnType<typeof agentFixture>>()
     const second = deferred<ReturnType<typeof agentFixture>>()
     const third = deferred<ReturnType<typeof agentFixture>>()
-    third.resolve(agentFixture('scout'))
+    third.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'spawn'] } } }))
     const patchAgent = vi.fn()
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise)
@@ -624,10 +626,10 @@ describe('agent config', () => {
     // C was submitted by the remounted instance, but the shared coordinator
     // keeps it behind A and B even though its promise is already resolved.
     expect(patchAgent).toHaveBeenCalledTimes(1)
-    first.resolve(agentFixture('scout'))
+    first.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'web'] } } }))
     await settle(5)
     expect(patchAgent).toHaveBeenCalledTimes(2)
-    second.resolve(agentFixture('scout'))
+    second.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'web', 'spawn'] } } }))
     await settle(7)
 
     expect(patchAgent).toHaveBeenCalledTimes(3)
@@ -640,11 +642,164 @@ describe('agent config', () => {
     expect(listAgents).toHaveBeenCalledTimes(1)
   })
 
+  it('adopts the acknowledged Agent response before rebasing a newer optimistic save', async () => {
+    const first = deferred<ReturnType<typeof agentFixture>>()
+    const second = deferred<ReturnType<typeof agentFixture>>()
+    const reconciliation = deferred<ReturnType<typeof agentFixture>[]>()
+    const patchAgent = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise)
+    const api = stubApi({
+      patchAgent,
+      listAgents: () => reconciliation.promise,
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { backend: modelBackend('old-model'), description: 'initial description' })]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+
+    const firstSave = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: 'server-model' },
+      apply: spec => { spec.backend = modelBackend('server-model') },
+      success: 'Saved model settings',
+    })
+    const secondSave = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { description: 'queued description' },
+      apply: spec => { spec.description = 'queued description' },
+      success: 'Saved description',
+    })
+
+    const acknowledged = agentFixture('scout', { backend: modelBackend('server-model'), description: 'initial description' })
+    acknowledged.metadata.generation = 7
+    acknowledged.status = { backend: { type: 'model' }, conditions: [{ type: 'BackendReady', status: 'False', observedGeneration: 6 }] }
+    first.resolve(acknowledged)
+
+    await expect(firstSave).resolves.toBe(true)
+    expect(store.agent('scout')?.metadata.generation).toBe(7)
+    expect(store.agent('scout')?.status?.conditions?.[0]).toMatchObject({ type: 'BackendReady', status: 'False', observedGeneration: 6 })
+    expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('server-model'))
+    expect(store.agent('scout')?.spec.description).toBe('queued description')
+    expect(patchAgent.mock.calls[1][1]).toEqual({ description: 'queued description' })
+
+    const secondAcknowledged = agentFixture('scout', { backend: modelBackend('server-model'), description: 'queued description' })
+    secondAcknowledged.metadata.generation = 8
+    secondAcknowledged.status = { backend: { type: 'model' }, conditions: [{ type: 'BackendReady', status: 'True', observedGeneration: 8 }] }
+    second.resolve(secondAcknowledged)
+    await expect(secondSave).resolves.toBe(true)
+    reconciliation.resolve([secondAcknowledged])
+  })
+
+  it('releases later saves after a stalled nonessential reconciliation read', async () => {
+    vi.useFakeTimers()
+    try {
+      const stalledRead = deferred<ReturnType<typeof agentFixture>[]>()
+      const patchAgent = vi.fn()
+        .mockResolvedValueOnce(agentFixture('scout', { backend: modelBackend('first-model') }))
+        .mockResolvedValueOnce(agentFixture('scout', { backend: modelBackend('second-model'), description: 'second save' }))
+      const listAgents = vi.fn()
+        .mockImplementationOnce(() => stalledRead.promise)
+        .mockResolvedValueOnce([agentFixture('scout', { backend: modelBackend('server-model'), description: 'second save' })])
+      const api = stubApi({ patchAgent, listAgents })
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout', { backend: modelBackend('old-model') })]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+
+      const firstSave = queueAgentConfigSave({
+        store,
+        api,
+        name: 'scout',
+        patch: { modelCredential: 'first-model' },
+        apply: spec => { spec.backend = modelBackend('first-model') },
+        success: 'Saved first model',
+      })
+      await expect(firstSave).resolves.toBe(true)
+      expect(listAgents).toHaveBeenCalledTimes(1)
+
+      const secondSave = queueAgentConfigSave({
+        store,
+        api,
+        name: 'scout',
+        patch: { modelCredential: 'second-model' },
+        apply: spec => { spec.backend = modelBackend('second-model') },
+        success: 'Saved second model',
+      })
+      await vi.advanceTimersByTimeAsync(AGENT_RECONCILE_TIMEOUT_MS)
+      await expect(secondSave).resolves.toBe(true)
+      expect(patchAgent).toHaveBeenCalledTimes(2)
+      expect(listAgents).toHaveBeenCalledTimes(2)
+
+      // The timed-out read ignored its signal, but its late response must not
+      // replace the newer response or erase the second acknowledged save.
+      stalledRead.resolve([agentFixture('scout', { backend: modelBackend('stale-model') })])
+      for (let i = 0; i < 8; i++) await Promise.resolve()
+      expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('server-model'))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps authoritative server fields after an ambiguous timed-out write and queued failure', async () => {
+    const firstWrite = deferred<ReturnType<typeof agentFixture>>()
+    const secondWrite = deferred<ReturnType<typeof agentFixture>>()
+    const secondStarted = deferred<void>()
+    const authoritative = agentFixture('scout', { backend: modelBackend('new-model'), description: 'server description' })
+    authoritative.metadata.generation = 2
+    let lists = 0
+    const patchAgent = vi.fn()
+      .mockImplementationOnce(() => firstWrite.promise)
+      .mockImplementationOnce(() => { secondStarted.resolve(); return secondWrite.promise })
+    const api = stubApi({
+      patchAgent,
+      listAgents: () => ++lists === 1 ? Promise.resolve([structuredClone(authoritative)]) : Promise.reject(new Error('refresh unavailable')),
+    })
+    const store = makeStore(api)
+    store.agents.data = [agentFixture('scout', { backend: modelBackend('old-model'), description: 'old description' })]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+
+    const firstSave = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: 'new-model' },
+      apply: spec => { spec.backend = modelBackend('new-model') },
+      success: 'Saved model',
+    })
+    const laterSave = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { description: 'queued description' },
+      apply: spec => { spec.description = 'queued description' },
+      success: 'Saved description',
+    })
+
+    const ambiguousTimeout = new Error('Saving agent settings timed out. The change may still have been saved; refresh to confirm it.')
+    ambiguousTimeout.name = 'TimeoutError'
+    firstWrite.reject(ambiguousTimeout)
+    await expect(firstSave).resolves.toBe(false)
+    await secondStarted.promise
+
+    expect(patchAgent.mock.calls[1][1]).toEqual({ description: 'queued description' })
+    expect(store.agent('scout')?.metadata.generation).toBe(2)
+    expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('new-model'))
+    expect(store.agent('scout')?.spec.description).toBe('queued description')
+
+    secondWrite.reject(new Error('conflict'))
+    await expect(laterSave).resolves.toBe(false)
+    expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('new-model'))
+    expect(store.agent('scout')?.spec.description).toBe('server description')
+  })
+
   it('holds new writes behind reconciliation and rebases them onto the fresh agent', async () => {
     const firstRefresh = deferred<ReturnType<typeof agentFixture>[]>()
     const secondWrite = deferred<never>()
     const patchAgent = vi.fn()
-      .mockResolvedValueOnce(agentFixture('scout'))
+      .mockResolvedValueOnce(agentFixture('scout', { description: 'old server field', tools: { interactive: { families: ['core', 'web'] } } }))
       .mockImplementationOnce(() => secondWrite.promise)
     const listAgents = vi.fn()
       .mockImplementationOnce(() => firstRefresh.promise)
@@ -762,7 +917,7 @@ describe('agent config', () => {
 
     expect(patchAgent).toHaveBeenCalledTimes(2)
     expect(store.agent('scout')?.spec.tools?.interactive?.families).toEqual(['core', 'web', 'spawn'])
-    second.resolve(agentFixture('scout'))
+    second.resolve(agentFixture('scout', { tools: { interactive: { families: ['core', 'web', 'spawn'] } } }))
     await settle(5)
     expect(store.agent('scout')?.spec.tools?.interactive?.families).toEqual(['core', 'web', 'spawn'])
   })
@@ -1903,6 +2058,36 @@ describe('agent backend', () => {
     await settle()
     expect(text(card)).toContain('HarnessNotReady')
     expect(text(card)).toContain('Saved backend readiness')
+  })
+
+  it('hides an outdated backend warning until the saved generation is checked', async () => {
+    const { el, store } = await mountConfig({ backend: modelBackend('gpt') }, CREDS, EDGES, {
+      conditions: [{ type: 'BackendReady', status: 'False', observedGeneration: 2, reason: 'UnknownModelCredential', message: 'old-model no longer exists' }],
+    })
+    store.agent('scout')!.metadata.generation = 3
+    store.dispatchEvent(new Event('change')); await settle()
+    const card = el.querySelector('#agent-backend-heading')!.closest('section')!
+    expect(text(card)).toContain('Checking the saved backend configuration…')
+    expect(text(card)).not.toContain('UnknownModelCredential')
+    expect(text(card)).not.toContain('Backend ready')
+    store.agent('scout')!.status!.conditions = [{ type: 'BackendReady', status: 'True', observedGeneration: 3 }]
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(text(card)).toContain('Backend ready')
+    expect(text(card)).not.toContain('Checking the saved backend configuration…')
+  })
+
+  it('separates saving model changes from the old backend readiness verdict', async () => {
+    const { el, store, pending } = await mountDeferredConfig({ backend: modelBackend('gpt') }, CREDS)
+    store.agent('scout')!.status = { conditions: [{ type: 'BackendReady', status: 'False', reason: 'UnknownModelCredential', message: 'old-model no longer exists' }] }
+    store.dispatchEvent(new Event('change')); await settle()
+    sectionButton(el, 'Save model').click(); await settle()
+    const card = el.querySelector('#agent-backend-heading')!.closest('section')!
+    expect(text(card)).toContain('Saving backend changes…')
+    expect(text(card)).not.toContain('UnknownModelCredential')
+    pending.resolve({ ...agentFixture('scout', { backend: modelBackend('gpt') }), metadata: { name: 'scout', generation: 3 }, status: { conditions: [{ type: 'BackendReady', status: 'False', observedGeneration: 2, reason: 'UnknownModelCredential' }] } })
+    await settle(12)
+    expect(sectionButton(el, 'Save model').disabled).toBe(false)
+    expect(text(card)).not.toContain('Saving backend changes…')
   })
 
   it('labels pending readiness for the saved backend without guessing from the draft', async () => {

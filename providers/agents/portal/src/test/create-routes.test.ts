@@ -358,9 +358,9 @@ describe('route-owned creation surfaces', () => {
     expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'dev-tools', connections: [], families: ['core'] }))
   })
 
-  it('renders model creation separately and saves the typed credential payload', async () => {
-    const saveCredential = vi.fn().mockResolvedValue({ name: 'main', provider: 'openai-compatible', model: 'gpt-5' })
-    const api = stubApi({ probeCredentialDraft: () => Promise.resolve({ ok: true, latencyMS: 1 }), saveCredential, catalog: () => Promise.resolve([]), usage: () => Promise.resolve({ windowDays: 30, total: { key: 'total', runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0, latencyP50MS: 0, latencyP95MS: 0 }, byAgent: [], byModel: [], series: [] }) })
+  it('renders provider creation separately and saves only the provider connection', async () => {
+    const saveCredential = vi.fn().mockResolvedValue({ name: 'main', provider: 'openai-compatible', model: '', isConnection: true })
+    const api = stubApi({ probeCredentialDraft: () => Promise.resolve({ ok: true, latencyMS: 1 }), saveCredential, catalog: () => Promise.resolve([]) })
     const store = makeStore(api)
     const el = await mount<Models>('agents-models', { store, api, routeOwned: true, createRoute: true })
     expect(el.querySelector('.k-create-page')).not.toBeNull()
@@ -368,30 +368,18 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('.k-create-header .k-create-title')?.textContent).toContain('Connect provider')
     expect(el.querySelector('.k-create-surface')).not.toBeNull()
     expect(el.querySelector('.k-model-grid')).toBeNull()
-    for (const [field, value] of Object.entries({ apiKey: 'secret' })) {
-      const input = el.querySelector<HTMLInputElement>(`[name=${field}]`)!
-      input.value = value
-      input.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    }
+    const input = el.querySelector<HTMLInputElement>('[name="apiKey"]')!
+    input.value = 'secret'
+    input.dispatchEvent(new InputEvent('input', { bubbles: true }))
     await settle(el)
-    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Continue')!.click()
-    await settle(el)
-    el.querySelector<HTMLButtonElement>('#model-id')!.click()
-    await settle(el)
-    const search = document.querySelector<HTMLInputElement>('.k-table__filter-search input')!
-    search.value = 'gpt-5'
-    search.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    await settle(el)
-    document.querySelector<HTMLElement>('[role="option"]')!.click()
-    await settle(el)
-    expect(saveCredential).not.toHaveBeenCalled()
+    expect(el.querySelector('#model-id')).toBeNull()
     ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Verify & connect')!.click()
     await settle(el, 12)
-    expect(saveCredential).toHaveBeenCalledTimes(2)
+    expect(saveCredential).toHaveBeenCalledOnce()
     expect(saveCredential.mock.calls[0][0]).toMatchObject({ model: '', apiKey: 'secret' })
-    expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: saveCredential.mock.calls[0][0].name, model: 'gpt-5' })
-  })
-})
+    expect(saveCredential.mock.calls[0][0]).not.toHaveProperty('connectionRef')
+    expect(el.textContent).toContain('Provider connected')
+  })})
 
 describe('route-owned collection affordances', () => {
   it('shows guided first-run journeys only after each collection is authoritative', async () => {

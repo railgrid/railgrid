@@ -449,7 +449,7 @@ describe('dedicated chat model recovery routing', () => {
     const api = element.api!
     const connection: Credential = {
       name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
-      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['gpt-4.1-mini'],
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: [],
     }
     const addedModel: Credential = {
       name: 'openai-gpt-4-1-mini', provider: 'openai', connectionRef: connection.name, model: 'gpt-4.1-mini',
@@ -468,15 +468,16 @@ describe('dedicated chat model recovery routing', () => {
     api.canConfigureChatModel = vi.fn().mockResolvedValue(true) as ApiClient['canConfigureChatModel']
     api.catalog = vi.fn().mockResolvedValue([]) as ApiClient['catalog']
     api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 }) as ApiClient['testProviderConnection']
-    api.saveCredential = vi.fn().mockResolvedValue(addedModel) as ApiClient['saveCredential']
-    api.listCredentials = vi.fn().mockResolvedValue([connection, addedModel]) as ApiClient['listCredentials']
+    api.probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['gpt-4.1-mini'] }) as ApiClient['probeCredentialDraft']
+    api.saveCredential = vi.fn().mockResolvedValueOnce(connection).mockResolvedValueOnce(addedModel) as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockResolvedValueOnce([connection]).mockResolvedValueOnce([connection, addedModel]) as ApiClient['listCredentials']
     api.chatStream = chatStream as unknown as ApiClient['chatStream']
 
     store.agents.data = [agentFixture('scout')]
     store.agents.loaded = store.agents.hasSnapshot = true
-    // The Agent still names its configured model, but only its provider
-    // connection is available so dedicated chat must enter setup recovery.
-    store.credentials.data = [connection]
+    // The Agent still names a model, but no provider connection or model is
+    // available so dedicated chat must enter setup recovery.
+    store.credentials.data = []
     store.credentials.loaded = store.credentials.hasSnapshot = true
     store.dispatchEvent(new Event('change'))
     history.replaceState(null, '', '#/agents/scout/chat')
@@ -495,6 +496,19 @@ describe('dedicated chat model recovery routing', () => {
     })
     connectModelButton!.click()
     await vi.waitFor(() => expect(location.hash).toBe('#/create/model/from-connection'))
+
+    const connectProvider = element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!
+    connectProvider.click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model'))
+    const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    apiKey.value = 'workspace-test-key'
+    apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('h1'))).toBe('Add model'))
+    expect(location.hash).toBe('#/create/model')
+    expect(element.querySelector('#model-credential')).toBeNull()
+    expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
 
     const savedConnection = element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
     savedConnection.value = connection.name
@@ -526,6 +540,9 @@ describe('dedicated chat model recovery routing', () => {
       selectedCredential: addedModel.name,
       modelCredential: addedModel.name,
     }))
+    expect(api.saveCredential).toHaveBeenNthCalledWith(1, expect.objectContaining({ model: '', apiKey: 'workspace-test-key' }))
+    expect(api.saveCredential).toHaveBeenNthCalledWith(2, expect.objectContaining({ connectionRef: connection.name, model: 'gpt-4.1-mini' }))
+    expect(api.probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'workspace-test-key' }), true, expect.any(AbortSignal))
     expect(chatStream).not.toHaveBeenCalled()
     expect(api.listMessagePage).toHaveBeenLastCalledWith('scout', originalSession.id)
     element.remove()
@@ -992,6 +1009,97 @@ describe('Models sub-tab shell routing', () => {
     await settleVue(6)
     expect(location.hash).toBe('#/models/provider-connections')
     expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+  })
+
+  it('saves a provider without a model, then offers Add model and Done', async () => {
+    const element = await mountShell('#/models/provider-connections')
+    const store = element.store!
+    const api = element.api!
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: [],
+    }
+    const secondConnection: Credential = {
+      name: 'openai-staging', provider: 'openai', displayName: 'OpenAI staging',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['gpt-4.1-mini'],
+    }
+    const addedModel: Credential = {
+      name: 'openai-gpt-4-1-mini', provider: 'openai', connectionRef: connection.name, model: 'gpt-4.1-mini',
+    }
+    const saved: Credential[] = []
+    const stalledCredentialList = deferred<Credential[]>()
+    let stallNextCredentialList = false
+    let connectionWrites = 0
+    api.catalog = vi.fn().mockResolvedValue([]) as ApiClient['catalog']
+    api.probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['gpt-4.1-mini'] }) as ApiClient['probeCredentialDraft']
+    api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 }) as ApiClient['testProviderConnection']
+    const saveCredential = vi.fn().mockImplementation(async (body: { model?: string }) => {
+      if (body.model) { saved.push(addedModel); return addedModel }
+      const result = connectionWrites++ === 0 ? connection : secondConnection
+      saved.push(result)
+      return result
+    })
+    api.saveCredential = saveCredential as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockImplementation(async () => {
+      if (stallNextCredentialList) {
+        stallNextCredentialList = false
+        return stalledCredentialList.promise
+      }
+      return [...saved]
+    }) as ApiClient['listCredentials']
+    store.credentials.data = []
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+
+    buttonWithText(element, 'Connect provider').click()
+    await settleVue(6)
+    const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    apiKey.value = 'first-key'
+    apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
+    expect(api.probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'first-key', model: '' }), true, expect.any(AbortSignal))
+    expect(saveCredential).toHaveBeenCalledOnce()
+    expect(saveCredential.mock.calls[0][0]).toMatchObject({ apiKey: 'first-key', model: '' })
+    expect(api.testProviderConnection).not.toHaveBeenCalled()
+
+    // The provider connection save already completed; a slow credentials
+    // refresh must not hold the subsequent model binding or route handoff.
+    stallNextCredentialList = true
+    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Add model').click()
+    await settleVue(6)
+    expect(text(element.querySelector('h1'))).toBe('Add model')
+    expect(element.querySelector<HTMLInputElement>('#model-credential')).toBeNull()
+    expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
+    element.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settleVue()
+    const search = document.querySelector<HTMLInputElement>('[aria-label="Search model IDs"]')!
+    search.value = 'gpt-4.1-mini'
+    search.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    document.querySelector<HTMLElement>('[role="option"]')!.click()
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    expect(saveCredential).toHaveBeenCalledTimes(2)
+    expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: connection.name, model: 'gpt-4.1-mini' })
+    expect(saveCredential.mock.calls[1][0]).not.toHaveProperty('apiKey')
+    expect(store.credentials.data).toContainEqual(addedModel)
+    stalledCredentialList.resolve([...saved])
+
+    buttonWithText(element, 'Connect provider').click()
+    await settleVue(6)
+    const stagingKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    stagingKey.value = 'second-key'
+    stagingKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
+    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Done').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    expect(store.credentials.data.map(item => item.name)).toEqual(expect.arrayContaining([connection.name, secondConnection.name, addedModel.name]))
+    element.remove()
   })
 
   it('opens the Workspace assistant sub-tab from the host settings shortcut', async () => {

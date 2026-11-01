@@ -10,7 +10,7 @@ import { presentModelProbeResult } from '../model-probe-result'
 import { confirmDialog } from '../portalkit/confirm'
 
 ensureAgentUIStyles()
-const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; busy: boolean; error?: string | null }>()
+const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; discoveryFallback?: { connectionName: string; models: string[] } | null; busy: boolean; error?: string | null }>()
 const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; cancel: []; 'connect-provider': [] }>()
 const newID = `connection-${crypto.randomUUID()}`
 const connections = computed(() => props.credentials.filter(item => item.isConnection))
@@ -21,6 +21,7 @@ const editingProviderConnection = Boolean(props.credential?.isConnection)
 const managingConnection = Boolean(props.credential && !props.credential.connectionRef)
 const selectedConnection = ref(originalConnection?.name || props.initialConnection || '')
 const connection = computed(() => connections.value.find(item => item.name === selectedConnection.value) || (originalConnection?.name === selectedConnection.value ? originalConnection : undefined))
+const standaloneConnection = computed(() => !props.credential && !props.initialConnection && !props.selectConnection)
 const preset = ref(presetFor(originalConnection).id)
 const current = computed(() => providerPreset(preset.value))
 const providers = PROVIDER_PRESETS.filter(item => item.family === 'chat')
@@ -34,7 +35,11 @@ const suggestedName = computed(() => {
   return brand + (count ? ` ${count + 1}` : '')
 })
 const model = ref(props.credential?.model || '')
-const models = ref<string[]>(originalConnection?.discovered || [])
+function connectionModelOptions(name: string, persisted: string[] | undefined): string[] {
+  if (props.discoveryFallback?.connectionName === name) return props.discoveryFallback.models
+  return persisted || []
+}
+const models = ref<string[]>(connectionModelOptions(originalConnection?.name || props.initialConnection || '', originalConnection?.discovered))
 const modelStage = ref(Boolean(props.credential || props.initialConnection))
 const alreadyConfigured = computed(() => !props.credential && Boolean(selectedConnection.value) && props.credentials.some(item => (item.connectionRef === selectedConnection.value || item.name === selectedConnection.value) && item.model === model.value.trim()))
 const discovering = ref(false)
@@ -62,7 +67,7 @@ watch(fingerprint, () => {
   operationNotice.value = interrupted ? 'Connection details changed. Verify again before saving.' : ''
 })
 watch(selectedConnection, () => {
-  apiKey.value = ''; workspaceID.value = ''; model.value = ''; models.value = connection.value?.discovered || []
+  apiKey.value = ''; workspaceID.value = ''; model.value = ''; models.value = connectionModelOptions(selectedConnection.value, connection.value?.discovered)
   modelStage.value = Boolean(selectedConnection.value); discoveryError.value = ''
 })
 watch(preset, () => { apiKey.value = ''; workspaceID.value = ''; baseURL.value = current.value.baseURL; model.value = ''; models.value = []; modelStage.value = false; discoveryError.value = '' })
@@ -129,9 +134,14 @@ async function discover(): Promise<void> {
   try {
     const result = await probe(true, signal)
     if (serial !== generation) return
-    if (!result?.ok) { discoveryError.value = presentModelProbeResult(result || { ok: false, latencyMS: 0 }, 'discover').error || 'Models could not be loaded. Enter a model ID manually.'; return }
+    if (!result?.ok) {
+      verifiedFingerprint.value = ''
+      discoveryError.value = presentModelProbeResult(result || { ok: false, latencyMS: 0 }, 'discover').error || 'Models could not be loaded.'
+      return
+    }
     models.value = result.models || []
-  } catch (error) { if (serial === generation) discoveryError.value = (error as Error).message }
+    if (standaloneConnection.value) verifiedFingerprint.value = fingerprint.value
+  } catch (error) { if (serial === generation) { verifiedFingerprint.value = ''; discoveryError.value = (error as Error).message } }
   finally { operation.finish(); if (serial === generation) discovering.value = false }
 }
 function bindingName(connectionName: string, modelID: string): string {
@@ -142,7 +152,7 @@ function bindingName(connectionName: string, modelID: string): string {
 }
 async function connect(): Promise<void> {
   if (locked.value || !valid() || alreadyConfigured.value) return
-  if (!editingProviderConnection && !model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
+  if (!standaloneConnection.value && !editingProviderConnection && !model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
   const operation = startOperation()
   const { serial, signal } = operation
   const snapshot = fingerprint.value
@@ -151,12 +161,20 @@ async function connect(): Promise<void> {
     let result: CredentialTestResult = { ok: true, latencyMS: 0 }
     const candidates = managingConnection
       ? [...new Set([model.value.trim(), ...props.credentials.filter(item => item.connectionRef === selectedConnection.value).map(item => item.model || '')].filter(Boolean))]
-      : [model.value.trim()]
+      : (standaloneConnection.value && !model.value.trim() ? [] : [model.value.trim()])
     if (verifiedFingerprint.value !== snapshot) {
-      if (editingProviderConnection && !candidates.length) {
+      if ((editingProviderConnection || standaloneConnection.value) && !candidates.length) {
         const response = await probe(true, signal)
         if (serial !== generation) return
-        if (!response?.ok) { testError.value = presentModelProbeResult(response || { ok: false, latencyMS: 0 }, 'discover').error || 'Provider access could not be verified. Choose a model to test instead.'; return }
+        if (!response?.ok) {
+          verifiedFingerprint.value = ''
+          const message = presentModelProbeResult(response || { ok: false, latencyMS: 0 }, 'discover').error || 'Provider access could not be verified.'
+          if (standaloneConnection.value) {
+            discoveryError.value = `${message} Retry discovery or enter a verification model ID.`
+            modelStage.value = true
+          } else testError.value = `${message} Choose a model to test instead.`
+          return
+        }
         result = response
       }
       for (const candidate of candidates) {
@@ -167,6 +185,7 @@ async function connect(): Promise<void> {
       }
     }
     verifiedFingerprint.value = snapshot
+    if (standaloneConnection.value) { emit('save', { ...draft(), model: '' }, result); return }
     if (editingProviderConnection) { emit('save', { ...draft(), model: '' }, result); return }
     if (props.credential && !props.credential.connectionRef && props.credential.model) {
       emit('save', draft(), result)
@@ -179,7 +198,14 @@ async function connect(): Promise<void> {
       connectionRef: parentName, model: model.value.trim(), displayName: model.value.trim(),
       ...(!selectedConnection.value || managingConnection ? { newConnection: { ...draft(), name: parentName, model: '' } } : {}),
     }, result)
-  } catch (error) { if (serial === generation) testError.value = (error as Error).message }
+  } catch (error) {
+    if (serial === generation) {
+      if (standaloneConnection.value && !model.value.trim()) {
+        discoveryError.value = (error as Error).message
+        modelStage.value = true
+      } else testError.value = (error as Error).message
+    }
+  }
   finally { operation.finish(); if (serial === generation) testing.value = false }
 }
 async function requestProvider(event: MouseEvent): Promise<void> {
@@ -204,7 +230,7 @@ defineExpose({ cancel, locked })
 </script>
 
 <template>
-  <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect agents-model-create" aria-label="Model configuration form" novalidate :aria-busy="locked" @submit.prevent="modelStage ? connect() : discover()">
+  <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect agents-model-create" :aria-label="standaloneConnection ? 'Provider connection form' : 'Model configuration form'" novalidate :aria-busy="locked" @submit.prevent="modelStage || standaloneConnection ? connect() : discover()">
     <div class="k-create-body">
       <section class="agents-provider-connect__section" aria-labelledby="provider-connect-heading">
         <h2 id="provider-connect-heading" class="k-model-form-heading">Provider connection</h2>
@@ -239,12 +265,12 @@ defineExpose({ cancel, locked })
       </section>
       <p v-if="fieldError" id="provider-connection-error" class="k-inline-notification k-inline-notification--error" role="alert">{{ fieldError }}</p>
       <section v-if="modelStage" class="k-model-form-section" aria-labelledby="provider-model-heading">
-        <div class="k-model-form-row"><h2 id="provider-model-heading" class="k-model-form-heading">{{ editingProviderConnection ? 'Verify provider access' : 'Choose a model' }}</h2><button type="button" class="k-btn k-btn--ghost" :disabled="locked || !canContinue" aria-describedby="provider-model-help" @click="discover"><RefreshCw :size="14" />{{ discovering ? 'Loading…' : 'Refresh models' }}</button></div>
-        <label for="model-id" class="k-model-form-field">{{ editingProviderConnection ? 'Verification model (optional)' : 'Model' }}
+        <div class="k-model-form-row"><h2 id="provider-model-heading" class="k-model-form-heading">{{ editingProviderConnection || standaloneConnection ? 'Verify provider access' : 'Choose a model' }}</h2><button type="button" class="k-btn k-btn--ghost" :disabled="locked || !canContinue" aria-describedby="provider-model-help" @click="discover"><RefreshCw :size="14" />{{ discovering ? 'Loading…' : 'Refresh models' }}</button></div>
+        <label for="model-id" class="k-model-form-field">{{ editingProviderConnection || standaloneConnection ? 'Verification model (optional)' : 'Model' }}
           <ModelIDSelector :model-value="model" :invalid="Boolean(fieldError && fieldError.includes('model'))" :models="models.map(id => ({ id, name: id, compatibility: 'available' as const }))" :disabled="locked" :described-by="fieldError ? 'provider-model-help provider-connection-error' : 'provider-model-help'" @update:model-value="model = $event" />
         </label>
-        <p id="provider-model-help" class="k-model-form-hint">{{ editingProviderConnection ? 'Configured models are verified automatically. An optional test model is used only for verification; no models will be added or changed.' : 'Choose an available model or enter its exact ID. You can add more models to this provider connection later.' }}</p>
-        <p v-if="discoveryError" class="k-inline-notification k-inline-notification--warning" role="status">{{ discoveryError }} You can still enter a model ID manually.</p>
+        <p id="provider-model-help" class="k-model-form-hint">{{ editingProviderConnection ? 'Configured models are verified automatically. An optional test model is used only for verification; no models will be added or changed.' : standaloneConnection ? 'Model discovery checks provider access without adding a model. If listing is unavailable, enter one model ID to verify access; it will not be saved.' : 'Choose an available model or enter its exact ID. You can add more models to this provider connection later.' }}</p>
+        <p v-if="discoveryError" class="k-inline-notification k-inline-notification--warning" role="status">{{ discoveryError }}{{ standaloneConnection ? '' : ' You can still enter a model ID manually.' }}</p>
         <label v-if="editingDetails" class="k-model-form-field">Connection name (optional)
           <input v-model="connectionLabel" class="k-input" name="connectionName" :placeholder="suggestedName" :disabled="locked" maxlength="100">
           <span class="k-model-form-hint">For example, “OpenAI production”. This identifies the saved key, not a model.</span>
@@ -252,16 +278,17 @@ defineExpose({ cancel, locked })
         <p v-if="model && !editingProviderConnection" class="k-model-form-hint">{{ model }} will use {{ connection?.displayName || connectionLabel || suggestedName }}.</p>
         <p v-if="alreadyConfigured" class="k-model-form-hint" role="status">This model is already configured for this connection. Choose another model to add.</p>
         <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
-        <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> {{ editingProviderConnection ? 'Provider access verified. Save the connection changes.' : 'Model verified. Finish connecting to save your changes.' }}</p>
+        <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> {{ standaloneConnection ? 'Provider access verified. Save the connection without adding a model.' : editingProviderConnection ? 'Provider access verified. Save the connection changes.' : 'Model verified. Finish connecting to save your changes.' }}</p>
       </section>
       <p v-if="operationNotice" class="k-model-form-hint" role="status">{{ operationNotice }}</p>
       <p v-if="error" class="k-inline-notification k-inline-notification--error" role="alert">{{ error }}</p>
     </div>
     <footer class="k-create-actions agents-provider-connect__actions">
-      <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ editingProviderConnection && !model && !credentials.some(item => item.connectionRef === selectedConnection && item.model) ? 'Verification checks provider access without sending a model request.' : managingConnection ? 'Verification tests each configured model on this connection. The provider may charge the account linked to the key.' : 'Verification sends a short request using this key. The provider may charge the account linked to the key.' }}</p>
+      <p v-if="standaloneConnection && !modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">Provider discovery checks access without sending a model request. No model will be added.</p>
+      <p v-else-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ standaloneConnection && !model ? 'Verification checks provider access without sending a model request. No model will be added.' : editingProviderConnection && !model && !credentials.some(item => item.connectionRef === selectedConnection && item.model) ? 'Verification checks provider access without sending a model request.' : managingConnection ? 'Verification tests each configured model on this connection. The provider may charge the account linked to the key.' : 'Verification sends a short request using this key. The provider may charge the account linked to the key.' }}</p>
       <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">{{ testing ? 'Stop verification' : discovering ? 'Stop loading' : 'Cancel' }}</button>
-      <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="discovering" :size="14" class="animate-spin motion-reduce:animate-none" />{{ discovering ? 'Loading models…' : 'Continue' }}</button>
-      <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || (!editingProviderConnection && !model.trim()) || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Verifying…' : busy ? (editingProviderConnection ? 'Saving…' : 'Connecting…') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
+      <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Checking provider…' : busy ? 'Saving…' : standaloneConnection ? 'Verify & connect' : 'Continue' }}</button>
+      <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || (!standaloneConnection && !editingProviderConnection && !model.trim()) || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? (standaloneConnection && !model.trim() ? 'Checking provider…' : 'Verifying…') : busy ? (standaloneConnection ? 'Saving…' : editingProviderConnection ? 'Saving…' : 'Connecting…') : standaloneConnection ? (verifiedFingerprint ? 'Save provider connection' : model.trim() ? 'Verify & connect' : 'Retry provider check') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
     </footer>
   </form>
 </template>

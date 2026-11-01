@@ -187,9 +187,10 @@ const WEBHOOK_SOURCES = ['webhook', 'github']
 // The schema's ceiling on Webhook spec.deliveryRetention.
 const MAX_DELIVERY_RETENTION = 1000
 
-interface BoundedProbeFetchOptions {
+interface BoundedFetchOptions {
   signal?: AbortSignal
   timeoutMs: number
+  timeoutMessage?: string
   // A shared deadline lets a multi-request cleanup phase have one total
   // budget instead of receiving a fresh timeout for each GET and DELETE.
   deadline?: number
@@ -204,8 +205,8 @@ function probeAbortError(signal?: AbortSignal): Error {
   return error
 }
 
-function probeTimeoutError(): Error {
-  const error = new Error('Verification request timed out. Check the connection and try again.')
+function probeTimeoutError(message = 'Verification request timed out. Check the connection and try again.'): Error {
+  const error = new Error(message)
   error.name = 'TimeoutError'
   return error
 }
@@ -230,22 +231,23 @@ function raceProbeOperation<T>(operation: Promise<T>, signal: AbortSignal): Prom
 }
 
 /**
- * createBoundedProbeFetch is deliberately local to the Agents portal. Model
- * probes have a finite frontend budget, including when the host fetch ignores
- * AbortSignal and when a response arrives but its body never does. The wrapped
- * request signal still reaches the host transport whenever it supports abort.
+ * createBoundedRequestFetch is deliberately local to the Agents portal. A
+ * bounded request has a finite frontend budget, including when the host fetch
+ * ignores AbortSignal and when a response arrives but its body never does. The
+ * wrapped request signal still reaches the host transport whenever it supports
+ * abort.
  */
-export function createBoundedProbeFetch(fetcher: ProviderFetch, options: BoundedProbeFetchOptions): ProviderFetch {
+export function createBoundedRequestFetch(fetcher: ProviderFetch, options: BoundedFetchOptions): ProviderFetch {
   return async (input, init = {}) => {
     const externalSignals = [...new Set([options.signal, init.signal].filter((signal): signal is AbortSignal => !!signal))]
     const aborted = externalSignals.find(signal => signal.aborted)
     if (aborted) throw probeAbortError(aborted)
 
     const remaining = options.deadline === undefined ? options.timeoutMs : Math.min(options.timeoutMs, options.deadline - Date.now())
-    if (remaining <= 0) throw probeTimeoutError()
+    if (remaining <= 0) throw probeTimeoutError(options.timeoutMessage)
 
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(probeTimeoutError()), remaining)
+    const timer = setTimeout(() => controller.abort(probeTimeoutError(options.timeoutMessage)), remaining)
     const listeners = externalSignals.map(signal => {
       const listener = () => controller.abort(probeAbortError(signal))
       signal.addEventListener('abort', listener, { once: true })
@@ -283,6 +285,17 @@ export function createBoundedProbeFetch(fetcher: ProviderFetch, options: Bounded
     }
   }
 }
+
+/**
+ * createBoundedProbeFetch keeps the credential-probe timeout message and
+ * behavior explicit at its call sites while sharing the request machinery.
+ */
+export function createBoundedProbeFetch(fetcher: ProviderFetch, options: BoundedFetchOptions): ProviderFetch {
+  return createBoundedRequestFetch(fetcher, options)
+}
+
+export const AGENT_PATCH_TIMEOUT_MS = 15 * 1000
+export const AGENT_RECONCILE_TIMEOUT_MS = 15 * 1000
 
 // checkRetention mirrors the schema's bounds on spec.deliveryRetention so a
 // typo is refused before the request rather than by a 422 from kcp.
@@ -359,7 +372,7 @@ function asResourceError(error: unknown): ResourceError {
   }
   if (error instanceof Error && error.name === 'TimeoutError') {
     const failure = presentRequestFailure(504, error.message)
-    return new ResourceError(504, 'Timeout', 'Verification request timed out. Check the connection and try again.', failure.technicalDiagnostic)
+    return new ResourceError(504, 'Timeout', error.message, failure.technicalDiagnostic)
   }
   const diagnostic = error instanceof Error ? error.message : String(error)
   const failure = presentRequestFailure(0, diagnostic)
@@ -674,7 +687,17 @@ export class Resources {
 
   // ---- agents --------------------------------------------------------------
 
-  listAgents = (): Promise<Agent[]> => this.run((c) => c.listAll<Agent & KubeObject>(AGENTS))
+  listAgents = (signal?: AbortSignal): Promise<Agent[]> => {
+    const context = this.ctx
+    const work = (client: KubeClient) => client.listAll<Agent & KubeObject>(AGENTS)
+    if (!signal) return this.run(work)
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      signal,
+      timeoutMs: AGENT_RECONCILE_TIMEOUT_MS,
+      timeoutMessage: 'Agent settings refresh timed out. The saved change may still be present; refresh to confirm it.',
+    })
+    return this.run(work, () => this.client(context, bounded))
+  }
 
   createAgent = (body: AgentCreate): Promise<Agent> =>
     this.run(async (client) => {
@@ -753,8 +776,13 @@ export class Resources {
       return { agent: created, createdSchedules, warnings }
     })
 
-  patchAgent = (name: string, body: AgentPatch): Promise<Agent> =>
-    this.run(async (client) => {
+  patchAgent = (name: string, body: AgentPatch): Promise<Agent> => {
+    const context = this.ctx
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      timeoutMs: AGENT_PATCH_TIMEOUT_MS,
+      timeoutMessage: 'Saving agent settings timed out. The change may still have been saved; refresh to confirm it.',
+    })
+    return this.run(async (client) => {
       const spec: Record<string, unknown> = {}
       // Budget and the model map are merges against what is stored, so they are
       // the only fields that need the current object. Everything else is a
@@ -810,7 +838,8 @@ export class Resources {
       if (Object.keys(tools).length > 0) spec.tools = tools
 
       return client.patch<Agent & KubeObject>(AGENTS, name, { spec }, { type: 'merge' })
-    })
+    }, () => this.client(context, bounded))
+  }
 
   deleteAgent = (name: string): Promise<void> =>
     this.run(async (client) => {
