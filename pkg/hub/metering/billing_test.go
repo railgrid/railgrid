@@ -223,6 +223,61 @@ func TestSummaryWithoutBillingOrMetering(t *testing.T) {
 	}
 }
 
+func TestSummaryPreservesDeclaredOverridesEvenWhenEqualToPlan(t *testing.T) {
+	limit := map[string]any{"meter": "workspaces", "shape": "Level", "enforce": "Hard", "max": "1"}
+	ent := &unstructured.Unstructured{}
+	ent.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	ent.SetKind("Entitlement")
+	ent.SetName("org-1")
+	if err := unstructured.SetNestedMap(ent.Object, map[string]any{
+		"account": "org-1", "plan": "free", "overrides": []any{limit},
+	}, "spec"); err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedSlice(ent.Object, []any{limit}, "status", "effectiveLimits"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := newBillingFixture(t, true, planObj("free", "Free", "", limit), ent)
+	got, err := b.Summary(context.Background(), "org-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Overrides) != 1 || got.Overrides[0].Meter != "workspaces" || got.Overrides[0].Max != "1" || got.Overrides[0].Shape != "Level" || got.Overrides[0].Enforce != "Hard" {
+		t.Fatalf("declared override was lost despite matching catalog limit: %+v", got)
+	}
+	// The wire payload must distinguish a persistent override from an
+	// effective allowance, even though all three limits happen to match.
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var overrides []Limit
+	if err := json.Unmarshal(payload["overrides"], &overrides); err != nil || len(overrides) != 1 || overrides[0].Max != "1" {
+		t.Fatalf("overrides payload = %s, error = %v", payload["overrides"], err)
+	}
+
+	// A new organization has known-empty overrides, rather than an omitted
+	// field or null that an older-hub client must treat as unknown.
+	got, err = b.Summary(context.Background(), "org-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err = json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if string(payload["overrides"]) != "[]" {
+		t.Fatalf("new organization overrides payload = %s; want []", payload["overrides"])
+	}
+}
+
 func TestCheckoutForwardsAndMapsErrors(t *testing.T) {
 	b, dep := newBillingFixture(t, true)
 	u, err := b.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel")
