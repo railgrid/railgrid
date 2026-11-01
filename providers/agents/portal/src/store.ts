@@ -19,6 +19,7 @@ export interface Slice<T> {
   data: T
   loading: boolean
   error: string | null
+  errorStatus?: number
   // loaded flips true after the first settled load, including a failure.
   loaded: boolean
   // hasSnapshot flips only after a successful response, including an
@@ -284,13 +285,17 @@ export class AppStore extends EventTarget {
       if (this.latestLoadID[key] === loadID) {
         s.data = this.mergeLoadedRows(key, rows, requestGeneration)
         s.error = null
+        delete s.errorStatus
         s.hasSnapshot = true
       }
     } catch (e) {
       if (this.retired) return
       // Preserve the error from the most recent request. An older failed
       // request must not hide a newer successful refresh (or vice versa).
-      if (this.latestLoadID[key] === loadID) s.error = (e as Error).message
+      if (this.latestLoadID[key] === loadID) {
+        s.error = (e as Error).message
+        s.errorStatus = typeof (e as { status?: unknown }).status === 'number' ? (e as { status: number }).status : undefined
+      }
     } finally {
       if (this.retired) return
       this.pendingLoads[key as CreateCollectionKey]?.delete(loadID)

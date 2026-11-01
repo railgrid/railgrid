@@ -1118,3 +1118,10 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
 .agents-models-empty { padding: 24px; }
 .agents-models-empty h3 { margin: 0 0 8px; }
 .agents-models-empty p { margin: 0; color: var(--color-text-secondary); }
+
+.agents-model-recovery{flex:none;display:grid;justify-items:start;gap:12px;margin-top:16px;padding:20px;border-top:1px solid var(--color-border-subtle);background:var(--color-surface);color:var(--color-text-primary);}
+.agents-model-recovery h3{margin:0;font-size:14px;font-weight:600;}
+.agents-model-recovery p{margin:0;color:var(--color-text-secondary);font-size:13px;line-height:1.5;}
+.agents-model-recovery select{width:100%;}
+.agents-model-recovery--compact{margin:0;padding:8px;display:flex;align-items:center;gap:12px;border:0;background:transparent;}
+.agents-model-recovery--compact h3{font-size:13px;}

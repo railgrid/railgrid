@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
-import type { RailgridContext } from '../types'
+import type { Credential, RailgridContext } from '../types'
 import { agentFixture } from './helpers'
 import { settleVue } from './vue-helper'
 
@@ -25,6 +25,9 @@ async function mountOverlay() {
   document.body.appendChild(element)
   mounted.push(element)
   await settleVue(6)
+  vi.spyOn(element.api!, 'canConfigureChatModel').mockResolvedValue(true)
+  element.store!.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  element.store!.credentials.loaded = element.store!.credentials.hasSnapshot = true
   vi.spyOn(element.api!, 'getSessionModel').mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' })
   vi.spyOn(element.api!, 'listSessions').mockResolvedValue([])
   vi.spyOn(element.api!, 'listMessagePage').mockResolvedValue({ items: [] })
@@ -181,4 +184,122 @@ describe('persistent agent overlay', () => {
     await send(element, 'No page context')
     expect(stream.mock.calls[0]![1]).toBe('No page context')
   })
+})
+
+describe('overlay model recovery', () => {
+  function models(element: AgentsElement, data: Credential[]) {
+    element.store!.credentials.data = data
+    element.store!.credentials.loaded = element.store!.credentials.hasSnapshot = true
+    element.store!.dispatchEvent(new Event('change'))
+  }
+  it('replaces stale controls and preserves the draft through model removal and restoration', async () => {
+    const element = await mountOverlay()
+    const stream = vi.spyOn(element.api!, 'chatStream')
+    const input = element.querySelector('textarea')!
+    input.value = 'Keep this unsent draft'; input.dispatchEvent(new Event('input')); await settleVue()
+    element.querySelector<HTMLButtonElement>('.k-ai-model-reasoning-picker__trigger')!.click(); await settleVue()
+    expect(document.querySelector('[role=dialog]')).not.toBeNull()
+    models(element, []); await settleVue(12)
+    expect(element.textContent).toContain('Connect a model to continue')
+    expect(element.querySelector('textarea')).toBeNull()
+    expect(element.querySelector('.k-ai-model-reasoning-picker')).toBeNull()
+    expect(element.querySelector('form.agents-composer')).toBeNull()
+    expect(document.querySelector('[role=dialog]')).toBeNull()
+    models(element, [{ name: 'openai', provider: 'openai', model: 'restored' }]); await settleVue(10)
+    expect(element.querySelector('textarea')?.value).toBe('Keep this unsent draft')
+    expect(stream).not.toHaveBeenCalled()
+  })
+  it('requires an explicit replacement selection and keeps the same conversation', async () => {
+    const element = await mountOverlay()
+    const save = vi.spyOn(element.api!, 'saveSessionModel').mockImplementation(async (_name, _session, preferences) => preferences)
+    models(element, [{ name: 'replacement', provider: 'openai', model: 'new-model' }]); await settleVue(12)
+    expect(element.textContent).toContain('Choose a model to continue')
+    expect(save).not.toHaveBeenCalled()
+    const selector = element.querySelector<HTMLSelectElement>('.agents-model-recovery select')!
+    const use = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Use model')!
+    expect(use.disabled).toBe(true)
+    selector.value = 'replacement'; selector.dispatchEvent(new Event('change')); await settleVue()
+    use.click(); await settleVue(12)
+    expect(save).toHaveBeenCalledOnce()
+    expect(save.mock.calls[0][2]).toMatchObject({ modelCredential: 'replacement' })
+    expect(element.querySelector('.agents-model-recovery')).toBeNull()
+    expect(element.querySelector('textarea')).toBeTruthy()
+  })
+  it('distinguishes loading from failure and retries the credential read', async () => {
+    const element = await mountOverlay()
+    const load = vi.spyOn(element.store!, 'load').mockResolvedValue(undefined)
+    element.store!.credentials.data = []; element.store!.credentials.hasSnapshot = false; element.store!.credentials.loading = true
+    element.store!.dispatchEvent(new Event('change')); await settleVue()
+    expect(element.textContent).toContain('Loading models…')
+    expect(element.querySelector('.agents-model-recovery select')).toBeNull()
+    element.store!.credentials.loading = false; element.store!.credentials.error = 'offline'; element.store!.dispatchEvent(new Event('change')); await settleVue()
+    expect(element.textContent).toContain('Models could not be loaded')
+    const retry = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Retry')!
+    retry.click(); await settleVue()
+    expect(load).toHaveBeenCalledWith('credentials')
+    expect(element.textContent).not.toContain('Connect model')
+  })
+  it('offers administrator guidance when setup permission is denied', async () => {
+    const element = await mountOverlay()
+    vi.mocked(element.api!.canConfigureChatModel).mockResolvedValue(false)
+    models(element, []); await settleVue(12)
+    expect(element.textContent).toContain('Ask a workspace administrator')
+    expect([...element.querySelectorAll('button')].some(button => button.textContent === 'Connect model')).toBe(false)
+  })
+  it('retries permission checks without treating a failed check as denial', async () => {
+    const element = await mountOverlay()
+    vi.mocked(element.api!.canConfigureChatModel).mockRejectedValueOnce(new Error('offline')).mockResolvedValue(true)
+    models(element, []); await settleVue(12)
+    expect(element.textContent).toContain('Setup access could not be checked')
+    const retry = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Retry access check')!
+    retry.click(); await settleVue(12)
+    expect([...element.querySelectorAll('button')].some(button => button.textContent === 'Connect model')).toBe(true)
+  })
+  it('navigates into Add model with a recovery return intent and refreshes models on return', async () => {
+    const element = await mountOverlay()
+    models(element, []); await settleVue(12)
+    const navigation = vi.fn(); element.addEventListener('railgrid-overlay-navigate', navigation)
+    const connect = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Connect model')!
+    connect.click(); await settleVue()
+    expect(navigation.mock.calls[0][0].detail).toEqual({ path: '#/create/model/from-connection', recovery: true })
+    const load = vi.spyOn(element.store!, 'load').mockResolvedValue(undefined)
+    element.dispatchEvent(new Event('railgrid-overlay-resume')); await settleVue()
+    expect(load).toHaveBeenCalledWith('credentials')
+  })
+  it('explains forbidden model reads without presenting configuration or retry actions', async () => {
+    const element = await mountOverlay()
+    element.store!.credentials.error = 'forbidden'; element.store!.credentials.errorStatus = 403
+    element.store!.dispatchEvent(new Event('change')); await settleVue()
+    expect(element.textContent).toContain('Model access is restricted')
+    expect(element.textContent).toContain('Ask a workspace administrator')
+    expect(element.querySelector('textarea')).toBeNull()
+    expect(element.querySelector('.agents-model-recovery button')).toBeNull()
+  })
+  it('moves focus out of the removed composer and restores it after recovery', async () => {
+    const element = await mountOverlay()
+    element.querySelector('textarea')!.focus()
+    models(element, []); await settleVue(12)
+    expect(document.activeElement?.id).toBe('overlay-model-recovery-title')
+    const connect = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Connect model')!
+    connect.focus()
+    models(element, [{ name: 'openai', provider: 'openai', model: 'restored' }]); await settleVue(10)
+    expect(document.activeElement).toBe(element.querySelector('textarea'))
+  })
+  it('keeps Stop available when a model disappears during an active reply', async () => {
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* () {
+      yield { event: 'start', data: JSON.stringify({ runID: 'active-run', sessionID: 'active-session' }) }
+      await pending
+      yield { event: 'done', data: JSON.stringify({ runID: 'active-run', content: 'Done', status: 'Succeeded' }) }
+    })
+    const element = await mountOverlay()
+    await send(element, 'Start work')
+    models(element, []); await settleVue()
+    expect(element.querySelector('.agents-stop')).not.toBeNull()
+    expect(element.querySelector('.agents-model-recovery')).toBeNull()
+    finish(); await settleVue(14)
+    expect(element.querySelector('.agents-model-recovery')).not.toBeNull()
+  })
+
 })

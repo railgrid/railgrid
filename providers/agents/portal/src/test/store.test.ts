@@ -352,3 +352,17 @@ describe('SSE parsing', () => {
     expect(out).toEqual([{ text: 'a' }, { text: 'b' }])
   })
 })
+
+describe('credential read access state', () => {
+  it('retains a forbidden status for recovery and clears it after a successful retry', async () => {
+    const listCredentials = vi.fn().mockRejectedValueOnce(Object.assign(new Error('Forbidden'), { status: 403 })).mockResolvedValue([])
+    const store = makeStore(stubApi({ listCredentials }))
+    await store.load('credentials')
+    expect(store.credentials.errorStatus).toBe(403)
+    expect(store.credentials.hasSnapshot).toBe(false)
+    await store.load('credentials')
+    expect(store.credentials.errorStatus).toBeUndefined()
+    expect(store.credentials.error).toBeNull()
+    expect(store.credentials.hasSnapshot).toBe(true)
+  })
+})

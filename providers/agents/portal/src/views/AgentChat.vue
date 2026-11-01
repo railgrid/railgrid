@@ -63,7 +63,7 @@ interface ConversationRailHandle {
   expanded?: boolean
 }
 
-const props = defineProps<{ store: AppStore; api: ApiClient; name: string; compact?: boolean; composerOnly?: boolean; pageContext?: string }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; name: string; overlay?: boolean; compact?: boolean; composerOnly?: boolean; pageContext?: string }>()
 const emit = defineEmits<{ navigate: [route: Route]; 'inspection-open': [open: boolean] }>()
 // The standalone chat keeps its Conversation heading. AgentDetail supplies a
 // leading navigation control, compact identity heading, and actions when the
@@ -195,7 +195,9 @@ const inheritedModelCredential = computed(() => {
 // is therefore the backend question, not the credential one.
 const hasModel = computed(() => {
   revision.value
-  return agentHarnessBacked(agent.value) || Boolean(selectedModel.value)
+  return agentHarnessBacked(agent.value) || (props.overlay
+    ? props.store.credentials.errorStatus !== 403 && props.store.credentials.hasSnapshot && modelChoices.value.some(choice => choice.id === selectedModel.value)
+    : Boolean(selectedModel.value))
 })
 // Preferences belong to the active conversation, never to the Agent spec.
 const modelSaving = ref(false)
@@ -222,6 +224,55 @@ const modelChoices = computed(() => {
 })
 const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
 const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
+
+// A remembered name is not an available model. Keep running work stoppable,
+// but replace the idle overlay composer with one coherent recovery surface.
+const modelRecovery = computed(() => {
+  revision.value
+  if (!props.overlay || !isModelBackend.value || hasModel.value || modelInteractionLocked.value) return 'ready'
+  if (props.store.credentials.loading && !props.store.credentials.hasSnapshot) return 'loading'
+  if (props.store.credentials.errorStatus === 403) return 'inaccessible'
+  if (props.store.credentials.error) return 'error'
+  if (!props.store.credentials.hasSnapshot) return 'loading'
+  return modelChoices.value.length ? 'choose' : 'connect'
+})
+const replacementModel = ref('')
+const setupAllowed = ref<boolean | null>(null)
+const setupAccessError = ref(false)
+const setupAccessRetry = ref(0)
+const recoveryConnectionNames = computed(() => {
+  revision.value
+  return props.store.credentials.data.filter(item => item.isConnection).map(item => item.name)
+})
+watch([() => props.store, () => props.api, () => props.name, modelRecovery, () => recoveryConnectionNames.value.join('|'), setupAccessRetry], async (_value, _old, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
+  setupAllowed.value = null; setupAccessError.value = false; replacementModel.value = ''
+  if (modelRecovery.value !== 'connect') return
+  const authority = captureAuthority()
+  try {
+    const allowed = await authority.api.canConfigureChatModel(recoveryConnectionNames.value)
+    if (current && authorityIsCurrent(authority)) setupAllowed.value = allowed
+  } catch {
+    if (current && authorityIsCurrent(authority)) setupAccessError.value = true
+  }
+}, { immediate: true })
+function resumeOverlayModels(): void { void props.store.load('credentials') }
+function connectRecoveryModel(): void {
+  if (setupAllowed.value !== true) return
+  emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
+}
+
+const recoveryPanel = ref<HTMLElement | null>(null)
+const recoveryHeading = ref<HTMLElement | null>(null)
+watch(modelRecovery, async (state, previous) => {
+  const focused = document.activeElement
+  const wasEditing = focused === composer.value
+  const wasRecovering = focused instanceof Node && Boolean(recoveryPanel.value?.contains(focused))
+  await nextTick()
+  if (state !== 'ready' && ((previous === 'ready' && wasEditing) || wasRecovering)) recoveryHeading.value?.focus()
+  else if (state === 'ready' && wasRecovering) composer.value?.focus()
+})
 
 function modelRequestKey(name: string, session: string, api: ApiClient): string {
   const scope = api.contextAuthority?.()
@@ -2131,6 +2182,7 @@ onMounted(() => {
   mounted = true
   chatHost?.value?.addEventListener('railgrid-chat-handoff', offerDraft)
   chatHost?.value?.addEventListener('railgrid-overlay-focus-composer', focusComposer)
+  chatHost?.value?.addEventListener('railgrid-overlay-resume', resumeOverlayModels)
   bindServer(props.store)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
@@ -2140,6 +2192,7 @@ onBeforeUnmount(() => {
   clearArtifactState()
   chatHost?.value?.removeEventListener('railgrid-chat-handoff', offerDraft)
   chatHost?.value?.removeEventListener('railgrid-overlay-focus-composer', focusComposer)
+  chatHost?.value?.removeEventListener('railgrid-overlay-resume', resumeOverlayModels)
   logResizeObserver?.disconnect()
   clearDetachedStarts()
   mounted = false
@@ -2253,7 +2306,7 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="!hasModel" class="agents-warn-banner" role="status">
+        <div v-if="!hasModel && !overlay" class="agents-warn-banner" role="status">
           No model assigned — pick a model credential in the Config tab to start chatting.
         </div>
 
@@ -2371,7 +2424,29 @@ defineExpose({
           </button>
         </div>
 
-        <form class="agents-composer k-ai-composer-dock" @submit.prevent="send">
+        <section v-if="modelRecovery !== 'ready'" ref="recoveryPanel" class="agents-model-recovery" :class="{ 'agents-model-recovery--compact': composerOnly }" :aria-labelledby="domID('model-recovery-title')" :aria-busy="modelRecovery === 'loading' || modelSaving">
+          <h3 ref="recoveryHeading" :id="domID('model-recovery-title')" tabindex="-1" aria-live="polite">{{ modelRecovery === 'loading' ? 'Loading models…' : modelRecovery === 'error' ? 'Models could not be loaded' : modelRecovery === 'inaccessible' ? 'Model access is restricted' : modelRecovery === 'choose' ? 'Choose a model to continue' : 'Connect a model to continue' }}</h3>
+          <template v-if="!composerOnly">
+            <p v-if="modelRecovery === 'inaccessible'">You don’t have access to the models this assistant needs. Ask a workspace administrator to restore access.</p>
+            <p v-else-if="modelRecovery === 'error'">We couldn’t check which models are available. Retry to continue.</p>
+            <p v-else-if="modelRecovery !== 'loading'">{{ selectedModel ? 'The selected model is unavailable.' : 'This assistant needs a model before it can reply.' }} Your conversation and draft are kept here.</p>
+            <button v-if="modelRecovery === 'error'" type="button" class="k-btn k-btn--primary" :disabled="store.credentials.loading" @click="resumeOverlayModels">{{ store.credentials.loading ? 'Retrying…' : 'Retry' }}</button>
+            <template v-else-if="modelRecovery === 'choose'">
+              <label :for="domID('recovery-model')">Available model</label>
+              <select :id="domID('recovery-model')" v-model="replacementModel" class="k-input" :disabled="modelSwitchDisabled"><option disabled value="">Choose a model</option><option v-for="choice in modelChoices" :key="choice.id" :value="choice.id">{{ choice.name }} · {{ choice.model }}</option></select>
+              <p v-if="modelSaveError" role="alert">{{ modelSaveError }}</p>
+              <button type="button" class="k-btn k-btn--primary" :disabled="!replacementModel || modelSwitchDisabled || !modelChoices.some(choice => choice.id === replacementModel)" @click="selectModelCredential(replacementModel)">{{ modelSaving ? 'Selecting…' : 'Use model' }}</button>
+            </template>
+            <template v-else-if="modelRecovery === 'connect'">
+              <button v-if="setupAllowed" type="button" class="k-btn k-btn--primary" @click="connectRecoveryModel">Connect model</button>
+              <p v-else-if="setupAllowed === false">Ask a workspace administrator to connect a model.</p>
+              <template v-else-if="setupAccessError"><p>Setup access could not be checked.</p><button type="button" class="k-btn k-btn--ghost" @click="setupAccessRetry++">Retry access check</button></template>
+              <p v-else role="status">Checking setup access…</p>
+            </template>
+          </template>
+          <button v-else-if="modelRecovery !== 'loading'" type="button" class="k-btn k-btn--ghost" @click="engageOverlay">Review setup</button>
+        </section>
+        <form v-else class="agents-composer k-ai-composer-dock" @submit.prevent="send">
           <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!hasModel">
             <template #editor>
               <textarea

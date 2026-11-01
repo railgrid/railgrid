@@ -436,6 +436,7 @@ export class ApiClient {
   // any agent does, so first-run works. They used to hang off an arbitrary
   // Agent, which meant an empty workspace could save a credential and then had
   // nothing to test it with.
+  canConfigureChatModel = (connections: string[]): Promise<boolean> => this.resources.canConfigureChatModel(connections)
   listCredentials = (): Promise<Credential[]> => this.resources.listCredentials()
   saveCredential = (body: CredentialWrite): Promise<Credential> => this.resources.saveCredential(body)
   deleteCredential = (name: string): Promise<void> => this.resources.deleteCredential(name)

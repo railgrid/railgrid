@@ -923,3 +923,29 @@ describe('model listing with named connection grants', () => {
     await expect(resources.listCredentials()).rejects.toMatchObject({ status: 403 })
   })
 })
+
+describe('overlay setup permissions', () => {
+  it('checks named connection get/use without requesting Secret access', async () => {
+    kcp.reply('POST /selfsubjectaccessreviews', { status: { allowed: true } })
+    expect(await resources.canConfigureChatModel(['production'])).toBe(true)
+    expect(kcp.calls.map(call => (call.body as { spec: { resourceAttributes: unknown } }).spec.resourceAttributes)).toEqual([
+      { group: 'agents.railgrid.ai', resource: 'modelcredentials', verb: 'create' },
+      { group: 'agents.railgrid.ai', resource: 'modelproviderconnections', verb: 'get', name: 'production' },
+      { group: 'agents.railgrid.ai', resource: 'modelproviderconnections', verb: 'use', name: 'production' },
+      { group: 'agents.railgrid.ai', resource: 'modelproviderconnections/test', verb: 'create', name: 'production' },
+    ])
+  })
+  it('requires provider and Secret write permissions for a new connection', async () => {
+    kcp.reply('POST /selfsubjectaccessreviews', { status: { allowed: true } })
+    expect(await resources.canConfigureChatModel([])).toBe(true)
+    const attributes = kcp.calls.map(call => (call.body as { spec: { resourceAttributes: unknown } }).spec.resourceAttributes)
+    expect(attributes).toContainEqual({ group: '', resource: 'secrets', verb: 'create', namespace: 'default' })
+    expect(attributes).toContainEqual({ group: '', resource: 'secrets', verb: 'patch', namespace: 'default' })
+    expect(kcp.calls.every(call => call.url.includes('/selfsubjectaccessreviews'))).toBe(true)
+  })
+  it('does not offer setup to a caller who cannot create models', async () => {
+    kcp.reply('POST /selfsubjectaccessreviews', { status: { allowed: false } })
+    expect(await resources.canConfigureChatModel(['production'])).toBe(false)
+    expect(kcp.calls).toHaveLength(1)
+  })
+})

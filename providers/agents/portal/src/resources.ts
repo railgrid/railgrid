@@ -1155,6 +1155,31 @@ export class Resources {
 
   // ---- model credentials ---------------------------------------------------
 
+  canConfigureChatModel = (connections: string[]): Promise<boolean> =>
+    this.run(async client => {
+      const can = async (group: string, resource: string, verb: string, name?: string, namespace?: string): Promise<boolean> => {
+        const review = await client.create<KubeObject & { status?: { allowed?: boolean } }>(
+          { group: 'authorization.k8s.io', version: 'v1', resource: 'selfsubjectaccessreviews' },
+          { apiVersion: 'authorization.k8s.io/v1', kind: 'SelfSubjectAccessReview', metadata: {}, spec: { resourceAttributes: { group, resource, verb, ...(name ? { name } : {}), ...(namespace ? { namespace } : {}) } } } as KubeObject & { status?: { allowed?: boolean } },
+        )
+        return review.status?.allowed === true
+      }
+      if (!await can(GROUP, 'modelcredentials', 'create')) return false
+      for (const name of connections) {
+        if (await can(GROUP, 'modelproviderconnections', 'get', name) && await can(GROUP, 'modelproviderconnections', 'use', name) && await can(GROUP, 'modelproviderconnections/test', 'create', name)) return true
+      }
+      const checks = await Promise.all([
+        can(GROUP, 'modelproviderconnections', 'get'),
+        can(GROUP, 'modelproviderconnections', 'create'),
+        can(GROUP, 'modelcredentials', 'get'),
+        can(GROUP, 'modelcredentials', 'delete'),
+        can(GROUP, 'modelcredentials/test', 'create'),
+        can(GROUP, 'modelcredentials/discover', 'create'),
+        ...['get', 'create', 'patch', 'delete'].map(verb => can('', 'secrets', verb, undefined, SECRET_NAMESPACE)),
+      ])
+      return checks.every(Boolean)
+    })
+
   /**
    * listCredentials reads the ModelCredential objects and projects them onto
    * the view the Models page renders.

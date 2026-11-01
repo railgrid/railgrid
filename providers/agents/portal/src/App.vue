@@ -161,7 +161,7 @@ let modelCreateOwner: Route = { kind: 'menu', menu: 'models' }
 function go(next: Route, mode?: 'push' | 'replace'): void {
   if (props.overlay) {
     if (next.kind !== 'agent' || next.name !== props.overlay.agent || next.tab !== 'chat') {
-      props.host.dispatchEvent(new CustomEvent('railgrid-overlay-navigate', { detail: { path: hashFor(next) } }))
+      props.host.dispatchEvent(new CustomEvent('railgrid-overlay-navigate', { detail: { path: hashFor(next), recovery: next.kind === 'create' && next.resource === 'model' && next.type === 'from-connection' } }))
     }
     return
   }

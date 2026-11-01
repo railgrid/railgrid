@@ -104,6 +104,27 @@ messages. Context is not system policy, a permission grant, or proof of the
 resource's current state. The agent must inspect resources through its
 configured tools and existing authorization rules.
 
+## Model recovery
+
+An idle model-backed overlay checks its remembered selection against the loaded
+model collection. When that selection is missing, a recovery panel replaces the
+whole composer: no empty model picker, reasoning controls, or disabled send
+button. The transcript stays visible and the unsent draft stays in memory.
+An active reply keeps its Stop control until work finishes.
+
+Loading, failed reads, forbidden reads, missing configuration, and available
+replacement choices are separate states. Replacement selection is explicit and
+updates only this conversation. Setup access is checked with Kubernetes
+SelfSubjectAccessReview; permission checks read no Secrets. Users without setup
+access receive administrator guidance, and a failed access check offers retry.
+
+Connect model opens Add model, where saved provider connections and the Connect
+provider link remain available. The host collapses the overlay without replacing
+its mounted conversation and shows Return to assistant. Returning refreshes the
+model list and restores the expanded conversation and its draft. This flow does
+not automatically select a newly connected model, send a message, or change the
+Agent's workspace configuration.
+
 ## Prototype boundaries
 
 - Selection persists on this browser only; there is no server-side preference.
