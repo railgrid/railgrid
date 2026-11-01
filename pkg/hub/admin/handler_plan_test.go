@@ -90,12 +90,12 @@ func TestSetOrganizationPlan(t *testing.T) {
 	known := func(_ context.Context, name string) (bool, error) { return name == "team", nil }
 	h, client := planRouter(t, known, org)
 
-	// Detach onto an existing plan: the org now owns its account.
+	// Put the organization on an existing plan.
 	rec, body := putPlan(h, "org-a", `{"plan":"team"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
 	}
-	if body["account"] != "org-a" || body["ownAccount"] != true || body["plan"] != "team" {
+	if body["name"] != "org-a" || body["plan"] != "team" {
 		t.Fatalf("body = %v", body)
 	}
 	got, _ := client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
@@ -113,10 +113,14 @@ func TestSetOrganizationPlan(t *testing.T) {
 		t.Fatalf("spec.plan changed to %q on a refused request", got.Spec.Plan)
 	}
 
-	// Empty pools the org back into its creator's account.
+	// Empty returns the organization to the default plan.
 	rec, body = putPlan(h, "org-a", `{"plan":""}`)
-	if rec.Code != http.StatusOK || body["account"] != "user-alice" || body["ownAccount"] != false {
-		t.Fatalf("pool back: status = %d body = %v", rec.Code, body)
+	if rec.Code != http.StatusOK || body["plan"] != "" {
+		t.Fatalf("back to the default plan: status = %d body = %v", rec.Code, body)
+	}
+	got, _ = client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if got.Spec.Plan != "" {
+		t.Fatalf("spec.plan = %q, want empty", got.Spec.Plan)
 	}
 
 	rec, _ = putPlan(h, "missing", `{"plan":"team"}`)

@@ -32,7 +32,6 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
-	"github.com/railgrid/railgrid/pkg/hub/metering"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -98,11 +97,11 @@ func (h *Handler) Register(r *mux.Router) {
 	// restore past the window is refused with 409.
 	r.HandleFunc("/organizations/{name}/undelete", h.undeleteOrganization).Methods(http.MethodPost)
 	r.HandleFunc("/organizations/{name}/workspaces/{ws}/undelete", h.undeleteOrgWorkspace).Methods(http.MethodPost)
-	// Plan assignment detaches an organization from its creator's pooled
-	// metering account onto its own Entitlement on the named plan (empty
-	// pools it back). The hub's metering reconciler does the moving; this
-	// route only records intent on Organization.spec.plan, after checking
-	// the plan exists.
+	// Plan assignment puts an organization's metering Entitlement on the
+	// named plan (empty returns it to the default plan), which also decides
+	// whether it counts against its admins' free-organizations cap. The hub's
+	// metering reconciler moves the Entitlement; this route only records
+	// intent on Organization.spec.plan, after checking the plan exists.
 	r.HandleFunc("/organizations/{name}/plan", h.setOrganizationPlan).Methods(http.MethodPut)
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
@@ -174,14 +173,11 @@ type orgDTO struct {
 	// the last moment an undelete is accepted.
 	DeletionRequestedAt *string `json:"deletionRequestedAt,omitempty"`
 	PurgeAt             *string `json:"purgeAt,omitempty"`
-	// Account is the metering Account the organization's usage pools into
-	// (metering.OwnerAccount); OwnAccount says whether that account is the
-	// organization's own rather than its creator's. Plan is spec.plan, set
-	// when an admin detached it onto a plan.
-	Account    string `json:"account"`
-	OwnAccount bool   `json:"ownAccount"`
-	Plan       string `json:"plan,omitempty"`
-	CreatedBy  string `json:"createdBy,omitempty"`
+	// Plan is spec.plan: the metering plan a platform admin put the
+	// organization on, empty while it is on the default (free) plan.
+	// CreatedBy is the User named by the created-by label.
+	Plan      string `json:"plan,omitempty"`
+	CreatedBy string `json:"createdBy,omitempty"`
 }
 
 type workspaceDTO struct {
@@ -219,7 +215,6 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		if o.Status.DeletionRequestedAt != nil {
 			dto.DeletionRequestedAt, dto.PurgeAt = h.softDeleteStamps(o.Status.DeletionRequestedAt.Time)
 		}
-		dto.Account, dto.OwnAccount = metering.OwnerAccount(o)
 		dto.Plan = o.Spec.Plan
 		dto.CreatedBy = o.Labels[tenancyv1alpha1.OrganizationCreatorLabel]
 		// Best-effort: enumerate the org's child workspaces and their
@@ -301,9 +296,9 @@ type planRequest struct {
 	Plan string `json:"plan"`
 }
 
-// setOrganizationPlan records Organization.spec.plan. 200 with the new
-// account/plan projection, 400 for an unknown plan, 404 for an unknown
-// organization, 503 when metering is not configured.
+// setOrganizationPlan records Organization.spec.plan. 200 with {name, plan},
+// 400 for an unknown plan, 404 for an unknown organization, 503 when
+// metering is not configured.
 func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	if name == "" {
@@ -353,8 +348,7 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		account, own := metering.OwnerAccount(org)
-		writeJSON(w, map[string]any{"name": org.Name, "plan": org.Spec.Plan, "account": account, "ownAccount": own})
+		writeJSON(w, map[string]any{"name": org.Name, "plan": org.Spec.Plan})
 		return
 	}
 	writeError(w, http.StatusConflict, fmt.Sprintf("organization %q changed while updating; retry: %v", name, lastErr))
