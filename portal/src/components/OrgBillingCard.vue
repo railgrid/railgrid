@@ -5,7 +5,7 @@
 // the user back to the settings page with ?billing=success|canceled|portal,
 // which this card turns into a notice and a reload. Without metering the
 // card says so; with metering but nothing sold it shows the plan read-only.
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ExternalLink, Loader2, RefreshCw } from 'lucide-vue-next'
 
@@ -14,6 +14,7 @@ import InlineNotification from '@/portalkit/InlineNotification.vue'
 import { toast } from '@/portalkit/toast'
 import MeteringUsageList from '@/components/MeteringUsageList.vue'
 import { useTenantStore, type OrgBilling } from '@/stores/tenant'
+import { authSessionRevision } from '@/auth/token'
 
 const props = defineProps<{
   orgUuid: string
@@ -97,24 +98,54 @@ const periodEnd = computed(() => {
 
 const managedByOperator = computed(() => billing.value?.managedBy === 'operator')
 
+// A hosted page is requested for one organization from one place. The request
+// outlives neither: if the card unmounts, the route or the organization
+// changes, or the session is replaced (logout, re-login) while the hub is
+// answering, the URL that comes back is dropped instead of navigated to.
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
+
+interface HostedPageRequest { org: string; route: string; auth: number }
+
+function hostedPageRequest(): HostedPageRequest {
+  return { org: props.orgUuid, route: route.fullPath, auth: authSessionRevision() }
+}
+
+function hostedPageStillWanted(request: HostedPageRequest): boolean {
+  return !disposed && props.orgUuid === request.org && tenant.orgUUID === request.org &&
+    route.fullPath === request.route && authSessionRevision() === request.auth
+}
+
 async function upgrade(plan: string): Promise<void> {
+  const request = hostedPageRequest()
   busy.value = plan
   error.value = null
   try {
-    window.location.assign(await tenant.startOrgCheckout(props.orgUuid, plan))
+    const url = await tenant.startOrgCheckout(request.org, plan)
+    if (!hostedPageStillWanted(request)) {
+      busy.value = null
+      return
+    }
+    window.location.assign(url)
   } catch (err) {
-    error.value = (err as Error).message
+    if (hostedPageStillWanted(request)) error.value = (err as Error).message
     busy.value = null
   }
 }
 
 async function manage(): Promise<void> {
+  const request = hostedPageRequest()
   busy.value = 'portal'
   error.value = null
   try {
-    window.location.assign(await tenant.openOrgBillingPortal(props.orgUuid))
+    const url = await tenant.openOrgBillingPortal(request.org)
+    if (!hostedPageStillWanted(request)) {
+      busy.value = null
+      return
+    }
+    window.location.assign(url)
   } catch (err) {
-    error.value = (err as Error).message
+    if (hostedPageStillWanted(request)) error.value = (err as Error).message
     busy.value = null
   }
 }
@@ -170,11 +201,11 @@ async function manage(): Promise<void> {
     <div v-if="loading && !loaded" class="text-sm text-text-muted" role="status" aria-live="polite">Loading plan and usage…</div>
 
     <template v-else-if="billing?.installed">
-      <div v-if="billing.limits.length" class="rounded-lg border border-border-default/30 p-3">
-        <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">Limits and usage</div>
+      <div v-if="billing.limits.length || Object.keys(billing.usage).length" class="rounded-lg border border-border-default/30 p-3">
+        <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">{{ billing.limits.length ? 'Limits and usage' : 'Usage' }}</div>
         <MeteringUsageList :limits="billing.limits" :usage="billing.usage" :window="billing.window ?? null" />
       </div>
-      <p v-else class="text-sm text-text-muted">This plan sets no limits.</p>
+      <p v-else class="text-sm text-text-muted">This plan sets no limits, and nothing has been measured yet.</p>
 
       <div v-if="offers.length" class="mt-4">
         <div class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-text-muted">
@@ -185,7 +216,7 @@ async function manage(): Promise<void> {
             <div class="flex items-center justify-between gap-2">
               <span class="text-sm font-semibold text-text-primary">{{ p.displayName || p.name }}</span>
               <button
-                v-if="billing.enabled && p.sellable && canManage"
+                v-if="billing.enabled && p.sellable && canManage && !managedByOperator"
                 type="button"
                 class="k-btn k-btn--primary px-3 py-1 text-xs disabled:opacity-50"
                 :disabled="!!busy"
@@ -194,6 +225,11 @@ async function manage(): Promise<void> {
                 <Loader2 v-if="busy === p.name" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
                 {{ current && !current.sellable ? 'Upgrade' : 'Switch' }}
               </button>
+              <span
+                v-else-if="billing.enabled && p.sellable && managedByOperator"
+                class="text-[11px] text-text-muted"
+                title="A platform admin assigned this organization's plan; a subscription cannot change it until they release it"
+              >Plan assigned by admin</span>
               <span v-else-if="billing.enabled && p.sellable" class="text-[11px] text-text-muted">Admins can switch</span>
               <span v-else-if="p.name === billing.defaultPlan" class="text-[11px] text-text-muted">Default</span>
               <span v-else class="text-[11px] text-text-muted" title="Assigned by a platform admin">By arrangement</span>

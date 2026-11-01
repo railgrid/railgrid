@@ -842,7 +842,7 @@ async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
   // Re-validate after the modal: the route, organization, operating
   // workspace or inventory may have changed while it was open.
   const current = workspaces.value.find((candidate) => candidate.uuid === workspace.uuid)
-  if (!current || route.fullPath !== requestRoute || tenant.orgUUID !== org || workspaceForceDeleteDisabledReason(current)) return
+  if (pageDisposed || !current || route.fullPath !== requestRoute || tenant.orgUUID !== org || workspaceForceDeleteDisabledReason(current)) return
   forceDeletingWorkspaceUUID.value = workspace.uuid
   try {
     await tenant.forceDeleteWorkspace(org, workspace.uuid)

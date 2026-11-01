@@ -38,6 +38,7 @@ type deployment struct {
 	t        *testing.T
 	token    string
 	enabled  bool
+	emptyURL bool // answer the hosted-page routes with {"url":""}
 	requests []map[string]string
 	webhooks []string
 }
@@ -68,7 +69,25 @@ func (d *deployment) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": `plan "free" is not sold`})
 			return
 		}
+		if d.emptyURL {
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://checkout.stripe.com/c/pay/cs_1"})
+	})
+	mux.HandleFunc("/billing/portal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+d.token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		d.requests = append(d.requests, body)
+		if d.emptyURL {
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://billing.stripe.com/p/session/ps_1"})
 	})
 	mux.HandleFunc("/billing/webhook", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -230,5 +249,62 @@ func TestForwardWebhookRelaysBodyAndSignature(t *testing.T) {
 	b.ForwardWebhook(rec, httptest.NewRequest(http.MethodPost, "/api/billing/webhook", strings.NewReader("{}")))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("not installed: %d", rec.Code)
+	}
+}
+
+// A plan a platform administrator assigned (PlanSourceOperator on the
+// Entitlement) is not for sale through Checkout: the deployment's billing
+// reconciler leaves such a plan alone, so the organization would pay and
+// stay where it is.
+func TestCheckoutRefusedWhileAPlatformAdminOwnsThePlan(t *testing.T) {
+	ent := &unstructured.Unstructured{}
+	ent.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	ent.SetKind("Entitlement")
+	ent.SetName("org-1")
+	ent.SetLabels(map[string]string{PlanSourceLabel: PlanSourceOperator})
+	_ = unstructured.SetNestedMap(ent.Object, map[string]any{"account": "org-1", "plan": "team"}, "spec")
+	b, dep := newBillingFixture(t, true, ent)
+
+	_, err := b.Checkout(context.Background(), "org-1", "large", "https://hub/ok", "https://hub/cancel")
+	var be *BillingError
+	if !errors.As(err, &be) || be.Status != http.StatusConflict || !strings.Contains(be.Message, "platform administrator") {
+		t.Fatalf("checkout under an operator-assigned plan: %v", err)
+	}
+	if len(dep.requests) != 0 {
+		t.Fatalf("the deployment was asked anyway: %v", dep.requests)
+	}
+
+	// Another organization, not operator-managed, still checks out.
+	if u, err := b.Checkout(context.Background(), "org-2", "large", "https://hub/ok", "https://hub/cancel"); err != nil || u == "" {
+		t.Fatalf("checkout for a subscription-managed organization: %q %v", u, err)
+	}
+}
+
+// A 2xx without a URL is a bad gateway, not a redirect to "".
+func TestCheckoutAndPortalRefuseAnEmptyURL(t *testing.T) {
+	b, dep := newBillingFixture(t, true)
+	dep.emptyURL = true
+	var be *BillingError
+	if _, err := b.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel"); !errors.As(err, &be) || be.Status != http.StatusBadGateway {
+		t.Fatalf("checkout with an empty url: %v", err)
+	}
+	if _, err := b.Portal(context.Background(), "org-1", "https://hub/back"); !errors.As(err, &be) || be.Status != http.StatusBadGateway {
+		t.Fatalf("portal with an empty url: %v", err)
+	}
+	dep.emptyURL = false
+	if u, err := b.Portal(context.Background(), "org-1", "https://hub/back"); err != nil || u != "https://billing.stripe.com/p/session/ps_1" {
+		t.Fatalf("portal: %q %v", u, err)
+	}
+}
+
+// The webhook route is registered on every hub; without metering the relay
+// is nil and answers 503, so the provider retries later instead of taking a
+// generic answer for a receipt.
+func TestForwardWebhookWithoutMeteringAnswers503(t *testing.T) {
+	var b *Billing
+	rec := httptest.NewRecorder()
+	b.ForwardWebhook(rec, httptest.NewRequest(http.MethodPost, "/api/billing/webhook", strings.NewReader(`{"id":"evt_1"}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }

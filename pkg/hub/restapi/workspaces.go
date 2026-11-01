@@ -321,13 +321,16 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseForceParam reads the optional ?force query parameter of DELETE.
-// Absent means false; anything strconv.ParseBool rejects is a 400, so a
-// typo such as ?force=yes cannot silently fall back to the recoverable path.
+// Absent means false; a present key whose value strconv.ParseBool rejects is
+// a 400, the empty value included (?force= or a bare ?force, what a client
+// with an unset variable sends), so no malformed request silently falls back
+// to the recoverable path the caller did not ask for.
 func parseForceParam(w http.ResponseWriter, r *http.Request) (force bool, ok bool) {
-	raw := r.URL.Query().Get("force")
-	if raw == "" {
+	q := r.URL.Query()
+	if !q.Has("force") {
 		return false, true
 	}
+	raw := q.Get("force")
 	force, err := strconv.ParseBool(raw)
 	if err != nil {
 		writeError(w, newValidationError("force must be true or false"))

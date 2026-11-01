@@ -354,6 +354,7 @@ function workspaceForceDeleteFixture({ current = false, forced = false, schedule
     forceDeletingWorkspaceUUID: { value: null },
     workspaceDeleteBatchBusy: { value: false },
     workspaces: { value: [workspace] },
+    pageDisposed: false,
     route: { fullPath: '/org-a/settings/organizations' },
     // The sandboxed function checks `error instanceof Error`; share this
     // realm's Error so a rejection thrown by the fixture is recognised.
@@ -407,6 +408,10 @@ for (const [name, change] of [
   ['inventory unverified', (context) => { context.workspaceInventoryVerified.value = false }],
   ['row became the operating workspace', (context) => { context.tenant.workspaceMode = 'workspace'; context.tenant.workspaceUUID = 'workspace-a' }],
   ['row left the inventory', (context) => { context.workspaces.value = [] }],
+  // The confirmation is mounted globally and outlives this page: a user who
+  // leaves and comes back to the same URL must not have a disposed page's
+  // inventory authorise the delete.
+  ['page disposed', (context) => { context.pageDisposed = true }],
   ['organization deletion started', (context) => { context.activeOrg.value = { ...context.activeOrg.value, deletionRequestedAt: '2026-10-01T00:00:00Z' } }],
 ]) {
   test(`delete now confirmation does not send after ${name}`, async () => {
