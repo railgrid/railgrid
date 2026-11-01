@@ -245,7 +245,7 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkOrgQuota applies O-5 for user: the organizations cap first, then,
-// when the hub knows which plan is free, the free-organizations cap. Both
+// while a metering deployment is there, the free-organizations cap. Both
 // counts exclude personal Organizations (platform-created, one per user)
 // and include Organizations inside their soft-delete window: those still
 // exist, with their metering account and every allowance on it, until the
@@ -263,7 +263,8 @@ func (h *Handler) checkOrgQuota(ctx context.Context, user string) error {
 	})); err != nil {
 		return err
 	}
-	if h.mgr.freePlan == "" {
+	if h.mgr.freePlan == "" || (h.mgr.meteringInstalled != nil && !h.mgr.meteringInstalled()) {
+		// No metering, no allowances to multiply: the free cap waits.
 		return nil
 	}
 	return quota.CheckFreeOrgQuota(ctx, user, caps.FreeOrganizations, quota.CounterFunc(func(ctx context.Context) (int32, error) {

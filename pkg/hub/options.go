@@ -147,8 +147,9 @@ type Options struct {
 	// FreeOrgsPerUser is how many non-personal Organizations on the default
 	// (free) metering plan a User may administer at once (O-5); creating
 	// another needs a plan on one of them. User.spec.quota.freeOrganizations
-	// overrides it per user. Applies only when metering is configured
-	// (MeteringWorkspace). Zero forbids free organizations beyond the
+	// overrides it per user. Applies only while a metering deployment is
+	// discovered in MeteringWorkspace: without metering there are no
+	// allowances to multiply. Zero forbids free organizations beyond the
 	// personal one; must not be negative.
 	FreeOrgsPerUser int32
 
