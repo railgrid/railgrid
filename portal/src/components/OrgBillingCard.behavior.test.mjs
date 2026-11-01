@@ -137,3 +137,53 @@ test('the generation moves synchronously on scope changes and on unmount', () =>
   }
   assert.match(script, /onBeforeUnmount\(\(\) => \{\s*disposed = true\s*hostedPageGeneration\+\+\s*\}\)/)
 })
+
+const recommendedPlan = loadFunction('recommendedPlan', { Number, Math })
+const planLimit = (max, extra = {}) => ({ meter: 'workspaces', shape: 'Level', enforce: 'Hard', max, ...extra })
+const planOffer = (name, max, extra = {}) => ({ name, current: false, sellable: false, limits: [planLimit(max)], ...extra })
+
+test('recommendations provide actual headroom and choose the smallest sufficient known allowance', () => {
+  const small = planOffer('small', '10')
+  const large = planOffer('large', '100')
+  assert.equal(recommendedPlan('workspaces', [large, small], [planLimit('1')], { workspaces: '1' }), small)
+  // At 10/10, an allowance of 10 does not restore room for another workspace.
+  assert.equal(recommendedPlan('workspaces', [small, large], [planLimit('1')], { workspaces: '10' }), large)
+  assert.equal(recommendedPlan('workspaces', [small], [planLimit('1')], { workspaces: '12' }), null)
+})
+
+test('recommendations use effective limits rather than the catalog current-plan allowance', () => {
+  const current = planOffer('free', '1', { current: true })
+  const small = planOffer('small', '10')
+  const large = planOffer('large', '100')
+  assert.equal(recommendedPlan('workspaces', [current, small, large], [planLimit('20')], { workspaces: '20' }), large)
+  assert.equal(recommendedPlan('workspaces', [small], [planLimit('20')], { workspaces: '2' }), null)
+})
+
+test('unknown usage never yields an upgrade recommendation', () => {
+  for (const usage of [{}, { workspaces: '' }, { workspaces: null }, { workspaces: ' ' }, { workspaces: 'not measured' }]) {
+    assert.equal(recommendedPlan('workspaces', [planOffer('small', '10')], [planLimit('0')], usage), null)
+  }
+  assert.equal(recommendedPlan('workspaces', [planOffer('small', '10')], [planLimit('0')], { workspaces: '0' }).name, 'small')
+})
+
+test('recommendations exclude unknown allowances, different shapes and current plans', () => {
+  const offers = [
+    planOffer('not-specified', '10', { limits: [] }),
+    planOffer('unknown-max', undefined),
+    planOffer('different-shape', '10', { limits: [planLimit('10', { shape: 'Consumption' })] }),
+    planOffer('already-current', '100', { current: true }),
+  ]
+  assert.equal(recommendedPlan('workspaces', offers, [planLimit('1')], { workspaces: '1' }), null)
+})
+
+test('a metered numeric reference is not treated as an enforced limit', () => {
+  assert.equal(recommendedPlan('workspaces', [planOffer('small', '10')], [planLimit('1', { enforce: 'Meter' })], { workspaces: '2' }), null)
+})
+
+test('omitted shape is compared as Consumption, while fractional display retains precision', () => {
+  const candidate = planOffer('small', '10', { limits: [planLimit('10', { shape: 'Consumption' })] })
+  assert.equal(recommendedPlan('workspaces', [candidate], [planLimit('1', { shape: undefined })], { workspaces: '1' }), candidate)
+  const quantity = loadFunction('quantity', { Number, Intl })
+  assert.equal(quantity('0.000000000000000001'), '0.000000000000000001')
+  assert.equal(quantity('9007199254740993'), '9007199254740993')
+})
