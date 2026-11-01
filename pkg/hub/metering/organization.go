@@ -34,7 +34,10 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
@@ -57,10 +60,10 @@ const (
 	LabelPlanFromSpec = "railgrid.ai/plan-from-spec"
 
 	// membershipRefresh paces the re-list of an organization's workspaces.
-	// Child workspaces are created by the hub itself (createWorkspace) and
-	// are not watched by this single-cluster manager; until a Workspace watch
-	// through the core export feeds this reconciler, the report follows them
-	// on this cadence.
+	// The child workspaces the hub itself creates and deletes reach this
+	// reconciler at once through the WorkspaceNotifier; this cadence is the
+	// backstop for a Workspace changed outside the hub (kubectl, a kcp-side
+	// cleanup), which this single-cluster manager does not watch.
 	membershipRefresh = 5 * time.Minute
 	// notInstalledRetry is how long to wait for metering to appear before
 	// looking at an organization again.
@@ -92,7 +95,12 @@ type OrganizationOptions struct {
 	// DefaultPlan is the Plan an organization's Entitlement names while
 	// Organization.spec.plan is empty.
 	DefaultPlan string
-	Logger      klog.Logger
+	// WorkspaceEvents, when set, names the organizations whose child
+	// workspaces the hub itself created or deleted (the Bootstrapper's
+	// observer), so their membership report follows at once instead of on
+	// the next re-list.
+	WorkspaceEvents *WorkspaceNotifier
+	Logger          klog.Logger
 }
 
 // OrganizationReconciler gives every Organization its own billing objects in
@@ -122,10 +130,46 @@ func SetupOrganizationReconciler(mgr manager.Manager, opts OrganizationOptions) 
 		opts.DefaultPlan = "free"
 	}
 	r := &OrganizationReconciler{Client: mgr.GetClient(), opts: opts}
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		Named("metering-organization").
-		For(&tenancyv1alpha1.Organization{}).
-		Complete(r)
+		For(&tenancyv1alpha1.Organization{})
+	if opts.WorkspaceEvents != nil {
+		b = b.WatchesRawSource(opts.WorkspaceEvents.source())
+	}
+	return b.Complete(r)
+}
+
+// WorkspaceNotifier hands the organization reconciler the organizations
+// whose child workspaces the hub itself has just created or deleted, so the
+// membership report (and with it the workspaces usage) follows the hub's own
+// writes at once rather than on the periodic re-list. It is a
+// controller-runtime channel source; Notify never blocks, and an event that
+// does not fit the buffer is dropped because the re-list covers it.
+type WorkspaceNotifier struct {
+	ch chan event.TypedGenericEvent[client.Object]
+}
+
+// NewWorkspaceNotifier returns a notifier with room for a burst of events.
+func NewWorkspaceNotifier() *WorkspaceNotifier {
+	return &WorkspaceNotifier{ch: make(chan event.TypedGenericEvent[client.Object], 256)}
+}
+
+// Notify enqueues a reconcile of the Organization named orgUUID. Safe to call
+// from any goroutine; it never blocks.
+func (n *WorkspaceNotifier) Notify(orgUUID string) {
+	if n == nil || orgUUID == "" {
+		return
+	}
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: orgUUID}}
+	select {
+	case n.ch <- event.TypedGenericEvent[client.Object]{Object: org}:
+	default:
+	}
+}
+
+// source is the controller-runtime source the reconciler watches.
+func (n *WorkspaceNotifier) source() source.Source {
+	return source.Channel(n.ch, &handler.EnqueueRequestForObject{})
 }
 
 // WorkspaceClients returns a Workspaces func over base, caching one dynamic
@@ -226,6 +270,12 @@ func (r *OrganizationReconciler) members(ctx context.Context, org *tenancyv1alph
 		return nil, fmt.Errorf("list workspaces of %s: %w", path, err)
 	}
 	for _, ws := range children.Items {
+		// A workspace being deleted is leaving the account: it stops counting
+		// when the cascade asks for its removal, not when kcp's finalizers let
+		// go of the object minutes later.
+		if ws.GetDeletionTimestamp() != nil {
+			continue
+		}
 		c, _, _ := unstructured.NestedString(ws.Object, "spec", "cluster")
 		if c == "" {
 			continue

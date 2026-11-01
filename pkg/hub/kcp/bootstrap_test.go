@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -353,5 +354,58 @@ func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.
 	path, _, _ := unstructured.NestedString(got.Object, "spec", "reference", "export", "path")
 	if path != "root:providers:app-studio" {
 		t.Errorf("reference was disturbed: %q", path)
+	}
+}
+
+// The child workspace observer is told about the hub's own creates (once the
+// workspace is Ready) and deletes, so a derived view such as the metering
+// membership report can follow them at once.
+func TestChildWorkspaceObserverFollowsCreatesAndDeletes(t *testing.T) {
+	ready := map[string]any{
+		"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace",
+		"metadata": map[string]any{"name": "ws-1"},
+		"spec":     map[string]any{"cluster": "lc-1"},
+		"status":   map[string]any{"phase": "Ready"},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/clusters/root:railgrid:tenants:org-1/apis/tenancy.kcp.io/v1alpha1/workspaces") {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(ready)
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(ready)
+		case http.MethodDelete:
+			_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "v1", "kind": "Status", "status": "Success"})
+		default:
+			http.Error(w, r.Method, http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	var observed []string
+	b := NewBootstrapper(&rest.Config{Host: server.URL}).WithChildWorkspaceObserver(func(orgUUID string) {
+		observed = append(observed, orgUUID)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := b.EnsureChildWorkspace(ctx, "org-1", "ws-1"); err != nil {
+		t.Fatalf("EnsureChildWorkspace: %v", err)
+	}
+	if err := b.DeleteChildWorkspace(ctx, "org-1", "ws-1"); err != nil {
+		t.Fatalf("DeleteChildWorkspace: %v", err)
+	}
+	if want := []string{"org-1", "org-1"}; !reflect.DeepEqual(observed, want) {
+		t.Fatalf("observer saw %v, want %v", observed, want)
+	}
+
+	// Without an observer the hooks are no-ops.
+	if err := NewBootstrapper(&rest.Config{Host: server.URL}).DeleteChildWorkspace(ctx, "org-1", "ws-1"); err != nil {
+		t.Fatalf("DeleteChildWorkspace without observer: %v", err)
 	}
 }
