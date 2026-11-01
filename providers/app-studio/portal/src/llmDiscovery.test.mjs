@@ -32,3 +32,15 @@ test('maps provider presets to known endpoints and leaves custom endpoints edita
   })
   assert.equal(llmProviderSelection('custom', 'https://api.openai.com/v1').baseURL, '')
 })
+
+test('Anthropic and OpenRouter presets round-trip through saved compatible connections', () => {
+  for (const [preset, baseURL] of [
+    ['anthropic', 'https://api.anthropic.com/v1'],
+    ['openrouter', 'https://openrouter.ai/api/v1'],
+  ]) {
+    assert.deepEqual(llmProviderSelection(preset), { provider: 'openai-compatible', baseURL })
+    assert.equal(inferLLMProviderPreset('openai-compatible', baseURL + '/'), preset)
+    assert.equal(llmProviderSelection('custom', baseURL).baseURL, '')
+  }
+  assert.equal(inferLLMProviderPreset('openai-compatible', 'https://api.anthropic.com.example.org/v1'), 'custom')
+})

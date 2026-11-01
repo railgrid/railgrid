@@ -18,8 +18,10 @@ type LLMCredentialMode = 'api-key' | 'service-account-json'
 
 const providerOptions = [
   { value: 'openai', label: 'OpenAI' },
-  { value: 'google', label: 'Google AI Studio' },
+  { value: 'anthropic', label: 'Anthropic (Claude, OpenAI-compat)' },
+  { value: 'openrouter', label: 'OpenRouter' },
   { value: 'custom', label: 'Custom OpenAI-compatible' },
+  { value: 'google', label: 'Google AI Studio' },
 ] as const
 
 const props = withDefaults(defineProps<{
