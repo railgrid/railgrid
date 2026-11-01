@@ -166,6 +166,9 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	// than a caller's, because that is the identity an unattended run will use:
 	// a credential that only the person who typed it can read is exactly the
 	// failure this condition exists to catch.
+	if err := (&modelcredential.ProviderConnectionReconciler{}).SetupWithManager(mgr); err != nil {
+		return err
+	}
 	if err := (&modelcredential.Reconciler{}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("model credential controller: %w", err)
 	}

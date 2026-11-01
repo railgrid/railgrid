@@ -167,11 +167,13 @@ func APIKeyFromSecret(sec *corev1.Secret, spec agentsv1alpha1.ModelCredentialSpe
 // its Secret through c.
 func ProfileFor(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelCredential) (Profile, error) {
 	if cred.Spec.ConnectionRef != "" {
-		getter, ok := c.(CredentialGetter)
+		getter, ok := c.(interface {
+			GetModelProviderConnection(context.Context, string) (*agentsv1alpha1.ModelProviderConnection, error)
+		})
 		if !ok {
 			return Profile{}, fmt.Errorf("provider connection cannot be resolved: %w", ErrNotConfigured)
 		}
-		connection, err := getter.GetModelCredential(ctx, cred.Spec.ConnectionRef)
+		connection, err := getter.GetModelProviderConnection(ctx, cred.Spec.ConnectionRef)
 		if err != nil {
 			return Profile{}, err
 		}

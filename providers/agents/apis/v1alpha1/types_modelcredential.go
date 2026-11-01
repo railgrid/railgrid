@@ -129,7 +129,7 @@ type ModelCredential struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.connectionRef) && size(self.connectionRef) > 0) || (has(self.secretRef) && has(self.secretRef.name) && size(self.secretRef.name) > 0)",message="a direct connection needs spec.secretRef"
 // +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || ((has(self.model) && size(self.model) > 0) && (!has(self.baseURL) || size(self.baseURL) == 0) && (!has(self.secretRef) || !has(self.secretRef.name)) && !(self.provider in ['claude-code','codex']))",message="a referenced model inherits its endpoint and secret from a chat connection"
 type ModelCredentialSpec struct {
-	// ConnectionRef names a direct ModelCredential in this workspace that owns
+	// ConnectionRef names a ModelProviderConnection in this workspace that owns
 	// the provider endpoint and Secret. A model binding supplies only its Model;
 	// references cannot be chained or point at a coding-harness identity.
 	// +optional
@@ -193,10 +193,9 @@ type ModelCredentialSpec struct {
 // workspace this ModelCredential lives in.
 type ModelCredentialSecretRef struct {
 	// Name is the Secret's name.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
+	// +optional
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 // ModelCredentialStatus is what the reconciler observed about the pair.

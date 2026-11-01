@@ -56,8 +56,9 @@ var (
 	// key stays in the Secret spec.secretRef names; this object is what the
 	// portal lists, what a reconciler validates, and what the probe verbs are
 	// addressed at.
-	ModelCredentialGVR = agentsGVR("modelcredentials")
-	SecretGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	ModelCredentialGVR         = agentsGVR("modelcredentials")
+	ModelProviderConnectionGVR = agentsGVR("modelproviderconnections")
+	SecretGVR                  = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
 func agentsGVR(resource string) schema.GroupVersionResource {
@@ -65,14 +66,15 @@ func agentsGVR(resource string) schema.GroupVersionResource {
 }
 
 var (
-	agentResource    = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
-	connectionRes    = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
-	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
-	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
-	webhookResource  = tenant.Resource{GVR: WebhookGVR, Kind: "Webhook", Plural: "Webhooks", Namespaced: false}
-	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
-	modelCredRes     = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
-	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
+	agentResource              = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
+	connectionRes              = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
+	scheduleResource           = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
+	triggerResource            = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
+	webhookResource            = tenant.Resource{GVR: WebhookGVR, Kind: "Webhook", Plural: "Webhooks", Namespaced: false}
+	toolsetResource            = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
+	modelCredRes               = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
+	modelProviderConnectionRes = tenant.Resource{GVR: ModelProviderConnectionGVR, Kind: "ModelProviderConnection", Plural: "ModelProviderConnections", Namespaced: false}
+	secretResource             = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
 // Client provides typed access to the agents provider's tenant-workspace
@@ -142,6 +144,20 @@ func (c *Client) ModelCredentials() *TypedResource[agentsv1alpha1.ModelCredentia
 	}
 }
 
+// ModelProviderConnections returns reusable provider accounts in this workspace.
+func (c *Client) ModelProviderConnections() *TypedResource[agentsv1alpha1.ModelProviderConnection, agentsv1alpha1.ModelProviderConnectionList] {
+	return &TypedResource[agentsv1alpha1.ModelProviderConnection, agentsv1alpha1.ModelProviderConnectionList]{scope: c.scope, res: modelProviderConnectionRes, gvk: ModelProviderConnectionGVR.GroupVersion().WithKind("ModelProviderConnection")}
+}
+
+// GetModelProviderConnection requires use permission before exposing credentials
+// to the runtime. A read of the public configuration alone grants no key use.
+func (c *Client) GetModelProviderConnection(ctx context.Context, name string) (*agentsv1alpha1.ModelProviderConnection, error) {
+	if err := AuthorizeModelProviderConnectionUse(ctx, c.scope.Dynamic(), name, true); err != nil {
+		return nil, err
+	}
+	return c.ModelProviderConnections().Get(ctx, name, metav1.GetOptions{})
+}
+
 // GetModelCredential reads one ModelCredential by name, which is what
 // llm.CredentialResolver needs. It is spelled out rather than left to the
 // caller so the whole provider resolves a credential name the same way.
@@ -150,7 +166,7 @@ func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1
 	if err != nil || credential.Spec.ConnectionRef == "" {
 		return credential, err
 	}
-	connection, err := c.ModelCredentials().Get(ctx, credential.Spec.ConnectionRef, metav1.GetOptions{})
+	connection, err := c.GetModelProviderConnection(ctx, credential.Spec.ConnectionRef)
 	if err != nil {
 		return nil, err
 	}

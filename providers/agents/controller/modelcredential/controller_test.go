@@ -93,7 +93,7 @@ func newReconciler(t *testing.T, probe Prober, objs ...client.Object) (*Reconcil
 	t.Helper()
 	c := fake.NewClientBuilder().
 		WithScheme(agentsscheme.NewScheme()).
-		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}).
+		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}, &agentsv1alpha1.ModelProviderConnection{}).
 		WithObjects(objs...).
 		Build()
 	return &Reconciler{
@@ -337,7 +337,7 @@ func TestReconcileIsIdempotent(t *testing.T) {
 func TestReconcileSecretReadFailureIsNotAVerdict(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(agentsscheme.NewScheme()).
-		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}).
+		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}, &agentsv1alpha1.ModelProviderConnection{}).
 		WithObjects(credential(), secret(true, map[string][]byte{"apiKey": []byte("k")})).
 		Build()
 	c := interceptor.NewClient(base, interceptor.Funcs{
@@ -470,48 +470,27 @@ func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
 	}
 }
 
-func TestReferencedModelUsesCurrentConnectionWithoutAdoptingItsSecret(t *testing.T) {
-	connection := credential()
-	connection.Name = "account"
-	connection.Spec.Model = ""
+func TestReferencedModelTracksConnectionReadinessWithoutReadingItsSecret(t *testing.T) {
+	source := credential()
+	connection := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account"}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{Provider: source.Spec.Provider, BaseURL: source.Spec.BaseURL, SecretRef: source.Spec.SecretRef}, Status: agentsv1alpha1.ModelCredentialStatus{Conditions: []metav1.Condition{{Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionTrue}}}}
 	model := credential()
 	model.Spec = agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "account", Model: "bound-model"}
-	key := secret(true, map[string][]byte{"apiKey": []byte("first-key")})
-	var endpoint, apiKey string
-	r, c := newReconciler(t, func(_ context.Context, profile llm.Profile) ([]string, time.Duration, error) {
-		endpoint, apiKey = profile.BaseURL, profile.APIKey
-		return []string{"bound-model"}, 0, nil
-	}, connection, model, key)
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		t.Fatal("binding must not discover models or read a key")
+		return nil, 0, nil
+	}, connection, model)
 	reconcileOnce(t, r)
 	got := read(t, c)
-	if got.Spec.ConnectionRef != "account" || got.Spec.SecretRef.Name != "" || got.Spec.BaseURL != "" {
-		t.Fatalf("stored model must retain only its reference: %+v", got.Spec)
+	if got.Spec.SecretRef.Name != "" || condition(t, got, agentsv1alpha1.ConditionReady).Status != metav1.ConditionTrue {
+		t.Fatal("binding did not follow its ready connection")
 	}
-	if condition(t, got, agentsv1alpha1.ConditionReady).Status != metav1.ConditionTrue {
-		t.Fatal("referenced model was not ready")
-	}
-	var stored corev1.Secret
-	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: testSecret}, &stored); err != nil {
-		t.Fatal(err)
-	}
-	if len(stored.OwnerReferences) != 0 {
-		t.Fatal("model binding adopted its connection's Secret")
-	}
-	var current agentsv1alpha1.ModelCredential
-	if err := c.Get(t.Context(), types.NamespacedName{Name: "account"}, &current); err != nil {
-		t.Fatal(err)
-	}
-	current.Spec.BaseURL = "https://rotated.example/v1"
-	if err := c.Update(t.Context(), &current); err != nil {
-		t.Fatal(err)
-	}
-	stored.Data["apiKey"] = []byte("rotated-key")
-	if err := c.Update(t.Context(), &stored); err != nil {
+	connection.Status.Conditions[0].Status = metav1.ConditionFalse
+	if err := c.Status().Update(t.Context(), connection); err != nil {
 		t.Fatal(err)
 	}
 	reconcileOnce(t, r)
-	if endpoint != current.Spec.BaseURL || apiKey != "rotated-key" {
-		t.Fatal("model did not follow the connection and key rotation")
+	if condition(t, read(t, c), agentsv1alpha1.ConditionReady).Status != metav1.ConditionFalse {
+		t.Fatal("binding ignored failed connection")
 	}
 }
 

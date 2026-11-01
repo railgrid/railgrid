@@ -132,7 +132,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Named("agents-modelcredential").
 		For(&agentsv1alpha1.ModelCredential{}).
 		Watches(&corev1.Secret{}, credentialsForSecret).
-		Watches(&agentsv1alpha1.ModelCredential{}, modelsForConnection).
+		Watches(&agentsv1alpha1.ModelProviderConnection{}, modelsForConnection).
 		Complete(r)
 }
 
@@ -152,8 +152,12 @@ func credentialsForSecret(clusterName multicluster.ClusterName, cl cluster.Clust
 			klog.FromContext(ctx).Error(err, "listing model credentials for a secret event")
 			return nil
 		}
+		var parents agentsv1alpha1.ModelProviderConnectionList
+		if err := cl.GetClient().List(ctx, &parents); err != nil {
+			return nil
+		}
 		connections := make(map[string]string)
-		for _, item := range list.Items {
+		for _, item := range parents.Items {
 			connections[item.Name] = item.Spec.SecretRef.Name
 		}
 		var reqs []reconcile.Request
@@ -230,21 +234,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
 	}
 
+	if cred.Spec.ConnectionRef != "" {
+		return r.reconcileModelBinding(ctx, c, &cred)
+	}
 	originalSpec := cred.Spec
 	var apiKey, secretReason, secretMessage string
-	if cred.Spec.ConnectionRef != "" {
-		var connection agentsv1alpha1.ModelCredential
-		readErr := c.Get(ctx, types.NamespacedName{Name: cred.Spec.ConnectionRef}, &connection)
-		if readErr != nil && !apierrors.IsNotFound(readErr) {
-			return ctrl.Result{}, readErr
-		}
-		resolved, resolveErr := agentsv1alpha1.ResolveModelConnection(&cred, &connection)
-		if readErr != nil || resolveErr != nil {
-			secretReason, secretMessage = agentsv1alpha1.ReasonInvalidSpec, "the referenced provider connection is missing or invalid"
-		} else {
-			cred.Spec = resolved.Spec
-		}
-	}
 	if secretReason == "" {
 		apiKey, secretReason, secretMessage, err = r.resolveSecret(ctx, c, &cred)
 	}

@@ -303,8 +303,8 @@ describe('models view on an empty workspace', () => {
 
   it('locks credential actions before confirmation and during deletion', async () => {
     const request = deferred<void>()
-    const saveCredential = vi.fn(() => request.promise)
-    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), saveCredential })
+    const deleteCredential = vi.fn(() => request.promise)
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), deleteCredential })
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
@@ -316,7 +316,7 @@ describe('models view on an empty workspace', () => {
     resolveConfirm(true)
     await settleVue()
 
-    expect(saveCredential).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'main', model: '' }))
+    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('main')
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
     expect(deleting.disabled).toBe(true)
     expect(deleting.getAttribute('aria-busy')).toBe('true')
@@ -720,7 +720,7 @@ describe('provider connection table', () => {
     expect(table.textContent).not.toContain('Staging')
     table.querySelector<HTMLButtonElement>('[aria-label="Add model to Production"]')!.click()
     await settleVue()
-    expect(view.element.querySelector('.k-provider-connect')).toBeTruthy()
+    expect(view.element.querySelector('.agents-provider-connect')).toBeTruthy()
     expect(view.element.querySelector('#model-credential')).toBeNull()
     ;[...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Cancel')!.click()
     await settleVue()

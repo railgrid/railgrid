@@ -44,25 +44,25 @@ describe('provider-first BYOK flow', () => {
 
   it('adds another model using the saved key without returning or rewriting it', async () => {
     const save = vi.fn()
-    const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
     const probeCredentialDraft = vi.fn()
-    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testCredential, probeCredentialDraft }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection, probeCredentialDraft }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
     expect(view.element.querySelector('[name="apiKey"]')).toBeNull()
     await choose(view.element, 'second-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(testCredential).toHaveBeenCalledWith('account', 'second-model')
+    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model')
     expect(probeCredentialDraft).not.toHaveBeenCalled()
     expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
     expect(save.mock.calls[0][0].newConnection).toBeUndefined()
   })
 
   it('does not create duplicate model entries on the same saved connection', async () => {
-    const testCredential = vi.fn()
-    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testCredential }), credentials: [account, { name: 'existing', connectionRef: 'account', model: 'first-model' }], initialConnection: 'account', busy: false })
+    const testProviderConnection = vi.fn()
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account, { name: 'existing', connectionRef: 'account', model: 'first-model' }], initialConnection: 'account', busy: false })
     await choose(view.element, 'first-model')
     expect(button(view.element, 'Verify & connect').disabled).toBe(true)
     expect(view.element.textContent).toContain('already configured')
-    expect(testCredential).not.toHaveBeenCalled()
+    expect(testProviderConnection).not.toHaveBeenCalled()
   })
 
   it('keeps a discovery failure recoverable through manual model entry', async () => {
@@ -92,8 +92,8 @@ describe('provider-first BYOK flow', () => {
   it('does not save after a failed test, and ignores stale tests after unmount', async () => {
     const save = vi.fn()
     let resolve!: (value: unknown) => void
-    const testCredential = vi.fn().mockResolvedValueOnce({ ok: false, latencyMS: 0, error: 'Access denied' }).mockImplementationOnce(() => new Promise(done => { resolve = done }))
-    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testCredential }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
+    const testProviderConnection = vi.fn().mockResolvedValueOnce({ ok: false, latencyMS: 0, error: 'Access denied' }).mockImplementationOnce(() => new Promise(done => { resolve = done }))
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
     await choose(view.element, 'first-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
     expect(save).not.toHaveBeenCalled()
@@ -107,9 +107,9 @@ describe('provider-first BYOK flow', () => {
 describe('Add model from a saved provider connection', () => {
   it('starts with saved connections and a separate Connect provider link', async () => {
     const save = vi.fn()
-    const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
     const openProvider = vi.fn()
-    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testCredential }), credentials: [account], selectConnection: true, busy: false, onSave: save, onConnectProvider: openProvider })
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account], selectConnection: true, busy: false, onSave: save, onConnectProvider: openProvider })
     expect(view.element.querySelector('#model-provider')).toBeNull()
     expect(view.element.querySelector('#model-credential')).toBeNull()
     const selector = view.element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
@@ -120,7 +120,7 @@ describe('Add model from a saved provider connection', () => {
     expect(view.element.querySelector('#model-credential')).toBeNull()
     await choose(view.element, 'second-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(testCredential).toHaveBeenCalledWith('account', 'second-model')
+    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model')
     expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
     expect(save.mock.calls[0][0].newConnection).toBeUndefined()
   })

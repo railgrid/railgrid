@@ -15,7 +15,7 @@ import (
 )
 
 func TestSharedConnectionResolution(t *testing.T) {
-	connection := &ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "account"}, Spec: ModelCredentialSpec{
+	connection := &ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account"}, Spec: ModelProviderConnectionSpec{
 		Provider: ModelProviderOpenAI, BaseURL: "https://first.example/v1", SecretRef: ModelCredentialSecretRef{Name: "shared-key"},
 	}}
 	first := &ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "first"}, Spec: ModelCredentialSpec{ConnectionRef: "account", Model: "first-model"}}
@@ -44,19 +44,15 @@ func TestSharedConnectionResolution(t *testing.T) {
 }
 
 func TestSharedConnectionRejectsInvalidReferences(t *testing.T) {
-	for _, name := range []string{"missing", "self", "chain", "harness", "terminating", "empty-model"} {
+	for _, name := range []string{"missing", "harness", "terminating", "empty-model"} {
 		t.Run(name, func(t *testing.T) {
 			model := &ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "model"}, Spec: ModelCredentialSpec{ConnectionRef: "account", Model: "model-id"}}
-			connection := &ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "account"}}
+			connection := &ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account"}}
 			switch name {
 			case "missing":
 				connection = nil
 			case "empty-model":
 				model.Spec.Model = ""
-			case "self":
-				model.Name = "account"
-			case "chain":
-				connection.Spec.ConnectionRef = "another-account"
 			case "harness":
 				connection.Spec.Provider = ModelProviderCodex
 			case "terminating":

@@ -45,7 +45,7 @@ class FakeKcp {
       return jsonResponse(f.status, { kind: 'Status', status: 'Failure', reason: f.reason, message: f.message, code: f.status })
     }
     const hit = [...this.responses.keys()].find((k) => this.matches(k, method, url))
-    return jsonResponse(200, hit ? this.responses.get(hit) : { metadata: { name: 'ok' } })
+    return jsonResponse(200, hit ? this.responses.get(hit) : method === 'GET' && new URL(url, 'https://test.invalid').pathname.endsWith('/modelproviderconnections') ? { items: [] } : { metadata: { name: 'ok' } })
   }
 
   private matches(key: string, method: string, url: string): boolean {
@@ -647,13 +647,13 @@ describe('model credentials', () => {
     ).resolves.toMatchObject({ name: 'ok' })
   })
 
-  it('clears the model with a null so a merge patch actually removes it', async () => {
-    kcp.reply('GET /modelcredentials/primary', {
-      metadata: { name: 'primary' },
-      spec: { baseURL: 'https://api.openai.com/v1', model: 'gpt-5', secretRef: { name: 's' } },
-    })
-    await resources.saveCredential({ name: 'primary', baseURL: 'https://api.openai.com/v1', model: '' })
-    expect((kcp.lastOf('PATCH').body as { spec: { model: unknown } }).spec.model).toBeNull()
+  it('writes provider connections to their own kind without a model field', async () => {
+    kcp.fail('GET /modelproviderconnections/primary',404,'NotFound')
+    await resources.saveCredential({ name: 'primary', baseURL: 'https://api.openai.com/v1', model: '', apiKey: 'test-key' })
+    const write = kcp.lastOf('POST')
+    expect(write.url).toContain('/modelproviderconnections')
+    expect(write.body).toMatchObject({ kind: 'ModelProviderConnection' })
+    expect((write.body as { spec: object }).spec).not.toHaveProperty('model')
   })
 
   it('still writes a chat endpoint as a stringData apiKey pointed at by spec.secretKey', async () => {
@@ -816,7 +816,7 @@ describe('model credentials', () => {
 describe('shared provider connections', () => {
   it('creates a model reference without writing or fetching the shared Secret', async () => {
     kcp.fail('GET /modelcredentials/new-model', 404, 'NotFound')
-    kcp.reply('GET /modelcredentials/account', { metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'shared-key' } } })
+    kcp.reply('GET /modelproviderconnections/account', { metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'shared-key' } } })
     await resources.saveCredential({ name: 'new-model', connectionRef: 'account', model: 'model-two' })
     const write = kcp.lastOf('POST').body as { spec: unknown }
     expect(write.spec).toEqual({ connectionRef: 'account', model: 'model-two' })
@@ -838,12 +838,12 @@ describe('shared provider connections', () => {
   })
 
   it('hydrates model metadata from the current provider connection', async () => {
-    kcp.reply('GET /modelcredentials', { items: [
-      { metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://rotated.example/v1', secretRef: { name: 'rotated-key' } } },
-      { metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } },
-    ] })
-    expect((await resources.listCredentials()).find(item => item.name === 'model-two')).toMatchObject({ connectionRef: 'account', model: 'two', baseURL: 'https://rotated.example/v1', secretRef: 'rotated-key' })
-    expect(kcp.calls).toHaveLength(1)
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } }] })
+    kcp.reply('GET /modelproviderconnections', { items: [{ kind: 'ModelProviderConnection', metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://rotated.example/v1', secretRef: { name: 'rotated-key' } } }] })
+    const listed = await resources.listCredentials()
+    expect(listed.find(item => !item.isConnection && item.name === 'model-two')).toMatchObject({ connectionRef: 'account', model: 'two', baseURL: 'https://rotated.example/v1', secretRef: 'rotated-key' })
+    expect(listed.find(item => item.isConnection && item.name === 'account')).toBeTruthy()
+    expect(kcp.calls).toHaveLength(2)
   })
 })
 

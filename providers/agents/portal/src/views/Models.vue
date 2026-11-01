@@ -196,7 +196,7 @@ function familyModel(credential: Credential): string {
 function familyEndpoint(credential: Credential): string {
   return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
 }
-const providerConnections = computed(() => credentials.value.data.filter(item => !item.connectionRef && !isHarnessProvider(item.provider)))
+const providerConnections = computed(() => credentials.value.data.filter(item => item.isConnection))
 const connectionRows = computed(() => providerConnections.value.map(credential => ({
   id: credential.name,
   name: credential.displayName || credential.name,
@@ -268,9 +268,7 @@ async function remove(name: string, connection = false): Promise<void> {
     if (!ok || !authorityIsCurrent(authority)) return
     invalidateProbe(name)
     const result = await mutate(authority.store, { run: async () => {
-      const item = credentials.value.data.find(candidate => candidate.name === name)
-      if (!connection && item && !item.connectionRef && !isHarnessProvider(item.provider) && item.model) await authority.api.saveCredential({ name, provider: item.provider, baseURL: item.baseURL, model: '' })
-      else await authority.api.deleteCredential(name)
+      await (connection ? authority.api.deleteProviderConnection(name) : authority.api.deleteCredential(name))
       return true
     }, success: 'Credential deleted.', failure: 'Delete failed', reload: ['credentials'] })
     if (result && authorityIsCurrent(authority)) clearProbeState(name)
@@ -377,7 +375,7 @@ defineExpose({ loadCatalog, loadUsage })
         <button v-if="credentialView && (!showFirstRun || connectionView)" class="k-btn k-btn--primary" @click="connectionView ? openProvider() : beginModel()"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
       </header>
       <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
-        <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
+        <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
       <template v-if="credentialView">
       <template v-if="modelView">

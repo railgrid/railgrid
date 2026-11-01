@@ -178,18 +178,20 @@ checks enforce that contract and both page and total budgets.
 See [resource creation](../patterns/resource-creation.md) and
 [interaction accessibility](../accessibility/interaction.md).
 
-## Agents provider-first BYOK flow
+### Agents provider-first BYOK flow
 
 Agents connects an API provider once, then configures model bindings against it.
-A direct `ModelCredential` with no selected model owns the endpoint, workspace
-selection and Secret reference. Each configured model has its own
-`ModelCredential` with `spec.connectionRef` and `spec.model`, and resolves the
-connection at runtime. Legacy direct model credentials remain usable and can
-also supply a connection for additional model bindings. References are tenant
-local, one hop, and cannot target harness identities. Rotating the connection's
-key or endpoint therefore has one authority; model bindings never copy a key.
-Deleting a model binding does not delete the shared Secret. The portal and MCP
-writers refuse to delete a connection while bindings reference it.
+A `ModelProviderConnection` owns the endpoint, workspace selection, and Secret
+reference. Each configured model has its own `ModelCredential` with
+`spec.connectionRef` and `spec.model`. References remain inside the workspace;
+model bindings do not own or copy the shared key. Legacy direct API credentials
+are migrated while preserving model names and existing Secret data. A server
+finalizer retains provider-owned keys while models reference the connection.
+See [connection lifecycle and access](../../agents-model-provider-connections.md).
+
+Add model starts with saved provider connections and a **Connect provider** link
+beneath the selector. That link opens the separate provider setup route; creating
+a new provider is not an option embedded in the saved-connection dropdown.
 
 The Agents create route offers only API provider presets. Harness logins retain
 the separate Add harness identity entry point and their existing form. The

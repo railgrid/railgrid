@@ -20,12 +20,14 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // The two probe verbs hang off a ModelCredential:
@@ -63,6 +65,22 @@ func (s *Server) gatedModelCredential(w http.ResponseWriter, r *http.Request) (*
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "model credential not resolved")
 		return nil, nil, false
 	}
+	if gate.object.GetKind() == "ModelProviderConnection" {
+		var connection agentsv1alpha1.ModelProviderConnection
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(gate.object.Object, &connection); err != nil {
+			writeStatus(w, 500, "InternalError", "provider connection could not be read")
+			return nil, nil, false
+		}
+		if err := agentsclient.AuthorizeModelProviderConnectionUse(r.Context(), gate.provider, connection.Name, false); err != nil {
+			dataplane.WriteError(w, dataplane.ErrDenied)
+			return nil, nil, false
+		}
+		if !connection.DeletionTimestamp.IsZero() {
+			writeStatus(w, 409, "Conflict", "provider connection is deleting")
+			return nil, nil, false
+		}
+		return &agentsv1alpha1.ModelCredential{TypeMeta: metav1.TypeMeta{Kind: "ModelProviderConnection"}, ObjectMeta: connection.ObjectMeta, Spec: connection.CredentialSpec()}, c, true
+	}
 	var cred agentsv1alpha1.ModelCredential
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(gate.object.Object, &cred); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "model credential could not be read")
@@ -84,6 +102,10 @@ func (s *Server) resolveGatedProfile(w http.ResponseWriter, r *http.Request) (*a
 	}
 	profile, err := llm.ProfileFor(r.Context(), c, cred)
 	if err != nil {
+		if apierrors.IsForbidden(err) {
+			dataplane.WriteError(w, dataplane.ErrDenied)
+			return nil, nil, llm.Profile{}, false
+		}
 		writeJSON(w, http.StatusOK, credentialTestResult{
 			OK:    false,
 			Error: "This credential's API key could not be read. Check that Secret " + cred.Spec.SecretRef.Name + " exists in namespace default and holds the key.",
@@ -247,7 +269,11 @@ func refreshDiscoveredModels(ctx context.Context, c *agentsclient.Client, cred *
 	// an abandoned status write is not worth failing the verb over.
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
-	_ = c.ModelCredentials().PatchStatus(writeCtx, cred.Name, status)
+	if cred.Kind == "ModelProviderConnection" {
+		_ = c.ModelProviderConnections().PatchStatus(writeCtx, cred.Name, status)
+	} else {
+		_ = c.ModelCredentials().PatchStatus(writeCtx, cred.Name, status)
+	}
 }
 
 // maxProbeErrorLength bounds status.lastProbeError, matching the kind's

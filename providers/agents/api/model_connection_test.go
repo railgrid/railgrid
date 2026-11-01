@@ -10,6 +10,7 @@ package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -17,8 +18,13 @@ import (
 	"strings"
 	"testing"
 
+	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	ktesting "k8s.io/client-go/testing"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
@@ -294,5 +300,53 @@ func TestTestModelOverride(t *testing.T) {
 				t.Fatalf("override = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSharedProviderUseGateProtectsKeysAndUpdatesTheCorrectResource(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"test-model"}]}`))
+	}))
+	defer upstream.Close()
+	for _, resource := range []string{"modelcredentials", "modelproviderconnections"} {
+		for _, allowed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/use=%t", resource, allowed), func(t *testing.T) {
+				connection := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": agentsv1alpha1.SchemeGroupVersion.String(), "kind": "ModelProviderConnection", "metadata": map[string]interface{}{"name": "account"}, "spec": map[string]interface{}{"provider": "openai-compatible", "baseURL": upstream.URL, "secretRef": map[string]interface{}{"name": "shared"}}}}
+				model := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": agentsv1alpha1.SchemeGroupVersion.String(), "kind": "ModelCredential", "metadata": map[string]interface{}{"name": "selected"}, "spec": map[string]interface{}{"connectionRef": "account", "model": "test-model"}}}
+				key := &unstructured.Unstructured{Object: map[string]interface{}{"apiVersion": "v1", "kind": "Secret", "metadata": map[string]interface{}{"name": "shared", "namespace": "default", "labels": map[string]interface{}{"railgrid.ai/owner": "agents"}}, "data": map[string]interface{}{"apiKey": base64.StdEncoding.EncodeToString([]byte("test-only"))}}}
+				callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser, Objects: []*unstructured.Unstructured{connection, model, key}, ListKinds: map[schema.GroupVersionResource]string{agentsclient.ModelProviderConnectionGVR: "ModelProviderConnectionList", agentsclient.ModelCredentialGVR: "ModelCredentialList", agentsclient.SecretGVR: "SecretList"}, Allow: func(a conformance.Attributes) bool {
+					return a.Verb == "get" || (a.Resource == "modelproviderconnections" && a.Verb == "use" && allowed)
+				}}
+				server := newGatedTestServer(t, callers)
+				name := "account"
+				if resource == "modelcredentials" {
+					name = "selected"
+				}
+				recorder := httptest.NewRecorder()
+				gatedHandler(t, server).ServeHTTP(recorder, stamped(http.MethodPost, verbBase(conformanceCluster, resource, name)+"/discover", nil, conformanceUser))
+				provider, err := callers.AsProvider(conformanceCluster)
+				if err != nil {
+					t.Fatal(err)
+				}
+				actions := provider.(interface{ Actions() []ktesting.Action }).Actions()
+				secretRead := false
+				for _, action := range actions {
+					if action.GetResource().Resource == "secrets" {
+						secretRead = true
+					}
+					if resource == "modelproviderconnections" && action.GetVerb() == "patch" && action.GetResource().Resource == "modelcredentials" {
+						t.Fatal("connection discovery wrote model status")
+					}
+				}
+				if !allowed {
+					if recorder.Code != http.StatusNotFound || secretRead {
+						t.Fatalf("denied use reached key: status=%d keyRead=%v", recorder.Code, secretRead)
+					}
+				} else if recorder.Code != http.StatusOK || !secretRead {
+					t.Fatalf("authorized connection failed: %d %s", recorder.Code, recorder.Body.String())
+				}
+			})
+		}
 	}
 }

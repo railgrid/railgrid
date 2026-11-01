@@ -94,7 +94,7 @@ import type {
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { AGENTS, CONNECTIONS, MODELCREDENTIALS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
+import { AGENTS, CONNECTIONS, MODELCREDENTIALS, MODELPROVIDERCONNECTIONS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
 import type { AgentTemplate } from './agent-template'
 import { presentRequestFailure } from './request-errors'
 import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
@@ -449,6 +449,12 @@ export class ApiClient {
    * run, which is where a model the endpoint lists but will not chat on
    * surfaces as a 404 in someone's chat window.
    */
+  deleteProviderConnection = (name: string): Promise<void> => this.resources.deleteProviderConnection(name)
+  testProviderConnection = (name: string, model?: string): Promise<CredentialTestResult> =>
+    this.sendVerb('POST', this.verb(MODELPROVIDERCONNECTIONS, name, 'test'), model ? { model } : undefined)
+  discoverProviderConnection = (name: string): Promise<CredentialTestResult> =>
+    this.sendVerb('POST', this.verb(MODELPROVIDERCONNECTIONS, name, 'discover'))
+
   testCredential = (name: string, model?: string): Promise<CredentialTestResult> =>
     this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'test'), model ? { model } : undefined)
   /**

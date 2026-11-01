@@ -4,7 +4,7 @@ import { Check, Loader2, RefreshCw } from 'lucide-vue-next'
 import ModelIDSelector from '../agentkit/ModelIDSelector.vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import { PROVIDER_PRESETS, presetFor, providerPreset } from '../conn-defs'
-import { isHarnessProvider, type Credential, type CredentialWrite, type CredentialTestResult } from '../types'
+import { type Credential, type CredentialWrite, type CredentialTestResult } from '../types'
 import type { ApiClient } from '../api'
 import { presentModelProbeResult } from '../model-probe-result'
 import { confirmDialog } from '../portalkit/confirm'
@@ -13,13 +13,13 @@ ensureAgentUIStyles()
 const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; busy: boolean; error?: string | null }>()
 const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; cancel: []; 'connect-provider': [] }>()
 const newID = `connection-${crypto.randomUUID()}`
-const connections = computed(() => props.credentials.filter(item => !item.connectionRef && !isHarnessProvider(item.provider)))
+const connections = computed(() => props.credentials.filter(item => item.isConnection))
 const originalConnection = props.credential?.connectionRef
-  ? props.credentials.find(item => item.name === props.credential!.connectionRef)
+  ? props.credentials.find(item => item.isConnection && item.name === props.credential!.connectionRef)
   : props.credential
 const managingConnection = Boolean(props.credential && !props.credential.connectionRef)
 const selectedConnection = ref(originalConnection?.name || props.initialConnection || '')
-const connection = computed(() => connections.value.find(item => item.name === selectedConnection.value))
+const connection = computed(() => connections.value.find(item => item.name === selectedConnection.value) || (originalConnection?.name === selectedConnection.value ? originalConnection : undefined))
 const preset = ref(presetFor(originalConnection).id)
 const current = computed(() => providerPreset(preset.value))
 const providers = PROVIDER_PRESETS.filter(item => item.family === 'chat')
@@ -77,8 +77,8 @@ function valid(): boolean {
 }
 async function probe(discover: boolean, candidate = model.value.trim()): Promise<CredentialTestResult | undefined> {
   if (canReuse.value && !apiKey.value.trim()) return discover
-    ? props.api.discoverCredential(connection.value!.name)
-    : props.api.testCredential(connection.value!.name, candidate)
+    ? (connection.value?.isConnection ? props.api.discoverProviderConnection(connection.value.name) : props.api.discoverCredential(connection.value!.name))
+    : (connection.value?.isConnection ? props.api.testProviderConnection(connection.value.name, candidate) : props.api.testCredential(connection.value!.name, candidate))
   return props.api.probeCredentialDraft({ ...draft(), model: candidate }, discover)
 }
 async function discover(): Promise<void> {
@@ -149,16 +149,16 @@ defineExpose({ cancel, locked })
 </script>
 
 <template>
-  <form class="k-create-surface k-create-surface--wide k-model-form k-provider-connect agents-model-create" aria-label="Model configuration form" novalidate :aria-busy="locked" @submit.prevent="modelStage ? connect() : discover()">
+  <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect agents-model-create" aria-label="Model configuration form" novalidate :aria-busy="locked" @submit.prevent="modelStage ? connect() : discover()">
     <div class="k-create-body">
-      <section class="k-provider-connect__section" aria-labelledby="provider-connect-heading">
+      <section class="agents-provider-connect__section" aria-labelledby="provider-connect-heading">
         <h2 id="provider-connect-heading" class="k-model-form-heading">Provider connection</h2>
         <template v-if="selectConnection && !credential">
           <label v-if="connections.length" for="saved-provider-connection" class="k-model-form-field">Saved provider connection
             <select id="saved-provider-connection" v-model="selectedConnection" class="k-input" :disabled="locked"><option value="" disabled>Select a provider connection</option><option v-for="item in connections" :key="item.name" :value="item.name">{{ item.displayName || item.name }} · {{ presetFor(item).label }}</option></select>
           </label>
           <p v-else class="k-model-form-hint">No saved provider connections yet. Connect a provider to add your first model.</p>
-          <p class="k-model-form-hint">Need another provider? <a class="k-text-link" href="#/create/model" :aria-disabled="locked || undefined" @click="requestProvider">Connect provider</a></p>
+          <p class="k-model-form-hint">Need another provider? <a class="agents-provider-connect__link" href="#/create/model" :aria-disabled="locked || undefined" @click="requestProvider">Connect provider</a></p>
         </template>
         <template v-if="editingDetails">
           <label class="k-model-form-field"><span id="agents-model-provider-label">Provider</span>
@@ -168,7 +168,7 @@ defineExpose({ cancel, locked })
             <input id="model-base-url" v-model="baseURL" class="k-input" name="baseURL" type="url" placeholder="https://your-provider.example/v1" :disabled="locked" :aria-invalid="Boolean(fieldError && fieldError.includes('endpoint'))" :aria-describedby="fieldError ? 'provider-url-help provider-connection-error' : 'provider-url-help'">
             <span id="provider-url-help" class="k-model-form-hint">Use an OpenAI-compatible API endpoint. You can enter a model ID if this provider does not list models.</span>
           </label>
-          <details v-else class="k-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint">API endpoint: <span class="font-mono">{{ baseURL }}</span></p></details>
+          <details v-else class="agents-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint">API endpoint: <span class="font-mono">{{ baseURL }}</span></p></details>
         </template>
         <p v-else-if="connection" class="k-model-form-hint">{{ presetFor(connection).label }} · {{ connection?.baseURL }}<br>Uses the key stored with {{ connection?.displayName || connection?.name }}.</p>
       </section>
@@ -201,8 +201,8 @@ defineExpose({ cancel, locked })
       </section>
       <p v-if="error" class="k-inline-notification k-inline-notification--error" role="alert">{{ error }}</p>
     </div>
-    <footer class="k-create-actions">
-      <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint k-provider-connect__charge">{{ managingConnection ? 'Verification tests each configured model on this connection.' : 'Verification sends a short request using this key.' }} The provider may charge the account linked to the key.</p>
+    <footer class="k-create-actions agents-provider-connect__actions">
+      <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ managingConnection ? 'Verification tests each configured model on this connection.' : 'Verification sends a short request using this key.' }} The provider may charge the account linked to the key.</p>
       <button type="button" class="k-btn k-btn--ghost" :disabled="locked" @click="cancel">Cancel</button>
       <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="discovering" :size="14" class="animate-spin motion-reduce:animate-none" />{{ discovering ? 'Loading models…' : 'Continue' }}</button>
       <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || !model.trim() || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Verifying…' : busy ? 'Connecting…' : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
@@ -211,13 +211,12 @@ defineExpose({ cancel, locked })
 </template>
 
 <style scoped>
-.k-provider-connect .k-text-link{color:var(--color-accent);text-decoration:underline;text-underline-offset:3px;}
-.k-provider-connect .k-text-link[aria-disabled="true"]{opacity:.6;cursor:default;}
-.k-provider-connect__section{display:grid;gap:12px;min-width:0;}
-.k-provider-connect__details{font-size:12px;color:var(--color-text-secondary);}
-.k-provider-connect__details summary{cursor:pointer;}
-.k-provider-connect__details p{margin-top:8px;overflow-wrap:anywhere;}
-.k-provider-connect .k-btn--primary:disabled{color:var(--color-text-secondary);background:var(--color-surface-overlay);box-shadow:none;opacity:1;}
-.k-provider-connect__charge{flex:1 1 100%;max-width:75ch;}
-@media(max-width:620px){.k-provider-connect .k-create-actions{position:static;}}
+.agents-provider-connect .agents-provider-connect__link{color:var(--color-accent);text-decoration:underline;text-underline-offset:3px;}
+.agents-provider-connect .agents-provider-connect__link[aria-disabled="true"]{opacity:.6;cursor:default;}
+.agents-provider-connect__section{display:grid;gap:12px;min-width:0;}
+.agents-provider-connect__details{font-size:12px;color:var(--color-text-secondary);}
+.agents-provider-connect__details summary{cursor:pointer;}
+.agents-provider-connect__details p{margin-top:8px;overflow-wrap:anywhere;}
+.agents-provider-connect__charge{flex:1 1 100%;max-width:75ch;}
+@media(max-width:620px){.agents-provider-connect__actions{position:static;}}
 </style>
