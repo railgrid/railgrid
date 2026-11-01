@@ -42,6 +42,8 @@ const testing = ref(false)
 const discoveryError = ref('')
 const testError = ref('')
 const fieldError = ref('')
+const operationNotice = ref('')
+let activeOperation: AbortController | null = null
 const verifiedFingerprint = ref('')
 let generation = 0
 const locked = computed(() => props.busy || testing.value || discovering.value)
@@ -53,7 +55,12 @@ const isAnthropic = computed(() => { try { return new URL(effectiveURL.value).ho
 const canReuse = computed(() => Boolean(connection.value && (!editingDetails.value || (effectiveURL.value === connection.value.baseURL && effectiveProvider.value === (connection.value.provider || current.value.provider) && effectiveWorkspace.value === (connection.value.anthropicWorkspaceID || '')))))
 const canContinue = computed(() => Boolean(effectiveURL.value && (canReuse.value || apiKey.value.trim())))
 const fingerprint = computed(() => JSON.stringify([selectedConnection.value, effectiveProvider.value, effectiveURL.value, effectiveWorkspace.value, apiKey.value, model.value]))
-watch(fingerprint, () => { generation++; verifiedFingerprint.value = ''; testError.value = ''; fieldError.value = '' })
+watch(fingerprint, () => {
+  const interrupted = Boolean(activeOperation)
+  invalidateOperation()
+  verifiedFingerprint.value = ''; testError.value = ''; fieldError.value = ''
+  operationNotice.value = interrupted ? 'Connection details changed. Verify again before saving.' : ''
+})
 watch(selectedConnection, () => {
   apiKey.value = ''; workspaceID.value = ''; model.value = ''; models.value = connection.value?.discovered || []
   modelStage.value = Boolean(selectedConnection.value); discoveryError.value = ''
@@ -61,7 +68,36 @@ watch(selectedConnection, () => {
 watch(preset, () => { apiKey.value = ''; workspaceID.value = ''; baseURL.value = current.value.baseURL; model.value = ''; models.value = []; modelStage.value = false; discoveryError.value = '' })
 watch(baseURL, () => { apiKey.value = ''; workspaceID.value = ''; models.value = [] })
 watch(apiKey, () => { if (editingDetails.value) models.value = [] })
-onBeforeUnmount(() => { generation++; apiKey.value = '' })
+onBeforeUnmount(() => { invalidateOperation(); apiKey.value = '' })
+
+function invalidateOperation(): void {
+  generation++
+  activeOperation?.abort()
+  activeOperation = null
+  testing.value = false
+  discovering.value = false
+}
+function startOperation() {
+  const serial = ++generation
+  const controller = new AbortController()
+  activeOperation = controller
+  operationNotice.value = ''
+  const timeout = setTimeout(() => controller.abort(new Error('Verification timed out. Check the provider connection and try again.')), 60_000)
+  return { serial, signal: controller.signal, finish: () => {
+    clearTimeout(timeout)
+    if (activeOperation === controller) activeOperation = null
+  } }
+}
+async function awaitProbe(request: () => Promise<CredentialTestResult | undefined>, signal: AbortSignal): Promise<CredentialTestResult | undefined> {
+  signal.throwIfAborted()
+  let abort!: () => void
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    abort = () => reject(signal.reason)
+    signal.addEventListener('abort', abort, { once: true })
+  })
+  try { return await Promise.race([request(), interrupted]) }
+  finally { signal.removeEventListener('abort', abort) }
+}
 
 function draft(): CredentialWrite {
   return { name: originalConnection?.name || newID, displayName: connectionLabel.value.trim() || suggestedName.value, provider: effectiveProvider.value, baseURL: effectiveURL.value, ...(apiKey.value.trim() ? { apiKey: apiKey.value.trim() } : {}), anthropicWorkspaceID: effectiveWorkspace.value, model: model.value.trim() }
@@ -76,23 +112,27 @@ function valid(): boolean {
   if (isAnthropic.value && effectiveWorkspace.value && !/^wrkspc_[A-Za-z0-9]+$/.test(effectiveWorkspace.value)) { fieldError.value = 'Enter a workspace ID beginning with wrkspc_, or leave it blank for a workspace-scoped key.'; return false }
   return true
 }
-async function probe(discover: boolean, candidate = model.value.trim()): Promise<CredentialTestResult | undefined> {
+async function probe(discover: boolean, signal: AbortSignal, candidate = model.value.trim()): Promise<CredentialTestResult | undefined> {
+  return awaitProbe(() => probeRequest(discover, signal, candidate), signal)
+}
+async function probeRequest(discover: boolean, signal: AbortSignal, candidate: string): Promise<CredentialTestResult | undefined> {
   if (canReuse.value && !apiKey.value.trim()) return discover
-    ? (connection.value?.isConnection ? props.api.discoverProviderConnection(connection.value.name) : props.api.discoverCredential(connection.value!.name))
-    : (connection.value?.isConnection ? props.api.testProviderConnection(connection.value.name, candidate) : props.api.testCredential(connection.value!.name, candidate))
-  return props.api.probeCredentialDraft({ ...draft(), model: candidate }, discover)
+    ? (connection.value?.isConnection ? props.api.discoverProviderConnection(connection.value.name, signal) : props.api.discoverCredential(connection.value!.name, signal))
+    : (connection.value?.isConnection ? props.api.testProviderConnection(connection.value.name, candidate, signal) : props.api.testCredential(connection.value!.name, candidate, signal))
+  return props.api.probeCredentialDraft({ ...draft(), model: candidate }, discover, signal)
 }
 async function discover(): Promise<void> {
   if (locked.value || !valid()) return
-  const serial = ++generation
+  const operation = startOperation()
+  const { serial, signal } = operation
   discovering.value = true; discoveryError.value = ''; modelStage.value = true
   try {
-    const result = await probe(true)
+    const result = await probe(true, signal)
     if (serial !== generation) return
     if (!result?.ok) { discoveryError.value = presentModelProbeResult(result || { ok: false, latencyMS: 0 }, 'discover').error || 'Models could not be loaded. Enter a model ID manually.'; return }
     models.value = result.models || []
   } catch (error) { if (serial === generation) discoveryError.value = (error as Error).message }
-  finally { if (serial === generation) discovering.value = false }
+  finally { operation.finish(); if (serial === generation) discovering.value = false }
 }
 function bindingName(connectionName: string, modelID: string): string {
   let hash = 2166136261
@@ -103,7 +143,8 @@ function bindingName(connectionName: string, modelID: string): string {
 async function connect(): Promise<void> {
   if (locked.value || !valid() || alreadyConfigured.value) return
   if (!editingProviderConnection && !model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
-  const serial = ++generation
+  const operation = startOperation()
+  const { serial, signal } = operation
   const snapshot = fingerprint.value
   testing.value = true; testError.value = ''
   try {
@@ -113,13 +154,13 @@ async function connect(): Promise<void> {
       : [model.value.trim()]
     if (verifiedFingerprint.value !== snapshot) {
       if (editingProviderConnection && !candidates.length) {
-        const response = await probe(true)
+        const response = await probe(true, signal)
         if (serial !== generation) return
         if (!response?.ok) { testError.value = presentModelProbeResult(response || { ok: false, latencyMS: 0 }, 'discover').error || 'Provider access could not be verified. Choose a model to test instead.'; return }
         result = response
       }
       for (const candidate of candidates) {
-        const response = await probe(false, candidate)
+        const response = await probe(false, signal, candidate)
         if (serial !== generation) return
         if (!response?.ok) { testError.value = `${candidate}: ${presentModelProbeResult(response || { ok: false, latencyMS: 0 }, 'test').error || 'The model did not respond. Review the connection and try again.'}`; return }
         result = response
@@ -139,7 +180,7 @@ async function connect(): Promise<void> {
       ...(!selectedConnection.value || managingConnection ? { newConnection: { ...draft(), name: parentName, model: '' } } : {}),
     }, result)
   } catch (error) { if (serial === generation) testError.value = (error as Error).message }
-  finally { if (serial === generation) testing.value = false }
+  finally { operation.finish(); if (serial === generation) testing.value = false }
 }
 async function requestProvider(event: MouseEvent): Promise<void> {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
@@ -149,7 +190,13 @@ async function requestProvider(event: MouseEvent): Promise<void> {
   emit('connect-provider')
 }
 async function cancel(): Promise<void> {
-  if (locked.value) return
+  if (props.busy) return
+  if (testing.value || discovering.value) {
+    const wasTesting = testing.value
+    invalidateOperation()
+    operationNotice.value = wasTesting ? 'Verification stopped. Your changes have not been saved.' : 'Model loading stopped. You can try again or enter a model ID manually.'
+    return
+  }
   if ((apiKey.value || model.value !== (props.credential?.model || '')) && !await confirmDialog({ title: 'Discard connection changes?', message: 'Your unsaved changes will be lost.', confirmLabel: 'Discard changes' })) return
   emit('cancel')
 }
@@ -207,11 +254,12 @@ defineExpose({ cancel, locked })
         <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
         <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> {{ editingProviderConnection ? 'Provider access verified. Save the connection changes.' : 'Model verified. Finish connecting to save your changes.' }}</p>
       </section>
+      <p v-if="operationNotice" class="k-model-form-hint" role="status">{{ operationNotice }}</p>
       <p v-if="error" class="k-inline-notification k-inline-notification--error" role="alert">{{ error }}</p>
     </div>
     <footer class="k-create-actions agents-provider-connect__actions">
       <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ editingProviderConnection && !model && !credentials.some(item => item.connectionRef === selectedConnection && item.model) ? 'Verification checks provider access without sending a model request.' : managingConnection ? 'Verification tests each configured model on this connection. The provider may charge the account linked to the key.' : 'Verification sends a short request using this key. The provider may charge the account linked to the key.' }}</p>
-      <button type="button" class="k-btn k-btn--ghost" :disabled="locked" @click="cancel">Cancel</button>
+      <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="cancel">{{ testing ? 'Stop verification' : discovering ? 'Stop loading' : 'Cancel' }}</button>
       <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="discovering" :size="14" class="animate-spin motion-reduce:animate-none" />{{ discovering ? 'Loading models…' : 'Continue' }}</button>
       <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || (!editingProviderConnection && !model.trim()) || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Verifying…' : busy ? (editingProviderConnection ? 'Saving…' : 'Connecting…') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
     </footer>

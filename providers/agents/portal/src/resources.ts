@@ -32,7 +32,7 @@ import {
   type KubeObject,
   type KubeResourceRef,
 } from './portalkit/kube'
-import { providerFetch } from './portalkit/tenant'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { presentRequestFailure } from './request-errors'
 import {
   AGENT_BACKEND_HARNESS,
@@ -128,6 +128,8 @@ const LABEL_CREDENTIAL_PROBE = 'agents.railgrid.ai/credential-probe'
 const ANNOTATION_CREDENTIAL_PROBE_ID = 'agents.railgrid.ai/credential-probe-id'
 const ANNOTATION_CREDENTIAL_PROBE_EXPIRY = 'agents.railgrid.ai/credential-probe-expires-at'
 const CREDENTIAL_PROBE_TTL_MS = 10 * 60 * 1000
+const CREDENTIAL_PROBE_REQUEST_TIMEOUT_MS = 15 * 1000
+const CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS = 10 * 1000
 // DEFAULT_MCPSERVER is the conventional endpoint every workspace gets.
 const DEFAULT_MCPSERVER = 'default'
 
@@ -184,6 +186,103 @@ const SCHEDULE_TYPES = ['cron', 'wakeup', 'heartbeat']
 const WEBHOOK_SOURCES = ['webhook', 'github']
 // The schema's ceiling on Webhook spec.deliveryRetention.
 const MAX_DELIVERY_RETENTION = 1000
+
+interface BoundedProbeFetchOptions {
+  signal?: AbortSignal
+  timeoutMs: number
+  // A shared deadline lets a multi-request cleanup phase have one total
+  // budget instead of receiving a fresh timeout for each GET and DELETE.
+  deadline?: number
+}
+
+function probeAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason
+  if (reason instanceof Error && (reason.name === 'AbortError' || reason.name === 'TimeoutError')) return reason
+  const error = new Error('The credential probe was aborted')
+  error.name = reason instanceof Error && /timed? out|timeout/i.test(reason.message) ? 'TimeoutError' : 'AbortError'
+  if (error.name === 'TimeoutError' && reason instanceof Error) error.message = reason.message
+  return error
+}
+
+function probeTimeoutError(): Error {
+  const error = new Error('Verification request timed out. Check the connection and try again.')
+  error.name = 'TimeoutError'
+  return error
+}
+
+function throwIfProbeAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw probeAbortError(signal)
+}
+
+function raceProbeOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(probeAbortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(probeAbortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    operation.then(
+      value => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      error => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
+
+/**
+ * createBoundedProbeFetch is deliberately local to the Agents portal. Model
+ * probes have a finite frontend budget, including when the host fetch ignores
+ * AbortSignal and when a response arrives but its body never does. The wrapped
+ * request signal still reaches the host transport whenever it supports abort.
+ */
+export function createBoundedProbeFetch(fetcher: ProviderFetch, options: BoundedProbeFetchOptions): ProviderFetch {
+  return async (input, init = {}) => {
+    const externalSignals = [...new Set([options.signal, init.signal].filter((signal): signal is AbortSignal => !!signal))]
+    const aborted = externalSignals.find(signal => signal.aborted)
+    if (aborted) throw probeAbortError(aborted)
+
+    const remaining = options.deadline === undefined ? options.timeoutMs : Math.min(options.timeoutMs, options.deadline - Date.now())
+    if (remaining <= 0) throw probeTimeoutError()
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(probeTimeoutError()), remaining)
+    const listeners = externalSignals.map(signal => {
+      const listener = () => controller.abort(probeAbortError(signal))
+      signal.addEventListener('abort', listener, { once: true })
+      return { signal, listener }
+    })
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      for (const { signal, listener } of listeners) signal.removeEventListener('abort', listener)
+    }
+
+    try {
+      const response = await raceProbeOperation(
+        Promise.resolve().then(() => fetcher(input, { ...init, signal: controller.signal })),
+        controller.signal,
+      )
+      // These are the body readers used by the kcp client and probe verbs.
+      // Keep their promises on the same deadline as the request itself.
+      const bodyReaders = new Set(['text', 'json', 'arrayBuffer', 'blob', 'formData'])
+      return new Proxy(response, {
+        get(target, property) {
+          if (bodyReaders.has(String(property))) {
+            const reader = Reflect.get(target, property, target) as () => Promise<unknown>
+            return () => raceProbeOperation(Promise.resolve().then(() => reader.call(target)), controller.signal).finally(finish)
+          }
+          const value = Reflect.get(target, property, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    } catch (error) {
+      finish()
+      throw error
+    }
+  }
+}
 
 // checkRetention mirrors the schema's bounds on spec.deliveryRetention so a
 // typo is refused before the request rather than by a 422 from kcp.
@@ -257,6 +356,10 @@ function asResourceError(error: unknown): ResourceError {
   }
   if (isAbortError(error)) {
     return new ResourceError(409, 'ContextChanged', 'workspace changed while the request was in flight')
+  }
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    const failure = presentRequestFailure(504, error.message)
+    return new ResourceError(504, 'Timeout', 'Verification request timed out. Check the connection and try again.', failure.technicalDiagnostic)
   }
   const diagnostic = error instanceof Error ? error.message : String(error)
   const failure = presentRequestFailure(0, diagnostic)
@@ -487,15 +590,15 @@ export class Resources {
     return !!(this.ctx?.tenant || '').trim()
   }
 
-  private client(): KubeClient {
-    const cluster = (this.ctx?.tenant || '').trim()
+  private client(context: RailgridContext | null = this.ctx, transport?: ProviderFetch): KubeClient {
+    const cluster = (context?.tenant || '').trim()
     if (!cluster) throw new ResourceError(400, 'TenantMissing', 'no workspace selected')
     // The context is captured at construction and re-checked after the
     // response is read: a reply that lands after the user switched workspace
     // belongs to the workspace it was asked of, not the one now on screen.
     const expected = cluster
     return createKubeClient({
-      fetch: providerFetch(this.ctx),
+      fetch: transport ?? providerFetch(context),
       cluster,
       fieldManager: FIELD_MANAGER,
       onResponse: () => {
@@ -506,9 +609,9 @@ export class Resources {
     })
   }
 
-  private async run<T>(work: (client: KubeClient) => Promise<T>): Promise<T> {
+  private async run<T>(work: (client: KubeClient) => Promise<T>, getClient?: () => KubeClient): Promise<T> {
     try {
-      return await work(this.client())
+      return await work(getClient ? getClient() : this.client())
     } catch (error) {
       throw asResourceError(error)
     }
@@ -1235,8 +1338,16 @@ export class Resources {
    * The caller supplies a scoped verb client. The host authority guard still
    * cancels requests after a workspace switch; it is never bypassed for cleanup.
    */
-  withCredentialProbe = <T>(body: CredentialWrite, probe: (name: string) => Promise<T>): Promise<T> =>
-    this.run(async client => {
+  withCredentialProbe = <T>(body: CredentialWrite, probe: (name: string) => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    // Pin the original context and transport for both setup and cleanup. A
+    // workspace switch still trips client.onResponse and the captured host
+    // fetch still enforces the authority it received; cleanup never reuses the
+    // user's cancellation signal.
+    const context = this.ctx
+    const baseFetch = providerFetch(context)
+    const setupFetch = createBoundedProbeFetch(baseFetch, { signal, timeoutMs: CREDENTIAL_PROBE_REQUEST_TIMEOUT_MS })
+    return this.run(async client => {
+      throwIfProbeAborted(signal)
       const provider = body.provider || MODEL_PROVIDER_OPENAI_COMPATIBLE
       const baseURL = body.baseURL?.trim() || ''
       const anthropicWorkspaceID = body.anthropicWorkspaceID?.trim() || ''
@@ -1259,30 +1370,44 @@ export class Resources {
       let objectAttempted = false
       let ownerUID: string | undefined
       let secretUID: string | undefined
+      let cleanupClient: KubeClient | undefined
+      const getCleanupClient = (): KubeClient => {
+        if (!cleanupClient) {
+          const deadline = Date.now() + CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS
+          cleanupClient = this.client(context, createBoundedProbeFetch(baseFetch, {
+            timeoutMs: CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS,
+            deadline,
+          }))
+        }
+        return cleanupClient
+      }
       const cleanup = async (ref: KubeResourceRef, objectName: string, namespace?: string): Promise<void> => {
         try {
-          const object = await client.get(ref, objectName, { namespace })
+          const cleanupTransport = getCleanupClient()
+          const object = await cleanupTransport.get(ref, objectName, { namespace })
           // An ambiguous POST response can still have committed. Inspect the
           // unique marker and use a UID precondition; never delete a replacement.
           if (object.metadata.labels?.['railgrid.ai/owner'] !== 'agents' || object.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || object.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_ID] !== probeID || !object.metadata.uid) throw new Error('Probe ownership could not be confirmed')
           const expectedUID = ref === SECRETS ? secretUID : ownerUID
           if (expectedUID && object.metadata.uid !== expectedUID) throw new Error('The test resource was replaced')
           if (ref === SECRETS && !object.metadata.ownerReferences?.some(owner => owner.apiVersion === API_VERSION && owner.kind === 'ModelCredential' && owner.name === name && owner.uid === ownerUID)) throw new Error('The test Secret owner could not be confirmed')
-          await client.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid, resourceVersion: object.metadata.resourceVersion } })
+          await cleanupTransport.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid, resourceVersion: object.metadata.resourceVersion } })
           if (ref === SECRETS) {
             // A successful DELETE can leave an object terminating behind a
             // finalizer. Preserve the owning credential until the key is gone.
-            await client.get(ref, objectName, { namespace })
+            await cleanupTransport.get(ref, objectName, { namespace })
             throw new Error('The test Secret is still terminating')
           }
         } catch (error) { if (!isKubeNotFound(error)) throw error }
       }
+      let result: T
       try {
         objectAttempted = true
         const owner = await client.create(MODELCREDENTIALS, {
           apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, labels, annotations },
           spec: { provider, baseURL, ...(anthropicWorkspaceID ? { anthropicWorkspaceID } : {}), secretRef: { name: secretName }, secretKey: DEFAULT_CREDENTIAL_KEY },
         } as KubeObject)
+        throwIfProbeAborted(signal)
         if (!owner.metadata.uid) throw new Error('The workspace did not confirm the test credential identity.')
         ownerUID = owner.metadata.uid
         secretAttempted = true
@@ -1293,12 +1418,14 @@ export class Resources {
           },
           type: 'Opaque', stringData: { [DEFAULT_CREDENTIAL_KEY]: apiKey },
         } as KubeObject, { namespace: SECRET_NAMESPACE })
+        throwIfProbeAborted(signal)
         secretUID = secret.metadata.uid
         // Creating two objects is not atomic. A delayed Secret write may finish
         // after the controller expires its owner; never call a model on behalf
         // of an expired or replaced candidate. Its owner reference also allows
         // kcp garbage collection if this browser closes before cleanup.
         const active = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        throwIfProbeAborted(signal)
         const created = Date.parse(active.metadata.creationTimestamp || '')
         const requestedExpiry = Date.parse(active.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_EXPIRY] || '')
         const deadline = Math.min(created + CREDENTIAL_PROBE_TTL_MS, Number.isFinite(requestedExpiry) ? requestedExpiry : Infinity)
@@ -1309,7 +1436,9 @@ export class Resources {
         if (!activeSpec || activeSpec.provider !== provider || activeSpec.baseURL !== baseURL || (activeSpec.anthropicWorkspaceID || '') !== anthropicWorkspaceID || activeSpec.secretRef?.name !== secretName || activeSpec.secretKey !== DEFAULT_CREDENTIAL_KEY) {
           throw validationError('This verification candidate changed. Test the connection again.')
         }
-        return await probe(name)
+        throwIfProbeAborted(signal)
+        result = await probe(name)
+        throwIfProbeAborted(signal)
       } finally {
         const leftovers: string[] = []
         if (secretAttempted) {
@@ -1325,7 +1454,10 @@ export class Resources {
           'Temporary verification credentials could not be removed. Automatic cleanup will retry when the workspace is available. If this persists, ask a workspace administrator.',
           `Cleanup could not remove ${leftovers.join(' and ')}.`)
       }
-    })
+      throwIfProbeAborted(signal)
+      return result
+    }, () => this.client(context, setupFetch))
+  }
 
   /**
    * saveCredential writes the Secret and then the ModelCredential.

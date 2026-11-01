@@ -94,7 +94,7 @@ import type {
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { AGENTS, CONNECTIONS, MODELCREDENTIALS, MODELPROVIDERCONNECTIONS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
+import { AGENTS, CONNECTIONS, createBoundedProbeFetch, MODELCREDENTIALS, MODELPROVIDERCONNECTIONS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
 import type { AgentTemplate } from './agent-template'
 import { presentRequestFailure } from './request-errors'
 import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
@@ -111,6 +111,8 @@ export type { SSEEvent } from './attendedMcp'
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
+
+const MODEL_PROBE_REQUEST_TIMEOUT_MS = 40 * 1000
 
 export interface MessagePage {
   items: TranscriptMessage[]
@@ -384,6 +386,27 @@ export class ApiClient {
     return (r.status === 204 ? (undefined as unknown) : await r.json()) as T
   }
 
+  private async sendProbeVerb<T>(path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    const boundedFetch = createBoundedProbeFetch((input, init) => this.fetch(input, init), {
+      signal,
+      timeoutMs: MODEL_PROBE_REQUEST_TIMEOUT_MS,
+    })
+    const r = await boundedFetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: this.headers(body !== undefined),
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    })
+    if (!r.ok) throw await this.fail(r)
+    if (r.status === 204) {
+      // Consume the empty response through the bounded reader so its timeout
+      // and abort listeners are released just like a JSON response.
+      await r.text()
+      return undefined as T
+    }
+    return await r.json() as T
+  }
+
   // listVerb unwraps the standard { items: [...] } list envelope a verb
   // answers with, tolerating a missing body.
   private async listVerb<T>(path: string): Promise<T[]> {
@@ -451,28 +474,28 @@ export class ApiClient {
    * surfaces as a 404 in someone's chat window.
    */
   deleteProviderConnection = (name: string): Promise<void> => this.resources.deleteProviderConnection(name)
-  testProviderConnection = (name: string, model?: string): Promise<CredentialTestResult> =>
-    this.sendVerb('POST', this.verb(MODELPROVIDERCONNECTIONS, name, 'test'), model ? { model } : undefined)
-  discoverProviderConnection = (name: string): Promise<CredentialTestResult> =>
-    this.sendVerb('POST', this.verb(MODELPROVIDERCONNECTIONS, name, 'discover'))
+  testProviderConnection = (name: string, model?: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
+    this.sendProbeVerb(this.verb(MODELPROVIDERCONNECTIONS, name, 'test'), model ? { model } : undefined, signal)
+  discoverProviderConnection = (name: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
+    this.sendProbeVerb(this.verb(MODELPROVIDERCONNECTIONS, name, 'discover'), undefined, signal)
 
-  testCredential = (name: string, model?: string): Promise<CredentialTestResult> =>
-    this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'test'), model ? { model } : undefined)
+  testCredential = (name: string, model?: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
+    this.sendProbeVerb(this.verb(MODELCREDENTIALS, name, 'test'), model ? { model } : undefined, signal)
   /**
    * discoverCredential asks the endpoint what it serves. It also refreshes the
    * object's status.models, so the list a person just saw and the list the
    * object reports are the same one.
    */
-  discoverCredential = (name: string): Promise<CredentialTestResult> =>
-    this.sendVerb('POST', this.verb(MODELCREDENTIALS, name, 'discover'))
+  discoverCredential = (name: string, signal?: AbortSignal): Promise<CredentialTestResult> =>
+    this.sendProbeVerb(this.verb(MODELCREDENTIALS, name, 'discover'), undefined, signal)
 
   /** Validate a new key/endpoint without replacing the saved connection. */
-  probeCredentialDraft = (body: CredentialWrite, discover: boolean): Promise<CredentialTestResult> => {
+  probeCredentialDraft = (body: CredentialWrite, discover: boolean, signal?: AbortSignal): Promise<CredentialTestResult> => {
     const scoped = new ApiClient()
     scoped.setContext(this.ctx ? { ...this.ctx } : null)
     return scoped.resources.withCredentialProbe(body, name => discover
-      ? scoped.discoverCredential(name)
-      : scoped.testCredential(name, body.model))
+      ? scoped.discoverCredential(name, signal)
+      : scoped.testCredential(name, body.model, signal), signal)
   }
 
   // The curated catalog is compiled-in reference data — prices, context

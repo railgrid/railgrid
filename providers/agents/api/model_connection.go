@@ -294,7 +294,17 @@ func boundedProbeError(err error) string {
 }
 
 func verifyCredentialModel(ctx context.Context, profile llm.Profile) credentialTestResult {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	return verifyCredentialModelWithTimeout(ctx, profile, modelCredentialTestTimeout)
+}
+
+// modelCredentialTestTimeout bounds a user-facing verification round-trip.
+// Unlike discovery, verification sends one model request and may have a slower
+// inference response, but a provider that never answers must not leave the
+// caller waiting indefinitely.
+const modelCredentialTestTimeout = 30 * time.Second
+
+func verifyCredentialModelWithTimeout(ctx context.Context, profile llm.Profile, timeout time.Duration) credentialTestResult {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	start := time.Now()
 	model, err := llm.BuildModel(ctx, profile)

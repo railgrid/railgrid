@@ -13,10 +13,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
@@ -209,6 +211,47 @@ func TestVerifyGPT6GatewayCredentialUsesChatCompletions(t *testing.T) {
 	})
 	if !result.OK || calls != 1 {
 		t.Fatalf("custom-gateway GPT-6 test result = %#v after %d calls", result, calls)
+	}
+}
+
+func TestVerifyCredentialModelBoundsStalledUpstream(t *testing.T) {
+	requestStarted := make(chan struct{}, 1)
+	requestCanceled := make(chan struct{})
+	releaseHandler := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		requestStarted <- struct{}{}
+		select {
+		case <-r.Context().Done():
+			close(requestCanceled)
+		case <-releaseHandler:
+		}
+	}))
+	defer upstream.Close()
+	defer close(releaseHandler)
+
+	started := time.Now()
+	result := verifyCredentialModelWithTimeout(context.Background(), llm.Profile{
+		Provider: llm.ProviderOpenAICompatible,
+		BaseURL:  upstream.URL,
+		Model:    "gpt-6-luna",
+		APIKey:   "test-only-key",
+	}, 250*time.Millisecond)
+	if result.OK || result.Error != "Connection test timed out. Check the endpoint and retry." {
+		t.Fatalf("stalled model probe result = %#v; want a bounded timeout", result)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("stalled model probe took %s, want it to respect its deadline", elapsed)
+	}
+	select {
+	case <-requestStarted:
+	default:
+		t.Fatal("stalled model probe never reached the local endpoint")
+	}
+	select {
+	case <-requestCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("model HTTP request was not canceled when the probe deadline expired")
 	}
 }
 

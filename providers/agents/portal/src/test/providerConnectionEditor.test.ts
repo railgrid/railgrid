@@ -50,7 +50,7 @@ describe('provider-first BYOK flow', () => {
     expect(view.element.querySelector('[name="apiKey"]')).toBeNull()
     await choose(view.element, 'second-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model')
+    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model', expect.any(AbortSignal))
     expect(probeCredentialDraft).not.toHaveBeenCalled()
     expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
     expect(save.mock.calls[0][0].newConnection).toBeUndefined()
@@ -86,7 +86,7 @@ describe('provider-first BYOK flow', () => {
     button(view.element, 'Verify & save').click(); await settleVue()
     expect(probeCredentialDraft.mock.calls.map(call => call[0].model)).toEqual(['first-model', 'second-model'])
     expect(save).not.toHaveBeenCalled()
-    expect(view.element.textContent).toContain('second-model:')
+    await vi.waitFor(() => expect(view.element.textContent).toContain('second-model:'))
   })
 
   it('does not save after a failed test, and ignores stale tests after unmount', async () => {
@@ -120,7 +120,7 @@ describe('Add model from a saved provider connection', () => {
     expect(view.element.querySelector('#model-credential')).toBeNull()
     await choose(view.element, 'second-model')
     button(view.element, 'Verify & connect').click(); await settleVue()
-    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model')
+    expect(testProviderConnection).toHaveBeenCalledWith('account', 'second-model', expect.any(AbortSignal))
     expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
     expect(save.mock.calls[0][0].newConnection).toBeUndefined()
   })
@@ -147,7 +147,7 @@ describe('editing provider connections', () => {
     await choose(view.element, 'second-model')
     button(view.element, 'Verify & save').click(); await settleVue()
     expect(testProviderConnection.mock.calls.map(call => call[1])).toEqual(['second-model', 'first-model'])
-    expect(save).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce())
     expect(save.mock.calls[0][0]).toMatchObject({ name: 'account', model: '', baseURL: account.baseURL })
     expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
     expect(save.mock.calls[0][0]).not.toHaveProperty('newConnection')
@@ -161,7 +161,7 @@ describe('editing provider connections', () => {
     await input(view.element, '[name="connectionName"]', 'Renamed connection')
     expect(button(view.element, 'Verify & save').disabled).toBe(false)
     button(view.element, 'Verify & save').click(); await settleVue()
-    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith('account')
+    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith('account', expect.any(AbortSignal))
     expect(testProviderConnection).not.toHaveBeenCalled()
     expect(save.mock.calls[0][0]).toMatchObject({ name: 'account', model: '', displayName: 'Renamed connection' })
     expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
@@ -172,7 +172,77 @@ describe('editing provider connections', () => {
     const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account, { name: 'configured', connectionRef: 'account', model: 'first-model' }], credential: account, busy: false, onSave: save })
     button(view.element, 'Verify & save').click(); await settleVue()
-    expect(testProviderConnection).toHaveBeenCalledExactlyOnceWith('account', 'first-model')
+    expect(testProviderConnection).toHaveBeenCalledExactlyOnceWith('account', 'first-model', expect.any(AbortSignal))
     expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
+  })
+})
+
+
+describe('bounded provider verification', () => {
+  it('lets a user stop verification, ignore a late success, and retry', async () => {
+    let resolve!: (value: unknown) => void
+    const save = vi.fn()
+    const testProviderConnection = vi.fn().mockImplementationOnce(() => new Promise(done => { resolve = done })).mockResolvedValue({ ok: true, latencyMS: 1 })
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
+    await choose(view.element, 'first-model')
+    button(view.element, 'Verify & connect').click(); await settleVue()
+    expect(button(view.element, 'Stop verification').disabled).toBe(false)
+    const signal = testProviderConnection.mock.calls[0][2] as AbortSignal
+    button(view.element, 'Stop verification').click(); await settleVue()
+    expect(signal.aborted).toBe(true)
+    expect(button(view.element, 'Verify & connect').disabled).toBe(false)
+    resolve({ ok: true, latencyMS: 1 }); await settleVue()
+    expect(save).not.toHaveBeenCalled()
+    button(view.element, 'Verify & connect').click(); await settleVue(12)
+    await vi.waitFor(() => expect(save).toHaveBeenCalledOnce())
+  })
+
+  it('times out an unresponsive verification and never saves its late result', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolve!: (value: unknown) => void
+      const save = vi.fn()
+      const testProviderConnection = vi.fn(() => new Promise(done => { resolve = done }))
+      const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account], initialConnection: 'account', busy: false, onSave: save })
+      await choose(view.element, 'first-model')
+      button(view.element, 'Verify & connect').click(); await settleVue()
+      await vi.advanceTimersByTimeAsync(60_000); await settleVue()
+      expect(view.element.textContent).toContain('Verification timed out')
+      expect(button(view.element, 'Verify & connect').disabled).toBe(false)
+      expect(button(view.element, 'Cancel').disabled).toBe(false)
+      resolve({ ok: true, latencyMS: 1 }); await settleVue()
+      expect(save).not.toHaveBeenCalled()
+      view.unmount()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('releases a stale verification when autofill changes the credential', async () => {
+    let resolve!: (value: unknown) => void
+    const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => discover
+      ? Promise.resolve({ ok: true, latencyMS: 1, models: ['first-model'] })
+      : new Promise(done => { resolve = done }))
+    const save = vi.fn()
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false, onSave: save })
+    await input(view.element, '[name="apiKey"]', 'first-key')
+    button(view.element, 'Continue').click(); await settleVue(12)
+    await choose(view.element, 'first-model')
+    button(view.element, 'Verify & connect').click(); await settleVue()
+    const signal = probeCredentialDraft.mock.calls.at(-1)![2] as AbortSignal
+    await input(view.element, '[name="apiKey"]', 'autofilled-replacement-key')
+    expect(signal.aborted).toBe(true)
+    expect(button(view.element, 'Verify & connect').disabled).toBe(false)
+    resolve({ ok: true, latencyMS: 1 }); await settleVue()
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('allows stopping discovery and entering a model manually', async () => {
+    const probeCredentialDraft = vi.fn(() => new Promise(() => {}))
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [], busy: false })
+    await input(view.element, '[name="apiKey"]', 'test-key')
+    button(view.element, 'Continue').click(); await settleVue()
+    button(view.element, 'Stop loading').click(); await settleVue()
+    expect(view.element.textContent).toContain('Model loading stopped')
+    expect(view.element.querySelector<HTMLButtonElement>('#model-id')?.disabled).toBe(false)
+    expect((probeCredentialDraft.mock.calls[0] as unknown as [unknown, boolean, AbortSignal])[2].aborted).toBe(true)
   })
 })

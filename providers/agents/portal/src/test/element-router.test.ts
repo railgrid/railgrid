@@ -626,7 +626,7 @@ describe('dedicated chat model recovery routing', () => {
 
     buttonWithText(element, 'Verify & connect').click()
     await settleVue(12, 20)
-    expect(api.testProviderConnection).toHaveBeenCalledWith(connection.name, 'gpt-4.1-mini')
+    expect(api.testProviderConnection).toHaveBeenCalledWith(connection.name, 'gpt-4.1-mini', expect.any(AbortSignal))
 
     expect(api.saveCredential).toHaveBeenCalledWith(expect.objectContaining({
       connectionRef: connection.name,
