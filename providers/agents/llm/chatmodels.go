@@ -134,9 +134,8 @@ func hasIDToken(id, tok string) bool {
 // ChatCapable reports whether a discovered model id is retained as an agent
 // model candidate by the current discovery curation.
 //
-// A curated catalog id (llm.Catalog(), matched exactly after normalization) is
-// always retained: the catalog is the hand-written list of models this repo
-// runs agents on, so it overrules the deny-list. That is what keeps
+// A catalog model with verified tool support is retained. Pricing-only
+// entries do not override the deny-list. That is what keeps
 // gemini-2.5-pro and gemini-3-pro — real chat models whose ids end in the same
 // "-pro" that marks OpenAI's responses-only family — in the candidate list.
 //
@@ -149,7 +148,7 @@ func ChatCapable(id string) bool {
 	if norm == "" {
 		return false
 	}
-	if _, ok := catalogRankByID[norm]; ok {
+	if entry, ok := LookupModel(norm); ok && entry.ToolCall {
 		return true
 	}
 	for _, tok := range nonChatTokens {

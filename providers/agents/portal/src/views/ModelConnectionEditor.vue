@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import snapshotSuffixPattern from '../model-snapshot-suffix.json'
+
 // Connection probes use saved credentials only when the endpoint, provider,
 // and key are unchanged. New or rotated credentials are verified through a
 // temporary workspace object; the named connection is saved only after the
@@ -113,7 +115,7 @@ const locked = computed(() => props.busy || testing.value || discovering.value)
 function catalogRecommended(id: string): boolean {
   const normalized = id.toLowerCase().trim().replace(/^.*\//, '')
   return (props.catalog || []).some(item => item.recommended && (normalized === item.id ||
-    (normalized.startsWith(item.id) && /^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$/.test(normalized.slice(item.id.length)))))
+    (normalized.startsWith(item.id) && new RegExp(snapshotSuffixPattern).test(normalized.slice(item.id.length)))))
 }
 const discoveredModels = computed(() => models.value.map(id => ({
   id,

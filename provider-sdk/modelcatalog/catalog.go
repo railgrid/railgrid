@@ -57,6 +57,11 @@ var catalog = []ModelInfo{
 	{ID: "gpt-5.4", Family: "openai", InputPer1M: 2.5, OutputPer1M: 15, ToolCall: true},
 	{ID: "gpt-5.4-mini", Family: "openai", InputPer1M: 0.75, OutputPer1M: 4.5, ToolCall: true},
 	{ID: "gemini-3-flash", Family: "google", InputPer1M: 0.5, OutputPer1M: 3, ToolCall: true},
+	// Explicit historical rates; these variants must not inherit a base model rate.
+	{ID: "gpt-5.2", Family: "openai", InputPer1M: 1.75, OutputPer1M: 14, PricingCheckedAt: "2026-11-01", PricingSource: "https://developers.openai.com/api/docs/models/gpt-5.2"},
+	{ID: "gpt-5-chat-latest", Family: "openai", InputPer1M: 1.25, OutputPer1M: 10, PricingCheckedAt: "2026-11-01", PricingSource: "https://developers.openai.com/api/docs/models/gpt-5-chat-latest"},
+	{ID: "gpt-4o-mini-search-preview", Family: "openai", InputPer1M: 0.15, OutputPer1M: 0.6, PricingCheckedAt: "2026-11-01", PricingSource: "https://developers.openai.com/api/docs/models/gpt-4o-mini-search-preview"},
+	{ID: "o3-pro", Family: "openai", InputPer1M: 20, OutputPer1M: 80, PricingCheckedAt: "2026-11-01", PricingSource: "https://developers.openai.com/api/docs/models/o3-pro"},
 	// OpenAI
 	{ID: "gpt-4o", Family: "openai", Label: "GPT-4o", ContextWindow: 128000, InputPer1M: 2.50, OutputPer1M: 10.00, Vision: true, ToolCall: true},
 	{ID: "gpt-4o-mini", Family: "openai", Label: "GPT-4o mini", ContextWindow: 128000, InputPer1M: 0.15, OutputPer1M: 0.60, Vision: true, ToolCall: true},
@@ -79,9 +84,9 @@ var catalog = []ModelInfo{
 	{ID: "claude-haiku-4-5", Family: "anthropic", Label: "Claude Haiku 4.5", ContextWindow: 200000, InputPer1M: 1.00, OutputPer1M: 5.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "claude-3-5-haiku", Family: "anthropic", Label: "Claude 3.5 Haiku", ContextWindow: 200000, InputPer1M: 0.80, OutputPer1M: 4.00, Vision: true, ToolCall: true},
 	// Google (via OpenAI-compatible endpoints)
-	{ID: "gemini-2.5-pro", Family: "google", Recommended: true, Label: "Gemini 2.5 Pro", ContextWindow: 1000000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
-	{ID: "gemini-2.5-flash", Family: "google", Recommended: true, Label: "Gemini 2.5 Flash", ContextWindow: 1000000, InputPer1M: 0.30, OutputPer1M: 2.50, Vision: true, ToolCall: true},
-	{ID: "gemini-3-pro", Family: "google", Recommended: true, Label: "Gemini 3 Pro", ContextWindow: 1000000, InputPer1M: 2.00, OutputPer1M: 12.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "gemini-2.5-pro", Family: "google", Label: "Gemini 2.5 Pro", ContextWindow: 1000000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "gemini-2.5-flash", Family: "google", Label: "Gemini 2.5 Flash", ContextWindow: 1000000, InputPer1M: 0.30, OutputPer1M: 2.50, Vision: true, ToolCall: true},
+	{ID: "gemini-3-pro", Family: "google", Label: "Gemini 3 Pro", ContextWindow: 1000000, InputPer1M: 2.00, OutputPer1M: 12.00, Vision: true, ToolCall: true, Reasoning: true},
 }
 
 var catalogByID = func() map[string]ModelInfo {
@@ -95,9 +100,8 @@ var catalogByID = func() map[string]ModelInfo {
 // Catalog returns the curated model list (copy-safe; callers must not mutate).
 func Catalog() []ModelInfo { return catalog }
 
-// normalizeModelID lowercases and strips a leading provider/org prefix, then
-// trims common date/version suffixes so "openai/gpt-4o-2024-08-06" and
-// "GPT-4o" both resolve to "gpt-4o".
+// normalizeModelID lowercases and strips leading provider/org prefixes.
+// LookupModel handles snapshot and alias suffixes after normalization.
 func normalizeModelID(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if idx := strings.LastIndex(m, "/"); idx >= 0 {
@@ -106,9 +110,11 @@ func normalizeModelID(model string) string {
 	return m
 }
 
-// A model variant is not a dated snapshot: never price a new generation or
-// specialized suffix using an older model's rate.
-var datedModelSuffix = regexp.MustCompile(`^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+// SnapshotSuffixPattern is exported to both portals by their catalog generators.
+// A new generation or specialized suffix must not inherit an older model rate.
+const SnapshotSuffixPattern = `^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2}|latest)$`
+
+var datedModelSuffix = regexp.MustCompile(SnapshotSuffixPattern)
 
 // IsRecommended distinguishes current choices from historical pricing entries.
 func IsRecommended(model string) bool {
@@ -117,7 +123,7 @@ func IsRecommended(model string) bool {
 }
 
 // LookupModel returns the catalog entry for a model id, matching first on the
-// exact normalized id and then on a catalog ID followed by a dated snapshot
+// exact normalized id and then on a catalog ID followed by a latest alias or dated snapshot
 // suffix (so "gpt-4o-2024-08-06" matches "gpt-4o"). Other variants are unknown.
 func LookupModel(model string) (ModelInfo, bool) {
 	norm := normalizeModelID(model)

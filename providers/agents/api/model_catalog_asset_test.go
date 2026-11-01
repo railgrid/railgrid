@@ -13,6 +13,8 @@ import (
 	"os"
 	"testing"
 
+	"github.com/railgrid/provider-sdk/modelcatalog"
+
 	"github.com/railgrid/provider-agents/llm"
 )
 
@@ -48,5 +50,19 @@ func TestModelCatalogAssetMatchesTheCompiledCatalog(t *testing.T) {
 	}
 	if string(onDisk) != string(want)+"\n" {
 		t.Errorf("%s is stale: it no longer matches llm.Catalog(). Regenerate it.", modelCatalogAsset)
+	}
+}
+
+func TestCommittedSnapshotSuffixMatchesBackend(t *testing.T) {
+	data, err := os.ReadFile("../portal/src/model-snapshot-suffix.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pattern string
+	if err := json.Unmarshal(data, &pattern); err != nil {
+		t.Fatal(err)
+	}
+	if pattern != modelcatalog.SnapshotSuffixPattern {
+		t.Fatal("stale model suffix pattern; run make generate-model-catalog")
 	}
 }

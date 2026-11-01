@@ -401,7 +401,7 @@ describe('focused model connection editor', () => {
   // Discovery already dropped everything that cannot chat. What is left still
   // mixes the curated families (priced, sized, capability-chipped) with
   // whatever else the gateway carries, and the list says which is which.
-  const discovered = ['gpt-6.1-sol', 'claude-sonnet-5-5', 'gpt-4o', 'gpt-4.1', 'gpt-6.1-sol-custom', 'some-gateway-model']
+  const discovered = ['gpt-6.1-sol', 'claude-sonnet-5-5-latest', 'claude-sonnet-5-5', 'gpt-4o', 'gpt-4.1', 'gpt-6.1-sol-custom', 'some-gateway-model']
   const api = stubApi()
   const { element: el } = await mountVue(Editor, {
    api,
@@ -417,6 +417,7 @@ describe('focused model connection editor', () => {
   const other = text.indexOf('Other models this endpoint serves')
   expect(text.indexOf('gpt-6.1-sol')).toBeLessThan(other)
   expect(text.indexOf('claude-sonnet-5-5')).toBeLessThan(other)
+  expect(text.indexOf('claude-sonnet-5-5-latest')).toBeLessThan(other)
   expect(text.indexOf('gpt-4o')).toBeGreaterThan(other)
   expect(text.indexOf('gpt-6.1-sol-custom')).toBeGreaterThan(other)
   // Every discovered id is still offered, and manual entry still works.

@@ -28,3 +28,14 @@ test('unknown variants do not inherit historical prices', () => {
   }
   assert.equal(lookupCatalog('gpt-4o').inputPer1M, 2.5)
 })
+
+test('historical variants and latest aliases remain priced', () => {
+ for (const [id, input, output] of [
+  ['gpt-5.2', 1.75, 14], ['gpt-5-chat-latest', 1.25, 10],
+  ['claude-sonnet-4-5-latest', 3, 15], ['claude-3-5-haiku-latest', .8, 4],
+  ['gpt-4o-mini-search-preview', .15, .6], ['o3-pro', 20, 80],
+ ]) {
+  assert.equal(lookupCatalog(id)?.inputPer1M, input, id)
+  assert.equal(lookupCatalog(id)?.outputPer1M, output, id)
+ }
+})

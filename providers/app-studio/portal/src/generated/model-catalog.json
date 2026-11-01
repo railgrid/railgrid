@@ -130,7 +130,6 @@
     "reasoning": true
   },
   {
-    "recommended": true,
     "id": "gemini-2.5-flash",
     "family": "google",
     "label": "Gemini 2.5 Flash",
@@ -141,7 +140,6 @@
     "toolCall": true
   },
   {
-    "recommended": true,
     "id": "gemini-2.5-pro",
     "family": "google",
     "label": "Gemini 2.5 Pro",
@@ -160,7 +158,6 @@
     "toolCall": true
   },
   {
-    "recommended": true,
     "id": "gemini-3-pro",
     "family": "google",
     "label": "Gemini 3 Pro",
@@ -222,6 +219,14 @@
     "toolCall": true
   },
   {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-4o-mini-search-preview",
+    "id": "gpt-4o-mini-search-preview",
+    "family": "openai",
+    "inputPer1M": 0.15,
+    "outputPer1M": 0.6
+  },
+  {
     "id": "gpt-5",
     "family": "openai",
     "label": "GPT-5",
@@ -231,6 +236,14 @@
     "vision": true,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5-chat-latest",
+    "id": "gpt-5-chat-latest",
+    "family": "openai",
+    "inputPer1M": 1.25,
+    "outputPer1M": 10
   },
   {
     "id": "gpt-5-mini",
@@ -260,6 +273,14 @@
     "vision": true,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.2",
+    "id": "gpt-5.2",
+    "family": "openai",
+    "inputPer1M": 1.75,
+    "outputPer1M": 14
   },
   {
     "id": "gpt-5.4",
@@ -360,6 +381,14 @@
     "outputPer1M": 4.4,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/o3-pro",
+    "id": "o3-pro",
+    "family": "openai",
+    "inputPer1M": 20,
+    "outputPer1M": 80
   },
   {
     "id": "o4-mini",

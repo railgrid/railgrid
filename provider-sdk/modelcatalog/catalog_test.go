@@ -44,3 +44,29 @@ func TestModelVariantsDoNotInheritPricesOrRecommendations(t *testing.T) {
 		}
 	}
 }
+
+func TestHistoricalModelCostsRemainAvailable(t *testing.T) {
+	for _, tc := range []struct {
+		id            string
+		input, output float64
+	}{
+		{"gpt-5.2", 1.75, 14}, {"gpt-5-chat-latest", 1.25, 10},
+		{"claude-sonnet-4-5-latest", 3, 15}, {"claude-3-5-haiku-latest", .8, 4},
+		{"gpt-4o-mini-search-preview", .15, .6}, {"o3-pro", 20, 80},
+	} {
+		if got := CostMicros(tc.id, 1000000, 1000000); got != int64((tc.input+tc.output)*1000000) {
+			t.Errorf("%s cost = %d", tc.id, got)
+		}
+		if IsRecommended(tc.id) {
+			t.Errorf("historical model recommended: %s", tc.id)
+		}
+	}
+}
+
+func TestRecommendationsHavePricingProvenance(t *testing.T) {
+	for _, entry := range Catalog() {
+		if entry.Recommended && (entry.PricingSource == "" || entry.PricingCheckedAt == "") {
+			t.Errorf("recommendation missing pricing provenance: %s", entry.ID)
+		}
+	}
+}
