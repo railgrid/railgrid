@@ -160,6 +160,10 @@ func (h *Handler) createWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	// The workspace exists and is Ready: tell the metering membership
+	// reconciler now, so the organization's usage follows this create at
+	// once rather than on its periodic re-list.
+	h.mgr.workspaceChanged(r.Context(), orgUUID)
 	if err := h.mgr.bootstrapper.EnsureChildWorkspaceRailgridBinding(r.Context(), orgUUID, wsUUID); err != nil {
 		writeError(w, err)
 		return

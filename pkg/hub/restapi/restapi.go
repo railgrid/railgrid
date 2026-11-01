@@ -244,6 +244,25 @@ type Manager struct {
 	// hosted flows return to.
 	billing        BillingOps
 	hubExternalURL string
+	// workspaceObserver, when set, is told the organization whose child
+	// workspace createWorkspace just created, so a derived view of an
+	// organization's workspaces (the metering membership report) follows the
+	// hub's own write at once instead of on its periodic re-list.
+	workspaceObserver func(ctx context.Context, orgUUID string)
+}
+
+// WithWorkspaceObserver installs fn, called with the organization UUID once
+// createWorkspace has a Ready child workspace. fn runs synchronously in the
+// request with its context; it must be quick and must not fail the request.
+func (m *Manager) WithWorkspaceObserver(fn func(ctx context.Context, orgUUID string)) *Manager {
+	m.workspaceObserver = fn
+	return m
+}
+
+func (m *Manager) workspaceChanged(ctx context.Context, orgUUID string) {
+	if m.workspaceObserver != nil {
+		m.workspaceObserver(ctx, orgUUID)
+	}
 }
 
 // WithOrgPlanSource installs the plan lookup the free-organizations cap

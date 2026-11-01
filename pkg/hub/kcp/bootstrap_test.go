@@ -355,3 +355,61 @@ func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.
 		t.Errorf("reference was disturbed: %q", path)
 	}
 }
+
+// DeleteChildWorkspace asks kcp to delete a live Workspace and says so; one
+// that is already terminating or gone is left alone and reported as not
+// deleted, so a sweep that keeps finding a terminating workspace does not
+// treat every pass as a fresh deletion.
+func TestDeleteChildWorkspaceReportsOnlyALiveDeletion(t *testing.T) {
+	state := map[string]map[string]any{
+		"live":        {"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace", "metadata": map[string]any{"name": "live"}},
+		"terminating": {"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace", "metadata": map[string]any{"name": "terminating", "deletionTimestamp": "2026-11-01T12:00:00Z", "finalizers": []any{"x"}}},
+	}
+	var deletes []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		const prefix = "/clusters/root:railgrid:tenants:org-1/apis/tenancy.kcp.io/v1alpha1/workspaces/"
+		if !strings.HasPrefix(r.URL.Path, prefix) {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		name := strings.TrimPrefix(r.URL.Path, prefix)
+		ws, ok := state[name]
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{"kind": "Status", "apiVersion": "v1", "status": "Failure", "reason": "NotFound", "code": 404})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(ws)
+		case http.MethodDelete:
+			deletes = append(deletes, name)
+			_ = json.NewEncoder(w).Encode(ws)
+		default:
+			http.Error(w, r.Method, http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+
+	b := NewBootstrapper(&rest.Config{Host: server.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for _, tc := range []struct {
+		name    string
+		deleted bool
+	}{{"live", true}, {"terminating", false}, {"missing", false}} {
+		got, err := b.DeleteChildWorkspace(ctx, "org-1", tc.name)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got != tc.deleted {
+			t.Errorf("%s: deleted = %v, want %v", tc.name, got, tc.deleted)
+		}
+	}
+	if len(deletes) != 1 || deletes[0] != "live" {
+		t.Errorf("kcp was asked to delete %v, want only the live workspace", deletes)
+	}
+}
