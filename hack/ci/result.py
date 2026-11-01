@@ -6,49 +6,75 @@ import os
 import sys
 
 
-# Keep this inventory aligned with each completion job's direct needs. Tests
-# compare it with the workflows so new jobs cannot escape the completion gate.
+# Every validation job of each managed workflow and the rule that selects it.
+# Tests compare this inventory with the workflows' jobs, their `if`
+# conditions and the completion job's direct needs, so a new job cannot escape
+# the gate and a condition cannot drift from the policy here.
+#
+#   always   every mode, every event
+#   ui       full and provider-ui modes (skipped by docs-only PRs)
+#   full     full mode only
+#   publish  full mode on events other than pull_request (the E2E build job
+#            validates the hub and agent Dockerfiles on PRs)
+#   images   whenever selection chose at least one provider image, on PRs and
+#            manual runs (provider images are published by provider-release)
 POLICIES = {
     "ci": {
-        "always": {"test-app-studio-harness-scripts", "govulncheck", "verify-boilerplate", "verify-portalkit",
-                   "verify-ui-conformance", "verify-design-docs",
-                   "verify-tilt-browser-deployment", "provider-portals", "verify-ci-selection"},
-        "full": {"build", "test-modules", "test-app-studio-postgres",
-                 "lint", "verify-codegen", "portal"},
+        "contracts": "always",
+        "provider-portals": "ui",
+        "build": "full",
+        "test-modules": "full",
+        "test-app-studio-postgres": "full",
+        "lint": "full",
+        "verify-codegen": "full",
+        "portal": "full",
     },
     "e2e": {
-        "always": set(),
-        "full": {"actions-node-sdk", "e2e-providers", "e2e-standalone", "e2e-ssh",
-                 "e2e-oidc", "e2e-external-kcp", "e2e-edges-connectivity", "e2e-cli"},
+        "build": "full",
+        "e2e-providers": "full",
+        "e2e-standalone": "full",
+        "e2e-ssh": "full",
+        "e2e-oidc": "full",
+        "e2e-external-kcp": "full",
+        "e2e-edges-connectivity": "full",
+        "e2e-cli": "full",
     },
     "images": {
-        "always": set(),
-        "full": {"build-and-push-hub-image", "build-and-push-agent-image"},
-        "validation": {"build-and-push-provider-images"},
+        "build-and-push-hub-image": "publish",
+        "build-and-push-agent-image": "publish",
+        "build-and-push-provider-images": "images",
     },
-    "helm-images": {"always": set(), "full": {"build-hub"}},
 }
+MODES = ("full", "provider-ui", "docs")
 
 
-def expected_jobs(workflow, mode, event):
-    if mode not in ("full", "provider-ui"):
+def selected(rule, mode, event, has_images):
+    return {
+        "always": True,
+        "ui": mode in ("full", "provider-ui"),
+        "full": mode == "full",
+        "publish": mode == "full" and event != "pull_request",
+        "images": has_images and event in ("pull_request", "workflow_dispatch"),
+    }[rule]
+
+
+def expected_jobs(workflow, mode, event, has_images=False):
+    if mode not in MODES:
         raise ValueError("Missing or invalid selection mode")
-    if mode == "provider-ui" and event != "pull_request":
+    if mode != "full" and event != "pull_request":
         raise ValueError("Non-PR events must use full mode")
-    policy = POLICIES[workflow]
-    expected = {}
-    for category, jobs in policy.items():
-        selected = (category == "always" or (category == "full" and mode == "full")
-                    or (category == "validation" and event in ("pull_request", "workflow_dispatch")))
-        expected.update({job: "success" if selected else "skipped" for job in jobs})
-    return expected
+    if mode == "docs" and has_images:
+        raise ValueError("Docs-only PRs select no images")
+    return {job: "success" if selected(rule, mode, event, has_images) else "skipped"
+            for job, rule in POLICIES[workflow].items()}
 
 
 def check_results(workflow, event, needs):
     changes = needs.get("changes", {})
     if changes.get("result") != "success":
         return ["Change detection did not succeed"]
-    expected = expected_jobs(workflow, changes.get("outputs", {}).get("mode"), event)
+    outputs = changes.get("outputs", {})
+    expected = expected_jobs(workflow, outputs.get("mode"), event, outputs.get("has-images") == "true")
     errors = []
     if set(needs) != set(expected) | {"changes"}:
         errors.append("Completion dependencies do not match the validation job inventory")

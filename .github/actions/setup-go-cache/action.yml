@@ -1,0 +1,84 @@
+name: Set up Go with shared caches
+description: >
+  Install the pinned Go toolchain and restore the repository's shared Go caches.
+  Two caches, both written only from main: the MODULE cache is one entry for
+  every Go module in the repo (the CI `build` job runs `go mod download` in each
+  module before it saves, so provider jobs hit it too), and the BUILD cache is
+  one entry per scope so -race and plain compiles do not evict each other.
+  Scopes: `build` (plain compiles: build, lint, codegen, e2e), `race` (the
+  module test matrix; saved by the root module, which compiles most of what the
+  providers import), `darwin` (the macOS job). PR refs restore the newest main
+  entry through restore-keys and never save, so the repository's 10 GB cache
+  budget holds only entries every run reads. Before this action, nineteen jobs
+  shared one setup-go key that the first job to finish on main saved, so every
+  job compiled cold behind a 92 MB "cache hit".
+inputs:
+  go-version-file:
+    description: go.mod to take the toolchain version from
+    default: go.mod
+  build-scope:
+    description: Build-cache scope to restore (build, race, darwin)
+    default: build
+  cache:
+    description: Restore the module and build caches at all (false for jobs that only need the toolchain)
+    default: 'true'
+  save-mod:
+    description: Save the shared module cache on main when its key misses (the CI build job only)
+    default: 'false'
+  save-build:
+    description: Save this scope's build cache on main when its key misses (one job per scope)
+    default: 'false'
+  extra-build-paths:
+    description: Additional directories to keep in this scope's build cache (one per line, e.g. the golangci-lint cache)
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
+        cache: false
+
+    - id: paths
+      if: inputs.cache == 'true'
+      shell: bash
+      run: |
+        echo "mod=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+        echo "build=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+
+    # The module cache is OS-independent source, so one key serves Linux and
+    # macOS alike. restore-keys makes a go.sum bump restore the previous entry
+    # and download only the delta.
+    - name: Module cache (restore, and save on main)
+      if: inputs.cache == 'true' && inputs.save-mod == 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.paths.outputs.mod }}
+        key: go-mod-${{ hashFiles('**/go.sum') }}
+        restore-keys: go-mod-
+    - name: Module cache (restore only)
+      if: inputs.cache == 'true' && !(inputs.save-mod == 'true' && github.ref == 'refs/heads/main')
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.paths.outputs.mod }}
+        key: go-mod-${{ hashFiles('**/go.sum') }}
+        restore-keys: go-mod-
+
+    - name: Build cache (restore, and save on main)
+      if: inputs.cache == 'true' && inputs.save-build == 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ steps.paths.outputs.build }}
+          ${{ inputs.extra-build-paths }}
+        key: go-build-${{ inputs.build-scope }}-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+        restore-keys: go-build-${{ inputs.build-scope }}-${{ runner.os }}-
+    - name: Build cache (restore only)
+      if: inputs.cache == 'true' && !(inputs.save-build == 'true' && github.ref == 'refs/heads/main')
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ${{ steps.paths.outputs.build }}
+          ${{ inputs.extra-build-paths }}
+        key: go-build-${{ inputs.build-scope }}-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+        restore-keys: go-build-${{ inputs.build-scope }}-${{ runner.os }}-

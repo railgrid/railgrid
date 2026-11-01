@@ -1,8 +1,8 @@
 name: Select CI checks
-description: Select provider UI checks from the full PR diff, otherwise run full CI
+description: Select CI from the full PR diff (full, provider-ui or docs) and the provider images whose inputs changed
 outputs:
   mode:
-    description: full or provider-ui
+    description: full, provider-ui or docs
     value: ${{ steps.select.outputs.mode }}
   providers:
     description: JSON array of affected providers
@@ -13,6 +13,9 @@ outputs:
   image-matrix:
     description: Provider image matrix including existing build metadata
     value: ${{ steps.select.outputs.image-matrix }}
+  has-images:
+    description: Whether the image matrix selected at least one provider image
+    value: ${{ steps.select.outputs.has-images }}
 runs:
   using: composite
   steps:

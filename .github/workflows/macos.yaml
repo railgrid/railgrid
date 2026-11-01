@@ -1,38 +1,60 @@
 name: macOS Edges
 
+# Compiles the Darwin agent and the localhost health stub and runs the focused
+# agent tests on a real macOS runner. Only the Darwin-specific half lives here:
+# the full Edges provider suite and the Edges portal checks run on Linux in the
+# CI workflow (Test (providers/edges) and Provider portal (edges)), and a macOS
+# minute bills at ten times a Linux one, so repeating them here paid ~35
+# Linux-minutes per push for nothing. The path filter keeps the job to changes
+# that can affect a Darwin build or the packages the focused tests cover.
+# It has no registry, release, or publishing steps; release publication
+# remains owned by the existing release workflows.
+
 on:
   push:
     branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'apis/**'
+      - 'hack/edges-macos/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/macos.yaml'
+      - '.github/actions/setup-go-cache/**'
   pull_request:
     branches: [main]
+    paths:
+      - 'cmd/**'
+      - 'pkg/**'
+      - 'apis/**'
+      - 'hack/edges-macos/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/macos.yaml'
+      - '.github/actions/setup-go-cache/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# This workflow compiles and tests the Darwin agent and the localhost health
-# stub. It has no registry, release, or publishing steps; release publication
-# remains owned by the existing release workflows.
 jobs:
   darwin:
     runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      # The module cache is the shared one Linux writes (modules are plain
+      # source); the build cache is macOS's own `darwin` scope.
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
-          cache-dependency-path: '**/go.sum'
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          build-scope: darwin
+          save-build: 'true'
       - name: Compile Darwin agent targets
         run: make build-macos-agent
       - name: Compile Darwin health stub targets
         run: make build-macos-stub
       - name: Run focused root agent tests
         run: make test-macos-agent
-      - name: Run Edges provider tests
-        run: make test-edges-provider
-      - name: Run Edges portal checks
-        run: make test-edges-portal

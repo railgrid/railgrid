@@ -6,8 +6,12 @@ on:
   push:
     tags:
       - 'v*'
-  # On PRs and manual runs, jobs use build-only mode (push: false, single-arch)
-  # so a broken Dockerfile or build context is caught before a release tag.
+  # On PRs only the provider images whose build context changed are built
+  # (push: false, single-arch), so a broken Dockerfile is caught before the
+  # split sync reaches a mirror. The hub and agent Dockerfiles are validated on
+  # every full-mode PR by the E2E workflow's `build` job, which builds both
+  # images for the kind suites; building them a second time here was waste.
+  # Manual runs build everything without publishing.
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -41,6 +45,7 @@ jobs:
       providers: ${{ steps.changes.outputs.providers }}
       portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
       image-matrix: ${{ steps.changes.outputs.image-matrix }}
+      has-images: ${{ steps.changes.outputs.has-images }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +55,7 @@ jobs:
 
   build-and-push-hub-image:
     needs: changes
-    if: needs.changes.outputs.mode == 'full'
+    if: needs.changes.outputs.mode == 'full' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,15 +98,18 @@ jobs:
             GIT_COMMIT=${{ github.sha }}
             BUILD_DATE=${{ github.event.release.created_at }}
 
-  # PR and manual validation of selected provider Dockerfiles and build contexts,
-  # before the split sync reaches a mirror. The selector preserves companion
-  # images and their distinct contexts in the full matrix. These builds are NEVER
-  # pushed here — provider images are published per-provider, stamped with the
-  # provider's own version, by provider-release.yaml on a `providers/<name>/v*`
-  # tag. (Publishing here would tag provider images with the hub version.)
+  # PR and manual validation of provider Dockerfiles and build contexts, before
+  # the split sync reaches a mirror. hack/ci/selection.py picks the images whose
+  # inputs (hack/ci/matrices.json) the PR touched; a manual run builds them all.
+  # These builds are NEVER pushed here — provider images are published
+  # per-provider, stamped with the provider's own version, by
+  # provider-release.yaml on a `providers/<name>/v*` tag. (Publishing here would
+  # tag provider images with the hub version.) They do not write the GHA layer
+  # cache either: PR refs writing twelve `mode=max` scopes is what kept the
+  # repository's 10 GB cache budget full and evicted the Go caches.
   build-and-push-provider-images:
     needs: changes
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: needs.changes.outputs.has-images == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -133,14 +141,12 @@ jobs:
           # Provider publication stays in provider-release.yaml.
           platforms: linux/amd64
           push: false
-          cache-from: type=gha,scope=provider-${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=provider-${{ matrix.name }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
   build-and-push-agent-image:
     needs: changes
-    if: needs.changes.outputs.mode == 'full'
+    if: needs.changes.outputs.mode == 'full' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read

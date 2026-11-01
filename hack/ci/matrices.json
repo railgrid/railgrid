@@ -39,48 +39,58 @@
   "images": [
     {
       "name": "quickstart",
-      "image": "railgrid-quickstart-provider"
+      "image": "railgrid-quickstart-provider",
+      "inputs": ["providers/quickstart/", "provider-sdk/"]
     },
     {
       "name": "infrastructure",
-      "image": "railgrid-infrastructure-provider"
+      "image": "railgrid-infrastructure-provider",
+      "inputs": ["providers/infrastructure/", "provider-sdk/"]
     },
     {
       "name": "code",
-      "image": "railgrid-code-provider"
+      "image": "railgrid-code-provider",
+      "inputs": ["providers/code/", "provider-sdk/"]
     },
     {
       "name": "kuery",
-      "image": "railgrid-kuery-provider"
+      "image": "railgrid-kuery-provider",
+      "inputs": ["providers/kuery/", "provider-sdk/"]
     },
     {
       "name": "app-studio",
-      "image": "railgrid/app-studio-provider"
+      "image": "railgrid/app-studio-provider",
+      "inputs": ["providers/app-studio/", "provider-sdk/"]
     },
     {
       "name": "agents",
-      "image": "railgrid-agents-provider"
+      "image": "railgrid-agents-provider",
+      "inputs": ["providers/agents/", "provider-sdk/", "pkg/", "go.mod", "go.sum"]
     },
     {
       "name": "edges",
-      "image": "railgrid-edges-provider"
+      "image": "railgrid-edges-provider",
+      "inputs": ["providers/edges/", "provider-sdk/"]
     },
     {
       "name": "infrastructure/dev-agent",
       "image": "railgrid-dev-agent",
-      "context": "./providers/infrastructure/dev-agent"
+      "context": "./providers/infrastructure/dev-agent",
+      "inputs": ["providers/infrastructure/dev-agent/"]
     },
     {
       "name": "infrastructure/universal-dev",
       "image": "railgrid-universal-dev",
       "context": "./providers/infrastructure/dev-agent",
-      "dockerfile": "./providers/infrastructure/dev-agent/Dockerfile.universal"
+      "dockerfile": "./providers/infrastructure/dev-agent/Dockerfile.universal",
+      "inputs": ["providers/infrastructure/dev-agent/"]
     },
     {
       "name": "access-proxy",
       "image": "railgrid-access-proxy",
       "context": ".",
-      "dockerfile": "./providers/infrastructure/Dockerfile.access-proxy"
+      "dockerfile": "./providers/infrastructure/Dockerfile.access-proxy",
+      "inputs": ["providers/infrastructure/", "provider-sdk/"]
     }
   ]
 }
