@@ -110,6 +110,12 @@ type WorkspaceOps interface {
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
 	SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+	// GetWorkspaceDeletionForced reports whether a soft-deleted workspace
+	// was marked for deletion without the recovery window;
+	// SetWorkspaceDeletionForced stamps that marker (and the deletion
+	// timestamp when the workspace was not soft-deleted yet) in one update.
+	GetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string) (bool, error)
+	SetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 
 	// GetChildWorkspaceClusterName returns the kcp logical-cluster name
 	// (the /clusters/<name> hash) for a child workspace. Used to build
@@ -229,6 +235,31 @@ type Manager struct {
 	orgCaps           *quota.Caps
 	freePlan          string
 	meteringInstalled func() bool
+	// planSource answers which plan an organization is on from its metering
+	// Entitlement (ok false when metering has nothing to say); nil reads
+	// Organization.spec.plan alone.
+	planSource func(ctx context.Context, org string) (plan string, ok bool, err error)
+	// billing is the metering seam behind the organization billing routes;
+	// nil answers them with "not installed". hubExternalURL is where the
+	// hosted flows return to.
+	billing        BillingOps
+	hubExternalURL string
+}
+
+// WithOrgPlanSource installs the plan lookup the free-organizations cap
+// prefers over Organization.spec.plan: the Entitlement's plan, which a
+// subscription can set without the organization knowing.
+func (m *Manager) WithOrgPlanSource(fn func(ctx context.Context, org string) (string, bool, error)) *Manager {
+	m.planSource = fn
+	return m
+}
+
+// WithBilling installs the billing seam and the hub URL its hosted flows
+// return to.
+func (m *Manager) WithBilling(ops BillingOps, hubExternalURL string) *Manager {
+	m.billing = ops
+	m.hubExternalURL = hubExternalURL
+	return m
 }
 
 // WithOrgCaps installs the organization caps createOrg applies.
@@ -403,7 +434,7 @@ func (h *Handler) RegisterUserOnly(r *mux.Router) {
 //	POST   /api/orgs/{org}/workspaces                                       create a workspace
 //	GET    /api/orgs/{org}/workspaces/{ws}                                  get one Workspace
 //	PATCH  /api/orgs/{org}/workspaces/{ws}                                  patch Workspace metadata
-//	DELETE /api/orgs/{org}/workspaces/{ws}                                  soft-delete Workspace
+//	DELETE /api/orgs/{org}/workspaces/{ws}[?force=true]                     soft-delete Workspace (force: no grace period, not restorable)
 //	POST   /api/orgs/{org}/workspaces/{ws}/undelete                         undelete Workspace
 //
 //	GET    /api/orgs/{org}/workspaces/{ws}/memberships                      list workspace-scope members
@@ -427,6 +458,10 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// Registered before /{org}/memberships etc. is irrelevant to matching (the
 	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
 	// a provider belongs to the Org, while Enable belongs to one Workspace.
+	// Billing: what the organization's plan buys and how to change it.
+	r.HandleFunc("/{org}/billing", h.getOrgBilling).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/billing/checkout", h.orgBillingCheckout).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/billing/portal", h.orgBillingPortal).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers", h.listOrgProviders).Methods(http.MethodGet)
 	// Registered ahead of the {name} routes: "install-targets" is a literal
 	// sibling of a provider name, and this keeps it that way if a GET
@@ -916,6 +951,10 @@ type WorkspaceView struct {
 	DisplayName         string     `json:"displayName,omitempty"`
 	ClusterName         string     `json:"clusterName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	// DeletionForced is set when the deletion was requested without the
+	// recovery window (DELETE ?force=true): the cascade runs on the
+	// reconciler's next sweep and undelete is refused.
+	DeletionForced bool `json:"deletionForced,omitempty"`
 	// Role is the CALLER's workspace-scope role ("admin" | "member"), or
 	// empty when they hold no workspace-scope row here (possible for org
 	// admins, who can list every workspace but manage only those they are

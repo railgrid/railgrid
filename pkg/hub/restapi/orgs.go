@@ -320,9 +320,50 @@ func (h *Handler) countFreeOrgsAdministered(ctx context.Context, user string) (i
 			}
 			return 0, err
 		}
-		if org.Spec.Personal || !org.DeletionTimestamp.IsZero() || !quota.IsFree(org, h.mgr.freePlan) {
+		if org.Spec.Personal || !org.DeletionTimestamp.IsZero() {
 			continue
 		}
+		// The Entitlement's plan wins over the organization's own field: a
+		// subscription puts an organization on a plan without touching the
+		// Organization. Without metering, spec.plan is all there is.
+		plan := org.Spec.Plan
+		if h.mgr.planSource != nil {
+			if p, ok, err := h.mgr.planSource(ctx, org.Name); err != nil {
+				return 0, err
+			} else if ok {
+				plan = p
+			}
+		}
+		if !quota.IsFreePlan(plan, h.mgr.freePlan) {
+			continue
+		}
+		n++
+	}
+	// An organization the user just created is theirs to administer before
+	// the bootstrap controller has written their index entry, and it is
+	// created on the free plan: it counts from the moment it exists, or two
+	// creates in a row would both see an index without the first. Once
+	// IndexSynced is true the index is the authority (a creator who handed
+	// the organization over is not charged for it); an organization whose
+	// bootstrap never completes stays counted, which is the safe side.
+	list, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
+		LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
+	})
+	if err != nil {
+		return 0, err
+	}
+	for i := range list.Items {
+		o := &list.Items[i]
+		if seen[o.Name] || o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
+			continue
+		}
+		if apimeta.IsStatusConditionTrue(o.Status.Conditions, tenancyv1alpha1.OrganizationConditionIndexSynced) {
+			continue
+		}
+		if !quota.IsFreePlan(o.Spec.Plan, h.mgr.freePlan) {
+			continue
+		}
+		seen[o.Name] = true
 		n++
 	}
 	return n, nil

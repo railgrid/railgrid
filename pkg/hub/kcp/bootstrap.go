@@ -21,6 +21,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	stderrors "errors"
 	"fmt"
 	"reflect"
 	"sort"
@@ -740,6 +741,20 @@ func (b *Bootstrapper) EnsureChildWorkspaceDefaultMCPServer(ctx context.Context,
 // the kcp Workspace IS the source of truth for workspace lifecycle.
 const WorkspaceDeletionAnnotation = "tenants.railgrid.ai/deletion-requested-at"
 
+// WorkspaceDeletionForcedAnnotation marks a soft-deleted kcp Workspace whose
+// admin asked for deletion without the recovery window (value "true"). The
+// soft-delete reconciler runs the cascade on its next sweep however much of
+// the grace period is left, and the undelete paths refuse to clear it. It
+// only ever accompanies WorkspaceDeletionAnnotation, whose timestamp still
+// records when deletion was first requested.
+const WorkspaceDeletionForcedAnnotation = "tenants.railgrid.ai/deletion-forced"
+
+// ErrWorkspaceDeletionForced is returned by ClearWorkspaceDeletionAnnotation
+// when the Workspace carries WorkspaceDeletionForcedAnnotation: a forced
+// deletion is not recoverable, so the clear is refused instead of racing
+// the cascade.
+var ErrWorkspaceDeletionForced = stderrors.New("workspace deletion was forced and cannot be restored")
+
 // DeleteOrgWorkspace removes the kcp Workspace at
 // root:railgrid:tenants:{orgUUID}. Idempotent on NotFound. Cascade callers
 // should ensure all child Workspaces and the in-workspace Memberships
@@ -883,6 +898,29 @@ func (b *Bootstrapper) GetWorkspaceDeletionRequestedAt(ctx context.Context, orgU
 	return &t, true, nil
 }
 
+// GetWorkspaceDeletionForced reports whether the child Workspace carries
+// WorkspaceDeletionForcedAnnotation. A missing Workspace reads as not
+// forced, the same answer as "no soft-delete requested".
+func (b *Bootstrapper) GetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string) (bool, error) {
+	if orgUUID == "" || wsUUID == "" {
+		return false, fmt.Errorf("GetWorkspaceDeletionForced: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return false, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("getting Workspace %s in org %s: %w", wsUUID, orgUUID, err)
+	}
+	raw, _, _ := unstructured.NestedString(ws.Object, "metadata", "annotations", WorkspaceDeletionForcedAnnotation)
+	return raw == "true", nil
+}
+
 // DeleteOrgMemberships removes every Membership CR inside the
 // Organization workspace at root:railgrid:tenants:{orgUUID}. Used by the
 // soft-delete cascade right before tearing down the workspace itself,
@@ -931,11 +969,65 @@ func (b *Bootstrapper) SetWorkspaceDeletionAnnotation(ctx context.Context, orgUU
 	return b.patchWorkspaceDeletionAnnotationIfAbsent(ctx, orgUUID, wsUUID, at.UTC().Format(time.RFC3339))
 }
 
+// SetWorkspaceDeletionForced marks the Workspace for deletion without the
+// recovery window. One conditional update stamps
+// WorkspaceDeletionForcedAnnotation and, only when the Workspace is not
+// soft-deleted yet, WorkspaceDeletionAnnotation with at: an earlier
+// soft-delete keeps its original timestamp so the audit trail still says
+// when deletion was first requested, and an already-forced Workspace is a
+// successful no-op. Writing both keys in the same update means a forced
+// marker can never exist without the timestamp the reconciler keys on.
+func (b *Bootstrapper) SetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string, at time.Time) error {
+	if orgUUID == "" || wsUUID == "" {
+		return fmt.Errorf("SetWorkspaceDeletionForced: orgUUID and wsUUID are required")
+	}
+	orgConfig := configForPath(b.config, kcppaths.OrgPath(orgUUID))
+	orgClient, err := dynamic.NewForConfig(orgConfig)
+	if err != nil {
+		return fmt.Errorf("creating org workspace client: %w", err)
+	}
+	const maxAttempts = 5
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		ws, err := orgClient.Resource(workspaceGVR).Get(ctx, wsUUID, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+		if annos == nil {
+			annos = map[string]string{}
+		}
+		if annos[WorkspaceDeletionForcedAnnotation] == "true" && annos[WorkspaceDeletionAnnotation] != "" {
+			return nil
+		}
+		if annos[WorkspaceDeletionAnnotation] == "" {
+			annos[WorkspaceDeletionAnnotation] = at.UTC().Format(time.RFC3339)
+		}
+		annos[WorkspaceDeletionForcedAnnotation] = "true"
+		if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
+			return fmt.Errorf("setting annotations: %w", err)
+		}
+		if _, err := orgClient.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{}); err == nil {
+			return nil
+		} else {
+			lastErr = err
+			if !errors.IsConflict(err) {
+				return fmt.Errorf("updating workspace %s/%s: %w", orgUUID, wsUUID, err)
+			}
+		}
+	}
+	return fmt.Errorf("updating workspace %s/%s after %d conflicts: %w", orgUUID, wsUUID, maxAttempts, lastErr)
+}
+
 // ClearWorkspaceDeletionAnnotation removes the soft-delete annotation
 // from the Workspace, signalling undelete. Idempotent on already-absent.
 // It performs one conditional update and returns conflicts to the REST layer,
 // which re-reads the annotation before deciding whether a retry is safe. That
 // boundary prevents a stale clear from deleting a newer deletion request.
+// A forced deletion (WorkspaceDeletionForcedAnnotation) is refused with
+// ErrWorkspaceDeletionForced on the same read the update is conditioned on,
+// so a force that lands concurrently conflicts the clear instead of being
+// wiped by it.
 func (b *Bootstrapper) ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error {
 	if orgUUID == "" || wsUUID == "" {
 		return fmt.Errorf("ClearWorkspaceDeletionAnnotation: orgUUID and wsUUID are required")
@@ -950,10 +1042,14 @@ func (b *Bootstrapper) ClearWorkspaceDeletionAnnotation(ctx context.Context, org
 		return err
 	}
 	annos, _, _ := unstructured.NestedStringMap(ws.Object, "metadata", "annotations")
+	if annos[WorkspaceDeletionForcedAnnotation] == "true" {
+		return ErrWorkspaceDeletionForced
+	}
 	if _, present := annos[WorkspaceDeletionAnnotation]; !present {
 		return nil
 	}
 	delete(annos, WorkspaceDeletionAnnotation)
+	delete(annos, WorkspaceDeletionForcedAnnotation)
 	if err := unstructured.SetNestedStringMap(ws.Object, annos, "metadata", "annotations"); err != nil {
 		return fmt.Errorf("setting annotations: %w", err)
 	}

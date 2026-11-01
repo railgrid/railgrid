@@ -397,8 +397,13 @@ spec:
   caps, hub flags a platform admin overrides in `User.spec.quota`:
   `--default-orgs-per-user` (10) on the organizations the user created and
   `--free-orgs-per-user` (1) on the non-personal organizations on the free
-  plan the user administers today, read from their membership index. The
-  free cap is off while no metering deployment is discovered. There is no
+  plan the user administers today, read from their membership index (the
+  plan is the Entitlement's where metering can answer, else `spec.plan`; an
+  organization just created counts until `IndexSynced`). The free cap is
+  off while discovery has definitely found no metering deployment; while
+  the answer is unknown the cap applies, and a transient poll failure keeps
+  the last answer. `PUT …/plan` with an empty plan also resets the
+  Entitlement to the default plan, whoever set it. There is no
   `organizations` meter and no MeteringConfig for Organizations: the hub is
   the only gate, and the caps are soft.
 - Which plan an org is on: `Organization.spec.plan` (manual, admin-only,
@@ -682,46 +687,50 @@ portal pages reading hub REST, which reads the store as kcp-admin.
 
 ## 10. Stripe
 
-The division is: the **hub** owns the customer relationship (one Stripe
-Customer per Organization, Checkout and Customer Portal sessions, the
-webhook route, mapping active entitlements to a plan) and writes the result
-to `Entitlement.spec.plan`; **contrib-metering** owns usage export (its
-Stripe backend pushes meter events with `Plan.spec.backend[meter].priceID`
-and dedupes by window). Neither enforces; the webhook does.
+Stripe lives in `contrib-metering` (private), not in the hub (public). The
+division landed on 31 October: **contrib-metering** owns everything that
+knows Stripe exists: the Customer per Account (its `stripe` usage backend,
+`Account.status.customerRef`), `Plan.spec.subscription.priceID` as the one
+mapping between a plan and a Price, Checkout and Customer Portal sessions,
+the signed webhook, and a reconciler that keeps `Entitlement.spec.plan` in
+step with the plan the subscription pays for, recording the subscription in
+`Entitlement.status.billing` and the `BillingSynced` condition. The
+**hub** owns nothing Stripe-shaped: it reads the Entitlement, forwards two
+flows, and relays the webhook. See `contrib-metering/docs/billing.md` for
+the flows, the ownership rule and the per-environment setup.
 
-- **Customer identity.** Both sides must land on the same Customer.
-  Convention: `metadata[kcp_account]=<orgUUID>` and
-  `Idempotency-Key: org-<uuid>` on create; the hub creates first (it needs
-  the id for Checkout) and stores it in
-  `Organization.status.billing.customerID`; contrib-metering's backend
-  looks up by the same metadata before creating. Verify the backend's lookup
-  does that rather than always creating.
-- **Mapping.** Product and recurring Price per paid Plan; Entitlement
-  Feature `plan.<name>` per Plan (`Plan` has no field for it, so the hub
-  keeps the map in `config/metering/stripe.yaml` or a `Plan` annotation);
-  add-on features map to `Entitlement.spec.overrides` rows. Subscription
-  status mirrors into `status.billing.subscriptionStatus`.
-- **Flows.** `POST /api/orgs/{org}/billing/checkout {plan}` and
-  `POST /api/orgs/{org}/billing/portal` (org admins). A public,
-  signature-verified `POST /api/billing/stripe/webhook` only enqueues the
-  org; the billing reconciler re-reads active entitlements and the
-  subscription from Stripe and writes `status.billing` and the Entitlement's
-  plan. Replays, reordering and the 10-entitlement summary cap are harmless
-  because the reconciler never trusts the event body. Periodic resync and an
-  admin button cover lost deliveries.
-- **Downgrade and non-payment.** Losing the plan feature drops the org to
-  the default plan; creates stop at the new limits, data stays. `past_due`
-  is a banner; `unpaid` or `canceled` revokes. Suspension is never automatic.
-- **Metered spend.** Providers' Consumption UsageRecords flow through the
-  controller to Stripe meters; overage is a metered Price on the same
-  subscription.
-- **Config and safety.** `--stripe-secret-key` (restricted key: Customers
-  write, Checkout and Portal sessions write, Entitlements and Subscriptions
-  read) and `--stripe-webhook-secret` on the hub; the metering chart gets its
-  own key limited to Customers read and Meter Events write. `livemode` check,
-  per-peer rate limit on the webhook route, `stripe listen` in Tilt,
-  `stripe-mock` in e2e. Self-hosted installs and org-owned providers use the
-  manual plan path.
+- **Hub seam** (`pkg/hub/metering/billing.go`, landed 31 Oct):
+  `GET /api/orgs/{org}/billing` composes the organization's plan, effective
+  limits, usage, over-limit flags, `status.billing` and the plans on offer
+  (`spec.subscription.priceID` set means sellable) from the metering store;
+  `POST /api/orgs/{org}/billing/checkout {plan}` and `POST
+  …/billing/portal` (org admins) call the deployment's `/billing/checkout`
+  and `/billing/portal` with the operator token and the settings page as the
+  return address (`?billing=success|canceled|portal`), answering `{url}`;
+  `POST /api/billing/webhook` (public) relays body and `Stripe-Signature`
+  to `/billing/webhook` unchanged. `GET /billing/status` on the deployment
+  tells the hub whether plans are sold at all; without it the page shows the
+  plan read-only. The organization settings page renders all of this in
+  `OrgBillingCard.vue`.
+- **Who owns the plan.** `Organization.spec.plan` (admin-only) still wins:
+  the hub's reconciler writes it to the Entitlement with
+  `metering.contrib.kcp.io/plan-source=operator`, which the billing
+  reconciler respects, and clears the label with the assignment. Otherwise
+  the subscription owns the plan. The free-organizations cap (O-5) reads the
+  Entitlement's plan when metering is installed, so a paid organization is
+  not counted as free whichever way it was paid for.
+- **Environments.** console-dev runs Stripe test mode: a test key and
+  webhook secret in the metering namespace, test-mode Price ids on the Plans
+  the ops Kustomization applies, and the hub's public
+  `/api/billing/webhook` registered as the test endpoint. Production is the
+  same chart with live values. The deployment ignores an event from the
+  other environment, so the two can never cross.
+- **Not yet built.** Metered spend (Consumption meters as Stripe meter
+  events on the subscription's metered Price) stays on the usage backend's
+  flush and needs the subscription item wired per plan; a per-peer rate
+  limit on the public webhook route; `past_due` as a banner is read from
+  `status.billing.status` but there is no notification path; trials are a
+  plan or a Stripe trial, still open.
 
 ## 11. Phases
 

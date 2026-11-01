@@ -205,6 +205,9 @@ Identity-only (`/api`):
 ```
 GET    /api/orgs                       → {"items":[{uuid,displayName,personal,role,workspaceCreation,catalogEntryCreation,createdAt,deletionRequestedAt,initialWorkspacePending}]}
 POST   /api/orgs                       {"displayName":…,"workspaceCreation":…,"catalogEntryCreation":…}
+GET    /api/orgs/{org}/billing         → {installed,enabled,livemode,plan,limits[],usage{},subscription?,plans[]} (metering)
+POST   /api/orgs/{org}/billing/checkout {"plan":…} → {url} to redirect to (org admin; a hosted Checkout)
+POST   /api/orgs/{org}/billing/portal  → {url} to redirect to (org admin; the billing provider's Customer Portal)
 GET    /api/users/me                   → {user,email,displayName,rbacIdentity}
 GET    /api/users/search?q=<5..254 chars>   prefix match on email/name (or a static member id) → items[{user,memberId,email,displayName}]
 DELETE /api/users/me
@@ -225,8 +228,8 @@ POST             /api/orgs/{org}/providers/{name}/credentials/rotate
 GET|POST         /api/orgs/{org}/memberships                     POST {"user","role":"admin|member","invite"?}
 DELETE           /api/orgs/{org}/memberships/me
 PATCH|DELETE     /api/orgs/{org}/memberships/{user}              PATCH {"role"}; DELETE ?cascade=true drops workspace rows too
-GET|POST         /api/orgs/{org}/workspaces                      → items[{uuid,orgUUID,displayName,clusterName,role,deletionRequestedAt}]; POST {"displayName"}
-GET|PATCH|DELETE /api/orgs/{org}/workspaces/{ws}
+GET|POST         /api/orgs/{org}/workspaces                      → items[{uuid,orgUUID,displayName,clusterName,role,deletionRequestedAt,deletionForced}]; POST {"displayName"}
+GET|PATCH|DELETE /api/orgs/{org}/workspaces/{ws}                 DELETE ?force=true skips the 30-day grace period (not restorable; undelete → 409)
 POST             /api/orgs/{org}/workspaces/{ws}/undelete
 GET|POST         /api/orgs/{org}/workspaces/{ws}/memberships
 DELETE           /api/orgs/{org}/workspaces/{ws}/memberships/me

@@ -23,6 +23,9 @@ export interface AdminWorkspace {
   // last moment a restore is accepted.
   deletionRequestedAt?: string
   purgeAt?: string
+  // Set when the deletion skipped the recovery window: there is no purgeAt
+  // and the hub refuses to restore it.
+  deletionForced?: boolean
 }
 export interface AdminOrg {
   name: string

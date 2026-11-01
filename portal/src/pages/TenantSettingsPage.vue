@@ -31,6 +31,7 @@ import MemberList from '@/components/MemberList.vue'
 import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
+import OrgBillingCard from '@/components/OrgBillingCard.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
@@ -477,7 +478,7 @@ const workspaceRows = computed(() => workspaces.value.map((workspace) => ({
   ...workspace,
   name: workspace.displayName || workspace.uuid,
   status: workspaceStatus(workspace),
-  deletion: workspaceDeletionCountdown(workspace.deletionRequestedAt),
+  deletion: workspaceDeletionCountdown(workspace),
 })))
 
 const selectedWorkspace = computed<WorkspaceRow | null>(() => {
@@ -491,8 +492,11 @@ function workspaceStatus(workspace: WorkspaceRow): 'Ready' | 'Provisioning' | 'D
   return 'Ready'
 }
 
-function workspaceDeletionCountdown(deletionRequestedAt?: string | null): string | null {
+function workspaceDeletionCountdown(workspace: WorkspaceRow): string | null {
+  const { deletionRequestedAt } = workspace
   if (!deletionRequestedAt) return null
+  // A forced deletion has no window: the hub cascades on its next sweep.
+  if (workspace.deletionForced) return 'Deleting now. No recovery window.'
   const requestedAtMs = Date.parse(deletionRequestedAt)
   if (!Number.isFinite(requestedAtMs)) return 'Deletion timing unavailable.'
   // Local delete stamps can be milliseconds newer than the minute ticker. A
@@ -556,6 +560,7 @@ watch(
 
 const workspaceDeleteSelectionDisabled = computed(() =>
   workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || !!restoringWorkspaceUUID.value ||
+  !!forceDeletingWorkspaceUUID.value ||
   !organizationTargetUUID.value || !!organizationSettingsOrg.value?.deletionRequestedAt,
 )
 
@@ -569,11 +574,13 @@ function workspaceBulkDeleteDisabledReason(workspace: WorkspaceRow): string | nu
     return 'Restore the organization before deleting workspaces.'
   }
   if (workspace.role !== 'admin') return 'Workspace admin access is required to delete this workspace.'
+  if (workspace.deletionForced) return 'This workspace is being deleted now.'
   if (workspace.deletionRequestedAt) return 'This workspace is already scheduled for deletion.'
   if (tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === workspace.uuid) {
     return 'Switch to another operating workspace before deleting this one.'
   }
   if (restoringWorkspaceUUID.value) return 'Wait for the workspace restore to finish before selecting workspaces.'
+  if (forceDeletingWorkspaceUUID.value) return 'Wait for the running deletion to finish before selecting workspaces.'
   return null
 }
 
@@ -631,7 +638,7 @@ function workspaceDeleteContextIsCurrent(context: WorkspaceDeleteContext): boole
 function workspaceDeleteDispatchIsAllowed(context: WorkspaceDeleteContext): boolean {
   return workspaceDeleteContextIsCurrent(context) &&
     !organizationSettingsOrg.value?.deletionRequestedAt && !activeOrg.value?.deletionRequestedAt &&
-    workspaceInventoryVerified.value && !restoringWorkspaceUUID.value
+    workspaceInventoryVerified.value && !restoringWorkspaceUUID.value && !forceDeletingWorkspaceUUID.value
 }
 
 function workspaceDeleteTargetIsEligible(context: WorkspaceDeleteContext, uuid: string): boolean {
@@ -667,7 +674,7 @@ function recordWorkspaceDeleteOutcomes(
 }
 
 async function requestWorkspaceDeletions(keys: Array<string | number>, retryOnly: boolean): Promise<void> {
-  if (workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || restoringWorkspaceUUID.value) return
+  if (workspaceDeleteBatchBusy.value || !workspaceInventoryVerified.value || restoringWorkspaceUUID.value || forceDeletingWorkspaceUUID.value) return
   const orgUUID = organizationTargetUUID.value
   if (!orgUUID || activeSection.value !== 'organizations' || organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) return
 
@@ -779,9 +786,11 @@ async function onRetryFailedWorkspaceDeletions(): Promise<void> {
 }
 
 const restoringWorkspaceUUID = ref<string | null>(null)
+const forceDeletingWorkspaceUUID = ref<string | null>(null)
 async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
   if (!workspaceInventoryVerified.value || workspace.orgUUID !== tenant.orgUUID ||
-    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt || restoringWorkspaceUUID.value || workspaceDeleteBatchBusy.value) return
+    activeOrg.value?.deletionRequestedAt || workspace.role !== 'admin' || !workspace.deletionRequestedAt ||
+    workspace.deletionForced || restoringWorkspaceUUID.value || forceDeletingWorkspaceUUID.value || workspaceDeleteBatchBusy.value) return
   const org = workspace.orgUUID
   restoringWorkspaceUUID.value = workspace.uuid
   try {
@@ -791,6 +800,57 @@ async function restoreWorkspace(workspace: WorkspaceRow): Promise<void> {
     if (tenant.orgUUID === org) toast('error', error instanceof Error ? error.message : 'Could not restore workspace. Try again.')
   } finally {
     if (restoringWorkspaceUUID.value === workspace.uuid) restoringWorkspaceUUID.value = null
+  }
+}
+
+function workspaceForceDeleteDisabledReason(workspace: WorkspaceRow): string | null {
+  if (!workspaceInventoryVerified.value) return 'Verify the current workspace inventory before deleting.'
+  if (workspace.orgUUID !== tenant.orgUUID || organizationTargetUUID.value !== tenant.orgUUID) {
+    return 'This workspace is outside the current organization settings scope.'
+  }
+  if (organizationSettingsOrg.value?.deletionRequestedAt || activeOrg.value?.deletionRequestedAt) {
+    return 'Restore the organization before deleting workspaces.'
+  }
+  if (workspace.role !== 'admin') return 'Workspace admin access is required to delete this workspace.'
+  if (workspace.deletionForced) return 'This workspace is already being deleted now.'
+  if (tenant.workspaceMode === 'workspace' && tenant.workspaceUUID === workspace.uuid) {
+    return 'Switch to another operating workspace before deleting this one.'
+  }
+  if (restoringWorkspaceUUID.value || forceDeletingWorkspaceUUID.value || workspaceDeleteBatchBusy.value) {
+    return 'Wait for the running workspace action to finish.'
+  }
+  return null
+}
+
+// forceDeleteWorkspace deletes one workspace without the 30-day recovery
+// window. The hub stamps the kcp Workspace forced and its reconciler
+// cascades on the next sweep, so the row reads "Deleting now" until the
+// inventory drops it. Unlike the bulk action this is never restorable, so
+// the confirmation says so in plain words and names the exact target.
+async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
+  if (workspaceForceDeleteDisabledReason(workspace)) return
+  const org = workspace.orgUUID
+  const name = workspace.displayName || workspace.uuid
+  const requestRoute = route.fullPath
+  const confirmed = await confirmDialog({
+    title: `Delete "${name}" now?`,
+    message: `This skips the 30-day recovery window. The workspace and everything in it are removed permanently and cannot be restored.\n\nWorkspace: ${name} (UUID ${workspace.uuid})`,
+    danger: true,
+    confirmLabel: 'Delete now',
+  })
+  if (!confirmed) return
+  // Re-validate after the modal: the route, organization, operating
+  // workspace or inventory may have changed while it was open.
+  const current = workspaces.value.find((candidate) => candidate.uuid === workspace.uuid)
+  if (!current || route.fullPath !== requestRoute || tenant.orgUUID !== org || workspaceForceDeleteDisabledReason(current)) return
+  forceDeletingWorkspaceUUID.value = workspace.uuid
+  try {
+    await tenant.forceDeleteWorkspace(org, workspace.uuid)
+    if (tenant.orgUUID === org) toast('ok', `Deleting "${name}" now. It cannot be restored.`)
+  } catch (error) {
+    if (tenant.orgUUID === org) toast('error', error instanceof Error ? error.message : 'Could not delete the workspace now. Try again.')
+  } finally {
+    if (forceDeletingWorkspaceUUID.value === workspace.uuid) forceDeletingWorkspaceUUID.value = null
   }
 }
 
@@ -2896,6 +2956,12 @@ function fmtDate(s?: string | null): string {
             </div>
           </section>
 
+          <OrgBillingCard
+            v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt"
+            :org-uuid="organizationSettingsOrg.uuid"
+            :can-manage="canEditOrg"
+          />
+
           <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4 rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
             <div>
               <h2 id="organization-workspaces-title" class="text-lg font-semibold text-text-primary">Workspaces</h2>
@@ -2978,7 +3044,7 @@ function fmtDate(s?: string | null): string {
               :row-selection-disabled-reason="workspaceRowSelectionDisabledReason"
               :selection-label="workspaceSelectionLabel"
               :selection-disabled="workspaceDeleteSelectionDisabled"
-              :selection-clear-disabled="workspaceDeleteBatchBusy || !!restoringWorkspaceUUID"
+              :selection-clear-disabled="workspaceDeleteBatchBusy || !!restoringWorkspaceUUID || !!forceDeletingWorkspaceUUID"
               :interactive="false"
               :loaded="workspaceListLoaded"
               :loading="workspaceListLoading"
@@ -3024,13 +3090,23 @@ function fmtDate(s?: string | null): string {
               </template>
               <template #actions="{ row }">
                 <ResourceTableActionButton
-                  v-if="row.deletionRequestedAt && row.role === 'admin'"
+                  v-if="row.deletionRequestedAt && !row.deletionForced && row.role === 'admin'"
                   :icon="RotateCcw"
                   :label="`Restore workspace ${String(row.name)}`"
                   :busy-label="`Restoring workspace ${String(row.name)}…`"
                   :busy="restoringWorkspaceUUID === row.uuid"
-                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID || workspaceDeleteBatchBusy"
+                  :disabled="!workspaceInventoryVerified || !!restoringWorkspaceUUID || !!forceDeletingWorkspaceUUID || workspaceDeleteBatchBusy"
                   @click="restoreWorkspace(row as unknown as WorkspaceRow)"
+                />
+                <ResourceTableActionButton
+                  v-if="row.role === 'admin' && !row.deletionForced"
+                  :icon="Trash2"
+                  tone="danger"
+                  :label="`Delete workspace ${String(row.name)} now, without the recovery window`"
+                  :busy-label="`Deleting workspace ${String(row.name)} now…`"
+                  :busy="forceDeletingWorkspaceUUID === row.uuid"
+                  :disabled="!!workspaceForceDeleteDisabledReason(row as unknown as WorkspaceRow)"
+                  @click="forceDeleteWorkspace(row as unknown as WorkspaceRow)"
                 />
               </template>
             </ResourceTable>

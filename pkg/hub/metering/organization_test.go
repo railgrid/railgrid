@@ -250,8 +250,8 @@ func TestSpecPlanIsFollowedAndOverridesArePreserved(t *testing.T) {
 	if got := planOf(t, ws, "org-1"); got != "team" {
 		t.Fatalf("plan = %q, want team", got)
 	}
-	if entitlementOf(t, ws, "org-1").GetLabels()[LabelPlanFromSpec] != "true" {
-		t.Fatal("entitlement created from spec.plan must carry the label")
+	if labels := entitlementOf(t, ws, "org-1").GetLabels(); labels[LabelPlanFromSpec] != "true" || labels[PlanSourceLabel] != PlanSourceOperator {
+		t.Fatalf("entitlement created from spec.plan must carry the hub's and billing's labels: %v", labels)
 	}
 	if got := reportAccount(t, ws, "org-1"); got != "org-1" {
 		t.Fatalf("report account = %q, want org-1", got)
@@ -282,8 +282,8 @@ func TestClearingSpecPlanReturnsAHubWrittenPlanToTheDefault(t *testing.T) {
 	if got := planOf(t, ws, "org-1"); got != "free" {
 		t.Fatalf("plan = %q, want free", got)
 	}
-	if entitlementOf(t, ws, "org-1").GetLabels()[LabelPlanFromSpec] != "" {
-		t.Fatal("label must go with the plan the hub stopped writing")
+	if labels := entitlementOf(t, ws, "org-1").GetLabels(); labels[LabelPlanFromSpec] != "" || labels[PlanSourceLabel] != "" {
+		t.Fatalf("labels must go with the plan the hub stopped writing: %v", labels)
 	}
 	if got := overridesOf(t, ws, "org-1"); len(got) != 1 {
 		t.Fatalf("overrides were not preserved: %v", got)
