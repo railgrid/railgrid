@@ -88,7 +88,12 @@ spec:
       crd: {}
   - group: agents.railgrid.ai
     name: modelcredentials
-    schema: v261101-9f4e428d.modelcredentials.agents.railgrid.ai
+    schema: v261101-25a3c54f.modelcredentials.agents.railgrid.ai
+    storage:
+      crd: {}
+  - group: agents.railgrid.ai
+    name: modelproviderconnections
+    schema: v261101-25a3c54f.modelproviderconnections.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -244,6 +249,24 @@ spec:
           name: agents.railgrid.ai
   - group: agents.railgrid.ai
     name: modelcredentials/test
+    schema: v260924-87f1980f.test.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: modelproviderconnections/discover
+    schema: v260924-87f1980f.discover.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: modelproviderconnections/test
     schema: v260924-87f1980f.test.agents.railgrid.ai
     storage:
       virtual:
