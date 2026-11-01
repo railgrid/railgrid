@@ -51,6 +51,8 @@ func TestSharedConnectionRejectsInvalidReferences(t *testing.T) {
 			switch name {
 			case "missing":
 				connection = nil
+			case "empty-model":
+				model.Spec.Model = ""
 			case "self":
 				model.Name = "account"
 			case "chain":
