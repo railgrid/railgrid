@@ -32,6 +32,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -49,6 +50,12 @@ type Handler struct {
 	// Organization.spec.plan. Nil means plan assignment is unavailable
 	// (metering not configured) and the route answers 503.
 	planExists func(ctx context.Context, name string) (bool, error)
+	// resetPlan puts an organization's metering Entitlement back on the
+	// default plan when the plan route is handed an empty plan. Clearing
+	// Organization.spec.plan alone cannot do that for an Entitlement an
+	// admin edited directly (the reconciler leaves those alone), so the
+	// explicit reset goes to metering too. Nil skips it.
+	resetPlan func(ctx context.Context, org string) error
 }
 
 // NewHandler builds an admin Handler.
@@ -68,6 +75,15 @@ func (h *Handler) WithSoftDeleteGracePeriod(d time.Duration) *Handler {
 // existence check (metering.PlanExists in production).
 func (h *Handler) WithPlanLookup(exists func(ctx context.Context, name string) (bool, error)) *Handler {
 	h.planExists = exists
+	return h
+}
+
+// WithPlanReset makes PUT /organizations/{name}/plan with an empty plan
+// also reset the organization's Entitlement to the default plan
+// (metering.ResetPlan in production), so the route returns an organization
+// to the default plan whoever put it on its current one.
+func (h *Handler) WithPlanReset(reset func(ctx context.Context, org string) error) *Handler {
+	h.resetPlan = reset
 	return h
 }
 
@@ -187,6 +203,10 @@ type workspaceDTO struct {
 	Providers           []string `json:"providers"`
 	DeletionRequestedAt *string  `json:"deletionRequestedAt,omitempty"`
 	PurgeAt             *string  `json:"purgeAt,omitempty"`
+	// DeletionForced is set when the deletion skips the recovery window:
+	// the cascade runs on the reconciler's next sweep, so there is no
+	// PurgeAt deadline and an undelete is refused.
+	DeletionForced bool `json:"deletionForced,omitempty"`
 }
 
 // softDeleteStamps renders a soft-delete timestamp and the matching purge
@@ -233,6 +253,10 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 				}
 				if ws.DeletionRequestedAt != nil {
 					wd.DeletionRequestedAt, wd.PurgeAt = h.softDeleteStamps(*ws.DeletionRequestedAt)
+					if ws.DeletionForced {
+						wd.DeletionForced = true
+						wd.PurgeAt = nil
+					}
 				}
 				dto.Workspaces = append(dto.Workspaces, wd)
 			}
@@ -348,6 +372,15 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// An empty plan is an explicit reset, whether or not spec.plan had
+		// anything to clear: a plan set on the Entitlement directly leaves
+		// spec.plan empty, and the reconciler keeps such a plan on purpose.
+		if req.Plan == "" && h.resetPlan != nil {
+			if err := h.resetPlan(r.Context(), org.Name); err != nil {
+				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("organization %q is detached from its plan but its entitlement could not be reset: %v", name, err))
+				return
+			}
+		}
 		writeJSON(w, map[string]any{"name": org.Name, "plan": org.Spec.Plan})
 		return
 	}
@@ -359,7 +392,8 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 // the workspace carries no soft-delete stamp (a workspace that does not
 // exist reads as unstamped, which is the same answer: nothing to restore),
 // 404 only if it vanished between the read and the clear, 409 once the
-// window has elapsed.
+// window has elapsed or when the deletion was forced (no window to restore
+// within).
 func (h *Handler) undeleteOrgWorkspace(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	ws := mux.Vars(r)["ws"]
@@ -373,6 +407,8 @@ func (h *Handler) undeleteOrgWorkspace(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, ErrGracePeriodExpired):
 		writeError(w, http.StatusConflict, "workspace deletion grace period has expired; the cascade has started")
+	case errors.Is(err, kcp.ErrWorkspaceDeletionForced):
+		writeError(w, http.StatusConflict, "workspace deletion was forced and cannot be restored")
 	case apierrors.IsNotFound(err):
 		writeError(w, http.StatusNotFound, fmt.Sprintf("workspace %q in organization %q not found", ws, name))
 	default:

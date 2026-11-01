@@ -17,7 +17,9 @@ limitations under the License.
 package restapi
 
 import (
+	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 )
 
 // CreateWorkspaceRequest is the POST body for creating a Workspace.
@@ -264,13 +267,24 @@ func (h *Handler) patchWorkspace(w http.ResponseWriter, r *http.Request) {
 
 // deleteWorkspace soft-deletes a Workspace by stamping the
 // deletion-requested-at annotation. Picked up by the soft-delete
-// reconciler (PR #212).
+// reconciler (PR #212). With ?force=true the workspace is instead marked
+// for deletion without the recovery window: the reconciler cascades on its
+// next sweep and undelete is refused.
 func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireTenantContext(w, r, true, true); !ok {
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]
 	wsUUID := mux.Vars(r)["ws"]
+
+	force, ok := parseForceParam(w, r)
+	if !ok {
+		return
+	}
+	if force {
+		h.forceDeleteWorkspace(w, r, orgUUID, wsUUID)
+		return
+	}
 
 	// Keep DELETE idempotent without extending the recovery window. The
 	// annotation is the source of truth, so an already-requested deletion is a
@@ -306,10 +320,43 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	writeError(w, lastErr)
 }
 
+// parseForceParam reads the optional ?force query parameter of DELETE.
+// Absent means false; anything strconv.ParseBool rejects is a 400, so a
+// typo such as ?force=yes cannot silently fall back to the recoverable path.
+func parseForceParam(w http.ResponseWriter, r *http.Request) (force bool, ok bool) {
+	raw := r.URL.Query().Get("force")
+	if raw == "" {
+		return false, true
+	}
+	force, err := strconv.ParseBool(raw)
+	if err != nil {
+		writeError(w, newValidationError("force must be true or false"))
+		return false, false
+	}
+	return force, true
+}
+
+// forceDeleteWorkspace marks the Workspace for deletion without the
+// recovery window. One conditional update in the bootstrapper stamps the
+// forced marker and, unless the workspace is already inside its grace
+// window, the deletion timestamp: an earlier soft-delete keeps its original
+// timestamp, and an already-forced workspace is a successful no-op. The
+// cascade itself still belongs to the soft-delete reconciler, which runs it
+// on the next sweep; this handler never deletes anything directly.
+func (h *Handler) forceDeleteWorkspace(w http.ResponseWriter, r *http.Request, orgUUID, wsUUID string) {
+	if err := h.mgr.bootstrapper.SetWorkspaceDeletionForced(r.Context(), orgUUID, wsUUID, time.Now().UTC()); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // undeleteWorkspace clears the deletion-requested-at annotation while the
 // recovery window (Manager.SoftDeleteGracePeriod) is still open. The read/clear loop handles conflicts
 // from the soft-delete reconciler (or a concurrent delete) without clearing a
-// newer request that won the race.
+// newer request that won the race. A forced deletion has no window and is
+// refused with 409; the bootstrapper decides that on the read its clear is
+// conditioned on, so a force landing mid-restore is never wiped.
 func (h *Handler) undeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.requireTenantContext(w, r, true, true); !ok {
 		return
@@ -338,6 +385,10 @@ func (h *Handler) undeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		err = h.mgr.bootstrapper.ClearWorkspaceDeletionAnnotation(r.Context(), orgUUID, wsUUID)
 		if err == nil {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if errors.Is(err, kcp.ErrWorkspaceDeletionForced) {
+			writeStatus(w, http.StatusConflict, "Conflict", "workspace deletion was forced and cannot be restored")
 			return
 		}
 		lastErr = err
@@ -396,6 +447,9 @@ func (h *Handler) workspaceView(r *http.Request, orgUUID, wsUUID string) (Worksp
 	if t, found, err := h.mgr.bootstrapper.GetWorkspaceDeletionRequestedAt(r.Context(), orgUUID, wsUUID); err == nil && found && t != nil {
 		tt := *t
 		view.DeletionRequestedAt = &tt
+		if forced, err := h.mgr.bootstrapper.GetWorkspaceDeletionForced(r.Context(), orgUUID, wsUUID); err == nil && forced {
+			view.DeletionForced = true
+		}
 	}
 	return view, true
 }

@@ -98,8 +98,9 @@ func NewDiscovery(base *rest.Config, workspace string, logger klog.Logger) (*Dis
 	return &Discovery{client: client, workspace: workspace, logger: logger}, nil
 }
 
-// Run polls until ctx ends. Never fatal: an unreachable or missing workspace
-// means "not installed" until it is.
+// Run polls until ctx ends. Never fatal: a missing workspace means "not
+// installed" until it is, and a workspace that cannot be read right now
+// keeps the last answer (see refresh).
 func (d *Discovery) Run(ctx context.Context) {
 	for {
 		d.refresh(ctx)
@@ -118,15 +119,23 @@ func (d *Discovery) Refresh(ctx context.Context) (Endpoints, bool) {
 	return d.Current()
 }
 
+// refresh reads the published objects once. Only a definite answer moves
+// the state: the ConfigMap present, or kcp saying it is not there (NotFound,
+// or Forbidden on a workspace the hub cannot see). Any other failure, a
+// timeout or a kcp hiccup, is transient and keeps the last answer: a gate
+// that reads "installed" (the free-organizations cap, plan assignment) must
+// not open because one poll failed while the deployment and every
+// allowance in it are still there.
 func (d *Discovery) refresh(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	cm, err := d.client.CoreV1().ConfigMaps(metav1.NamespaceDefault).Get(ctx, endpointsConfigMap, metav1.GetOptions{})
 	if err != nil {
-		if !apierrors.IsNotFound(err) && !apierrors.IsForbidden(err) {
-			d.logger.V(2).Info("metering discovery: endpoints not readable", "workspace", d.workspace, "error", err.Error())
+		if apierrors.IsNotFound(err) || apierrors.IsForbidden(err) {
+			d.set(nil)
+			return
 		}
-		d.set(nil)
+		d.logger.V(2).Info("metering discovery: endpoints not readable, keeping the last answer", "workspace", d.workspace, "error", err.Error())
 		return
 	}
 	e := &Endpoints{
@@ -168,6 +177,15 @@ func (d *Discovery) Current() (Endpoints, bool) {
 		return Endpoints{}, false
 	}
 	return *d.current, true
+}
+
+// Installed says whether a deployment is discovered and whether that is a
+// definite answer: known is false until the first poll has reached kcp. A
+// gate that must fail closed treats "not known" as installed.
+func (d *Discovery) Installed() (installed, known bool) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.current != nil, d.checked
 }
 
 // Handler serves the admin-area view of metering. Mount it under the admin

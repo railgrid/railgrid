@@ -90,7 +90,12 @@ func (c Caps) ForUser(user *tenancyv1alpha1.User) Caps {
 // Entitlement in step with spec.plan, so this is the organization's plan
 // without a metering read.
 func IsFree(org *tenancyv1alpha1.Organization, defaultPlan string) bool {
-	return org.Spec.Plan == "" || org.Spec.Plan == defaultPlan
+	return IsFreePlan(org.Spec.Plan, defaultPlan)
+}
+
+// IsFreePlan reports whether plan is the free one: empty, or defaultPlan.
+func IsFreePlan(plan, defaultPlan string) bool {
+	return plan == "" || plan == defaultPlan
 }
 
 // Counter is the minimal interface the quota checks consume. The caller

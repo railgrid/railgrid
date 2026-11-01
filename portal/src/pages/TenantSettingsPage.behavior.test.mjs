@@ -197,6 +197,7 @@ function workspaceBulkDeleteFixture() {
     workspaceInventoryVerified: { value: true },
     workspaceListLoading: { value: false },
     restoringWorkspaceUUID: { value: null },
+    forceDeletingWorkspaceUUID: { value: null },
     activeSection: { value: 'organizations' },
     organizationTargetUUID: { value: 'org-a' },
     organizationSettingsOrg: { value: organization },
@@ -330,4 +331,124 @@ test('bulk delete settles through an inventory failure without reviving cleared 
   assert.equal(fixture.context.workspaceDeleteSummary.value.items.length, 2)
   assert.equal(fixture.context.workspaceDeleteSummary.value.items[1].error, 'Permission denied')
   refresh.resolve()
+})
+
+function workspaceForceDeleteFixture({ current = false, forced = false, scheduled = false } = {}) {
+  const confirmations = []
+  const calls = { force: [], toast: [] }
+  const organization = { uuid: 'org-a', displayName: 'Team A', deletionRequestedAt: null }
+  const workspace = {
+    uuid: 'workspace-a',
+    orgUUID: 'org-a',
+    displayName: 'Production',
+    role: 'admin',
+    deletionRequestedAt: scheduled || forced ? '2026-10-01T00:00:00Z' : null,
+    deletionForced: forced,
+  }
+  const context = {
+    workspaceInventoryVerified: { value: true },
+    organizationTargetUUID: { value: 'org-a' },
+    organizationSettingsOrg: { value: organization },
+    activeOrg: { value: organization },
+    restoringWorkspaceUUID: { value: null },
+    forceDeletingWorkspaceUUID: { value: null },
+    workspaceDeleteBatchBusy: { value: false },
+    workspaces: { value: [workspace] },
+    route: { fullPath: '/org-a/settings/organizations' },
+    // The sandboxed function checks `error instanceof Error`; share this
+    // realm's Error so a rejection thrown by the fixture is recognised.
+    Error,
+    tenant: {
+      orgUUID: 'org-a',
+      workspaceMode: current ? 'workspace' : 'organization',
+      workspaceUUID: current ? 'workspace-a' : null,
+      forceDeleteWorkspace: async (orgUUID, uuid) => { calls.force.push([orgUUID, uuid]) },
+    },
+    confirmDialog: (options) => {
+      const decision = deferred()
+      confirmations.push({ ...decision, options })
+      return decision.promise
+    },
+    toast: (...args) => calls.toast.push(args),
+  }
+  for (const name of ['workspaceForceDeleteDisabledReason', 'forceDeleteWorkspace']) context[name] = loadFunction(name, context)
+  return { context, workspace, calls, confirmations }
+}
+
+test('delete now says in plain words that the workspace cannot be restored and names the target', async () => {
+  const fixture = workspaceForceDeleteFixture({ scheduled: true })
+  const pending = fixture.context.forceDeleteWorkspace(fixture.workspace)
+  assert.equal(fixture.confirmations.length, 1)
+  assert.equal(fixture.confirmations[0].options.title, 'Delete "Production" now?')
+  assert.equal(fixture.confirmations[0].options.confirmLabel, 'Delete now')
+  assert.equal(fixture.confirmations[0].options.danger, true)
+  assert.match(fixture.confirmations[0].options.message, /skips the 30-day recovery window/)
+  assert.match(fixture.confirmations[0].options.message, /cannot be restored/)
+  assert.match(fixture.confirmations[0].options.message, /Production \(UUID workspace-a\)/)
+  fixture.confirmations[0].resolve(true)
+  await pending
+  assert.deepEqual(fixture.calls.force, [['org-a', 'workspace-a']])
+  assert.equal(fixture.context.forceDeletingWorkspaceUUID.value, null)
+  assert.deepEqual(fixture.calls.toast, [['ok', 'Deleting "Production" now. It cannot be restored.']])
+})
+
+test('delete now does nothing when the confirmation is declined', async () => {
+  const fixture = workspaceForceDeleteFixture()
+  const pending = fixture.context.forceDeleteWorkspace(fixture.workspace)
+  fixture.confirmations[0].resolve(false)
+  await pending
+  assert.deepEqual(fixture.calls.force, [])
+  assert.deepEqual(fixture.calls.toast, [])
+})
+
+for (const [name, change] of [
+  ['route changed', (context) => { context.route.fullPath = '/org-a/settings/workspaces' }],
+  ['organization changed', (context) => { context.tenant.orgUUID = 'org-b' }],
+  ['inventory unverified', (context) => { context.workspaceInventoryVerified.value = false }],
+  ['row became the operating workspace', (context) => { context.tenant.workspaceMode = 'workspace'; context.tenant.workspaceUUID = 'workspace-a' }],
+  ['row left the inventory', (context) => { context.workspaces.value = [] }],
+  ['organization deletion started', (context) => { context.activeOrg.value = { ...context.activeOrg.value, deletionRequestedAt: '2026-10-01T00:00:00Z' } }],
+]) {
+  test(`delete now confirmation does not send after ${name}`, async () => {
+    const fixture = workspaceForceDeleteFixture()
+    const pending = fixture.context.forceDeleteWorkspace(fixture.workspace)
+    assert.equal(fixture.confirmations.length, 1)
+    change(fixture.context)
+    fixture.confirmations[0].resolve(true)
+    await pending
+    assert.deepEqual(fixture.calls.force, [])
+    assert.deepEqual(fixture.calls.toast, [])
+  })
+}
+
+test('delete now is unavailable for the operating workspace, an already forced row, and non-admins', () => {
+  const current = workspaceForceDeleteFixture({ current: true })
+  assert.match(current.context.workspaceForceDeleteDisabledReason(current.workspace), /Switch to another operating workspace/)
+  const forced = workspaceForceDeleteFixture({ forced: true })
+  assert.match(forced.context.workspaceForceDeleteDisabledReason(forced.workspace), /already being deleted now/)
+  const member = workspaceForceDeleteFixture()
+  assert.match(member.context.workspaceForceDeleteDisabledReason({ ...member.workspace, role: 'member' }), /admin access/)
+  assert.equal(member.context.workspaceForceDeleteDisabledReason(member.workspace), null)
+  // A row already inside its grace period can still be deleted now.
+  const scheduled = workspaceForceDeleteFixture({ scheduled: true })
+  assert.equal(scheduled.context.workspaceForceDeleteDisabledReason(scheduled.workspace), null)
+})
+
+test('delete now surfaces the hub rejection as an error toast and releases the row', async () => {
+  const fixture = workspaceForceDeleteFixture()
+  fixture.context.tenant.forceDeleteWorkspace = async () => { throw new Error('Workspace is protected.') }
+  const pending = fixture.context.forceDeleteWorkspace(fixture.workspace)
+  fixture.confirmations[0].resolve(true)
+  await pending
+  assert.deepEqual(fixture.calls.toast, [['error', 'Workspace is protected.']])
+  assert.equal(fixture.context.forceDeletingWorkspaceUUID.value, null)
+})
+
+test('bulk selection keeps explaining scheduled rows and names a forced row as deleting now', () => {
+  const fixture = workspaceBulkDeleteFixture()
+  const scheduled = { ...fixture.context.workspaces.value[0], deletionRequestedAt: '2026-10-01T00:00:00Z' }
+  assert.match(fixture.context.workspaceBulkDeleteDisabledReason(scheduled), /already scheduled for deletion/)
+  assert.match(fixture.context.workspaceBulkDeleteDisabledReason({ ...scheduled, deletionForced: true }), /being deleted now/)
+  fixture.context.forceDeletingWorkspaceUUID.value = 'workspace-b'
+  assert.match(fixture.context.workspaceBulkDeleteDisabledReason(fixture.context.workspaces.value[0]), /running deletion/)
 })

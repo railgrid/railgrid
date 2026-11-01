@@ -38,6 +38,7 @@ import (
 // and the handler's re-read (a concurrent newer delete).
 type fakeWorkspaceOps struct {
 	stamp      *time.Time
+	forced     bool
 	conflicts  int
 	onConflict func(f *fakeWorkspaceOps)
 	clearCalls int
@@ -62,8 +63,14 @@ func (f *fakeWorkspaceOps) GetWorkspaceDeletionRequestedAt(context.Context, stri
 	t := *f.stamp
 	return &t, true, nil
 }
+func (f *fakeWorkspaceOps) GetWorkspaceDeletionForced(context.Context, string, string) (bool, error) {
+	return f.forced, nil
+}
 func (f *fakeWorkspaceOps) ClearWorkspaceDeletionAnnotation(context.Context, string, string) error {
 	f.clearCalls++
+	if f.forced {
+		return kcp.ErrWorkspaceDeletionForced
+	}
 	if f.conflicts > 0 {
 		f.conflicts--
 		if f.onConflict != nil {
@@ -107,6 +114,14 @@ func TestUndeleteOrgWorkspace(t *testing.T) {
 			grace:     24 * time.Hour,
 			wantErr:   ErrGracePeriodExpired,
 			wantStamp: &old,
+		},
+		{
+			name:       "forced deletion is never restorable",
+			ops:        &fakeWorkspaceOps{stamp: &recent, forced: true},
+			grace:      24 * time.Hour,
+			wantErr:    kcp.ErrWorkspaceDeletionForced,
+			wantStamp:  &recent,
+			wantClears: 1,
 		},
 		{
 			name:       "conflict with the same stamp retries and clears",
@@ -168,6 +183,7 @@ func TestUndeleteOrgWorkspaceHandlerStatus(t *testing.T) {
 	}{
 		{"inside window", &fakeWorkspaceOps{stamp: &recent}, http.StatusNoContent},
 		{"not stamped", &fakeWorkspaceOps{}, http.StatusNoContent},
+		{"forced", &fakeWorkspaceOps{stamp: &recent, forced: true}, http.StatusConflict},
 		{"expired", &fakeWorkspaceOps{stamp: &old}, http.StatusConflict},
 	}
 	for _, tc := range cases {

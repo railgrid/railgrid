@@ -30,7 +30,9 @@ import (
 // through controller-runtime; this sweep walks every Org workspace,
 // asks the kcp API for each Org's child workspaces, reads the
 // soft-delete annotation, and decides per workspace whether to mark
-// UMIs, run the cascade, or no-op.
+// UMIs, run the cascade, or no-op. A workspace whose deletion was forced
+// (tenants.railgrid.ai/deletion-forced) cascades on the first sweep that
+// sees it instead of waiting out the grace window.
 //
 // Performance note: this is intentionally simple — one ListOrgs call
 // plus one ListChildren per Org per tick. With workspacePollInterval
@@ -70,7 +72,14 @@ func (r *Reconciler) reconcileAllWorkspaces(ctx context.Context) error {
 				}
 				continue
 			}
-			if r.now().Before(r.gracePeriodFor(*requestedAt)) {
+			forced, err := r.provisioner.GetWorkspaceDeletionForced(ctx, orgUUID, wsUUID)
+			if err != nil {
+				logger.Error(err, "Reading forced-deletion annotation failed; will retry next sweep", "org", orgUUID, "workspace", wsUUID)
+				continue
+			}
+			// A forced deletion has no recovery window: the cascade runs on
+			// this sweep however recent the request is.
+			if !forced && r.now().Before(r.gracePeriodFor(*requestedAt)) {
 				if err := r.handleWorkspaceWithinGrace(ctx, state, orgUUID, wsUUID, *requestedAt); err != nil {
 					logger.Error(err, "Workspace within-grace sweep failed", "org", orgUUID, "workspace", wsUUID)
 				}

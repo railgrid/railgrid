@@ -17,7 +17,7 @@ import { confirmDialog } from '@/portalkit/confirm'
 import { authFetch } from '@/auth/session'
 
 import MeteringLimitsEditor, { type Limit } from './MeteringLimitsEditor.vue'
-import MeteringUsageList, { type LimitRow, type UsageWindow } from './MeteringUsageList.vue'
+import MeteringUsageList, { type LimitRow, type UsageWindow } from '@/components/MeteringUsageList.vue'
 
 type Endpoints = { portalURL: string; webhookURL?: string; auditURL?: string; version?: string; workspace: string }
 type Status = {
