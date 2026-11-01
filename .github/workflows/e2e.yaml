@@ -25,6 +25,7 @@ jobs:
       providers: ${{ steps.changes.outputs.providers }}
       portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
       image-matrix: ${{ steps.changes.outputs.image-matrix }}
+      has-images: ${{ steps.changes.outputs.has-images }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,22 +33,45 @@ jobs:
       - uses: ./.github/actions/ci-changes
         id: changes
 
-  actions-node-sdk:
+  # The four kind-based suites deploy the hub (and the standalone suite the
+  # agent) from a locally built image with imagePullPolicy Never, and drive the
+  # hub with bin/railgrid. Build those ONCE here and hand them to the suite
+  # jobs as one artifact: before this job each suite compiled the binaries and
+  # built the image itself, ~9 minutes of identical work per job. The tarball
+  # keeps the executable bits, which upload-artifact does not. This is also
+  # the PR-side validation of deploy/Dockerfile.hub and Dockerfile.agent; the
+  # image workflow builds them only where it publishes.
+  build:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
-    name: Actions Node SDK package contract
+    name: Build hub + agent (binaries and images)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-go-cache
         with:
-          node-version: 22
+          build-scope: build
 
-      - name: Test package and clean alias install
-        working-directory: provider-sdk/actions-node
-        run: npm test && npm run test:install
+      - name: Build binaries
+        run: make build
+
+      - name: Build hub and agent images
+        run: make e2e-images
+
+      - name: Archive binaries and images
+        run: |
+          docker save ghcr.io/railgrid/railgrid-hub:test ghcr.io/railgrid/railgrid-agent:test -o images.tar
+          tar -cf e2e-build.tar bin images.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: e2e-build
+          path: e2e-build.tar
+          compression-level: 1
+          retention-days: 1
+          if-no-files-found: error
 
   # Subprocess provider suites: hub with embedded kcp + provider binaries as
   # host processes, driven over HTTP + kcp dynamic clients. No kind, no Helm,
@@ -63,11 +87,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       # These suites build the provider binaries and assert on their behaviour,
       # so they must exercise THIS commit's provider-sdk, not the last published
@@ -101,7 +123,7 @@ jobs:
         run: make e2e-edges
 
   e2e-standalone:
-    needs: changes
+    needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: Standalone (embedded kcp + static token)
     runs-on: ubuntu-latest
@@ -109,11 +131,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -131,27 +151,17 @@ jobs:
       - name: Pin the dev hub host to loopback
         run: echo "127.0.0.1 console.127.0.0.1.sslip.io" | sudo tee -a /etc/hosts
 
-      - name: Build binaries
-        run: make build
-
-      - name: Add bin/ to PATH
-        run: echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Build hub Docker image
-        run: docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
-
-      - name: Build agent Docker image
-        run: docker build -f deploy/Dockerfile.agent -t ghcr.io/railgrid/railgrid-agent:test .
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-build
+      - name: Unpack binaries and images
+        run: |
+          tar -xf e2e-build.tar
+          docker load -i images.tar
+          echo "$(pwd)/bin" >> "$GITHUB_PATH"
 
       - name: Run standalone e2e
-        env:
-          RAILGRID_HUB_IMAGE: ghcr.io/railgrid/railgrid-hub
-          RAILGRID_HUB_IMAGE_PULL_POLICY: Never
-          RAILGRID_HUB_IMAGE_TAG: test
-          RAILGRID_AGENT_IMAGE: ghcr.io/railgrid/railgrid-agent
-          RAILGRID_AGENT_IMAGE_TAG: test
-          RAILGRID_AGENT_IMAGE_PULL_POLICY: Never
-        run: make e2e-standalone E2E_TIMEOUT=50m E2E_FLAGS="-ssh-keepalive-duration=30s -keep-clusters"
+        run: make e2e-standalone-run E2E_TIMEOUT=50m E2E_FLAGS="-ssh-keepalive-duration=30s -keep-clusters"
 
       - name: Collect kind cluster logs
         if: failure()
@@ -172,9 +182,8 @@ jobs:
             /tmp/kind-logs/
           retention-days: 3
 
-
   e2e-ssh:
-    needs: changes
+    needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: SSH Server-Mode (hub-only cluster)
     runs-on: ubuntu-latest
@@ -182,11 +191,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -198,27 +205,20 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The dev hub is https://console.127.0.0.1.sslip.io:9443. Public DNS
-      # already answers it with 127.0.0.1; pin it anyway so a DNS hiccup at
-      # sslip.io cannot fail the run.
       - name: Pin the dev hub host to loopback
         run: echo "127.0.0.1 console.127.0.0.1.sslip.io" | sudo tee -a /etc/hosts
 
-      - name: Build binaries
-        run: make build
-
-      - name: Add bin/ to PATH
-        run: echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Build hub Docker image
-        run: docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-build
+      - name: Unpack binaries and images
+        run: |
+          tar -xf e2e-build.tar
+          docker load -i images.tar
+          echo "$(pwd)/bin" >> "$GITHUB_PATH"
 
       - name: Run SSH e2e
-        env:
-          RAILGRID_HUB_IMAGE: ghcr.io/railgrid/railgrid-hub
-          RAILGRID_HUB_IMAGE_PULL_POLICY: Never
-          RAILGRID_HUB_IMAGE_TAG: test
-        run: make e2e-ssh E2E_TIMEOUT=30m E2E_FLAGS="-keep-clusters"
+        run: make e2e-ssh-run E2E_TIMEOUT=30m E2E_FLAGS="-keep-clusters"
 
       - name: Collect kind cluster logs
         if: failure()
@@ -238,8 +238,9 @@ jobs:
             *.log
             /tmp/kind-logs/
           retention-days: 3
+
   e2e-oidc:
-    needs: changes
+    needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: OIDC (Dex + auth-code flow)
     runs-on: ubuntu-latest
@@ -247,11 +248,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -263,9 +262,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The dev hub is https://console.127.0.0.1.sslip.io:9443. Public DNS
-      # already answers it with 127.0.0.1; pin it anyway so a DNS hiccup at
-      # sslip.io cannot fail the run.
       - name: Pin the dev hub host to loopback
         run: echo "127.0.0.1 console.127.0.0.1.sslip.io" | sudo tee -a /etc/hosts
 
@@ -277,23 +273,17 @@ jobs:
           helm repo add dexidp https://charts.dexidp.io
           helm repo update dexidp
 
-      - name: Build binaries
-        run: make build
-
-      - name: Add bin/ to PATH
-        run: echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Build hub Docker image
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-build
+      - name: Unpack binaries and images
         run: |
-          docker build -f deploy/Dockerfile.hub \
-            -t ghcr.io/railgrid/railgrid-hub:test .
+          tar -xf e2e-build.tar
+          docker load -i images.tar
+          echo "$(pwd)/bin" >> "$GITHUB_PATH"
 
       - name: Run OIDC e2e
-        env:
-          RAILGRID_HUB_IMAGE: ghcr.io/railgrid/railgrid-hub
-          RAILGRID_HUB_IMAGE_PULL_POLICY: Never
-          RAILGRID_HUB_IMAGE_TAG: test
-        run: make e2e-oidc E2E_TIMEOUT=35m E2E_FLAGS="-keep-clusters"
+        run: make e2e-oidc-run E2E_TIMEOUT=35m E2E_FLAGS="-keep-clusters"
 
       - name: Collect kind cluster logs
         if: failure()
@@ -315,7 +305,7 @@ jobs:
           retention-days: 3
 
   e2e-external-kcp:
-    needs: changes
+    needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: External KCP (kcp via Helm + static token)
     runs-on: ubuntu-latest
@@ -323,11 +313,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -339,9 +327,6 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # The dev hub is https://console.127.0.0.1.sslip.io:9443. Public DNS
-      # already answers it with 127.0.0.1; pin it anyway so a DNS hiccup at
-      # sslip.io cannot fail the run.
       - name: Pin the dev hub host to loopback
         run: echo "127.0.0.1 console.127.0.0.1.sslip.io" | sudo tee -a /etc/hosts
 
@@ -350,23 +335,17 @@ jobs:
           helm repo add kcp-dev https://kcp-dev.github.io/helm-charts
           helm repo update kcp-dev
 
-      - name: Build binaries
-        run: make build
-
-      - name: Add bin/ to PATH
-        run: echo "$(pwd)/bin" >> $GITHUB_PATH
-
-      - name: Build hub Docker image
+      - uses: actions/download-artifact@v4
+        with:
+          name: e2e-build
+      - name: Unpack binaries and images
         run: |
-          docker build -f deploy/Dockerfile.hub \
-            -t ghcr.io/railgrid/railgrid-hub:test .
+          tar -xf e2e-build.tar
+          docker load -i images.tar
+          echo "$(pwd)/bin" >> "$GITHUB_PATH"
 
       - name: Run external KCP e2e
-        env:
-          RAILGRID_HUB_IMAGE: ghcr.io/railgrid/railgrid-hub
-          RAILGRID_HUB_IMAGE_PULL_POLICY: Never
-          RAILGRID_HUB_IMAGE_TAG: test
-        run: make e2e-external-kcp E2E_TIMEOUT=70m E2E_FLAGS="-keep-clusters"
+        run: make e2e-external-kcp-run E2E_TIMEOUT=70m E2E_FLAGS="-keep-clusters"
 
       - name: Collect kind cluster logs
         if: failure()
@@ -400,11 +379,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -437,11 +414,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: ./.github/actions/free-disk-space
-
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
-          go-version-file: go.mod
+          build-scope: build
 
       - name: Install kind
         uses: helm/kind-action@v1
@@ -464,7 +439,7 @@ jobs:
   result:
     name: E2E result
     if: always()
-    needs: [changes, actions-node-sdk, e2e-cli, e2e-edges-connectivity, e2e-external-kcp, e2e-oidc, e2e-providers, e2e-ssh, e2e-standalone]
+    needs: [changes, build, e2e-cli, e2e-edges-connectivity, e2e-external-kcp, e2e-oidc, e2e-providers, e2e-ssh, e2e-standalone]
     runs-on: ubuntu-latest
     permissions:
       contents: read

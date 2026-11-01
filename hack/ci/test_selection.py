@@ -25,6 +25,7 @@ class SelectionTests(unittest.TestCase):
             {"provider": "app-studio", "test": True, "typecheck": True}])
         self.assertEqual(result["image-matrix"]["include"], [
             {"name": "app-studio", "image": "railgrid/railgrid/app-studio-provider"}])
+        self.assertTrue(result["has-images"])
         paths = [STUDIO + "package-lock.json", "providers/agents/portal/src/App.vue"]
         result = selection("pull_request", paths, "fork-owner")
         self.assertEqual(result["providers"], ["agents", "app-studio"])
@@ -43,14 +44,51 @@ class SelectionTests(unittest.TestCase):
                      "provider-sdk/agentkit/styles.ts", "provider-sdk/agentkit-vue/Chat.vue",
                      "providers/app-studio/main.go", "providers/app-studio/go.mod",
                      "go.mod", "go.sum", "go.work", "providers/app-studio/Dockerfile",
-                     "Makefile", ".github/workflows/ci.yaml", "docs/design/README.md",
+                     "Makefile", ".github/workflows/ci.yaml",
                      "unknown.txt", "providers/new-provider/portal/App.vue",
                      STUDIO + "../main.go", STUDIO + "src//App.vue"]:
             with self.subTest(path=path):
                 self.assertEqual(classify("pull_request", [path])[0], "full")
                 self.assertEqual(classify("pull_request", [STUDIO + "src/App.vue", path])[0], "full")
+                self.assertEqual(classify("pull_request", ["docs/providers.md", path])[0], "full")
         for paths in ([], None):
             self.assertEqual(classify("pull_request", paths)[0], "full")
+
+    def test_docs_only_changes_select_docs_mode_with_no_portals_or_images(self):
+        for paths in (["docs/providers.md"], ["README.md", "AGENTS.md"], ["docs/design/foundations/tokens.yaml"],
+                      ["providers/edges/deploy/chart/README.md", "hack/ci/README.md"]):
+            with self.subTest(paths=paths):
+                self.assertEqual(classify("pull_request", paths), ("docs", [], "Every changed file is documentation."))
+                result = selection("pull_request", paths, "railgrid")
+                self.assertEqual(result["mode"], "docs")
+                self.assertEqual(result["portal-matrix"]["include"], [])
+                self.assertEqual(result["image-matrix"]["include"], [])
+                self.assertFalse(result["has-images"])
+        # A portal edit beside a docs edit is a portal change, not a docs change.
+        self.assertEqual(classify("pull_request", ["docs/providers.md", STUDIO + "src/App.vue"])[0], "full")
+        for event in ("push", "workflow_dispatch"):
+            self.assertEqual(classify(event, ["docs/providers.md"])[0], "full")
+
+    def test_full_mode_pr_builds_only_images_whose_inputs_changed(self):
+        def names(paths):
+            result = selection("pull_request", paths, "railgrid")
+            self.assertEqual(result["mode"], "full")
+            self.assertEqual(result["has-images"], bool(result["image-matrix"]["include"]))
+            return [entry["name"] for entry in result["image-matrix"]["include"]]
+        self.assertEqual(names(["Makefile"]), [])
+        self.assertEqual(names(["pkg/hub/server.go"]), ["agents"])
+        self.assertEqual(names(["go.sum"]), ["agents"])
+        self.assertEqual(names(["providers/code/main.go"]), ["code"])
+        self.assertEqual(names(["providers/infrastructure/backend/kro/x.go"]), ["infrastructure", "access-proxy"])
+        # dev-agent is a nested directory of the infrastructure image's context too.
+        self.assertEqual(names(["providers/infrastructure/dev-agent/main.go"]),
+                         ["infrastructure", "infrastructure/dev-agent", "infrastructure/universal-dev", "access-proxy"])
+        self.assertEqual(names(["provider-sdk/serve/serve.go"]),
+                         ["quickstart", "infrastructure", "code", "kuery", "app-studio", "agents", "edges", "access-proxy"])
+        for path in ("hack/ci/matrices.json", ".github/workflows/images.yaml", ".github/actions/ci-changes/action.yml"):
+            self.assertEqual(len(names([path])), 10, path)
+        for entry in selection("pull_request", ["hack/ci/matrices.json"], "railgrid")["image-matrix"]["include"]:
+            self.assertNotIn("inputs", entry)
 
     def test_no_changed_file_limit(self):
         paths = [STUDIO + f"src/component-{n}.vue" for n in range(3501)]
@@ -80,9 +118,11 @@ class SelectionTests(unittest.TestCase):
         ]
         for event in ("pull_request", "push", "release", "workflow_dispatch"):
             with self.subTest(event=event):
-                result = selection(event, ["Makefile"] if event == "pull_request" else [STUDIO + "App.vue"], "railgrid")
+                # A PR whose diff is unavailable and every non-PR event select every image.
+                result = selection(event, None if event == "pull_request" else [STUDIO + "App.vue"], "railgrid")
                 self.assertEqual(result["mode"], "full")
                 self.assertEqual(result["image-matrix"]["include"], expected_images)
+                self.assertTrue(result["has-images"])
                 self.assertEqual(result["portal-matrix"]["include"], [
                     {"provider": name, "test": flags[0], "typecheck": flags[1]}
                     for name, flags in expected_portals.items()])

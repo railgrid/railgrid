@@ -21,7 +21,7 @@ Every item below was re-read on main, not taken from PR descriptions. "Closed" m
 | 0.1 tracked credentials | Closed | `kk` and both quickstart binaries untracked; `.gitignore` covers them | – | The `kk` client cert is in 10 historical commits: treat as burned, rotate |
 | 0.2 `dev-token` | Partial | `hack/install/lib.sh` generates `openssl rand -hex 24` into `.railgrid-install/hub-token` (umask 077) | – | `Makefile` `STATIC_AUTH_TOKEN ?= dev-token`, `hack/scripts/dev-tenant-setup.sh`, `hack/dev/tenant-bootstrap.env.example` still default to it (dev paths only) |
 | 0.3 encryption env | Closed | env, chart value, and docs gone; chart states plaintext | – | Reserved columns still written as defaults |
-| 0.4 CI | Partial | 10-module matrix with vet and tests; govulncheck blocking with allowlist; CODEOWNERS | – | **No branch protection on `main`** (ruleset only blocks deletion and force-push): CI is not a required check and CODEOWNERS is advisory. `providers/edges` runs without `-race`; `providers/infrastructure/dev-agent` is not in the matrix |
+| 0.4 CI | Partial | 10-module matrix with vet and tests; CODEOWNERS. The govulncheck gate was removed in the CI cost restructure (2026-11); a vulnerability scan, if reinstated, belongs on a schedule rather than in every PR | – | **No branch protection on `main`** (ruleset only blocks deletion and force-push): CI is not a required check and CODEOWNERS is advisory. `providers/edges` runs without `-race`; `providers/infrastructure/dev-agent` is not in the matrix |
 | 1.1 agent SSRF | Partial | `svc_policy.go` hard-blocks link-local/unspecified/multicast; resolve-then-pin dialer; 403 in enforce | **`warn`**: still dials LAN and internet targets, only the metadata class is refused | Flip `--svc-policy=enforce` plus `--svc-allow-cidr`. No `spec.caBundle`; no e2e for `HostNotAllowed` |
 | 1.2 bearer to org providers | Closed | `proxy_edge.go` deletes Authorization and sets a delegated token unconditionally; empty `CatalogEntryCreation` = admin; migration pins existing orgs to `members` | on | – |
 | 1.2 delegated identity forgery (found in review) | Closed | HMAC proof over tenant, user, provider, SA name **and UID**, keyed from a Secret in `root:railgrid:system:controllers`; verified in the resolver | on | Assurance is absence of any tenant binding in that workspace plus kcp default-deny; no test asserts tenants cannot reach it |
@@ -142,7 +142,7 @@ The Agents chart (`deploy/chart/values.yaml:44`) and README advertise `AGENTS_ME
 Every fix in phases 1 and 2 lands in `providers/edges`, `providers/agents`, `pkg/agent`, or `pkg/hub`. Only `pkg/` is tested in CI today. Before the first fix merges:
 
 - In `.github/workflows/ci.yaml`, create a `go.work` the way the e2e workflow already does, then run `go test -race -count=1 ./...` per module.
-- Add `go vet` and `govulncheck` per module.
+- Add `go vet` per module (done). A `govulncheck` gate ran per PR from 2026-10 until the 2026-11 CI cost restructure removed it; reinstate it as a scheduled scan if wanted.
 - Require one human approval on pull requests that touch `pkg/hub`, `pkg/agent`, `pkg/server`, `providers/edges`, or any file matching `*auth*`, `*proxy*`, `*token*`. A CODEOWNERS file is enough.
 
 This is the gate for everything below. A security fix without a CI test is a fix that will regress.
