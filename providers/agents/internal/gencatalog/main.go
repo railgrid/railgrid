@@ -21,6 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/railgrid/provider-sdk/modelcatalog"
 
 	"github.com/railgrid/provider-agents/llm"
 )
@@ -29,6 +32,11 @@ func main() {
 	if len(os.Args) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: gencatalog <output.json>")
 		os.Exit(2)
+	}
+	pattern, _ := json.Marshal(modelcatalog.SnapshotSuffixPattern)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(os.Args[1]), "..", "src", "model-snapshot-suffix.json"), append(pattern, '\n'), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	encoded, err := json.MarshalIndent(llm.Catalog(), "", "  ")
 	if err != nil {

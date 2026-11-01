@@ -1,3 +1,4 @@
+import snapshotSuffixPattern from './generated/model-snapshot-suffix.json'
 // The workspace's LLM model registry, read and written directly against kcp.
 //
 // The registry is `spec.llm` on the Studio — a typed CR field holding no
@@ -99,8 +100,8 @@ interface CatalogEntry {
 const catalog = catalogEntries as CatalogEntry[]
 
 // lookupCatalog mirrors modelcatalog.LookupModel: normalize (lowercase, drop
-// any provider prefix), match exactly, else take the LONGEST catalog id that
-// is a prefix — so "gpt-4o-mini-2024" prefers "gpt-4o-mini" over "gpt-4o".
+// any provider prefix), then accept exact IDs, dated snapshots, or latest aliases.
+// Unknown generations and variants must not inherit an older model price.
 export function lookupCatalog(model: string): CatalogEntry | undefined {
   const normalized = model.toLowerCase().trim().split('/').pop() ?? ''
   if (!normalized) return undefined
@@ -108,7 +109,7 @@ export function lookupCatalog(model: string): CatalogEntry | undefined {
   if (exact) return exact
   let best: CatalogEntry | undefined
   for (const entry of catalog) {
-    if (normalized.startsWith(entry.id) && (!best || entry.id.length > best.id.length)) best = entry
+    if (normalized.startsWith(entry.id) && new RegExp(snapshotSuffixPattern).test(normalized.slice(entry.id.length)) && (!best || entry.id.length > best.id.length)) best = entry
   }
   return best
 }

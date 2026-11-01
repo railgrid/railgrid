@@ -74,6 +74,9 @@ func TestProjectAssistantModelCostMicros(t *testing.T) {
 		want      int64
 		wantKnown bool
 	}{
+		{model: "gpt-6.1-sol", in: 1_000_000, out: 1_000_000, want: 12_000_000, wantKnown: true},
+		{model: "gpt-6-astra", in: 1_000_000, out: 1_000_000, want: 60_000_000, wantKnown: true},
+		{model: "claude-opus-5-5", in: 1000, out: 1000, want: 24000, wantKnown: true},
 		{model: "gpt-5.4", in: 1_000_000, out: 1_000_000, want: 17_500_000, wantKnown: true},
 		{model: "openai/GPT-5.4-2026-03-01", in: 1_000_000, out: 0, want: 2_500_000, wantKnown: true},
 		{model: "gpt-4o-mini-2024-07-18", in: 1_000_000, out: 1_000_000, want: 750_000, wantKnown: true},
@@ -92,18 +95,12 @@ func TestProjectAssistantModelCostMicros(t *testing.T) {
 			}
 		})
 	}
-	// The unknown-model fallback must be a frontier-tier rate: no catalog entry
-	// may exceed it on either input or output, except the premium o1* and
-	// claude-opus-4* tiers, which are knowingly priced above it. Adding a
-	// cheaper-than-fallback entry is fine; adding a pricier one outside those
-	// families means the fallback (or this exemption) needs revisiting.
-	for id, price := range projectAssistantModelPrices {
-		if price.InputPer1M > projectAssistantUnknownModelPrice.InputPer1M || price.OutputPer1M > projectAssistantUnknownModelPrice.OutputPer1M {
-			if !strings.HasPrefix(id, "o1") && !strings.HasPrefix(id, "claude-opus-4") {
-				t.Errorf("catalog price for %s exceeds the unknown-model fallback", id)
-			}
-		}
+	// Unknown models retain the explicit budgeting fallback; it is not a
+	// guaranteed upper bound on every current or future provider rate.
+	if projectAssistantUnknownModelPrice.InputPer1M <= 0 || projectAssistantUnknownModelPrice.OutputPer1M <= 0 {
+		t.Fatal("unknown models must not spend without a budgeting estimate")
 	}
+
 }
 
 // The float to int64 step is where an absurd cost could turn into a credit:

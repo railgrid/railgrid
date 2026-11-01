@@ -33,7 +33,7 @@ func TestDiscoverProjectLLMModelsOpenAICompatible(t *testing.T) {
 			t.Errorf("authorization = %q, want workspace credential", got)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"data":[{"id":"text-embedding-3-large"},{"id":"custom-chat"},{"id":"gpt-5.4"}]}`))
+		_, _ = w.Write([]byte(`{"data":[{"id":"text-embedding-3-large"},{"id":"custom-chat"},{"id":"gpt-6.1-sol"}]}`))
 	}))
 	defer upstream.Close()
 
@@ -48,8 +48,8 @@ func TestDiscoverProjectLLMModelsOpenAICompatible(t *testing.T) {
 	if response.Source != defaultProjectLLMProvider || len(response.Models) != 3 {
 		t.Fatalf("response = %#v, want three OpenAI-compatible models", response)
 	}
-	if response.Models[0].ID != "gpt-5.4" || response.Models[0].Compatibility != "recommended" {
-		t.Fatalf("first model = %#v, want recommended gpt-5.4", response.Models[0])
+	if response.Models[0].ID != "gpt-6.1-sol" || response.Models[0].Compatibility != "recommended" {
+		t.Fatalf("first model = %#v, want recommended gpt-6.1-sol", response.Models[0])
 	}
 	if response.Models[1].ID != "custom-chat" || response.Models[1].Compatibility != "available" {
 		t.Fatalf("second model = %#v, want available custom-chat", response.Models[1])
@@ -194,4 +194,17 @@ func projectLLMDiscoveryRequest(t *testing.T, body string) *http.Request {
 	request = stampTestCaller(request, testUserForToken("test-token"))
 	request.Header.Set("X-Railgrid-Cluster", "cluster-a")
 	return request
+}
+
+func TestRecommendationsDistinguishCurrentModelsFromLegacyAndVariants(t *testing.T) {
+	for _, id := range []string{"gpt-6.1-sol", "gpt-6-astra", "gpt-6.1-terra", "gpt-6-luna", "claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5", "claude-fable-5-1", "openai/gpt-6.1-sol"} {
+		if got := projectLLMDiscoveredModel(id, "", defaultProjectLLMProvider, nil); got.Compatibility != "recommended" {
+			t.Errorf("%s: %s", id, got.Compatibility)
+		}
+	}
+	for _, id := range []string{"gpt-4o", "gpt-5.4", "claude-sonnet-4", "claude-opus-4-5", "gpt-6.1-sol-custom", "claude-opus-5-50"} {
+		if got := projectLLMDiscoveredModel(id, "", defaultProjectLLMProvider, nil); got.Compatibility != "available" {
+			t.Errorf("%s: %s", id, got.Compatibility)
+		}
+	}
 }

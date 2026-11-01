@@ -29,6 +29,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/railgrid/provider-sdk/modelcatalog"
+
 	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"k8s.io/klog/v2"
@@ -149,63 +151,14 @@ type projectAssistantModelPrice struct {
 	OutputPer1M float64
 }
 
-// projectAssistantModelPrices is a best-effort 2026 list-price snapshot for
-// the model families App Studio is deployed with. Lookup normalizes the id
-// (lowercase, provider prefix stripped) and picks the longest matching
-// prefix, so "openai/gpt-5.4-2026-03-01" resolves to "gpt-5.4". Prices drift;
-// they exist to bound spend, not to bill.
-var projectAssistantModelPrices = map[string]projectAssistantModelPrice{
-	"gpt-4o":           {InputPer1M: 2.50, OutputPer1M: 10.00},
-	"gpt-4o-mini":      {InputPer1M: 0.15, OutputPer1M: 0.60},
-	"gpt-4.1":          {InputPer1M: 2.00, OutputPer1M: 8.00},
-	"gpt-4.1-mini":     {InputPer1M: 0.40, OutputPer1M: 1.60},
-	"gpt-4.1-nano":     {InputPer1M: 0.10, OutputPer1M: 0.40},
-	"gpt-5":            {InputPer1M: 1.25, OutputPer1M: 10.00},
-	"gpt-5-mini":       {InputPer1M: 0.25, OutputPer1M: 2.00},
-	"gpt-5-nano":       {InputPer1M: 0.05, OutputPer1M: 0.40},
-	"gpt-5.1":          {InputPer1M: 1.25, OutputPer1M: 10.00},
-	"gpt-5.4":          {InputPer1M: 2.50, OutputPer1M: 15.00},
-	"gpt-5.4-mini":     {InputPer1M: 0.75, OutputPer1M: 4.50},
-	"o1":               {InputPer1M: 15.00, OutputPer1M: 60.00},
-	"o3":               {InputPer1M: 2.00, OutputPer1M: 8.00},
-	"o3-mini":          {InputPer1M: 1.10, OutputPer1M: 4.40},
-	"o4-mini":          {InputPer1M: 1.10, OutputPer1M: 4.40},
-	"claude-sonnet-4":  {InputPer1M: 3.00, OutputPer1M: 15.00},
-	"claude-opus-4":    {InputPer1M: 15.00, OutputPer1M: 75.00},
-	"claude-opus-4-5":  {InputPer1M: 5.00, OutputPer1M: 25.00},
-	"claude-haiku-4-5": {InputPer1M: 1.00, OutputPer1M: 5.00},
-	"claude-3-5-haiku": {InputPer1M: 0.80, OutputPer1M: 4.00},
-	"gemini-2.5-pro":   {InputPer1M: 1.25, OutputPer1M: 10.00},
-	"gemini-2.5-flash": {InputPer1M: 0.30, OutputPer1M: 2.50},
-	"gemini-3-pro":     {InputPer1M: 2.00, OutputPer1M: 12.00},
-	"gemini-3-flash":   {InputPer1M: 0.50, OutputPer1M: 3.00},
-}
-
 // projectAssistantUnknownModelPrice is charged for any model id the table
-// does not know. It is deliberately a frontier-tier rate: an unknown model
-// must err on the side of exhausting the cap early rather than letting an
-// unpriced model spend without bound.
+// does not know. This fixed budgeting fallback is not a quote or a guaranteed upper bound
+// for unknown models. Known models use the shared, versioned catalog.
 var projectAssistantUnknownModelPrice = projectAssistantModelPrice{InputPer1M: 5.00, OutputPer1M: 25.00}
 
 func projectAssistantModelPriceFor(model string) (projectAssistantModelPrice, bool) {
-	normalized := strings.ToLower(strings.TrimSpace(model))
-	if idx := strings.LastIndex(normalized, "/"); idx >= 0 {
-		normalized = normalized[idx+1:]
-	}
-	if normalized == "" {
-		return projectAssistantUnknownModelPrice, false
-	}
-	if price, ok := projectAssistantModelPrices[normalized]; ok {
-		return price, true
-	}
-	best := ""
-	for id := range projectAssistantModelPrices {
-		if strings.HasPrefix(normalized, id) && len(id) > len(best) {
-			best = id
-		}
-	}
-	if best != "" {
-		return projectAssistantModelPrices[best], true
+	if entry, ok := modelcatalog.LookupModel(model); ok {
+		return projectAssistantModelPrice{InputPer1M: entry.InputPer1M, OutputPer1M: entry.OutputPer1M}, true
 	}
 	return projectAssistantUnknownModelPrice, false
 }

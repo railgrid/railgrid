@@ -284,3 +284,11 @@ func TestModelLifecycleRefusalKeepsModelSubject(t *testing.T) {
 		})
 	}
 }
+
+func TestCurrentModelsSortBeforeHistoricalCatalogEntries(t *testing.T) {
+	got := FilterChatModels([]string{"gpt-4o", "claude-sonnet-4", "gpt-6.1-sol", "claude-sonnet-5-5"})
+	want := []string{"gpt-6.1-sol", "claude-sonnet-5-5", "gpt-4o", "claude-sonnet-4"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+}

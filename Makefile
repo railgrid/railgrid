@@ -3082,6 +3082,10 @@ test-app-studio-portal: ## Run the App Studio portal regression suite
 	cd providers/app-studio/portal && npm test
 
 .PHONY: generate-app-studio-model-catalog test-app-studio-reasoning lint-app-studio-reasoning fix-lint-app-studio-reasoning
+.PHONY: generate-model-catalog
+generate-model-catalog: generate-app-studio-model-catalog ## Regenerate both providers' shared model catalog assets
+	cd providers/agents && go run ./internal/gencatalog portal/public/model-catalog.json
+
 generate-app-studio-model-catalog: ## Generate App Studio's model pricing and reasoning capability assets
 	cd providers/app-studio && go run ./hack/modelcatalog-json
 

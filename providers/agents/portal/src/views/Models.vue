@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import snapshotSuffixPattern from '../model-snapshot-suffix.json'
+
 import { Play, ArrowLeft, Brain, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
@@ -122,7 +124,7 @@ function lookupModel(model: string): ModelInfo | undefined {
   let exact: ModelInfo | undefined; let best: ModelInfo | undefined
   for (const item of catalog.value) {
     if (item.id === normalized) exact = item
-    if (normalized.startsWith(item.id) && (!best || item.id.length > best.id.length)) best = item
+    if (normalized.startsWith(item.id) && new RegExp(snapshotSuffixPattern).test(normalized.slice(item.id.length)) && (!best || item.id.length > best.id.length)) best = item
   }
   return exact || best
 }
