@@ -137,3 +137,131 @@ test('the generation moves synchronously on scope changes and on unmount', () =>
   }
   assert.match(script, /onBeforeUnmount\(\(\) => \{\s*disposed = true\s*hostedPageGeneration\+\+\s*\}\)/)
 })
+
+const recommendedPlan = loadFunction('recommendedPlan', { Number, Math })
+const recommendWithoutOverrides = (...args) => recommendedPlan(...args, [])
+const planLimit = (max, extra = {}) => ({ meter: 'workspaces', shape: 'Level', enforce: 'Hard', max, ...extra })
+const planOffer = (name, max, extra = {}) => ({ name, current: false, sellable: false, limits: [planLimit(max)], ...extra })
+
+test('recommendations provide actual headroom and choose the smallest sufficient known allowance', () => {
+  const small = planOffer('small', '10')
+  const large = planOffer('large', '100')
+  assert.equal(recommendWithoutOverrides('workspaces', [large, small], [planLimit('1')], { workspaces: '1' }), small)
+  // At 10/10, an allowance of 10 does not restore room for another workspace.
+  assert.equal(recommendWithoutOverrides('workspaces', [small, large], [planLimit('1')], { workspaces: '10' }), large)
+  assert.equal(recommendWithoutOverrides('workspaces', [small], [planLimit('1')], { workspaces: '12' }), null)
+})
+
+test('recommendations use effective limits rather than the catalog current-plan allowance', () => {
+  const current = planOffer('free', '1', { current: true })
+  const small = planOffer('small', '10')
+  const large = planOffer('large', '100')
+  assert.equal(recommendWithoutOverrides('workspaces', [current, small, large], [planLimit('20')], { workspaces: '20' }), large)
+  assert.equal(recommendWithoutOverrides('workspaces', [small], [planLimit('20')], { workspaces: '2' }), null)
+})
+
+test('unknown usage never yields an upgrade recommendation', () => {
+  for (const usage of [{}, { workspaces: '' }, { workspaces: null }, { workspaces: ' ' }, { workspaces: 'not measured' }]) {
+    assert.equal(recommendWithoutOverrides('workspaces', [planOffer('small', '10')], [planLimit('0')], usage), null)
+  }
+  assert.equal(recommendWithoutOverrides('workspaces', [planOffer('small', '10')], [planLimit('0')], { workspaces: '0' }).name, 'small')
+})
+
+test('recommendations exclude unknown allowances, different shapes and current plans', () => {
+  const offers = [
+    planOffer('not-specified', '10', { limits: [] }),
+    planOffer('unknown-max', undefined),
+    planOffer('different-shape', '10', { limits: [planLimit('10', { shape: 'Consumption' })] }),
+    planOffer('already-current', '100', { current: true }),
+  ]
+  assert.equal(recommendWithoutOverrides('workspaces', offers, [planLimit('1')], { workspaces: '1' }), null)
+})
+
+test('a metered numeric reference is not treated as an enforced limit', () => {
+  assert.equal(recommendWithoutOverrides('workspaces', [planOffer('small', '10')], [planLimit('1', { enforce: 'Meter' })], { workspaces: '2' }), null)
+})
+
+test('omitted shape is compared as Consumption, while fractional display retains precision', () => {
+  const candidate = planOffer('small', '10', { limits: [planLimit('10', { shape: 'Consumption' })] })
+  assert.equal(recommendWithoutOverrides('workspaces', [candidate], [planLimit('1', { shape: undefined })], { workspaces: '1' }), candidate)
+  const quantity = loadFunction('quantity', { Number, Intl })
+  assert.equal(quantity('0.000000000000000001'), '0.000000000000000001')
+  assert.equal(quantity('9007199254740993'), '9007199254740993')
+})
+
+test('persistent overrides and unknown override metadata cannot yield upgrade promises', () => {
+  const plans = [planOffer('large', '100')]
+  const effective = [planLimit('20')]
+  assert.equal(recommendedPlan('workspaces', plans, effective, { workspaces: '20' }, [planLimit('20')]), null)
+  // Even an override equal to the catalog allowance will survive an upgrade.
+  assert.equal(recommendedPlan('workspaces', plans, [planLimit('1')], { workspaces: '1' }, [planLimit('1')]), null)
+  assert.equal(recommendedPlan('workspaces', plans, effective, { workspaces: '20' }), null)
+  assert.equal(recommendedPlan('workspaces', plans, effective, { workspaces: '20' }, []), plans[0])
+})
+
+test('proposed allowances preserve overrides, including meters absent from the target plan', () => {
+  const proposedLimits = loadFunction('proposedLimits', { Map })
+  const plan = planOffer('large', '100')
+  const override = planLimit('20')
+  const extra = { meter: 'agents', shape: 'Level', enforce: 'Soft', max: '5' }
+  const actual = proposedLimits(plan, [override, extra])
+  assert.equal(actual.find(limit => limit.meter === 'workspaces'), override)
+  assert.equal(actual.find(limit => limit.meter === 'agents'), extra)
+  assert.equal(plan.limits[0].max, '100', 'catalog limits are not mutated')
+})
+
+test('the current comparison column uses effective allowances and candidates retain persistent overrides', () => {
+  const catalog = planOffer('free', '1', { current: true })
+  const effective = [planLimit('20')]
+  const proposedLimits = loadFunction('proposedLimits', { Map })
+  const declaration = parsed.statements.flatMap((node) => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+    .find((node) => node.name.getText(parsed) === 'comparisonPlans')
+  assert.ok(declaration?.initializer)
+  const code = ts.transpileModule(`const result = ${declaration.initializer.getText(parsed)}`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const actual = runInNewContext(`${code}\nresult`, {
+    computed: (fn) => fn(), current: { value: catalog },
+    billing: { value: { limits: effective, overrides: effective } },
+    offers: { value: [planOffer('large', '100')] }, proposedLimits,
+  })
+  assert.equal(actual[0].limits, effective)
+  assert.equal(actual[1].limits[0].max, '20')
+  assert.equal(catalog.limits[0].max, '1')
+})
+
+test('admin request drafts distinguish empty, populated, and unknown overrides', () => {
+  for (const overrides of [[], [planLimit('1')], undefined]) {
+    const context = {
+      billing: { value: { limits: [planLimit('1')], usage: { workspaces: '1' }, overrides } },
+      reviewPlan: { value: planOffer('small', '10') }, reviewLimits: { value: [planLimit('10')] },
+      reviewMeters: { value: ['workspaces'] }, focusedMeter: { value: null },
+      planLabel: { value: 'Free' }, props: { orgUuid: 'org-a' }, requestDraft: { value: '' },
+      overridesKnown: { value: overrides !== undefined }, limitsPending: { value: false },
+      quantity: (value) => value, meterLabel: (meter) => meter,
+      allowance: (limits, meter) => limits.find(limit => limit.meter === meter)?.max,
+    }
+    loadFunction('prepareRequest', context)()
+    assert.equal(context.requestDraft.value.includes('Existing organization overrides remain in effect.'), !!overrides?.length)
+    assert.equal(context.requestDraft.value.includes('This hub does not report organization overrides.'), overrides === undefined)
+  }
+})
+
+test('pending allowance changes suppress upgrade hints until the applied snapshot catches up', () => {
+  const proposedLimits = loadFunction('proposedLimits', { Map })
+  const allowancesPending = loadFunction('allowancesPending', { proposedLimits, JSON })
+  const value = { plans: [planOffer('free', '1', { current: true }), planOffer('small', '10')],
+    limits: [planLimit('0')], overrides: [], usage: { workspaces: '1' } }
+  // An override was removed, but effective limits still reflect that override.
+  assert.equal(allowancesPending(value), true)
+  const suggestion = loadFunction('suggestion', { billing: { value }, allowancesPending, recommendedPlan })
+  assert.equal(suggestion('workspaces'), null)
+  value.limits = [planLimit('1')]
+  assert.equal(allowancesPending(value), false)
+  assert.equal(suggestion('workspaces').name, 'small')
+  // An override was just added; the catalog-sized snapshot is now stale.
+  value.overrides = [planLimit('20')]
+  assert.equal(allowancesPending(value), true)
+  value.limits = [planLimit('20')]
+  assert.equal(allowancesPending(value), false)
+})

@@ -101,8 +101,13 @@ type OrgBilling struct {
 	PlanDisplayName string `json:"planDisplayName,omitempty"`
 	// ManagedBy is who set the plan: "billing" (a subscription), "operator"
 	// (a platform admin), empty for the default plan.
-	ManagedBy     string            `json:"managedBy,omitempty"`
-	Limits        []Limit           `json:"limits"`
+	ManagedBy string  `json:"managedBy,omitempty"`
+	Limits    []Limit `json:"limits"`
+	// Overrides persist across plan changes. Expose their declaration even
+	// when equal to the current plan's allowance: effective limits alone do
+	// not reveal whether a different plan would change the allowance.
+	// The empty list confirms that no overrides apply.
+	Overrides     []Limit           `json:"overrides"`
 	Usage         map[string]string `json:"usage"`
 	Window        *UsageWindow      `json:"window,omitempty"`
 	OverSoftLimit bool              `json:"overSoftLimit"`
@@ -147,7 +152,7 @@ type billingStatus struct {
 
 // Summary composes OrgBilling for org.
 func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
-	out := OrgBilling{Limits: []Limit{}, Usage: map[string]string{}, Plans: []PlanOffer{}}
+	out := OrgBilling{Limits: []Limit{}, Overrides: []Limit{}, Usage: map[string]string{}, Plans: []PlanOffer{}}
 	e, ok := b.discovery.Current()
 	if !ok {
 		return out, nil
@@ -185,6 +190,7 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		out.Plan, _, _ = unstructured.NestedString(ent.Object, "spec", "plan")
 		out.ManagedBy = ent.GetLabels()[PlanSourceLabel]
 		out.Limits = limitsOf(ent.Object, "status", "effectiveLimits")
+		out.Overrides = limitsOf(ent.Object, "spec", "overrides")
 		if usage, ok, _ := unstructured.NestedStringMap(ent.Object, "status", "usage"); ok {
 			out.Usage = usage
 		}
