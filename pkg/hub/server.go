@@ -542,6 +542,10 @@ func (s *Server) Run(ctx context.Context) error {
 		heartbeatRecorder      providers.HeartbeatRecorder
 		heartbeatAuthenticator providers.HeartbeatAuthenticator
 	)
+	// billing is the metering billing seam. It stays nil without kcp or
+	// metering, and the webhook route registered after this block then
+	// answers 503, so a delivery never falls through to a 404.
+	var billing *metering.Billing
 	if kcpConfig != nil {
 		heartbeatRecorder, err = providers.NewCatalogHeartbeatRecorder(kcpConfig, providerRegistry)
 		if err != nil {
@@ -1116,15 +1120,11 @@ func (s *Server) Run(ctx context.Context) error {
 					} else {
 						meteringStore = store
 						apiMgr.WithOrgPlanSource(metering.EntitlementPlan(meteringDiscovery, store, logger.WithName("metering")))
-						billing := metering.NewBilling(meteringDiscovery, store, logger.WithName("billing"))
+						billing = metering.NewBilling(meteringDiscovery, store, logger.WithName("billing"))
 						apiMgr.WithBilling(billing, s.opts.HubExternalURL)
-						// The billing provider's webhook: public, relayed to the
-						// metering deployment, which verifies its signature.
-						router.HandleFunc("/api/billing/webhook", billing.ForwardWebhook).Methods(http.MethodPost)
 					}
 				}
 			}
-
 			// Platform-admin surface (/api/admin/*, portal /bonkers). Only
 			// wired when --admin-users is set; gated so only allowlisted
 			// identities pass. Onboards providers (workspace + SA + kubeconfig)
@@ -1181,6 +1181,9 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// The billing provider's webhook is served on every hub, kcp or not;
+	// without metering the relay is nil and answers 503.
+	registerBillingWebhook(router, billing)
 
 	// 7. Create and start multicluster controllers (when kcp is configured)
 	if kcpConfig != nil {

@@ -23,11 +23,13 @@ import (
 	"strings"
 
 	"github.com/railgrid/railgrid/pkg/hub/metering"
+
+	"k8s.io/klog/v2"
 )
 
 // The organization's billing routes, a thin layer over the metering seam:
 //
-//	GET  /api/orgs/{org}/billing            any member: plan, limits, usage, subscription, plans on offer
+//	GET  /api/orgs/{org}/billing            organization member: plan, limits, usage, subscription, plans on offer
 //	POST /api/orgs/{org}/billing/checkout   org admin: {plan} -> {url} to redirect to
 //	POST /api/orgs/{org}/billing/portal     org admin: {} -> {url} to redirect to
 //
@@ -52,7 +54,7 @@ type SessionResponse struct {
 }
 
 func (h *Handler) getOrgBilling(w http.ResponseWriter, r *http.Request) {
-	tc, ok := h.requireTenantContext(w, r, false, false)
+	tc, ok := h.requireOrgMember(w, r)
 	if !ok {
 		return
 	}
@@ -62,7 +64,7 @@ func (h *Handler) getOrgBilling(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := h.mgr.billing.Summary(r.Context(), tc.OrgUUID)
 	if err != nil {
-		writeStatus(w, http.StatusBadGateway, "BillingUnavailable", err.Error())
+		writeBillingError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, summary)
@@ -87,7 +89,7 @@ func (h *Handler) orgBillingCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := h.mgr.billing.Checkout(r.Context(), tc.OrgUUID, req.Plan, h.billingReturnURL(tc.OrgUUID, "success"), h.billingReturnURL(tc.OrgUUID, "canceled"))
 	if err != nil {
-		writeBillingError(w, err)
+		writeBillingError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, SessionResponse{URL: url})
@@ -104,7 +106,7 @@ func (h *Handler) orgBillingPortal(w http.ResponseWriter, r *http.Request) {
 	}
 	url, err := h.mgr.billing.Portal(r.Context(), tc.OrgUUID, h.billingReturnURL(tc.OrgUUID, "portal"))
 	if err != nil {
-		writeBillingError(w, err)
+		writeBillingError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, SessionResponse{URL: url})
@@ -116,11 +118,16 @@ func (h *Handler) billingReturnURL(org, outcome string) string {
 	return strings.TrimRight(h.mgr.hubExternalURL, "/") + "/ui/" + org + "/settings/organizations?billing=" + outcome
 }
 
-func writeBillingError(w http.ResponseWriter, err error) {
+// writeBillingError answers a billing failure. A BillingError carries a
+// message meant for the caller. Anything else is a kcp or HTTP client error
+// whose text (server URLs, cluster paths) stays in the log: every member of
+// the organization can reach these routes.
+func writeBillingError(w http.ResponseWriter, r *http.Request, err error) {
 	var be *metering.BillingError
 	if errors.As(err, &be) {
 		writeStatus(w, be.Status, "Billing", be.Message)
 		return
 	}
-	writeStatus(w, http.StatusBadGateway, "Billing", err.Error())
+	klog.FromContext(r.Context()).Error(err, "organization billing request failed", "path", r.URL.Path)
+	writeStatus(w, http.StatusBadGateway, "BillingUnavailable", "billing information is temporarily unavailable")
 }
