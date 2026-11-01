@@ -86,6 +86,8 @@ export interface OrgBilling {
   planDisplayName?: string
   managedBy?: string
   limits: OrgBillingLimit[]
+  /** Persistent entitlement overrides; absent on older hubs means unknown. */
+  overrides?: OrgBillingLimit[]
   usage: Record<string, string>
   window?: { start: string; end: string }
   overSoftLimit: boolean

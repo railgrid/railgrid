@@ -223,7 +223,7 @@ function barLabel(row: Row): string {
                 <div class="k-progress__bar" :class="barClass(r)" :style="{ '--k-progress-value': r.ratio }" />
               </div>
             </div>
-            <ChevronRight v-if="interactive" class="metering-chevron" aria-hidden="true" />
+            <ChevronRight v-if="interactive" class="metering-chevron" :stroke-width="2" aria-hidden="true" />
           </component>
           <div v-if="interactive" class="metering-explanation">
             <p>{{ modeTitle(r) || 'Usage is reported without a configured limit.' }}.</p>
@@ -250,7 +250,7 @@ function barLabel(row: Row): string {
 .metering-description { display: block; font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
 .metering-numbers { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 7px; }
 .metering-quantity { white-space: normal; overflow-wrap: anywhere; }
-.metering-state { font-size: 11px; }
+.metering-state { font-family: var(--font-mono); font-size: 11px; }
 .metering-controls { display: flex; flex-direction: column; gap: 12px; padding: 16px 0 8px; }
 .metering-search-input { width: 100%; }
 .metering-filters { display: flex; flex-wrap: wrap; gap: 6px; }
