@@ -38,6 +38,11 @@ SelfSubjectAccessReview. Denial occurs before reading the key. Editing endpoint
 or authentication configuration requires the ordinary write permissions, and
 writing key material requires separate Secret permissions.
 
+During migration, write access to legacy direct ModelCredential configurations
+retains its prior credential-administration authority. The new connection kind
+does not retroactively narrow those old RBAC grants; do not treat unrestricted
+legacy credential writes as permission to configure model bindings only.
+
 For example, a role may allow connection selection and use without editing it:
 
 ```yaml
