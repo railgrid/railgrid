@@ -275,6 +275,7 @@ func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, org *ten
 		labels := map[string]string{LabelOrganization: org.Name}
 		if org.Spec.Plan != "" {
 			labels[LabelPlanFromSpec] = "true"
+			labels[PlanSourceLabel] = PlanSourceOperator
 		}
 		u.SetLabels(labels)
 		_ = unstructured.SetNestedMap(u.Object, map[string]any{"account": org.Name, "plan": want}, "spec")
@@ -292,7 +293,7 @@ func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, org *ten
 	fromSpec := labels[LabelPlanFromSpec] == "true"
 	switch {
 	case org.Spec.Plan != "":
-		if current == org.Spec.Plan && fromSpec {
+		if current == org.Spec.Plan && fromSpec && labels[PlanSourceLabel] == PlanSourceOperator {
 			return nil
 		}
 	case !fromSpec:
@@ -308,8 +309,12 @@ func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, org *ten
 	}
 	if org.Spec.Plan != "" {
 		labels[LabelPlanFromSpec] = "true"
+		// Tell the deployment's billing reconciler the plan is an admin's:
+		// a subscription change must not overwrite it.
+		labels[PlanSourceLabel] = PlanSourceOperator
 	} else {
 		delete(labels, LabelPlanFromSpec)
+		delete(labels, PlanSourceLabel)
 	}
 	ent.SetLabels(labels)
 	if _, err := res.Update(ctx, ent, metav1.UpdateOptions{FieldManager: FieldManager}); err != nil {

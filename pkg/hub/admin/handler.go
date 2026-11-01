@@ -49,6 +49,12 @@ type Handler struct {
 	// Organization.spec.plan. Nil means plan assignment is unavailable
 	// (metering not configured) and the route answers 503.
 	planExists func(ctx context.Context, name string) (bool, error)
+	// resetPlan puts an organization's metering Entitlement back on the
+	// default plan when the plan route is handed an empty plan. Clearing
+	// Organization.spec.plan alone cannot do that for an Entitlement an
+	// admin edited directly (the reconciler leaves those alone), so the
+	// explicit reset goes to metering too. Nil skips it.
+	resetPlan func(ctx context.Context, org string) error
 }
 
 // NewHandler builds an admin Handler.
@@ -68,6 +74,15 @@ func (h *Handler) WithSoftDeleteGracePeriod(d time.Duration) *Handler {
 // existence check (metering.PlanExists in production).
 func (h *Handler) WithPlanLookup(exists func(ctx context.Context, name string) (bool, error)) *Handler {
 	h.planExists = exists
+	return h
+}
+
+// WithPlanReset makes PUT /organizations/{name}/plan with an empty plan
+// also reset the organization's Entitlement to the default plan
+// (metering.ResetPlan in production), so the route returns an organization
+// to the default plan whoever put it on its current one.
+func (h *Handler) WithPlanReset(reset func(ctx context.Context, org string) error) *Handler {
+	h.resetPlan = reset
 	return h
 }
 
@@ -345,6 +360,15 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		// An empty plan is an explicit reset, whether or not spec.plan had
+		// anything to clear: a plan set on the Entitlement directly leaves
+		// spec.plan empty, and the reconciler keeps such a plan on purpose.
+		if req.Plan == "" && h.resetPlan != nil {
+			if err := h.resetPlan(r.Context(), org.Name); err != nil {
+				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("organization %q is detached from its plan but its entitlement could not be reset: %v", name, err))
 				return
 			}
 		}

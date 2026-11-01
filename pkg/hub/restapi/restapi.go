@@ -229,6 +229,31 @@ type Manager struct {
 	orgCaps           *quota.Caps
 	freePlan          string
 	meteringInstalled func() bool
+	// planSource answers which plan an organization is on from its metering
+	// Entitlement (ok false when metering has nothing to say); nil reads
+	// Organization.spec.plan alone.
+	planSource func(ctx context.Context, org string) (plan string, ok bool, err error)
+	// billing is the metering seam behind the organization billing routes;
+	// nil answers them with "not installed". hubExternalURL is where the
+	// hosted flows return to.
+	billing        BillingOps
+	hubExternalURL string
+}
+
+// WithOrgPlanSource installs the plan lookup the free-organizations cap
+// prefers over Organization.spec.plan: the Entitlement's plan, which a
+// subscription can set without the organization knowing.
+func (m *Manager) WithOrgPlanSource(fn func(ctx context.Context, org string) (string, bool, error)) *Manager {
+	m.planSource = fn
+	return m
+}
+
+// WithBilling installs the billing seam and the hub URL its hosted flows
+// return to.
+func (m *Manager) WithBilling(ops BillingOps, hubExternalURL string) *Manager {
+	m.billing = ops
+	m.hubExternalURL = hubExternalURL
+	return m
 }
 
 // WithOrgCaps installs the organization caps createOrg applies.
@@ -427,6 +452,10 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	// Registered before /{org}/memberships etc. is irrelevant to matching (the
 	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
 	// a provider belongs to the Org, while Enable belongs to one Workspace.
+	// Billing: what the organization's plan buys and how to change it.
+	r.HandleFunc("/{org}/billing", h.getOrgBilling).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/billing/checkout", h.orgBillingCheckout).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/billing/portal", h.orgBillingPortal).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers", h.listOrgProviders).Methods(http.MethodGet)
 	// Registered ahead of the {name} routes: "install-targets" is a literal
 	// sibling of a provider name, and this keeps it that way if a GET

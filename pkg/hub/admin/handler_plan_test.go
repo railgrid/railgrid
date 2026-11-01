@@ -19,6 +19,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,6 +51,11 @@ func TestSetOrganizationPlanRequiresPlatformAdmin(t *testing.T) {
 
 func planRouter(t *testing.T, lookup func(context.Context, string) (bool, error), orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
 	t.Helper()
+	return planRouterWithReset(t, lookup, nil, orgs...)
+}
+
+func planRouterWithReset(t *testing.T, lookup func(context.Context, string) (bool, error), reset func(context.Context, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -69,8 +75,58 @@ func planRouter(t *testing.T, lookup func(context.Context, string) (bool, error)
 	if lookup != nil {
 		h.WithPlanLookup(lookup)
 	}
+	if reset != nil {
+		h.WithPlanReset(reset)
+	}
 	h.Register(sub)
 	return r, client
+}
+
+// An empty plan resets the Entitlement even when spec.plan was already
+// empty: a plan set on the Entitlement directly never reached spec.plan, so
+// clearing the field alone would change nothing.
+func TestSetOrganizationPlanEmptyResetsTheEntitlement(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	known := func(_ context.Context, name string) (bool, error) { return name == "team", nil }
+	var resets []string
+	var resetErr error
+	reset := func(_ context.Context, name string) error {
+		resets = append(resets, name)
+		return resetErr
+	}
+	h, _ := planRouterWithReset(t, known, reset, org)
+
+	// spec.plan is empty and stays empty; the reset still runs.
+	rec, _ := putPlan(h, "org-a", `{"plan":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(resets) != 1 || resets[0] != "org-a" {
+		t.Fatalf("resets = %v, want [org-a]", resets)
+	}
+
+	// Assigning a plan does not reset.
+	if rec, _ = putPlan(h, "org-a", `{"plan":"team"}`); rec.Code != http.StatusOK {
+		t.Fatalf("assign: status = %d", rec.Code)
+	}
+	if len(resets) != 1 {
+		t.Fatalf("resets after assign = %v", resets)
+	}
+
+	// A reset the metering workspace refuses is reported, with the field
+	// already cleared.
+	resetErr = errors.New("metering is not installed")
+	rec, _ = putPlan(h, "org-a", `{"plan":""}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed reset: status = %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(resets) != 2 {
+		t.Fatalf("resets = %v", resets)
+	}
 }
 
 func putPlan(h http.Handler, org, body string) (*httptest.ResponseRecorder, map[string]any) {

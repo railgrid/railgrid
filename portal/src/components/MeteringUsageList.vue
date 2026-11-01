@@ -33,17 +33,28 @@ type Row = {
   state: State
 }
 
-const numberFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 })
+const integerFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
 
+// num is the value as a number for comparing usage with the max; the
+// display never goes through it, so a quantity the API states as "0.001"
+// is shown as "0.001", not rounded to nothing.
 function num(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null
   const n = typeof value === 'number' ? value : Number(String(value))
   return Number.isFinite(n) ? n : null
 }
 
+// show keeps the API's own decimal string. Only a whole number is
+// reformatted, for digit grouping; anything with a fraction, an exponent or
+// a unit is shown as it came.
 function show(value: unknown): string {
-  const n = num(value)
-  return n === null ? String(value ?? '') : numberFormat.format(n)
+  if (value === undefined || value === null) return ''
+  const text = String(value).trim()
+  if (/^-?\d+$/.test(text)) {
+    const n = Number(text)
+    return Number.isSafeInteger(n) ? integerFormat.format(n) : text
+  }
+  return text
 }
 
 const rows = computed<Row[]>(() => {
@@ -132,8 +143,20 @@ function barClass(row: Row): string {
   return 'k-progress__bar--accent'
 }
 
+// The progress range is the clamped percentage: a max of 0 and usage over
+// the max are both valid rows, and neither fits a raw min/max/now triple
+// (valuemax would equal valuemin; valuenow would exceed valuemax). The real
+// numbers go in aria-valuetext.
+function barPercent(row: Row): number {
+  return Math.round((row.ratio ?? 0) * 100)
+}
+
+function barText(row: Row): string {
+  return `${row.used} of ${row.max}${row.state === 'over' ? ', over the limit' : ''}`
+}
+
 function barLabel(row: Row): string {
-  return `${row.meter}: ${row.used} of ${row.max}${row.state === 'over' ? ', over the limit' : ''}`
+  return `${row.meter}: ${barText(row)}`
 }
 </script>
 
@@ -158,8 +181,9 @@ function barLabel(row: Row): string {
           role="progressbar"
           :aria-label="barLabel(r)"
           aria-valuemin="0"
-          :aria-valuemax="r.maxNum ?? undefined"
-          :aria-valuenow="r.usedNum ?? undefined"
+          aria-valuemax="100"
+          :aria-valuenow="barPercent(r)"
+          :aria-valuetext="barText(r)"
         >
           <div class="k-progress__bar" :class="barClass(r)" :style="{ '--k-progress-value': r.ratio }" />
         </div>
