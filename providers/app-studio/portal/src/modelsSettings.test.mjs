@@ -203,7 +203,10 @@ test('renders the Models collection heading and an explicit unavailable usage ca
 
   assert.match(html, /<h2[^>]*>Models<\/h2>/)
   assert.match(html, /Configure the model credentials App Studio uses/)
-  assert.match(html, /class="k-model-usage" aria-label="Usage and cost"/)
+  const usageSection = html.match(/<section\b[^>]*aria-label="Usage and cost"[^>]*>/)?.[0]
+  assert.ok(usageSection, 'renders the accessible usage section')
+  const usageClasses = usageSection.match(/\bclass="([^"]*)"/)?.[1].split(/\s+/) ?? []
+  assert.ok(usageClasses.includes('k-model-usage'), 'retains the usage section styling')
   assert.match(html, /class="k-model-usage__unavailable"/)
   assert.match(html, /Usage reporting isn’t available yet/)
   assert.match(html, /Spend will appear here when reporting is available/)
