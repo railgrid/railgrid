@@ -410,9 +410,10 @@ func TestParseHeartbeatAuthMode(t *testing.T) {
 // given status, counting the reviews it served and recording which cluster it
 // was asked to serve.
 type tokenReviewFake struct {
-	reviews  int
-	clusters []string
-	status   authnv1.TokenReviewStatus
+	reviews          int
+	clusters         []string
+	status           authnv1.TokenReviewStatus
+	omitClusterExtra bool
 }
 
 func (f *tokenReviewFake) newClient(cluster string) (kubernetes.Interface, error) {
@@ -428,6 +429,11 @@ func (f *tokenReviewFake) newClient(cluster string) (kubernetes.Interface, error
 		}
 		out := in.DeepCopy()
 		out.Status = f.status
+		// kcp includes the verified issuing cluster, not merely the requested
+		// TokenReview workspace. Tests can override or omit it explicitly.
+		if out.Status.Authenticated && out.Status.User.Extra == nil && !f.omitClusterExtra {
+			out.Status.User.Extra = map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {cluster}}
+		}
 		return true, out, nil
 	})
 	return cs, nil
@@ -552,7 +558,7 @@ func TestTokenReviewAuthenticatorNegativeCacheIsBounded(t *testing.T) {
 		}
 	}
 	key := func(token string) heartbeatAuthCacheKey {
-		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code", cluster: "code-cluster"}
 	}
 
 	for i := range a.negativeMax {
@@ -612,7 +618,7 @@ func TestTokenReviewAuthenticatorNegativeCacheRepeatRejectionKeepsOneSlot(t *tes
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
 	a.negativeMax = 8
 	key := func(token string) heartbeatAuthCacheKey {
-		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code", cluster: "code-cluster"}
 	}
 	garbage := key("garbage")
 

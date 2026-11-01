@@ -31,6 +31,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
@@ -39,11 +41,12 @@ import (
 type HeartbeatAuthMode string
 
 const (
-	// HeartbeatAuthWarn records the beat anyway and logs the failure with the
+	// HeartbeatAuthWarn records a platform beat anyway and logs the failure with the
 	// provider name and reason. It is the default for this release so that
 	// providers deployed from charts that predate the authenticated heartbeat
 	// keep working while operators roll them forward; the next release flips
 	// the default to HeartbeatAuthEnforce.
+	// Organization-owned providers always require successful authentication.
 	HeartbeatAuthWarn HeartbeatAuthMode = "warn"
 	// HeartbeatAuthEnforce rejects unauthenticated beats. A provider that
 	// cannot prove it holds its own service-account token goes stale after
@@ -126,10 +129,9 @@ const ProviderSAUsername = "system:serviceaccount:" + ProviderSANamespace + ":" 
 // (such as the workload-identity audience) would reject the very token the hub
 // minted for the provider.
 //
-// Running the review inside the provider workspace is what scopes the check:
-// kcp binds service-account tokens to the logical cluster they were issued in,
-// so a "provider" SA token from any other workspace does not authenticate here
-// at all, let alone as ProviderSAUsername.
+// Both the provider username and kcp's verified issuing-cluster extra must
+// match. A TokenReview URL alone does not scope the result: kcp may authenticate
+// a service-account token against the token's own workspace.
 type tokenReviewAuthenticator struct {
 	clusters    ClusterResolver
 	newClient   func(cluster string) (kubernetes.Interface, error)
@@ -177,6 +179,7 @@ type heartbeatAuthRejection struct {
 type heartbeatAuthCacheKey struct {
 	tokenHash [sha256.Size]byte
 	provider  string
+	cluster   string
 }
 
 // NewTokenReviewHeartbeatAuthenticator returns a HeartbeatAuthenticator that
@@ -215,7 +218,11 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	if !ok {
 		return ErrHeartbeatNoBearer
 	}
-	key := heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: providerName}
+	cluster, ok := heartbeatCatalogCluster(ctx, a.clusters, providerName)
+	if !ok || cluster == "" {
+		return fmt.Errorf("%w: no CatalogEntry cluster known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
+	}
+	key := heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: providerName, cluster: cluster}
 	now := a.now()
 	if a.cached(key, now) {
 		return nil
@@ -224,10 +231,6 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 		return err
 	}
 
-	cluster, ok := a.clusters.CatalogEntryCluster(providerName)
-	if !ok || cluster == "" {
-		return fmt.Errorf("%w: no CatalogEntry cluster known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
-	}
 	client, err := a.newClient(cluster)
 	if err != nil {
 		return fmt.Errorf("%w: creating client for cluster %s: %v", ErrHeartbeatAuthUnavailable, cluster, err)
@@ -243,6 +246,14 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	}
 	if review.Status.User.Username != ProviderSAUsername {
 		return a.reject(key, now, fmt.Errorf("%w: authenticated as %q, want %q", ErrHeartbeatWrongIdentity, review.Status.User.Username, ProviderSAUsername))
+	}
+	// kcp's service-account authenticator can validate a token from another
+	// workspace even when TokenReview was submitted to this workspace. The
+	// username is identical in every provider workspace, so bind it to the
+	// issuing cluster returned by the authenticator, not just the URL or JWT hint.
+	verifiedClusters := review.Status.User.Extra[dataplane.ClusterNameExtra]
+	if len(verifiedClusters) != 1 || verifiedClusters[0] != cluster {
+		return a.reject(key, now, fmt.Errorf("%w: authenticated workspace does not match provider catalog workspace", ErrHeartbeatWrongIdentity))
 	}
 
 	a.mu.Lock()

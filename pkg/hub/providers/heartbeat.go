@@ -18,6 +18,7 @@ package providers
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -67,6 +68,8 @@ const heartbeatPersistThreshold = HeartbeatTTL / 6
 // (no or unrecognised token), 403 (some other identity) or 503 (could not
 // verify). A nil authenticate means the hub cannot verify anything (no kcp)
 // and behaves like a check that always fails with ErrHeartbeatAuthUnavailable.
+// Warn mode is a legacy platform-only compatibility policy; organization-owned
+// provider heartbeats always require authentication.
 //
 // A rejection says only which of those three classes it was: the reason goes to
 // the log, never to the caller. In enforce mode a beat for a name that is not
@@ -102,7 +105,7 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate H
 		// CatalogEntry has not been observed yet is known here and unresolvable
 		// there. That transient startup state must stay a 503 the provider
 		// retries, so only a name absent from the registry short-circuits.
-		previous, known := reg.Get(name)
+		previous, known := reg.heartbeatProvider(r, name)
 		if !known {
 			if mode == HeartbeatAuthEnforce {
 				// Deliberately indistinguishable from a bad credential: same
@@ -123,8 +126,15 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate H
 			http.Error(w, "provider not found", http.StatusNotFound)
 			return
 		}
-		if err := authenticate(r.Context(), r, name); err != nil {
-			if mode == HeartbeatAuthEnforce {
+		// Carry the selected catalog workspace through authentication and
+		// persistence. Selection is only a hint; TokenReview must verify it.
+		ctx := context.WithValue(r.Context(), heartbeatTargetKey{}, heartbeatTarget{name: name, cluster: previous.CatalogEntryCluster})
+		r = r.WithContext(ctx)
+		if err := authenticate(ctx, r, name); err != nil {
+			// Warn mode preserves legacy platform compatibility only. An org
+			// target came from an untrusted JWT hint and must always pass
+			// TokenReview before it can change that organization's state.
+			if mode == HeartbeatAuthEnforce || previous.OrgUUID != "" {
 				logger.V(1).Info("heartbeat rejected", "provider", name, "reason", err.Error())
 				// The body says only which class of failure it was. The
 				// authenticator's messages carry logical cluster IDs and the
@@ -161,7 +171,7 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate H
 		// waiting for the watch to loop the status write back around. The
 		// provider was in the registry above, so this only fails if it was
 		// deleted in between.
-		if !reg.Heartbeat(name, body.Version, now) {
+		if !reg.heartbeat(previous.OrgUUID, name, previous.CatalogEntryCluster, body.Version, now) {
 			http.Error(w, "provider not found", http.StatusNotFound)
 			return
 		}
@@ -180,6 +190,62 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate H
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+}
+
+type heartbeatTargetKey struct{}
+
+type heartbeatTarget struct {
+	name    string
+	cluster string
+}
+
+// A kcp service-account JWT carries its issuing workspace. Use this untrusted
+// claim only to choose an already-observed CatalogEntry; the existing scoped
+// TokenReview is still the authority, so a forged claim grants nothing. This
+// also lets existing SDK clients heartbeat without a new header or protocol.
+func (r *Registry) heartbeatProvider(req *http.Request, name string) (Provider, bool) {
+	token, ok := bearerToken(req)
+	if !ok {
+		return r.Get(name)
+	}
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || len(parts[1]) > 16*1024 {
+		return r.Get(name)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return r.Get(name)
+	}
+	var claims struct {
+		Cluster string `json:"kubernetes.io/serviceaccount/clusterName"`
+	}
+	if json.Unmarshal(payload, &claims) != nil || claims.Cluster == "" {
+		return r.Get(name)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for key, p := range r.byKey {
+		if key.Name == name && p.CatalogEntryCluster == claims.Cluster {
+			return cloneProvider(*p), true
+		}
+	}
+	// Provisioning can seed a platform record before the catalog watch has
+	// observed its workspace. Preserve the retryable 503 from TokenReview in
+	// that case, including for real JWTs with an issuing-workspace claim.
+	if p, ok := r.byKey[providerKey{Name: name}]; ok && p.CatalogEntryCluster == "" {
+		return cloneProvider(*p), true
+	}
+	return Provider{}, false
+}
+
+// Shared by TokenReview and the recorder so both address exactly the catalog
+// workspace selected by the handler, rather than a platform provider that
+// happens to have the same name. Standalone callers retain platform behavior.
+func heartbeatCatalogCluster(ctx context.Context, clusters ClusterResolver, name string) (string, bool) {
+	if target, ok := ctx.Value(heartbeatTargetKey{}).(heartbeatTarget); ok && target.name == name {
+		return target.cluster, target.cluster != ""
+	}
+	return clusters.CatalogEntryCluster(name)
 }
 
 // parseHeartbeatPath extracts the provider name from

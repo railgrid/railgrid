@@ -517,3 +517,19 @@ func TestEdgeRouteUsable(t *testing.T) {
 		})
 	}
 }
+
+// An admin kubeconfig's root workspace must not prefix a tenant route.
+func TestBackendProxyReplacesKCPWorkspaceScope(t *testing.T) {
+	proxy, rec := newEdgeBackedProxy(t, testOrg)
+	scoped := *proxy.kcpFrontDoor
+	scoped.Path = "/clusters/root"
+	proxy.SetKCPFrontDoor(&scoped, proxy.kcpTransport)
+	w := serveProxy(proxy, "/services/providers/infrastructure/readyz")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	want := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/readyz"
+	if rec.path != want {
+		t.Fatalf("path = %q, want %q", rec.path, want)
+	}
+}

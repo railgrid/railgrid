@@ -792,16 +792,17 @@ func (r *Registry) SetWorkspaceCluster(orgUUID, name, cluster string) bool {
 // the name is not in the registry (caller should reject with 404).
 // reportedVersion is optional; pass empty to leave the field untouched.
 //
-// Global-scoped: the heartbeat endpoint addresses providers by bare name with
-// no tenant context, so an org-owned provider cannot beat here — and cannot
-// keep a platform provider of the same name looking alive. Org-owned providers
-// consequently never set HeartbeatRequired, which leaves their readiness
-// resting on endpoint validity alone.
+// This compatibility entry point is platform-scoped. The HTTP handler uses
+// the provider selected from the token's verified catalog workspace instead.
 func (r *Registry) Heartbeat(name, reportedVersion string, now time.Time) bool {
+	return r.heartbeat("", name, "", reportedVersion, now)
+}
+
+func (r *Registry) heartbeat(orgUUID, name, cluster, reportedVersion string, now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	p, ok := r.byKey[providerKey{Name: name}]
-	if !ok {
+	p, ok := r.byKey[providerKey{Org: orgUUID, Name: name}]
+	if !ok || (cluster != "" && p.CatalogEntryCluster != cluster) {
 		return false
 	}
 	p.LastHeartbeat = now

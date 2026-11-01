@@ -43,9 +43,9 @@ type ClusterResolver interface {
 }
 
 // NewCatalogHeartbeatRecorder returns a HeartbeatRecorder that stamps
-// CatalogEntry.status in the provider's own workspace
-// (root:railgrid:providers/<name>), where each provider's `init` self-registers
-// its entry.
+// CatalogEntry.status in the provider's own platform or organization workspace,
+// where each provider's `init` self-registers its entry. The HTTP handler carries
+// the TokenReview target through the request context to preserve org scope.
 //
 // Addressing the entry by cluster rather than by a fixed path matters: an
 // earlier version wrote to root:railgrid:system:providers, which serves the API but
@@ -63,7 +63,7 @@ func NewCatalogHeartbeatRecorder(kcpConfig *rest.Config, clusters ClusterResolve
 		return nil, fmt.Errorf("cluster resolver is required")
 	}
 	return func(ctx context.Context, name, version string, at time.Time) error {
-		cluster, ok := clusters.CatalogEntryCluster(name)
+		cluster, ok := heartbeatCatalogCluster(ctx, clusters, name)
 		if !ok || cluster == "" {
 			// The catalog watch has not seen this provider's entry yet. The
 			// beat still landed in the registry; only the cross-replica

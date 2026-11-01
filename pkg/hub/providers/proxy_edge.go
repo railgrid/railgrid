@@ -21,6 +21,7 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
+	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -308,7 +309,11 @@ func (p *ProviderProxy) resolveEdgeHop(prov Provider) (edgeHop, error) {
 // backend root) through the tunnel. The query is left to the caller.
 func (h edgeHop) url(rest string) *url.URL {
 	u := h.target
-	u.Path = singleJoiningSlash(h.target.Path, h.route.EdgeProxyPath(rest))
+	// The admin kubeconfig may already address /clusters/root. Replace that
+	// workspace rather than nesting the tenant route underneath it.
+	clusterPath := apiurl.KCPClusterURL(u.Path, h.route.Cluster)
+	tail := strings.TrimPrefix(h.route.EdgeProxyPath(rest), "/clusters/"+h.route.Cluster)
+	u.Path = singleJoiningSlash(clusterPath, tail)
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""

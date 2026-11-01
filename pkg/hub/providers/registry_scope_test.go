@@ -177,8 +177,8 @@ func TestRegistryDeleteByCluster(t *testing.T) {
 	}
 }
 
-// Heartbeats arrive by bare name with no tenant context, so they must only ever
-// mark a platform provider alive.
+// The bare-name registry compatibility method remains platform-only; the HTTP
+// handler separately selects the authenticated catalog workspace.
 func TestRegistryHeartbeatIsGlobalOnly(t *testing.T) {
 	reg := newScopedRegistry()
 	now := time.Now()
@@ -193,8 +193,8 @@ func TestRegistryHeartbeatIsGlobalOnly(t *testing.T) {
 
 // A heartbeat must be vouched for by the provider's own service account,
 // reviewed in the provider's own workspace. A token that the hub has verified
-// for one provider must not keep another one alive, and an org-owned provider
-// has no workspace the bare-name endpoint could review in at all.
+// for one provider must not keep another one alive. A standalone authenticator
+// without the HTTP handler's workspace selection remains platform-scoped.
 func TestHeartbeatRequiresOwnProviderSA(t *testing.T) {
 	reg := newScopedRegistry()
 	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster"})
@@ -222,8 +222,9 @@ func TestHeartbeatRequiresOwnProviderSA(t *testing.T) {
 		t.Fatalf("reviewed in %v, want a fresh review in code's workspace", f.clusters)
 	}
 
-	// Org-owned providers cannot beat here: the bare-name endpoint only
-	// resolves platform providers, so there is no workspace to review in.
+	// A standalone authenticator without a handler-selected token workspace
+	// retains platform-only resolution. The HTTP handler supplies org scope
+	// only from a registered catalog workspace, never a tenant header.
 	err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("vault", "vault-token"), "vault")
 	if !errors.Is(err, ErrHeartbeatAuthUnavailable) {
 		t.Fatalf("Authenticate(vault) = %v, want ErrHeartbeatAuthUnavailable", err)

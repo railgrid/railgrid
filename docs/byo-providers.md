@@ -80,14 +80,18 @@ Everything below is hub-mediated. Per decision O-10 tenants hold no credential
 that reaches an Org workspace, so an Org admin cannot build any of this by hand;
 the REST surface is where the membership and role checks live.
 
-1. `POST /api/orgs/{org}/providers` with `{"name": "vault"}`.
-   The hub creates the `providers` container if needed, creates the provider
-   workspace, mints a `provider` ServiceAccount that is cluster-admin **in that
-   workspace only**, and returns a kubeconfig scoped to it.
-2. The Org installs the provider's Helm chart against that kubeconfig. The
-   chart's `init` container creates the APIExport, APIResourceSchemas, the
-   `APIExportEndpointSlice`, and the `CatalogEntry` — all inside the provider's
-   own workspace.
+1. `POST /api/orgs/{org}/providers` with the provider name and a connected
+   KubernetesCluster edge in the Org. The hub creates the `providers` container
+   if needed, creates the provider workspace, mints a `provider` ServiceAccount
+   that is cluster-admin **in that workspace only**, and returns a kubeconfig
+   scoped to it. The edge is required because the hub reaches the provider
+   backend through that cluster's outbound tunnel.
+2. The Org installs the provider's Helm chart into the hosting cluster using
+   that cluster's own kubeconfig. The provider kubeconfig from registration is
+   a separate credential: store it in the hosting cluster as the Secret your
+   chart expects, so the chart's `init` can create the APIExport,
+   APIResourceSchemas, the `APIExportEndpointSlice`, and the `CatalogEntry` in
+   the provider's workspace.
 3. The hub's catalog reconciler observes the new `CatalogEntry`, resolves the
    workspace path from the cluster's `LogicalCluster` (`kcp.io/path`), attributes
    it to the Org, and upserts it into the registry under that Org's scope.
@@ -99,6 +103,137 @@ the REST surface is where the membership and role checks live.
 
 Registration is idempotent: re-posting the same name returns the same workspace
 and the same token, so the portal can retry safely.
+
+### Register and deploy a provider you wrote
+
+The hub supports org-authored providers through the registration API. The
+console's **Providers → Self-Hosting** tab currently offers platform providers
+that publish a deployment recipe; it does not have a form for registering an
+arbitrary provider name. For a custom provider, register through the API and
+follow the deployment instructions for your own chart. The hub creates the
+provider workspace and returns its scoped kubeconfig, but it does not build or
+deploy your provider chart.
+
+Before registering, select an eligible connected KubernetesCluster edge in the
+Org. Authenticate with the `railgrid` CLI and select an Org and Workspace.
+`railgrid env --no-mcp` supplies the hub URL, bearer token, and Org and Workspace
+UUIDs required as tenant headers. Re-run it when an OIDC token expires. Set up
+those values before listing available targets:
+
+```sh
+eval "$(railgrid env --no-mcp)"
+export RAILGRID_HUB_URL="$HUB"
+export RAILGRID_TOKEN="$TOKEN"
+export ORG_UUID="$ORG"
+export WORKSPACE_UUID="$WS"
+
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer $RAILGRID_TOKEN" \
+  -H "X-Railgrid-Org: $ORG_UUID" \
+  -H "X-Railgrid-Workspace: $WORKSPACE_UUID" \
+  "$RAILGRID_HUB_URL/api/orgs/$ORG_UUID/providers/install-targets" \
+  | jq '.items[] | select(.eligible) | {workspace, name, connected}'
+```
+
+Registration fails unless the chosen edge is eligible. Set the following
+values from an eligible target. `EDGE_WORKSPACE` is the UUID of the team
+workspace containing the edge, and `EDGE_NAME` is the KubernetesCluster
+resource name. The registration request is authorized by the Org's
+`catalogEntryCreation` policy (Org admins by default):
+
+```sh
+export PROVIDER_NAME='vault'
+export EDGE_WORKSPACE='…'
+export EDGE_NAME='production'
+
+# Keep the response and returned kubeconfig private. Do not print either one.
+umask 077
+response_file="$(mktemp)"
+provider_kubeconfig="$(mktemp)"
+curl --fail --silent --show-error \
+  -X POST \
+  -H "Authorization: Bearer $RAILGRID_TOKEN" \
+  -H "X-Railgrid-Org: $ORG_UUID" \
+  -H "X-Railgrid-Workspace: $WORKSPACE_UUID" \
+  -H 'Content-Type: application/json' \
+  "$RAILGRID_HUB_URL/api/orgs/$ORG_UUID/providers" \
+  --data "{\"name\":\"$PROVIDER_NAME\",\"edge\":{\"workspace\":\"$EDGE_WORKSPACE\",\"name\":\"$EDGE_NAME\"}}" \
+  > "$response_file"
+jq -er '.kubeconfig' "$response_file" > "$provider_kubeconfig"
+chmod 600 "$provider_kubeconfig"
+rm -f "$response_file"
+```
+
+Use your hosting cluster's kubeconfig to create the Secret consumed by your
+provider chart. Keep the provider workspace kubeconfig separate; do not pass it
+to Helm as the hosting-cluster credential:
+
+```sh
+export HOST_KUBECONFIG="$HOME/.kube/config"
+export HOST_CONTEXT='production'
+export PROVIDER_NAMESPACE='railgrid-provider-vault'
+
+kubectl --kubeconfig "$HOST_KUBECONFIG" --context "$HOST_CONTEXT" \
+  create namespace "$PROVIDER_NAMESPACE" --dry-run=client -o yaml \
+  | kubectl --kubeconfig "$HOST_KUBECONFIG" --context "$HOST_CONTEXT" apply -f -
+kubectl --kubeconfig "$HOST_KUBECONFIG" --context "$HOST_CONTEXT" \
+  -n "$PROVIDER_NAMESPACE" create secret generic provider-kubeconfig \
+  --from-file=kubeconfig="$provider_kubeconfig" --dry-run=client -o yaml \
+  | kubectl --kubeconfig "$HOST_KUBECONFIG" --context "$HOST_CONTEXT" apply -f -
+rm -f "$provider_kubeconfig"
+```
+
+Now install your chart into that hosting cluster using its kubeconfig, and set
+the chart values that point its `init` container at the Secret you just created.
+The release name, chart reference, namespace, Secret name/key, and values are
+defined by your chart; the hub does not assume or supply them for a custom
+provider. For example, adapt this command to your chart's documented values:
+
+```sh
+helm upgrade --install "$PROVIDER_NAME" ./chart \
+  --kubeconfig "$HOST_KUBECONFIG" --kube-context "$HOST_CONTEXT" \
+  --namespace "$PROVIDER_NAMESPACE" --create-namespace \
+  --values ./provider-values.yaml
+```
+
+Configure `provider-values.yaml` using your chart's documented values. The
+Secret above stores the provider workspace kubeconfig under the data key
+`kubeconfig`; use that key unless your chart documents another key.
+
+If you build the provider image on your workstation, Docker must be available
+there for the build. A local image is not automatically visible to the hosting
+cluster: push it to a registry the cluster can pull from, or use your cluster's
+documented image-loading workflow. A chart using an already-published image
+does not require Docker on the workstation.
+
+After the chart has installed and its `CatalogEntry` appears in the Org's
+catalog, members can enable it in a Workspace through the ordinary Enable flow.
+Review and accept the API permission claims there. Registration alone does not
+bind the APIExport into a Workspace.
+
+### Check registration and recover from an incomplete install
+
+After the provider's `init` has created its `CatalogEntry`, the tenant-scoped
+`GET /api/providers` catalog should include it with `scope: "org"`. Once the
+provider's endpoints are valid and its configured heartbeat has arrived, it
+should report `ready: true`. A provider that serves a UI should also report
+`mainJSIntegrity`; providers without a UI do not need that field. After enabling
+the provider, check
+`GET /api/orgs/{org}/workspaces/{workspace}/providers/enabled`: its binding
+should reach `Bound` and identify this copy with `selfHosted: true`. A newly
+registered provider can exist before its chart is installed, so a workspace
+entry with `registered: false` means the catalog entry has not appeared yet.
+
+If registration succeeded but the catalog entry is missing, check the chart's
+`init` logs and verify it received the kubeconfig from the registration
+response. If the entry exists but is not ready, check the APIExport endpoint
+URLs against the [platform prerequisite](#platform-prerequisite-a-publicly-dialable-virtual-workspace-url),
+the provider's readiness endpoint, and its heartbeat logs. The hosting cluster
+must be able to pull the image named by the chart; a locally built image must be
+pushed to a reachable registry or loaded using that cluster's image workflow.
+Enabling waits for a usable APIExport and accepted claims; if the binding does
+not become `Bound`, inspect its conditions and resolve any pending or rejected
+claims before retrying Enable.
 
 ## Platform prerequisite: a publicly dialable virtual-workspace URL
 
@@ -277,7 +412,7 @@ Registering with `sourceProvider` set to a platform provider name renders that
 provider's recipe:
 
 ```
-POST /api/orgs/{org}/providers  {"name": "edges", "sourceProvider": "edges"}
+POST /api/orgs/{org}/providers  {"name":"edges","sourceProvider":"edges","edge":{"workspace":"<team-workspace-uuid>","name":"<connected-kubernetes-cluster-edge>"}}
 ```
 
 The response carries the credential plus ordered steps: create the namespace,
@@ -533,7 +668,7 @@ Registry scoping enforces the rest:
 
 | Lookup | Scope | Why |
 |---|---|---|
-| `Get(name)` | platform only | Backs the bare-name request paths (UI/backend proxy, heartbeat) that carry no tenant context. If org records were reachable, an Org could name a provider after a platform one and capture its route. |
+| `Get(name)` | platform only | Compatibility and control lookups without a verified provider-workspace context retain the platform fallback. Org heartbeat requests select their catalog workspace from the bearer hint and authenticate there; they do not use this fallback for a matched Org provider. |
 | `GetForOrg(org, name)` | Org's own, else platform | The tenant-scoped Enable path, where the Org is known and verified. |
 | `ListForOrg(org)` | Org's own + platform | The catalog. An empty org means platform-only, never everything. |
 
@@ -584,9 +719,12 @@ because the chart writes its CatalogEntry under its own name.
 
 Resolution prefers the Org's own provider, so the copy shadows the platform one
 **for that Org and no one else**. `Registry.Get` stays platform-only, so an org
-copy can never capture a platform provider's proxy or heartbeat route by name;
-only the tenant-scoped lookups (`GetForOrg`, `ListForOrg`) see it. Tests pin both
-halves. `ListForOrg` flags such a copy with `shadowsPlatform: true` on the
+copy cannot capture a platform provider's proxy route by name. Heartbeat
+selection uses the bearer token's untrusted issuing-workspace hint and then
+authenticates in that exact provider workspace, so a same-named Org provider
+updates only its own heartbeat record. Tenant-scoped lookups (`GetForOrg`,
+`ListForOrg`) also see the Org copy. Tests pin these boundaries. `ListForOrg`
+flags such a copy with `shadowsPlatform: true` on the
 catalog DTO, and the portal shows an **Overrides platform provider** tag next
 to **Self-managed**, so the override is visible to the Org rather than being
 inferred from a card that quietly changed.
@@ -630,11 +768,20 @@ in URL paths.
   attention* — which would turn a multi-hour debug into a line of text.
   Single-shard and embedded platforms are not exposed to this: the hub fronts
   their virtual workspaces itself.
-- **No heartbeat.** The heartbeat endpoint addresses providers by bare name with
-  no tenant context, so it is platform-only — an org provider cannot beat, and
-  cannot keep a platform provider of the same name looking alive. Org providers
-  therefore never set `HeartbeatRequired`, leaving readiness resting on endpoint
-  validity. An org-scoped heartbeat path is future work.
+- **Heartbeat uses the provider's existing endpoint and SDK.** The hub still
+  accepts `POST /api/providers/{name}/heartbeat`. The provider's bearer JWT
+  carries an issuing-workspace claim; the hub treats that claim only as an
+  untrusted hint to select the matching CatalogEntry workspace, then performs a
+  TokenReview in that workspace. The review must authenticate as the provider
+  ServiceAccount and return exactly one
+  `authentication.kcp.io/cluster-name` value matching the selected CatalogEntry
+  workspace. The ServiceAccount username alone is insufficient because it is
+  the same in every provider workspace. An Org provider's heartbeat must pass
+  these checks even when `--provider-heartbeat-auth=warn`; warn-mode acceptance
+  is retained only for platform compatibility. This lets the existing provider
+  heartbeat client work without a new header or protocol and keeps same-named
+  Org and platform providers on their own heartbeat records. This describes the
+  hub-side code path; it does not assert a production rollout.
 - **The provider UI is portable, through a grant.** `/services/providers/{name}`
   (MCP, OAuth, webhooks, health — a verb is a kcp custom subresource on
   `/clusters/{id}/apis/…`, reached through kcp's own routing) resolves in the

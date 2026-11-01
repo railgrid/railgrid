@@ -511,3 +511,28 @@ func TestParseUIGrantPath(t *testing.T) {
 		}
 	}
 }
+
+func TestUIGrantReplacesKCPWorkspaceScope(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	scoped := *f.edgeURL
+	scoped.Path = "/clusters/root"
+	f.ui.SetKCPFrontDoor(&scoped, http.DefaultTransport)
+	w, grant := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusOK {
+		t.Fatalf("grant status = %d: %s", w.Code, w.Body.String())
+	}
+	want := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/main.js"
+	if f.edge.path != want {
+		t.Fatalf("hash path = %q, want %q", f.edge.path, want)
+	}
+	if grant.Integrity != wantSRI(t, orgBundleBody) {
+		t.Fatal("grant is not pinned to the org bundle")
+	}
+	fetched := f.fetchBundle(grant.URL)
+	if fetched.Code != http.StatusOK || fetched.Body.String() != orgBundleBody {
+		t.Fatalf("bundle status/body = %d %q", fetched.Code, fetched.Body.String())
+	}
+	if f.edge.path != want {
+		t.Fatalf("asset path = %q, want %q", f.edge.path, want)
+	}
+}
