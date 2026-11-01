@@ -7,7 +7,7 @@
 // card says so; with metering but nothing sold it shows the plan read-only.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowRight, ChevronRight, ExternalLink, Loader2, RefreshCw } from 'lucide-vue-next'
+import { ArrowRight, ChevronRight, ExternalLink, Loader2 } from 'lucide-vue-next'
 
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import InlineNotification from '@/portalkit/InlineNotification.vue'
@@ -31,7 +31,6 @@ const loading = ref(false)
 const loaded = ref(false)
 const error = ref<string | null>(null)
 const busy = ref<string | null>(null)
-const refreshedAt = ref('')
 const comparisonOpen = ref(false)
 const reviewOpen = ref(false)
 const selectedPlan = ref('')
@@ -53,7 +52,6 @@ async function load(): Promise<void> {
     if (disposed || generation !== loadGeneration || props.orgUuid !== org) return
     billing.value = result
     loaded.value = true
-    refreshedAt.value = new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
   } catch (err) {
     if (!disposed && generation === loadGeneration && props.orgUuid === org) error.value = (err as Error).message
   } finally {
@@ -81,7 +79,6 @@ onMounted(() => {
 watch(() => props.orgUuid, () => {
   billing.value = null
   loaded.value = false
-  refreshedAt.value = ''
   comparisonOpen.value = false
   reviewOpen.value = false
   requestDraft.value = ''
@@ -342,12 +339,10 @@ async function manage(): Promise<void> {
           <template v-else>Understand each allowance, spot constraints, and compare capacity.</template>
         </p>
       </div>
-      <div class="billing-header-actions">
-        <span v-if="refreshedAt" class="billing-freshness" role="status">{{ loading ? 'Refreshing…' : `Fetched at ${refreshedAt}` }}</span>
-        <button v-if="billing?.enabled && billing.subscription?.status && canManage" type="button" class="billing-action k-btn k-btn--ghost" :disabled="!!busy" @click="manage">
+      <div v-if="billing?.enabled && billing.subscription?.status && canManage" class="billing-header-actions">
+        <button type="button" class="billing-action k-btn k-btn--ghost" :disabled="!!busy" @click="manage">
           <Loader2 v-if="busy === 'portal'" class="h-3.5 w-3.5 animate-spin" aria-hidden="true" /><ExternalLink v-else class="h-3.5 w-3.5" aria-hidden="true" />Manage billing
         </button>
-        <button type="button" class="billing-action k-btn k-btn--ghost billing-refresh" :disabled="loading" aria-label="Refresh plan and usage" @click="load"><RefreshCw class="h-4 w-4" :stroke-width="1.75" :class="{ 'animate-spin': loading }" aria-hidden="true" /></button>
       </div>
     </header>
     <div class="billing-body">
@@ -391,9 +386,9 @@ async function manage(): Promise<void> {
 .org-billing{container-type:inline-size;border:1px solid var(--color-border-default);border-radius:6px;background:var(--color-surface-raised);min-width:0}
 .billing-header{padding:24px 28px;display:flex;justify-content:space-between;align-items:flex-start;gap:20px;border-bottom:1px solid var(--color-border-subtle)}
 .plan-identity{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px}.plan-identity h3{font-size:22px;font-weight:600;letter-spacing:-.02em;line-height:1.2}
-.billing-description{margin-top:8px;font-size:12px;line-height:1.6;color:var(--color-text-secondary);max-width:75ch}.billing-header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}.billing-header-actions .billing-action{font-size:12px}.billing-freshness{font-family:var(--font-mono);font-size:11px;color:var(--color-text-secondary)}.billing-refresh{width:36px;height:36px;padding:0}.billing-body{padding:24px 28px 28px}
+.billing-description{margin-top:8px;font-size:12px;line-height:1.6;color:var(--color-text-secondary);max-width:75ch}.billing-header-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;justify-content:flex-end}.billing-header-actions .billing-action{font-size:12px}.billing-body{padding:24px 28px 28px}
 .section-heading{display:flex;justify-content:space-between;align-items:baseline;gap:16px}.section-heading h3,.comparison-heading h3,.upgrade-prompt h3{font-size:14px;font-weight:600}.section-heading p,.section-heading>span{font-size:12px;color:var(--color-text-secondary)}.section-heading p{margin-top:6px}.section-heading>span{font-size:11px}.upgrade-prompt{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:20px;background:var(--color-accent-subtle);border-radius:6px;margin-bottom:30px}.upgrade-prompt p{font-size:13px;margin:7px 0;line-height:1.6}.upgrade-prompt span{font-size:11px;color:var(--color-text-secondary)}.upgrade-prompt .billing-action{flex-shrink:0;font-size:12px}.upgrade-review{padding-bottom:28px;margin-bottom:28px;border-bottom:1px solid var(--color-border-default)}.upgrade-review .billing-action{font-size:12px}.plan-choice{display:flex;gap:12px;align-items:center;flex-wrap:wrap;font-size:12px;margin:20px 0}.plan-choice .billing-plan-select{width:auto;max-width:100%;min-width:160px}.upgrade-focus{padding:16px 0;border-block:1px solid var(--color-border-subtle);margin-bottom:12px}.upgrade-focus h4{font-size:13px;font-weight:600}.upgrade-focus p,.review-caveat{font-size:12px;line-height:1.6;color:var(--color-text-secondary);max-width:75ch}.upgrade-focus p{margin-top:6px}.review-caveat{margin:18px 0}.review-actions{display:flex;gap:12px;flex-wrap:wrap}.request-draft{margin-top:24px;font-size:12px}.request-draft textarea{display:block;width:100%;margin:10px 0;line-height:1.6;resize:vertical;min-height:180px}.request-draft p{color:var(--color-text-secondary)}
 .comparison-section{border-top:1px solid var(--color-border-default)}.comparison-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:24px 28px;cursor:pointer;list-style:none}.comparison-heading::-webkit-details-marker,.limits-help summary::-webkit-details-marker{display:none}.comparison-heading p{font-size:12px;color:var(--color-text-secondary);margin-top:6px}.comparison-heading>span{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--color-accent)}.comparison-section[open]>.comparison-heading>span>svg,.limits-help[open]>summary>svg{transform:rotate(90deg)}.comparison-scroll{overflow-x:auto;max-width:100%;padding:0 28px}.upgrade-review .comparison-scroll{padding:0}.plan-table{width:100%;border-collapse:collapse;font-size:12px}.plan-table th,.plan-table td{text-align:center;padding:16px 14px;border-bottom:1px solid var(--color-border-subtle);min-width:105px;overflow-wrap:anywhere}.plan-table th:first-child{text-align:left;min-width:140px}.plan-table th{font-weight:600}.plan-table thead th{font-family:var(--font-mono)}.plan-table td{font-family:var(--font-mono);font-variant-numeric:tabular-nums}.plan-table small{display:block;margin-top:5px;font:400 11px/1.5 var(--font-sans);color:var(--color-text-secondary)}.plan-table td small,.plan-table thead small,.plan-table .meter-id{font-family:var(--font-mono)}.current-column{background:var(--color-accent-subtle)}.comparison-footer{padding:20px 28px 24px;display:flex;align-items:center;justify-content:space-between;gap:20px}.comparison-footer p{max-width:75ch;font-size:12px;line-height:1.6;color:var(--color-text-secondary)}.comparison-footer .billing-action{font-size:12px;flex-shrink:0}.limits-help{border-top:1px solid var(--color-border-default);padding:0 28px}.limits-help summary{display:flex;justify-content:space-between;align-items:center;min-height:52px;cursor:pointer;font-size:12px;font-weight:500;list-style:none}.limits-help>div{padding-bottom:20px;font-size:12px;line-height:1.7;color:var(--color-text-secondary);max-width:80ch}.limits-help p+p{margin-top:10px}.limits-help strong{font-weight:500;color:var(--color-text-primary)}.metric-upgrade-hint{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:0 32px 16px 0}.metric-upgrade-hint p{font-size:12px;line-height:1.6;color:var(--color-text-secondary)}.upgrade-link{display:inline-flex;align-items:center;gap:6px;min-height:36px;color:var(--color-accent);font-size:12px;text-decoration:underline;text-underline-offset:3px;flex-shrink:0}.upgrade-link:hover{color:var(--color-text-primary)}.org-billing :is(summary,button,select,textarea,[tabindex]):focus-visible{outline:2px solid var(--color-accent);outline-offset:3px}
 @container(max-width:640px){.billing-header{padding:20px;flex-wrap:wrap;gap:16px}.billing-header-actions{justify-content:flex-start}.billing-body{padding:20px}.upgrade-prompt{flex-direction:column;align-items:flex-start;gap:14px;padding:18px}.section-heading{align-items:flex-start}.section-heading>span{max-width:15ch;text-align:right}.comparison-heading{padding:20px;align-items:flex-start}.comparison-heading>span{font-size:11px;max-width:11ch}.comparison-scroll{padding:0 12px}.plan-table th,.plan-table td{padding:13px 8px;min-width:88px}.plan-table th:first-child{min-width:120px}.comparison-footer{padding:18px 20px;align-items:flex-start;flex-direction:column;gap:14px}.limits-help{padding:0 20px}.metric-upgrade-hint{flex-direction:column;gap:3px;padding-right:22px}}
-@media(pointer:coarse){.org-billing button,.org-billing select{min-height:44px}.billing-refresh{min-width:44px}}
+@media(pointer:coarse){.org-billing button,.org-billing select{min-height:44px}}
 </style>
