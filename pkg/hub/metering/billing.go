@@ -386,7 +386,10 @@ func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 	req.Header.Set("Accept", "application/json")
 	resp, err := b.client.Do(req)
 	if err != nil {
-		return &BillingError{Status: http.StatusBadGateway, Message: "metering unreachable: " + err.Error()}
+		// A transport failure names the deployment's URL and the connection
+		// error; it goes back as a plain error so the route logs it and
+		// answers with a fixed sentence.
+		return fmt.Errorf("calling metering %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
@@ -406,7 +409,10 @@ func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 		case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
 			return &BillingError{Status: http.StatusBadGateway, Message: "metering rejected the hub's operator token"}
 		case resp.StatusCode >= 500:
-			return &BillingError{Status: http.StatusBadGateway, Message: "metering: " + msg.Error}
+			// The deployment's own failure text is for its operator, not
+			// for the organization's members.
+			b.logger.Error(nil, "metering failed a billing request", "path", path, "status", resp.StatusCode, "answer", msg.Error)
+			return &BillingError{Status: http.StatusBadGateway, Message: "metering could not complete the request; try again later"}
 		default:
 			return &BillingError{Status: resp.StatusCode, Message: msg.Error}
 		}
