@@ -31,6 +31,7 @@ import MemberList from '@/components/MemberList.vue'
 import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
+import OrgBillingCard from '@/components/OrgBillingCard.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
@@ -2895,6 +2896,12 @@ function fmtDate(s?: string | null): string {
               </div>
             </div>
           </section>
+
+          <OrgBillingCard
+            v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt"
+            :org-uuid="organizationSettingsOrg.uuid"
+            :can-manage="canEditOrg"
+          />
 
           <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4 rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
             <div>

@@ -1017,6 +1017,65 @@ func TestCreateOrg_FreeOrganizationsCapWaitsForMetering(t *testing.T) {
 	})
 }
 
+// An organization the user created a moment ago counts against the free cap
+// before the bootstrap controller has indexed their admin membership: the
+// create lock is released after the Create, so a second request would
+// otherwise read an index without the first organization and pass too.
+// Once the index is synced, the index decides: a creator who handed the
+// organization over is not charged for it.
+func TestCreateOrg_FreeCapCountsACreatedOrganizationNotYetIndexed(t *testing.T) {
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another free"})
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
+			{OrgUUID: "personal", Role: tenancyv1alpha1.MembershipRoleAdmin, Personal: true},
+		}},
+	}
+	justCreated := func(synced bool) *tenancyv1alpha1.Organization {
+		o := &tenancyv1alpha1.Organization{
+			ObjectMeta: metav1.ObjectMeta{Name: "org-new", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}},
+			Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "new"},
+		}
+		if synced {
+			o.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionIndexSynced, Status: metav1.ConditionTrue, Reason: "Synced"}}
+		}
+		return o
+	}
+
+	t.Run("bootstrap pending counts", func(t *testing.T) {
+		mgr, _, _ := newTestManager(t, umi, justCreated(false))
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil)
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		expectQuotaExceeded(t, srv.URL, body, "1 of 1", "free plan")
+	})
+	t.Run("indexed and handed over does not", func(t *testing.T) {
+		mgr, _, _ := newTestManager(t, umi, justCreated(true))
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil)
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		expectPassedQuota(t, srv.URL, body)
+	})
+}
+
+// The free cap reads the plan an organization's Entitlement is on when
+// metering can say: a plan set there directly, or by a subscription, never
+// reaches Organization.spec.plan.
+func TestCreateOrg_FreeCapReadsTheEntitlementPlan(t *testing.T) {
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another free"})
+	mgr := freeCapFixture(t)
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil).
+		WithOrgPlanSource(func(_ context.Context, org string) (string, bool, error) {
+			if org == "org-free" {
+				return "team", true, nil // upgraded on the Entitlement, spec.plan still empty
+			}
+			return "", false, nil
+		})
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	expectPassedQuota(t, srv.URL, body)
+}
+
 // User.spec.quota overrides the hub caps per user, a set 0 included.
 func TestCreateOrg_UserQuotaOverridesTheHubCaps(t *testing.T) {
 	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another"})

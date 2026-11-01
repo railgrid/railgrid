@@ -53,6 +53,47 @@ interface PersistedTenant {
   workspaceMode?: 'workspace' | 'organization'
 }
 
+// Billing, as GET /api/orgs/{org}/billing projects it: the organization's
+// plan and what it buys, usage against it, the subscription behind it, and
+// the plans on offer. installed is false without metering; enabled is false
+// when the deployment sells nothing (no Checkout, no Customer Portal).
+export interface OrgBillingLimit {
+  meter: string
+  shape?: string
+  enforce: string
+  max?: string
+}
+export interface OrgBillingPlan {
+  name: string
+  displayName?: string
+  sellable: boolean
+  current: boolean
+  limits: OrgBillingLimit[]
+}
+export interface OrgBillingSubscription {
+  entitledPlan?: string
+  status?: string
+  currentPeriodEnd?: string
+  cancelAtPeriodEnd: boolean
+  syncedAt?: string
+}
+export interface OrgBilling {
+  installed: boolean
+  enabled: boolean
+  livemode: boolean
+  defaultPlan?: string
+  plan?: string
+  planDisplayName?: string
+  managedBy?: string
+  limits: OrgBillingLimit[]
+  usage: Record<string, string>
+  window?: { start: string; end: string }
+  overSoftLimit: boolean
+  overHardLimit: boolean
+  subscription?: OrgBillingSubscription
+  plans: OrgBillingPlan[]
+}
+
 export interface OrgRow {
   uuid: string
   displayName: string
@@ -1009,6 +1050,43 @@ export const useTenantStore = defineStore('tenant', () => {
     return true
   }
 
+  // hubMessage is the hub's own sentence from a failed response, else the
+  // fallback with the status.
+  async function hubMessage(resp: Response, fallback: string): Promise<string> {
+    const body = (await resp.json().catch(() => ({}))) as { message?: string; error?: string }
+    return body.message || body.error || `${fallback}: ${resp.status}`
+  }
+
+  async function fetchOrgBilling(targetOrgUUID: string): Promise<OrgBilling> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing`, {
+      headers: { 'X-Railgrid-Org': targetOrgUUID },
+    })
+    if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to load billing'))
+    return (await resp.json()) as OrgBilling
+  }
+
+  // startOrgCheckout and openOrgBillingPortal return the hosted page's URL
+  // the caller redirects to; the hub supplies the return addresses.
+  async function startOrgCheckout(targetOrgUUID: string, plan: string): Promise<string> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing/checkout`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
+      body: JSON.stringify({ plan }),
+    })
+    if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to start checkout'))
+    return ((await resp.json()) as { url: string }).url
+  }
+
+  async function openOrgBillingPortal(targetOrgUUID: string): Promise<string> {
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing/portal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
+      body: '{}',
+    })
+    if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to open the billing portal'))
+    return ((await resp.json()) as { url: string }).url
+  }
+
   async function deleteOrg(targetOrgUUID: string): Promise<boolean> {
     const selectionRevisionAtStart = selectionRevision
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}`, {
@@ -1686,6 +1764,9 @@ export const useTenantStore = defineStore('tenant', () => {
     patchOrgDisplayName,
     deleteOrg,
     undeleteOrg,
+    fetchOrgBilling,
+    startOrgCheckout,
+    openOrgBillingPortal,
     // actions: workspace
     createWorkspace,
     patchWorkspaceDisplayName,

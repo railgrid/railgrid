@@ -1090,22 +1090,37 @@ func (s *Server) Run(ctx context.Context) error {
 					logger.Error(err, "Metering discovery not started")
 				} else {
 					meteringDiscovery = d
+					// The first look happens before the routes serve, so a
+					// restart does not start with an answer nobody has given.
+					meteringDiscovery.Refresh(ctx)
 					go meteringDiscovery.Run(ctx)
 					logger.Info("Metering discovery enabled", "workspace", s.opts.MeteringWorkspace, "defaultPlan", s.opts.MeteringDefaultPlan)
 					// The free-organizations cap applies while a metering
 					// deployment is discovered: without one there are no
 					// allowances to multiply, and a hub whose metering
-					// workspace is configured but empty caps nothing.
+					// workspace is configured but empty caps nothing. Until
+					// discovery has a definite answer the cap applies: a
+					// hub that cannot reach kcp for a moment must not hand
+					// out free organizations it would otherwise refuse.
 					apiMgr.WithFreePlan(s.opts.MeteringDefaultPlan, func() bool {
-						_, ok := meteringDiscovery.Current()
-						return ok
+						installed, known := meteringDiscovery.Installed()
+						return installed || !known
 					})
 					// The admin plan route checks the plan it is handed
-					// exists in the metering workspace.
+					// exists in the metering workspace; the free cap reads
+					// each organization's plan from its Entitlement; the
+					// organization billing routes read it and forward the
+					// hosted flows.
 					if store, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
-						logger.Error(err, "Creating metering workspace client failed; plan assignment is unavailable")
+						logger.Error(err, "Creating metering workspace client failed; plan assignment and billing are unavailable")
 					} else {
 						meteringStore = store
+						apiMgr.WithOrgPlanSource(metering.EntitlementPlan(meteringDiscovery, store, logger.WithName("metering")))
+						billing := metering.NewBilling(meteringDiscovery, store, logger.WithName("billing"))
+						apiMgr.WithBilling(billing, s.opts.HubExternalURL)
+						// The billing provider's webhook: public, relayed to the
+						// metering deployment, which verifies its signature.
+						router.HandleFunc("/api/billing/webhook", billing.ForwardWebhook).Methods(http.MethodPost)
 					}
 				}
 			}
@@ -1141,7 +1156,8 @@ func (s *Server) Run(ctx context.Context) error {
 				adminHandler := admin.NewHandler(adminSvc, userClient, providerRegistry).
 					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
 				if meteringStore != nil {
-					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore))
+					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore)).
+						WithPlanReset(metering.ResetPlan(meteringDiscovery, meteringStore, s.opts.MeteringDefaultPlan, logger.WithName("metering-admin")))
 				}
 				adminHandler.Register(adminSub)
 				// The admin area reads metering through this proxy.
