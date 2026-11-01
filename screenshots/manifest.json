@@ -1,0 +1,379 @@
+{
+  "createdAt": "2026-11-01T03:41:57.521Z",
+  "screenshots": [
+    {
+      "file": "agents.workspace-valid.light.1440x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID valid example",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "agents.workspace-invalid.light.1440x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID inline validation error",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "app-studio.haiku-reasoning-picker.light.1440x1050.png",
+      "surface": "App Studio",
+      "state": "Claude Haiku 5.5 picker: Model default with inherited Medium and five explicit effort stops",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "pickerBounds": {
+        "x": 254,
+        "y": 808,
+        "width": 320,
+        "height": 183
+      },
+      "effortLabels": [
+        "Model default",
+        "Low",
+        "Medium",
+        "High",
+        "Extra high",
+        "Max"
+      ],
+      "modelCalls": 0
+    },
+    {
+      "file": "agents.workspace-valid.light.390x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID valid example",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "agents.workspace-invalid.light.390x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID inline validation error",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "app-studio.haiku-reasoning-picker.light.390x1050.png",
+      "surface": "App Studio",
+      "state": "Claude Haiku 5.5 picker: Model default with inherited Medium and five explicit effort stops",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "light",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "light"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "pickerBounds": {
+        "x": 8,
+        "y": 807,
+        "width": 320,
+        "height": 183
+      },
+      "effortLabels": [
+        "Model default",
+        "Low",
+        "Medium",
+        "High",
+        "Extra high",
+        "Max"
+      ],
+      "modelCalls": 0
+    },
+    {
+      "file": "agents.workspace-valid.dark.1440x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID valid example",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "agents.workspace-invalid.dark.1440x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID inline validation error",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "app-studio.haiku-reasoning-picker.dark.1440x1050.png",
+      "surface": "App Studio",
+      "state": "Claude Haiku 5.5 picker: Model default with inherited Medium and five explicit effort stops",
+      "viewport": {
+        "width": 1440,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 1440,
+        "documentClient": 1440,
+        "documentScroll": 1440,
+        "bodyClient": 1440,
+        "bodyScroll": 1440
+      },
+      "pickerBounds": {
+        "x": 254,
+        "y": 808,
+        "width": 320,
+        "height": 183
+      },
+      "effortLabels": [
+        "Model default",
+        "Low",
+        "Medium",
+        "High",
+        "Extra high",
+        "Max"
+      ],
+      "modelCalls": 0
+    },
+    {
+      "file": "agents.workspace-valid.dark.390x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID valid example",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "agents.workspace-invalid.dark.390x1050.png",
+      "surface": "Agents",
+      "state": "Anthropic workspace ID inline validation error",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "apiKey": "dummy value entered in password-masked field; no probe or save"
+    },
+    {
+      "file": "app-studio.haiku-reasoning-picker.dark.390x1050.png",
+      "surface": "App Studio",
+      "state": "Claude Haiku 5.5 picker: Model default with inherited Medium and five explicit effort stops",
+      "viewport": {
+        "width": 390,
+        "height": 1050
+      },
+      "theme": "dark",
+      "screenshotViewport": "viewport",
+      "horizontalOverflow": false,
+      "overflowMetrics": {
+        "classes": [
+          "dark"
+        ],
+        "viewport": 390,
+        "documentClient": 390,
+        "documentScroll": 390,
+        "bodyClient": 390,
+        "bodyScroll": 390
+      },
+      "pickerBounds": {
+        "x": 8,
+        "y": 807,
+        "width": 320,
+        "height": 183
+      },
+      "effortLabels": [
+        "Model default",
+        "Low",
+        "Medium",
+        "High",
+        "Extra high",
+        "Max"
+      ],
+      "modelCalls": 0
+    }
+  ],
+  "checks": [
+    {
+      "surface": "App Studio",
+      "assertion": "temporary Anthropic Haiku model configured with dummy-only key and no connection test",
+      "result": "passed"
+    },
+    {
+      "surface": "App Studio",
+      "assertion": "temporary project has no repository/template and only an empty session",
+      "result": "passed"
+    },
+    {
+      "surface": "Agents",
+      "assertion": "Find models reports malformed workspace ID before probe/network request",
+      "result": "passed"
+    },
+    {
+      "surface": "Agents",
+      "assertion": "Find models reports malformed workspace ID before probe/network request",
+      "result": "passed"
+    },
+    {
+      "surface": "Agents",
+      "assertion": "Find models reports malformed workspace ID before probe/network request",
+      "result": "passed"
+    },
+    {
+      "surface": "Agents",
+      "assertion": "Find models reports malformed workspace ID before probe/network request",
+      "result": "passed"
+    },
+    {
+      "assertion": "exactly twelve screenshots captured; dummy key only; no credential probe, model call, turn, repository, template, or deployment",
+      "result": "passed"
+    }
+  ],
+  "cleanup": {
+    "session": "removed or absent",
+    "project": "removed or absent",
+    "registry entry": "removed or absent",
+    "dummy credential Secret": "removed or absent"
+  }
+}
