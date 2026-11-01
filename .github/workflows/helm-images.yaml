@@ -1,17 +1,17 @@
 name: Helm OCI Image Build and Push
 
+# Publishes the platform charts (deploy/charts/*) to ghcr as OCI artifacts on
+# every push to main and on v* tags. This workflow no longer runs on pull
+# requests: PR validation of every chart (platform and provider) is the
+# `make verify-charts` step of the CI workflow's `contracts` job, which costs
+# seconds instead of three billed job-minutes per push. Manual runs package
+# and lint without logging in or pushing.
 on:
   push:
     branches:
       - main
     tags:
       - "v*"
-  # On PRs and manual runs the chart is packaged but NOT pushed (no login, push gated below), so
-  # a broken Chart.yaml / template is caught in the PR before the split sync
-  # ever reaches a mirror.
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -19,32 +19,10 @@ permissions:
   packages: write
   id-token: write
 
-# Cancel superseded PR validation only; publishing runs have unique groups.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
-  changes:
+  publish-charts:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      mode: ${{ steps.changes.outputs.mode }}
-      providers: ${{ steps.changes.outputs.providers }}
-      portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
-      image-matrix: ${{ steps.changes.outputs.image-matrix }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/ci-changes
-        id: changes
-
-  build-hub:
-    needs: changes
-    if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -77,12 +55,12 @@ jobs:
       - name: Package and push Helm charts as OCI
         env:
           HELM_EXPERIMENTAL_OCI: 1
-          # PRs and manual runs validate only; pushes/tags publish.
+          # Manual runs validate only; pushes/tags publish.
           PUSH: ${{ github.event_name == 'push' }}
         run: |
           set -euo pipefail
 
-          # Login to GitHub Container Registry for Helm (skip on PRs — no push).
+          # Login to GitHub Container Registry for Helm (skip on manual runs — no push).
           if [ "${PUSH}" = "true" ]; then
             echo "${{ github.token }}" | helm registry login ghcr.io --username ${{ github.actor }} --password-stdin
           fi
@@ -101,8 +79,8 @@ jobs:
 
           # Platform charts (deploy/charts/*) are versioned + published here with
           # the hub version. Provider charts (providers/*/deploy/chart/) are only
-          # LINTED/PACKAGED here on PRs for validation — they are published, with
-          # each provider's OWN version, by provider-release.yaml on a
+          # LINTED/PACKAGED here on manual runs — they are published, with each
+          # provider's OWN version, by provider-release.yaml on a
           # `providers/<name>/v*` tag. Publishing them here would stamp them with
           # the hub version. The provider chart dirs are all named "chart", so the
           # chart name is read from the Chart.yaml name: field.
@@ -122,10 +100,9 @@ jobs:
               # Lint first: `helm package` only tars the chart and does NOT
               # render templates, so a broken template would still package
               # cleanly. `helm lint` renders the templates against the chart's
-              # default values, so a PR fails on template errors (the whole
-              # point of building charts here). All current charts — platform
-              # and provider — lint cleanly with their defaults (the platform
-              # charts' `required` values are defaulted in values.yaml).
+              # default values. All current charts — platform and provider —
+              # lint cleanly with their defaults (the platform charts'
+              # `required` values are defaulted in values.yaml).
               helm lint "$chart_dir"
 
               # Package the chart
@@ -161,21 +138,7 @@ jobs:
                 helm push "${chart_name}-${CHART_VERSION}.tgz" "oci://ghcr.io/${{ github.repository_owner }}/charts"
                 echo "Helm chart pushed to oci://ghcr.io/${{ github.repository_owner }}/charts/${chart_name}:${CHART_VERSION}"
               else
-                echo "PR build: packaged ${chart_name}-${CHART_VERSION}.tgz (not pushed)"
+                echo "Manual run: packaged ${chart_name}-${CHART_VERSION}.tgz (not pushed)"
               fi
             fi
           done
-
-  result:
-    name: Helm result
-    if: always()
-    needs: [changes, build-hub]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Require selected jobs to succeed
-        env:
-          CI_NEEDS: ${{ toJSON(needs) }}
-        run: python3 hack/ci/result.py helm-images
