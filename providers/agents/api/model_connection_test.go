@@ -174,6 +174,34 @@ func TestVerifyCredentialModelTestsChatNotCatalog(t *testing.T) {
 	}
 }
 
+func TestVerifyGPT6GatewayCredentialUsesChatCompletions(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			t.Errorf("request = %s %s, want POST /chat/completions", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != "gpt-6-luna" || body["reasoning_effort"] != "none" {
+			t.Errorf("gateway request = %#v, want GPT-6 Luna with Chat Completions reasoning disabled", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-gateway","object":"chat.completion","created":1,"model":"gpt-6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	result := verifyCredentialModel(t.Context(), llm.Profile{
+		Provider: llm.ProviderOpenAICompatible, BaseURL: upstream.URL,
+		Model: "gpt-6-luna", APIKey: "private-key",
+	})
+	if !result.OK || calls != 1 {
+		t.Fatalf("custom-gateway GPT-6 test result = %#v after %d calls", result, calls)
+	}
+}
+
 // A probe failure is recorded bounded and without the body verbatim: an
 // upstream can answer with megabytes, and it can echo the request headers the
 // key travelled in.

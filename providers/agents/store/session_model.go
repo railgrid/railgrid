@@ -35,6 +35,9 @@ type SessionModelSettings struct {
 type ModelSettings struct {
 	ModelCredential string `json:"modelCredential"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
+	// Transport is resolved before execution and retained across resumes.
+	// Older snapshots leave it empty and resolve it when their model is built.
+	Transport string `json:"transport,omitempty"`
 }
 
 func (m *MemoryStore) GetSessionModelSettings(_ context.Context, scope Scope, session string) (SessionModelSettings, error) {

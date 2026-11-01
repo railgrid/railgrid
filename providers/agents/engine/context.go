@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -53,6 +54,11 @@ func estimateMessageTokens(m *schema.Message) int {
 	for _, tc := range m.ToolCalls {
 		n += estimateTokens(tc.ID) + estimateTokens(tc.Type)
 		n += estimateTokens(tc.Function.Name) + estimateTokens(tc.Function.Arguments) + 8
+		if len(tc.Extra) > 0 {
+			if extra, err := json.Marshal(tc.Extra); err == nil {
+				n += estimateTokens(string(extra))
+			}
+		}
 	}
 	// Image payload tokenization varies by model and provider. A conservative
 	// reserve ensures an image-bearing history can trigger compaction before the
@@ -297,6 +303,9 @@ func compactBeforeRequest(
 	if err := validateToolMessagePairing(replacement); err != nil {
 		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
 	}
+	if err := validateRetainedToolCallMetadata(history, replacement); err != nil {
+		return nil, nil, false, fmt.Errorf("engine: context compactor: %w", err)
+	}
 	if err := validateReferenceOnlyCompaction(history, replacement); err != nil {
 		return nil, nil, false, err
 	}
@@ -314,6 +323,35 @@ func compactBeforeRequest(
 		return nil, nil, false, &ContextBudgetError{Estimate: estimate, Reason: "context compactor returned history over budget"}
 	}
 	return rebuilt, rebuiltIdentities, true, nil
+}
+
+// validateRetainedToolCallMetadata keeps opaque adapter state attached to any
+// tool call the compactor retains. A whole call/result group may be summarized
+// away, but a retained call must keep its original provider continuation data.
+func validateRetainedToolCallMetadata(source, replacement []Message) error {
+	metadataByID := make(map[string]map[string]any)
+	for _, message := range source {
+		if message.Role != RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if len(call.Extra) > 0 {
+				metadataByID[call.ID] = call.Extra
+			}
+		}
+	}
+	for _, message := range replacement {
+		if message.Role != RoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			prior, ok := metadataByID[call.ID]
+			if ok && !reflect.DeepEqual(prior, call.Extra) {
+				return fmt.Errorf("context compactor changed continuation metadata for tool call %q", call.ID)
+			}
+		}
+	}
+	return nil
 }
 
 // redactReferenceOnlyForCompaction preserves opaque references but never sends

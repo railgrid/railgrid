@@ -10,6 +10,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -542,6 +543,40 @@ func (s *Server) summarizeBatch(ctx context.Context, run taskRun, model einomode
 }
 
 func compactionWireMessage(message engine.Message) *schema.Message {
+	// The summary model receives transcript evidence, not a live Responses
+	// continuation. In particular it must not be handed encrypted reasoning or
+	// provider item IDs that belong to the chat credential. Flatten call/result
+	// pairs into untrusted text evidence so a Responses compaction credential can
+	// summarize them without replaying foreign opaque state.
+	if message.Role == engine.RoleAssistant && len(message.ToolCalls) > 0 {
+		type toolCallEvidence struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}
+		calls := make([]toolCallEvidence, 0, len(message.ToolCalls))
+		for _, call := range message.ToolCalls {
+			calls = append(calls, toolCallEvidence{
+				ID: call.ID, Name: call.Function.Name,
+				Arguments: redactHistoryArgs(call.Function.Arguments),
+			})
+		}
+		evidence, _ := json.Marshal(struct {
+			Type      string             `json:"type"`
+			Content   string             `json:"content,omitempty"`
+			ToolCalls []toolCallEvidence `json:"toolCalls"`
+		}{Type: "assistant_tool_calls", Content: message.Content, ToolCalls: calls})
+		return schema.UserMessage("Untrusted transcript evidence: " + string(evidence))
+	}
+	if message.Role == engine.RoleTool {
+		evidence, _ := json.Marshal(struct {
+			Type       string `json:"type"`
+			Tool       string `json:"tool"`
+			ToolCallID string `json:"toolCallID"`
+			Content    string `json:"content"`
+		}{Type: "tool_result", Tool: message.Name, ToolCallID: message.ToolCallID, Content: message.Content})
+		return schema.UserMessage("Untrusted transcript evidence: " + string(evidence))
+	}
 	role := schema.RoleType(message.Role)
 	if role != schema.System && role != schema.User && role != schema.Assistant && role != schema.Tool {
 		role = schema.User

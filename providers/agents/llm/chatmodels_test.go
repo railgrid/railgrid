@@ -130,40 +130,157 @@ func TestFilterChatModelsIsStable(t *testing.T) {
 	}
 }
 
-// A run that dies on the upstream's "use v1/responses instead" is a model to
-// change, and the message has to say which credential owns it — while keeping
-// the provider's own words for anyone pasting it into a support thread.
-func TestExplainChatCompletionsRefusal(t *testing.T) {
-	upstream := errors.New(`engine: start stream: error, status code: 404, message: This model is not supported in the v1/chat/completions endpoint. Use the v1/responses endpoint instead.`)
-	got := ExplainChatCompletionsRefusal(upstream, "dev")
-	if got == nil {
-		t.Fatal("expected the error to survive")
+// Model-unavailable errors can come from either transport. Preserve the
+// upstream details while giving the same model-level recovery guidance for
+// Chat Completions and Responses failures.
+func TestExplainModelUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{
+			name: "Chat Completions directs to Responses",
+			err:  errors.New(`engine: start stream: error, status code: 404, message: This model is not supported in the v1/chat/completions endpoint. Use the v1/responses endpoint instead.`),
+			want: "v1/responses",
+		},
+		{
+			name: "Responses model deprecated",
+			err:  fmt.Errorf("engine: start stream: %w", errors.New("The model 'gpt-6-luna' is deprecated for the v1/responses endpoint")),
+			want: "deprecated for the v1/responses endpoint",
+		},
+		{
+			name: "Responses model_not_supported code",
+			err:  errors.New(`engine: start stream: error, status code: 400, message: {"code":"model_not_supported","message":"This model is not supported on the v1/responses endpoint"}`),
+			want: "model_not_supported",
+		},
 	}
-	for _, want := range []string{"dev", "v1/responses", "pick another model"} {
-		if !strings.Contains(strings.ToLower(got.Error()), strings.ToLower(want)) {
-			t.Fatalf("message %q does not mention %q", got.Error(), want)
-		}
-	}
-	if !errors.Is(got, upstream) {
-		t.Fatal("the upstream error must stay unwrappable")
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ExplainModelUnavailable(tc.err, "dev")
+			if got == nil {
+				t.Fatal("expected the error to survive")
+			}
+			for _, want := range []string{"dev", tc.want, "cannot use its model", "model supported by this endpoint"} {
+				if !strings.Contains(strings.ToLower(got.Error()), strings.ToLower(want)) {
+					t.Fatalf("message %q does not mention %q", got.Error(), want)
+				}
+			}
+			if !errors.Is(got, tc.err) {
+				t.Fatal("the upstream error must stay unwrappable")
+			}
+			var unavailable *ModelUnavailableError
+			if !errors.As(got, &unavailable) {
+				t.Fatalf("wrapped error has type %T, want *ModelUnavailableError", got)
+			}
+		})
 	}
 
-	deprecated := fmt.Errorf("engine: start stream: %w", errors.New("The model `gpt-5.3-chat-latest` is deprecated"))
-	if !ChatCompletionsRefusal(deprecated) {
+	deprecated := fmt.Errorf("engine: start stream: %w", errors.New("The model 'gpt-5.3-chat-latest' is deprecated"))
+	if !IsModelUnavailable(deprecated) {
 		t.Fatal("a deprecation is a model problem too")
+	}
+	parameterDeprecated := errors.New("Responses API error: invalid_parameter: For model gpt-6-luna, parameter reasoning is deprecated")
+	if IsModelUnavailable(parameterDeprecated) {
+		t.Fatal("a deprecated Responses parameter was classified as an unavailable model")
+	}
+	if got := ExplainModelUnavailable(parameterDeprecated, "dev"); got != parameterDeprecated {
+		t.Fatalf("parameter deprecation was rewritten as model advice: %v", got)
 	}
 
 	// Everything else is passed through untouched: dressing a real failure up
 	// as a configuration problem sends people to the wrong place.
 	other := errors.New("engine: start stream: connection refused")
-	if ExplainChatCompletionsRefusal(other, "dev") != other {
+	if ExplainModelUnavailable(other, "dev") != other {
 		t.Fatal("an unrelated error must not be wrapped")
 	}
 	// No credential to name, nothing to add.
-	if ExplainChatCompletionsRefusal(upstream, "  ") != upstream {
+	if ExplainModelUnavailable(tests[0].err, "  ") != tests[0].err {
 		t.Fatal("an unnamed credential must not be wrapped")
 	}
-	if ExplainChatCompletionsRefusal(nil, "dev") != nil {
+	if ExplainModelUnavailable(nil, "dev") != nil {
 		t.Fatal("nil must stay nil")
+	}
+}
+
+func TestModelLifecycleRefusalRequiresModelSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "model followed by parameter",
+			text: "the model parameter is deprecated",
+		},
+		{
+			name: "parameter before model",
+			text: "parameter model is deprecated, use x",
+		},
+		{
+			name: "quoted parameter after model",
+			text: `The MODEL "PARAMETER" is deprecated`,
+		},
+		{
+			name: "quoted param after model",
+			text: "The model `param` has been retired",
+		},
+		{
+			name: "param before model",
+			text: "param model has been retired",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := errors.New(tc.text)
+			if IsModelUnavailable(err) {
+				t.Fatalf("IsModelUnavailable(%q) = true, want false", tc.text)
+			}
+			if got := ExplainModelUnavailable(err, "dev"); got != err {
+				t.Fatalf("ExplainModelUnavailable(%q) rewrote an unrelated parameter diagnostic: %v", tc.text, got)
+			}
+		})
+	}
+}
+
+func TestModelLifecycleRefusalKeepsModelSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "unnamed model deprecated",
+			text: "The model is deprecated",
+		},
+		{
+			name: "named model deprecated",
+			text: "The model 'gpt-6-luna' is deprecated",
+		},
+		{
+			name: "named model retired",
+			text: "Model `gpt-4o` has been retired",
+		},
+		{
+			name: "unnamed model retired",
+			text: "This model has been retired",
+		},
+		{
+			name: "unrelated parameter diagnostic beside model lifecycle refusal",
+			text: "parameter reasoning is deprecated. The model 'gpt-6-luna' is deprecated",
+		},
+		{
+			name: "parameter model diagnostic before model retirement",
+			text: "parameter model is deprecated, use x. The model 'gpt-6-luna' has been retired",
+		},
+		{
+			name: "model parameter diagnostic before unnamed model deprecation",
+			text: "the model parameter is deprecated. The model is deprecated",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !IsModelUnavailable(errors.New(tc.text)) {
+				t.Fatalf("IsModelUnavailable(%q) = false, want true", tc.text)
+			}
+		})
 	}
 }

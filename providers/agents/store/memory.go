@@ -572,6 +572,17 @@ func cloneSessionSummary(s SessionSummary) SessionSummary {
 	checkpoint.ReplacementHistory = append([]SessionCheckpointMessage(nil), s.Checkpoint.ReplacementHistory...)
 	for i := range checkpoint.ReplacementHistory {
 		checkpoint.ReplacementHistory[i].ToolCalls = append([]SessionCheckpointToolCall(nil), checkpoint.ReplacementHistory[i].ToolCalls...)
+		for j := range checkpoint.ReplacementHistory[i].ToolCalls {
+			extra := checkpoint.ReplacementHistory[i].ToolCalls[j].Extra
+			if extra == nil {
+				continue
+			}
+			clone := make(map[string]string, len(extra))
+			for key, value := range extra {
+				clone[key] = value
+			}
+			checkpoint.ReplacementHistory[i].ToolCalls[j].Extra = clone
+		}
 	}
 	s.Checkpoint = &checkpoint
 	return s

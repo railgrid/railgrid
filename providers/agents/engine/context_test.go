@@ -18,6 +18,38 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+func TestContextCompactionCannotDropRetainedToolContinuationMetadata(t *testing.T) {
+	call := schema.ToolCall{
+		ID: "call-1", Type: "function", Extra: map[string]any{
+			"railgrid_openai_responses_item_id":   "fc_1",
+			"railgrid_openai_responses_reasoning": `[ {"id":"rs_1","encrypted_content":"opaque-signature"} ]`,
+			"railgrid_openai_responses_origin":    "sha256:credential-fingerprint",
+		},
+		Function: schema.FunctionCall{Name: "read_file", Arguments: `{}`},
+	}
+	input := []*schema.Message{
+		schema.UserMessage("older"),
+		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{call}},
+		schema.ToolMessage("contents", call.ID, schema.WithToolName(call.Function.Name)),
+		schema.UserMessage("latest request"),
+	}
+	task := &Message{Role: RoleUser, Content: "latest request"}
+	_, _, _, err := compactBeforeRequest(context.Background(), input, nil, 0, task, TurnConfig{
+		ContextBudgetTokens: 1,
+		ContextCompactor: func(_ context.Context, history []Message, _ ContextEstimate) ([]Message, error) {
+			// Keep the complete call/result group and latest user request, but
+			// emulate a replacement path that accidentally drops Eino Extra.
+			assistant := history[1]
+			assistant.ToolCalls = append([]schema.ToolCall(nil), assistant.ToolCalls...)
+			assistant.ToolCalls[0].Extra = nil
+			return []Message{assistant, history[2], history[3]}, nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "changed continuation metadata") {
+		t.Fatalf("compaction error = %v, want retained opaque metadata refusal", err)
+	}
+}
+
 func TestEstimateTokens(t *testing.T) {
 	if estimateTokens("") != 0 {
 		t.Fatal("the empty string is zero tokens")

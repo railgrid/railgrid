@@ -58,34 +58,50 @@ truth rather than a button somebody pressed once:
 | `Reachable` | `GET {spec.baseURL}/models` answered with that key |
 | `Ready` | both of the above |
 
-`status.models` records the **chat-capable subset** of what the endpoint
-served, which is what the portal's model picker offers, and
+`status.models` records the **curated agent model candidates** from the endpoint,
+which is what the portal's model picker offers, and
 `status.lastProbeError` explains a failure (bounded, never the key).
 
 The subset matters. An endpoint answers `GET /models` with everything the
 account can reach — for OpenAI that is ~130 ids including speech,
 transcription, embeddings, images, realtime, moderation, the legacy completion
-models, and the families served only on `/v1/responses` (`*-codex`, `*-pro`,
-`*-deep-research`, `computer-use-*`). This engine speaks Chat Completions only,
-so picking one of those saves cleanly and then fails on the first turn with the
-provider's 404 "This model is not supported in the v1/chat/completions
-endpoint". `llm.ChatCapable` / `llm.FilterChatModels` (`llm/chatmodels.go`)
-remove them, inside `llm.DiscoverModels` so the reconciler's `status.models`
+models, and specialized families served only on `/v1/responses` (`*-codex`,
+`*-pro`, `*-deep-research`, `computer-use-*`). On the official OpenAI endpoint,
+Agents uses Eino’s native Responses adapter for the GPT-6 family and for some
+earlier catalog models when a selected reasoning effort requires it. Custom
+gateways use Chat Completions by default unless an admitted run has a pinned
+protocol. Having a Responses adapter does not make every Responses-only family
+supported. Discovery filters known specialized families
+that Agents does not route, while retaining catalog entries explicitly
+included for Agents. `llm.ChatCapable` / `llm.FilterChatModels`
+(`llm/chatmodels.go`) apply that curation inside `llm.DiscoverModels` so the
+reconciler's `status.models`
 and the `discover` verb's answer are one list. Curated catalog ids come first,
 in catalog order, then the rest alphabetically; the portal groups on that split
-(**Recommended** / **Other models this endpoint serves**) and manual entry
-stays available for anything the deny-list is wrong about.
+(**Recommended** / **Other models this endpoint serves**). These are model
+candidates, not a compatibility guarantee: manual entry stays available when
+curation misses an id, and the editor's test checks the selected model before
+it is saved.
 
 Two verbs probe a **saved** credential on demand:
 `modelcredentials/{name}/test` runs a real chat round-trip, and
 `modelcredentials/{name}/discover` re-reads the model list and refreshes the
 status. `test` takes an optional body `{"model": "<id>"}` that probes that
-chat-capable id instead of the saved `spec.model` — everything else (endpoint,
-key) still comes from the object and its Secret. That is what lets the editor
+curated model candidate instead of the saved `spec.model` — everything else
+(endpoint, key) still comes from the object and its Secret. That lets the editor
 prove a model a person just picked *before* "Save changes" writes it, rather
-than leaving the first agent run to discover it does not work. Agents reference a credential by name in `spec.models[purpose]` and
-`spec.modelFallbacks`, and their own `ModelCredentialsReady` condition names
-any that are missing or not ready.
+than leaving the first agent run to discover it does not work. Agents reference
+a credential by name in `spec.models[purpose]` and `spec.modelFallbacks`, and
+their own `ModelCredentialsReady` condition names any that are missing or not
+ready.
+
+Durable Responses tool continuations require stable provider signing material:
+set `AGENTS_WEBHOOK_KEY` or configure the provider kubeconfig from which the
+key is derived. Only ephemeral probes and development runs without provider
+configuration use a process-random key. A parked continuation is tied to the
+credential's endpoint, model and API key. Rotating the signing material or API key, or
+changing the endpoint or model, invalidates it; start a new run after such a
+change.
 
 New endpoints and replacement keys are verified through temporary, explicitly
 marked ModelCredential/Secret pairs before the named connection is saved. The

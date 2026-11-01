@@ -10,10 +10,14 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
+	einomodel "github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	"github.com/railgrid/provider-agents/llm"
 )
 
 // gatedTool returns a tool that interrupts instead of executing, recording
@@ -182,6 +186,11 @@ func TestCheckpointRoundTrip(t *testing.T) {
 		schema.UserMessage("hi"),
 		{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
 			Index: &idx, ID: "tc-9", Type: "function",
+			Extra: map[string]any{
+				llm.ResponsesToolItemIDExtraKey:    "fc_9",
+				llm.ResponsesToolReasoningExtraKey: `[{"id":"rs_9","encrypted_content":"opaque-signature"}]`,
+				llm.ResponsesToolOriginExtraKey:    "sha256:credential-fingerprint",
+			},
 			Function: schema.FunctionCall{Name: "do_thing", Arguments: `{"a":1}`},
 		}}},
 		schema.ToolMessage("done", "tc-9", schema.WithToolName("do_thing")),
@@ -199,7 +208,107 @@ func TestCheckpointRoundTrip(t *testing.T) {
 	if len(tc) != 1 || tc[0].ID != "tc-9" || tc[0].Function.Arguments != `{"a":1}` {
 		t.Fatalf("tool call did not round-trip: %+v", tc)
 	}
+	if tc[0].Extra[llm.ResponsesToolItemIDExtraKey] != "fc_9" || !strings.Contains(tc[0].Extra[llm.ResponsesToolReasoningExtraKey].(string), "opaque-signature") || tc[0].Extra[llm.ResponsesToolOriginExtraKey] != "sha256:credential-fingerprint" {
+		t.Fatalf("tool continuation metadata did not round-trip: %#v", tc[0].Extra)
+	}
 	if restored[3].ToolCallID != "tc-9" || restored[3].ToolName != "do_thing" {
 		t.Fatalf("tool message did not round-trip: %+v", restored[3])
 	}
+}
+
+func TestResponsesContinuationMetadataSurvivesConcatToolExecutionAndResume(t *testing.T) {
+	model := &responsesContinuationModel{}
+	tool := Tool{Name: "read_file", ExecRich: func(context.Context, string) (Observation, error) {
+		return Observation{}, &InterruptError{Tool: "read_file", Args: `{"path":"README.md"}`, RequestID: "approval-1"}
+	}}
+	paused, err := New().StreamTurnWithTools(context.Background(), model,
+		[]Message{{Role: RoleUser, Content: "Read README.md."}}, []Tool{tool}, TurnConfig{MaxIters: 4}, Callbacks{
+			HydrateToolCalls: llm.HydrateResponsesToolCalls,
+		})
+	if err != nil || paused.Interrupt == nil {
+		t.Fatalf("turn did not park at the gated tool call: result=%+v err=%v", paused, err)
+	}
+	checkpoint := paused.Interrupt.Checkpoint
+	last := checkpoint.Messages[len(checkpoint.Messages)-1]
+	if len(last.ToolCalls) != 1 || last.ToolCalls[0].Extra[llm.ResponsesToolItemIDExtraKey] != "fc_1" ||
+		last.ToolCalls[0].Extra[llm.ResponsesToolOriginExtraKey] != "sha256:credential-fingerprint" ||
+		!strings.Contains(last.ToolCalls[0].Extra[llm.ResponsesToolReasoningExtraKey].(string), "opaque-signature") {
+		t.Fatalf("approval checkpoint lost Responses continuation metadata: %#v", last.ToolCalls)
+	}
+	encodedCheckpoint, err := json.Marshal(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedCheckpoint), "private reasoning summary") || !strings.Contains(string(encodedCheckpoint), "opaque-signature") {
+		t.Fatalf("checkpoint must retain opaque continuation only: %s", encodedCheckpoint)
+	}
+
+	approved := Tool{Name: "read_file", ExecRich: func(_ context.Context, args string) (Observation, error) {
+		if args != `{"path":"README.md"}` {
+			t.Errorf("approved call args = %q", args)
+		}
+		return Observation{Text: "README contents"}, nil
+	}}
+	resumed, err := New().ResumeTurnWithTools(context.Background(), model, checkpoint, []Tool{approved}, TurnConfig{MaxIters: 4}, true, "", Callbacks{
+		HydrateToolCalls: llm.HydrateResponsesToolCalls,
+	})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if resumed.Interrupt != nil || resumed.FinalContent != "Done" {
+		t.Fatalf("resume result = %+v", resumed)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model requests = %d, want initial plus resumed continuation", len(model.inputs))
+	}
+	input := model.inputs[1]
+	var call *schema.ToolCall
+	var toolResult *schema.Message
+	for _, message := range input {
+		if message.Role == schema.Assistant && len(message.ToolCalls) == 1 {
+			call = &message.ToolCalls[0]
+		}
+		if message.Role == schema.Tool {
+			toolResult = message
+		}
+	}
+	if call == nil || call.ID != "call_1" || call.Extra[llm.ResponsesToolItemIDExtraKey] != "fc_1" ||
+		call.Extra[llm.ResponsesToolOriginExtraKey] != "sha256:credential-fingerprint" ||
+		!strings.Contains(call.Extra[llm.ResponsesToolReasoningExtraKey].(string), "opaque-signature") {
+		t.Fatalf("resumed model input lost original call metadata: %#v", input)
+	}
+	if toolResult == nil || toolResult.ToolCallID != "call_1" || toolResult.Content != "README contents" {
+		t.Fatalf("resumed model input lost the matching tool result: %#v", input)
+	}
+}
+
+type responsesContinuationModel struct {
+	inputs [][]*schema.Message
+	calls  int
+}
+
+func (m *responsesContinuationModel) Generate(context.Context, []*schema.Message, ...einomodel.Option) (*schema.Message, error) {
+	return nil, errors.New("not used")
+}
+
+func (m *responsesContinuationModel) WithTools([]*schema.ToolInfo) (einomodel.ToolCallingChatModel, error) {
+	return m, nil
+}
+
+func (m *responsesContinuationModel) Stream(_ context.Context, in []*schema.Message, _ ...einomodel.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.calls++
+	m.inputs = append(m.inputs, in)
+	if m.calls == 1 {
+		index := 0
+		return schema.StreamReaderFromArray([]*schema.Message{
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{
+				Index: &index, ID: "call_1", Type: "function",
+				Function: schema.FunctionCall{Name: "read_file", Arguments: `{"path":"README.md"}`},
+			}}},
+			{Role: schema.Assistant, ToolCalls: []schema.ToolCall{{Index: &index}}, Extra: map[string]any{
+				"railgrid_openai_responses_tool_state": `{"call_1":{"railgrid_openai_responses_item_id":"fc_1","railgrid_openai_responses_reasoning":"[{\"id\":\"rs_1\",\"encrypted_content\":\"opaque-signature\"}]","railgrid_openai_responses_origin":"sha256:credential-fingerprint"}}`,
+			}},
+		}), nil
+	}
+	return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "Done"}}), nil
 }

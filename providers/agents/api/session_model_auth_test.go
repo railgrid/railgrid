@@ -510,6 +510,17 @@ func TestResolveMCPChatModelSettingsReadsExplicitCredentialAsCaller(t *testing.T
 		t.Fatalf("MCP caller credential reads = %v, want [chosen]", resolver.getNames)
 	}
 
+	resolver = &sessionModelCredentialResolver{getErr: apierrors.NewNotFound(agentsclient.ModelCredentialGVR.GroupResource(), "chosen")}
+	run.Creds = resolver
+	err = s.resolveChatModelSettings(t.Context(), &run)
+	requestErr, isRequestErr = err.(*requestError)
+	if !isRequestErr || requestErr.code != http.StatusNotFound {
+		t.Fatalf("unavailable explicit choice = %v, want fail-closed 404", err)
+	}
+	if run.ModelSettings != nil {
+		t.Fatal("unavailable explicit choice pinned a fallback-capable run")
+	}
+
 	resolver = &sessionModelCredentialResolver{credential: &agentsv1alpha1.ModelCredential{}}
 	run.Creds = resolver
 	if err := s.resolveChatModelSettings(t.Context(), &run); err != nil {

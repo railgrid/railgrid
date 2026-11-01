@@ -91,7 +91,7 @@ func ReasoningProfiles() []ReasoningProfile {
 // Model names are case-insensitive, but the ID must exactly match a documented
 // alias; gateway namespaces and inferred date suffixes are not accepted.
 func ReasoningProfileForConnection(provider, baseURL, model string) (ReasoningProfile, bool) {
-	if !usesOfficialOpenAIEndpoint(provider, baseURL) {
+	if !IsOfficialOpenAIEndpoint(provider, baseURL) {
 		return ReasoningProfile{}, false
 	}
 	id := strings.ToLower(strings.TrimSpace(model))
@@ -121,7 +121,11 @@ func ValidateReasoningEffort(provider, baseURL, model, effort string) error {
 	return fmt.Errorf("reasoning effort %q is not supported for model %q", effort, profile.ID)
 }
 
-func usesOfficialOpenAIEndpoint(provider, baseURL string) bool {
+// IsOfficialOpenAIEndpoint reports whether provider and baseURL identify the
+// official OpenAI API endpoint. Keep this predicate shared by routing and
+// capability checks so a gateway cannot inherit official model behavior just
+// by serving an OpenAI model ID.
+func IsOfficialOpenAIEndpoint(provider, baseURL string) bool {
 	provider = strings.TrimSpace(provider)
 	if provider != "" && !strings.EqualFold(provider, "openai-compatible") {
 		return false

@@ -833,9 +833,11 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 	})
 
 	mcp.AddTool(srv, &mcp.Tool{
-		Name:        "test_model_credential",
-		Title:       "Test a model credential",
-		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and, on success, the chat-capable model ids (the endpoint's speech, embedding, image and responses-only models are filtered out — this provider runs agents on Chat Completions).",
+		Name:  "test_model_credential",
+		Title: "Test a model credential",
+		Description: "Health-check a model credential by listing the models its endpoint serves. Returns latency and curated agent model candidates. " +
+			"Discovery filters non-chat modalities and known unsupported specialized model families. " +
+			"Automatic Responses routing applies only to supported models and reasoning configurations on the official OpenAI endpoint; custom gateways default to Chat Completions.",
 		Annotations: readOnly,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in nameInput) (*mcp.CallToolResult, testResultOutput, error) {
 		c, err := s.mcpClient(r)
