@@ -155,6 +155,7 @@ const mainPaddingBottom = computed(() => {
 
 const mainClass = computed(() => [
   'relative z-10 min-h-0 min-w-0 flex-1',
+  { 'railgrid-shell-main--chat-closing': assistantOverlay.sidePanelClosing },
   layoutProps.fullBleed ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-5 sm:px-8',
 ])
 
@@ -1155,6 +1156,13 @@ const contextStatus = computed<ContextStatus>(() => {
 </template>
 
 <style scoped>
+/* The page's scrollbar sits beside the docked chat. Remove that native scroll
+   layer during dismissal so it cannot linger at the old panel boundary. */
+.railgrid-shell-main--chat-closing {
+  overflow: hidden;
+  scrollbar-gutter: stable;
+}
+
 .fade-enter-active,
 .fade-leave-active {
   transition: opacity 0.15s ease;

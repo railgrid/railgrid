@@ -17,6 +17,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   const dockVisible = ref(false)
   const sidePanelWidth = ref(0)
   const sidePanelFullscreen = ref(false)
+  const sidePanelClosing = ref(false)
   const settingsOpen = ref(false)
   const followContext = ref(true)
   const preferenceKey = computed(() => {
@@ -31,6 +32,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     dockVisible.value = false
     sidePanelWidth.value = 0
     sidePanelFullscreen.value = false
+    sidePanelClosing.value = false
     followContext.value = true
     minimized.value = false
     if (!key) return
@@ -61,14 +63,16 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
     dockVisible.value = false
     sidePanelWidth.value = 0
     sidePanelFullscreen.value = false
+    sidePanelClosing.value = false
     settingsOpen.value = options.settings === true
   }
   function setSidePanel(width: number, fullscreen = false): void {
     sidePanelWidth.value = Number.isFinite(width) ? Math.max(0, width) : 0
     sidePanelFullscreen.value = fullscreen
   }
+  function setSidePanelClosing(value: boolean): void { sidePanelClosing.value = value }
   function setSettingsOpen(value: boolean): void { settingsOpen.value = value }
   function setDockVisible(value: boolean): void { dockVisible.value = value }
   function setFollowContext(value: boolean): void { followContext.value = value; save() }
-  return { sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
+  return { sidePanelClosing, setSidePanelClosing, sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
 })
