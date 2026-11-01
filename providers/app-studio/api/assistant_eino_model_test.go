@@ -52,8 +52,14 @@ func TestProjectLLMTransport(t *testing.T) {
 		{name: "GPT-5.6 Luna none remains Chat", settings: reasoningSettings(base, "gpt-5.6-luna", "none"), want: projectLLMTransportChatCompletions},
 		{name: "GPT-5.6 Luna explicit reasoning uses Responses", settings: reasoningSettings(base, "gpt-5.6-luna", "high"), want: projectLLMTransportResponses},
 		{name: "custom endpoint keeps existing Chat routing", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://llm.example.test/v1", Model: "gpt-5.6-luna", ReasoningEffort: "high"}, want: projectLLMTransportChatCompletions},
+		{name: "official Anthropic endpoint uses native Messages", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-5-5"}, want: projectLLMTransportAnthropic},
+		{name: "legacy openai provider also uses official Anthropic Messages", settings: projectLLMSettings{Provider: "openai", BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-5-5"}, want: projectLLMTransportAnthropic},
+		{name: "official Anthropic endpoint selects native transport for unknown models too", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.anthropic.com/v1", Model: "claude-haiku-4-5-20251001"}, want: projectLLMTransportAnthropic},
+		{name: "Anthropic model ID on custom gateway remains Chat Completions", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://gateway.example.test/v1", Model: "claude-haiku-5-5"}, want: projectLLMTransportChatCompletions},
+		{name: "Anthropic model ID on OpenAI endpoint remains Chat Completions", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: defaultProjectLLMBaseURL, Model: "claude-haiku-5-5"}, want: projectLLMTransportChatCompletions},
 		{name: "frozen Chat transport wins", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, Model: "gpt-6-luna", ReasoningTransport: projectLLMTransportChatCompletions}, want: projectLLMTransportChatCompletions},
 		{name: "frozen Responses transport wins", settings: projectLLMSettings{Provider: projectLLMProviderGoogle, Model: "gemini-2.5-pro", ReasoningTransport: projectLLMTransportResponses}, want: projectLLMTransportResponses},
+		{name: "frozen Anthropic transport wins", settings: projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://gateway.example.test/v1", Model: "claude-haiku-5-5", ReasoningTransport: projectLLMTransportAnthropic}, want: projectLLMTransportAnthropic},
 		{name: "Google uses Gemini", settings: projectLLMSettings{Provider: projectLLMProviderGoogle, Model: "gemini-2.5-pro"}, want: projectLLMTransportGemini},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,6 +67,17 @@ func TestProjectLLMTransport(t *testing.T) {
 				t.Fatalf("projectLLMTransport() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestProjectAnthropicDefaultEffortRemainsUnset(t *testing.T) {
+	settings := projectLLMSettings{
+		Provider: defaultProjectLLMProvider,
+		BaseURL:  "https://api.anthropic.com/v1",
+		Model:    "claude-haiku-5-5",
+	}
+	if got := projectLLMEffectiveReasoningEffort(settings); got != "" {
+		t.Fatalf("projectLLMEffectiveReasoningEffort() = %q, want empty so Anthropic applies its native model default", got)
 	}
 }
 

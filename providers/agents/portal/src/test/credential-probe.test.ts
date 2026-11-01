@@ -28,6 +28,14 @@ function fixture(intercept?: (call: Call, persisted: Map<string, any>) => Respon
 }
 
 describe('exact-candidate model probes', () => {
+  it.each([true, false])('persists the Anthropic workspace on the temporary probe (discovery=%s)', async discover => {
+    const { api, calls, persisted } = fixture()
+    await api.probeCredentialDraft({ ...candidate, baseURL: 'https://api.anthropic.com/v1', anthropicWorkspaceID: 'wrkspc_team' }, discover)
+    const object = calls.find(call => call.method === 'POST' && call.url.endsWith('/modelcredentials'))!
+    expect(object.body.spec.anthropicWorkspaceID).toBe('wrkspc_team')
+    expect(persisted.size).toBe(0)
+  })
+
   it.each([true, false])('keeps keys only in owned Secrets and cleans up exact objects (discovery=%s)', async discover => {
     const { api, calls, persisted } = fixture()
     const started = Date.now()

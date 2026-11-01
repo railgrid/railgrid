@@ -20,20 +20,25 @@ import (
 	"strings"
 )
 
-const officialOpenAIBaseURL = "https://api.openai.com/v1"
+const (
+	officialOpenAIBaseURL    = "https://api.openai.com/v1"
+	officialAnthropicBaseURL = "https://api.anthropic.com/v1"
+)
 
 // ReasoningProfile describes the reasoning controls Railgrid knows are
-// supported by an exact OpenAI model alias or snapshot. Pricing and broad
+// supported by an exact official API model ID or alias. Pricing and broad
 // model-family lookups are deliberately not used to infer reasoning support.
 type ReasoningProfile struct {
 	ID                    string   `json:"id"`
 	Aliases               []string `json:"aliases,omitempty"`
 	Efforts               []string `json:"efforts"`
+	DefaultEffort         string   `json:"defaultEffort,omitempty"`
+	AnthropicMessages     bool     `json:"anthropicMessages,omitempty"`
 	ResponsesForReasoning bool     `json:"responsesForReasoning,omitempty"`
 }
 
 // Official model documentation is the source for the supported effort values
-// and snapshots. Custom OpenAI-compatible endpoints, proxies, and Azure-style
+// and snapshots. Custom OpenAI-compatible endpoints, proxies, and cloud
 // deployments are excluded because their model IDs and feature support vary.
 //
 // Sources:
@@ -50,6 +55,9 @@ type ReasoningProfile struct {
 //   - https://developers.openai.com/api/docs/models/o3
 //   - https://developers.openai.com/api/docs/models/o3-mini
 //   - https://developers.openai.com/api/docs/models/o4-mini
+//   - https://platform.claude.com/docs/en/build-with-claude/effort
+//   - https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
+//   - https://platform.claude.com/docs/en/models/opus-4-5/overview
 var reasoningProfiles = []ReasoningProfile{
 	{ID: "gpt-6-astra", Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
 	{ID: "gpt-6.1-sol", Efforts: []string{"low", "medium", "high", "xhigh", "max"}},
@@ -63,6 +71,21 @@ var reasoningProfiles = []ReasoningProfile{
 	{ID: "o3", Aliases: []string{"o3-2025-04-16"}, Efforts: []string{"low", "medium", "high"}},
 	{ID: "o3-mini", Aliases: []string{"o3-mini-2025-01-31"}, Efforts: []string{"low", "medium", "high"}},
 	{ID: "o4-mini", Aliases: []string{"o4-mini-2025-04-16"}, Efforts: []string{"low", "medium", "high"}},
+
+	// These entries use Claude API model IDs. Only the Opus 4.5 dated ID has a
+	// separate documented Claude API alias; newer dateless IDs are canonical.
+	// Haiku 4.5 and Sonnet 4.5 intentionally have no profiles: Anthropic does
+	// not support output_config.effort on those models.
+	{ID: "claude-opus-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium", AnthropicMessages: true},
+	{ID: "claude-opus-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-opus-4-8", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-opus-4-7", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-opus-4-6", Efforts: []string{"low", "medium", "high", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-opus-4-5-20251101", Aliases: []string{"claude-opus-4-5"}, Efforts: []string{"low", "medium", "high"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-sonnet-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-sonnet-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-sonnet-4-6", Efforts: []string{"low", "medium", "high", "max"}, DefaultEffort: "high", AnthropicMessages: true},
+	{ID: "claude-haiku-5-5", Efforts: []string{"low", "medium", "high", "xhigh", "max"}, DefaultEffort: "medium", AnthropicMessages: true},
 }
 
 var reasoningProfileByModel = func() map[string]ReasoningProfile {
@@ -87,16 +110,23 @@ func ReasoningProfiles() []ReasoningProfile {
 }
 
 // ReasoningProfileForConnection returns the profile for a known model only
-// when the configured connection targets the official OpenAI API endpoint.
+// when the configured connection targets the matching official API endpoint.
 // Model names are case-insensitive, but the ID must exactly match a documented
 // alias; gateway namespaces and inferred date suffixes are not accepted.
 func ReasoningProfileForConnection(provider, baseURL, model string) (ReasoningProfile, bool) {
-	if !IsOfficialOpenAIEndpoint(provider, baseURL) {
+	if !usesOfficialChatProvider(provider) {
 		return ReasoningProfile{}, false
 	}
 	id := strings.ToLower(strings.TrimSpace(model))
 	profile, ok := reasoningProfileByModel[id]
 	if !ok {
+		return ReasoningProfile{}, false
+	}
+	if profile.AnthropicMessages {
+		if !usesOfficialAnthropicEndpoint(provider, baseURL) {
+			return ReasoningProfile{}, false
+		}
+	} else if !usesOfficialOpenAIEndpoint(provider, baseURL) {
 		return ReasoningProfile{}, false
 	}
 	return copyReasoningProfile(profile), true
@@ -134,6 +164,33 @@ func IsOfficialOpenAIEndpoint(provider, baseURL string) bool {
 	if raw == "" {
 		raw = officialOpenAIBaseURL
 	}
+	return matchesOfficialEndpoint(raw, "api.openai.com")
+}
+
+// usesOfficialOpenAIEndpoint retains the connection provider alias accepted by
+// reasoning profiles while the exported routing predicate stays strict about
+// the normalized provider name.
+func usesOfficialOpenAIEndpoint(provider, baseURL string) bool {
+	provider = strings.TrimSpace(provider)
+	if strings.EqualFold(provider, "openai") {
+		provider = "openai-compatible"
+	}
+	return IsOfficialOpenAIEndpoint(provider, baseURL)
+}
+
+func usesOfficialAnthropicEndpoint(provider, baseURL string) bool {
+	if !usesOfficialChatProvider(provider) || strings.TrimSpace(baseURL) == "" {
+		return false
+	}
+	return matchesOfficialEndpoint(strings.TrimSpace(baseURL), "api.anthropic.com")
+}
+
+func usesOfficialChatProvider(provider string) bool {
+	provider = strings.TrimSpace(provider)
+	return provider == "" || strings.EqualFold(provider, "openai-compatible") || strings.EqualFold(provider, "openai")
+}
+
+func matchesOfficialEndpoint(raw, host string) bool {
 	if strings.ContainsAny(raw, "?#") {
 		return false
 	}
@@ -141,7 +198,7 @@ func IsOfficialOpenAIEndpoint(provider, baseURL string) bool {
 	if err != nil || !strings.EqualFold(u.Scheme, "https") || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" {
 		return false
 	}
-	if !strings.EqualFold(u.Host, "api.openai.com") && !strings.EqualFold(u.Host, "api.openai.com:443") {
+	if !strings.EqualFold(u.Host, host) && !strings.EqualFold(u.Host, host+":443") {
 		return false
 	}
 	return u.EscapedPath() == "/v1" || u.EscapedPath() == "/v1/"

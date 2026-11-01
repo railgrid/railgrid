@@ -30,7 +30,8 @@ type modelCredential struct {
 	Model     string `json:"model,omitempty"`
 	HasAPIKey bool   `json:"hasAPIKey"`
 	// APIKey is write-only (accepted on save, never returned).
-	APIKey string `json:"apiKey,omitempty"`
+	APIKey               string `json:"apiKey,omitempty"`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
 }
 
 // CredentialSecretName is the Secret a ModelCredential written through this
@@ -53,6 +54,7 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	req.BaseURL = strings.TrimSpace(req.BaseURL)
 	req.Model = strings.TrimSpace(req.Model)
 	req.APIKey = strings.TrimSpace(req.APIKey)
+	req.AnthropicWorkspaceID = strings.TrimSpace(req.AnthropicWorkspaceID)
 	if req.Name == "" {
 		return nil, errBadRequest("name is required")
 	}
@@ -107,18 +109,19 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 		TypeMeta:   metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential"},
 		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
 		Spec: agentsv1alpha1.ModelCredentialSpec{
-			Provider:  req.Provider,
-			BaseURL:   req.BaseURL,
-			Model:     req.Model,
-			SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
-			SecretKey: secretKey,
+			Provider:             req.Provider,
+			BaseURL:              req.BaseURL,
+			AnthropicWorkspaceID: req.AnthropicWorkspaceID,
+			Model:                req.Model,
+			SecretRef:            agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
+			SecretKey:            secretKey,
 		},
 	}
 	if _, err := c.ModelCredentials().Update(ctx, cred, metav1.UpdateOptions{}); err != nil {
 		return nil, err
 	}
 	return &modelCredential{
-		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, HasAPIKey: true,
+		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, AnthropicWorkspaceID: req.AnthropicWorkspaceID, HasAPIKey: true,
 	}, nil
 }
 

@@ -610,7 +610,7 @@ func (s *Server) generateProjectCreatePreflight(ctx context.Context, c *asclient
 		einoschema.UserMessage("Prompt:\n" + prompt),
 	}
 	reply, err := generateProjectCreatePreflightReply(ctx, settings, func() (*einoschema.Message, error) {
-		return model.Generate(ctx, messages, projectTemperatureOptions(settings.Model, 0.1)...)
+		return model.Generate(ctx, messages, projectTemperatureOptions(settings, 0.1)...)
 	})
 	if err != nil {
 		if ctx.Err() != nil {

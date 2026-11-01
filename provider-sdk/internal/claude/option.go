@@ -1,0 +1,117 @@
+// Copyright 2026 The Railgrid Authors. Local copy with a goroutine error-scope fix.
+
+/*
+ * Copyright 2024 CloudWeGo Authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package claude
+
+import (
+	"time"
+
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/cloudwego/eino/components/model"
+)
+
+type options struct {
+	TopK *int32
+
+	Thinking *Thinking
+
+	ThinkingConfig *anthropic.ThinkingConfigParamUnion
+
+	DisableParallelToolUse *bool
+
+	AutoCacheControl *CacheControl
+
+	ResponseFormat *ResponseFormat
+
+	RequestTimeout time.Duration
+
+	CustomHeaders map[string]string
+}
+
+func WithTopK(k int32) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.TopK = &k
+	})
+}
+
+// Deprecated: Use WithThinkingConfig instead.
+func WithThinking(t *Thinking) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.Thinking = t
+	})
+}
+
+// WithThinkingConfig sets Claude thinking using Anthropic SDK's native union.
+func WithThinkingConfig(t *anthropic.ThinkingConfigParamUnion) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.ThinkingConfig = t
+	})
+}
+
+func WithDisableParallelToolUse() model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		b := true
+		o.DisableParallelToolUse = &b
+	})
+}
+
+// Deprecated: Use WithAutoCacheControl instead.
+// WithEnableAutoCache enables automatic caching in a multi-turn conversation.
+// The caching strategy sets separate breakpoints for tool and system messages.
+// Additionally, a breakpoint is set on the last input message of each turn to cache the session.
+func WithEnableAutoCache(enabled bool) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		if enabled {
+			o.AutoCacheControl = &CacheControl{}
+		} else {
+			o.AutoCacheControl = nil
+		}
+	})
+}
+
+// WithAutoCacheControl sets the CacheControl for automatically placed cache breakpoints.
+// The caching strategy sets separate breakpoints for tool and system messages.
+// Additionally, a breakpoint is set on the last input message of each turn to cache the session.
+// A non-nil ctrl enables auto cache; nil disables it.
+func WithAutoCacheControl(ctrl *CacheControl) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.AutoCacheControl = ctrl
+	})
+}
+
+// WithResponseFormat sets the response format for structured JSON output.
+func WithResponseFormat(rf *ResponseFormat) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.ResponseFormat = rf
+	})
+}
+
+// WithRequestTimeout sets the timeout for each API request.
+// This overrides the RequestTimeout set in Config for a single call.
+func WithRequestTimeout(d time.Duration) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.RequestTimeout = d
+	})
+}
+
+// WithCustomHeaders specifies custom HTTP headers to include in API requests.
+func WithCustomHeaders(headers map[string]string) model.Option {
+	return model.WrapImplSpecificOptFn(func(o *options) {
+		o.CustomHeaders = headers
+	})
+}

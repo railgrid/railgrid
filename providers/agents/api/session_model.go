@@ -133,7 +133,7 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			options = llm.ReasoningEfforts(credential.Spec.Provider, credential.Spec.BaseURL, credential.Spec.Model)
-			defaultEffort = llm.DefaultReasoningEffort(credential.Spec.Model)
+			defaultEffort = llm.DefaultReasoningEffortForConnection(credential.Spec.Provider, credential.Spec.BaseURL, credential.Spec.Model)
 		}
 	}
 	effort := settings.ReasoningEffortByModel[selected]

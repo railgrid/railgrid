@@ -583,6 +583,7 @@ func cloneSessionSummary(s SessionSummary) SessionSummary {
 			}
 			checkpoint.ReplacementHistory[i].ToolCalls[j].Extra = clone
 		}
+		checkpoint.ReplacementHistory[i].Continuation = checkpoint.ReplacementHistory[i].Continuation.Clone()
 	}
 	s.Checkpoint = &checkpoint
 	return s

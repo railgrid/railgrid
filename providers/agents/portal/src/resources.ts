@@ -1184,6 +1184,7 @@ export class Resources {
     this.run(async client => {
       const provider = body.provider || MODEL_PROVIDER_OPENAI_COMPATIBLE
       const baseURL = body.baseURL?.trim() || ''
+      const anthropicWorkspaceID = body.anthropicWorkspaceID?.trim() || ''
       const apiKey = body.apiKey?.trim() || ''
       if (isHarnessProvider(provider) || !apiKey || !baseURL) throw validationError('A model probe needs an endpoint and a new API key.')
       let endpoint: URL
@@ -1225,7 +1226,7 @@ export class Resources {
         objectAttempted = true
         const owner = await client.create(MODELCREDENTIALS, {
           apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, labels, annotations },
-          spec: { provider, baseURL, secretRef: { name: secretName }, secretKey: DEFAULT_CREDENTIAL_KEY },
+          spec: { provider, baseURL, ...(anthropicWorkspaceID ? { anthropicWorkspaceID } : {}), secretRef: { name: secretName }, secretKey: DEFAULT_CREDENTIAL_KEY },
         } as KubeObject)
         if (!owner.metadata.uid) throw new Error('The workspace did not confirm the test credential identity.')
         ownerUID = owner.metadata.uid
@@ -1250,7 +1251,7 @@ export class Resources {
           throw validationError('This verification session expired or changed. Test the connection again.')
         }
         const activeSpec = active.spec
-        if (!activeSpec || activeSpec.provider !== provider || activeSpec.baseURL !== baseURL || activeSpec.secretRef?.name !== secretName || activeSpec.secretKey !== DEFAULT_CREDENTIAL_KEY) {
+        if (!activeSpec || activeSpec.provider !== provider || activeSpec.baseURL !== baseURL || (activeSpec.anthropicWorkspaceID || '') !== anthropicWorkspaceID || activeSpec.secretRef?.name !== secretName || activeSpec.secretKey !== DEFAULT_CREDENTIAL_KEY) {
           throw validationError('This verification candidate changed. Test the connection again.')
         }
         return await probe(name)
@@ -1402,6 +1403,7 @@ export class Resources {
         // what clearing the field means.
         const spec: Record<string, unknown> = { provider, baseURL, secretRef: { name: secretName }, secretKey }
         if (model !== undefined) spec.model = model || null
+        if (body.anthropicWorkspaceID !== undefined) spec.anthropicWorkspaceID = body.anthropicWorkspaceID.trim() || null
         const patched = await client.patch<KubeModelCredential & KubeObject>(
           MODELCREDENTIALS, name, { spec }, { type: 'merge' },
         )
@@ -1411,7 +1413,7 @@ export class Resources {
         apiVersion: API_VERSION,
         kind: 'ModelCredential',
         metadata: { name },
-        spec: defined({ provider, baseURL, model: model || undefined, secretRef: { name: secretName }, secretKey }),
+        spec: defined({ provider, baseURL, model: model || undefined, anthropicWorkspaceID: body.anthropicWorkspaceID?.trim() || undefined, secretRef: { name: secretName }, secretKey }),
       } as unknown as KubeModelCredential & KubeObject)
       return credentialView(created)
     })
@@ -1445,6 +1447,7 @@ interface KubeModelCredential {
   spec?: {
     provider?: string
     baseURL?: string
+    anthropicWorkspaceID?: string
     model?: string
     secretRef?: { name?: string }
     secretKey?: string
@@ -1475,6 +1478,7 @@ function credentialView(object: KubeModelCredential): Credential {
     name: object.metadata?.name ?? '',
     provider: object.spec?.provider ?? '',
     baseURL: object.spec?.baseURL ?? '',
+    ...(object.spec?.anthropicWorkspaceID ? { anthropicWorkspaceID: object.spec.anthropicWorkspaceID } : {}),
     model: object.spec?.model ?? '',
     secretRef: object.spec?.secretRef?.name ?? '',
     secretKey: object.spec?.secretKey ?? '',

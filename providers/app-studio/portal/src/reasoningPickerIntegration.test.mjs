@@ -56,6 +56,7 @@ test('the provider maps only the selected connection capabilities and preserves 
   assert.match(app, /landingReasoningEfforts\.value\[JSON\.stringify\(\[appContextFingerprint\(props\.ctx\), modelID\]\)\]/)
   assert.match(app, /reasoningEffortError\(assistantReasoningEffort\.value, selectedReasoningEffortOptions\.value\)/)
   assert.match(app, /reasoningEffortError\(selectedModelDefaultEffort\.value, selectedReasoningEffortOptions\.value\)/)
+  assert.match(app, /reasoningDefaultEffortForConnection\(selectedLLMModel\.value, reasoningCatalogEntries\)/)
   assert.match(app, /reasoningEffortError\(landingReasoningEffort\.value, selectedReasoningEffortOptions\.value\)/)
 })
 

@@ -481,13 +481,14 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	// Messages carry runID, and tool-role messages carry metadata.tool/args, so
 	// a reloaded session can rebuild its tool cards rather than showing a flat
-	// wall of text.
+	// wall of text. Internal reasoning continuation metadata is omitted from
+	// this display response and remains server-side for model replay only.
 	page, err := s.store.ListMessages(r.Context(), id.scope(name), session, limit, r.URL.Query().Get("cursor"))
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeList(w, publicTranscriptMessages(page.Items), map[string]any{"nextCursor": page.NextCursor})
+	writeList(w, publicContinuationTranscriptMessages(publicTranscriptMessages(page.Items)), map[string]any{"nextCursor": page.NextCursor})
 }
 
 // listSessions returns up to 100 conversations and 100 saved empty chats,
