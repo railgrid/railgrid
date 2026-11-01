@@ -205,7 +205,7 @@ Identity-only (`/api`):
 ```
 GET    /api/orgs                       → {"items":[{uuid,displayName,personal,role,workspaceCreation,catalogEntryCreation,createdAt,deletionRequestedAt,initialWorkspacePending}]}
 POST   /api/orgs                       {"displayName":…,"workspaceCreation":…,"catalogEntryCreation":…}
-GET    /api/orgs/{org}/billing         → {installed,enabled,livemode,plan,limits[],usage{},subscription?,plans[]} (metering)
+GET    /api/orgs/{org}/billing         → {installed,enabled,livemode,plan,limits[],usage{},subscription?,plans[]} (metering; organization members, a workspace-only member gets 403)
 POST   /api/orgs/{org}/billing/checkout {"plan":…} → {url} to redirect to (org admin; a hosted Checkout)
 POST   /api/orgs/{org}/billing/portal  → {url} to redirect to (org admin; the billing provider's Customer Portal)
 GET    /api/users/me                   → {user,email,displayName,rbacIdentity}

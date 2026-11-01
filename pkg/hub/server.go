@@ -1083,7 +1083,9 @@ func (s *Server) Run(ctx context.Context) error {
 			// Metering is a standalone deployment discovered through kcp, not
 			// a provider: the hub learns where it is from the endpoints it
 			// publishes in its workspace, gives every organization its billing
-			// objects there, and lets the admin area read it.
+			// objects there, and lets the admin area read it. billing stays
+			// nil without metering; the webhook route below then answers 503.
+			var billing *metering.Billing
 			if s.opts.MeteringWorkspace != "" {
 				d, err := metering.NewDiscovery(kcpConfig, s.opts.MeteringWorkspace, logger)
 				if err != nil {
@@ -1116,14 +1118,17 @@ func (s *Server) Run(ctx context.Context) error {
 					} else {
 						meteringStore = store
 						apiMgr.WithOrgPlanSource(metering.EntitlementPlan(meteringDiscovery, store, logger.WithName("metering")))
-						billing := metering.NewBilling(meteringDiscovery, store, logger.WithName("billing"))
+						billing = metering.NewBilling(meteringDiscovery, store, logger.WithName("billing"))
 						apiMgr.WithBilling(billing, s.opts.HubExternalURL)
-						// The billing provider's webhook: public, relayed to the
-						// metering deployment, which verifies its signature.
-						router.HandleFunc("/api/billing/webhook", billing.ForwardWebhook).Methods(http.MethodPost)
 					}
 				}
 			}
+			// The billing provider's webhook: public, relayed to the metering
+			// deployment, which verifies its signature. Registered whether or
+			// not metering is configured, so a delivery to a hub without it is
+			// answered with the documented 503 instead of falling through to
+			// the generic API handling.
+			router.HandleFunc("/api/billing/webhook", billing.ForwardWebhook).Methods(http.MethodPost)
 
 			// Platform-admin surface (/api/admin/*, portal /bonkers). Only
 			// wired when --admin-users is set; gated so only allowlisted

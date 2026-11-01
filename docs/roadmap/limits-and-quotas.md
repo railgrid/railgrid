@@ -700,7 +700,7 @@ flows, and relays the webhook. See `contrib-metering/docs/billing.md` for
 the flows, the ownership rule and the per-environment setup.
 
 - **Hub seam** (`pkg/hub/metering/billing.go`, landed 31 Oct):
-  `GET /api/orgs/{org}/billing` composes the organization's plan, effective
+  `GET /api/orgs/{org}/billing` (organization members) composes the organization's plan, effective
   limits, usage, over-limit flags, `status.billing` and the plans on offer
   (`spec.subscription.priceID` set means sellable) from the metering store;
   `POST /api/orgs/{org}/billing/checkout {plan}` and `POST

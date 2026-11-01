@@ -238,13 +238,29 @@ func limitsOf(obj map[string]any, fields ...string) []Limit {
 	return out
 }
 
-// Checkout asks the deployment for a Checkout URL that puts org on plan.
+// Checkout asks the deployment for a Checkout URL that puts org on plan. An
+// organization whose plan a platform administrator assigned
+// (PlanSourceOperator on its Entitlement) is refused: the deployment's
+// billing reconciler leaves such a plan alone, so paying would change
+// nothing until the administrator releases it.
 func (b *Billing) Checkout(ctx context.Context, org, plan, successURL, cancelURL string) (string, error) {
+	ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
+	switch {
+	case err == nil && ent.GetLabels()[PlanSourceLabel] == PlanSourceOperator:
+		return "", &BillingError{Status: http.StatusConflict, Message: "the organization's plan is assigned by a platform administrator; ask them to release it before subscribing"}
+	case err != nil && !apierrors.IsNotFound(err):
+		return "", fmt.Errorf("reading entitlement: %w", err)
+	}
 	var out struct {
 		URL string `json:"url"`
 	}
 	if err := b.post(ctx, "/billing/checkout", map[string]string{"account": org, "plan": plan, "successURL": successURL, "cancelURL": cancelURL}, &out); err != nil {
 		return "", err
+	}
+	if out.URL == "" {
+		// A 2xx without a URL would send the browser to "" and reload the
+		// settings page with no error; say what happened instead.
+		return "", &BillingError{Status: http.StatusBadGateway, Message: "metering answered without a checkout URL"}
 	}
 	return out.URL, nil
 }
@@ -257,14 +273,23 @@ func (b *Billing) Portal(ctx context.Context, org, returnURL string) (string, er
 	if err := b.post(ctx, "/billing/portal", map[string]string{"account": org, "returnURL": returnURL}, &out); err != nil {
 		return "", err
 	}
+	if out.URL == "" {
+		return "", &BillingError{Status: http.StatusBadGateway, Message: "metering answered without a billing portal URL"}
+	}
 	return out.URL, nil
 }
 
 // ForwardWebhook relays the provider's delivery to the deployment, body
 // and signature header unchanged, and returns its answer. No hub-side
 // authentication: the deployment verifies the provider's signature, which
-// is the only credential a webhook carries.
+// is the only credential a webhook carries. The route is registered on
+// every hub, so a nil Billing (metering not configured) answers 503 and the
+// provider retries later rather than taking a generic answer for a receipt.
 func (b *Billing) ForwardWebhook(w http.ResponseWriter, r *http.Request) {
+	if b == nil {
+		http.Error(w, "metering is not configured on this hub", http.StatusServiceUnavailable)
+		return
+	}
 	e, ok := b.discovery.Current()
 	if !ok {
 		http.Error(w, "metering is not installed", http.StatusServiceUnavailable)

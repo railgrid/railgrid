@@ -299,16 +299,32 @@ func (h *Handler) countCreatedOrgs(ctx context.Context, user string) (int32, err
 // organization over frees the slot, and a creator who left is not charged
 // for it (docs/organizations.md O-5).
 func (h *Handler) countFreeOrgsAdministered(ctx context.Context, user string) (int32, error) {
-	idx, err := h.mgr.client.UserMembershipIndices().Get(ctx, user, metav1.GetOptions{})
+	// The organizations the user created are read before their index. The
+	// bootstrap controller writes the user's admin index entry and then marks
+	// the organization IndexSynced; read in this order, an organization that
+	// finishes bootstrapping between the two reads is in the index, and one
+	// that finishes after both is still unsynced in the list, so it is
+	// counted either way. The other order left a window in which it was in
+	// neither: missing from the index that had been read, and skipped in the
+	// list as already synced.
+	created, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
+		LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
+	})
 	if err != nil {
-		if apierrors.IsNotFound(err) {
-			return 0, nil
-		}
+		return 0, err
+	}
+	// A user without an index yet (their first organization, or the index
+	// controller lagging) administers nothing through it; what they created
+	// still counts below.
+	var entries []tenancyv1alpha1.MembershipIndexEntry
+	if idx, err := h.mgr.client.UserMembershipIndices().Get(ctx, user, metav1.GetOptions{}); err == nil {
+		entries = idx.Spec.Entries
+	} else if !apierrors.IsNotFound(err) {
 		return 0, err
 	}
 	seen := map[string]bool{}
 	var n int32
-	for _, e := range idx.Spec.Entries {
+	for _, e := range entries {
 		if e.WorkspaceUUID != "" || e.Role != tenancyv1alpha1.MembershipRoleAdmin || e.Personal || seen[e.OrgUUID] {
 			continue
 		}
@@ -346,14 +362,8 @@ func (h *Handler) countFreeOrgsAdministered(ctx context.Context, user string) (i
 	// IndexSynced is true the index is the authority (a creator who handed
 	// the organization over is not charged for it); an organization whose
 	// bootstrap never completes stays counted, which is the safe side.
-	list, err := h.mgr.client.Organizations().List(ctx, metav1.ListOptions{
-		LabelSelector: tenancyv1alpha1.OrganizationCreatorLabel + "=" + user,
-	})
-	if err != nil {
-		return 0, err
-	}
-	for i := range list.Items {
-		o := &list.Items[i]
+	for i := range created.Items {
+		o := &created.Items[i]
 		if seen[o.Name] || o.Spec.Personal || !o.DeletionTimestamp.IsZero() {
 			continue
 		}
