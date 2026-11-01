@@ -225,10 +225,26 @@ var modelUnavailableFragments = []string{
 	"model_not_supported",
 }
 
-// modelLifecycleRefusal does not classify a deprecated parameter as an
-// unavailable model; for example, "parameter reasoning is deprecated" remains
-// an upstream diagnostic. A quoted or unquoted model ID is optional.
-var modelLifecycleRefusal = regexp.MustCompile(`(?:^|[^a-z0-9_])(?:the\s+)?model(?:\s+(?:['"\x60])?[a-z0-9][a-z0-9._:/-]*(?:['"\x60])?)?\s+(?:is|has been)\s+(?:deprecated|retired)\b`)
+// modelLifecycleRefusal finds lifecycle sentences and captures both a
+// parameter subject modifier and the optional model label. The parameter
+// capture handles diagnostics such as "parameter model is deprecated"; the
+// model-label capture handles "the model parameter is deprecated". A quoted
+// or unquoted model ID is optional.
+var modelLifecycleRefusal = regexp.MustCompile(`(?:^|[^a-z0-9_])(?:(?:the\s+)?(parameter|param)\s+)?(?:the\s+)?model(?:\s+(?:['"\x60])?([a-z0-9][a-z0-9._:/-]*)(?:['"\x60])?)?\s+(?:is|has been)\s+(?:deprecated|retired)\b`)
+
+func hasModelLifecycleRefusal(msg string) bool {
+	for _, match := range modelLifecycleRefusal.FindAllStringSubmatch(msg, -1) {
+		if match[1] != "" || isParameterLabel(match[2]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isParameterLabel(label string) bool {
+	return label == "parameter" || label == "param"
+}
 
 // IsModelUnavailable reports whether err says the selected model cannot serve
 // the request, such as an unsupported transport, a retired model, or a model
@@ -239,7 +255,7 @@ func IsModelUnavailable(err error) bool {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	if modelLifecycleRefusal.MatchString(msg) {
+	if hasModelLifecycleRefusal(msg) {
 		return true
 	}
 	for _, frag := range modelUnavailableFragments {

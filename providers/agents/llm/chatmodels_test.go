@@ -202,3 +202,85 @@ func TestExplainModelUnavailable(t *testing.T) {
 		t.Fatal("nil must stay nil")
 	}
 }
+
+func TestModelLifecycleRefusalRequiresModelSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "model followed by parameter",
+			text: "the model parameter is deprecated",
+		},
+		{
+			name: "parameter before model",
+			text: "parameter model is deprecated, use x",
+		},
+		{
+			name: "quoted parameter after model",
+			text: `The MODEL "PARAMETER" is deprecated`,
+		},
+		{
+			name: "quoted param after model",
+			text: "The model `param` has been retired",
+		},
+		{
+			name: "param before model",
+			text: "param model has been retired",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := errors.New(tc.text)
+			if IsModelUnavailable(err) {
+				t.Fatalf("IsModelUnavailable(%q) = true, want false", tc.text)
+			}
+			if got := ExplainModelUnavailable(err, "dev"); got != err {
+				t.Fatalf("ExplainModelUnavailable(%q) rewrote an unrelated parameter diagnostic: %v", tc.text, got)
+			}
+		})
+	}
+}
+
+func TestModelLifecycleRefusalKeepsModelSubject(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{
+			name: "unnamed model deprecated",
+			text: "The model is deprecated",
+		},
+		{
+			name: "named model deprecated",
+			text: "The model 'gpt-6-luna' is deprecated",
+		},
+		{
+			name: "named model retired",
+			text: "Model `gpt-4o` has been retired",
+		},
+		{
+			name: "unnamed model retired",
+			text: "This model has been retired",
+		},
+		{
+			name: "unrelated parameter diagnostic beside model lifecycle refusal",
+			text: "parameter reasoning is deprecated. The model 'gpt-6-luna' is deprecated",
+		},
+		{
+			name: "parameter model diagnostic before model retirement",
+			text: "parameter model is deprecated, use x. The model 'gpt-6-luna' has been retired",
+		},
+		{
+			name: "model parameter diagnostic before unnamed model deprecation",
+			text: "the model parameter is deprecated. The model is deprecated",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if !IsModelUnavailable(errors.New(tc.text)) {
+				t.Fatalf("IsModelUnavailable(%q) = false, want true", tc.text)
+			}
+		})
+	}
+}
