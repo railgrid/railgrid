@@ -7,6 +7,7 @@ import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
@@ -195,6 +196,14 @@ function familyEndpoint(credential: Credential): string {
   return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
 }
 const providerConnections = computed(() => credentials.value.data.filter(item => !item.connectionRef && !isHarnessProvider(item.provider)))
+const connectionRows = computed(() => providerConnections.value.map(credential => ({
+  id: credential.name,
+  name: credential.displayName || credential.name,
+  endpoint: credential.baseURL || 'Provider default',
+  modelCount: credentials.value.data.filter(item => item.connectionRef === credential.name || (item.name === credential.name && item.model)).length,
+  credential,
+})))
+function connectionCredential(row: Record<string, unknown>): Credential { return row.credential as Credential }
 const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection).map(credential => ({
   id: credential.name, name: credential.displayName || credential.name, model: familyModel(credential), endpoint: familyEndpoint(credential) || 'Provider default',
   configured: credential.secretResolved !== false,
@@ -359,6 +368,7 @@ defineExpose({ loadCatalog, loadUsage })
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
       <template v-if="credentialView">
+      <template v-if="modelView">
       <div v-if="modelView && catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogError" class="k-stale" role="status">Could not refresh the model catalog. Showing the last loaded catalog. {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
@@ -366,12 +376,34 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-      <section v-if="connectionView && providerConnections.length" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
+      </template>
+      <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
         <header class="k-resource-page__header"><div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Each connection stores one key that its models reuse.</p></div></header>
-        <div v-for="connection in providerConnections" :key="connection.name" class="k-card agents-provider-connection">
-          <div><strong>{{ connection.displayName || connection.name }}</strong><p class="agents-hint">{{ connection.baseURL }} · {{ credentials.data.filter(item => item.connectionRef === connection.name || (item.name === connection.name && item.model)).length }} configured {{ credentials.data.filter(item => item.connectionRef === connection.name || (item.name === connection.name && item.model)).length === 1 ? 'model' : 'models' }}</p></div>
-          <div class="agents-provider-connection__actions"><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="addModel(connection.name)">Add model</button><button class="k-btn k-btn--ghost" :disabled="credentialActions.size > 0" @click="toggleEdit(connection)">Edit connection</button><button class="k-icon-action" :aria-label="`Delete provider connection ${connection.displayName || connection.name}`" :disabled="credentialIsBusy(connection.name)" @click="remove(connection.name, true)"><Trash2 :size="14" /></button></div>
-        </div>
+        <ResourceTable
+          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'endpoint', label: 'Endpoint', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
+          :rows="connectionRows"
+          row-key="id"
+          aria-label="Provider connections"
+          :loaded="credentials.hasSnapshot"
+          :loading="credentials.loading"
+          :error="credentials.error"
+          :stale="credentials.hasSnapshot && !!credentials.error"
+          retryable
+          searchable
+          search-placeholder="Search provider connections…"
+          :search-keys="['name', 'endpoint']"
+          empty-text="No provider connections yet. Connect a provider once, then reuse its key across models."
+          search-empty-text="No provider connections match your search."
+          paginated
+          :interactive="false"
+          @retry="store.load('credentials')"
+        >
+          <template #actions="{ row }">
+            <ResourceTableActionButton :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialActions.size > 0" @click="addModel(connectionCredential(row).name)" />
+            <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="credentialActions.size > 0" @click="toggleEdit(connectionCredential(row))" />
+            <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :busy-label="`Deleting provider connection ${row.name}…`" :busy="credentialAction(connectionCredential(row).name) === 'deleting'" :disabled="credentialActions.size > 0" @click="remove(connectionCredential(row).name, true)" />
+          </template>
+        </ResourceTable>
       </section>
       <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout">
         <template #cards="{ rows }">
@@ -405,7 +437,6 @@ defineExpose({ loadCatalog, loadUsage })
           <ResourceTableDeleteButton :label="`Delete ${credential.name}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
         </template>
       </ModelCollection>
-      <div v-if="connectionView && credentials.hasSnapshot && !providerConnections.length" class="k-card agents-models-empty"><h3>No provider connections yet</h3><p>Connect a provider once, then reuse its key across models.</p></div>
       <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
       </template>
       <WorkspaceAssistantCard v-if="activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />

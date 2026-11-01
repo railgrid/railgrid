@@ -657,7 +657,7 @@ describe('model management navigation', () => {
       '#/models', '#/models/provider-connections', '#/models/workspace-assistant', '#/models/usage',
     ])
     expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
-    expect(view.element.querySelector('.agents-provider-connection')).toBeNull()
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
     expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     expect(usage).not.toHaveBeenCalled()
@@ -669,12 +669,12 @@ describe('model management navigation', () => {
     }
     await open('#/models/provider-connections')
     expect(view.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
-    expect(view.element.querySelector('.agents-provider-connection')?.textContent).toContain('Production')
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')?.textContent).toContain('Production')
     expect(view.element.querySelector('.k-model-collection')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     await open('#/models/workspace-assistant')
     expect(view.element.querySelector('#workspace-assistant-settings')).toBeTruthy()
-    expect(view.element.querySelector('.agents-provider-connection')).toBeNull()
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     await open('#/models/usage')
     expect(usage).toHaveBeenCalledTimes(1)
@@ -692,5 +692,40 @@ describe('model management navigation', () => {
     expect(view.element.textContent).toContain('No provider connections yet')
     expect([...view.element.querySelectorAll('button')].some(button => button.textContent?.includes('Connect provider'))).toBe(true)
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
+  })
+})
+
+describe('provider connection table', () => {
+  it('uses the shared searchable table and keeps Add model and Edit actions scoped to the connection', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'production', displayName: 'Production', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1', discovered: ['gpt-6-luna'] },
+      { name: 'fast', connectionRef: 'production', model: 'gpt-6-luna' },
+      { name: 'staging', displayName: 'Staging', isConnection: true, provider: 'openai', baseURL: 'https://staging.example/v1' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    const table = view.element.querySelector('table[aria-label="Provider connections"]')!
+    expect(table).toBeTruthy()
+    expect([...table.querySelectorAll('thead th')].map(cell => cell.textContent?.trim())).toEqual(['Name', 'Endpoint', 'Models'])
+    const production = [...table.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('Production'))!
+    expect(production.textContent).toContain('https://api.openai.com/v1')
+    expect(production.textContent).toContain('1')
+    const search = view.element.querySelector<HTMLInputElement>('.k-table__search-input')!
+    search.value = 'Production'
+    search.dispatchEvent(new Event('input'))
+    await settleVue(4, 150)
+    expect(table.textContent).toContain('Production')
+    expect(table.textContent).not.toContain('Staging')
+    table.querySelector<HTMLButtonElement>('[aria-label="Add model to Production"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-provider-connect')).toBeTruthy()
+    expect(view.element.querySelector('#model-credential')).toBeNull()
+    ;[...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Cancel')!.click()
+    await settleVue()
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Edit provider connection Production"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-create-title')?.textContent).toBe('Edit provider connection')
   })
 })
