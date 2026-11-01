@@ -35,8 +35,9 @@ limitations under the License.
 //     polls (default every minute) — lists Org workspaces, lists each
 //     Org's child Workspaces, reads the annotation
 //     tenants.railgrid.ai/deletion-requested-at and, once the grace
-//     window expires, drives the Workspace cascade (kcp Workspace +
-//     workspace-scope UMI rows).
+//     window expires — or at once when the companion annotation
+//     tenants.railgrid.ai/deletion-forced is set — drives the Workspace
+//     cascade (kcp Workspace + workspace-scope UMI rows).
 //
 // Inside the grace window the reconciler does NOT delete anything —
 // it surfaces a DeletionInProgress condition on the parent CR and
@@ -44,7 +45,9 @@ limitations under the License.
 // softDeletedAt so the portal switcher (step 10) hides them. Undelete
 // (the deletionRequestedAt / annotation being cleared back to nil)
 // clears the marker and the condition; nothing brings back resources
-// that the post-window cascade has already removed.
+// that the post-window cascade has already removed. A forced Workspace
+// deletion is the one exception: it has no window, and the undelete
+// paths refuse to clear it.
 package softdelete
 
 import (

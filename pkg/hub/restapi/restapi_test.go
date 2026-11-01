@@ -66,6 +66,8 @@ type fakeOps struct {
 	childWorkspaces        map[string]map[string]bool   // orgUUID → wsUUID set
 	wsDisplayNames         map[wsKey]string             // (org,ws) → display
 	wsDeletionAnnos        map[wsKey]time.Time          // (org,ws) → timestamp
+	wsDeletionForced       map[wsKey]bool               // (org,ws) → deletion-forced marker
+	setForcedCalls         map[wsKey]int                // (org,ws) → count
 	mcpServerCalls         map[wsKey]int                // (org,ws) → count
 	railgridBindingCalls   map[wsKey]int                // (org,ws) → count
 	workspaceAdmins        map[wsKey]map[string]bool    // (org,ws) → rbacIdentity set
@@ -98,6 +100,8 @@ func newFakeOps() *fakeOps {
 		childWorkspaces:        map[string]map[string]bool{},
 		wsDisplayNames:         map[wsKey]string{},
 		wsDeletionAnnos:        map[wsKey]time.Time{},
+		wsDeletionForced:       map[wsKey]bool{},
+		setForcedCalls:         map[wsKey]int{},
 		mcpServerCalls:         map[wsKey]int{},
 		railgridBindingCalls:   map[wsKey]int{},
 		workspaceAdmins:        map[wsKey]map[string]bool{},
@@ -369,11 +373,37 @@ func (f *fakeOps) SetWorkspaceDeletionAnnotation(_ context.Context, orgUUID, wsU
 	return nil
 }
 
+func (f *fakeOps) GetWorkspaceDeletionForced(_ context.Context, orgUUID, wsUUID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wsDeletionForced[wsKey{orgUUID, wsUUID}], nil
+}
+
+func (f *fakeOps) SetWorkspaceDeletionForced(_ context.Context, orgUUID, wsUUID string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := wsKey{orgUUID, wsUUID}
+	f.setForcedCalls[key]++
+	if _, ok := f.childWorkspaces[orgUUID][wsUUID]; !ok {
+		return apierrors.NewNotFound(schema.GroupResource{Group: "tenancy.kcp.io", Resource: "workspaces"}, wsUUID)
+	}
+	// Mirror the bootstrapper: one write that keeps an earlier timestamp
+	// and only adds the forced marker.
+	if _, exists := f.wsDeletionAnnos[key]; !exists {
+		f.wsDeletionAnnos[key] = at
+	}
+	f.wsDeletionForced[key] = true
+	return nil
+}
+
 func (f *fakeOps) ClearWorkspaceDeletionAnnotation(_ context.Context, orgUUID, wsUUID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	key := wsKey{orgUUID, wsUUID}
 	f.clearDeletionCalls[key]++
+	if f.wsDeletionForced[key] {
+		return kcp.ErrWorkspaceDeletionForced
+	}
 	if f.clearDeletionConflicts[key] > 0 {
 		f.clearDeletionConflicts[key]--
 		if stamp, ok := f.clearDeletionRaceStamp[key]; ok {
@@ -1353,6 +1383,123 @@ func TestDeleteWorkspace_RetriesUpdateConflictWithoutResettingTimestamp(t *testi
 	}
 	if got := ops.wsDeletionAnnos[key]; got.IsZero() {
 		t.Error("deletion timestamp was not persisted after the retry")
+	}
+}
+
+func TestDeleteWorkspace_ForceMarksForcedAndStampsTimestamp(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1?force=true", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status: got %d, want 204", resp.StatusCode)
+	}
+	key := wsKey{"org-a", "ws-1"}
+	if _, ok := ops.wsDeletionAnnos[key]; !ok {
+		t.Error("deletion timestamp not stamped by the forced delete")
+	}
+	if !ops.wsDeletionForced[key] {
+		t.Error("forced marker not set")
+	}
+	if got := ops.setDeletionCalls[key]; got != 0 {
+		t.Errorf("SetWorkspaceDeletionAnnotation calls: got %d, want 0 (the forced write stamps both keys at once)", got)
+	}
+
+	// The projection tells the portal the row is not restorable.
+	req, _ = http.NewRequest(http.MethodGet, srv.URL+"/api/orgs/org-a/workspaces/ws-1", nil)
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	var view WorkspaceView
+	if err := json.NewDecoder(resp.Body).Decode(&view); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	_ = resp.Body.Close()
+	if view.DeletionRequestedAt == nil || !view.DeletionForced {
+		t.Errorf("view: got deletionRequestedAt=%v deletionForced=%v, want both set", view.DeletionRequestedAt, view.DeletionForced)
+	}
+}
+
+func TestDeleteWorkspace_ForceKeepsEarlierTimestampAndIsIdempotent(t *testing.T) {
+	original := time.Date(2026, 6, 1, 12, 34, 56, 0, time.UTC)
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = original
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	for i := 0; i < 2; i++ {
+		req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1?force=true", nil)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("DELETE #%d: %v", i+1, err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Errorf("DELETE #%d status: got %d, want 204", i+1, resp.StatusCode)
+		}
+	}
+	if got := ops.wsDeletionAnnos[key]; !got.Equal(original) {
+		t.Errorf("deletion timestamp: got %s, want the original %s", got.Format(time.RFC3339), original.Format(time.RFC3339))
+	}
+	if !ops.wsDeletionForced[key] {
+		t.Error("forced marker not set on an already soft-deleted workspace")
+	}
+}
+
+func TestDeleteWorkspace_RejectsMalformedForce(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1?force=yes", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status: got %d, want 400", resp.StatusCode)
+	}
+	key := wsKey{"org-a", "ws-1"}
+	if _, ok := ops.wsDeletionAnnos[key]; ok {
+		t.Error("a malformed force must not fall back to a recoverable delete")
+	}
+	if ops.wsDeletionForced[key] {
+		t.Error("a malformed force must not mark the workspace forced")
+	}
+}
+
+func TestUndeleteWorkspace_RefusesForcedDeletion(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+	key := wsKey{"org-a", "ws-1"}
+	ops.wsDeletionAnnos[key] = time.Now().UTC().Add(-time.Hour)
+	ops.wsDeletionForced[key] = true
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs/org-a/workspaces/ws-1/undelete", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("undelete: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status: got %d, want 409", resp.StatusCode)
+	}
+	if _, ok := ops.wsDeletionAnnos[key]; !ok || !ops.wsDeletionForced[key] {
+		t.Error("undelete cleared a forced deletion")
 	}
 }
 

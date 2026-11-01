@@ -569,7 +569,7 @@ delete cascade (O-8).
 the same grace period as Orgs.
 
 1. Hub sets the
-   `tenancy.railgrid.ai/deletion-requested-at` annotation (RFC3339)
+   `tenants.railgrid.ai/deletion-requested-at` annotation (RFC3339)
    on the kcp Workspace. We don't extend kcp's `Workspace` CRD; an
    annotation IS the source of truth. Requires caller is Workspace
    admin or Org admin (O-15).
@@ -583,6 +583,18 @@ the same grace period as Orgs.
    everything inside it (APIBindings, tenant objects like edges /
    MCP instances / kube ServiceAccounts, RBAC) — and strips the
    workspace-scope UMI rows for every member.
+5. `DELETE /api/orgs/{org-uuid}/workspaces/{ws-uuid}?force=true` skips
+   the window. The hub stamps a companion annotation
+   `tenants.railgrid.ai/deletion-forced=true` in the same update as the
+   timestamp (an earlier `deletion-requested-at` is kept, so the audit
+   trail still says when deletion was first requested) and the
+   reconciler cascades on its next sweep instead of waiting out the
+   grace period. There is nothing to recover: both undelete endpoints
+   answer 409 for a forced Workspace. Same admin requirement as the
+   soft delete; the portal offers it as a per-row **Delete now** action
+   in Organization settings behind its own confirmation. The handler
+   never deletes anything itself — the reconciler stays the only writer
+   of the cascade.
 
 The cascade controller logs the count of objects being deleted in
 each phase so an operator inspecting the audit log can see what was

@@ -54,6 +54,12 @@ type Provisioner interface {
 	// present but malformed".
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
 
+	// GetWorkspaceDeletionForced reports whether the child Workspace
+	// carries tenants.railgrid.ai/deletion-forced: its admin asked for
+	// deletion without the recovery window, so the cascade runs on the
+	// next sweep however much of the grace period is left.
+	GetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string) (bool, error)
+
 	// DeleteOrgMemberships removes every Membership CR inside the
 	// Organization workspace. Run during Org cascade so UMI strips
 	// see a clean delta.

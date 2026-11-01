@@ -92,7 +92,9 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
       All organizations registered on the hub, with their workspaces, enabled providers and the
       metering plan a platform admin assigned (none means the default, free plan). An organization or
       workspace marked <span class="k-badge k-badge--danger align-middle">deleting</span>
-      is inside its recovery window and can be restored here until the hub purges it.
+      is inside its recovery window and can be restored here until the hub purges it. A workspace
+      marked <span class="k-badge k-badge--danger align-middle">deleting now</span> was deleted
+      without a recovery window and cannot be restored.
     </p>
 
     <p v-if="actionError" class="mb-2 text-sm text-danger" role="alert" aria-live="assertive">{{ actionError }}</p>
@@ -165,9 +167,11 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
             <span
               v-if="row.deletionRequestedAt"
               class="k-badge k-badge--danger ml-1"
-              :title="rowString(row, 'purgeAt') ? `Purged ${purgeLabel(rowString(row, 'purgeAt'))}` : undefined"
+              :title="row.deletionForced
+                ? 'Deleted without a recovery window; the hub is removing it now.'
+                : rowString(row, 'purgeAt') ? `Purged ${purgeLabel(rowString(row, 'purgeAt'))}` : undefined"
             >
-              deleting
+              {{ row.deletionForced ? 'deleting now' : 'deleting' }}
             </span>
           </template>
           <template #uuid="{ value }">
@@ -189,7 +193,10 @@ function restoreWorkspace(org: AdminOrg, wsUUID: string) {
             <span v-else class="text-[11px] text-text-muted">—</span>
           </template>
           <template #actions="{ row }">
-            <div v-if="row.deletionRequestedAt" class="flex items-center justify-end gap-2">
+            <div v-if="row.deletionRequestedAt && row.deletionForced" class="flex items-center justify-end">
+              <span class="text-[11px] text-text-muted">no recovery window</span>
+            </div>
+            <div v-else-if="row.deletionRequestedAt" class="flex items-center justify-end gap-2">
               <span v-if="rowString(row, 'purgeAt')" class="text-[11px] text-text-muted">
                 purged {{ purgeLabel(rowString(row, 'purgeAt')) }}
               </span>

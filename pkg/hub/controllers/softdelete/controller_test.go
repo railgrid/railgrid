@@ -47,6 +47,7 @@ type fakeProvisioner struct {
 	childWorkspaces   map[string][]string        // orgUUID → list
 	orgMembers        map[string][]string        // orgUUID → list of member user names
 	wsDeletionAnnos   map[workspaceKey]time.Time // present-keyed; missing means no annotation
+	wsDeletionForced  map[workspaceKey]bool      // deletion-forced annotation present
 	getDeletionErrors map[workspaceKey]error     // optional injected errors
 
 	// call recording
@@ -67,6 +68,7 @@ func newFakeProvisioner() *fakeProvisioner {
 		childWorkspaces:   map[string][]string{},
 		orgMembers:        map[string][]string{},
 		wsDeletionAnnos:   map[workspaceKey]time.Time{},
+		wsDeletionForced:  map[workspaceKey]bool{},
 		getDeletionErrors: map[workspaceKey]error{},
 	}
 }
@@ -97,6 +99,7 @@ func (f *fakeProvisioner) DeleteChildWorkspace(_ context.Context, orgUUID, wsUUI
 		f.childWorkspaces[orgUUID] = next
 	}
 	delete(f.wsDeletionAnnos, workspaceKey{orgUUID, wsUUID})
+	delete(f.wsDeletionForced, workspaceKey{orgUUID, wsUUID})
 	return nil
 }
 
@@ -129,6 +132,12 @@ func (f *fakeProvisioner) GetWorkspaceDeletionRequestedAt(_ context.Context, org
 	}
 	tt := t
 	return &tt, true, nil
+}
+
+func (f *fakeProvisioner) GetWorkspaceDeletionForced(_ context.Context, orgUUID, wsUUID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.wsDeletionForced[workspaceKey{orgUUID, wsUUID}], nil
 }
 
 func (f *fakeProvisioner) DeleteOrgMemberships(_ context.Context, orgUUID string) error {
@@ -598,6 +607,44 @@ func TestWorkspaceSoftDelete_Undelete_ClearsMarker(t *testing.T) {
 	for _, e := range idx.Spec.Entries {
 		if e.WorkspaceUUID == "alice-ws" && e.SoftDeletedAt != nil {
 			t.Errorf("expected SoftDeletedAt cleared on undelete; got %#v", e)
+		}
+	}
+}
+
+// A forced deletion skips the window: the cascade runs on the first sweep
+// even though the request is a minute old, and the UMI row is stripped
+// rather than marked.
+func TestWorkspaceSoftDelete_Forced_CascadesInsideGrace(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	requestedAt := now.Add(-1 * time.Minute)
+
+	umi := newUMI("alice", "alice-org", "alice-ws", true, tenancyv1alpha1.MembershipRoleAdmin)
+
+	prov := newFakeProvisioner()
+	prov.orgs = []string{"alice-org"}
+	prov.childWorkspaces["alice-org"] = []string{"alice-ws"}
+	prov.orgMembers["alice-org"] = []string{"alice"}
+	prov.wsDeletionAnnos[workspaceKey{"alice-org", "alice-ws"}] = requestedAt
+	prov.wsDeletionForced[workspaceKey{"alice-org", "alice-ws"}] = true
+
+	r, c := newReconciler(t, prov, umi)
+	r.now = func() time.Time { return now }
+
+	if err := r.reconcileAllWorkspaces(context.Background()); err != nil {
+		t.Fatalf("reconcileAllWorkspaces: %v", err)
+	}
+
+	if len(prov.deleteChildCalls) != 1 || prov.deleteChildCalls[0] != (workspaceKey{"alice-org", "alice-ws"}) {
+		t.Errorf("expected DeleteChildWorkspace for the forced alice-org/alice-ws inside its grace window; got %v", prov.deleteChildCalls)
+	}
+
+	var idx tenancyv1alpha1.UserMembershipIndex
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "alice"}, &idx); err != nil {
+		t.Fatalf("get UMI: %v", err)
+	}
+	for _, e := range idx.Spec.Entries {
+		if e.WorkspaceUUID == "alice-ws" {
+			t.Errorf("expected workspace-scope row stripped; still has %#v", e)
 		}
 	}
 }
