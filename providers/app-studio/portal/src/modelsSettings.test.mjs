@@ -598,3 +598,10 @@ test('restores the saved list layout with ResourceTable actions and model states
     else globalThis.window = previousWindow
   }
 })
+
+test('offers all Agents chat provider paths and keeps Google AI Studio', async () => {
+  const html = await render({ editorOpen: true })
+  for (const label of ['OpenAI', 'Anthropic (Claude, OpenAI-compat)', 'OpenRouter', 'Custom OpenAI-compatible', 'Google AI Studio']) {
+    assert.ok(html.includes(label), `missing provider option: ${label}`)
+  }
+})

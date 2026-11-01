@@ -16,6 +16,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -205,6 +206,62 @@ func TestRecommendationsDistinguishCurrentModelsFromLegacyAndVariants(t *testing
 	for _, id := range []string{"gpt-4o", "gpt-5.4", "claude-sonnet-4", "claude-opus-4-5", "gpt-6.1-sol-custom", "claude-opus-5-50"} {
 		if got := projectLLMDiscoveredModel(id, "", defaultProjectLLMProvider, nil); got.Compatibility != "available" {
 			t.Errorf("%s: %s", id, got.Compatibility)
+		}
+	}
+}
+
+func TestDiscoverProjectAnthropicModels(t *testing.T) {
+	for _, endpoint := range []string{"https://api.anthropic.com/v1", "https://openrouter.ai/api/v1", "https://api.anthropic.com.example.org/v1"} {
+		t.Run(endpoint, func(t *testing.T) {
+			calls := 0
+			official := endpoint == "https://api.anthropic.com/v1"
+			client := &http.Client{Transport: projectResponsesFixtureRoundTripper(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.Header.Get("Authorization") != "Bearer key" {
+					t.Error("missing credential")
+				}
+				body := `{"data":[{"id":"claude-sonnet-5-5","display_name":"Sonnet"}],"has_more":false}`
+				if official {
+					if r.Header.Get("anthropic-version") != "2023-06-01" || r.URL.Query().Get("limit") != "1000" {
+						t.Error("missing Anthropic request options")
+					}
+					if calls == 1 {
+						body = `{"data":[{"id":"claude-opus-5-5"}],"has_more":true,"last_id":"claude-opus-5-5"}`
+					} else if r.URL.Query().Get("after_id") != "claude-opus-5-5" {
+						t.Error("missing pagination cursor")
+					}
+				} else if r.Header.Get("anthropic-version") != "" || r.URL.RawQuery != "" {
+					t.Error("Anthropic options leaked to another endpoint")
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+			})}
+			result, err := discoverProjectLLMModels(t.Context(), client, projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: endpoint, APIKey: "key"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if official {
+				want = 2
+			}
+			if calls != want || len(result.Models) != want {
+				t.Fatalf("calls=%d models=%v", calls, result.Models)
+			}
+		})
+	}
+}
+
+func TestDiscoverProjectAnthropicModelsRejectsInvalidPagination(t *testing.T) {
+	for _, body := range []string{
+		`{"data":[],"has_more":true}`, `{"data":[{"id":"claude-sonnet-5-5"}],"has_more":true,"last_id":"repeat"}`, `{"data":[]}`,
+	} {
+		calls := 0
+		client := &http.Client{Transport: projectResponsesFixtureRoundTripper(func(r *http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+		})}
+		_, err := discoverProjectLLMModels(t.Context(), client, projectLLMSettings{Provider: defaultProjectLLMProvider, BaseURL: "https://api.anthropic.com/v1", APIKey: "key"})
+		if err == nil || calls > 2 {
+			t.Fatalf("expected bounded failure, calls=%d error=%v", calls, err)
 		}
 	}
 }

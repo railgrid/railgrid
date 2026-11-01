@@ -26,6 +26,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 )
 
@@ -175,7 +176,75 @@ func discoverProjectLLMModels(ctx context.Context, client *http.Client, settings
 	return ProjectLLMModelDiscoveryResponse{Models: models, Source: defaultProjectLLMProvider}, err
 }
 
+// Anthropic's official endpoint uses its native, paginated Models API even
+// when the saved connection provider is openai-compatible.
+func discoverProjectAnthropicModels(ctx context.Context, client *http.Client, settings projectLLMSettings) ([]ProjectLLMDiscoveredModelView, error) {
+	models := make([]ProjectLLMDiscoveredModelView, 0)
+	seen := make(map[string]bool)
+	cursors := make(map[string]bool)
+	cursor := ""
+	for page := 0; page < 10; page++ {
+		query := url.Values{"limit": {"1000"}}
+		if cursor != "" {
+			query.Set("after_id", cursor)
+		}
+		endpoint, err := projectLLMDiscoveryEndpoint(settings.BaseURL, "models", query)
+		if err != nil {
+			return nil, err
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settings.APIKey))
+		request.Header.Set("anthropic-version", "2023-06-01")
+		var payload struct {
+			Data *[]struct {
+				ID   string `json:"id"`
+				Name string `json:"display_name"`
+			} `json:"data"`
+			HasMore *bool  `json:"has_more"`
+			LastID  string `json:"last_id"`
+		}
+		if err := projectLLMDiscoveryJSON(client, request, &payload); err != nil {
+			return nil, err
+		}
+		if payload.Data == nil || payload.HasMore == nil {
+			return nil, fmt.Errorf("anthropic model list is missing data or has_more")
+		}
+		for _, item := range *payload.Data {
+			id := strings.TrimSpace(item.ID)
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			name := strings.TrimSpace(item.Name)
+			if name == "" {
+				name = id
+			}
+			models = append(models, projectLLMDiscoveredModel(id, name, defaultProjectLLMProvider, nil))
+			if len(models) > projectLLMDiscoveryMaxModels {
+				return nil, fmt.Errorf("anthropic model list exceeds %d models", projectLLMDiscoveryMaxModels)
+			}
+		}
+		if !*payload.HasMore {
+			return sortProjectLLMDiscoveredModels(models), nil
+		}
+		cursor = strings.TrimSpace(payload.LastID)
+		if len(*payload.Data) == 0 || cursor == "" || cursors[cursor] {
+			return nil, fmt.Errorf("anthropic model list returned an invalid pagination cursor")
+		}
+		cursors[cursor] = true
+	}
+	return nil, fmt.Errorf("anthropic model list exceeded pagination limit")
+}
+
 func discoverOpenAICompatibleModels(ctx context.Context, client *http.Client, settings projectLLMSettings) ([]ProjectLLMDiscoveredModelView, error) {
+	if anthropicmodel.UsesEndpoint(settings.BaseURL) {
+		return discoverProjectAnthropicModels(ctx, client, settings)
+	}
 	endpoint, err := projectLLMDiscoveryEndpoint(settings.BaseURL, "models", nil)
 	if err != nil {
 		return nil, err

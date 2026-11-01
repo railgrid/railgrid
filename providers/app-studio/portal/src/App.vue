@@ -2538,6 +2538,10 @@ const llmApiKeyHint = computed(() =>
 const llmProviderGuidance = computed(() =>
   llmProviderPreset.value === 'openai'
     ? 'Uses OpenAI’s standard API endpoint.'
+    : llmProviderPreset.value === 'anthropic'
+    ? 'Use an Anthropic API key to connect Claude models.'
+    : llmProviderPreset.value === 'openrouter'
+    ? 'Use an OpenRouter API key and the full provider/model identifier.'
     : isGoogleGeminiProvider.value
     ? 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.'
     : 'Use a provider or gateway that supports your model and GET /models. GPT-6 models use the Responses API; other models use Chat Completions.',
