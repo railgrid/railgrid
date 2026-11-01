@@ -18,6 +18,7 @@ package metering
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"strings"
@@ -34,12 +35,10 @@ import (
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 const (
@@ -61,10 +60,23 @@ const (
 
 	// membershipRefresh paces the re-list of an organization's workspaces.
 	// The child workspaces the hub itself creates and deletes reach this
-	// reconciler at once through the WorkspaceNotifier; this cadence is the
-	// backstop for a Workspace changed outside the hub (kubectl, a kcp-side
-	// cleanup), which this single-cluster manager does not watch.
+	// reconciler at once: whichever replica served the write stamps
+	// WorkspacesChangedAnnotation on the Organization, which this
+	// reconciler watches. This cadence is the backstop for a Workspace
+	// changed outside the hub (kubectl, a kcp-side cleanup), which this
+	// single-cluster manager does not watch.
 	membershipRefresh = 5 * time.Minute
+
+	// WorkspacesChangedAnnotation on an Organization records when the hub
+	// last created or deleted one of its child workspaces. Any replica
+	// writes it (WorkspaceNotifier.Notify); the organization reconciler,
+	// which runs on the leader only, sees the update through its watch on
+	// Organizations and re-lists the membership report. The value is the
+	// time of the change, so every change is a distinct update.
+	WorkspacesChangedAnnotation = "metering.railgrid.ai/workspaces-changed-at"
+
+	// notifyTimeout bounds the Organization patch a Notify makes.
+	notifyTimeout = 10 * time.Second
 	// notInstalledRetry is how long to wait for metering to appear before
 	// looking at an organization again.
 	notInstalledRetry = time.Minute
@@ -95,12 +107,7 @@ type OrganizationOptions struct {
 	// DefaultPlan is the Plan an organization's Entitlement names while
 	// Organization.spec.plan is empty.
 	DefaultPlan string
-	// WorkspaceEvents, when set, names the organizations whose child
-	// workspaces the hub itself created or deleted (the Bootstrapper's
-	// observer), so their membership report follows at once instead of on
-	// the next re-list.
-	WorkspaceEvents *WorkspaceNotifier
-	Logger          klog.Logger
+	Logger      klog.Logger
 }
 
 // OrganizationReconciler gives every Organization its own billing objects in
@@ -130,46 +137,51 @@ func SetupOrganizationReconciler(mgr manager.Manager, opts OrganizationOptions) 
 		opts.DefaultPlan = "free"
 	}
 	r := &OrganizationReconciler{Client: mgr.GetClient(), opts: opts}
-	b := ctrl.NewControllerManagedBy(mgr).
+	return ctrl.NewControllerManagedBy(mgr).
 		Named("metering-organization").
-		For(&tenancyv1alpha1.Organization{})
-	if opts.WorkspaceEvents != nil {
-		b = b.WatchesRawSource(opts.WorkspaceEvents.source())
-	}
-	return b.Complete(r)
+		For(&tenancyv1alpha1.Organization{}).
+		Complete(r)
 }
 
-// WorkspaceNotifier hands the organization reconciler the organizations
-// whose child workspaces the hub itself has just created or deleted, so the
-// membership report (and with it the workspaces usage) follows the hub's own
-// writes at once rather than on the periodic re-list. It is a
-// controller-runtime channel source; Notify never blocks, and an event that
-// does not fit the buffer is dropped because the re-list covers it.
+// WorkspaceNotifier tells the organization reconciler that an organization's
+// child workspaces changed, from any replica. The hub serves workspace
+// creates and runs the soft-delete cascade on whichever replica holds the
+// request or the lease, but reconciles metering membership on the leader
+// only, so an in-process signal is lost whenever those differ. Notify
+// instead stamps WorkspacesChangedAnnotation on the Organization; the
+// leader's watch on Organizations turns that into a reconcile. A failed
+// stamp is logged, not returned: the periodic re-list covers it.
 type WorkspaceNotifier struct {
-	ch chan event.TypedGenericEvent[client.Object]
+	orgs   dynamic.ResourceInterface
+	logger klog.Logger
+	now    func() time.Time
 }
 
-// NewWorkspaceNotifier returns a notifier with room for a burst of events.
-func NewWorkspaceNotifier() *WorkspaceNotifier {
-	return &WorkspaceNotifier{ch: make(chan event.TypedGenericEvent[client.Object], 256)}
+// NewWorkspaceNotifier returns a notifier over the Organizations that users
+// targets (the root:railgrid:users workspace).
+func NewWorkspaceNotifier(users dynamic.Interface, logger klog.Logger) *WorkspaceNotifier {
+	return &WorkspaceNotifier{orgs: users.Resource(railgridclient.OrganizationGVR), logger: logger, now: time.Now}
 }
 
-// Notify enqueues a reconcile of the Organization named orgUUID. Safe to call
-// from any goroutine; it never blocks.
+// Notify records that orgUUID's child workspaces changed. Safe to call from
+// any goroutine and on a nil notifier (a hub without metering); it never
+// returns an error. An Organization that is already gone has nothing to
+// report into and is skipped.
 func (n *WorkspaceNotifier) Notify(orgUUID string) {
 	if n == nil || orgUUID == "" {
 		return
 	}
-	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: orgUUID}}
-	select {
-	case n.ch <- event.TypedGenericEvent[client.Object]{Object: org}:
-	default:
+	patch, err := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": map[string]string{
+		WorkspacesChangedAnnotation: n.now().UTC().Format(time.RFC3339Nano),
+	}}})
+	if err != nil {
+		return
 	}
-}
-
-// source is the controller-runtime source the reconciler watches.
-func (n *WorkspaceNotifier) source() source.Source {
-	return source.Channel(n.ch, &handler.EnqueueRequestForObject{})
+	ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
+	defer cancel()
+	if _, err := n.orgs.Patch(ctx, orgUUID, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: FieldManager}); err != nil && !apierrors.IsNotFound(err) {
+		n.logger.Error(err, "recording a workspace change on the organization; its membership report follows on the next re-list", "organization", orgUUID)
+	}
 }
 
 // WorkspaceClients returns a Workspaces func over base, caching one dynamic
