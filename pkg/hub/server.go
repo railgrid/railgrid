@@ -145,6 +145,10 @@ func (s *Server) Run(ctx context.Context) error {
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
+	// workspaceNotifier, set when metering is configured, records the hub's
+	// own child workspace creates and deletes on the Organization for the
+	// (leader-only) metering organization reconciler to pick up.
+	var workspaceNotifier *metering.WorkspaceNotifier
 	var embeddedKCP *kcp.EmbeddedKCP
 	// meteringDiscovery is set once kcp is up and --metering-workspace is
 	// configured; the admin proxy and the organization reconciler share it.
@@ -390,11 +394,14 @@ func (s *Server) Run(ctx context.Context) error {
 
 		// The hub creates and deletes child workspaces on whichever replica
 		// serves the request or runs the cascade, but reconciles metering
-		// membership on the leader only. Each change is recorded on the
-		// Organization, which that reconciler watches, so the membership
-		// report follows at once from any replica.
+		// membership on the leader only. The REST create and the soft-delete
+		// cascade record each change on the Organization, which that
+		// reconciler watches, so the membership report follows at once from
+		// any replica. The organization bootstrap controller is left out on
+		// purpose: it writes the Organization's status in the same reconcile,
+		// and a stamp there would make that write conflict.
 		if s.opts.MeteringWorkspace != "" {
-			bootstrapper.WithChildWorkspaceObserver(metering.NewWorkspaceNotifier(userDynamic, logger.WithName("metering-workspaces")).Notify)
+			workspaceNotifier = metering.NewWorkspaceNotifier(userDynamic, logger.WithName("metering-workspaces"))
 		}
 	}
 
@@ -985,6 +992,9 @@ func (s *Server) Run(ctx context.Context) error {
 			apiMgr := restapi.NewManager(userClient, bootstrapper).
 				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
 				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser})
+			if workspaceNotifier != nil {
+				apiMgr.WithWorkspaceObserver(workspaceNotifier.Notify)
+			}
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
@@ -1399,7 +1409,11 @@ func (s *Server) Run(ctx context.Context) error {
 				logger.Error(err, "Creating soft-delete manager failed")
 				return
 			}
-			if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper, s.opts.SoftDeleteGracePeriod); err != nil {
+			var softdeleteOpts []softdelete.Option
+			if workspaceNotifier != nil {
+				softdeleteOpts = append(softdeleteOpts, softdelete.WithWorkspaceObserver(workspaceNotifier.Notify))
+			}
+			if err := softdelete.SetupWithManager(softdeleteMgr, bootstrapper, s.opts.SoftDeleteGracePeriod, softdeleteOpts...); err != nil {
 				logger.Error(err, "Setting up soft-delete reconciler failed")
 				return
 			}

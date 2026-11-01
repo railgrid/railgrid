@@ -629,6 +629,8 @@ func TestWorkspaceSoftDelete_Forced_CascadesInsideGrace(t *testing.T) {
 
 	r, c := newReconciler(t, prov, umi)
 	r.now = func() time.Time { return now }
+	var told []string
+	r.workspaceObserver = func(_ context.Context, org string) { told = append(told, org) }
 
 	if err := r.reconcileAllWorkspaces(context.Background()); err != nil {
 		t.Fatalf("reconcileAllWorkspaces: %v", err)
@@ -636,6 +638,11 @@ func TestWorkspaceSoftDelete_Forced_CascadesInsideGrace(t *testing.T) {
 
 	if len(prov.deleteChildCalls) != 1 || prov.deleteChildCalls[0] != (workspaceKey{"alice-org", "alice-ws"}) {
 		t.Errorf("expected DeleteChildWorkspace for the forced alice-org/alice-ws inside its grace window; got %v", prov.deleteChildCalls)
+	}
+	// The cascade tells the workspace observer once per deleted workspace, so
+	// the metering membership report follows the deletion at once.
+	if len(told) != 1 || told[0] != "alice-org" {
+		t.Errorf("expected the workspace observer to be told about alice-org once; got %v", told)
 	}
 
 	var idx tenancyv1alpha1.UserMembershipIndex

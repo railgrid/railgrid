@@ -2378,3 +2378,35 @@ func TestProjectOrg_InitialWorkspacePending(t *testing.T) {
 		})
 	}
 }
+
+// With metering configured, createWorkspace tells the workspace observer
+// about the organization once the workspace is Ready; that is how the
+// metering membership report follows the create at once.
+func TestCreateWorkspace_TellsTheWorkspaceObserver(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A", WorkspaceCreation: tenancyv1alpha1.WorkspaceCreationMembers},
+	}
+	alice := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
+	}
+	mgr, _, _ := newTestManager(t, org, alice)
+	var told []string
+	mgr.WithWorkspaceObserver(func(_ context.Context, orgUUID string) { told = append(told, orgUUID) })
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	body, _ := json.Marshal(CreateWorkspaceRequest{DisplayName: "platform"})
+	resp, err := http.Post(srv.URL+"/api/orgs/org-a/workspaces", "application/json", jsonBody(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status: got %d, want 201", resp.StatusCode)
+	}
+	if len(told) != 1 || told[0] != "org-a" {
+		t.Fatalf("observer told %v, want [org-a]", told)
+	}
+}

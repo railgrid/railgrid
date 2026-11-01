@@ -134,6 +134,9 @@ func (r *Reconciler) handleWorkspaceCascade(ctx context.Context, state *workspac
 	if err := r.provisioner.DeleteChildWorkspace(ctx, orgUUID, wsUUID); err != nil {
 		return fmt.Errorf("deleting child Workspace %s/%s: %w", orgUUID, wsUUID, err)
 	}
+	if r.workspaceObserver != nil {
+		r.workspaceObserver(ctx, orgUUID)
+	}
 	for _, member := range members {
 		if err := r.removeUMIEntryForWorkspace(ctx, member, orgUUID, wsUUID); err != nil {
 			return err

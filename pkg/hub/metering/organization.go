@@ -74,9 +74,6 @@ const (
 	// Organizations and re-lists the membership report. The value is the
 	// time of the change, so every change is a distinct update.
 	WorkspacesChangedAnnotation = "metering.railgrid.ai/workspaces-changed-at"
-
-	// notifyTimeout bounds the Organization patch a Notify makes.
-	notifyTimeout = 10 * time.Second
 	// notInstalledRetry is how long to wait for metering to appear before
 	// looking at an organization again.
 	notInstalledRetry = time.Minute
@@ -151,6 +148,12 @@ func SetupOrganizationReconciler(mgr manager.Manager, opts OrganizationOptions) 
 // instead stamps WorkspacesChangedAnnotation on the Organization; the
 // leader's watch on Organizations turns that into a reconcile. A failed
 // stamp is logged, not returned: the periodic re-list covers it.
+//
+// The REST workspace create and the soft-delete workspace cascade call it.
+// The organization bootstrap controller, which creates an organization's
+// first workspace, does not: it writes the Organization's status in the
+// same reconcile, and a stamp there would make that write conflict on
+// every pass. Its status update re-enqueues this reconciler anyway.
 type WorkspaceNotifier struct {
 	orgs   dynamic.ResourceInterface
 	logger klog.Logger
@@ -163,11 +166,13 @@ func NewWorkspaceNotifier(users dynamic.Interface, logger klog.Logger) *Workspac
 	return &WorkspaceNotifier{orgs: users.Resource(railgridclient.OrganizationGVR), logger: logger, now: time.Now}
 }
 
-// Notify records that orgUUID's child workspaces changed. Safe to call from
-// any goroutine and on a nil notifier (a hub without metering); it never
-// returns an error. An Organization that is already gone has nothing to
+// Notify records that orgUUID's child workspaces changed. It runs
+// synchronously in the caller (a request handler or the cascade sweep) and
+// makes one kcp patch bounded by ctx; it never returns an error, so the
+// caller's own work is never failed by it. Safe on a nil notifier (a hub
+// without metering). An Organization that is already gone has nothing to
 // report into and is skipped.
-func (n *WorkspaceNotifier) Notify(orgUUID string) {
+func (n *WorkspaceNotifier) Notify(ctx context.Context, orgUUID string) {
 	if n == nil || orgUUID == "" {
 		return
 	}
@@ -177,8 +182,6 @@ func (n *WorkspaceNotifier) Notify(orgUUID string) {
 	if err != nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
-	defer cancel()
 	if _, err := n.orgs.Patch(ctx, orgUUID, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: FieldManager}); err != nil && !apierrors.IsNotFound(err) {
 		n.logger.Error(err, "recording a workspace change on the organization; its membership report follows on the next re-list", "organization", orgUUID)
 	}
