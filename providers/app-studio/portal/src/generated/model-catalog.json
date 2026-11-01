@@ -10,12 +10,40 @@
     "toolCall": true
   },
   {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "id": "claude-fable-5-1",
+    "family": "anthropic",
+    "label": "Claude Fable 5.1",
+    "contextWindow": 1000000,
+    "inputPer1M": 10,
+    "outputPer1M": 50,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
     "id": "claude-haiku-4-5",
     "family": "anthropic",
     "label": "Claude Haiku 4.5",
     "contextWindow": 200000,
     "inputPer1M": 1,
     "outputPer1M": 5,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "id": "claude-haiku-5-5",
+    "family": "anthropic",
+    "label": "Claude Haiku 5.5",
+    "contextWindow": 1000000,
+    "inputPer1M": 0.1,
+    "outputPer1M": 0.5,
     "vision": true,
     "toolCall": true,
     "reasoning": true
@@ -53,6 +81,20 @@
     "reasoning": true
   },
   {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "id": "claude-opus-5-5",
+    "family": "anthropic",
+    "label": "Claude Opus 5.5",
+    "contextWindow": 1000000,
+    "inputPer1M": 4,
+    "outputPer1M": 20,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
     "id": "claude-sonnet-4",
     "family": "anthropic",
     "label": "Claude Sonnet 4",
@@ -69,6 +111,20 @@
     "contextWindow": 200000,
     "inputPer1M": 3,
     "outputPer1M": 15,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "id": "claude-sonnet-5-5",
+    "family": "anthropic",
+    "label": "Claude Sonnet 5.5",
+    "contextWindow": 1000000,
+    "inputPer1M": 2,
+    "outputPer1M": 10,
     "vision": true,
     "toolCall": true,
     "reasoning": true
@@ -93,6 +149,13 @@
     "vision": true,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "id": "gemini-3-flash",
+    "family": "google",
+    "inputPer1M": 0.5,
+    "outputPer1M": 3,
+    "toolCall": true
   },
   {
     "id": "gemini-3-pro",
@@ -156,6 +219,14 @@
     "toolCall": true
   },
   {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-4o-mini-search-preview",
+    "id": "gpt-4o-mini-search-preview",
+    "family": "openai",
+    "inputPer1M": 0.15,
+    "outputPer1M": 0.6
+  },
+  {
     "id": "gpt-5",
     "family": "openai",
     "label": "GPT-5",
@@ -165,6 +236,14 @@
     "vision": true,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5-chat-latest",
+    "id": "gpt-5-chat-latest",
+    "family": "openai",
+    "inputPer1M": 1.25,
+    "outputPer1M": 10
   },
   {
     "id": "gpt-5-mini",
@@ -178,12 +257,97 @@
     "reasoning": true
   },
   {
+    "id": "gpt-5-nano",
+    "family": "openai",
+    "inputPer1M": 0.05,
+    "outputPer1M": 0.4,
+    "toolCall": true
+  },
+  {
     "id": "gpt-5.1",
     "family": "openai",
     "label": "GPT-5.1",
     "contextWindow": 400000,
     "inputPer1M": 1.25,
     "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/gpt-5.2",
+    "id": "gpt-5.2",
+    "family": "openai",
+    "inputPer1M": 1.75,
+    "outputPer1M": 14
+  },
+  {
+    "id": "gpt-5.4",
+    "family": "openai",
+    "inputPer1M": 2.5,
+    "outputPer1M": 15,
+    "toolCall": true
+  },
+  {
+    "id": "gpt-5.4-mini",
+    "family": "openai",
+    "inputPer1M": 0.75,
+    "outputPer1M": 4.5,
+    "toolCall": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://developers.openai.com/api/docs/pricing",
+    "id": "gpt-6-astra",
+    "family": "openai",
+    "label": "GPT-6 Astra",
+    "contextWindow": 1050000,
+    "inputPer1M": 10,
+    "outputPer1M": 50,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://developers.openai.com/api/docs/pricing",
+    "id": "gpt-6-luna",
+    "family": "openai",
+    "label": "GPT-6 Luna",
+    "contextWindow": 1050000,
+    "inputPer1M": 0.1,
+    "outputPer1M": 0.5,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://developers.openai.com/api/docs/pricing",
+    "id": "gpt-6.1-sol",
+    "family": "openai",
+    "label": "GPT-6.1 Sol",
+    "contextWindow": 1050000,
+    "inputPer1M": 2,
+    "outputPer1M": 10,
+    "vision": true,
+    "toolCall": true,
+    "reasoning": true
+  },
+  {
+    "recommended": true,
+    "pricingCheckedAt": "2026-10-31",
+    "pricingSource": "https://developers.openai.com/api/docs/pricing",
+    "id": "gpt-6.1-terra",
+    "family": "openai",
+    "label": "GPT-6.1 Terra",
+    "contextWindow": 1050000,
+    "inputPer1M": 1,
+    "outputPer1M": 5,
     "vision": true,
     "toolCall": true,
     "reasoning": true
@@ -217,6 +381,14 @@
     "outputPer1M": 4.4,
     "toolCall": true,
     "reasoning": true
+  },
+  {
+    "pricingCheckedAt": "2026-11-01",
+    "pricingSource": "https://developers.openai.com/api/docs/models/o3-pro",
+    "id": "o3-pro",
+    "family": "openai",
+    "inputPer1M": 20,
+    "outputPer1M": 80
   },
   {
     "id": "o4-mini",

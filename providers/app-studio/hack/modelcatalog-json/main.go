@@ -31,10 +31,13 @@ limitations under the License.
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/railgrid/provider-sdk/modelcatalog"
 
 	"github.com/railgrid/provider-app-studio/api/modelcatalogjson"
 )
@@ -43,6 +46,11 @@ func main() {
 	out := flag.String("out", filepath.Join("portal", "src", "generated", "model-catalog.json"), "model pricing catalog file to write")
 	reasoningOut := flag.String("reasoning-out", filepath.Join("portal", "src", "generated", "reasoning-catalog.json"), "reasoning catalog file to write")
 	flag.Parse()
+	pattern, _ := json.Marshal(modelcatalog.SnapshotSuffixPattern)
+	if err := writeCatalog(filepath.Join(filepath.Dir(*out), "model-snapshot-suffix.json"), append(pattern, '\n')); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	data, err := modelcatalogjson.Render()
 	if err != nil {

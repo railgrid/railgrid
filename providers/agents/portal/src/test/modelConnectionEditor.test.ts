@@ -397,22 +397,29 @@ describe('focused model connection editor', () => {
   expect(save).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-4o', apiKey: 'rotated-key' }), expect.objectContaining({ ok: true }))
  })
 
- it('separates catalog-known models from the rest of what the endpoint serves', async () => {
+ it('separates current recommended models from the rest of what the endpoint serves', async () => {
   // Discovery already dropped everything that cannot chat. What is left still
   // mixes the curated families (priced, sized, capability-chipped) with
   // whatever else the gateway carries, and the list says which is which.
-  const discovered = ['gpt-4o', 'gpt-4.1', 'some-gateway-model', 'another-gateway-model']
+  const discovered = ['gpt-6.1-sol', 'claude-sonnet-5-5-latest', 'claude-sonnet-5-5', 'gpt-4o', 'gpt-4.1', 'gpt-6.1-sol-custom', 'some-gateway-model']
   const api = stubApi()
   const { element: el } = await mountVue(Editor, {
    api,
    credential: { ...credential, discovered },
    busy: false,
-   catalog: [{ id: 'gpt-4o', family: 'openai', inputPer1M: 1, outputPer1M: 1 }, { id: 'gpt-4.1', family: 'openai', inputPer1M: 1, outputPer1M: 1 }],
+   catalog: [{ id: 'gpt-6.1-sol', family: 'openai', recommended: true, inputPer1M: 2, outputPer1M: 10 }, { id: 'claude-sonnet-5-5', family: 'anthropic', recommended: true, inputPer1M: 2, outputPer1M: 10 }, { id: 'gpt-4o', family: 'openai', inputPer1M: 1, outputPer1M: 1 }, { id: 'gpt-4.1', family: 'openai', inputPer1M: 1, outputPer1M: 1 }],
   })
   el.querySelector<HTMLButtonElement>('#model-id')!.click(); await settleVue()
   const panel = document.querySelector('.k-table__filter-panel')!
   expect(panel.textContent).toContain('Recommended')
   expect(panel.textContent).toContain('Other models this endpoint serves')
+  const text = panel.textContent!
+  const other = text.indexOf('Other models this endpoint serves')
+  expect(text.indexOf('gpt-6.1-sol')).toBeLessThan(other)
+  expect(text.indexOf('claude-sonnet-5-5')).toBeLessThan(other)
+  expect(text.indexOf('claude-sonnet-5-5-latest')).toBeLessThan(other)
+  expect(text.indexOf('gpt-4o')).toBeGreaterThan(other)
+  expect(text.indexOf('gpt-6.1-sol-custom')).toBeGreaterThan(other)
   // Every discovered id is still offered, and manual entry still works.
   const values = [...panel.querySelectorAll('[role="option"]')].map(option => option.textContent?.trim())
   for (const id of discovered) expect(values.some(value => value?.includes(id))).toBe(true)
