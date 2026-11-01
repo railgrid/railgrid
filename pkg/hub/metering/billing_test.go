@@ -74,6 +74,18 @@ func (d *deployment) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "pq: connection to /var/run/postgresql refused"})
 			return
 		}
+		if body["plan"] == "proxied" {
+			// Something in front of metering answered, not the deployment.
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("<html><body><h1>403 Forbidden</h1><p>internal-ingress-7f: policy secret-policy-name denied</p></body></html>"))
+			return
+		}
+		if body["plan"] == "verbose" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "plan is not sold: " + strings.Repeat("x", 2000)})
+			return
+		}
 		if d.emptyURL {
 			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
 			return
@@ -342,5 +354,33 @@ func TestTransportAndServerFailuresKeepDetailOutOfTheMessage(t *testing.T) {
 	_, err = b.Checkout(context.Background(), "org-1", "free", "https://hub/ok", "https://hub/cancel")
 	if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !strings.Contains(be.Message, "not sold") {
 		t.Fatalf("a 4xx from the deployment: %v", err)
+	}
+}
+
+// Only a JSON error from the deployment reaches the caller, capped; a
+// non-JSON 4xx (a proxy or an HTML error page in front of metering) is a
+// 502 with a fixed message, and its excerpt is bounded for the log.
+func TestOnlyTheDeploymentsOwnErrorReachesTheCaller(t *testing.T) {
+	b, _ := newBillingFixture(t, true)
+	var be *BillingError
+
+	_, err := b.Checkout(context.Background(), "org-1", "proxied", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "secret-policy") || strings.Contains(be.Message, "<") {
+		t.Fatalf("an HTML 403 from a proxy: %v", err)
+	}
+
+	_, err = b.Checkout(context.Background(), "org-1", "verbose", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !strings.HasPrefix(be.Message, "plan is not sold") {
+		t.Fatalf("a long JSON error: %v", err)
+	}
+	if n := len([]rune(be.Message)); n > maxAnswerExcerpt+1 {
+		t.Fatalf("the deployment's message was not capped: %d characters", n)
+	}
+
+	if got := excerpt("  " + strings.Repeat("é", 300) + "  "); len([]rune(got)) != maxAnswerExcerpt+1 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("excerpt = %d characters", len([]rune(got)))
+	}
+	if got := excerpt(" short "); got != "short" {
+		t.Fatalf("excerpt(short) = %q", got)
 	}
 }

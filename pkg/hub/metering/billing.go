@@ -362,9 +362,26 @@ func (b *Billing) status(ctx context.Context, e Endpoints) (billingStatus, error
 	return st, nil
 }
 
+// maxAnswerExcerpt bounds what of a deployment's error answer is kept: a
+// message passed to the caller or a line in the log, never a 64 KiB page.
+const maxAnswerExcerpt = 256
+
+// excerpt trims s and keeps at most maxAnswerExcerpt characters of it.
+func excerpt(s string) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > maxAnswerExcerpt {
+		return string(r[:maxAnswerExcerpt]) + "…"
+	}
+	return s
+}
+
 // post calls a token-guarded billing route and maps the deployment's
-// answer: its 4xx reach the caller as they are, anything else is a 502,
-// and a deployment without billing is a 503.
+// answer. A *BillingError carries a status and a message meant for the
+// caller: the deployment's own JSON 4xx answer (capped), or a fixed
+// sentence for the cases the hub names itself; a deployment without
+// billing is a 503. A transport failure is a plain error whose detail the
+// route keeps in the log, and an answer that is not the deployment's own
+// (a proxy or an HTML error page) is a 502 with a fixed message.
 func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 	e, ok := b.discovery.Current()
 	if !ok {
@@ -394,15 +411,18 @@ func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= 300 {
+		// Only a JSON {"error": ...} is the deployment speaking to the
+		// caller. Anything else, a proxy's or an HTML error page in front
+		// of metering, is not for the organization's members: it stays a
+		// bounded excerpt in the log, and both are capped where derived.
 		var msg struct {
 			Error string `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &msg)
-		if msg.Error == "" {
-			msg.Error = strings.TrimSpace(string(raw))
-		}
+		answer := excerpt(msg.Error)
+		detail := excerpt(string(raw))
 		switch {
-		case resp.StatusCode == http.StatusNotFound && strings.Contains(msg.Error, "page not found"):
+		case resp.StatusCode == http.StatusNotFound && strings.Contains(detail, "page not found"):
 			return &BillingError{Status: http.StatusServiceUnavailable, Message: "this metering deployment does not sell plans"}
 		case resp.StatusCode == http.StatusServiceUnavailable:
 			return &BillingError{Status: http.StatusServiceUnavailable, Message: "billing is not enabled on the metering deployment"}
@@ -411,10 +431,13 @@ func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 		case resp.StatusCode >= 500:
 			// The deployment's own failure text is for its operator, not
 			// for the organization's members.
-			b.logger.Error(nil, "metering failed a billing request", "path", path, "status", resp.StatusCode, "answer", msg.Error)
+			b.logger.Error(nil, "metering failed a billing request", "path", path, "status", resp.StatusCode, "answer", detail)
 			return &BillingError{Status: http.StatusBadGateway, Message: "metering could not complete the request; try again later"}
+		case answer != "":
+			return &BillingError{Status: resp.StatusCode, Message: answer}
 		default:
-			return &BillingError{Status: resp.StatusCode, Message: msg.Error}
+			b.logger.Error(nil, "metering answered a billing request with an error that is not its own", "path", path, "status", resp.StatusCode, "answer", detail)
+			return &BillingError{Status: http.StatusBadGateway, Message: "metering did not accept the request"}
 		}
 	}
 	if out != nil {
