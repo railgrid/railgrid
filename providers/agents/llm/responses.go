@@ -18,6 +18,8 @@ package llm
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -25,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/cloudwego/eino-ext/components/model/agenticopenai"
 	"github.com/cloudwego/eino/callbacks"
@@ -60,6 +63,15 @@ type responsesChatModel struct {
 var _ einomodel.BaseChatModel = (*responsesChatModel)(nil)
 var _ einomodel.ToolCallingChatModel = (*responsesChatModel)(nil)
 
+// Ephemeral callers do not retain continuations across process restarts. A
+// random process key avoids writing a verifier for guessable gateway API keys
+// even for connection probes and direct in-process users of this adapter.
+var ephemeralResponsesOriginKey = sync.OnceValue(func() []byte {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return key
+})
+
 // NewResponsesModel creates a ChatModel backed by Eino's native OpenAI
 // Responses implementation. The native adapter owns request encoding, HTTP,
 // SSE parsing, and conversion between Responses items and Eino's agentic
@@ -84,12 +96,19 @@ func NewResponsesModel(ctx context.Context, settings Profile) (einomodel.BaseCha
 	if err != nil {
 		return nil, fmt.Errorf("create native Eino OpenAI Responses model: %w", err)
 	}
+	originKey := settings.ResponsesOriginKey
+	if len(originKey) == 0 {
+		originKey = ephemeralResponsesOriginKey()
+	}
 	originInput := strings.Join([]string{
+		"railgrid-agents-responses-origin:v1",
 		strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
 		strings.TrimSpace(settings.Model),
 		strings.TrimSpace(settings.APIKey),
 	}, "\x00")
-	origin := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(originInput)))
+	mac := hmac.New(sha256.New, originKey)
+	_, _ = mac.Write([]byte(originInput))
+	origin := fmt.Sprintf("hmac-sha256:v1:%x", mac.Sum(nil))
 	return &responsesChatModel{model: model, modelName: strings.TrimSpace(settings.Model), origin: origin}, nil
 }
 
@@ -97,7 +116,7 @@ func (*responsesChatModel) GetType() string { return "OpenAIResponses" }
 
 func (*responsesChatModel) IsCallbacksEnabled() bool { return true }
 
-// ResponsesOrigin returns the stable, one-way model credential fingerprint
+// ResponsesOrigin returns the keyed model credential fingerprint
 // used to bind opaque tool continuation metadata to its originating endpoint.
 func (m *responsesChatModel) ResponsesOrigin() string { return m.origin }
 

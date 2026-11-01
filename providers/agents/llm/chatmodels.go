@@ -9,16 +9,20 @@
 package llm
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 )
 
-// Chat-capability curation.
+// Agent-model discovery curation.
 //
-// BuildModel selects Eino's Responses adapter for GPT-6 and for earlier
-// models whose reasoning requires it, retaining Chat Completions for other
-// compatible models. GET {baseURL}/models still lists modalities and specialized
-// model families outside this agent interface, so discovery needs curation.
+// On the official OpenAI endpoint, model routing selects Eino's Responses
+// adapter for the GPT-6 family and for earlier catalog models when a selected
+// reasoning effort requires it. Custom gateways default to Chat Completions
+// unless a run already has a pinned protocol. This does not make every
+// Responses-only model family supported. GET {baseURL}/models still lists
+// modalities and specialized model families outside the agent interface, so
+// discovery needs curation.
 //
 // So discovery is curated here, once, and DiscoverModels is the only caller —
 // which is what keeps ModelCredential.status.models (written by the
@@ -57,6 +61,11 @@ import (
 // "*-chat-latest" (gpt-5.3-chat-latest). "search-api" is listed as a whole
 // two-token phrase so it cannot catch "search-preview", and "chat" is not a
 // token at all.
+//
+// These examples are filtered even though Agents has a Responses adapter:
+// routing is limited to GPT-6 models and earlier cataloged models whose
+// selected reasoning effort uses Responses. Catalog entries override this
+// deny-list for model ids Agents has explicitly included.
 var nonChatTokens = []string{
 	"audio",
 	"babbage",
@@ -122,18 +131,19 @@ func hasIDToken(id, tok string) bool {
 	return false
 }
 
-// ChatCapable reports whether a discovered model id is offered for agent chat.
+// ChatCapable reports whether a discovered model id is retained as an agent
+// model candidate by the current discovery curation.
 //
 // A curated catalog id (llm.Catalog(), matched exactly after normalization) is
-// always chat-capable: the catalog is the hand-written list of models this
-// repo runs agents on, so it overrules the deny-list. That is what keeps
+// always retained: the catalog is the hand-written list of models this repo
+// runs agents on, so it overrules the deny-list. That is what keeps
 // gemini-2.5-pro and gemini-3-pro — real chat models whose ids end in the same
-// "-pro" that marks OpenAI's responses-only family — in the list.
+// "-pro" that marks OpenAI's responses-only family — in the candidate list.
 //
-// Anything else is chat-capable unless one of nonChatTokens names it. An
-// unknown id from an unknown gateway is therefore offered, which is the right
-// default: this is a curation of a list, not an authorization check, and the
-// `test` verb is what actually proves a model answers.
+// Anything else is retained unless one of nonChatTokens names it. An unknown
+// id from an unknown gateway is therefore offered, which is the right
+// default: this curation is not a compatibility check, and the `test` verb is
+// what actually proves a model answers.
 func ChatCapable(id string) bool {
 	norm := normalizeModelID(id)
 	if norm == "" {
@@ -150,8 +160,8 @@ func ChatCapable(id string) bool {
 	return true
 }
 
-// FilterChatModels returns the chat-capable subset of ids, deduplicated and in
-// a stable order: the ids the curated catalog recognizes first, in catalog
+// FilterChatModels returns the model-candidate subset retained by discovery,
+// deduplicated and in a stable order: catalog-known ids first, in catalog
 // order, then everything else alphabetically.
 //
 // Catalog-known first because that is the answer to "which of these 130 should
@@ -197,40 +207,42 @@ func FilterChatModels(ids []string) []string {
 
 // ---- run-time recovery copy -------------------------------------------------
 
-// chatCompletionsRefusals are fragments of the upstream's own refusal when a
-// model cannot serve a Chat Completions request. They are matched on the error
+// modelUnavailableFragments are fragments of the upstream's own refusal when
+// the selected model cannot serve the request. They are matched on the error
 // text because that is all there is: the SDK surfaces the provider's 404/400
-// body as an opaque error, and the two cases below are the ones a person can
-// actually fix by picking a different model.
+// body as an opaque error. These errors can come from either transport, and
+// picking a different model is the available recovery.
 //
 //	"not supported in the v1/chat/completions endpoint"  — a responses-only
 //	  model (gpt-5.3-codex, gpt-5-pro, o3-deep-research). OpenAI's full text
-//	  adds "Use the v1/responses endpoint instead", which this engine does not
-//	  speak.
-//	"deprecated" / "has been retired"                     — a snapshot the
-//	  provider has withdrawn (gpt-5.3-chat-latest).
-var chatCompletionsRefusals = []string{
+//	  adds "Use the v1/responses endpoint instead"; the current routing does
+//	  not select Responses for these unsupported families.
+//	modelLifecycleRefusal matches retirement/deprecation language when the
+//	model itself is the subject, regardless of transport.
+var modelUnavailableFragments = []string{
 	"not supported in the v1/chat/completions endpoint",
 	"not supported in the chat completions",
-	"is deprecated",
-	"has been deprecated",
-	"has been retired",
 	"model_not_supported",
 }
 
-// ChatCompletionsRefusal reports whether err is the upstream saying the chosen
-// model cannot answer on Chat Completions — because it is served only on
-// /v1/responses, or because the provider retired it.
-//
-// Neither is a fault of the credential: the endpoint is reachable and the key
-// is good. The only fix is a different model id, which is why the caller turns
-// this into copy that names the credential to edit.
-func ChatCompletionsRefusal(err error) bool {
+// modelLifecycleRefusal does not classify a deprecated parameter as an
+// unavailable model; for example, "parameter reasoning is deprecated" remains
+// an upstream diagnostic. A quoted or unquoted model ID is optional.
+var modelLifecycleRefusal = regexp.MustCompile(`(?:^|[^a-z0-9_])(?:the\s+)?model(?:\s+(?:['"\x60])?[a-z0-9][a-z0-9._:/-]*(?:['"\x60])?)?\s+(?:is|has been)\s+(?:deprecated|retired)\b`)
+
+// IsModelUnavailable reports whether err says the selected model cannot serve
+// the request, such as an unsupported transport, a retired model, or a model
+// the provider marks as unsupported. It recognizes errors from both Chat
+// Completions and Responses requests.
+func IsModelUnavailable(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	for _, frag := range chatCompletionsRefusals {
+	if modelLifecycleRefusal.MatchString(msg) {
+		return true
+	}
+	for _, frag := range modelUnavailableFragments {
 		if strings.Contains(msg, frag) {
 			return true
 		}
@@ -238,33 +250,32 @@ func ChatCompletionsRefusal(err error) bool {
 	return false
 }
 
-// ExplainChatCompletionsRefusal wraps a run failure the upstream refused for
-// model reasons with recovery copy naming the credential to fix. Any other
-// error — and an empty credential name — is returned untouched, so genuine
-// failures are never dressed up as a configuration problem.
+// ExplainModelUnavailable wraps a run failure the upstream refused for model
+// reasons with recovery copy naming the credential to fix. Any other error —
+// and an empty credential name — is returned untouched, so genuine failures
+// are never dressed up as a configuration problem.
 //
-// The upstream sentence is KEPT: it is the only place the provider says which
-// endpoint it wanted, and a person pasting it into a support thread needs it
-// verbatim.
-func ExplainChatCompletionsRefusal(err error, credential string) error {
+// The upstream sentence is kept so the provider's protocol-specific details
+// remain available to anyone diagnosing the failure.
+func ExplainModelUnavailable(err error, credential string) error {
 	credential = strings.TrimSpace(credential)
-	if credential == "" || !ChatCompletionsRefusal(err) {
+	if credential == "" || !IsModelUnavailable(err) {
 		return err
 	}
-	return &ChatModelRefusedError{Credential: credential, Err: err}
+	return &ModelUnavailableError{Credential: credential, Err: err}
 }
 
-// ChatModelRefusedError is a run failure caused by the model id on a
-// credential, rendered as something to do about it.
-type ChatModelRefusedError struct {
-	// Credential is the ModelCredential whose spec.model has to change.
+// ModelUnavailableError is a run failure caused by an unavailable model id on
+// a credential, rendered with a recovery step.
+type ModelUnavailableError struct {
+	// Credential is the ModelCredential whose spec.model may need to change.
 	Credential string
 	Err        error
 }
 
-func (e *ChatModelRefusedError) Error() string {
-	return "model credential " + e.Credential + " cannot run its model on chat: " + e.Err.Error() +
-		" — open Models → " + e.Credential + " → Edit and pick another model, then test it before saving."
+func (e *ModelUnavailableError) Error() string {
+	return "model credential " + e.Credential + " cannot use its model: " + e.Err.Error() +
+		" — open Models → " + e.Credential + " → Edit and choose a model supported by this endpoint, then test it before saving."
 }
 
-func (e *ChatModelRefusedError) Unwrap() error { return e.Err }
+func (e *ModelUnavailableError) Unwrap() error { return e.Err }

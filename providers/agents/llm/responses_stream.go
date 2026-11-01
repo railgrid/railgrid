@@ -30,7 +30,7 @@ import (
 // Eino's agenticopenai v0.2.3 drops Reasoning.EncryptedContent on output_item.done and emits
 // only response metadata on response.completed. Its non-streaming converter
 // preserves the same field. It also reduces structured error events to plain
-// errors, losing the code needed for retry and context-compaction decisions.
+// errors, losing the code used in failure diagnostics.
 // Observe opaque continuation metadata and structured errors until the native
 // converter preserves them; Eino still owns model output, SSE parsing, tool
 // conversion, and completion.

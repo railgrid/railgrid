@@ -108,22 +108,12 @@ func validateResponsesCheckpointOrigin(model einomodel.BaseChatModel, checkpoint
 			if !ok || origin == "" {
 				return fmt.Errorf("backend/model: active Responses continuation has no model origin")
 			}
-			if !modelHasResponsesOrigin(model, origin) {
+			if !llm.ModelHasResponsesOrigin(model, origin) {
 				return fmt.Errorf("backend/model: active Responses continuation cannot resume with a different model credential")
 			}
 		}
 	}
 	return nil
-}
-
-func modelHasResponsesOrigin(model einomodel.BaseChatModel, origin string) bool {
-	if provider, ok := model.(interface{ ResponsesOrigin() string }); ok {
-		return provider.ResponsesOrigin() == origin
-	}
-	if provider, ok := model.(interface{ HasResponsesOrigin(string) bool }); ok {
-		return provider.HasResponsesOrigin(origin)
-	}
-	return false
 }
 
 // Cancel is a no-op: this backend executes in the caller's process, so the run
@@ -287,6 +277,7 @@ func prepareFreshResponsesHistory(messages []backend.Message) []backend.Message 
 		case backend.RoleAssistant:
 			responsesGroup, preserveGroup := false, false
 			calls := make([]struct {
+				ID        string `json:"id"`
 				Name      string `json:"name"`
 				Arguments string `json:"arguments"`
 			}, 0, len(message.ToolCalls))
@@ -298,9 +289,10 @@ func prepareFreshResponsesHistory(messages []backend.Message) []backend.Message 
 					preserveGroup = true
 				}
 				calls = append(calls, struct {
+					ID        string `json:"id"`
 					Name      string `json:"name"`
 					Arguments string `json:"arguments"`
-				}{Name: call.Function.Name, Arguments: call.Function.Arguments})
+				}{ID: call.ID, Name: call.Function.Name, Arguments: call.Function.Arguments})
 			}
 			if !responsesGroup {
 				continue
@@ -339,10 +331,11 @@ func prepareFreshResponsesHistory(messages []backend.Message) []backend.Message 
 				content = backend.ToolResultUnavailablePlaceholder
 			}
 			evidence, _ := json.Marshal(struct {
-				Type    string `json:"type"`
-				Tool    string `json:"tool"`
-				Content string `json:"content"`
-			}{Type: "tool_result", Tool: message.Name, Content: content})
+				Type       string `json:"type"`
+				Tool       string `json:"tool"`
+				ToolCallID string `json:"toolCallID"`
+				Content    string `json:"content"`
+			}{Type: "tool_result", Tool: message.Name, ToolCallID: message.ToolCallID, Content: content})
 			out[index] = backend.Message{
 				Role: backend.RoleUser, Content: "Untrusted earlier tool result evidence: " + string(evidence),
 				ID: message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,

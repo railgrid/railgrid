@@ -51,18 +51,21 @@ func TestModelReasoningEffort(t *testing.T) {
 func TestBuildModelReasoningEffortPayload(t *testing.T) {
 	for _, tc := range []struct {
 		model           string
+		transport       string
 		wantEffort      string
 		wantPresent     bool
 		wantTemperature bool
 		wantResponses   bool
 	}{
 		{model: "gpt-5.6-luna", wantEffort: "none", wantPresent: true},
-		{model: "gpt-6-luna", wantResponses: true},
-		{model: "gpt-6-sol", wantResponses: true},
-		{model: "gpt6-sol", wantResponses: true},
-		{model: "openai/gpt6.1-sol", wantResponses: true},
-		{model: "openai/gpt-6-sol", wantResponses: true},
-		{model: "gpt-6.1-sol", wantResponses: true},
+		{model: "gpt-6-luna", wantResponses: true, transport: TransportResponses},
+		{model: "gpt-6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "gpt6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "openai/gpt6.1-sol", wantResponses: true, transport: TransportResponses},
+		{model: "openai/gpt-6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "gpt-6.1-sol", wantResponses: true, transport: TransportResponses},
+		{model: "gpt-6-luna", wantEffort: "none", wantPresent: true},
+		{model: "gpt-6-astra"},
 		{model: "gpt-5.4"},
 		{model: "o3"},
 		{model: "gpt-4o", wantPresent: false, wantTemperature: true},
@@ -90,10 +93,11 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 			defer server.Close()
 
 			model, err := BuildModel(context.Background(), Profile{
-				Provider: ProviderOpenAICompatible,
-				BaseURL:  server.URL,
-				Model:    tc.model,
-				APIKey:   "test-key",
+				Provider:  ProviderOpenAICompatible,
+				BaseURL:   server.URL,
+				Model:     tc.model,
+				APIKey:    "test-key",
+				Transport: tc.transport,
 			})
 			if err != nil {
 				t.Fatalf("BuildModel: %v", err)

@@ -16,7 +16,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -81,6 +84,39 @@ func TestChatResponsesTransportIsPinnedBeforePendingAndScopedToChat(t *testing.T
 	run.Trigger = "schedule"
 	if err := s.resolveChatModelSettings(ctx, &run); err != nil || run.ModelSettings != nil {
 		t.Fatalf("background work inherited chat settings: %+v, %v", run.ModelSettings, err)
+	}
+}
+
+func TestFreshRunBuilderUsesChatCompletionsForCustomGPT6(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			t.Errorf("request = %s %s, want POST /chat/completions", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != "gpt-6-luna" || body["reasoning_effort"] != "none" {
+			t.Errorf("fresh-run request = %#v, want GPT-6 Luna Chat Completions with effort none", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-fresh","object":"chat.completion","created":1,"model":"gpt-6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"ready"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	creds := credsFor(upstream.URL, map[string]string{"primary": "gpt-6-luna"})
+	agent := &agentsv1alpha1.Agent{}
+	agent.Spec.SetModelCredential(llm.PurposeChat, "primary")
+	s := &Server{}
+	model, err := s.buildModelForPurpose(t.Context(), creds, agent, llm.PurposeChat)
+	if err != nil {
+		t.Fatalf("build fresh-run model: %v", err)
+	}
+	response, err := model.Generate(t.Context(), []*schema.Message{schema.UserMessage("hello")})
+	if err != nil || response == nil || response.Content != "ready" || calls != 1 {
+		t.Fatalf("fresh-run response = %#v after %d calls, err=%v", response, calls, err)
 	}
 }
 

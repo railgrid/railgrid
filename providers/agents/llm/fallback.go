@@ -140,10 +140,7 @@ func (f *FallbackModel) HasResponsesOrigin(origin string) bool {
 		return false
 	}
 	for _, member := range f.members {
-		if provider, ok := member.(interface{ ResponsesOrigin() string }); ok && provider.ResponsesOrigin() == origin {
-			return true
-		}
-		if provider, ok := member.(interface{ HasResponsesOrigin(string) bool }); ok && provider.HasResponsesOrigin(origin) {
+		if ModelHasResponsesOrigin(member, origin) {
 			return true
 		}
 	}
@@ -157,7 +154,7 @@ func (f *FallbackModel) eligibleMembers(input []*schema.Message) ([]int, error) 
 	}
 	indexes := make([]int, 0, len(f.members))
 	for index, member := range f.members {
-		if hasContinuation && !modelHasResponsesOrigin(member, origin) {
+		if hasContinuation && !ModelHasResponsesOrigin(member, origin) {
 			continue
 		}
 		indexes = append(indexes, index)
@@ -168,7 +165,13 @@ func (f *FallbackModel) eligibleMembers(input []*schema.Message) ([]int, error) 
 	return indexes, nil
 }
 
-func modelHasResponsesOrigin(model einomodel.BaseChatModel, origin string) bool {
+// ModelHasResponsesOrigin reports whether a model or fallback chain can resume
+// a continuation from origin. Admission and fallback selection share this
+// check so an approval cannot execute a tool under a different credential.
+func ModelHasResponsesOrigin(model einomodel.BaseChatModel, origin string) bool {
+	if origin == "" {
+		return false
+	}
 	if provider, ok := model.(interface{ ResponsesOrigin() string }); ok {
 		return provider.ResponsesOrigin() == origin
 	}

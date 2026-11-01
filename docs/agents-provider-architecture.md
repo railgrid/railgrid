@@ -58,7 +58,7 @@ and tools are edited inside the agent, next to a live chat playground.
   to reach its provider (OpenAI-compatible today). A reconciler resolves the
   Secret and calls `GET {baseURL}/models`, so `status.conditions` — not a
   button somebody pressed once — is what says whether the credential works,
-  and `status.models` — the **chat-capable subset** of what the endpoint
+  and `status.models` — the **curated agent model candidates** from what the endpoint
   served — is what the portal's model picker offers.
 - **Schedules / Triggers / Connections CRUD** — full create/list/delete of the
   `AgentSchedule`, `AgentTrigger`, and `Connection` CRs from their tabs.
@@ -568,8 +568,8 @@ part.
 | `agents` | `inbox` | GET | this agent's pending approvals and questions |
 | `agents` | `inbox-resolve` | POST | `…/inbox-resolve/{itemID}` |
 | `agents` | `events` | GET | this agent's activity, streamed (SSE) |
-| `modelcredentials` | `test` | POST | probe the credential with a real chat round-trip; optional body `{"model": "<id>"}` probes that chat-capable id instead of the saved one |
-| `modelcredentials` | `discover` | POST | list the chat-capable ids the credential's endpoint serves, and refresh its status |
+| `modelcredentials` | `test` | POST | probe the credential with a real chat round-trip; optional body `{"model": "<id>"}` probes that curated model candidate instead of the saved one |
+| `modelcredentials` | `discover` | POST | list the curated agent model candidates the credential's endpoint serves, and refresh its status |
 | `runs` | `trace` | GET | the run's step trace and answer (Postgres) |
 | `runs` | `wait` | GET | block until the run settles |
 | `runs` | `cancel` | POST | ask a run in flight to stop |
@@ -606,6 +606,12 @@ values stay on the server and are restored when that credential is selected
 again. An empty effort uses the model default. Preferences belong to the exact
 organization, workspace, Agent, and session; they never update the Agent.
 Admitted runs pin their own model settings.
+
+Automatic Responses routing is limited to the official OpenAI endpoint. A
+custom gateway uses Chat Completions by default unless an admitted run has a
+pinned protocol. For Responses requests, an empty effort is omitted so the
+model uses its own default. GPT-6 Luna no longer receives an implicit `none`;
+an explicit effort, including `none`, is sent as selected.
 
 A session may save preferences before its first message. The session list shows
 the newest 100 conversations and newest 100 empty chats independently. Older
@@ -867,29 +873,31 @@ thing being asked about.
 
 **Discovery is curated, and the pick is proved before it is saved.** An
 endpoint answers `GET /models` with everything the account can reach; OpenAI's
-answer is ~130 ids, most of which are not chat models at all (speech,
-transcription, embeddings, images, realtime, moderation) and several of which
-are chat-shaped but served only on `/v1/responses` — `*-codex`, `*-pro`,
-`*-deep-research`, `computer-use-*`. `llm.BuildModel` speaks Chat Completions
-and nothing else, so offering that list raw is offering a trap: the model
-saves, and the failure arrives on the first turn as the provider's 404 "This
-model is not supported in the v1/chat/completions endpoint." So
-`llm.FilterChatModels` (a documented deny-list of id tokens, overruled by an
-exact catalog id so `gemini-2.5-pro` survives the `-pro` rule) runs inside
-`llm.DiscoverModels` — the one call the reconciler and the `discover` verb
-share, which is what keeps `status.models` and the verb's answer the same list
-rather than two. Catalog-known ids come first in catalog order, then the rest
-alphabetically, and the portal groups on that split.
+answer is ~130 ids, including non-chat modalities (speech, transcription,
+embeddings, images, realtime, moderation) and specialized families served only
+on `/v1/responses` — `*-codex`, `*-pro`, `*-deep-research`, `computer-use-*`.
+On the official OpenAI endpoint, Agents routes the GPT-6 family through its
+native Responses adapter, and routes some earlier catalog models through
+Responses when a selected reasoning effort requires it. Custom gateways use
+Chat Completions by default unless a run has a pinned protocol. This adapter
+does not make every Responses-only family supported.
+Discovery filters known specialized families Agents does not route, while an
+exact catalog id can override a deny-list token (so `gemini-2.5-pro` survives
+the `-pro` rule). `llm.FilterChatModels` runs inside `llm.DiscoverModels` — the
+one call shared by the reconciler and the `discover` verb — keeping
+`status.models` and the verb's answer the same curated candidate list. Catalog-
+known ids come first in catalog order, then the rest alphabetically, and the
+portal groups on that split.
 
-Curation narrows the list; it does not prove anything. That is what the `test`
-verb's optional `{"model": "<id>"}` body is for: the editor probes the model a
-person just picked, with the endpoint and key taken from a ModelCredential
-and its Secret, and "Save changes" stays disabled until it answers. New endpoints
-and replacement keys use the temporary credential lifecycle below, so a failed
-candidate never changes a working saved connection. And when a run does fail
-this way anyway (a model retired between the
-probe and the run), `llm.ExplainChatCompletionsRefusal` keeps the provider's
-sentence and adds which credential owns the model id.
+Curation narrows the list; it does not prove compatibility. That is what the
+`test` verb's optional `{"model": "<id>"}` body is for: the editor probes the
+model a person just picked, with the endpoint and key taken from a
+ModelCredential and its Secret, and "Save changes" stays disabled until it
+answers. New endpoints and replacement keys use the temporary credential
+lifecycle below, so a failed candidate never changes a working saved
+connection. If a model becomes unavailable between the probe and a run,
+`llm.ExplainModelUnavailable` keeps the provider's original error and identifies
+the credential that may need a different model.
 
 ### Temporary model verification credentials
 

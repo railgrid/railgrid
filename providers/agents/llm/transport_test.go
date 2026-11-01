@@ -76,7 +76,7 @@ func TestBuildModelLunaReasoningWithToolsUsesResponses(t *testing.T) {
 	}
 }
 
-func TestModelTransportMatchesAppStudio(t *testing.T) {
+func TestModelTransportRespectsEndpointAndPersistedProtocol(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		profile   Profile
@@ -89,9 +89,19 @@ func TestModelTransportMatchesAppStudio(t *testing.T) {
 		{"namespaced GPT-6", Profile{Model: "openai/GPT6.1-sol"}, TransportResponses, ""},
 		{"Astra tools", Profile{Model: "gpt-6-astra"}, TransportResponses, ""},
 		{"Sol tools", Profile{Model: "gpt-6.1-sol"}, TransportResponses, ""},
+		{"unknown future GPT-6 on official endpoint", Profile{Model: "gpt-6-future-preview"}, TransportResponses, ""},
+		{"unknown future GPT6 on official endpoint", Profile{Model: "gpt6-future-preview"}, TransportResponses, ""},
+		{"GPT-6 Luna gateway default", Profile{BaseURL: "https://gateway.example/v1", Model: "gpt-6-luna"}, TransportChatCompletions, "none"},
+		{"OpenAI provider with gateway override", Profile{Provider: ProviderOpenAI, BaseURL: "https://gateway.example/v1", Model: "gpt-6-luna"}, TransportChatCompletions, "none"},
+		{"GPT-6 Astra gateway default", Profile{BaseURL: "https://gateway.example/v1", Model: "gpt-6-astra"}, TransportChatCompletions, ""},
+		{"GPT-6 namespaced gateway default", Profile{BaseURL: "https://gateway.example/v1", Model: "openai/gpt-6.1-sol"}, TransportChatCompletions, ""},
+		{"custom gateway explicitly pinned Responses", Profile{BaseURL: "https://gateway.example/v1", Model: "gpt-6-luna", Transport: TransportResponses}, TransportResponses, ""},
+		{"official GPT-6 explicitly pinned Chat Completions", Profile{Model: "gpt6.1-sol", Transport: TransportChatCompletions}, TransportChatCompletions, ""},
 		{"legacy Luna default", Profile{Model: "gpt-5.6-luna"}, TransportChatCompletions, "none"},
+		{"legacy Luna gateway default", Profile{BaseURL: "https://gateway.example/v1", Model: "gpt-5.6-luna"}, TransportChatCompletions, "none"},
 		{"legacy Luna none", Profile{Model: "gpt-5.6-luna", ReasoningEffort: "none"}, TransportChatCompletions, "none"},
 		{"legacy Luna high", Profile{Model: "gpt-5.6-luna", ReasoningEffort: "high"}, TransportResponses, "high"},
+		{"legacy Luna gateway high stays Chat Completions", Profile{BaseURL: "https://gateway.example/v1", Model: "gpt-5.6-luna", ReasoningEffort: "high"}, TransportChatCompletions, "high"},
 		{"GPT-4o", Profile{Model: "gpt-4o"}, TransportChatCompletions, ""},
 		{"o3 reasoning", Profile{Model: "o3", ReasoningEffort: "high"}, TransportChatCompletions, "high"},
 		{"unknown gateway", Profile{BaseURL: "https://gateway.example/v1", Model: "custom-chat"}, TransportChatCompletions, ""},

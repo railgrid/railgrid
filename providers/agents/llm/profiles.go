@@ -103,8 +103,12 @@ var ErrCredentialNotFound = errors.New("model credential not found")
 // It never leaves the process.
 type Profile struct {
 	ReasoningEffort string `json:"-"`
+	// ResponsesOriginKey authenticates private continuation provenance. Durable
+	// callers supply a provider-held key shared across replicas; empty uses an
+	// ephemeral process key for probes and other non-durable callers.
+	ResponsesOriginKey []byte `json:"-"`
 	// Transport pins the protocol of an admitted run. Empty selects it from
-	// the model and effort, using the same rules as App Studio.
+	// the endpoint, model and effort.
 	Transport string `json:"-"`
 	Provider  string `json:"provider,omitempty"`
 	BaseURL   string `json:"baseURL,omitempty"`
@@ -193,7 +197,8 @@ func LoadCredential(ctx context.Context, c CredentialResolver, name string) (Pro
 var ErrHarnessCredential = errors.New("this model credential is a coding-harness identity, not a chat endpoint")
 
 // BuildModel constructs an Eino chat model from a profile, using native Eino
-// Responses support for models that require it and Chat Completions otherwise.
+// Responses support when pinned or selected by endpoint-specific routing, and
+// Chat Completions otherwise.
 //
 // A harness identity is REFUSED before anything else, including the empty-key
 // and empty-model checks, because it is the one failure whose cause is not
@@ -249,16 +254,25 @@ const (
 	TransportResponses       = "responses"
 )
 
-// ModelTransport mirrors App Studio's model routing. GPT-6 models use
-// Responses for tool calling, including Luna with nonzero reasoning. Earlier
-// models keep Chat Completions unless their selected effort requires Responses.
-// A persisted protocol takes precedence when resuming an admitted run.
+// ModelTransport selects the wire protocol for a model connection. A persisted
+// protocol takes precedence when resuming an admitted run. Automatic GPT-6
+// routing to Responses applies only to the official OpenAI endpoint; custom
+// OpenAI-compatible gateways keep Chat Completions unless a caller pinned
+// Responses explicitly. Earlier models keep Chat Completions unless their
+// selected effort requires Responses on the official endpoint.
 func ModelTransport(p Profile) string {
 	if transport := strings.TrimSpace(p.Transport); transport != "" {
 		return transport
 	}
 	p = p.normalized()
 	if p.Provider != ProviderOpenAICompatible && p.Provider != ProviderOpenAI {
+		return TransportChatCompletions
+	}
+	provider := p.Provider
+	if provider == ProviderOpenAI {
+		provider = ProviderOpenAICompatible
+	}
+	if !modelcatalog.IsOfficialOpenAIEndpoint(provider, p.BaseURL) {
 		return TransportChatCompletions
 	}
 	model := normalizeModelID(p.Model)
@@ -274,8 +288,9 @@ func ModelTransport(p Profile) string {
 	return TransportChatCompletions
 }
 
-// EffectiveReasoningEffort includes legacy Chat Completions compatibility
-// defaults. Responses leaves an omitted effort to the model's own default.
+// EffectiveReasoningEffort includes Chat Completions compatibility defaults,
+// such as Luna's implicit "none" on compatible gateways. Responses leaves an
+// omitted effort to the model's own default.
 func EffectiveReasoningEffort(p Profile) string {
 	if p.ReasoningEffort != "" {
 		return p.ReasoningEffort
@@ -288,8 +303,9 @@ func EffectiveReasoningEffort(p Profile) string {
 
 // ---- discovery --------------------------------------------------------------
 
-// DiscoverModels calls GET {baseURL}/models and returns the CHAT-CAPABLE
-// served model ids plus the round-trip latency. A non-2xx status or transport
+// DiscoverModels calls GET {baseURL}/models and returns the chat-capable model
+// ids served by the agent's supported model transports plus the round-trip
+// latency. A non-2xx status or transport
 // error is returned as err, with the latency still measured for the health
 // badge.
 //
@@ -300,10 +316,10 @@ func EffectiveReasoningEffort(p Profile) string {
 //
 // The curation (FilterChatModels, see chatmodels.go) is applied HERE for the
 // same reason. The endpoint answers with everything the account can reach —
-// speech, embeddings, images, the responses-only families — and this engine
-// speaks Chat Completions only, so an uncurated list is a list of ways to
-// save a credential that fails on its first turn. Filtering at the single
-// shared call is what keeps status.models and the verb's answer identical.
+// speech, embeddings, images, and model families outside this agent's chat
+// transports — so an uncurated list is a list of ways to save a credential that
+// fails on its first turn. Filtering at the single shared call keeps
+// status.models and the verb's answer identical.
 func DiscoverModels(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
 	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if base == "" {

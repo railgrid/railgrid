@@ -55,16 +55,23 @@ run starts.
 Session reads wait for pending writes to that same chat, including across view
 remounts. An unsent chat with saved preferences remains selected after reload.
 Chats that inherit the Agent default refresh their model and effort options when
-that default changes; explicit chat choices stay fixed. Model selection is disabled while a
-preference request is pending, without closing the reasoning picker.
+that default changes; explicit chat choices stay fixed. Model selection is
+disabled while a preference request is pending, without closing the reasoning
+picker.
 
 Effort choices come from the shared server-side model capability catalog.
 Custom endpoints and unknown models show only model selection. Agents uses Eino's
-native Responses model for GPT-6 models and for earlier models whose selected
-reasoning level requires Responses, matching App Studio's routing. Other models
-use Chat Completions. The run records its transport and effective reasoning
-effort for approval resumes and recovery. Effort is remembered separately for
-each credential in a chat.
+Automatic Responses routing is limited to the official OpenAI endpoint. There,
+Agents uses Eino's native Responses model for the GPT-6 family and for some
+earlier catalog models when a selected reasoning effort requires it. Custom
+gateways use Chat Completions by default unless a run resumes with a pinned
+protocol. This support does not extend to every model served only by Responses.
+Other supported models use Chat Completions. Unless a reasoning effort is
+explicitly selected, Responses requests omit the reasoning field. In
+particular, GPT-6 Luna no longer gets an implicit `none`; the model uses its own
+default. The run records its transport and effective reasoning effort for
+approval resumes and recovery. Effort is remembered separately for each
+credential in a chat.
 Switching back to a credential whose remembered effort is no longer supported
 resets that effort to model default; valid remembered choices are retained.
 

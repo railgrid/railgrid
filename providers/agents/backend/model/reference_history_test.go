@@ -303,6 +303,10 @@ func TestPrepareFreshResponsesHistoryPreservesProtectedGroupsOnly(t *testing.T) 
 				toolResult,
 				{Role: backend.RoleUser, Content: "Summarize this artifact."},
 			}
+			originalExtra := make(map[string]any, len(call.Extra))
+			for key, value := range call.Extra {
+				originalExtra[key] = value
+			}
 			prepared := prepareFreshResponsesHistory(messages)
 			if len(prepared) != len(messages) || prepared[0].Role != backend.RoleAssistant || prepared[1].Role != backend.RoleTool {
 				t.Fatalf("protected tool group was projected into prose: %+v", prepared)
@@ -316,13 +320,147 @@ func TestPrepareFreshResponsesHistoryPreservesProtectedGroupsOnly(t *testing.T) 
 			if extra["application-extra"] != "preserved" {
 				t.Errorf("prepared call lost unrelated metadata: %#v", extra)
 			}
-			if _, ok := messages[0].ToolCalls[0].Extra[llm.ResponsesToolOriginExtraKey]; !ok {
-				t.Fatal("preparing history mutated the caller's input")
+			gotOriginalExtra := messages[0].ToolCalls[0].Extra
+			if len(gotOriginalExtra) != len(originalExtra) {
+				t.Fatalf("preparing history mutated original continuation metadata: %#v", gotOriginalExtra)
+			}
+			for key, value := range originalExtra {
+				if gotOriginalExtra[key] != value {
+					t.Errorf("preparing history changed original metadata %q: got %#v, want %#v", key, gotOriginalExtra[key], value)
+				}
+			}
+			if messages[1].Content != toolResult.Content || messages[1].ResultReference != toolResult.ResultReference ||
+				messages[1].ResultUnavailable != toolResult.ResultUnavailable {
+				t.Fatalf("preparing history mutated original protected result: %+v", messages[1])
 			}
 			if prepared[1].ResultReference == nil && !prepared[1].ResultUnavailable {
 				t.Fatalf("prepared protected result lost its policy identity: %+v", prepared[1])
 			}
 		})
+	}
+}
+
+func TestPrepareFreshResponsesHistoryPreservesLogicalIDsForParallelEvidence(t *testing.T) {
+	callA := schema.ToolCall{
+		ID: "call-logical-a", Type: "function",
+		Function: schema.FunctionCall{Name: "lookup_note", Arguments: `{"note_id":"note-a"}`},
+		Extra: map[string]any{
+			llm.ResponsesToolItemIDExtraKey:    "fc_opaque_a",
+			llm.ResponsesToolReasoningExtraKey: `[{"encrypted_content":"opaque reasoning a"}]`,
+			llm.ResponsesToolOriginExtraKey:    "sha256:credential-a",
+		},
+	}
+	callB := schema.ToolCall{
+		ID: "call-logical-b", Type: "function",
+		Function: schema.FunctionCall{Name: "lookup_note", Arguments: `{"note_id":"note-b"}`},
+		Extra: map[string]any{
+			llm.ResponsesToolItemIDExtraKey:    "fc_opaque_b",
+			llm.ResponsesToolReasoningExtraKey: `[{"encrypted_content":"opaque reasoning b"}]`,
+			llm.ResponsesToolOriginExtraKey:    "sha256:credential-b",
+		},
+	}
+	messages := []backend.Message{
+		{Role: backend.RoleAssistant, ID: "assistant-parallel", Sequence: 10, ToolCalls: []schema.ToolCall{callA, callB}},
+		{Role: backend.RoleTool, Name: "lookup_note", ToolCallID: callB.ID, Content: "result for note-b", ID: "result-b", Sequence: 11},
+		{Role: backend.RoleTool, Name: "lookup_note", ToolCallID: callA.ID, Content: "result for note-a", ID: "result-a", Sequence: 12},
+		{Role: backend.RoleUser, Content: "Summarize both notes.", ID: "user-next", Sequence: 13},
+	}
+	originalExtras := make([]map[string]any, len(messages[0].ToolCalls))
+	for i, call := range messages[0].ToolCalls {
+		originalExtras[i] = make(map[string]any, len(call.Extra))
+		for key, value := range call.Extra {
+			originalExtras[i][key] = value
+		}
+	}
+
+	prepared := prepareFreshResponsesHistory(messages)
+	if len(prepared) != len(messages) {
+		t.Fatalf("prepared history length = %d, want %d", len(prepared), len(messages))
+	}
+	for i := 0; i < 3; i++ {
+		if prepared[i].Role != backend.RoleUser {
+			t.Fatalf("prepared message %d role = %q, want untrusted user evidence: %+v", i, prepared[i].Role, prepared[i])
+		}
+	}
+	if prepared[3].Role != backend.RoleUser || prepared[3].Content != messages[3].Content {
+		t.Fatalf("following user message changed: %+v", prepared[3])
+	}
+	if prepared[0].ID != messages[0].ID || prepared[1].ID != messages[1].ID || prepared[2].ID != messages[2].ID {
+		t.Fatalf("flattened evidence lost source message IDs: %#v", prepared[:3])
+	}
+
+	const callEvidencePrefix = "Untrusted earlier tool request evidence: "
+	if !strings.HasPrefix(prepared[0].Content, callEvidencePrefix) {
+		t.Fatalf("call evidence is not marked untrusted: %q", prepared[0].Content)
+	}
+	var calls struct {
+		Type      string `json:"type"`
+		ToolCalls []struct {
+			ID        string `json:"id"`
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"toolCalls"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(prepared[0].Content, callEvidencePrefix)), &calls); err != nil {
+		t.Fatalf("decode call evidence: %v", err)
+	}
+	if calls.Type != "assistant_tool_calls" || len(calls.ToolCalls) != 2 {
+		t.Fatalf("call evidence = %+v, want both calls", calls)
+	}
+	wantCalls := []struct {
+		id, args string
+	}{{callA.ID, callA.Function.Arguments}, {callB.ID, callB.Function.Arguments}}
+	for i, want := range wantCalls {
+		got := calls.ToolCalls[i]
+		if got.ID != want.id || got.Name != "lookup_note" || got.Arguments != want.args {
+			t.Errorf("call evidence %d = %+v, want logical ID %q with args %s", i, got, want.id, want.args)
+		}
+	}
+
+	const resultEvidencePrefix = "Untrusted earlier tool result evidence: "
+	results := make(map[string]string, 2)
+	for _, message := range prepared[1:3] {
+		if !strings.HasPrefix(message.Content, resultEvidencePrefix) {
+			t.Fatalf("result evidence is not marked untrusted: %q", message.Content)
+		}
+		var result struct {
+			Type       string `json:"type"`
+			Tool       string `json:"tool"`
+			ToolCallID string `json:"toolCallID"`
+			Content    string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(message.Content, resultEvidencePrefix)), &result); err != nil {
+			t.Fatalf("decode result evidence: %v", err)
+		}
+		if result.Type != "tool_result" || result.Tool != "lookup_note" {
+			t.Errorf("result evidence = %+v, want lookup_note tool result", result)
+		}
+		results[result.ToolCallID] = result.Content
+	}
+	if results[callA.ID] != "result for note-a" || results[callB.ID] != "result for note-b" {
+		t.Fatalf("reordered results lost call correlation: %#v", results)
+	}
+
+	preparedEvidence := strings.Join([]string{prepared[0].Content, prepared[1].Content, prepared[2].Content}, "\n")
+	for _, forbidden := range []string{
+		"fc_opaque_a", "fc_opaque_b", "opaque reasoning a", "opaque reasoning b",
+		"encrypted_content", "sha256:credential-a", "sha256:credential-b",
+		llm.ResponsesToolItemIDExtraKey, llm.ResponsesToolReasoningExtraKey, llm.ResponsesToolOriginExtraKey,
+	} {
+		if strings.Contains(preparedEvidence, forbidden) {
+			t.Errorf("flattened evidence retained opaque continuation metadata %q: %s", forbidden, preparedEvidence)
+		}
+	}
+	for i, want := range originalExtras {
+		got := messages[0].ToolCalls[i]
+		if len(got.Extra) != len(want) {
+			t.Errorf("preparing history changed original call %d metadata: got %#v, want %#v", i, got.Extra, want)
+		}
+		for key, value := range want {
+			if got.Extra[key] != value {
+				t.Errorf("preparing history mutated original call %d metadata %q: got %#v, want %#v", i, key, got.Extra[key], value)
+			}
+		}
 	}
 }
 

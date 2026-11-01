@@ -236,12 +236,12 @@ func TestFreshResponsesTurnTreatsEarlierCredentialCallsAsEvidence(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, foreign := range []string{"opaque-from-a", "fc_from_a", "call_from_a", "credential-a"} {
+	for _, foreign := range []string{"opaque-from-a", "fc_from_a", "credential-a"} {
 		if strings.Contains(string(input), foreign) {
 			t.Errorf("fresh credential B request contains credential A continuation %q: %s", foreign, input)
 		}
 	}
-	for _, expected := range []string{"read_file", "README.md", "README contents", "Summarize the README."} {
+	for _, expected := range []string{"call_from_a", "read_file", "README.md", "README contents", "Summarize the README."} {
 		if !strings.Contains(string(input), expected) {
 			t.Errorf("fresh request lost semantic history %q: %s", expected, input)
 		}
@@ -262,15 +262,11 @@ func TestApprovalResumeRejectsChangedResponsesCredential(t *testing.T) {
 		writeResponsesFixtureToolCall(w)
 	}))
 	defer server.Close()
-	modelA, err := llm.NewResponsesModel(context.Background(), llm.Profile{
+	profile := llm.Profile{
 		Provider: llm.ProviderOpenAICompatible, BaseURL: server.URL + "/v1", Model: "gpt-6.1-sol", APIKey: "credential-a",
-	})
-	if err != nil {
-		t.Fatal(err)
+		ResponsesOriginKey: []byte("durable-provider-signing-key"),
 	}
-	modelB, err := llm.NewResponsesModel(context.Background(), llm.Profile{
-		Provider: llm.ProviderOpenAICompatible, BaseURL: server.URL + "/v1", Model: "gpt-6.1-sol", APIKey: "credential-b",
-	})
+	modelA, err := llm.NewResponsesModel(context.Background(), profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,12 +286,33 @@ func TestApprovalResumeRejectsChangedResponsesCredential(t *testing.T) {
 		approvedExecutions++
 		return backend.Observation{Text: "README contents"}, nil
 	}}
-	_, err = New(engine.New(), modelB, "gpt-6.1-sol", nil).Continue(context.Background(), &backend.Run{ID: "run-1"}, backend.Answer{
-		State: paused.Parked.State, Decided: true, Approved: true,
-		Tools: []backend.Tool{approvedTool}, Limits: limits,
-	}, fixtureEventSink{})
-	if err == nil || !strings.Contains(err.Error(), "different model credential") {
-		t.Fatalf("resume with credential B error = %v, want credential mismatch", err)
+	for _, test := range []struct {
+		name   string
+		change func(*llm.Profile)
+	}{
+		{name: "API key rotation under the same credential", change: func(p *llm.Profile) { p.APIKey = "credential-b" }},
+		{name: "endpoint changed", change: func(p *llm.Profile) { p.BaseURL += "/other-account" }},
+		{name: "model changed", change: func(p *llm.Profile) { p.Model = "gpt-6-luna" }},
+		{name: "provider signing key changed", change: func(p *llm.Profile) { p.ResponsesOriginKey = []byte("new-provider-signing-key") }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changed := profile
+			test.change(&changed)
+			modelB, err := llm.NewResponsesModel(t.Context(), changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = New(engine.New(), modelB, changed.Model, nil).Continue(t.Context(), &backend.Run{ID: "run-1"}, backend.Answer{
+				State: paused.Parked.State, Decided: true, Approved: true,
+				Tools: []backend.Tool{approvedTool}, Limits: limits,
+			}, fixtureEventSink{})
+			if err == nil || !strings.Contains(err.Error(), "different model credential") {
+				t.Fatalf("resume with changed credential error = %v, want credential mismatch", err)
+			}
+			if approvedExecutions != 0 {
+				t.Fatalf("approved tool executed %d time(s) before rejecting the changed credential", approvedExecutions)
+			}
+		})
 	}
 	if calls != 1 {
 		t.Fatalf("credential B received %d Responses request(s); only credential A's initial call may be sent", calls)
