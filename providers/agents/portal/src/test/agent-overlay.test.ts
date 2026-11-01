@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../api'
 import { AgentsElement } from '../element'
@@ -137,6 +139,8 @@ describe('persistent agent overlay', () => {
     vi.spyOn(normal.api!, 'listSessions').mockResolvedValue([])
     vi.spyOn(normal.api!, 'listMessagePage').mockResolvedValue({ items: [] })
     vi.spyOn(normal.api!, 'listRuns').mockResolvedValue({ items: [] })
+    normal.store!.credentials.data = [{ name: 'openai', provider: 'openai', model: 'test-model' }]
+    normal.store!.credentials.loaded = normal.store!.credentials.hasSnapshot = true
     normal.store!.agents.data = [agentFixture()]
     normal.store!.agents.loaded = normal.store!.agents.hasSnapshot = true
     normal.store!.dispatchEvent(new Event('change'))
@@ -300,6 +304,28 @@ describe('overlay model recovery', () => {
     expect(element.querySelector('.agents-model-recovery')).toBeNull()
     finish(); await settleVue(14)
     expect(element.querySelector('.agents-model-recovery')).not.toBeNull()
+  })
+
+  it('keeps compact recovery visible under the real bar stylesheet and opens the full recovery view', async () => {
+    const style = document.createElement('style')
+    style.textContent = readFileSync(resolve(process.cwd(), 'src/style.css'), 'utf8')
+    document.head.appendChild(style)
+    try {
+      const element = await mountOverlay()
+      element.overlayState = { agent: 'scout', composerOnly: true }
+      models(element, []); await settleVue(12)
+      const recovery = element.querySelector<HTMLElement>('.agents-model-recovery')!
+      expect(getComputedStyle(recovery).display).not.toBe('none')
+      expect(getComputedStyle(element.querySelector('.agents-log')!).display).toBe('none')
+      expect(recovery.textContent).toContain('Model needed')
+      expect(element.querySelector('textarea')).toBeNull()
+      const engage = vi.fn(() => { element.overlayState = { agent: 'scout', composerOnly: false } })
+      element.addEventListener('railgrid-overlay-engage', engage)
+      recovery.querySelector<HTMLButtonElement>('button')!.click(); await settleVue(12)
+      expect(engage).toHaveBeenCalledOnce()
+      expect(element.textContent).toContain('Connect a model to continue')
+      expect([...element.querySelectorAll('button')].some(button => button.textContent === 'Connect model')).toBe(true)
+    } finally { style.remove() }
   })
 
 })

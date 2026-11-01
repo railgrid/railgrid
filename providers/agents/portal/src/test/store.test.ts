@@ -366,3 +366,16 @@ describe('credential read access state', () => {
     expect(store.credentials.hasSnapshot).toBe(true)
   })
 })
+
+describe('chat setup draft handoff', () => {
+  it('keeps the original session and draft scoped to the agent and retires them with authority', () => {
+    const store = makeStore(stubApi())
+    store.offerChatSetupDraft('scout', 'Unsent draft', 'session-one')
+    expect(store.takeChatSetupDraft('other-agent')).toBeUndefined()
+    expect(store.takeChatSetupDraft('scout')).toEqual({ draft: 'Unsent draft', session: 'session-one' })
+    expect(store.takeChatSetupDraft('scout')).toBeUndefined()
+    store.offerChatSetupDraft('scout', 'Private draft', 'session-two')
+    store.retire()
+    expect(store.takeChatSetupDraft('scout')).toBeUndefined()
+  })
+})

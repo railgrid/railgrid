@@ -14,6 +14,7 @@ import {
   Wrench,
   X,
 } from 'lucide-vue-next'
+import { credentialUnavailable } from '../types'
 import type { ApiClient } from '../api'
 import { validateBudgetInputs } from '../budget-validation'
 import ConfigSaveFeedback, { type ConfigSaveStatus } from '../components/ConfigSaveFeedback.vue'
@@ -230,13 +231,15 @@ const otherAgents = computed(() => {
   return props.store.agents.data.filter(candidate => candidate.metadata.name !== props.name)
 })
 const availableFallbacks = computed(() => credentials.value.filter(credential => (
-  credential.name !== modelCredential.value && !fallbacks.value.includes(credential.name)
+  !credentialUnavailable(credential) && credential.name !== modelCredential.value && !fallbacks.value.includes(credential.name)
 )))
 const credentialOptions = computed<FormSelectOption[]>(() => [
   { value: '', label: '— no model —' },
+  ...(missingModel.value && !credentials.value.some(item => item.name === modelCredential.value) ? [{ value: modelCredential.value, label: `${modelCredential.value} — unavailable`, disabled: true }] : []),
   ...credentials.value.map(credential => ({
     value: credential.name,
-    label: credential.connectionRef ? `${credential.connectionName || credential.connectionRef} · ${credential.displayName || credential.model}` : `${credential.name}${credential.model ? ` (${credential.model})` : ''}`,
+    label: credentialUnavailable(credential) ? `${credential.name} — unavailable` : credential.connectionRef ? `${credential.connectionName || credential.connectionRef} · ${credential.displayName || credential.model}` : `${credential.name}${credential.model ? ` (${credential.model})` : ''}`,
+    disabled: credentialUnavailable(credential),
   })),
 ])
 /**
@@ -391,6 +394,23 @@ const backendDirty = computed(() => !same(backendDraft.value, baselines.backend)
 const modelBacked = computed(() => backendType.value === AGENT_BACKEND_MODEL)
 // Tool grants are the stored agent's, so what disables the tools card is what
 // the object says today — not an unsaved draft.
+const missingModel = computed(() => credentialSlice.value.hasSnapshot && Boolean(modelCredential.value) && credentialUnavailable(credentials.value.find(item => item.name === modelCredential.value)))
+const missingFallbacks = computed(() => credentialSlice.value.hasSnapshot ? fallbacks.value.filter(name => credentialUnavailable(credentials.value.find(item => item.name === name))) : [])
+const needsModelSetup = computed(() => modelBacked.value && credentialSlice.value.hasSnapshot && !credentialSlice.value.error && !credentials.value.length)
+const modelSetupAllowed = ref<boolean | null>(null)
+const modelSetupAccessError = ref(false)
+const modelSetupRetry = ref(0)
+watch([needsModelSetup, () => props.api, () => props.store, () => props.name, () => credentialSlice.value.data.filter(item => item.isConnection).map(item => item.name).join('|'), modelSetupRetry], async (_value, _old, onCleanup) => {
+  let current = true
+  onCleanup(() => { current = false })
+  modelSetupAllowed.value = null; modelSetupAccessError.value = false
+  if (!needsModelSetup.value) return
+  try {
+    const allowed = await props.api.canConfigureChatModel(credentialSlice.value.data.filter(item => item.isConnection).map(item => item.name))
+    if (current) modelSetupAllowed.value = allowed
+  } catch { if (current) modelSetupAccessError.value = true }
+}, { immediate: true })
+
 const harnessStored = computed(() => agentHarnessBacked(agent.value))
 /** backendCondition is the reconciler's verdict on whether a turn can run. */
 const backendCondition = computed(() => agentCondition(agent.value, CONDITION_BACKEND_READY))
@@ -614,7 +634,7 @@ function removeFallback(index: number): void {
 }
 
 function saveModel(): void {
-  if (saveState.model.status === 'pending') return
+  if (saveState.model.status === 'pending' || Boolean(credentialSlice.value.error) || missingModel.value || missingFallbacks.value.length || credentialSlice.value.errorStatus === 403) return
   const credential = modelCredential.value
   const nextFallbacks = [...fallbacks.value]
   void saveRegion(
@@ -1106,7 +1126,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" :heading-id="domID('agent-model-heading')" title="Model" description="Which credential this agent reasons with. Fallbacks are tried in order when the primary fails.">
-      <div v-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+      <div v-if="credentialSlice.errorStatus === 403" class="k-inline-notification k-inline-notification--warning" role="status">Model access is restricted. Ask a workspace administrator to restore access.</div>
+      <div v-else-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
@@ -1115,24 +1136,36 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         Showing the last loaded credentials. {{ credentialSlice.error }}
         <button class="k-btn k-btn--ghost secondary" type="button" :disabled="credentialSlice.loading" @click="store.load('credentials')">{{ credentialSlice.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <label v-if="credentialSlice.hasSnapshot">
-        <span :id="domID('agent-model-credential-label')">Model credential</span>
-        <FormSelect v-model="modelCredential" :options="credentialOptions" :labelledby="domID('agent-model-credential-label')" :describedby="credentials.length === 0 ? domID('agent-model-credential-empty') : undefined" />
-        <span v-if="credentials.length === 0" :id="domID('agent-model-credential-empty')" class="agents-hint">No models yet — <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'models' })">add one under Models</button>.</span>
-      </label>
-      <div v-if="credentialSlice.hasSnapshot" class="agents-fieldset">
+      <template v-if="credentialSlice.hasSnapshot && credentialSlice.errorStatus !== 403">
+        <div v-if="missingModel || !credentials.length" :id="domID('agent-model-unavailable')" class="k-inline-notification k-inline-notification--warning" role="status">
+          <span class="k-inline-notification__body"><strong>{{ credentialSlice.error ? 'Model availability could not be refreshed' : missingModel ? 'Selected model is unavailable' : 'Connect a model to continue' }}</strong><span class="k-inline-notification__message"><template v-if="credentialSlice.error">The configured model or fallback was not in the last loaded models. Retry loading models to check its current availability.</template><template v-else><template v-if="missingModel">The configured model <code>{{ modelCredential }}</code> is not available in this workspace. </template>{{ credentials.length ? 'Choose a replacement below to restore this agent.' : 'Connect a model to restore this agent.' }}</template></span></span>
+        </div>
+        <label v-if="credentials.length">
+          <span :id="domID('agent-model-credential-label')">Model credential</span>
+          <FormSelect v-model="modelCredential" :options="credentialOptions" :invalid="missingModel" :labelledby="domID('agent-model-credential-label')" :describedby="missingModel ? domID('agent-model-unavailable') : undefined" />
+        </label>
+        <template v-else>
+          <p v-if="credentialSlice.error" class="agents-hint">Retry loading models before connecting a model.</p>
+          <button v-else-if="modelSetupAllowed" class="k-btn k-btn--primary" type="button" @click="emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })">Connect model</button>
+          <p v-else-if="modelSetupAllowed === false" class="agents-hint">Ask a workspace administrator to connect a model.</p>
+          <template v-else-if="modelSetupAccessError"><p class="agents-hint">Setup access could not be checked.</p><button class="k-btn k-btn--ghost" type="button" @click="modelSetupRetry++">Retry access check</button></template>
+          <p v-else class="agents-hint" role="status">Checking setup access…</p>
+        </template>
+      </template>
+      <div v-if="credentialSlice.hasSnapshot && credentialSlice.errorStatus !== 403" class="agents-fieldset">
         <span :id="domID('agent-fallbacks-label')" class="agents-fieldset-legend">Fallbacks</span>
         <div v-if="fallbacks.length" class="agents-chiprow">
           <span v-for="(fallback, index) in fallbacks" :key="`${fallback}-${index}`" class="agents-chip">
-            {{ fallback }}
+            {{ fallback }}{{ missingFallbacks.includes(fallback) ? ' — unavailable' : '' }}
             <button class="k-icon-action agents-chip-x" :aria-label="`Remove fallback ${fallback}`" type="button" @click="removeFallback(index)"><X :stroke-width="1.75" aria-hidden="true" /></button>
           </span>
         </div>
         <FormSelect v-if="availableFallbacks.length" class="agents-addselect" :model-value="''" :options="fallbackOptions" :labelledby="domID('agent-fallbacks-label')" :describedby="fallbacks.length === 0 ? domID('agent-fallbacks-empty') : undefined" @update:model-value="addFallback" />
         <span v-if="fallbacks.length === 0" :id="domID('agent-fallbacks-empty')" class="agents-hint">None — a model failure fails the run.</span>
       </div>
-      <div v-if="credentialSlice.hasSnapshot" class="agents-form-actions">
-        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending'" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
+      <div v-if="credentialSlice.hasSnapshot && credentials.length && credentialSlice.errorStatus !== 403" class="agents-form-actions">
+        <p v-if="missingFallbacks.length" class="agents-hint" role="status">Remove unavailable fallbacks before saving.</p>
+        <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending' || Boolean(credentialSlice.error) || missingModel || missingFallbacks.length > 0" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
         <ConfigSaveFeedback :id="domID('agent-model-save-feedback')" action="model" :status="feedbackStatus('model', modelDirty)" :newer-edits="newerEdits('model')" :error="feedbackError('model')" />
       </div>
     </ResourceSectionCard>

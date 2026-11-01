@@ -197,7 +197,7 @@ async function mountAgent(): Promise<void> {
       const detail = (event as CustomEvent<{ path?: string; recovery?: boolean }>).detail
       const path = detail?.path
       if (!path?.startsWith('#/')) return
-      element?.dispatchEvent(new Event('railgrid-chat-handoff'))
+      if (!detail?.recovery) element?.dispatchEvent(new Event('railgrid-chat-handoff'))
       recoveryPending.value = detail?.recovery === true
       overlay.closeForNavigation()
       void router.push(scopePath('/providers/agents') + path)

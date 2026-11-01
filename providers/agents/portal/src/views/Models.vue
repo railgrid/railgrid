@@ -28,7 +28,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; selectConnection?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat' })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'create-success': [detail: CreateSuccessDetail & Fence]
@@ -362,7 +362,7 @@ defineExpose({ loadCatalog, loadUsage })
 <template>
   <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'k-resource-page agents-panel agents-route-panel agents-models-page'">
     <template v-if="createRoute || creating || editingCredential">
-      <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
+      <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> {{ returnLabel }}</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
       <ProviderConnectionEditor v-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :select-connection="selectingConnection" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" @connect-provider="openProvider" />
       <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />

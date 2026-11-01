@@ -1218,9 +1218,9 @@ export class Resources {
         if (!view.connectionRef) return view
         const connection = connections.find(parent => parent.metadata?.name === view.connectionRef)
         if (!connection && unreadableConnections.has(view.connectionRef)) return view
-        if (!connection || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
+        if (!connection || connection.metadata?.deletionTimestamp || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, connectionUnavailable: true, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
         const parent = credentialView(connection)
-        return { ...view, provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
+        return { ...view, ...(parent.secretResolved !== undefined ? { secretResolved: parent.secretResolved } : {}), provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
       })
       out.push(...connections.map(item => ({ ...credentialView(item), isConnection: true })))
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))

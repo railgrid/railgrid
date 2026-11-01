@@ -1960,3 +1960,40 @@ describe('agent backend', () => {
     expect(text(card)).not.toContain('hub')
   })
 })
+
+describe('model configuration recovery', () => {
+  it('identifies a missing configured model and replaces the dead selector with setup', async () => {
+    const { el, patchAgent } = await mountConfig({ backend: modelBackend('haiku') })
+    const card = el.querySelector('#agent-model-heading')!.closest('section')!
+    expect(text(card)).toContain('Selected model is unavailable')
+    expect(text(card)).toContain('haiku')
+    expect(text(card)).toContain('Connect model')
+    expect(card.querySelector('[role=combobox]')).toBeNull()
+    expect([...card.querySelectorAll('button')].some(button => text(button) === 'Save model')).toBe(false)
+    expect(patchAgent).not.toHaveBeenCalled()
+  })
+  it('marks a stale selection invalid when replacement models exist', async () => {
+    const { el, patchAgent } = await mountConfig({ backend: modelBackend('haiku') }, [{ name: 'replacement', provider: 'openai', model: 'new-model' }])
+    const card = el.querySelector('#agent-model-heading')!.closest('section')!
+    const selector = card.querySelector('[role=combobox]')!
+    expect(selector.getAttribute('aria-invalid')).toBe('true')
+    expect(text(selector)).toContain('haiku — unavailable')
+    expect(sectionButton(el, 'Save model').disabled).toBe(true)
+    expect(patchAgent).not.toHaveBeenCalled()
+  })
+  it('marks missing fallbacks and blocks saving them as valid configuration', async () => {
+    const { el } = await mountConfig({ backend: modelBackend('primary', ['gone']) }, [{ name: 'primary', provider: 'openai', model: 'one' }])
+    expect(text(el)).toContain('gone — unavailable')
+    expect(sectionButton(el, 'Save model').disabled).toBe(true)
+  })
+})
+
+describe('stale configuration recovery', () => {
+  it('keeps missing references invalid after a failed refresh and never hangs on access checking', async () => {
+    const { el } = await mountConfig({ backend: modelBackend('haiku', ['gone']) }, [], [], undefined, { error: 'offline' })
+    expect(text(el)).toContain('Model availability could not be refreshed')
+    expect(text(el)).toContain('gone — unavailable')
+    expect(text(el)).not.toContain('Checking setup access')
+    expect([...el.querySelectorAll('button')].some(button => text(button) === 'Save model')).toBe(false)
+  })
+})

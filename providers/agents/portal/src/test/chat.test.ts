@@ -82,6 +82,8 @@ async function mountConversationRail(): Promise<MountedVue> {
 async function mountChat(chatStream: unknown, extra: Record<string, unknown> = {}) {
   const api = stubApi({ chatStream, listRuns: () => Promise.resolve({ items: [] }), ...extra })
   const store = makeStore(api)
+  store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  store.credentials.loaded = store.credentials.hasSnapshot = true
   store.agents.data = [agentFixture('scout')]
   store.agents.loaded = true
   const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -527,7 +529,7 @@ describe('chat streaming', () => {
     expect(textarea.getAttribute('aria-describedby')).toBe('agents-composer-help')
     expect(textarea.placeholder).toBe('Message scout…')
     expect(text(el.querySelector('#agents-composer-help'))).toContain('Enter to send')
-    expect(el.querySelector('.k-ai-composer__help')).not.toBeNull()
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
     expect(textarea.title).toContain('Enter to send')
     expect(submit.classList.contains('agents-composer-primary')).toBe(true)
     expect(submit.getAttribute('aria-label')).toBe('Send')
@@ -1494,6 +1496,8 @@ describe('chat read ownership', () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 'remembered-session')
     const api = stubApi({ listSessions: () => sessions.promise, chatStream })
     const store = makeStore(api)
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'test-model' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
@@ -1604,6 +1608,8 @@ describe('chat read ownership', () => {
       chatStream,
     })
     const store = makeStore(api)
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'test-model' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
@@ -3197,5 +3203,67 @@ describe('conversation history navigation', () => {
     expect(composer.value).toContain('which tools can you use')
     expect(document.activeElement).toBe(composer)
     expect(stream).not.toHaveBeenCalled()
+  })
+})
+
+describe('dedicated chat model recovery', () => {
+  it('replaces a missing selection with recovery and preserves an unsent draft', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
+    input.value = 'Keep this conversation draft'; input.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    expect(text(el)).toContain('Connect a model to continue')
+    expect(el.querySelector('textarea')).toBeNull()
+    expect(el.querySelector('.k-ai-model-reasoning-picker')).toBeNull()
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this conversation draft')
+  })
+  it('keeps a draft for setup navigation without assigning a replacement', async () => {
+    const { el, store, view } = await mountChat(scripted([]))
+    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
+    input.value = 'Retain through setup'; input.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    const connect = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Connect model')!
+    connect.click(); await settle()
+    expect(view.navigations.at(-1)).toEqual({ kind: 'create', resource: 'model', type: 'from-connection' })
+    expect(store.takeChatSetupDraft('scout')?.draft).toBe('Retain through setup')
+  })
+})
+
+describe('authoritative recovery state', () => {
+  it('keeps unknown credentials in loading and a failed first read in recovery', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.credentials.hasSnapshot = false; store.credentials.loaded = false; store.credentials.loading = true
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(text(el)).toContain('Loading models…')
+    expect(el.querySelector('textarea')).toBeNull()
+    store.credentials.loading = false; store.credentials.error = 'offline'; store.credentials.loaded = true
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(text(el)).toContain('Models could not be loaded')
+    expect(el.querySelector('textarea')).toBeNull()
+  })
+  it('blocks a known missing key without blocking discovery-only failures', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'manual-model', ready: false, secretResolved: true }]
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(el.querySelector('textarea')).not.toBeNull()
+    store.credentials.data[0].secretResolved = false
+    store.dispatchEvent(new Event('change')); await settle(12)
+    expect(el.querySelector('textarea')).toBeNull()
+    expect(text(el)).toContain('Connect a model to continue')
+  })
+  it('does not replace the thread or send a queued assisted prompt after recovery', async () => {
+    const stream = vi.fn(scripted([]))
+    const { el, store } = await mountChat(stream)
+    el.querySelector<HTMLTextAreaElement>('textarea')!.value = 'Retain my draft'
+    el.querySelector('textarea')!.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    store.setPendingPrompt('scout', 'Queued assisted setup')
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
+    store.dispatchEvent(new Event('change')); await settle(12)
+    expect(stream).not.toHaveBeenCalled()
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Retain my draft')
+    expect(store.takePendingPrompt('scout')).toBe('Queued assisted setup')
   })
 })

@@ -370,10 +370,17 @@ export interface Credential {
   ready?: boolean
   /** SecretResolved condition on its own, so the UI can say which half failed. */
   secretResolved?: boolean
+  /** Referenced provider connection is missing, invalid, or deleting. */
+  connectionUnavailable?: boolean
   /** The first unmet condition's message — what to fix. */
   statusMessage?: string
   /** status.models: the ids the endpoint served on the last successful probe. */
   discovered?: string[]
+}
+
+/** Discovery failure alone does not prove a model cannot answer inference. */
+export function credentialUnavailable(credential: Credential | undefined): boolean {
+  return !credential || credential.secretResolved === false || credential.connectionUnavailable === true
 }
 
 export interface Schedule {

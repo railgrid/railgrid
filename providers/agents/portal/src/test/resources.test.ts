@@ -949,3 +949,18 @@ describe('overlay setup permissions', () => {
     expect(kcp.calls).toHaveLength(1)
   })
 })
+
+describe('bound model recovery metadata', () => {
+  it('projects a missing shared key into the model without reading the Secret', async () => {
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model' }, spec: { connectionRef: 'account', model: 'one' } }] })
+    kcp.reply('GET /modelproviderconnections', { items: [{ metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://example/v1' }, status: { conditions: [{ type: 'SecretResolved', status: 'False' }] } }] })
+    const models = await resources.listCredentials()
+    expect(models.find(model => model.name === 'model')).toMatchObject({ secretResolved: false, connectionRef: 'account' })
+    expect(kcp.calls.some(call => call.url.includes('/secrets'))).toBe(false)
+  })
+  it('marks a missing provider connection explicitly', async () => {
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model' }, spec: { connectionRef: 'gone', model: 'one' } }] })
+    kcp.reply('GET /modelproviderconnections', { items: [] })
+    expect((await resources.listCredentials())[0]).toMatchObject({ connectionUnavailable: true, ready: false })
+  })
+})

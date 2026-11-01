@@ -167,8 +167,9 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
   }
   const previous = route.value
   if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
-    modelCreateOwner = previous.kind === 'menu' && previous.menu === 'models'
+    modelCreateOwner = previous.kind === 'agent' || (previous.kind === 'menu' && previous.menu === 'models')
       ? previous : { kind: 'menu', menu: 'models' }
+    if (previous.kind === 'agent') props.host.dispatchEvent(new Event('railgrid-chat-setup'))
   }
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   prepareAgentCreateRouteChange(previous, next)
@@ -268,7 +269,8 @@ function shouldResetRoute(previous: ContextAuthority | null, next: ContextAuthor
 function rotateContext(context: RailgridContext | null, resetRoute: boolean): void {
   boundStore?.removeEventListener('change', onStoreChange)
   boundStore = null
-  store.value.retire()
+  const previousStore = store.value
+  const previousAuthority = authority
   authorityEpoch.value += 1
   createSession.value += 1
   resolveConfirm(false)
@@ -278,6 +280,9 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   nextApi.setContext(context)
   api.value = nextApi
   const nextStore = markRaw(new AppStore(nextApi))
+  const nextAuthority = nextApi.contextAuthority()
+  if (previousAuthority?.usable && nextAuthority.usable && previousAuthority.userKey && nextAuthority.userKey && previousAuthority.userKey === nextAuthority.userKey && previousAuthority.tenantKey === nextAuthority.tenantKey) previousStore.transferChatSetupDraft(nextStore)
+  previousStore.retire()
   store.value = nextStore
   bindStore(nextStore)
   loadedTenant = null
@@ -285,7 +290,11 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   if (resetRoute) modelCreateOwner = { kind: 'menu', menu: 'models' }
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
-  maybeLoad()
+  if (authority.usable) {
+    loadedTenant = authority.tenantKey
+    nextStore.loadAll()
+    nextStore.connect()
+  }
 }
 
 function applyContext(context: RailgridContext | null): void {
@@ -422,6 +431,7 @@ function onCreateSuccess(detail: CreateSuccessDetail): void {
     agentCredentialSetup.value = null
     return
   }
+  if (detail.resource === 'model' && modelCreateOwner.kind === 'agent') { go(modelCreateOwner, 'replace'); return }
   if (detail.resource === 'agent') clearAgentCreateSetup()
   go(detail.destination || createSuccessRoute(detail), 'replace')
 }
@@ -660,6 +670,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'create' && route.resource === 'model'"
+        :return-label="modelCreateOwner.kind === 'agent' ? 'Conversation' : 'Models'"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"

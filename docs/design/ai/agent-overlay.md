@@ -125,6 +125,18 @@ model list and restores the expanded conversation and its draft. This flow does
 not automatically select a newly connected model, send a message, or change the
 Agent's workspace configuration.
 
+The compact assistant bar also keeps recovery visible: it shows a short status
+and Review setup, which expands the full recovery panel. The same recovery
+states replace the dedicated Agents chat composer. In Config, a missing primary
+model or fallback is explicitly marked unavailable, and invalid references
+cannot be saved as healthy configuration. A stale or failed credential read is
+not presented as proof that a model was deleted.
+
+Dedicated chat setup retains the original thread and draft in the current
+identity's AppStore. Both cancel and successful model creation return to that
+conversation; setup does not assign the new model automatically. Draft handoff
+is consumed on return and cleared when the store's authority is retired.
+
 ## Prototype boundaries
 
 - Selection persists on this browser only; there is no server-side preference.

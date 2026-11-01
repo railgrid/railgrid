@@ -203,6 +203,25 @@ export class AppStore extends EventTarget {
   // it, which is what makes auto-send fire exactly once: a re-render, a tab
   // switch back to Chat or a refresh all find nothing left to send.
 
+  private chatSetupDraft: { agent: string; draft: string; session: string } | null = null
+  offerChatSetupDraft(agent: string, draft: string, session: string): void {
+    if (this.retired) return
+    this.chatSetupDraft = { agent, draft, session }
+  }
+  transferChatSetupDraft(next: AppStore): void {
+    if (this.chatSetupDraft) {
+      const saved = this.chatSetupDraft
+      next.offerChatSetupDraft(saved.agent, saved.draft, saved.session)
+      this.chatSetupDraft = null
+    }
+  }
+  takeChatSetupDraft(agent: string): { draft: string; session: string } | undefined {
+    if (!this.chatSetupDraft || this.chatSetupDraft.agent !== agent) return undefined
+    const saved = this.chatSetupDraft
+    this.chatSetupDraft = null
+    return { draft: saved.draft, session: saved.session }
+  }
+
   private pendingPrompt: { agent: string; text: string } | null = null
 
   setPendingPrompt(agent: string, text: string): void {
@@ -422,6 +441,7 @@ export class AppStore extends EventTarget {
   retire(): void {
     if (this.retired) return
     this.retired = true
+    this.chatSetupDraft = null
     this.disconnect()
   }
 
