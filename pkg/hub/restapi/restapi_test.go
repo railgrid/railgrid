@@ -1106,6 +1106,81 @@ func TestCreateOrg_FreeCapReadsTheEntitlementPlan(t *testing.T) {
 	expectPassedQuota(t, srv.URL, body)
 }
 
+// A user whose membership index does not exist yet still has the
+// organizations they created counted: two creates in a row from a new user
+// must not both pass because neither sees an index.
+func TestCreateOrg_FreeCapCountsACreatedOrganizationWithoutAnIndex(t *testing.T) {
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another free"})
+	justCreated := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-new", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "new"},
+	}
+	mgr, _, _ := newTestManager(t, justCreated) // no UserMembershipIndex for alice
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil)
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	expectQuotaExceeded(t, srv.URL, body, "1 of 1", "free plan")
+}
+
+// Bootstrap can finish between the two reads the free cap makes. The cap
+// reads the organizations the user created before their index, so an
+// organization whose admin entry lands and whose IndexSynced turns true
+// while the cap is reading is still charged, exactly once.
+func TestCreateOrg_FreeCapCountsAnOrganizationSyncedBetweenItsReads(t *testing.T) {
+	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another free"})
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
+			{OrgUUID: "personal", Role: tenancyv1alpha1.MembershipRoleAdmin, Personal: true},
+		}},
+	}
+	justCreated := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-new", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "alice"}},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "new"},
+	}
+	mgr, _, dyn := newTestManager(t, umi, justCreated)
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil)
+
+	// The free cap's list of created organizations is the second such list
+	// of the request (the organizations cap makes the first). Bootstrap
+	// completes right then: the admin entry lands in the index, and the
+	// organization the list hands back already reports IndexSynced. Read
+	// the other way round (index first), the organization was in neither.
+	lists := 0
+	fake := dyn.(*dynamicfake.FakeDynamicClient)
+	fake.PrependReactor("list", "organizations", func(ktesting.Action) (bool, runtime.Object, error) {
+		lists++
+		if lists != 2 {
+			return false, nil, nil
+		}
+		// Through the tracker, not the client: the fake holds its lock while a
+		// reactor runs, so a client call from here would deadlock.
+		tracker := fake.Tracker()
+		obj, err := tracker.Get(railgridclient.UserMembershipIndexGVR, "", "alice")
+		if err != nil {
+			return true, nil, err
+		}
+		idx := obj.(*unstructured.Unstructured)
+		entries, _, _ := unstructured.NestedSlice(idx.Object, "spec", "entries")
+		entries = append(entries, map[string]any{"orgUUID": "org-new", "role": tenancyv1alpha1.MembershipRoleAdmin})
+		if err := unstructured.SetNestedSlice(idx.Object, entries, "spec", "entries"); err != nil {
+			return true, nil, err
+		}
+		if err := tracker.Update(railgridclient.UserMembershipIndexGVR, idx, ""); err != nil {
+			return true, nil, err
+		}
+		synced := justCreated.DeepCopy()
+		synced.Status.Conditions = []metav1.Condition{{Type: tenancyv1alpha1.OrganizationConditionIndexSynced, Status: metav1.ConditionTrue, Reason: "Synced"}}
+		return true, &tenancyv1alpha1.OrganizationList{Items: []tenancyv1alpha1.Organization{*synced}}, nil
+	})
+	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+	defer srv.Close()
+	expectQuotaExceeded(t, srv.URL, body, "1 of 1", "free plan")
+	if lists < 2 {
+		t.Fatalf("the request listed organizations %d time(s); the interleaving was not exercised", lists)
+	}
+}
+
 // User.spec.quota overrides the hub caps per user, a set 0 included.
 func TestCreateOrg_UserQuotaOverridesTheHubCaps(t *testing.T) {
 	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "another"})
@@ -1456,27 +1531,35 @@ func TestDeleteWorkspace_ForceKeepsEarlierTimestampAndIsIdempotent(t *testing.T)
 	}
 }
 
+// "yes" is not a boolean, "force=" or a bare "force" name the parameter
+// without a value (what a client with an unset variable sends), and "%ZZ" or
+// a stray semicolon make a query URL.Query would drop the pair from. None of
+// them may silently become the recoverable delete the caller did not ask for.
 func TestDeleteWorkspace_RejectsMalformedForce(t *testing.T) {
-	mgr, ops, _ := newTestManager(t)
-	_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
-	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
-	defer srv.Close()
+	for _, query := range []string{"?force=yes", "?force=", "?force", "?force=%ZZ", "?force=true;unused=x"} {
+		t.Run(query, func(t *testing.T) {
+			mgr, ops, _ := newTestManager(t)
+			_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+			defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1?force=yes", nil)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("DELETE: %v", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Errorf("status: got %d, want 400", resp.StatusCode)
-	}
-	key := wsKey{"org-a", "ws-1"}
-	if _, ok := ops.wsDeletionAnnos[key]; ok {
-		t.Error("a malformed force must not fall back to a recoverable delete")
-	}
-	if ops.wsDeletionForced[key] {
-		t.Error("a malformed force must not mark the workspace forced")
+			req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/workspaces/ws-1"+query, nil)
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("DELETE: %v", err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status: got %d, want 400", resp.StatusCode)
+			}
+			key := wsKey{"org-a", "ws-1"}
+			if _, ok := ops.wsDeletionAnnos[key]; ok {
+				t.Error("a malformed force must not fall back to a recoverable delete")
+			}
+			if ops.wsDeletionForced[key] {
+				t.Error("a malformed force must not mark the workspace forced")
+			}
+		})
 	}
 }
 

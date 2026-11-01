@@ -603,6 +603,24 @@ func (h *Handler) requireTenantContext(w http.ResponseWriter, r *http.Request, r
 	return tc, true
 }
 
+// requireOrgMember is requireTenantContext for an organization-scope route
+// any member may call. tenant.Middleware admits a user who holds only a
+// workspace-scope row when they send both tenant headers, with an empty
+// organization role; requireTenantContext checks the role for admin routes
+// only, so without this a workspace-only member could read organization-wide
+// data such as billing.
+func (h *Handler) requireOrgMember(w http.ResponseWriter, r *http.Request) (tenant.TenantContext, bool) {
+	tc, ok := h.requireTenantContext(w, r, false, false)
+	if !ok {
+		return tenant.TenantContext{}, false
+	}
+	if tc.Role == "" {
+		writeStatus(w, http.StatusForbidden, "Forbidden", "this endpoint requires organization membership")
+		return tenant.TenantContext{}, false
+	}
+	return tc, true
+}
+
 // decodeJSON unmarshals r.Body into out. 400 + writes status on error.
 func decodeJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 	if err := json.NewDecoder(r.Body).Decode(out); err != nil {

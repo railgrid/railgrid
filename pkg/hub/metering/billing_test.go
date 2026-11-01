@@ -38,6 +38,7 @@ type deployment struct {
 	t        *testing.T
 	token    string
 	enabled  bool
+	emptyURL bool // answer the hosted-page routes with {"url":""}
 	requests []map[string]string
 	webhooks []string
 }
@@ -68,7 +69,48 @@ func (d *deployment) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": `plan "free" is not sold`})
 			return
 		}
+		if body["plan"] == "boom" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "pq: connection to /var/run/postgresql refused"})
+			return
+		}
+		if body["plan"] == "proxied" {
+			// Something in front of metering answered, not the deployment.
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte("<html><body><h1>403 Forbidden</h1><p>internal-ingress-7f: policy secret-policy-name denied</p></body></html>"))
+			return
+		}
+		if body["plan"] == "redirected" {
+			// A 3xx the client does not follow (no Location) comes back as is.
+			w.WriteHeader(http.StatusMultipleChoices)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "choose a region"})
+			return
+		}
+		if body["plan"] == "verbose" {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "plan is not sold: " + strings.Repeat("x", 2000)})
+			return
+		}
+		if d.emptyURL {
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://checkout.stripe.com/c/pay/cs_1"})
+	})
+	mux.HandleFunc("/billing/portal", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+d.token {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body map[string]string
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		d.requests = append(d.requests, body)
+		if d.emptyURL {
+			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"url": "https://billing.stripe.com/p/session/ps_1"})
 	})
 	mux.HandleFunc("/billing/webhook", func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -230,5 +272,127 @@ func TestForwardWebhookRelaysBodyAndSignature(t *testing.T) {
 	b.ForwardWebhook(rec, httptest.NewRequest(http.MethodPost, "/api/billing/webhook", strings.NewReader("{}")))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("not installed: %d", rec.Code)
+	}
+}
+
+// A plan a platform administrator assigned (PlanSourceOperator on the
+// Entitlement) is not for sale through Checkout: the deployment's billing
+// reconciler leaves such a plan alone, so the organization would pay and
+// stay where it is.
+func TestCheckoutRefusedWhileAPlatformAdminOwnsThePlan(t *testing.T) {
+	ent := &unstructured.Unstructured{}
+	ent.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
+	ent.SetKind("Entitlement")
+	ent.SetName("org-1")
+	ent.SetLabels(map[string]string{PlanSourceLabel: PlanSourceOperator})
+	_ = unstructured.SetNestedMap(ent.Object, map[string]any{"account": "org-1", "plan": "team"}, "spec")
+	b, dep := newBillingFixture(t, true, ent)
+
+	_, err := b.Checkout(context.Background(), "org-1", "large", "https://hub/ok", "https://hub/cancel")
+	var be *BillingError
+	if !errors.As(err, &be) || be.Status != http.StatusConflict || !strings.Contains(be.Message, "platform administrator") {
+		t.Fatalf("checkout under an operator-assigned plan: %v", err)
+	}
+	if len(dep.requests) != 0 {
+		t.Fatalf("the deployment was asked anyway: %v", dep.requests)
+	}
+
+	// Another organization, not operator-managed, still checks out.
+	if u, err := b.Checkout(context.Background(), "org-2", "large", "https://hub/ok", "https://hub/cancel"); err != nil || u == "" {
+		t.Fatalf("checkout for a subscription-managed organization: %q %v", u, err)
+	}
+}
+
+// A 2xx without a URL is a bad gateway, not a redirect to "".
+func TestCheckoutAndPortalRefuseAnEmptyURL(t *testing.T) {
+	b, dep := newBillingFixture(t, true)
+	dep.emptyURL = true
+	var be *BillingError
+	if _, err := b.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel"); !errors.As(err, &be) || be.Status != http.StatusBadGateway {
+		t.Fatalf("checkout with an empty url: %v", err)
+	}
+	if _, err := b.Portal(context.Background(), "org-1", "https://hub/back"); !errors.As(err, &be) || be.Status != http.StatusBadGateway {
+		t.Fatalf("portal with an empty url: %v", err)
+	}
+	dep.emptyURL = false
+	if u, err := b.Portal(context.Background(), "org-1", "https://hub/back"); err != nil || u != "https://billing.stripe.com/p/session/ps_1" {
+		t.Fatalf("portal: %q %v", u, err)
+	}
+}
+
+// The webhook route is registered on every hub; without metering the relay
+// is nil and answers 503, so the provider retries later instead of taking a
+// generic answer for a receipt.
+func TestForwardWebhookWithoutMeteringAnswers503(t *testing.T) {
+	var b *Billing
+	rec := httptest.NewRecorder()
+	b.ForwardWebhook(rec, httptest.NewRequest(http.MethodPost, "/api/billing/webhook", strings.NewReader(`{"id":"evt_1"}`)))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+// What the hub cannot answer for itself stays out of the message a member
+// sees: a transport failure comes back as a plain error naming the
+// deployment's address, for the route to log, and the deployment's own 5xx
+// text is logged here and replaced by a fixed sentence.
+func TestTransportAndServerFailuresKeepDetailOutOfTheMessage(t *testing.T) {
+	store := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		gvrPlans: "PlanList", gvrEntitlements: "EntitlementList",
+	})
+	unreachable := NewBilling(discovered{PortalURL: "http://127.0.0.1:1", token: "tok"}, store, klog.Background())
+	_, err := unreachable.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel")
+	var be *BillingError
+	if err == nil || errors.As(err, &be) {
+		t.Fatalf("a transport failure must be a plain error for the route to log, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Fatalf("the plain error should keep the address for the log: %v", err)
+	}
+
+	b, _ := newBillingFixture(t, true)
+	_, err = b.Checkout(context.Background(), "org-1", "boom", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "postgresql") {
+		t.Fatalf("a 5xx from the deployment: %v", err)
+	}
+
+	// The deployment's own 4xx answer is meant for the caller and passes.
+	_, err = b.Checkout(context.Background(), "org-1", "free", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !strings.Contains(be.Message, "not sold") {
+		t.Fatalf("a 4xx from the deployment: %v", err)
+	}
+}
+
+// Only a JSON error from the deployment reaches the caller, capped; a
+// non-JSON 4xx (a proxy or an HTML error page in front of metering) is a
+// 502 with a fixed message, and its excerpt is bounded for the log.
+func TestOnlyTheDeploymentsOwnErrorReachesTheCaller(t *testing.T) {
+	b, _ := newBillingFixture(t, true)
+	var be *BillingError
+
+	_, err := b.Checkout(context.Background(), "org-1", "proxied", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "secret-policy") || strings.Contains(be.Message, "<") {
+		t.Fatalf("an HTML 403 from a proxy: %v", err)
+	}
+
+	_, err = b.Checkout(context.Background(), "org-1", "verbose", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !strings.HasPrefix(be.Message, "plan is not sold") {
+		t.Fatalf("a long JSON error: %v", err)
+	}
+	if n := len([]rune(be.Message)); n > maxAnswerExcerpt+1 {
+		t.Fatalf("the deployment's message was not capped: %d characters", n)
+	}
+
+	if got := excerpt("  " + strings.Repeat("é", 300) + "  "); len([]rune(got)) != maxAnswerExcerpt+1 || !strings.HasSuffix(got, "…") {
+		t.Fatalf("excerpt = %d characters", len([]rune(got)))
+	}
+	if got := excerpt(" short "); got != "short" {
+		t.Fatalf("excerpt(short) = %q", got)
+	}
+
+	// A 3xx is never a status the route may answer with, JSON error or not.
+	_, err = b.Checkout(context.Background(), "org-1", "redirected", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "region") {
+		t.Fatalf("a 3xx with a JSON error: %v", err)
 	}
 }

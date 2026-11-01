@@ -19,6 +19,7 @@ package restapi
 import (
 	"errors"
 	"net/http"
+	"net/url"
 	"strconv"
 	"time"
 
@@ -321,14 +322,24 @@ func (h *Handler) deleteWorkspace(w http.ResponseWriter, r *http.Request) {
 }
 
 // parseForceParam reads the optional ?force query parameter of DELETE.
-// Absent means false; anything strconv.ParseBool rejects is a 400, so a
-// typo such as ?force=yes cannot silently fall back to the recoverable path.
+// Absent means false; a present key whose value strconv.ParseBool rejects is
+// a 400, the empty value included (?force= or a bare ?force, what a client
+// with an unset variable sends), and so is a query string that does not
+// parse (?force=%ZZ, a stray semicolon). URL.Query would drop the pair it
+// cannot decode and read such a request as a plain delete, so the raw query
+// is parsed here and its error refused: no malformed request falls back to
+// the recoverable path the caller did not ask for.
 func parseForceParam(w http.ResponseWriter, r *http.Request) (force bool, ok bool) {
-	raw := r.URL.Query().Get("force")
-	if raw == "" {
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		writeError(w, newValidationError("malformed query string: "+err.Error()))
+		return false, false
+	}
+	if !q.Has("force") {
 		return false, true
 	}
-	force, err := strconv.ParseBool(raw)
+	raw := q.Get("force")
+	force, err = strconv.ParseBool(raw)
 	if err != nil {
 		writeError(w, newValidationError("force must be true or false"))
 		return false, false

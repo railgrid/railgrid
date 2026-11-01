@@ -832,6 +832,10 @@ async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
   const org = workspace.orgUUID
   const name = workspace.displayName || workspace.uuid
   const requestRoute = route.fullPath
+  // The same fence the bulk delete uses: it moves on every route, organization
+  // or operating-workspace change and on unmount, so a confirmation that was
+  // open while the user left and came back to this same URL cannot send.
+  const generation = workspaceDeleteScopeGeneration
   const confirmed = await confirmDialog({
     title: `Delete "${name}" now?`,
     message: `This skips the 30-day recovery window. The workspace and everything in it are removed permanently and cannot be restored.\n\nWorkspace: ${name} (UUID ${workspace.uuid})`,
@@ -842,7 +846,7 @@ async function forceDeleteWorkspace(workspace: WorkspaceRow): Promise<void> {
   // Re-validate after the modal: the route, organization, operating
   // workspace or inventory may have changed while it was open.
   const current = workspaces.value.find((candidate) => candidate.uuid === workspace.uuid)
-  if (!current || route.fullPath !== requestRoute || tenant.orgUUID !== org || workspaceForceDeleteDisabledReason(current)) return
+  if (pageDisposed || generation !== workspaceDeleteScopeGeneration || !current || route.fullPath !== requestRoute || tenant.orgUUID !== org || workspaceForceDeleteDisabledReason(current)) return
   forceDeletingWorkspaceUUID.value = workspace.uuid
   try {
     await tenant.forceDeleteWorkspace(org, workspace.uuid)
