@@ -135,6 +135,24 @@ type Reconciler struct {
 	gracePeriod time.Duration
 	// now returns the current time; swappable for tests.
 	now func() time.Time
+	// workspaceObserver, when set, is told the organization whose child
+	// Workspace the workspace cascade asked kcp to delete (see
+	// WithWorkspaceObserver).
+	workspaceObserver func(ctx context.Context, orgUUID string)
+}
+
+// Option configures the Reconciler SetupWithManager builds.
+type Option func(*Reconciler)
+
+// WithWorkspaceObserver registers fn, called with the organization UUID after
+// the workspace cascade has asked kcp to delete one of its child Workspaces,
+// so a derived view of an organization's workspaces (the metering membership
+// report) follows the deletion at once instead of on its periodic re-list.
+// The organization cascade does not call it: the Organization itself is
+// going, and the view's owner removes its objects on that. fn runs
+// synchronously in the sweep with its context.
+func WithWorkspaceObserver(fn func(ctx context.Context, orgUUID string)) Option {
+	return func(r *Reconciler) { r.workspaceObserver = fn }
 }
 
 // SetupWithManager registers the User and Organization watches with
@@ -145,12 +163,15 @@ type Reconciler struct {
 //
 // gracePeriod is the recovery window; a non-positive value selects
 // DefaultGracePeriod.
-func SetupWithManager(mgr manager.Manager, provisioner Provisioner, gracePeriod time.Duration) error {
+func SetupWithManager(mgr manager.Manager, provisioner Provisioner, gracePeriod time.Duration, opts ...Option) error {
 	r := &Reconciler{
 		client:      mgr.GetClient(),
 		provisioner: provisioner,
 		gracePeriod: gracePeriod,
 		now:         time.Now,
+	}
+	for _, opt := range opts {
+		opt(r)
 	}
 	klog.InfoS("Registering soft-delete reconciler", "gracePeriod", r.GracePeriod().String())
 

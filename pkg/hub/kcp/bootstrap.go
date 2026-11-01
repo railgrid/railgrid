@@ -76,10 +76,6 @@ type Bootstrapper struct {
 	// first-party CatalogEntries get materialized. nil/empty means "all
 	// known builtins" (matches the flag's default).
 	enabledProviders []string
-	// childWorkspaceObserver, when set, is told the organization whose child
-	// Workspace this bootstrapper has just created or deleted (see
-	// WithChildWorkspaceObserver).
-	childWorkspaceObserver func(orgUUID string)
 }
 
 // NewBootstrapper creates a new bootstrapper.
@@ -97,23 +93,6 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 	cfg.Burst = 100
 	cfg.RateLimiter = nil
 	return &Bootstrapper{config: cfg}
-}
-
-// WithChildWorkspaceObserver registers fn, called with the organization UUID
-// after EnsureChildWorkspace has a Ready child Workspace and after
-// DeleteChildWorkspace has asked kcp to remove one. A reconciler that keeps a
-// derived view of an organization's workspaces (the metering membership
-// report) uses it to follow the hub's own writes at once instead of on its
-// next re-list. fn must not block.
-func (b *Bootstrapper) WithChildWorkspaceObserver(fn func(orgUUID string)) *Bootstrapper {
-	b.childWorkspaceObserver = fn
-	return b
-}
-
-func (b *Bootstrapper) childWorkspaceChanged(orgUUID string) {
-	if b.childWorkspaceObserver != nil {
-		b.childWorkspaceObserver(orgUUID)
-	}
 }
 
 // WithEnabledProviders sets the subset of builtin providers the
@@ -577,7 +556,6 @@ func (b *Bootstrapper) EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID
 	if err := waitForWorkspaceReady(ctx, orgClient, wsUUID); err != nil {
 		return fmt.Errorf("waiting for child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
 	}
-	b.childWorkspaceChanged(orgUUID)
 	return nil
 }
 
@@ -809,7 +787,6 @@ func (b *Bootstrapper) DeleteChildWorkspace(ctx context.Context, orgUUID, wsUUID
 	if err := orgClient.Resource(workspaceGVR).Delete(ctx, wsUUID, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("deleting child Workspace %s in org %s: %w", wsUUID, orgUUID, err)
 	}
-	b.childWorkspaceChanged(orgUUID)
 	return nil
 }
 

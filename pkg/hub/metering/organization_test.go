@@ -428,20 +428,21 @@ func TestWorkspaceNotifierStampsTheOrganization(t *testing.T) {
 		return got.GetAnnotations()[WorkspacesChangedAnnotation]
 	}
 
-	n.Notify("org-1")
+	ctx := context.Background()
+	n.Notify(ctx, "org-1")
 	if got := stamp(); got != now.Format(time.RFC3339Nano) {
 		t.Fatalf("annotation = %q, want %q", got, now.Format(time.RFC3339Nano))
 	}
 	now = now.Add(time.Second)
-	n.Notify("org-1")
+	n.Notify(ctx, "org-1")
 	if got := stamp(); got != now.Format(time.RFC3339Nano) {
 		t.Fatalf("second change did not advance the stamp: %q", got)
 	}
 
-	n.Notify("gone") // an organization that no longer exists: nothing to report into
-	n.Notify("")     // never a valid organization
+	n.Notify(ctx, "gone") // an organization that no longer exists: nothing to report into
+	n.Notify(ctx, "")     // never a valid organization
 	var nilNotifier *WorkspaceNotifier
-	nilNotifier.Notify("org-1") // a hub without metering has no notifier; the hook stays safe
+	nilNotifier.Notify(ctx, "org-1") // a hub without metering has no notifier; the callers stay safe
 	if got := stamp(); got != now.Format(time.RFC3339Nano) {
 		t.Fatalf("no-op notifies changed the stamp: %q", got)
 	}
