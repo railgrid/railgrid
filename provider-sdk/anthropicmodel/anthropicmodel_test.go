@@ -26,10 +26,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino-ext/components/model/claude"
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 	"github.com/eino-contrib/jsonschema"
+	"github.com/railgrid/provider-sdk/internal/claude"
 )
 
 func TestGenerateUsesNativeMessagesWireAndToolConversion(t *testing.T) {
