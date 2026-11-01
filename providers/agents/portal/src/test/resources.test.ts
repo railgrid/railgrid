@@ -874,3 +874,36 @@ describe('edges', () => {
     await expect(resources.listEdges()).rejects.toMatchObject({ reason: 'EdgesBindingMissing' })
   })
 })
+
+
+describe('model listing with named connection grants', () => {
+  it('resolves named connections when listing all provider accounts is forbidden', async () => {
+    kcp.reply('GET /modelcredentials', { items: [
+      { metadata: { name: 'fast' }, spec: { connectionRef: 'production', model: 'one' } },
+      { metadata: { name: 'careful' }, spec: { connectionRef: 'production', model: 'two' } },
+    ] })
+    // Override only collection requests; a named get remains authorized.
+    resources.setContext({ ...contextWith(CLUSTER), fetch: async (input, init) => {
+      if (String(input).split('?')[0].endsWith('/modelproviderconnections')) return jsonResponse(403, { kind: 'Status', reason: 'Forbidden', message: 'list forbidden' })
+      return kcp.fetch(input, init)
+    } })
+    kcp.reply('GET /modelproviderconnections/production', { metadata: { name: 'production' }, spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1' } })
+    const listed = await resources.listCredentials()
+    expect(listed.find(item => item.name === 'fast')).toMatchObject({ model: 'one', baseURL: 'https://api.openai.com/v1' })
+    expect(listed.find(item => item.name === 'careful')).toMatchObject({ model: 'two', baseURL: 'https://api.openai.com/v1' })
+    expect(kcp.calls.filter(call => call.url.includes('/modelproviderconnections/production'))).toHaveLength(1)
+    expect(kcp.calls.some(call => call.url.includes('/secrets'))).toBe(false)
+  })
+
+  it('preserves a readable model and its observed readiness when connection metadata is forbidden', async () => {
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'fast' }, spec: { connectionRef: 'private', model: 'one' }, status: { conditions: [{ type: 'Ready', status: 'True' }] } }] })
+    kcp.fail('GET /modelproviderconnections', 403, 'Forbidden')
+    const listed = await resources.listCredentials()
+    expect(listed).toEqual([expect.objectContaining({ name: 'fast', model: 'one', ready: true })])
+  })
+
+  it('still reports failed model reads instead of hiding them as an empty collection', async () => {
+    kcp.fail('GET /modelcredentials', 403, 'Forbidden')
+    await expect(resources.listCredentials()).rejects.toMatchObject({ status: 403 })
+  })
+})

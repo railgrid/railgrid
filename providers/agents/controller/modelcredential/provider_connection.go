@@ -108,7 +108,7 @@ func migrateCredential(ctx context.Context, c client.Client, legacy *agentsv1alp
 		}
 	} else if err != nil {
 		return err
-	} else if connection.Annotations[migratedFrom] != string(legacy.UID) || !connection.DeletionTimestamp.IsZero() {
+	} else if connection.Annotations[migratedFrom] != string(legacy.UID) {
 		return fmt.Errorf("provider connection %q already exists independently; legacy credential was preserved", legacy.Name)
 	}
 	// Key ownership is transferred before modifying the source. ResourceVersion
@@ -153,6 +153,19 @@ func (r *ProviderConnectionReconciler) Reconcile(ctx context.Context, req mcreco
 			return ctrl.Result{}, client.IgnoreNotFound(err)
 		}
 		return ctrl.Result{}, migrateCredential(ctx, c, &legacy)
+	}
+	// Creation and source conversion are separate writes. Resume from the
+	// source UID even when the destination already exists, including deletion
+	// requests during an interrupted migration (the finalizer retains the key).
+	if sourceUID := connection.Annotations[migratedFrom]; sourceUID != "" {
+		var legacy agentsv1alpha1.ModelCredential
+		if err := c.Get(ctx, req.NamespacedName, &legacy); err != nil {
+			if !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		} else if string(legacy.UID) == sourceUID && legacy.Spec.ConnectionRef == "" && !agentsv1alpha1.IsHarnessProvider(legacy.Spec.Provider) && legacy.DeletionTimestamp.IsZero() {
+			return ctrl.Result{}, migrateCredential(ctx, c, &legacy)
+		}
 	}
 	if !connection.DeletionTimestamp.IsZero() {
 		return ctrl.Result{}, r.finalizeConnection(ctx, c, &connection)

@@ -136,17 +136,23 @@ func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) 
 	if name == "" {
 		return errBadRequest("name is required")
 	}
-	secretName := CredentialSecretName(name)
-	if cred, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{}); err == nil {
-		if cred.Spec.ConnectionRef != "" {
-			return c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{})
-		}
-		if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
-			secretName = n
-		}
-	} else if !apierrors.IsNotFound(err) {
+	cred, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
+	options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &cred.UID, ResourceVersion: &cred.ResourceVersion}}
+	if cred.Spec.ConnectionRef != "" {
+		err := c.ModelCredentials().Delete(ctx, name, options)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	secretName := strings.TrimSpace(cred.Spec.SecretRef.Name)
+
 	models, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
@@ -156,12 +162,34 @@ func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) 
 			return errBadRequest("remove the models using this connection before deleting it")
 		}
 	}
-	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	if err := c.ModelCredentials().Delete(ctx, name, options); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
-	if err := c.DeleteSecret(ctx, llm.SecretNamespace, secretName); err != nil && !apierrors.IsNotFound(err) {
+	if secretName == "" {
+		return nil
+	}
+	secret, err := c.GetSecret(ctx, llm.SecretNamespace, secretName)
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
+	if len(secret.OwnerReferences) != 1 {
+		return nil
+	}
+	// No name-based fallback: a migrated connection may own the same-named key.
+	// The resource version also protects ownership transfers after this read.
+	for _, owner := range secret.OwnerReferences {
+		if cred.UID != "" && owner.UID == cred.UID && owner.Kind == "ModelCredential" && owner.APIVersion == agentsv1alpha1.SchemeGroupVersion.String() {
+			err := c.DeleteSecretWithOptions(ctx, llm.SecretNamespace, secretName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &secret.UID, ResourceVersion: &secret.ResourceVersion}})
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			return err
+		}
+	}
+
 	return nil
 }
 

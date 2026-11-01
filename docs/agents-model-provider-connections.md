@@ -28,6 +28,10 @@ they do not claim a successful inference test. The portal's **Verify & connect**
 action tests the selected model before saving. Connection `test` and `discover`
 verbs are declared on `modelproviderconnections` in the provider manifest.
 
+Editing a provider connection uses **Verify & save**. It verifies the configured
+models, or discovers models when no bindings exist. An optional verification
+model adds an inference check without creating or changing a model binding.
+
 ## Access
 
 Listing or reading connection configuration does not permit inference. Attended
@@ -52,6 +56,10 @@ resourceNames: [production]
 verbs: [get, use]
 ```
 
+When listing all connections is forbidden, the model list reads only the named
+connections referenced by visible models. A forbidden metadata read does not hide
+the model or replace its observed readiness. Neither path reads Secrets.
+
 Unattended Agents retain the existing delegation model: the provider executes
 the models configured on the Agent with its own tenant-scoped identity. Granting
 Agent configuration and automation permissions is therefore a trusted delegation
@@ -73,6 +81,10 @@ Only provider-created Secrets owned by that exact connection UID are deleted.
 An externally supplied Secret is neither adopted nor deleted. Removing a
 finalizer manually is an administrative override of these lifecycle guarantees.
 
+Model deletion is idempotent: retrying an already deleted model never touches a
+connection key. Legacy direct-model cleanup deletes only a Secret exclusively
+owned by that exact ModelCredential UID, using deletion preconditions.
+
 ## Migration
 
 A multicluster controller watches legacy direct API ModelCredentials. It creates
@@ -88,6 +100,8 @@ addresses the new kind. Harness identities and temporary verification probes
 are excluded. A migration annotation records the source UID so an interrupted
 migration can resume. A same-name independently created connection is never
 overwritten; the source is retained and the controller reports an error.
+Reconciliation resumes ownership transfer and source conversion even when the
+destination already exists or is waiting for deletion.
 
 Direct legacy API credentials remain accepted for compatibility and are migrated
 by the controller. New portal connections use the new kind. Deployment applies

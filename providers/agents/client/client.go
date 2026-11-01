@@ -187,6 +187,12 @@ func (c *Client) DeleteSecret(ctx context.Context, namespace, name string) error
 	return c.scope.Delete(ctx, secretResource, namespace, name)
 }
 
+// DeleteSecretWithOptions preserves UID/resourceVersion preconditions for
+// ownership-sensitive cleanup. Concurrent key replacement must not be deleted.
+func (c *Client) DeleteSecretWithOptions(ctx context.Context, namespace, name string, options metav1.DeleteOptions) error {
+	return c.scope.Dynamic().Resource(SecretGVR).Namespace(namespace).Delete(ctx, name, options)
+}
+
 // ListSecrets lists Secrets in the tenant workspace namespace.
 func (c *Client) ListSecrets(ctx context.Context, namespace string) ([]corev1.Secret, error) {
 	items, err := c.scope.List(ctx, secretResource, namespace)
@@ -332,8 +338,8 @@ func (r *TypedResource[T, L]) ClearStatusFields(ctx context.Context, name string
 	return r.scope.ApplyStatus(ctx, u)
 }
 
-func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, _ metav1.DeleteOptions) error {
-	return r.scope.Delete(ctx, r.res, "", name)
+func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, options metav1.DeleteOptions) error {
+	return r.scope.Dynamic().Resource(r.res.GVR).Delete(ctx, name, options)
 }
 
 func (r *TypedResource[T, L]) toUnstructured(obj *T) (*unstructured.Unstructured, error) {

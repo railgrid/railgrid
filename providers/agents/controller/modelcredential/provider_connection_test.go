@@ -18,6 +18,7 @@ package modelcredential
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -196,5 +197,87 @@ func TestProviderConnectionOwnsDiscoveryAndReadiness(t *testing.T) {
 	}
 	if len(got.Status.Models) != 2 {
 		t.Fatalf("missing discovery: %+v", got.Status)
+	}
+}
+
+type migrationConflictClient struct {
+	client.Client
+	failed bool
+}
+
+func (c *migrationConflictClient) Update(ctx context.Context, obj client.Object, opts ...client.UpdateOption) error {
+	if _, ok := obj.(*agentsv1alpha1.ModelCredential); ok && !c.failed {
+		c.failed = true
+		return apierrors.NewConflict(agentsv1alpha1.Resource("modelcredentials"), obj.GetName(), fmt.Errorf("injected concurrent edit"))
+	}
+	return c.Client.Update(ctx, obj, opts...)
+}
+func TestMigrationRecoversThroughReconcileAfterConflict(t *testing.T) {
+	legacy := credential()
+	legacy.UID = "legacy-review"
+	legacy.Spec.Model = "existing-model"
+	key := secret(true, map[string][]byte{"apiKey": []byte("test-only")})
+	key.OwnerReferences = []metav1.OwnerReference{{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential", Name: legacy.Name, UID: legacy.UID}}
+	backing := migrationClient(legacy, key)
+	c := &migrationConflictClient{Client: backing}
+	r := &ProviderConnectionReconciler{Reconciler: Reconciler{Manager: fakeManager{c: c}, Now: func() time.Time { return now }, Probe: func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		return []string{"existing-model"}, 0, nil
+	}}}
+	req := mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: legacy.Name}}, ClusterName: testCluster}
+	if _, err := r.Reconcile(t.Context(), req); err == nil {
+		t.Fatal("expected injected conflict")
+	}
+	for i := 0; i < 4; i++ {
+		if _, err := r.Reconcile(t.Context(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stored agentsv1alpha1.ModelCredential
+	if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Spec.ConnectionRef == "" {
+		t.Fatalf("migration never resumed after conflict: legacy remains direct, endpoint=%q", stored.Spec.BaseURL)
+	}
+}
+func TestPartialConnectionOnlyMigrationCompletesThroughReconcile(t *testing.T) {
+	legacy := credential()
+	legacy.UID = "legacy-review"
+	legacy.Spec.Model = ""
+	connection := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: legacy.Name, UID: "already-created", Annotations: map[string]string{migratedFrom: string(legacy.UID)}, Finalizers: []string{agentsv1alpha1.ModelProviderConnectionFinalizer}}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{Provider: legacy.Spec.Provider, BaseURL: legacy.Spec.BaseURL, SecretRef: legacy.Spec.SecretRef}}
+	c := migrationClient(legacy, connection, secret(true, map[string][]byte{"apiKey": []byte("test-only")}))
+	r := &ProviderConnectionReconciler{Reconciler: Reconciler{Manager: fakeManager{c: c}, Now: func() time.Time { return now }, Probe: func(context.Context, llm.Profile) ([]string, time.Duration, error) { return nil, 0, nil }}}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(t.Context(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: legacy.Name}}, ClusterName: testCluster}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stored agentsv1alpha1.ModelCredential
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(legacy), &stored); !apierrors.IsNotFound(err) {
+		t.Fatal("legacy connection-only source survives every reconciliation")
+	}
+}
+
+func TestTerminatingPartialMigrationCanReleaseConnectionOnlySource(t *testing.T) {
+	legacy := credential()
+	legacy.UID = "legacy-partial"
+	legacy.Spec.Model = ""
+	connection := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: legacy.Name, UID: "connection-partial", Annotations: map[string]string{migratedFrom: string(legacy.UID)}, Finalizers: []string{agentsv1alpha1.ModelProviderConnectionFinalizer}}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{Provider: legacy.Spec.Provider, BaseURL: legacy.Spec.BaseURL, SecretRef: legacy.Spec.SecretRef}}
+	key := secret(true, map[string][]byte{"apiKey": []byte("test-only")})
+	key.OwnerReferences = []metav1.OwnerReference{{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential", Name: legacy.Name, UID: legacy.UID}}
+	c := migrationClient(legacy, connection, key)
+	if err := c.Delete(t.Context(), connection); err != nil {
+		t.Fatal(err)
+	}
+	r := &ProviderConnectionReconciler{Reconciler: Reconciler{Manager: fakeManager{c: c}, Now: func() time.Time { return now }}}
+	request := mcreconcile.Request{Request: reconcile.Request{NamespacedName: types.NamespacedName{Name: legacy.Name}}, ClusterName: testCluster}
+	for i := 0; i < 3; i++ {
+		if _, err := r.Reconcile(t.Context(), request); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var got agentsv1alpha1.ModelProviderConnection
+	if err := c.Get(t.Context(), client.ObjectKeyFromObject(connection), &got); !apierrors.IsNotFound(err) {
+		t.Fatal("terminating migration remained stuck", err)
 	}
 }

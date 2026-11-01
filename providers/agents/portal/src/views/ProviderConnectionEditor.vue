@@ -17,6 +17,7 @@ const connections = computed(() => props.credentials.filter(item => item.isConne
 const originalConnection = props.credential?.connectionRef
   ? props.credentials.find(item => item.isConnection && item.name === props.credential!.connectionRef)
   : props.credential
+const editingProviderConnection = Boolean(props.credential?.isConnection)
 const managingConnection = Boolean(props.credential && !props.credential.connectionRef)
 const selectedConnection = ref(originalConnection?.name || props.initialConnection || '')
 const connection = computed(() => connections.value.find(item => item.name === selectedConnection.value) || (originalConnection?.name === selectedConnection.value ? originalConnection : undefined))
@@ -101,16 +102,22 @@ function bindingName(connectionName: string, modelID: string): string {
 }
 async function connect(): Promise<void> {
   if (locked.value || !valid() || alreadyConfigured.value) return
-  if (!model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
+  if (!editingProviderConnection && !model.value.trim()) { fieldError.value = 'Choose a model or enter its exact ID.'; return }
   const serial = ++generation
   const snapshot = fingerprint.value
   testing.value = true; testError.value = ''
   try {
     let result: CredentialTestResult = { ok: true, latencyMS: 0 }
     const candidates = managingConnection
-      ? [...new Set([model.value.trim(), ...props.credentials.filter(item => item.connectionRef === selectedConnection.value).map(item => item.model || '').filter(Boolean)])]
+      ? [...new Set([model.value.trim(), ...props.credentials.filter(item => item.connectionRef === selectedConnection.value).map(item => item.model || '')].filter(Boolean))]
       : [model.value.trim()]
     if (verifiedFingerprint.value !== snapshot) {
+      if (editingProviderConnection && !candidates.length) {
+        const response = await probe(true)
+        if (serial !== generation) return
+        if (!response?.ok) { testError.value = presentModelProbeResult(response || { ok: false, latencyMS: 0 }, 'discover').error || 'Provider access could not be verified. Choose a model to test instead.'; return }
+        result = response
+      }
       for (const candidate of candidates) {
         const response = await probe(false, candidate)
         if (serial !== generation) return
@@ -119,6 +126,7 @@ async function connect(): Promise<void> {
       }
     }
     verifiedFingerprint.value = snapshot
+    if (editingProviderConnection) { emit('save', { ...draft(), model: '' }, result); return }
     if (props.credential && !props.credential.connectionRef && props.credential.model) {
       emit('save', draft(), result)
       return
@@ -184,28 +192,28 @@ defineExpose({ cancel, locked })
       </section>
       <p v-if="fieldError" id="provider-connection-error" class="k-inline-notification k-inline-notification--error" role="alert">{{ fieldError }}</p>
       <section v-if="modelStage" class="k-model-form-section" aria-labelledby="provider-model-heading">
-        <div class="k-model-form-row"><h2 id="provider-model-heading" class="k-model-form-heading">Choose a model</h2><button type="button" class="k-btn k-btn--ghost" :disabled="locked || !canContinue" aria-describedby="provider-model-help" @click="discover"><RefreshCw :size="14" />{{ discovering ? 'Loading…' : 'Refresh models' }}</button></div>
-        <label for="model-id" class="k-model-form-field">Model
+        <div class="k-model-form-row"><h2 id="provider-model-heading" class="k-model-form-heading">{{ editingProviderConnection ? 'Verify provider access' : 'Choose a model' }}</h2><button type="button" class="k-btn k-btn--ghost" :disabled="locked || !canContinue" aria-describedby="provider-model-help" @click="discover"><RefreshCw :size="14" />{{ discovering ? 'Loading…' : 'Refresh models' }}</button></div>
+        <label for="model-id" class="k-model-form-field">{{ editingProviderConnection ? 'Verification model (optional)' : 'Model' }}
           <ModelIDSelector :model-value="model" :invalid="Boolean(fieldError && fieldError.includes('model'))" :models="models.map(id => ({ id, name: id, compatibility: 'available' as const }))" :disabled="locked" :described-by="fieldError ? 'provider-model-help provider-connection-error' : 'provider-model-help'" @update:model-value="model = $event" />
         </label>
-        <p id="provider-model-help" class="k-model-form-hint">Choose an available model or enter its exact ID. You can add more models to this provider connection later.</p>
+        <p id="provider-model-help" class="k-model-form-hint">{{ editingProviderConnection ? 'Configured models are verified automatically. An optional test model is used only for verification; no models will be added or changed.' : 'Choose an available model or enter its exact ID. You can add more models to this provider connection later.' }}</p>
         <p v-if="discoveryError" class="k-inline-notification k-inline-notification--warning" role="status">{{ discoveryError }} You can still enter a model ID manually.</p>
         <label v-if="editingDetails" class="k-model-form-field">Connection name (optional)
           <input v-model="connectionLabel" class="k-input" name="connectionName" :placeholder="suggestedName" :disabled="locked" maxlength="100">
           <span class="k-model-form-hint">For example, “OpenAI production”. This identifies the saved key, not a model.</span>
         </label>
-        <p v-if="model" class="k-model-form-hint">{{ model }} will use {{ connection?.displayName || connectionLabel || suggestedName }}.</p>
+        <p v-if="model && !editingProviderConnection" class="k-model-form-hint">{{ model }} will use {{ connection?.displayName || connectionLabel || suggestedName }}.</p>
         <p v-if="alreadyConfigured" class="k-model-form-hint" role="status">This model is already configured for this connection. Choose another model to add.</p>
         <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
-        <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> Model verified. Finish connecting to save your changes.</p>
+        <p v-if="verifiedFingerprint" class="k-model-form-hint" role="status"><Check :size="14" class="inline" /> {{ editingProviderConnection ? 'Provider access verified. Save the connection changes.' : 'Model verified. Finish connecting to save your changes.' }}</p>
       </section>
       <p v-if="error" class="k-inline-notification k-inline-notification--error" role="alert">{{ error }}</p>
     </div>
     <footer class="k-create-actions agents-provider-connect__actions">
-      <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ managingConnection ? 'Verification tests each configured model on this connection.' : 'Verification sends a short request using this key.' }} The provider may charge the account linked to the key.</p>
+      <p v-if="modelStage" id="provider-verify-help" class="k-model-form-hint agents-provider-connect__charge">{{ editingProviderConnection && !model && !credentials.some(item => item.connectionRef === selectedConnection && item.model) ? 'Verification checks provider access without sending a model request.' : managingConnection ? 'Verification tests each configured model on this connection. The provider may charge the account linked to the key.' : 'Verification sends a short request using this key. The provider may charge the account linked to the key.' }}</p>
       <button type="button" class="k-btn k-btn--ghost" :disabled="locked" @click="cancel">Cancel</button>
       <button v-if="!modelStage" type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue"><Loader2 v-if="discovering" :size="14" class="animate-spin motion-reduce:animate-none" />{{ discovering ? 'Loading models…' : 'Continue' }}</button>
-      <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || !model.trim() || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Verifying…' : busy ? 'Connecting…' : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
+      <button v-else type="submit" class="k-btn k-btn--primary" :disabled="locked || !canContinue || (!editingProviderConnection && !model.trim()) || alreadyConfigured" aria-describedby="provider-verify-help"><Loader2 v-if="locked" :size="14" class="animate-spin motion-reduce:animate-none" />{{ testing ? 'Verifying…' : busy ? (editingProviderConnection ? 'Saving…' : 'Connecting…') : editingProviderConnection ? (verifiedFingerprint ? 'Save changes' : 'Verify & save') : verifiedFingerprint ? 'Finish connecting' : 'Verify & connect' }}</button>
     </footer>
   </form>
 </template>

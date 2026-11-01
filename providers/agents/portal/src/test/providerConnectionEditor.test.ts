@@ -83,7 +83,7 @@ describe('provider-first BYOK flow', () => {
     const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ probeCredentialDraft }), credentials: [account, { name: 'second', connectionRef: 'account', model: 'second-model' }], credential: account, busy: false, onSave: save })
     await input(view.element, '[name="apiKey"]', 'rotated-key')
     await choose(view.element, 'first-model')
-    button(view.element, 'Verify & connect').click(); await settleVue()
+    button(view.element, 'Verify & save').click(); await settleVue()
     expect(probeCredentialDraft.mock.calls.map(call => call[0].model)).toEqual(['first-model', 'second-model'])
     expect(save).not.toHaveBeenCalled()
     expect(view.element.textContent).toContain('second-model:')
@@ -132,5 +132,47 @@ describe('Add model from a saved provider connection', () => {
     expect(view.element.querySelector('#model-credential')).toBeNull()
     view.element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click(); await settleVue()
     expect(openProvider).toHaveBeenCalledOnce()
+  })
+})
+
+
+describe('editing provider connections', () => {
+  it('verifies a test model without creating or editing a model binding', async () => {
+    const save = vi.fn()
+    const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const view = await mountVue(ProviderConnectionEditor, {
+      api: stubApi({ testProviderConnection }), credentials: [account, { name: 'model-one', connectionRef: 'account', model: 'first-model' }],
+      credential: account, busy: false, onSave: save,
+    })
+    await choose(view.element, 'second-model')
+    button(view.element, 'Verify & save').click(); await settleVue()
+    expect(testProviderConnection.mock.calls.map(call => call[1])).toEqual(['second-model', 'first-model'])
+    expect(save).toHaveBeenCalledOnce()
+    expect(save.mock.calls[0][0]).toMatchObject({ name: 'account', model: '', baseURL: account.baseURL })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('newConnection')
+  })
+
+  it('edits a connection with no models by verifying discovery only', async () => {
+    const save = vi.fn()
+    const discoverProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: [] })
+    const testProviderConnection = vi.fn()
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ discoverProviderConnection, testProviderConnection }), credentials: [account], credential: account, busy: false, onSave: save })
+    await input(view.element, '[name="connectionName"]', 'Renamed connection')
+    expect(button(view.element, 'Verify & save').disabled).toBe(false)
+    button(view.element, 'Verify & save').click(); await settleVue()
+    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith('account')
+    expect(testProviderConnection).not.toHaveBeenCalled()
+    expect(save.mock.calls[0][0]).toMatchObject({ name: 'account', model: '', displayName: 'Renamed connection' })
+    expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
+  })
+
+  it('verifies configured models without requiring another model selection', async () => {
+    const save = vi.fn()
+    const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testProviderConnection }), credentials: [account, { name: 'configured', connectionRef: 'account', model: 'first-model' }], credential: account, busy: false, onSave: save })
+    button(view.element, 'Verify & save').click(); await settleVue()
+    expect(testProviderConnection).toHaveBeenCalledExactlyOnceWith('account', 'first-model')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
   })
 })

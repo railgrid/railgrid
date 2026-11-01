@@ -201,7 +201,9 @@ settings only when applicable. Continue discovers models without inference;
 failed discovery preserves manual model entry. Connection names are optional
 human labels; resource names are generated. Verify & connect tests the exact
 selected model and persists only after success. Editing shared connection
-details verifies every configured binding before saving, with the request cost
-explained beside the final action. The model list groups reusable provider
+details uses **Verify & save** to verify every configured binding, or discovery
+alone when none exist. An optional verification model is test-only; saving the
+connection never adds a model binding. Request cost is explained beside the
+final action. The model list groups reusable provider
 connections separately from selectable models, with Add model and Edit
 connection actions. Its mobile action footer stays in normal document flow.

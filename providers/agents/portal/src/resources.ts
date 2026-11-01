@@ -1167,12 +1167,32 @@ export class Resources {
    */
   listCredentials = (): Promise<Credential[]> =>
     this.run(async (client) => {
-      const [items, connections] = await Promise.all([client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS), client.listAll<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS)])
+      const [items, listedConnections] = await Promise.all([
+        client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS),
+        client.listAll<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS).catch(error => {
+          if (isKubeError(error) && error.status === 403) return null
+          throw error
+        }),
+      ])
+      const unreadableConnections = new Set<string>()
+      // A role can use named connections without permission to enumerate all
+      // provider accounts. Resolve only the model references it can see.
+      const connections = listedConnections ?? (await Promise.all(
+        [...new Set(items.map(item => item.spec?.connectionRef).filter((name): name is string => !!name))].map(async name => {
+          try { return await client.get<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS, name) }
+          catch (error) {
+            if (isKubeError(error) && error.status === 403) { unreadableConnections.add(name); return null }
+            if (isKubeNotFound(error)) return null
+            throw error
+          }
+        }),
+      )).filter((connection): connection is KubeModelCredential & KubeObject => connection !== null)
       const visible = items.filter(item => item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' && !(!item.spec?.model && !item.spec?.connectionRef && connections.some(parent => parent.metadata?.name === item.metadata?.name)))
       const out = visible.map(item => {
         const view = credentialView(item)
         if (!view.connectionRef) return view
         const connection = connections.find(parent => parent.metadata?.name === view.connectionRef)
+        if (!connection && unreadableConnections.has(view.connectionRef)) return view
         if (!connection || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
         const parent = credentialView(connection)
         return { ...view, provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
