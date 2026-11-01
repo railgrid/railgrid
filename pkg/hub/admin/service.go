@@ -365,6 +365,7 @@ type tenantWorkspaceOps interface {
 	GetWorkspaceDisplayName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 	GetChildWorkspaceClusterName(ctx context.Context, orgUUID, wsUUID string) (string, error)
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
+	GetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string) (bool, error)
 	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
 	ListProviderAPIBindings(ctx context.Context, orgUUID, wsUUID string) (map[string]kcp.ProviderBinding, error)
 }
@@ -395,6 +396,10 @@ type OrgWorkspace struct {
 	ClusterName         string     `json:"clusterName"`
 	Providers           []string   `json:"providers"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	// DeletionForced is set when the deletion was requested without the
+	// recovery window: the cascade runs on the reconciler's next sweep and
+	// a restore is refused.
+	DeletionForced bool `json:"deletionForced,omitempty"`
 }
 
 // ListOrgWorkspaces returns every child Workspace under the org at
@@ -421,6 +426,9 @@ func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgW
 		if t, found, err := s.bootstrapper.GetWorkspaceDeletionRequestedAt(ctx, orgUUID, wsUUID); err == nil && found && t != nil {
 			tt := *t
 			ws.DeletionRequestedAt = &tt
+			if forced, err := s.bootstrapper.GetWorkspaceDeletionForced(ctx, orgUUID, wsUUID); err == nil && forced {
+				ws.DeletionForced = true
+			}
 		}
 		if bindings, err := s.bootstrapper.ListProviderAPIBindings(ctx, orgUUID, wsUUID); err == nil {
 			for name := range bindings {
@@ -443,7 +451,8 @@ var ErrGracePeriodExpired = errors.New("soft-delete grace period has expired")
 // Workspace at root:railgrid:tenants:{orgUUID}:{wsUUID} while it is still
 // inside gracePeriod. Nil when the workspace was never soft-deleted (the
 // caller's intent already holds); ErrGracePeriodExpired once the window has
-// elapsed.
+// elapsed; kcp.ErrWorkspaceDeletionForced when the deletion was requested
+// without a window, which is never restorable.
 //
 // The bootstrapper's clear is a single conditional update that hands kcp
 // conflicts back, so this mirrors the tenant REST handler: re-read after a
@@ -466,6 +475,9 @@ func (s *Service) UndeleteOrgWorkspace(ctx context.Context, orgUUID, wsUUID stri
 		err = s.bootstrapper.ClearWorkspaceDeletionAnnotation(ctx, orgUUID, wsUUID)
 		if err == nil {
 			return nil
+		}
+		if errors.Is(err, kcp.ErrWorkspaceDeletionForced) {
+			return err
 		}
 		if !apierrors.IsConflict(err) {
 			return fmt.Errorf("clearing soft-delete annotation on workspace %s/%s: %w", orgUUID, wsUUID, err)

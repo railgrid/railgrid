@@ -324,10 +324,10 @@ test('organization inventory filters the complete set without changing context a
   for (const status of ['Ready', 'Provisioning', 'Deleting']) {
     assert.match(tenantSettingsPage, new RegExp(`value: '${status}', label: '${status}'`))
   }
-  assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && row\.role === 'admin'"/)
+  assert.match(tenantSettingsPage, /<ResourceTableActionButton\s+v-if="row\.deletionRequestedAt && !row\.deletionForced && row\.role === 'admin'"/)
   assert.match(tenantSettingsPage, /:label="`Restore workspace \$\{String\(row\.name\)\}`"/)
   assert.match(tenantSettingsPage, /:busy="restoringWorkspaceUUID === row\.uuid"/)
-  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID \|\| workspaceDeleteBatchBusy"/)
+  assert.match(tenantSettingsPage, /:disabled="!workspaceInventoryVerified \|\| !!restoringWorkspaceUUID \|\| !!forceDeletingWorkspaceUUID \|\| workspaceDeleteBatchBusy"/)
   assert.match(tenantSettingsPage, /workspace\.role !== 'admin' \|\| !workspace\.deletionRequestedAt/)
   assert.match(tenantSettingsPage, /tenant\.undeleteWorkspace\(org, workspace\.uuid\)/)
 })
@@ -433,7 +433,9 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(tenantSettingsPage, /return `\$\{days\} \$\{days === 1 \? 'day' : 'days'\} until deletion\.`/)
   assert.match(tenantSettingsPage, /return 'Deletion timing unavailable\.'/)
 
-  assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\.deletionRequestedAt\)/)
+  assert.match(tenantSettingsPage, /deletion: workspaceDeletionCountdown\(workspace\)/)
+  // A forced deletion has no countdown to show and no Restore to offer.
+  assert.match(tenantSettingsPage, /if \(workspace\.deletionForced\) return 'Deleting now\. No recovery window\.'/)
   const inventoryStart = tenantSettingsPage.indexOf('id="organization-workspaces-title"')
   const inventoryEnd = tenantSettingsPage.indexOf('</ResourceTable>', inventoryStart) + '</ResourceTable>'.length
   const inventory = tenantSettingsPage.slice(tenantSettingsPage.indexOf('<ResourceTable', inventoryStart), inventoryEnd)
@@ -441,6 +443,10 @@ test('deleting workspace rows expose an honest live grace-period countdown', () 
   assert.match(inventory, /\{\{ row\.deletion \}\}/)
   assert.match(inventory, /<StatusBadge :status="String\(row\.status\)"/)
   assert.match(inventory, /@click="restoreWorkspace\(row as unknown as WorkspaceRow\)"/)
+  assert.match(inventory, /v-if="row\.deletionRequestedAt && !row\.deletionForced && row\.role === 'admin'"/)
+  assert.match(inventory, /tone="danger"/)
+  assert.match(inventory, /:disabled="!!workspaceForceDeleteDisabledReason\(row as unknown as WorkspaceRow\)"/)
+  assert.match(inventory, /@click="forceDeleteWorkspace\(row as unknown as WorkspaceRow\)"/)
 
   assert.match(tenantSettingsPage, /const deletionCountdownNow = ref\(Date\.now\(\)\)/)
   assert.match(tenantSettingsPage, /window\.setInterval\(\(\) => \{\s*deletionCountdownNow\.value = Date\.now\(\)\s*\}, WORKSPACE_COUNTDOWN_REFRESH_MS\)/s)

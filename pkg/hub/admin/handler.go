@@ -32,6 +32,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
@@ -202,6 +203,10 @@ type workspaceDTO struct {
 	Providers           []string `json:"providers"`
 	DeletionRequestedAt *string  `json:"deletionRequestedAt,omitempty"`
 	PurgeAt             *string  `json:"purgeAt,omitempty"`
+	// DeletionForced is set when the deletion skips the recovery window:
+	// the cascade runs on the reconciler's next sweep, so there is no
+	// PurgeAt deadline and an undelete is refused.
+	DeletionForced bool `json:"deletionForced,omitempty"`
 }
 
 // softDeleteStamps renders a soft-delete timestamp and the matching purge
@@ -248,6 +253,10 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 				}
 				if ws.DeletionRequestedAt != nil {
 					wd.DeletionRequestedAt, wd.PurgeAt = h.softDeleteStamps(*ws.DeletionRequestedAt)
+					if ws.DeletionForced {
+						wd.DeletionForced = true
+						wd.PurgeAt = nil
+					}
 				}
 				dto.Workspaces = append(dto.Workspaces, wd)
 			}
@@ -383,7 +392,8 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 // the workspace carries no soft-delete stamp (a workspace that does not
 // exist reads as unstamped, which is the same answer: nothing to restore),
 // 404 only if it vanished between the read and the clear, 409 once the
-// window has elapsed.
+// window has elapsed or when the deletion was forced (no window to restore
+// within).
 func (h *Handler) undeleteOrgWorkspace(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	ws := mux.Vars(r)["ws"]
@@ -397,6 +407,8 @@ func (h *Handler) undeleteOrgWorkspace(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case errors.Is(err, ErrGracePeriodExpired):
 		writeError(w, http.StatusConflict, "workspace deletion grace period has expired; the cascade has started")
+	case errors.Is(err, kcp.ErrWorkspaceDeletionForced):
+		writeError(w, http.StatusConflict, "workspace deletion was forced and cannot be restored")
 	case apierrors.IsNotFound(err):
 		writeError(w, http.StatusNotFound, fmt.Sprintf("workspace %q in organization %q not found", ws, name))
 	default:

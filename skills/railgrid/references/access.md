@@ -228,8 +228,8 @@ POST             /api/orgs/{org}/providers/{name}/credentials/rotate
 GET|POST         /api/orgs/{org}/memberships                     POST {"user","role":"admin|member","invite"?}
 DELETE           /api/orgs/{org}/memberships/me
 PATCH|DELETE     /api/orgs/{org}/memberships/{user}              PATCH {"role"}; DELETE ?cascade=true drops workspace rows too
-GET|POST         /api/orgs/{org}/workspaces                      → items[{uuid,orgUUID,displayName,clusterName,role,deletionRequestedAt}]; POST {"displayName"}
-GET|PATCH|DELETE /api/orgs/{org}/workspaces/{ws}
+GET|POST         /api/orgs/{org}/workspaces                      → items[{uuid,orgUUID,displayName,clusterName,role,deletionRequestedAt,deletionForced}]; POST {"displayName"}
+GET|PATCH|DELETE /api/orgs/{org}/workspaces/{ws}                 DELETE ?force=true skips the 30-day grace period (not restorable; undelete → 409)
 POST             /api/orgs/{org}/workspaces/{ws}/undelete
 GET|POST         /api/orgs/{org}/workspaces/{ws}/memberships
 DELETE           /api/orgs/{org}/workspaces/{ws}/memberships/me

@@ -121,6 +121,10 @@ export interface WorkspaceRow {
   // in the sidebar; omitted by the hub until the workspace reports Ready.
   clusterName?: string
   deletionRequestedAt?: string | null
+  // Set with deletionRequestedAt when the deletion skipped the recovery
+  // window (DELETE ?force=true): the hub cascades on its next sweep and
+  // refuses to restore the row.
+  deletionForced?: boolean
   // The CALLER's workspace-scope role. Org admins are implicitly admin in
   // every child workspace, so the hub projects 'admin' for workspaces they
   // hold no explicit row in; an explicit row (admin or member) wins when
@@ -1169,6 +1173,48 @@ export const useTenantStore = defineStore('tenant', () => {
   }
 
   /**
+   * Delete one workspace without the recovery window. The hub marks the kcp
+   * Workspace forced and its reconciler cascades on the next sweep, so the
+   * row stays listed as deleting until the inventory drops it. Never
+   * restorable: the hub refuses undelete for a forced row. Rejections throw
+   * with the hub's message so the caller can show the reason.
+   */
+  async function forceDeleteWorkspace(targetOrgUUID: string, wsUUID: string): Promise<void> {
+    const selectionRevisionAtStart = selectionRevision
+    const identityRevisionAtStart = identityRevision
+    const authRevisionAtStart = authSessionRevision()
+    const resp = await authFetch(`/api/orgs/${targetOrgUUID}/workspaces/${wsUUID}?force=true`, {
+      method: 'DELETE',
+      headers: {
+        'X-Railgrid-Org': targetOrgUUID,
+        'X-Railgrid-Workspace': wsUUID,
+      },
+    })
+    if (!resp.ok) {
+      const detail = await statusMessage(resp)
+      throw new Error(detail || `Failed to delete workspace now (HTTP ${resp.status}).`)
+    }
+    // Reflect the accepted request locally only while the initiating scope
+    // still owns this cache; the follow-up list adopts the hub's projection.
+    if (
+      identityRevision === identityRevisionAtStart &&
+      authSessionRevision() === authRevisionAtStart &&
+      selectionRevision === selectionRevisionAtStart &&
+      orgUUID.value === targetOrgUUID
+    ) {
+      markLocallyDeletingWorkspace(targetOrgUUID, wsUUID)
+      const cached = workspacesByOrg.value[targetOrgUUID] ?? []
+      workspacesByOrg.value = {
+        ...workspacesByOrg.value,
+        [targetOrgUUID]: cached.map((workspace) => workspace.uuid === wsUUID
+          ? { ...workspace, deletionForced: true }
+          : workspace),
+      }
+    }
+    await fetchWorkspaces(targetOrgUUID, { selectDefault: false })
+  }
+
+  /**
    * Soft-delete multiple workspaces with bounded concurrency and per-item
    * outcomes. This intentionally does not reload the workspace list; callers
    * should perform one final `fetchWorkspaces(targetOrgUUID, { selectDefault:
@@ -1772,6 +1818,7 @@ export const useTenantStore = defineStore('tenant', () => {
     patchWorkspaceDisplayName,
     deleteWorkspace,
     deleteWorkspaces,
+    forceDeleteWorkspace,
     undeleteWorkspace,
     // actions: membership
     listOrgMembers,

@@ -201,6 +201,87 @@ func TenancyWorkspaceCRUD() features.Feature {
 
 			return ctx
 		}).
+		Assess("workspace_force_delete_skips_grace_period", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			hubURL := tenancyHubURL(ctx, t)
+			bearer := tenancyBearer(ctx, t)
+
+			org, err := framework.CreateOrgViaREST(ctx, hubURL, bearer, uniqueName("e2e-ws-force"))
+			if err != nil {
+				t.Fatalf("setup org: %v", err)
+			}
+			t.Cleanup(func() {
+				_, _ = framework.DeleteOrgViaREST(context.Background(), hubURL, bearer, org.UUID)
+			})
+			ws, err := framework.CreateWorkspaceViaREST(ctx, hubURL, bearer, org.UUID, uniqueName("ws"))
+			if err != nil {
+				t.Fatalf("create workspace: %v", err)
+			}
+
+			// A malformed force must not silently become a recoverable delete.
+			code, body, err := framework.DoRESTRequest(ctx, http.MethodDelete,
+				workspaceURL(hubURL, org.UUID, ws.UUID)+"?force=yes", bearer,
+				orgWSHeaders(org.UUID, ws.UUID), nil)
+			if err != nil {
+				t.Fatalf("DELETE workspace ?force=yes: %v", err)
+			}
+			requireStatus(t, "DELETE workspace ?force=yes", http.StatusBadRequest, code, body)
+
+			// Forced delete: 204, and the projection says the row is forced
+			// (deletionRequestedAt + deletionForced) until the reconciler's
+			// next sweep removes it. The hub refuses to restore it.
+			code, body, err = framework.DoRESTRequest(ctx, http.MethodDelete,
+				workspaceURL(hubURL, org.UUID, ws.UUID)+"?force=true", bearer,
+				orgWSHeaders(org.UUID, ws.UUID), nil)
+			if err != nil {
+				t.Fatalf("DELETE workspace ?force=true: %v", err)
+			}
+			requireOK(t, "DELETE workspace ?force=true", code, body)
+
+			code, body, _ = framework.DoRESTRequest(ctx, http.MethodGet,
+				workspaceURL(hubURL, org.UUID, ws.UUID), bearer,
+				orgWSHeaders(org.UUID, ws.UUID), nil)
+			if code == http.StatusOK {
+				var forced struct {
+					DeletionRequestedAt *string `json:"deletionRequestedAt"`
+					DeletionForced      bool    `json:"deletionForced"`
+				}
+				if err := json.Unmarshal(body, &forced); err != nil {
+					t.Fatalf("decoding forced workspace: %v", err)
+				}
+				if forced.DeletionRequestedAt == nil || *forced.DeletionRequestedAt == "" || !forced.DeletionForced {
+					t.Fatalf("expected deletionRequestedAt and deletionForced after ?force=true; body=%s", body)
+				}
+				code, body, err = framework.DoRESTRequest(ctx, http.MethodPost,
+					workspaceURL(hubURL, org.UUID, ws.UUID)+"/undelete", bearer,
+					orgWSHeaders(org.UUID, ws.UUID), nil)
+				if err != nil {
+					t.Fatalf("undelete forced workspace: %v", err)
+				}
+				requireStatus(t, "POST undelete of a forced workspace", http.StatusConflict, code, body)
+			}
+
+			// The soft-delete reconciler sweeps every minute; a forced row
+			// cascades on the first sweep that sees it rather than in 30 days.
+			deadline := time.Now().Add(3 * time.Minute)
+			for {
+				code, body, err = framework.DoRESTRequest(ctx, http.MethodGet,
+					workspaceURL(hubURL, org.UUID, ws.UUID), bearer,
+					orgWSHeaders(org.UUID, ws.UUID), nil)
+				if err != nil {
+					t.Fatalf("GET forced workspace: %v", err)
+				}
+				if code == http.StatusNotFound || code == http.StatusForbidden {
+					t.Logf("forced workspace %s is gone (status %d)", ws.UUID, code)
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("forced workspace still readable after 3m: status=%d body=%s", code, body)
+				}
+				time.Sleep(5 * time.Second)
+			}
+
+			return ctx
+		}).
 		Feature()
 }
 

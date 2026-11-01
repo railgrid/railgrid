@@ -110,6 +110,12 @@ type WorkspaceOps interface {
 	GetWorkspaceDeletionRequestedAt(ctx context.Context, orgUUID, wsUUID string) (*time.Time, bool, error)
 	SetWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 	ClearWorkspaceDeletionAnnotation(ctx context.Context, orgUUID, wsUUID string) error
+	// GetWorkspaceDeletionForced reports whether a soft-deleted workspace
+	// was marked for deletion without the recovery window;
+	// SetWorkspaceDeletionForced stamps that marker (and the deletion
+	// timestamp when the workspace was not soft-deleted yet) in one update.
+	GetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string) (bool, error)
+	SetWorkspaceDeletionForced(ctx context.Context, orgUUID, wsUUID string, at time.Time) error
 
 	// GetChildWorkspaceClusterName returns the kcp logical-cluster name
 	// (the /clusters/<name> hash) for a child workspace. Used to build
@@ -428,7 +434,7 @@ func (h *Handler) RegisterUserOnly(r *mux.Router) {
 //	POST   /api/orgs/{org}/workspaces                                       create a workspace
 //	GET    /api/orgs/{org}/workspaces/{ws}                                  get one Workspace
 //	PATCH  /api/orgs/{org}/workspaces/{ws}                                  patch Workspace metadata
-//	DELETE /api/orgs/{org}/workspaces/{ws}                                  soft-delete Workspace
+//	DELETE /api/orgs/{org}/workspaces/{ws}[?force=true]                     soft-delete Workspace (force: no grace period, not restorable)
 //	POST   /api/orgs/{org}/workspaces/{ws}/undelete                         undelete Workspace
 //
 //	GET    /api/orgs/{org}/workspaces/{ws}/memberships                      list workspace-scope members
@@ -945,6 +951,10 @@ type WorkspaceView struct {
 	DisplayName         string     `json:"displayName,omitempty"`
 	ClusterName         string     `json:"clusterName,omitempty"`
 	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	// DeletionForced is set when the deletion was requested without the
+	// recovery window (DELETE ?force=true): the cascade runs on the
+	// reconciler's next sweep and undelete is refused.
+	DeletionForced bool `json:"deletionForced,omitempty"`
 	// Role is the CALLER's workspace-scope role ("admin" | "member"), or
 	// empty when they hold no workspace-scope row here (possible for org
 	// admins, who can list every workspace but manage only those they are
