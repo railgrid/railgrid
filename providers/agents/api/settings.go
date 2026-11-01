@@ -72,9 +72,12 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	// silently move a credential onto this provider's default name when it was
 	// pointed somewhere else.
 	secretName, secretKey := CredentialSecretName(req.Name), agentsv1alpha1.DefaultModelSecretKey
-	existing, err := c.GetModelCredential(ctx, req.Name)
+	existing, err := c.ModelCredentials().Get(ctx, req.Name, metav1.GetOptions{})
 	switch {
 	case err == nil:
+		if existing.Spec.ConnectionRef != "" {
+			return nil, errBadRequest("edit the provider connection to change its endpoint or key")
+		}
 		if n := strings.TrimSpace(existing.Spec.SecretRef.Name); n != "" {
 			secretName = n
 		}
@@ -134,12 +137,24 @@ func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) 
 		return errBadRequest("name is required")
 	}
 	secretName := CredentialSecretName(name)
-	if cred, err := c.GetModelCredential(ctx, name); err == nil {
+	if cred, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{}); err == nil {
+		if cred.Spec.ConnectionRef != "" {
+			return c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{})
+		}
 		if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
 			secretName = n
 		}
 	} else if !apierrors.IsNotFound(err) {
 		return err
+	}
+	models, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, model := range models.Items {
+		if model.Spec.ConnectionRef == name {
+			return errBadRequest("remove the models using this connection before deleting it")
+		}
 	}
 	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
 		return err

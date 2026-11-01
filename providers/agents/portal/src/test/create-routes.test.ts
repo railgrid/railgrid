@@ -365,14 +365,17 @@ describe('route-owned creation surfaces', () => {
     const el = await mount<Models>('agents-models', { store, api, routeOwned: true, createRoute: true })
     expect(el.querySelector('.k-create-page')).not.toBeNull()
     expect(el.querySelectorAll('.k-back-action')).toHaveLength(1)
-    expect(el.querySelector('.k-create-header .k-create-title')?.textContent).toContain('Connect model')
+    expect(el.querySelector('.k-create-header .k-create-title')?.textContent).toContain('Connect provider')
     expect(el.querySelector('.k-create-surface')).not.toBeNull()
     expect(el.querySelector('.k-model-grid')).toBeNull()
-    for (const [field, value] of Object.entries({ name: 'main', apiKey: 'secret' })) {
+    for (const [field, value] of Object.entries({ apiKey: 'secret' })) {
       const input = el.querySelector<HTMLInputElement>(`[name=${field}]`)!
       input.value = value
       input.dispatchEvent(new InputEvent('input', { bubbles: true }))
     }
+    await settle(el)
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Continue')!.click()
+    await settle(el)
     el.querySelector<HTMLButtonElement>('#model-id')!.click()
     await settle(el)
     const search = document.querySelector<HTMLInputElement>('.k-table__filter-search input')!
@@ -381,15 +384,12 @@ describe('route-owned creation surfaces', () => {
     await settle(el)
     document.querySelector<HTMLElement>('[role="option"]')!.click()
     await settle(el)
-    // The exact candidate must respond before the named connection is saved.
-    const testButton = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Test connection')!
-    expect(testButton.disabled).toBe(false)
     expect(saveCredential).not.toHaveBeenCalled()
-    testButton.click()
-    await settle(el)
-    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
-    await settle(el, 5)
-    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'gpt-5', apiKey: 'secret' }))
+    ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Verify & connect')!.click()
+    await settle(el, 12)
+    expect(saveCredential).toHaveBeenCalledTimes(2)
+    expect(saveCredential.mock.calls[0][0]).toMatchObject({ model: '', apiKey: 'secret' })
+    expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: saveCredential.mock.calls[0][0].name, model: 'gpt-5' })
   })
 })
 

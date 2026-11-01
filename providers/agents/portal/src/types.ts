@@ -352,6 +352,10 @@ export function isJSONObject(text: string): boolean {
  * `discovered` is what that endpoint actually served.
  */
 export interface Credential {
+  connectionRef?: string
+  connectionName?: string
+  displayName?: string
+  isConnection?: boolean
   /** Sent only to api.anthropic.com. */
   anthropicWorkspaceID?: string
   name: string
@@ -1145,6 +1149,10 @@ export interface ConnectionWrite {
 }
 
 export interface CredentialWrite {
+  connectionRef?: string
+  displayName?: string
+  /** A new provider connection to persist before its first model binding. */
+  newConnection?: CredentialWrite
   /** Empty clears the saved Anthropic workspace selection. */
   anthropicWorkspaceID?: string
   name: string

@@ -409,6 +409,16 @@ func (s *Server) registerMCPTools(srv *mcp.Server, r *http.Request) {
 		out := listCredentialsOutput{Credentials: []credentialSummary{}}
 		for i := range list.Items {
 			cred := &list.Items[i]
+			if cred.Spec.Model == "" && !agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) {
+				continue
+			}
+			if cred.Spec.ConnectionRef != "" {
+				resolved, resolveErr := c.GetModelCredential(ctx, cred.Name)
+				if resolveErr != nil {
+					continue
+				}
+				cred = resolved
+			}
 			out.Credentials = append(out.Credentials, credentialSummary{
 				Name:                 cred.Name,
 				Provider:             cred.Spec.Provider,

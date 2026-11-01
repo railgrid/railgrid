@@ -236,7 +236,7 @@ const credentialOptions = computed<FormSelectOption[]>(() => [
   { value: '', label: '— no model —' },
   ...credentials.value.map(credential => ({
     value: credential.name,
-    label: `${credential.name}${credential.model ? ` (${credential.model})` : ''}`,
+    label: credential.connectionRef ? `${credential.connectionName || credential.connectionRef} · ${credential.displayName || credential.model}` : `${credential.name}${credential.model ? ` (${credential.model})` : ''}`,
   })),
 ])
 /**

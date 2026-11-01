@@ -166,6 +166,21 @@ func APIKeyFromSecret(sec *corev1.Secret, spec agentsv1alpha1.ModelCredentialSpe
 // ProfileFor builds the profile for an already-read ModelCredential, reading
 // its Secret through c.
 func ProfileFor(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelCredential) (Profile, error) {
+	if cred.Spec.ConnectionRef != "" {
+		getter, ok := c.(CredentialGetter)
+		if !ok {
+			return Profile{}, fmt.Errorf("provider connection cannot be resolved: %w", ErrNotConfigured)
+		}
+		connection, err := getter.GetModelCredential(ctx, cred.Spec.ConnectionRef)
+		if err != nil {
+			return Profile{}, err
+		}
+		resolved, err := agentsv1alpha1.ResolveModelConnection(cred, connection)
+		if err != nil {
+			return Profile{}, err
+		}
+		cred = resolved
+	}
 	sec, err := c.GetSecret(ctx, SecretNamespace, strings.TrimSpace(cred.Spec.SecretRef.Name))
 	if err != nil {
 		return Profile{}, err

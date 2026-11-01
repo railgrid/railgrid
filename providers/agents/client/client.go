@@ -146,7 +146,15 @@ func (c *Client) ModelCredentials() *TypedResource[agentsv1alpha1.ModelCredentia
 // llm.CredentialResolver needs. It is spelled out rather than left to the
 // caller so the whole provider resolves a credential name the same way.
 func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
-	return c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	credential, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	if err != nil || credential.Spec.ConnectionRef == "" {
+		return credential, err
+	}
+	connection, err := c.ModelCredentials().Get(ctx, credential.Spec.ConnectionRef, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return agentsv1alpha1.ResolveModelConnection(credential, connection)
 }
 
 // GetSecret fetches a Secret from the tenant workspace namespace.

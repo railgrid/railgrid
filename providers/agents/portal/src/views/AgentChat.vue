@@ -217,7 +217,7 @@ const invalidEffort = computed(() => Boolean(selectedEffort.value && !effortOpti
 const modelChoices = computed(() => {
   revision.value
   return props.store.chatCredentials().map(credential => ({
-    id: credential.name, name: credential.name, model: credential.model || 'Provider default',
+    id: credential.name, name: credential.connectionRef ? `${credential.connectionName || credential.connectionRef} · ${credential.displayName || credential.model}` : credential.displayName || credential.name, model: credential.model || 'Provider default',
   }))
 })
 const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))

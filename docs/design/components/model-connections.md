@@ -31,8 +31,9 @@ supplies primary and fallback assignments. The default slot carries pricing or
 capabilities, and the actions slot carries caller-owned mutations.
 
 `ModelConnectionForm` is the canonical shared form for the Name, Connection,
-Credential, and Model controls, discovery, test feedback, and Cancel → test →
-Connect actions. The Agents and App Studio adapters provide state, validation,
+Credential, Model, and Verify connection sections, discovery, and test feedback.
+Verification groups the test action, its request-charge hint, prerequisite help,
+and results inside the form body. The footer contains Cancel and Connect actions. The Agents and App Studio adapters provide state, validation,
 API event handlers, and provider-specific slots, including a `probe-details` disclosure after the test
 summary; Google credential-method and
 service-account JSON controls, plus App Studio recommendations, remain adapter
@@ -130,7 +131,7 @@ link offsets. Agents Models removes
 its former `agents-menu` and `agents-create-page` wrappers so its create route
 matches App Studio's wrapper geometry. The `.k-back-action` arrow is a fixed
 14px by 14px flex-none SVG. Focused forms use the shared wide creation surface,
-with the name followed by Connection, Credential, and Model sections. Use the
+with the name followed by Connection, Credential, Model, and Verify connection sections. Use the
 `.k-model-form-*` recipes for identical section geometry and responsive columns
 across both providers; keep field help inside the form surface. Fields top-align
 their grid contents so adjacent controls stay aligned when only one has help text.
@@ -176,3 +177,29 @@ checks enforce that contract and both page and total budgets.
 
 See [resource creation](../patterns/resource-creation.md) and
 [interaction accessibility](../accessibility/interaction.md).
+
+## Agents provider-first BYOK flow
+
+Agents connects an API provider once, then configures model bindings against it.
+A direct `ModelCredential` with no selected model owns the endpoint, workspace
+selection and Secret reference. Each configured model has its own
+`ModelCredential` with `spec.connectionRef` and `spec.model`, and resolves the
+connection at runtime. Legacy direct model credentials remain usable and can
+also supply a connection for additional model bindings. References are tenant
+local, one hop, and cannot target harness identities. Rotating the connection's
+key or endpoint therefore has one authority; model bindings never copy a key.
+Deleting a model binding does not delete the shared Secret. The portal and MCP
+writers refuse to delete a connection while bindings reference it.
+
+The Agents create route offers only API provider presets. Harness logins retain
+the separate Add harness identity entry point and their existing form. The
+provider form asks for credentials before model selection, keeps fixed endpoints
+under Connection details, and displays custom URLs and Anthropic workspace
+settings only when applicable. Continue discovers models without inference;
+failed discovery preserves manual model entry. Connection names are optional
+human labels; resource names are generated. Verify & connect tests the exact
+selected model and persists only after success. Editing shared connection
+details verifies every configured binding before saving, with the request cost
+explained beside the final action. The model list groups reusable provider
+connections separately from selectable models, with Add model and Edit
+connection actions. Its mobile action footer stays in normal document flow.

@@ -2,7 +2,7 @@
 //   1. An empty workspace crashed the Models view. Go marshals a nil slice as
 //      JSON null, so /api/usage returned "byModel": null and the dashboard's
 //      .map() threw during render — taking the whole view down, including the
-//      "Connect model" button.
+//      "Connect provider" button.
 //   2. The nav showed "reconnecting" forever on a healthy stream, because
 //      liveness was only set when a parsed event arrived and the server sends
 //      nothing but comment frames until something happens.
@@ -53,7 +53,7 @@ describe('models view on an empty workspace', () => {
     expect(header.classList.contains('agents-panel-head')).toBe(false)
   })
 
-  it('renders the dashboard and the Connect model button when usage arrays are null', async () => {
+  it('renders the dashboard and the Connect provider button when usage arrays are null', async () => {
     const api = stubApi({
       catalog: () => Promise.resolve([]),
       // Deliberately the raw (unnormalized) shape a pre-fix server sends.
@@ -64,7 +64,7 @@ describe('models view on an empty workspace', () => {
     await settleVue()
 
     const text = el.textContent || ''
-    expect(text).toContain('Connect model')
+    expect(text).toContain('Connect provider')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
     expect(text).toContain('most recent 5,000 runs')
@@ -229,13 +229,13 @@ describe('models view on an empty workspace', () => {
     await settleVue()
   })
 
-  it('opens the create form when Connect model is clicked', async () => {
+  it('opens the create form when Connect provider is clicked', async () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
     const store = makeStore(api)
     const { element: el } = await mountVue(Models, { store, api })
 
-    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Connect model'))
-    expect(btn, 'Connect model button should be present').toBeTruthy()
+    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Connect provider'))
+    expect(btn, 'Connect provider button should be present').toBeTruthy()
     btn!.click()
     await settleVue()
 
@@ -245,18 +245,13 @@ describe('models view on an empty workspace', () => {
     expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
   })
 
-  it.each(['claude-code', 'codex'])('updates the create heading when %s is selected', async provider => {
+  it.each(['claude-code', 'codex'])('keeps %s on the separate harness creation path', async provider => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true })
-    const heading = () => el.querySelector('h1.k-create-title')?.textContent?.trim()
-    expect(heading()).toBe('Connect model')
-
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true, initialFamily: 'harness' })
     const select = el.querySelector<HTMLSelectElement>('#model-provider')!
-    select.value = provider
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    await settleVue()
-
-    expect(heading()).toBe('Add harness identity')
+    select.value = provider; select.dispatchEvent(new Event('change', { bubbles: true })); await settleVue()
+    expect(el.querySelector('h1.k-create-title')?.textContent?.trim()).toBe('Add harness identity')
+    expect([...select.options].map(item => item.value)).toEqual(['claude-code', 'codex'])
   })
 
   it('tells the two credential families apart in the list', async () => {
@@ -299,8 +294,8 @@ describe('models view on an empty workspace', () => {
 
   it('locks credential actions before confirmation and during deletion', async () => {
     const request = deferred<void>()
-    const deleteCredential = vi.fn(() => request.promise)
-    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), deleteCredential })
+    const saveCredential = vi.fn(() => request.promise)
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls), saveCredential })
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
@@ -312,7 +307,7 @@ describe('models view on an empty workspace', () => {
     resolveConfirm(true)
     await settleVue()
 
-    expect(deleteCredential).toHaveBeenCalledTimes(1)
+    expect(saveCredential).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'main', model: '' }))
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
     expect(deleting.disabled).toBe(true)
     expect(deleting.getAttribute('aria-busy')).toBe('true')

@@ -469,3 +469,61 @@ func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
 		t.Errorf("a tenant-named secret must still resolve: Ready = %+v", cond)
 	}
 }
+
+func TestReferencedModelUsesCurrentConnectionWithoutAdoptingItsSecret(t *testing.T) {
+	connection := credential()
+	connection.Name = "account"
+	connection.Spec.Model = ""
+	model := credential()
+	model.Spec = agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "account", Model: "bound-model"}
+	key := secret(true, map[string][]byte{"apiKey": []byte("first-key")})
+	var endpoint, apiKey string
+	r, c := newReconciler(t, func(_ context.Context, profile llm.Profile) ([]string, time.Duration, error) {
+		endpoint, apiKey = profile.BaseURL, profile.APIKey
+		return []string{"bound-model"}, 0, nil
+	}, connection, model, key)
+	reconcileOnce(t, r)
+	got := read(t, c)
+	if got.Spec.ConnectionRef != "account" || got.Spec.SecretRef.Name != "" || got.Spec.BaseURL != "" {
+		t.Fatalf("stored model must retain only its reference: %+v", got.Spec)
+	}
+	if condition(t, got, agentsv1alpha1.ConditionReady).Status != metav1.ConditionTrue {
+		t.Fatal("referenced model was not ready")
+	}
+	var stored corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: testSecret}, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.OwnerReferences) != 0 {
+		t.Fatal("model binding adopted its connection's Secret")
+	}
+	var current agentsv1alpha1.ModelCredential
+	if err := c.Get(t.Context(), types.NamespacedName{Name: "account"}, &current); err != nil {
+		t.Fatal(err)
+	}
+	current.Spec.BaseURL = "https://rotated.example/v1"
+	if err := c.Update(t.Context(), &current); err != nil {
+		t.Fatal(err)
+	}
+	stored.Data["apiKey"] = []byte("rotated-key")
+	if err := c.Update(t.Context(), &stored); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r)
+	if endpoint != current.Spec.BaseURL || apiKey != "rotated-key" {
+		t.Fatal("model did not follow the connection and key rotation")
+	}
+}
+
+func TestMissingConnectionReportsNotReadyWithoutProbing(t *testing.T) {
+	model := credential()
+	model.Spec = agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "missing", Model: "bound-model"}
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		t.Fatal("called endpoint without a valid connection")
+		return nil, 0, nil
+	}, model)
+	reconcileOnce(t, r)
+	if condition(t, read(t, c), agentsv1alpha1.ConditionReady).Status != metav1.ConditionFalse {
+		t.Fatal("missing connection reported ready")
+	}
+}

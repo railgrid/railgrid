@@ -556,7 +556,7 @@ describe('model credentials', () => {
     const creds = await resources.listCredentials()
     expect(creds).toEqual([
       {
-        name: 'broken', provider: 'openai-compatible', baseURL: 'https://x.example/v1', model: '',
+        name: 'broken', isConnection: true, provider: 'openai-compatible', baseURL: 'https://x.example/v1', model: '',
         secretRef: 's', secretKey: '', ready: false, secretResolved: false,
         statusMessage: 'secret "s" is not readable', discovered: [],
       },
@@ -798,6 +798,7 @@ describe('model credentials', () => {
       metadata: { name: 'primary' },
       spec: { baseURL: 'https://x/v1', secretRef: { name: 'team-shared-key' } },
     })
+    kcp.reply('GET /modelcredentials', { items: [] })
     await resources.deleteCredential('primary')
     expect(kcp.calls.filter((c) => c.method === 'DELETE').map((c) => c.url.split('/').pop())).toEqual([
       'primary',
@@ -806,8 +807,43 @@ describe('model credentials', () => {
   })
 
   it('tolerates a credential whose Secret was already removed', async () => {
+    kcp.reply('GET /modelcredentials', { items: [] })
     kcp.fail('DELETE /secrets', 404, 'NotFound')
     await expect(resources.deleteCredential('primary')).resolves.toBeUndefined()
+  })
+})
+
+describe('shared provider connections', () => {
+  it('creates a model reference without writing or fetching the shared Secret', async () => {
+    kcp.fail('GET /modelcredentials/new-model', 404, 'NotFound')
+    kcp.reply('GET /modelcredentials/account', { metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'shared-key' } } })
+    await resources.saveCredential({ name: 'new-model', connectionRef: 'account', model: 'model-two' })
+    const write = kcp.lastOf('POST').body as { spec: unknown }
+    expect(write.spec).toEqual({ connectionRef: 'account', model: 'model-two' })
+    expect(kcp.calls.some(call => call.url.includes('/secrets'))).toBe(false)
+  })
+
+  it('removes one model without deleting its connection or shared key', async () => {
+    kcp.reply('GET /modelcredentials/model-two', { metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } })
+    await resources.deleteCredential('model-two')
+    expect(kcp.calls.filter(call => call.method === 'DELETE').map(call => call.url.split('/').pop())).toEqual(['model-two'])
+    expect(kcp.calls.some(call => call.url.includes('/secrets'))).toBe(false)
+  })
+
+  it('refuses to delete a provider connection while models reference it', async () => {
+    kcp.reply('GET /modelcredentials/account', { metadata: { name: 'account' }, spec: { secretRef: { name: 'shared-key' } } })
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } }] })
+    await expect(resources.deleteCredential('account')).rejects.toMatchObject({ status: 400 })
+    expect(kcp.calls.some(call => call.method === 'DELETE')).toBe(false)
+  })
+
+  it('hydrates model metadata from the current provider connection', async () => {
+    kcp.reply('GET /modelcredentials', { items: [
+      { metadata: { name: 'account' }, spec: { provider: 'openai', baseURL: 'https://rotated.example/v1', secretRef: { name: 'rotated-key' } } },
+      { metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } },
+    ] })
+    expect((await resources.listCredentials()).find(item => item.name === 'model-two')).toMatchObject({ connectionRef: 'account', model: 'two', baseURL: 'https://rotated.example/v1', secretRef: 'rotated-key' })
+    expect(kcp.calls).toHaveLength(1)
   })
 })
 

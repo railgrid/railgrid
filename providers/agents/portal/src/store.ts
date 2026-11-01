@@ -178,7 +178,7 @@ export class AppStore extends EventTarget {
   // an edge harness runs as. They are not variants of each other: the API
   // rejects one where the other belongs, so each picker offers only its own.
   chatCredentials(): Credential[] {
-    return this.credentials.data.filter((c) => isChatProvider(c.provider))
+    return this.credentials.data.filter((c) => isChatProvider(c.provider) && !c.isConnection)
   }
   harnessCredentials(): Credential[] {
     return this.credentials.data.filter((c) => isHarnessProvider(c.provider))

@@ -94,7 +94,7 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
     activity: store.value.pendingInbox().length,
     connections: store.value.connections.data.length + store.value.toolsets.data.length,
     webhooks: store.value.webhooks.data.length,
-    models: store.value.credentials.data.length,
+    models: store.value.credentials.data.filter(item => !item.isConnection).length,
   }
 })
 const live = computed(() => { storeRevision.value; return store.value.live })

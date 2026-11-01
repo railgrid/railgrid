@@ -1110,3 +1110,7 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
   railgrid-provider-agents .agents-connection-primary > .agents-connection-body { grid-column: 2; grid-row: 1; }
   railgrid-provider-agents .agents-connection-primary > .agents-connection-actions { grid-column: 2; grid-row: 2; }
 }
+
+railgrid-provider-agents .agents-provider-connection { display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;padding:16px;box-shadow:none;min-width:0; }
+railgrid-provider-agents .agents-provider-connection>div { min-width:0;overflow-wrap:anywhere; }
+railgrid-provider-agents .agents-provider-connection__actions { display:flex;flex-wrap:wrap;align-items:center;gap:8px; }

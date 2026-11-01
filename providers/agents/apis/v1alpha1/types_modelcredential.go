@@ -125,8 +125,18 @@ type ModelCredential struct {
 // syntax error and make the apiserver reject the whole CRD — silently, on
 // whoever next runs the formatter.
 //
-// +kubebuilder:validation:XValidation:rule="self.provider in ['claude-code','codex'] || (has(self.baseURL) && size(self.baseURL) > 0)",message="spec.baseURL is required for a chat endpoint provider"
+// +kubebuilder:validation:XValidation:rule="(has(self.connectionRef) && size(self.connectionRef) > 0) || self.provider in ['claude-code','codex'] || (has(self.baseURL) && size(self.baseURL) > 0)",message="spec.baseURL is required for a chat endpoint provider"
+// +kubebuilder:validation:XValidation:rule="(has(self.connectionRef) && size(self.connectionRef) > 0) || (has(self.secretRef) && has(self.secretRef.name) && size(self.secretRef.name) > 0)",message="a direct connection needs spec.secretRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || ((has(self.model) && size(self.model) > 0) && (!has(self.baseURL) || size(self.baseURL) == 0) && (!has(self.secretRef) || !has(self.secretRef.name)) && !(self.provider in ['claude-code','codex']))",message="a referenced model inherits its endpoint and secret from a chat connection"
 type ModelCredentialSpec struct {
+	// ConnectionRef names a direct ModelCredential in this workspace that owns
+	// the provider endpoint and Secret. A model binding supplies only its Model;
+	// references cannot be chained or point at a coding-harness identity.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`
+	ConnectionRef string `json:"connectionRef,omitempty"`
+
 	// Provider selects what kind of credential this is: a chat endpoint
 	// ("openai-compatible", the default, or "openai") or a coding-harness
 	// identity ("claude-code", "codex"). See the provider constants.
@@ -169,8 +179,8 @@ type ModelCredentialSpec struct {
 	// (manifest.yaml, provider-sdk/claimscope), so kcp hides anything without
 	// it from the provider's APIExport virtual workspace — an unlabelled
 	// Secret saves cleanly and is then invisible to every unattended run.
-	// +kubebuilder:validation:Required
-	SecretRef ModelCredentialSecretRef `json:"secretRef"`
+	// +optional
+	SecretRef ModelCredentialSecretRef `json:"secretRef,omitempty"`
 
 	// SecretKey is the key inside the referenced Secret holding the API key.
 	// +optional

@@ -132,6 +132,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Named("agents-modelcredential").
 		For(&agentsv1alpha1.ModelCredential{}).
 		Watches(&corev1.Secret{}, credentialsForSecret).
+		Watches(&agentsv1alpha1.ModelCredential{}, modelsForConnection).
 		Complete(r)
 }
 
@@ -151,15 +152,36 @@ func credentialsForSecret(clusterName multicluster.ClusterName, cl cluster.Clust
 			klog.FromContext(ctx).Error(err, "listing model credentials for a secret event")
 			return nil
 		}
+		connections := make(map[string]string)
+		for _, item := range list.Items {
+			connections[item.Name] = item.Spec.SecretRef.Name
+		}
 		var reqs []reconcile.Request
 		for i := range list.Items {
 			credential := &list.Items[i]
 			cleanupSecret := strings.TrimSpace(credential.Annotations[credentialProbeCleanupSecretAnnotation])
-			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() {
+			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() || (credential.Spec.ConnectionRef != "" && connections[credential.Spec.ConnectionRef] == obj.GetName()) {
 				reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
 			}
 		}
 		return reqs
+	}))(clusterName, cl)
+}
+
+// modelsForConnection rechecks model bindings when the shared connection changes.
+func modelsForConnection(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		var list agentsv1alpha1.ModelCredentialList
+		if err := cl.GetClient().List(ctx, &list); err != nil {
+			return nil
+		}
+		var requests []reconcile.Request
+		for _, model := range list.Items {
+			if model.Spec.ConnectionRef == obj.GetName() {
+				requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: model.Name}})
+			}
+		}
+		return requests
 	}))(clusterName, cl)
 }
 
@@ -208,7 +230,24 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
 	}
 
-	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)
+	originalSpec := cred.Spec
+	var apiKey, secretReason, secretMessage string
+	if cred.Spec.ConnectionRef != "" {
+		var connection agentsv1alpha1.ModelCredential
+		readErr := c.Get(ctx, types.NamespacedName{Name: cred.Spec.ConnectionRef}, &connection)
+		if readErr != nil && !apierrors.IsNotFound(readErr) {
+			return ctrl.Result{}, readErr
+		}
+		resolved, resolveErr := agentsv1alpha1.ResolveModelConnection(&cred, &connection)
+		if readErr != nil || resolveErr != nil {
+			secretReason, secretMessage = agentsv1alpha1.ReasonInvalidSpec, "the referenced provider connection is missing or invalid"
+		} else {
+			cred.Spec = resolved.Spec
+		}
+	}
+	if secretReason == "" {
+		apiKey, secretReason, secretMessage, err = r.resolveSecret(ctx, c, &cred)
+	}
 	if err != nil {
 		// A read we could not complete says nothing about the Secret. Leave
 		// the conditions as they stand and let the retry settle it.
@@ -278,6 +317,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if equalStatus(&cred.Status, status) {
 		return result, nil
 	}
+	cred.Spec = originalSpec
 	cred.Status = *status
 	if err := c.Status().Update(ctx, &cred); err != nil {
 		if apierrors.IsConflict(err) {
@@ -314,8 +354,10 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
-	if err := adoptSecret(ctx, c, cred, &sec); err != nil {
-		return "", "", "", err
+	if cred.Spec.ConnectionRef == "" {
+		if err := adoptSecret(ctx, c, cred, &sec); err != nil {
+			return "", "", "", err
+		}
 	}
 	// A harness identity is a different shape and a different check: which key
 	// is present decides how the harness is handed the credential, so "exactly

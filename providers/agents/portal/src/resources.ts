@@ -1167,7 +1167,15 @@ export class Resources {
   listCredentials = (): Promise<Credential[]> =>
     this.run(async (client) => {
       const items = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
-      const out = items.filter(item => item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true').map(credentialView)
+      const visible = items.filter(item => item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true')
+      const out = visible.map(item => {
+        const view = credentialView(item)
+        if (!view.connectionRef) return view
+        const connection = visible.find(parent => parent.metadata?.name === view.connectionRef)
+        if (!connection || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
+        const parent = credentialView(connection)
+        return { ...view, provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
+      })
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return out
     })
@@ -1299,7 +1307,6 @@ export class Resources {
       // A harness identity has no endpoint: the CRD's own CEL rule asks for a
       // baseURL only from a chat provider, and llm.BuildModel refuses this
       // family outright, so there is nothing for a URL here to mean.
-      if (!harness && !baseURL) throw validationError('baseURL is required')
       // The shape of a harness login is checked before the first request, so a
       // half-pasted auth.json costs nothing and reaches nothing.
       const harnessSecret = harness ? validHarnessSecret(provider, body.harnessSecret) : undefined
@@ -1313,6 +1320,22 @@ export class Resources {
       } catch (error) {
         if (!isKubeNotFound(error)) throw error
       }
+      if (body.connectionRef || existing?.spec?.connectionRef) {
+        if (existing && !existing.spec?.connectionRef) throw validationError('A direct connection cannot be replaced by a model reference.')
+        const connectionRef = body.connectionRef || existing!.spec!.connectionRef!
+        if (apiKey || body.harnessSecret) throw validationError('Update the provider connection to replace its key.')
+        const connection = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, connectionRef)
+        if (connectionRef === name || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider) || !connection.spec?.baseURL) throw validationError('Choose a direct API provider connection.')
+        const model = body.model?.trim()
+        if (!model) throw validationError('Choose a model for this connection.')
+        const metadata = { annotations: { 'agents.railgrid.ai/display-name': body.displayName || model } }
+        const spec = { connectionRef, model }
+        const result = existing
+          ? await client.patch<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name, { metadata, spec }, { type: 'merge' })
+          : await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, { apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, ...metadata }, spec } as unknown as KubeModelCredential & KubeObject)
+        return { ...credentialView(result), provider: connection.spec.provider, baseURL: connection.spec.baseURL, connectionName: credentialView(connection).displayName || connectionRef }
+      }
+      if (!harness && !baseURL) throw validationError('baseURL is required')
       const secretName = (existing?.spec?.secretRef?.name ?? '').trim() || credentialSecretName(name)
       const secretKey = (existing?.spec?.secretKey ?? '').trim() || DEFAULT_CREDENTIAL_KEY
 
@@ -1405,14 +1428,14 @@ export class Resources {
         if (model !== undefined) spec.model = model || null
         if (body.anthropicWorkspaceID !== undefined) spec.anthropicWorkspaceID = body.anthropicWorkspaceID.trim() || null
         const patched = await client.patch<KubeModelCredential & KubeObject>(
-          MODELCREDENTIALS, name, { spec }, { type: 'merge' },
+          MODELCREDENTIALS, name, { spec, ...(body.displayName ? { metadata: { annotations: { 'agents.railgrid.ai/display-name': body.displayName } } } : {}) }, { type: 'merge' },
         )
         return credentialView(patched)
       }
       const created = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
         apiVersion: API_VERSION,
         kind: 'ModelCredential',
-        metadata: { name },
+        metadata: { name, ...(body.displayName ? { annotations: { 'agents.railgrid.ai/display-name': body.displayName } } : {}) },
         spec: defined({ provider, baseURL, model: model || undefined, anthropicWorkspaceID: body.anthropicWorkspaceID?.trim() || undefined, secretRef: { name: secretName }, secretKey }),
       } as unknown as KubeModelCredential & KubeObject)
       return credentialView(created)
@@ -1428,6 +1451,9 @@ export class Resources {
       let secretName = credentialSecretName(name)
       try {
         const existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        if (existing.spec?.connectionRef) { await client.delete(MODELCREDENTIALS, name); return }
+        const credentials = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
+        if (credentials.some(item => item.spec?.connectionRef === name)) throw validationError('Remove the models using this provider connection before deleting it.')
         secretName = (existing.spec?.secretRef?.name ?? '').trim() || secretName
       } catch (error) {
         if (!isKubeNotFound(error)) throw error
@@ -1443,8 +1469,9 @@ export class Resources {
 
 /** KubeModelCredential is the object as kcp stores it. */
 interface KubeModelCredential {
-  metadata?: { name?: string }
+  metadata?: { name?: string; annotations?: Record<string, string> }
   spec?: {
+    connectionRef?: string
     provider?: string
     baseURL?: string
     anthropicWorkspaceID?: string
@@ -1476,6 +1503,9 @@ function credentialView(object: KubeModelCredential): Credential {
   const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
   return {
     name: object.metadata?.name ?? '',
+    ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
+    ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
+    ...(!object.spec?.model && !object.spec?.connectionRef && !isHarnessProvider(object.spec?.provider) ? { isConnection: true } : {}),
     provider: object.spec?.provider ?? '',
     baseURL: object.spec?.baseURL ?? '',
     ...(object.spec?.anthropicWorkspaceID ? { anthropicWorkspaceID: object.spec.anthropicWorkspaceID } : {}),
