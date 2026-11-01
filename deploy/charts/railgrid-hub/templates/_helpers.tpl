@@ -117,3 +117,19 @@ KCP kubeconfig Secret name (for external kcp mode).
 {{- printf "%s-kcp-kubeconfig" (include "railgrid-hub.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Pod annotations that let an annotation-driven scraper (Prometheus' classic
+prometheus.io convention, Grafana Alloy's k8s-monitoring annotationAutodiscovery)
+find the /metrics listener. Nothing when metrics are disabled.
+*/}}
+{{- define "railgrid-hub.metricsAnnotations" -}}
+{{- if .Values.metrics.enabled -}}
+prometheus.io/scrape: "true"
+prometheus.io/port: {{ .port | quote }}
+prometheus.io/path: /metrics
+k8s.grafana.com/scrape: "true"
+k8s.grafana.com/metrics.portName: {{ .portName | quote }}
+k8s.grafana.com/metrics.path: /metrics
+{{- end }}
+{{- end }}

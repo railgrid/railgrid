@@ -63,6 +63,7 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
 	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/metrics"
 	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
@@ -178,6 +179,10 @@ func runServe(opts serveOptions) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	// Prometheus metrics (controller-runtime reconcile, workqueue and client
+	// metrics, Go runtime) on a separate plain-HTTP listener, never the
+	// serving port; the chart annotates the pod for scraping.
+	go metrics.Serve(ctx, metrics.ListenFromEnv())
 
 	// The provider's kcp credential (its provisioned SA kubeconfig), shared by
 	// the tunnel server (token validation + Edge reads) and the edge controller

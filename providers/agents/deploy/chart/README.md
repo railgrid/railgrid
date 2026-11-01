@@ -68,6 +68,8 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `envFromSecret` | `""` | Optional Secret whose keys are injected wholesale as environment variables (LLM/channel credentials) — the containerized equivalent of sourcing .env. |
 | `podLabels` | `{}` |  |
 | `podAnnotations` | `{}` |  |
+| `metrics.enabled` | `true` | Serve Prometheus `/metrics` (controller-runtime reconcile, workqueue and client metrics, Go runtime) on a separate plain-HTTP listener and annotate the pod for scraping (`prometheus.io/*`, `k8s.grafana.com/*`). |
+| `metrics.port` | `9090` | Port of the metrics listener (`RAILGRID_METRICS_LISTEN`). |
 | `podSecurityContext` |  |  |
 | `podSecurityContext.fsGroup` | `65532` |  |
 | `resources` | `{}` |  |

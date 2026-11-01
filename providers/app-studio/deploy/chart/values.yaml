@@ -233,6 +233,16 @@ hub:
     key: token
 
 podLabels: {}
+# Prometheus metrics. The process serves /metrics (controller-runtime reconcile,
+# workqueue and client-go request metrics, Go runtime) on a separate plain-HTTP
+# listener, never the serving port, and the pod carries prometheus.io/* and
+# k8s.grafana.com/* scrape annotations so an annotation-driven collector picks
+# it up without operator CRDs. enabled: false drops the listener and the
+# annotations.
+metrics:
+  enabled: true
+  port: 9090
+
 podAnnotations: {}
 podSecurityContext:
   fsGroup: 65532
