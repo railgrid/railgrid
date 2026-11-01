@@ -433,7 +433,10 @@ func (b *Billing) post(ctx context.Context, path string, body, out any) error {
 			// for the organization's members.
 			b.logger.Error(nil, "metering failed a billing request", "path", path, "status", resp.StatusCode, "answer", detail)
 			return &BillingError{Status: http.StatusBadGateway, Message: "metering could not complete the request; try again later"}
-		case answer != "":
+		case answer != "" && resp.StatusCode >= 400 && resp.StatusCode < 500:
+			// The deployment's own refusal, for the caller. A 3xx that
+			// reached here (a 304, or one the client did not follow) is
+			// not a status the route may write, so it takes the default.
 			return &BillingError{Status: resp.StatusCode, Message: answer}
 		default:
 			b.logger.Error(nil, "metering answered a billing request with an error that is not its own", "path", path, "status", resp.StatusCode, "answer", detail)

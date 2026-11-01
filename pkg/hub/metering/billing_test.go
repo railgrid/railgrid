@@ -81,6 +81,12 @@ func (d *deployment) handler() http.Handler {
 			_, _ = w.Write([]byte("<html><body><h1>403 Forbidden</h1><p>internal-ingress-7f: policy secret-policy-name denied</p></body></html>"))
 			return
 		}
+		if body["plan"] == "redirected" {
+			// A 3xx the client does not follow (no Location) comes back as is.
+			w.WriteHeader(http.StatusMultipleChoices)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "choose a region"})
+			return
+		}
 		if body["plan"] == "verbose" {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": "plan is not sold: " + strings.Repeat("x", 2000)})
@@ -382,5 +388,11 @@ func TestOnlyTheDeploymentsOwnErrorReachesTheCaller(t *testing.T) {
 	}
 	if got := excerpt(" short "); got != "short" {
 		t.Fatalf("excerpt(short) = %q", got)
+	}
+
+	// A 3xx is never a status the route may answer with, JSON error or not.
+	_, err = b.Checkout(context.Background(), "org-1", "redirected", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "region") {
+		t.Fatalf("a 3xx with a JSON error: %v", err)
 	}
 }
