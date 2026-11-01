@@ -99,8 +99,8 @@ interface CatalogEntry {
 const catalog = catalogEntries as CatalogEntry[]
 
 // lookupCatalog mirrors modelcatalog.LookupModel: normalize (lowercase, drop
-// any provider prefix), match exactly, else take the LONGEST catalog id that
-// is a prefix — so "gpt-4o-mini-2024" prefers "gpt-4o-mini" over "gpt-4o".
+// any provider prefix), then accept only exact IDs or dated snapshots.
+// Unknown generations and variants must not inherit an older model price.
 export function lookupCatalog(model: string): CatalogEntry | undefined {
   const normalized = model.toLowerCase().trim().split('/').pop() ?? ''
   if (!normalized) return undefined
@@ -108,7 +108,7 @@ export function lookupCatalog(model: string): CatalogEntry | undefined {
   if (exact) return exact
   let best: CatalogEntry | undefined
   for (const entry of catalog) {
-    if (normalized.startsWith(entry.id) && (!best || entry.id.length > best.id.length)) best = entry
+    if (normalized.startsWith(entry.id) && /^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$/.test(normalized.slice(entry.id.length)) && (!best || entry.id.length > best.id.length)) best = entry
   }
   return best
 }

@@ -122,7 +122,7 @@ function lookupModel(model: string): ModelInfo | undefined {
   let exact: ModelInfo | undefined; let best: ModelInfo | undefined
   for (const item of catalog.value) {
     if (item.id === normalized) exact = item
-    if (normalized.startsWith(item.id) && (!best || item.id.length > best.id.length)) best = item
+    if (normalized.startsWith(item.id) && /^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$/.test(normalized.slice(item.id.length)) && (!best || item.id.length > best.id.length)) best = item
   }
   return exact || best
 }

@@ -9,7 +9,10 @@
 // Package modelcatalog owns the shared reference model pricing and capabilities.
 package modelcatalog
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // ModelInfo is a curated catalog entry: pricing (USD per 1M tokens) and
 // capabilities for a model id. Used to (a) compute per-run cost from token
@@ -22,15 +25,18 @@ import "strings"
 //
 //	usd_micros = round(inTokens*InputPer1M + outTokens*OutputPer1M)
 type ModelInfo struct {
-	ID            string  `json:"id"`
-	Family        string  `json:"family"`
-	Label         string  `json:"label,omitempty"`
-	ContextWindow int     `json:"contextWindow,omitempty"` // tokens
-	InputPer1M    float64 `json:"inputPer1M"`              // USD / 1M input tokens
-	OutputPer1M   float64 `json:"outputPer1M"`             // USD / 1M output tokens
-	Vision        bool    `json:"vision,omitempty"`
-	ToolCall      bool    `json:"toolCall,omitempty"`
-	Reasoning     bool    `json:"reasoning,omitempty"`
+	Recommended      bool    `json:"recommended,omitempty"`
+	PricingCheckedAt string  `json:"pricingCheckedAt,omitempty"`
+	PricingSource    string  `json:"pricingSource,omitempty"`
+	ID               string  `json:"id"`
+	Family           string  `json:"family"`
+	Label            string  `json:"label,omitempty"`
+	ContextWindow    int     `json:"contextWindow,omitempty"` // tokens
+	InputPer1M       float64 `json:"inputPer1M"`              // USD / 1M input tokens
+	OutputPer1M      float64 `json:"outputPer1M"`             // USD / 1M output tokens
+	Vision           bool    `json:"vision,omitempty"`
+	ToolCall         bool    `json:"toolCall,omitempty"`
+	Reasoning        bool    `json:"reasoning,omitempty"`
 }
 
 // catalog is the curated model list. Keyed lookups normalize the id (lowercase,
@@ -38,6 +44,19 @@ type ModelInfo struct {
 // OpenAI-compatible gateway id such as "openrouter/anthropic/claude-sonnet-4"
 // still resolves.
 var catalog = []ModelInfo{
+	// Current standard, uncached, short-context rates. See README.md for limits.
+	{ID: "gpt-6.1-sol", Family: "openai", Label: "GPT-6.1 Sol", ContextWindow: 1050000, InputPer1M: 2, OutputPer1M: 10, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://developers.openai.com/api/docs/pricing"},
+	{ID: "gpt-6-astra", Family: "openai", Label: "GPT-6 Astra", ContextWindow: 1050000, InputPer1M: 10, OutputPer1M: 50, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://developers.openai.com/api/docs/pricing"},
+	{ID: "gpt-6.1-terra", Family: "openai", Label: "GPT-6.1 Terra", ContextWindow: 1050000, InputPer1M: 1, OutputPer1M: 5, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://developers.openai.com/api/docs/pricing"},
+	{ID: "gpt-6-luna", Family: "openai", Label: "GPT-6 Luna", ContextWindow: 1050000, InputPer1M: 0.1, OutputPer1M: 0.5, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://developers.openai.com/api/docs/pricing"},
+	{ID: "claude-opus-5-5", Family: "anthropic", Label: "Claude Opus 5.5", ContextWindow: 1000000, InputPer1M: 4, OutputPer1M: 20, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://platform.claude.com/docs/en/about-claude/pricing"},
+	{ID: "claude-sonnet-5-5", Family: "anthropic", Label: "Claude Sonnet 5.5", ContextWindow: 1000000, InputPer1M: 2, OutputPer1M: 10, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://platform.claude.com/docs/en/about-claude/pricing"},
+	{ID: "claude-haiku-5-5", Family: "anthropic", Label: "Claude Haiku 5.5", ContextWindow: 1000000, InputPer1M: 0.1, OutputPer1M: 0.5, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://platform.claude.com/docs/en/about-claude/pricing"},
+	{ID: "claude-fable-5-1", Family: "anthropic", Label: "Claude Fable 5.1", ContextWindow: 1000000, InputPer1M: 10, OutputPer1M: 50, Vision: true, ToolCall: true, Reasoning: true, Recommended: true, PricingCheckedAt: "2026-10-31", PricingSource: "https://platform.claude.com/docs/en/about-claude/pricing"},
+	{ID: "gpt-5-nano", Family: "openai", InputPer1M: 0.05, OutputPer1M: 0.4, ToolCall: true},
+	{ID: "gpt-5.4", Family: "openai", InputPer1M: 2.5, OutputPer1M: 15, ToolCall: true},
+	{ID: "gpt-5.4-mini", Family: "openai", InputPer1M: 0.75, OutputPer1M: 4.5, ToolCall: true},
+	{ID: "gemini-3-flash", Family: "google", InputPer1M: 0.5, OutputPer1M: 3, ToolCall: true},
 	// OpenAI
 	{ID: "gpt-4o", Family: "openai", Label: "GPT-4o", ContextWindow: 128000, InputPer1M: 2.50, OutputPer1M: 10.00, Vision: true, ToolCall: true},
 	{ID: "gpt-4o-mini", Family: "openai", Label: "GPT-4o mini", ContextWindow: 128000, InputPer1M: 0.15, OutputPer1M: 0.60, Vision: true, ToolCall: true},
@@ -60,9 +79,9 @@ var catalog = []ModelInfo{
 	{ID: "claude-haiku-4-5", Family: "anthropic", Label: "Claude Haiku 4.5", ContextWindow: 200000, InputPer1M: 1.00, OutputPer1M: 5.00, Vision: true, ToolCall: true, Reasoning: true},
 	{ID: "claude-3-5-haiku", Family: "anthropic", Label: "Claude 3.5 Haiku", ContextWindow: 200000, InputPer1M: 0.80, OutputPer1M: 4.00, Vision: true, ToolCall: true},
 	// Google (via OpenAI-compatible endpoints)
-	{ID: "gemini-2.5-pro", Family: "google", Label: "Gemini 2.5 Pro", ContextWindow: 1000000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
-	{ID: "gemini-2.5-flash", Family: "google", Label: "Gemini 2.5 Flash", ContextWindow: 1000000, InputPer1M: 0.30, OutputPer1M: 2.50, Vision: true, ToolCall: true},
-	{ID: "gemini-3-pro", Family: "google", Label: "Gemini 3 Pro", ContextWindow: 1000000, InputPer1M: 2.00, OutputPer1M: 12.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "gemini-2.5-pro", Family: "google", Recommended: true, Label: "Gemini 2.5 Pro", ContextWindow: 1000000, InputPer1M: 1.25, OutputPer1M: 10.00, Vision: true, ToolCall: true, Reasoning: true},
+	{ID: "gemini-2.5-flash", Family: "google", Recommended: true, Label: "Gemini 2.5 Flash", ContextWindow: 1000000, InputPer1M: 0.30, OutputPer1M: 2.50, Vision: true, ToolCall: true},
+	{ID: "gemini-3-pro", Family: "google", Recommended: true, Label: "Gemini 3 Pro", ContextWindow: 1000000, InputPer1M: 2.00, OutputPer1M: 12.00, Vision: true, ToolCall: true, Reasoning: true},
 }
 
 var catalogByID = func() map[string]ModelInfo {
@@ -87,9 +106,19 @@ func normalizeModelID(model string) string {
 	return m
 }
 
+// A model variant is not a dated snapshot: never price a new generation or
+// specialized suffix using an older model's rate.
+var datedModelSuffix = regexp.MustCompile(`^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$`)
+
+// IsRecommended distinguishes current choices from historical pricing entries.
+func IsRecommended(model string) bool {
+	entry, ok := LookupModel(model)
+	return ok && entry.Recommended
+}
+
 // LookupModel returns the catalog entry for a model id, matching first on the
-// exact normalized id and then on the longest catalog id that is a prefix of it
-// (so "gpt-4o-2024-08-06" matches "gpt-4o"). Reports ok=false when unknown.
+// exact normalized id and then on a catalog ID followed by a dated snapshot
+// suffix (so "gpt-4o-2024-08-06" matches "gpt-4o"). Other variants are unknown.
 func LookupModel(model string) (ModelInfo, bool) {
 	norm := normalizeModelID(model)
 	if norm == "" {
@@ -102,7 +131,7 @@ func LookupModel(model string) (ModelInfo, bool) {
 	// with (e.g. "gpt-4o-mini-…" must prefer "gpt-4o-mini" over "gpt-4o").
 	best := ""
 	for id := range catalogByID {
-		if strings.HasPrefix(norm, id) && len(id) > len(best) {
+		if strings.HasPrefix(norm, id) && datedModelSuffix.MatchString(strings.TrimPrefix(norm, id)) && len(id) > len(best) {
 			best = id
 		}
 	}

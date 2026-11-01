@@ -58,7 +58,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: MODEL_PROVIDER_OPENAI,
     family: 'chat',
     baseURL: 'https://api.openai.com/v1',
-    modelHint: 'gpt-4o',
+    modelHint: 'gpt-6.1-sol',
     guidance: 'Uses OpenAI’s standard API endpoint.',
   },
   {
@@ -67,7 +67,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: MODEL_PROVIDER_OPENAI_COMPATIBLE,
     family: 'chat',
     baseURL: 'https://api.anthropic.com/v1',
-    modelHint: 'claude-sonnet-4-20250514',
+    modelHint: 'claude-sonnet-5-5',
     guidance: 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
   },
   {
@@ -76,7 +76,7 @@ export const PROVIDER_PRESETS: ProviderPreset[] = [
     provider: MODEL_PROVIDER_OPENAI_COMPATIBLE,
     family: 'chat',
     baseURL: 'https://openrouter.ai/api/v1',
-    modelHint: 'anthropic/claude-sonnet-4',
+    modelHint: 'anthropic/claude-sonnet-5-5',
     guidance: 'Use a provider or gateway that implements OpenAI Chat Completions and GET /models.',
   },
   {

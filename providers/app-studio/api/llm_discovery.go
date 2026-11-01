@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/railgrid/provider-sdk/modelcatalog"
 )
 
 const (
@@ -298,7 +300,7 @@ func projectLLMDiscoveredModel(id, name, provider string, capabilities []string)
 	compatibility := "available"
 	if projectLLMModelKnownUnsuitable(id, capabilities) {
 		compatibility = "unsuitable"
-	} else if projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: provider, Model: id}).VisionToolResults {
+	} else if modelcatalog.IsRecommended(id) || (provider == projectLLMProviderGoogle && projectAssistantCapabilitiesForModel(projectLLMSettings{Provider: provider, Model: id}).VisionToolResults) {
 		compatibility = "recommended"
 	}
 	return ProjectLLMDiscoveredModelView{

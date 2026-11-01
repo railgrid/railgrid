@@ -109,20 +109,16 @@ const baseline = fingerprint.value
 const verified = computed(() => testedFingerprint.value === fingerprint.value)
 const baseURLError = computed(() => endpointValidationError.value || (preset.value === 'custom' && !baseURL.value.trim() ? 'Base URL is required.' : ''))
 const locked = computed(() => props.busy || testing.value || discovering.value)
-// status.models is already curated to the chat-capable subset by the provider
-// (llm.FilterChatModels), so nothing here has to hide anything — what is left
-// is telling the curated families apart from whatever else the gateway carries.
-// catalogKnown mirrors the backend's LookupModel: exact id first, then the
-// longest catalog id the discovered id starts with, both after stripping a
-// provider prefix ("openai/gpt-4o", "models/gemini-2.5-pro").
-function catalogKnown(id: string): boolean {
+// Historical pricing coverage does not imply a current recommendation.
+function catalogRecommended(id: string): boolean {
   const normalized = id.toLowerCase().trim().replace(/^.*\//, '')
-  return (props.catalog || []).some(item => normalized === item.id || normalized.startsWith(item.id))
+  return (props.catalog || []).some(item => item.recommended && (normalized === item.id ||
+    (normalized.startsWith(item.id) && /^-(?:[0-9]{8}|[0-9]{4}-[0-9]{2}-[0-9]{2})$/.test(normalized.slice(item.id.length)))))
 }
 const discoveredModels = computed(() => models.value.map(id => ({
   id,
   name: id,
-  compatibility: (catalogKnown(id) ? 'recommended' : 'available') as 'recommended' | 'available',
+  compatibility: (catalogRecommended(id) ? 'recommended' : 'available') as 'recommended' | 'available',
 })))
 // A changed endpoint invalidates the stored key: it was issued for the old one
 // and must not be sent to a new one.

@@ -968,6 +968,7 @@ export const sessionLabel = (s: SessionMeta): string =>
 // ---- models dashboard ------------------------------------------------------
 
 export interface ModelInfo {
+  recommended?: boolean
   id: string
   family: string
   label?: string
