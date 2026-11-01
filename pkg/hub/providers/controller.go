@@ -683,10 +683,18 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		(prov.UIURL != nil || prov.BackendURL != nil ||
 			prov.BuiltinRoute != "" || prov.LocalUIAssets != nil || prov.APIExportName != "")
 
+	// Every heartbeat and status write reconciles the entry again, so the
+	// steady-state upsert is logged at V(4); a new record, or a change in
+	// what the proxies route on, gets an info line.
+	prev, existed := r.reg.lookup(prov.OrgUUID, prov.Name)
 	r.reg.Upsert(prov)
+	upsertLogger := logger.V(4)
+	if !existed || routingChanged(prev, prov) {
+		upsertLogger = logger
+	}
 	// Render URLs as strings: a nil *url.URL panics klog's stringer (shows as
 	// "<panic: ...>" in logs), which is the common case for builtins (localUI).
-	logger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", urlString(prov.UIURL), "backend", urlString(prov.BackendURL), "localUI", prov.LocalUIAssets != nil)
+	upsertLogger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", urlString(prov.UIURL), "backend", urlString(prov.BackendURL), "localUI", prov.LocalUIAssets != nil)
 
 	// The hub no longer provisions the per-provider workspace, schemas,
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
@@ -953,6 +961,16 @@ func apiGroupsUnknownDetail(err error) string {
 
 // urlString renders a *url.URL for logging, returning "" for nil (a nil
 // *url.URL panics klog's stringer).
+// routingChanged reports whether the fields the hub proxies and the portal
+// route on differ between two registry records. The catalog reconciler logs
+// an upsert at info only when they do.
+func routingChanged(prev, next Provider) bool {
+	return prev.EndpointsValid != next.EndpointsValid ||
+		urlString(prev.UIURL) != urlString(next.UIURL) ||
+		urlString(prev.BackendURL) != urlString(next.BackendURL) ||
+		(prev.LocalUIAssets != nil) != (next.LocalUIAssets != nil)
+}
+
 func urlString(u *url.URL) string {
 	if u == nil {
 		return ""

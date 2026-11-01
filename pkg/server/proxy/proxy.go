@@ -231,26 +231,29 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// correctly reject them, but running the check first saves a JWKS fetch and
 	// makes the auth branch unambiguous in logs.
 	if saClaims, ok := parseServiceAccountToken(token); ok {
-		p.logger.Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
+		p.logger.V(4).Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
 		p.serveServiceAccount(w, r, token, saClaims.ClusterName())
 		return
 	}
 
-	// Try OIDC verification (user tokens from Dex).
+	// Try OIDC verification (user tokens from Dex). A failure is reported on
+	// the 401 line below rather than as a line of its own, so a rejected
+	// request logs once.
+	oidcErr := "no verifier configured"
 	if p.verifier != nil {
 		idToken, err := p.verifier.Verify(p.verifyCtx, token)
 		if err == nil {
-			p.logger.Info("proxy auth: OIDC verified", "path", r.URL.Path)
+			p.logger.V(4).Info("proxy auth: OIDC verified", "path", r.URL.Path)
 			p.serveOIDC(w, r, token, idToken)
 			return
 		}
-		p.logger.Info("proxy auth: OIDC verify failed", "path", r.URL.Path, "err", err.Error())
+		oidcErr = err.Error()
 	}
 
 	// Log only SHA-256 hash prefix to prevent token information disclosure
 	// while still allowing correlation for debugging
 	tokenHash := sha256.Sum256([]byte(token))
-	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "tokenHash", hex.EncodeToString(tokenHash[:])[:16])
+	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "oidcErr", oidcErr, "tokenHash", hex.EncodeToString(tokenHash[:])[:16])
 	writeUnauthorized(w)
 }
 
