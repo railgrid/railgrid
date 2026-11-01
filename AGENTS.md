@@ -700,7 +700,12 @@ cannot capture a platform provider's proxy or heartbeat route by name. See
    talks to kcp. `CanSend` is **required**, not optional: point it at the
    provider's readiness (`vwhealth.Readiness.Check`, the same gate as
    `/readyz`), or `RunHeartbeat` refuses to start. Anything that reacts to tenant objects is a multicluster-runtime
-   reconciler under leader election, not a loop (§5.8).
+   reconciler under leader election, not a loop (§5.8). Start the metrics
+   listener in the same breath: `go metrics.Serve(ctx, metrics.ListenFromEnv())`
+   (`provider-sdk/metrics`) serves controller-runtime's reconcile, workqueue
+   and client metrics on a separate plain-HTTP port (`RAILGRID_METRICS_LISTEN`,
+   chart `metrics.*`, pod annotated for scraping); `/metrics` never goes on the
+   serving port.
 7. Report usage with `provider-sdk/usage`: a `usage.go` beside the controller
    manager declares the provider's resource-counter meters (`usage.Meter{Name,
    Kinds}`, e.g. `agents` → `Agent`) and `usage.Setup(mgr, ...)` goes on the

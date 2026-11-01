@@ -26,8 +26,13 @@ import (
 
 // Options holds configuration for the hub server.
 type Options struct {
-	DataDir               string
-	ListenAddr            string
+	DataDir    string
+	ListenAddr string
+	// MetricsListenAddr is the plain-HTTP Prometheus /metrics listener
+	// (provider-sdk/metrics): controller-runtime reconcile, workqueue and
+	// client metrics of every hub manager plus the Go runtime. Cluster-internal,
+	// never the serving port; empty disables it.
+	MetricsListenAddr     string
 	Kubeconfig            string
 	ExternalKCPKubeconfig string
 	IDPIssuerURL          string
@@ -250,6 +255,7 @@ func NewOptions() *Options {
 	return &Options{
 		DataDir:             "/tmp/railgrid-data",
 		ListenAddr:          ":9443",
+		MetricsListenAddr:   ":9090",
 		HubExternalURL:      "https://localhost:9443",
 		EmbeddedKCP:         false,
 		KCPSecurePort:       6443,
