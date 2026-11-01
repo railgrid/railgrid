@@ -631,7 +631,7 @@ cert-manager-issued CA bundles instead of the Tilt self-signed pair.
 |---|---|
 | `pkg/hub/options.go`, `cmd/railgrid-hub/main.go`, `pkg/hub/kcp/embedded.go` | `--metering-*` flags; write admission and audit files; set the kcp options (7.1) |
 | `pkg/hub/kcp/bootstrap.go`, `config/kcp/` | nothing new: the hub's org reconciler and config applier write into `root:railgrid:system:metering` as kcp-admin (the deployment self-binds its exports there) |
-| `pkg/hub/metering/organization.go` (landed 29 Oct, uncommitted) | **organization reconciler** on the same manager as the org bootstrap reconciler: per `Organization`, ensure `Account` (display name, server-side apply), `Entitlement` on `--metering-default-plan` (default `free`; create-only, so a plan an admin or billing later sets is never reset) and the `railgrid-hub.<org>` `MembershipReport` (org workspace plus every child workspace, `{cluster, path}`, written only when the set changes); all three deleted when the Organization is gone; a no-op until discovery reports metering installed, retried every minute until then. Existing organizations are covered on the first pass. Membership is refreshed on a 5-minute requeue; a `tenancy.kcp.io/workspaces` watch per org workspace is the follow-up that replaces the timer. `Organization.spec.plan` landed 31 Oct: the Entitlement's plan follows it (the default plan while empty, overrides preserved, a plan an admin set directly on the Entitlement kept until spec.plan speaks), written through `PUT /api/admin/organizations/{uuid}/plan`. Still to build here: `spec.suspended`, `status.billing` |
+| `pkg/hub/metering/organization.go` (landed 29 Oct, uncommitted) | **organization reconciler** on the same manager as the org bootstrap reconciler: per `Organization`, ensure `Account` (display name, server-side apply), `Entitlement` on `--metering-default-plan` (default `free`; create-only, so a plan an admin or billing later sets is never reset) and the `railgrid-hub.<org>` `MembershipReport` (org workspace plus every child workspace, `{cluster, path}`, written only when the set changes); all three deleted when the Organization is gone; a no-op until discovery reports metering installed, retried every minute until then. Existing organizations are covered on the first pass. Membership followed a 5-minute requeue until 1 Nov; since then the hub's own child workspace creates and deletes re-enqueue the organization at once (`WorkspaceNotifier`) and a workspace being deleted is left out, the requeue staying as the backstop for out-of-band changes. `Organization.spec.plan` landed 31 Oct: the Entitlement's plan follows it (the default plan while empty, overrides preserved, a plan an admin set directly on the Entitlement kept until spec.plan speaks), written through `PUT /api/admin/organizations/{uuid}/plan`. Still to build here: `spec.suspended`, `status.billing` |
 | `pkg/hub/metering` (landed 29 Oct, uncommitted: discovery + read-only proxy) | **discovery**: polls `--metering-workspace` for the ConfigMap `default/metering-endpoints` and Secret `default/metering-admin` that `metering init` publishes; `GET /api/admin/metering` (installed, version, readyz) and `GET /api/admin/metering/{collection}` proxy the metering API with the published token behind the admin gate, which is what the Bonkers **Metering** section renders (the hub portal authenticates with a bearer in localStorage, so an iframe of the metering portal would have no auth; native tables over the proxy instead). Still to build: the workspace watch for the membership reporter (above); **config applier**: applies `config/metering/` (Plans into `store`, MeteringConfigs into the provider workspace) when the `metering` admin `Provider` is Ready and on file change at startup; **billing reconciler** (section 10) |
 | `pkg/hub/metering/provider.go` (landed 29 Oct, uncommitted) | **provider binding reconciler** on the admin multicluster manager, per `Provider`: once discovery reports metering installed (the feature gate; until then every Provider is retried a minute later and nothing is written), it creates the `metering-provider` APIBinding in `status.workspacePath` against `--metering-workspace`, labelled `metering.railgrid.ai/managed-by=railgrid-hub`, and re-checks until kcp reports it Bound. Additive only: a binding is never removed (kcp refuses while bound objects exist, and the records are the provider's usage history) and a same-named binding to another export is left alone and logged. The narrow `railgrid:provider` role gained `usagerecords` and `meteringconfigs` in `metering.contrib.kcp.io`. Verified live under Tilt: all nine platform provider workspaces Bound within a minute of the hub restart. Org-owned providers (`root:railgrid:tenants:<org>:providers:<name>`) are not covered |
 | `pkg/hub/providers` | still to build: Enable refuses `providers.<name>: 0` rows; bindings labelled `railgrid.ai/provider` |
@@ -811,14 +811,20 @@ plugin under Tilt surfaced three things, all fixed in the uncommitted trees:
   install needs, and the Tilt seed applies it with the plans. Until the
   applier exists, an operator applies it by hand.
 
-Two things to decide, both visible in the admin area: the `workspaces` usage
-counts the organization's own workspace (the hub reports it as a member, and
-the webhook needs it there to attribute child creates), so `free` at
-`workspaces: 1` allows no child workspace at all; and membership refreshes on
-the hub's 5-minute requeue, so a workspace created between passes is
-unmetered (fail-open) until the next one. A Workspace watch in the hub's
-organization reconciler and a `Watches(Plan)` in contrib-metering's
-entitlement reconciler close the two gaps.
+Two things decided on 1 November, both visible in the admin area. The
+`workspaces` usage counts the member workspaces nested in another member of
+the account (contrib-metering `MembershipIndex.WorkspacesOf`), which is what
+the webhook attributes on a create: the organization's own workspace stays in
+the report so child creates resolve to the account, but it is not a workspace
+of the account, and `free` at `workspaces: 1` allows one workspace. And the
+hub's own child workspace creates and deletes reach the organization
+reconciler at once (`Bootstrapper.WithChildWorkspaceObserver` feeding
+`metering.WorkspaceNotifier`, a channel source on the reconciler), with a
+workspace the cascade has asked kcp to delete dropped from the report on that
+pass rather than when its finalizers let go; the 5-minute re-list remains only
+as the backstop for a Workspace changed outside the hub. Still open: a
+`Watches(Plan)` in contrib-metering's entitlement reconciler, so a changed
+limit is judged before the next sample.
 
 ## 13. Open questions
 

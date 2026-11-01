@@ -18,7 +18,9 @@ package metering
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -359,4 +361,80 @@ func TestNothingHappensUntilMeteringIsInstalled(t *testing.T) {
 	}
 	absent(t, ws, gvrEntitlements, "org-1")
 	absent(t, ws, gvrAccounts, "org-1")
+}
+
+func reportPaths(t *testing.T, ws dynamic.Interface, orgName string) []string {
+	t.Helper()
+	rep, err := ws.Resource(gvrMembershipReports).Get(context.Background(), Reporter+"."+orgName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("membership report: %v", err)
+	}
+	members, _, _ := unstructured.NestedSlice(rep.Object, "spec", "members")
+	var paths []string
+	for _, m := range members {
+		p, _, _ := unstructured.NestedString(m.(map[string]any), "path")
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+// A child workspace the cascade has asked kcp to delete is leaving the
+// organization: it drops out of the report at once rather than counting until
+// kcp's finalizers release the object.
+func TestMembersSkipAWorkspaceBeingDeleted(t *testing.T) {
+	r, ws := newFixture(t, org("org-1"))
+	orgWS, err := r.opts.Workspaces("root:railgrid:tenants:org-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminating := workspace("ws-c", "lc-c")
+	now := metav1.Now()
+	terminating.SetDeletionTimestamp(&now)
+	if _, err := orgWS.Resource(gvrWorkspaces).Create(context.Background(), terminating, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, "org-1")
+
+	want := []string{"root:railgrid:tenants:org-1", "root:railgrid:tenants:org-1:ws-a", "root:railgrid:tenants:org-1:ws-b"}
+	if got := reportPaths(t, ws, "org-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("report members = %v, want %v (ws-c is being deleted)", got, want)
+	}
+}
+
+// The notifier is how the hub's own workspace writes reach the reconciler: a
+// Notify enqueues the organization, and a burst past the buffer is dropped
+// rather than blocking the caller, since the periodic re-list covers it.
+func TestWorkspaceNotifierEnqueuesTheOrganizationWithoutBlocking(t *testing.T) {
+	n := NewWorkspaceNotifier()
+	n.Notify("org-1")
+	select {
+	case ev := <-n.ch:
+		if ev.Object.GetName() != "org-1" {
+			t.Fatalf("enqueued %q, want org-1", ev.Object.GetName())
+		}
+	default:
+		t.Fatal("Notify enqueued nothing")
+	}
+	n.Notify("")
+	if len(n.ch) != 0 {
+		t.Fatal("an empty organization name must not be enqueued")
+	}
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < cap(n.ch)+16; i++ {
+			n.Notify("org-2")
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Notify blocked on a full buffer")
+	}
+	if len(n.ch) != cap(n.ch) {
+		t.Fatalf("buffered %d events, want the full buffer %d", len(n.ch), cap(n.ch))
+	}
+	var nilNotifier *WorkspaceNotifier
+	nilNotifier.Notify("org-3") // a hub without metering has no notifier; the hook stays safe
 }
