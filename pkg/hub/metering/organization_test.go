@@ -18,7 +18,9 @@ package metering
 
 import (
 	"context"
+	"reflect"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -33,6 +35,7 @@ import (
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
 
 type installed bool
@@ -359,4 +362,88 @@ func TestNothingHappensUntilMeteringIsInstalled(t *testing.T) {
 	}
 	absent(t, ws, gvrEntitlements, "org-1")
 	absent(t, ws, gvrAccounts, "org-1")
+}
+
+func reportPaths(t *testing.T, ws dynamic.Interface, orgName string) []string {
+	t.Helper()
+	rep, err := ws.Resource(gvrMembershipReports).Get(context.Background(), Reporter+"."+orgName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("membership report: %v", err)
+	}
+	members, _, _ := unstructured.NestedSlice(rep.Object, "spec", "members")
+	var paths []string
+	for _, m := range members {
+		p, _, _ := unstructured.NestedString(m.(map[string]any), "path")
+		paths = append(paths, p)
+	}
+	return paths
+}
+
+// A child workspace the cascade has asked kcp to delete is leaving the
+// organization: it drops out of the report at once rather than counting until
+// kcp's finalizers release the object.
+func TestMembersSkipAWorkspaceBeingDeleted(t *testing.T) {
+	r, ws := newFixture(t, org("org-1"))
+	orgWS, err := r.opts.Workspaces("root:railgrid:tenants:org-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminating := workspace("ws-c", "lc-c")
+	now := metav1.Now()
+	terminating.SetDeletionTimestamp(&now)
+	if _, err := orgWS.Resource(gvrWorkspaces).Create(context.Background(), terminating, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, "org-1")
+
+	want := []string{"root:railgrid:tenants:org-1", "root:railgrid:tenants:org-1:ws-a", "root:railgrid:tenants:org-1:ws-b"}
+	if got := reportPaths(t, ws, "org-1"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("report members = %v, want %v (ws-c is being deleted)", got, want)
+	}
+}
+
+// A workspace create or delete served on any replica is recorded on the
+// Organization, which the leader's reconciler watches: that is how the signal
+// crosses replicas. Every change is a distinct stamp; a missing organization,
+// an empty name and a nil notifier are no-ops.
+func TestWorkspaceNotifierStampsTheOrganization(t *testing.T) {
+	org := &unstructured.Unstructured{}
+	org.SetAPIVersion(railgridclient.OrganizationGVR.GroupVersion().String())
+	org.SetKind("Organization")
+	org.SetName("org-1")
+	users := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{railgridclient.OrganizationGVR: "OrganizationList"}, org)
+
+	now := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	n := NewWorkspaceNotifier(users, klog.Background())
+	n.now = func() time.Time { return now }
+
+	stamp := func() string {
+		t.Helper()
+		got, err := users.Resource(railgridclient.OrganizationGVR).Get(context.Background(), "org-1", metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got.GetAnnotations()[WorkspacesChangedAnnotation]
+	}
+
+	ctx := context.Background()
+	n.Notify(ctx, "org-1")
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("annotation = %q, want %q", got, now.Format(time.RFC3339Nano))
+	}
+	now = now.Add(time.Second)
+	n.Notify(ctx, "org-1")
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("second change did not advance the stamp: %q", got)
+	}
+
+	n.Notify(ctx, "gone") // an organization that no longer exists: nothing to report into
+	n.Notify(ctx, "")     // never a valid organization
+	var nilNotifier *WorkspaceNotifier
+	nilNotifier.Notify(ctx, "org-1") // a hub without metering has no notifier; the callers stay safe
+	if got := stamp(); got != now.Format(time.RFC3339Nano) {
+		t.Fatalf("no-op notifies changed the stamp: %q", got)
+	}
 }

@@ -169,7 +169,7 @@ func (r *Reconciler) reconcileOrgCascade(ctx context.Context, org *tenancyv1alph
 	// (not the per-Workspace soft-delete annotation) so we don't
 	// restart a fresh 30-day clock inside the Org's own cascade.
 	for _, ws := range childWorkspaces {
-		if err := r.provisioner.DeleteChildWorkspace(ctx, org.Name, ws); err != nil {
+		if _, err := r.provisioner.DeleteChildWorkspace(ctx, org.Name, ws); err != nil {
 			logger.Error(err, "Deleting child Workspace failed; will retry", "workspace", ws)
 			return ctrl.Result{}, err
 		}
