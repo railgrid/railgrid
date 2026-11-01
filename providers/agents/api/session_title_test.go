@@ -16,7 +16,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -205,6 +208,42 @@ func TestAgentSessionTitleRunsDetachedWithPinnedChatCredential(t *testing.T) {
 	}
 	if prefs.ModelCredential != "agent-default" || prefs.ReasoningEffortByModel != nil {
 		t.Fatalf("title generation changed chat preferences: %+v", prefs)
+	}
+}
+
+func TestSessionTitleBuilderUsesChatCompletionsForCustomGPT6(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
+			t.Errorf("title request = %s %s, want POST /chat/completions", r.Method, r.URL.Path)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != "gpt-6-luna" || body["reasoning_effort"] != "none" {
+			t.Errorf("title request = %#v, want GPT-6 Luna Chat Completions with effort none", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-title","object":"chat.completion","created":1,"model":"gpt-6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"Gateway Title"},"finish_reason":"stop"}]}`))
+	}))
+	defer upstream.Close()
+
+	creds := credsFor(upstream.URL, map[string]string{"title": "gpt-6-luna"})
+	s := &Server{}
+	model, name, err := s.buildSessionTitleModel(t.Context(), creds, "title")
+	if err != nil {
+		t.Fatalf("build title model: %v", err)
+	}
+	if name != "gpt-6-luna" {
+		t.Fatalf("title model name = %q", name)
+	}
+	reply, err := model.Generate(t.Context(), []*schema.Message{
+		schema.SystemMessage(agentSessionTitleSystemPrompt), schema.UserMessage("Summarize the rollout risk."),
+	})
+	if err != nil || reply == nil || reply.Content != "Gateway Title" || calls != 1 {
+		t.Fatalf("title response = %#v after %d calls, err=%v", reply, calls, err)
 	}
 }
 

@@ -49,7 +49,7 @@ func TestReasoningProfileForConnection(t *testing.T) {
 	}
 }
 
-func TestUsesOfficialOpenAIEndpointSharedFixtures(t *testing.T) {
+func TestIsOfficialOpenAIEndpointSharedFixtures(t *testing.T) {
 	var fixture struct {
 		Cases []struct {
 			Name     string `json:"name"`
@@ -71,8 +71,8 @@ func TestUsesOfficialOpenAIEndpointSharedFixtures(t *testing.T) {
 
 	for _, tc := range fixture.Cases {
 		t.Run(tc.Name, func(t *testing.T) {
-			if got := usesOfficialOpenAIEndpoint(tc.Provider, tc.BaseURL); got != tc.Official {
-				t.Errorf("usesOfficialOpenAIEndpoint(%q, %q) = %v, want %v", tc.Provider, tc.BaseURL, got, tc.Official)
+			if got := IsOfficialOpenAIEndpoint(tc.Provider, tc.BaseURL); got != tc.Official {
+				t.Errorf("IsOfficialOpenAIEndpoint(%q, %q) = %v, want %v", tc.Provider, tc.BaseURL, got, tc.Official)
 			}
 		})
 	}

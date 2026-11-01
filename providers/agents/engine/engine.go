@@ -86,6 +86,17 @@ type ContextCompactionFunc func(ctx context.Context, history []Message, estimate
 
 // Callbacks stream run progress to the caller. All fields are optional.
 type Callbacks struct {
+	// PrepareFreshHistory projects prior-turn messages before the first model
+	// request in a new turn. It is not run when resuming a checkpoint: active
+	// tool continuations must retain their original model-bound metadata.
+	PrepareFreshHistory func([]Message) []Message
+	// HydrateToolCalls restores provider-specific metadata carried on a
+	// concatenated assistant message. Eino's message concatenator can retain
+	// this metadata on Message.Extra while dropping later ToolCall.Extra chunks.
+	// The adapter callback runs before calls are emitted, executed, or
+	// checkpointed; it must return a copy and must not expose opaque metadata as
+	// assistant text.
+	HydrateToolCalls func(*schema.Message) []schema.ToolCall
 	// OnDelta receives assistant content deltas as they stream.
 	OnDelta func(string)
 	// OnAssistantMessage fires once a streamed model response attempt finishes.
@@ -219,6 +230,13 @@ func (e *Engine) StreamTurnWithTools(
 	}
 	if err := rehydrateReferenceOnly(ctx, in, identities, byName, nil); err != nil {
 		return Result{}, err
+	}
+	if cb.PrepareFreshHistory != nil {
+		prepared := cb.PrepareFreshHistory(messagesFromEino(in, identities))
+		if len(prepared) == 0 {
+			return Result{}, errors.New("engine: fresh-history preparation removed every message")
+		}
+		in, identities = toEinoWithIdentities(prepared)
 	}
 	task := latestUserMessage(msgs)
 	var content strings.Builder
@@ -399,6 +417,9 @@ func (e *Engine) loop(
 			if err != nil {
 				cb.assistantMessage(AssistantMessage{Duration: time.Since(started)})
 				return Result{}, err
+			}
+			if cb.HydrateToolCalls != nil && len(full.ToolCalls) > 0 {
+				full.ToolCalls = cloneToolCalls(cb.HydrateToolCalls(full))
 			}
 			cb.assistantMessage(AssistantMessage{
 				Content: full.Content, HasToolCalls: len(full.ToolCalls) > 0, ToolCalls: cloneToolCalls(full.ToolCalls),

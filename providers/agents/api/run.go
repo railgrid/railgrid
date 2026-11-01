@@ -940,11 +940,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		return res, cause
 	}
 
-	// A model the upstream refuses on Chat Completions (a responses-only
-	// family, a retired snapshot) is a credential to edit, not a crash. The
-	// provider's own sentence is kept; what is added is which credential owns
-	// the model id and where to change it.
-	if err = llm.ExplainChatCompletionsRefusal(err, credentialNameForPurpose(agent, purpose)); err != nil {
+	// An unavailable model can fail on either transport, for example when the
+	// provider retires an id or refuses it on the selected endpoint. Keep the
+	// upstream details and identify the credential that may need another model.
+	if err = llm.ExplainModelUnavailable(err, credentialNameForPurpose(agent, purpose)); err != nil {
 		return finishFailedTurn(err)
 	}
 
@@ -1353,6 +1352,9 @@ func (k *turnSink) Assistant(message backend.AssistantMessage) {
 	if message.Complete && (message.HasToolCalls || len(message.ToolCalls) > 0) {
 		metadata := turnMetadata("commentary", "running", k.startedAt, 0, message.Duration.Milliseconds(), "")
 		metadata[historyToolCallsKey] = storedToolCalls(message.ToolCalls)
+		if continuation := storedResponsesContinuation(message.ToolCalls); continuation != nil {
+			metadata[historyResponsesContinuationKey] = continuation
+		}
 		metadata["modelOnly"] = strings.TrimSpace(message.Content) == ""
 		if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 			ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,

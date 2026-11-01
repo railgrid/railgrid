@@ -487,7 +487,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeList(w, page.Items, map[string]any{"nextCursor": page.NextCursor})
+	writeList(w, publicTranscriptMessages(page.Items), map[string]any{"nextCursor": page.NextCursor})
 }
 
 // listSessions returns up to 100 conversations and 100 saved empty chats,
@@ -761,6 +761,7 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 	var members []einomodel.BaseChatModel
 	var built []string
 	var lastErr error
+	originKey := s.webhookKeyBytes()
 	for _, name := range names {
 		profile, err := llm.LoadCredential(ctx, creds, name)
 		if err != nil {
@@ -769,6 +770,15 @@ func (s *Server) buildModelForPurpose(ctx context.Context, creds llm.CredentialR
 		}
 		if len(settings) > 0 && settings[0] != nil && name == settings[0].ModelCredential {
 			profile.ReasoningEffort = settings[0].ReasoningEffort
+			profile.Transport = settings[0].Transport
+		}
+		// The signing key lives outside the transcript database. Sharing it with
+		// every runtime model keeps checkpoint provenance stable across replicas
+		// without storing an offline verifier for a gateway's API key.
+		profile.ResponsesOriginKey = originKey
+		if llm.ModelTransport(profile) == llm.TransportResponses && len(originKey) == 0 && s.cfg.DatabaseURL != "" && !s.cfg.InMemoryStore {
+			lastErr = errors.New("durable Responses continuation signing unavailable — configure AGENTS_WEBHOOK_KEY or a readable RAILGRID_PROVIDER_KUBECONFIG")
+			continue
 		}
 		m, err := llm.BuildModel(ctx, profile)
 		if err != nil {

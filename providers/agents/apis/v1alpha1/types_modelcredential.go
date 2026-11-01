@@ -24,11 +24,13 @@ import (
 //
 // There are two families here and they are not variants of each other:
 //
-//   - CHAT ENDPOINTS — "openai" (the hosted endpoint) and "openai-compatible"
+//   - API CREDENTIALS — "openai" (the hosted endpoint) and "openai-compatible"
 //     (anything else implementing OpenAI Chat Completions + GET /models:
-//     Anthropic's compat endpoint, OpenRouter, a local gateway). A credential
-//     of this family is a base URL and a key, it is probed by calling
-//     /models, and llm.BuildModel turns it into a chat model.
+//     Anthropic's compat endpoint, OpenRouter, a local gateway). Automatic
+//     Responses routing for supported models and reasoning settings applies
+//     only to the official OpenAI endpoint; custom gateways default to Chat
+//     Completions. A credential is a base URL and key, probed by calling
+//     /models; llm.BuildModel turns it into a chat model.
 //
 //   - HARNESS IDENTITIES — "claude-code" and "codex". These are the login a
 //     coding harness on an edge runs as. There is no endpoint to probe and no
@@ -194,15 +196,18 @@ type ModelCredentialStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	// Models are the CHAT-CAPABLE model ids the endpoint reported on the last
-	// successful probe of GET {baseURL}/models — not everything it serves.
+	// Models are the agent model candidates retained from the last successful
+	// probe of GET {baseURL}/models — not everything the endpoint serves.
 	//
 	// An endpoint answers with every model the account can reach: speech,
-	// transcription, embeddings, images, realtime, moderation, and the
-	// families served only on the provider's responses API. Agents run on Chat
-	// Completions, so ids whose name says they are none of those are the only
-	// ones recorded here (llm.FilterChatModels). Catalog-known ids come first,
-	// in catalog order; the rest follow alphabetically.
+	// transcription, embeddings, images, realtime, moderation, and specialized
+	// model families that Agents does not currently route. On the official
+	// OpenAI endpoint, Agents uses Responses for GPT-6 models and selected
+	// reasoning configurations on supported earlier models. Custom gateways
+	// default to Chat Completions, and this does not imply support for every
+	// Responses-only family.
+	// llm.FilterChatModels applies discovery curation, retaining catalog-known
+	// candidates first in catalog order and other candidates alphabetically.
 	//
 	// Bounded: an aggregator can serve thousands, and an API object is not the
 	// place to mirror all of them.

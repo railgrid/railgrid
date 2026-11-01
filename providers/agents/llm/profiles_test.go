@@ -51,17 +51,21 @@ func TestModelReasoningEffort(t *testing.T) {
 func TestBuildModelReasoningEffortPayload(t *testing.T) {
 	for _, tc := range []struct {
 		model           string
+		transport       string
 		wantEffort      string
 		wantPresent     bool
 		wantTemperature bool
+		wantResponses   bool
 	}{
 		{model: "gpt-5.6-luna", wantEffort: "none", wantPresent: true},
+		{model: "gpt-6-luna", wantResponses: true, transport: TransportResponses},
+		{model: "gpt-6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "gpt6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "openai/gpt6.1-sol", wantResponses: true, transport: TransportResponses},
+		{model: "openai/gpt-6-sol", wantResponses: true, transport: TransportResponses},
+		{model: "gpt-6.1-sol", wantResponses: true, transport: TransportResponses},
 		{model: "gpt-6-luna", wantEffort: "none", wantPresent: true},
-		{model: "gpt-6-sol"},
-		{model: "gpt6-sol"},
-		{model: "openai/gpt6.1-sol"},
-		{model: "openai/gpt-6-sol"},
-		{model: "gpt-6.1-sol"},
+		{model: "gpt-6-astra"},
 		{model: "gpt-5.4"},
 		{model: "o3"},
 		{model: "gpt-4o", wantPresent: false, wantTemperature: true},
@@ -69,22 +73,31 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 		t.Run("model="+tc.model, func(t *testing.T) {
 			var payload map[string]any
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path != "/chat/completions" {
-					t.Errorf("request path = %q, want /chat/completions", r.URL.Path)
+				wantPath := "/chat/completions"
+				if tc.wantResponses {
+					wantPath = "/responses"
+				}
+				if r.URL.Path != wantPath {
+					t.Errorf("request path = %q, want %s", r.URL.Path, wantPath)
 				}
 				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 					t.Errorf("decode request: %v", err)
 				}
 				w.Header().Set("Content-Type", "application/json")
+				if tc.wantResponses {
+					_, _ = w.Write([]byte(`{"id":"resp_test","object":"response","status":"completed","output":[{"type":"message","id":"msg_test","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))
+					return
+				}
 				_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"test","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 			}))
 			defer server.Close()
 
 			model, err := BuildModel(context.Background(), Profile{
-				Provider: ProviderOpenAICompatible,
-				BaseURL:  server.URL,
-				Model:    tc.model,
-				APIKey:   "test-key",
+				Provider:  ProviderOpenAICompatible,
+				BaseURL:   server.URL,
+				Model:     tc.model,
+				APIKey:    "test-key",
+				Transport: tc.transport,
 			})
 			if err != nil {
 				t.Fatalf("BuildModel: %v", err)
@@ -160,7 +173,7 @@ func TestSelectedReasoningCapabilities(t *testing.T) {
 		{"openai-compatible", "https://api.openai.com/v1", "o3", "high", true},
 		{"openai", "https://custom.example/v1", "gpt-6-luna", "high", false},
 		{"openai", "", "gpt-4o", "high", false},
-		{"openai", "", "gpt-5.6-luna", "high", false},
+		{"openai", "", "gpt-5.6-luna", "high", true},
 		{"openai", "", "gpt-6-luna", "unknown", false},
 		{"openai", "", "unknown", "", true},
 	} {
@@ -179,10 +192,13 @@ func TestSelectedReasoningReachesModelRequest(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = previous })
 	var payload map[string]any
 	http.DefaultTransport = reasoningTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/v1/responses" {
+			t.Fatalf("reasoning request used %s", r.URL.Path)
+		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatal(err)
 		}
-		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))}, nil
+		return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"id":"resp_test","object":"response","status":"completed","output":[{"id":"msg_test","type":"message","role":"assistant","status":"completed","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`))}, nil
 	})
 	m, err := BuildModel(context.Background(), Profile{Provider: "openai", BaseURL: "https://api.openai.com/v1", Model: "gpt-6-luna", APIKey: "test", ReasoningEffort: "high"})
 	if err != nil {
@@ -191,7 +207,8 @@ func TestSelectedReasoningReachesModelRequest(t *testing.T) {
 	if _, err = m.Generate(context.Background(), []*schema.Message{schema.UserMessage("test")}); err != nil {
 		t.Fatal(err)
 	}
-	if payload["reasoning_effort"] != "high" {
-		t.Fatalf("reasoning not forwarded: %v", payload["reasoning_effort"])
+	reasoning, _ := payload["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" {
+		t.Fatalf("reasoning not forwarded: %v", payload["reasoning"])
 	}
 }
