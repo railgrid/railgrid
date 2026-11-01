@@ -430,6 +430,40 @@ func TestSessionModelInheritedAgentDefaultDoesNotRequireCredentialGet(t *testing
 	}
 }
 
+func TestSessionModelAnthropicOptionsAndDefaultComeFromConnection(t *testing.T) {
+	credential := sessionModelCredentialObject("agent-default", "claude-haiku-5-5")
+	if err := unstructured.SetNestedField(credential.Object, "https://api.anthropic.com/v1", "spec", "baseURL"); err != nil {
+		t.Fatal(err)
+	}
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects: []*unstructured.Unstructured{sessionModelAgentObject(conformanceAgent, "agent-default"), credential},
+		ListKinds: map[schema.GroupVersionResource]string{
+			agentsclient.AgentGVR: "AgentList", agentsclient.ModelCredentialGVR: "ModelCredentialList",
+		},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Resource == "agents" && a.Name == conformanceAgent && a.Verb == "get"
+		},
+	}
+	_, handler, _ := sessionModelTestServer(t, callers)
+	recorder := serveSessionModelRequest(handler, http.MethodGet, "new-chat", "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET session model options → %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		SelectedCredential string   `json:"selectedCredential"`
+		EffortOptions      []string `json:"effortOptions"`
+		DefaultEffort      string   `json:"defaultEffort"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	wantOptions := []string{"low", "medium", "high", "xhigh", "max"}
+	if response.SelectedCredential != "agent-default" || !reflect.DeepEqual(response.EffortOptions, wantOptions) || response.DefaultEffort != "medium" {
+		t.Fatalf("session options/default = %+v, want credential agent-default, options %v, default medium", response, wantOptions)
+	}
+}
+
 func TestResolveChatModelSettingsRechecksExplicitCredentialOnFreshAdmission(t *testing.T) {
 	allowCredential := false
 	callers := &conformance.FakeCallers{

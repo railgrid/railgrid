@@ -56,10 +56,11 @@ type turnProgressTracker struct {
 	// workedKnown distinguishes a measured zero from a run for which no
 	// model/tool timing evidence has been observed yet. This matters for old
 	// runs and setup failures, where elapsed wall time is not work evidence.
-	workedKnown bool
-	partial     strings.Builder
-	final       string
-	gotFinal    bool
+	workedKnown  bool
+	partial      strings.Builder
+	final        string
+	gotFinal     bool
+	continuation *backend.ContinuationMetadata
 }
 
 func newTurnProgressTracker(workedMS int64) *turnProgressTracker {
@@ -100,10 +101,12 @@ func (t *turnProgressTracker) assistant(message backend.AssistantMessage) {
 		// streamed deltas are now classified, so the unclassified buffer can be
 		// reused for the next response.
 		t.partial.Reset()
+		t.continuation = nil
 		return
 	}
 	t.final = message.Content
 	t.gotFinal = true
+	t.continuation = message.Continuation.Clone()
 	t.partial.Reset()
 }
 
@@ -260,10 +263,14 @@ func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run tas
 	if run.Agent != nil {
 		agentName = run.Agent.Name
 	}
+	metadata := turnMetadata("final", "completed", startedAt, tracker.durationMS(), 0, "")
+	if tracker.continuation != nil {
+		metadata[backend.ContinuationMetadataEnvelopeKey] = tracker.continuation.Clone()
+	}
 	return s.appendProgressMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
-		Metadata:  turnMetadata("final", "completed", startedAt, tracker.durationMS(), 0, ""),
+		Metadata:  metadata,
 		CreatedAt: createdAt,
 	})
 }

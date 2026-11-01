@@ -149,7 +149,7 @@ func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	got, _, err := DiscoverModels(t.Context(), upstream.URL, "private-key")
+	got, _, err := DiscoverModels(t.Context(), Profile{BaseURL: upstream.URL, APIKey: "private-key"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +161,52 @@ func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("discovered %v, want %v (catalog-known first, then alphabetical)", got, want)
 		}
+	}
+}
+
+func TestDiscoverModelsAnthropicHeaders(t *testing.T) {
+	for _, host := range []string{"api.anthropic.com", "api.openai.com", "api.anthropic.com.example.org"} {
+		t.Run(host, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" {
+					t.Errorf("unexpected discovery request: %s, authorization %q", r.URL.Path, r.Header.Get("Authorization"))
+				}
+				version := r.Header.Get("anthropic-version")
+				wantWorkspace := ""
+				if host == "api.anthropic.com" {
+					wantWorkspace = "wrkspc_test"
+				}
+				if got := r.Header.Get("anthropic-workspace-id"); got != wantWorkspace {
+					t.Errorf("workspace header = %q, want %q", got, wantWorkspace)
+				}
+				if host == "api.anthropic.com" && (version != "2023-06-01" || r.Header.Get("Content-Type") != "application/json") {
+					http.Error(w, "anthropic-version header is required", http.StatusBadRequest)
+					return
+				}
+				if host != "api.anthropic.com" && version != "" {
+					t.Errorf("Anthropic header sent to %s", host)
+				}
+				_, _ = io.WriteString(w, `{"data":[{"id":"claude-sonnet-4"}]}`)
+			}))
+			defer upstream.Close()
+			// Exercise the public endpoint selection through a local HTTP server,
+			// without a live credential or external network request.
+			client := &http.Client{Transport: reasoningTransport(func(r *http.Request) (*http.Response, error) {
+				local, err := http.NewRequestWithContext(r.Context(), r.Method, upstream.URL+r.URL.Path, nil)
+				if err != nil {
+					return nil, err
+				}
+				local.Header = r.Header.Clone()
+				return http.DefaultTransport.RoundTrip(local)
+			})}
+			previous := http.DefaultClient
+			http.DefaultClient = client
+			t.Cleanup(func() { http.DefaultClient = previous })
+			models, _, err := DiscoverModels(t.Context(), Profile{BaseURL: "https://" + host + "/v1/", APIKey: "test-key", AnthropicWorkspaceID: "wrkspc_test"})
+			if err != nil || len(models) != 1 || models[0] != "claude-sonnet-4" {
+				t.Fatalf("discovery = %v, %v", models, err)
+			}
+		})
 	}
 }
 
@@ -176,6 +222,11 @@ func TestSelectedReasoningCapabilities(t *testing.T) {
 		{"openai", "", "gpt-5.6-luna", "high", true},
 		{"openai", "", "gpt-6-luna", "unknown", false},
 		{"openai", "", "unknown", "", true},
+		{"openai-compatible", "https://api.anthropic.com/v1", "claude-haiku-5-5", "xhigh", true},
+		{"openai", "https://api.anthropic.com/v1", "claude-opus-4-6", "max", true},
+		{"openai-compatible", "https://api.anthropic.com/v1", "claude-opus-4-6", "xhigh", false},
+		{"openai-compatible", "https://api.anthropic.com/v1", "claude-sonnet-4-5-20250929", "high", false},
+		{"openai-compatible", "https://gateway.example/v1", "claude-haiku-5-5", "high", false},
 	} {
 		if err := ValidateReasoningEffort(tc.provider, tc.endpoint, tc.model, tc.effort); (err == nil) != tc.valid {
 			t.Fatalf("%+v: %v", tc, err)
@@ -183,9 +234,120 @@ func TestSelectedReasoningCapabilities(t *testing.T) {
 	}
 }
 
+func TestDefaultReasoningEffortForConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name, provider, endpoint, model, want string
+	}{
+		{name: "Haiku 5.5 Anthropic default", provider: ProviderOpenAICompatible, endpoint: "https://api.anthropic.com/v1", model: "claude-haiku-5-5", want: "medium"},
+		{name: "Opus 5.5 Anthropic default", provider: ProviderOpenAI, endpoint: "https://api.anthropic.com/v1", model: "claude-opus-5-5", want: "medium"},
+		{name: "Opus 4.5 Anthropic default", provider: ProviderOpenAICompatible, endpoint: "https://api.anthropic.com/v1", model: "claude-opus-4-5", want: "high"},
+		{name: "unsupported Haiku 4.5 has no default", provider: ProviderOpenAICompatible, endpoint: "https://api.anthropic.com/v1", model: "claude-haiku-4-5", want: ""},
+		{name: "custom Anthropic-compatible endpoint has no inferred default", provider: ProviderOpenAICompatible, endpoint: "https://gateway.example/v1", model: "claude-haiku-5-5", want: ""},
+		{name: "existing OpenAI default remains", provider: ProviderOpenAICompatible, endpoint: "https://api.openai.com/v1", model: "gpt-6-luna", want: DefaultReasoningEffort("gpt-6-luna")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DefaultReasoningEffortForConnection(tc.provider, tc.endpoint, tc.model); got != tc.want {
+				t.Fatalf("DefaultReasoningEffortForConnection() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 type reasoningTransport func(*http.Request) (*http.Response, error)
 
 func (f reasoningTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestAnthropicWorkspaceOnChatRequests(t *testing.T) {
+	for _, tc := range []struct{ host, workspace, want, effort string }{
+		{"api.anthropic.com", " wrkspc_test ", "wrkspc_test", "xhigh"},
+		{"api.anthropic.com", "", "", ""},
+		{"api.openai.com", "wrkspc_test", "", ""},
+		{"api.anthropic.com.example.org", "wrkspc_test", "", ""},
+	} {
+		t.Run(tc.host+tc.workspace, func(t *testing.T) {
+			previous := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = previous })
+			calls := 0
+			http.DefaultTransport = reasoningTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if got := r.Header.Get("anthropic-workspace-id"); got != tc.want {
+					t.Errorf("workspace header = %q, want %q", got, tc.want)
+				}
+				if tc.host == "api.anthropic.com" && r.URL.Path != "/v1/messages" {
+					t.Errorf("Anthropic reasoning must use Messages, got %s", r.URL.Path)
+				}
+				var payload struct {
+					Stream       bool     `json:"stream"`
+					Temperature  *float64 `json:"temperature"`
+					OutputConfig struct {
+						Effort string `json:"effort"`
+					} `json:"output_config"`
+					ReasoningEffort string `json:"reasoning_effort"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					return nil, err
+				}
+				if tc.host == "api.anthropic.com" && payload.Temperature != nil {
+					t.Error("Anthropic chat and stream requests must omit the default temperature")
+				}
+				if tc.host == "api.anthropic.com" && (payload.OutputConfig.Effort != tc.effort || payload.ReasoningEffort != "") {
+					t.Errorf("native effort = %q, compatibility effort = %q", payload.OutputConfig.Effort, payload.ReasoningEffort)
+				}
+				if tc.host != "api.anthropic.com" && payload.Temperature == nil {
+					t.Error("other chat endpoints must retain their existing default temperature")
+				}
+				body := `{"id":"test","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+				contentType := "application/json"
+				if payload.Stream {
+					contentType = "text/event-stream"
+					body = "data: {\"id\":\"test\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+				}
+				if tc.host == "api.anthropic.com" {
+					body = `{"id":"msg-test","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`
+					if payload.Stream {
+						body = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-haiku-5-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n" +
+							"event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+							"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+							"event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+							"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n" +
+							"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+					}
+				}
+				return &http.Response{StatusCode: 200, Header: http.Header{"Content-Type": []string{contentType}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			m, err := BuildModel(t.Context(), Profile{BaseURL: "https://" + tc.host + "/v1", Model: "claude-haiku-5-5", APIKey: "test-key", AnthropicWorkspaceID: tc.workspace, ReasoningEffort: tc.effort})
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages := []*schema.Message{schema.UserMessage("test")}
+			if _, err := m.Generate(t.Context(), messages); err != nil {
+				t.Fatal(err)
+			}
+			stream, err := m.Stream(t.Context(), messages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stream.Close()
+			var content strings.Builder
+			for {
+				message, err := stream.Recv()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				content.WriteString(message.Content)
+			}
+			if content.String() != "ok" {
+				t.Fatalf("stream content = %q", content.String())
+			}
+			if calls != 2 {
+				t.Fatalf("requests = %d, want 2", calls)
+			}
+		})
+	}
+}
 
 func TestSelectedReasoningReachesModelRequest(t *testing.T) {
 	previous := http.DefaultTransport

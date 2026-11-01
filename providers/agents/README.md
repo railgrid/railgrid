@@ -43,6 +43,28 @@ object in the tenant's own workspace carrying the provider flavour
 `secretRef` naming the Secret that holds the API key. The key itself is never
 on the object, so a credential is safe to list, watch and show.
 
+For Anthropic keys that are not scoped to a workspace, set
+`spec.anthropicWorkspaceID` to the `wrkspc_…` ID from Claude Console, or fill
+the optional **Anthropic workspace ID** field in the model connection form.
+It is stored on the credential and sent as `anthropic-workspace-id` on model
+discovery, verification, and ordinary or streaming chat requests, only to
+`api.anthropic.com`. Leave it blank for workspace-scoped keys. Changing or
+clearing it in the editor requires re-entering the API key and verifying the
+new selection before saving.
+
+Connections at `https://api.anthropic.com/v1` use Anthropic's native Messages
+API. Supported models expose their reasoning levels in the chat picker, and
+the selection is saved per model in the conversation. Haiku 5.5 offers Low,
+Medium, High, Extra high, and Max; **Model default** uses Medium. Selecting
+Model default leaves the effort unset in the upstream request.
+
+For Opus, Sonnet, and Haiku 5.5, Railgrid enables Anthropic's
+[`drop_block` binding control](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking).
+If instructions, tools, or compacted history change, Anthropic can drop the
+affected saved reasoning while retaining text and tool calls. Regenerating
+that reasoning can use more output tokens; unchanged conversations retain
+their signed reasoning blocks.
+
 The Secret must carry the label `railgrid.ai/owner: agents`. The provider's
 `secrets` permission claim is scoped to it, so kcp hides anything without it
 from the provider — an unlabelled Secret saves cleanly and is then invisible to

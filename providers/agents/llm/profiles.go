@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -39,6 +40,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 )
 
@@ -109,11 +111,12 @@ type Profile struct {
 	ResponsesOriginKey []byte `json:"-"`
 	// Transport pins the protocol of an admitted run. Empty selects it from
 	// the endpoint, model and effort.
-	Transport string `json:"-"`
-	Provider  string `json:"provider,omitempty"`
-	BaseURL   string `json:"baseURL,omitempty"`
-	Model     string `json:"model,omitempty"`
-	APIKey    string `json:"apiKey,omitempty"`
+	Transport            string `json:"-"`
+	Provider             string `json:"provider,omitempty"`
+	BaseURL              string `json:"baseURL,omitempty"`
+	Model                string `json:"model,omitempty"`
+	APIKey               string `json:"apiKey,omitempty"`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
 }
 
 func (p Profile) normalized() Profile {
@@ -127,6 +130,7 @@ func (p Profile) normalized() Profile {
 	}
 	p.Model = strings.TrimSpace(p.Model)
 	p.APIKey = strings.TrimSpace(p.APIKey)
+	p.AnthropicWorkspaceID = strings.TrimSpace(p.AnthropicWorkspaceID)
 	return p
 }
 
@@ -171,10 +175,11 @@ func ProfileFor(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelC
 		return Profile{}, fmt.Errorf("secret %q has no %q key: %w", cred.Spec.SecretRef.Name, SecretKey(cred.Spec), ErrNotConfigured)
 	}
 	return Profile{
-		Provider: cred.Spec.Provider,
-		BaseURL:  cred.Spec.BaseURL,
-		Model:    cred.Spec.Model,
-		APIKey:   key,
+		Provider:             cred.Spec.Provider,
+		BaseURL:              cred.Spec.BaseURL,
+		Model:                cred.Spec.Model,
+		APIKey:               key,
+		AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID,
 	}.normalized(), nil
 }
 
@@ -222,6 +227,11 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 			return nil, err
 		}
 		switch ModelTransport(p) {
+		case TransportAnthropicMessages:
+			return anthropicmodel.New(ctx, anthropicmodel.Config{
+				BaseURL: p.BaseURL, Model: p.Model, APIKey: p.APIKey,
+				WorkspaceID: p.AnthropicWorkspaceID, Effort: p.ReasoningEffort,
+			})
 		case TransportResponses:
 			return NewResponsesModel(ctx, p)
 		case TransportChatCompletions:
@@ -235,7 +245,12 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 			HTTPClient:      &http.Client{},
 			ReasoningEffort: openaimodel.ReasoningEffortLevel(EffectiveReasoningEffort(p)),
 		}
-		if modelSupportsTemperature(p.Model) {
+		if p.AnthropicWorkspaceID != "" {
+			cfg.HTTPClient.Transport = anthropicWorkspaceTransport{workspaceID: p.AnthropicWorkspaceID, base: http.DefaultTransport}
+		}
+		// Anthropic's newer models reject an explicit temperature. Let the
+		// compatibility endpoint select its model default on every request.
+		if modelSupportsTemperature(p.Model) && !isAnthropicEndpoint(p.BaseURL) {
 			t := float32(0.2)
 			cfg.Temperature = &t
 		}
@@ -250,12 +265,14 @@ func BuildModel(ctx context.Context, p Profile) (einomodel.BaseChatModel, error)
 }
 
 const (
-	TransportChatCompletions = "chat-completions"
-	TransportResponses       = "responses"
+	TransportChatCompletions   = "chat-completions"
+	TransportResponses         = "responses"
+	TransportAnthropicMessages = "anthropic-messages"
 )
 
 // ModelTransport selects the wire protocol for a model connection. A persisted
-// protocol takes precedence when resuming an admitted run. Automatic GPT-6
+// protocol takes precedence when resuming an admitted run. The official
+// Anthropic endpoint uses native Messages. Automatic GPT-6
 // routing to Responses applies only to the official OpenAI endpoint; custom
 // OpenAI-compatible gateways keep Chat Completions unless a caller pinned
 // Responses explicitly. Earlier models keep Chat Completions unless their
@@ -271,6 +288,9 @@ func ModelTransport(p Profile) string {
 	provider := p.Provider
 	if provider == ProviderOpenAI {
 		provider = ProviderOpenAICompatible
+	}
+	if anthropicmodel.UsesEndpoint(p.BaseURL) {
+		return TransportAnthropicMessages
 	}
 	if !modelcatalog.IsOfficialOpenAIEndpoint(provider, p.BaseURL) {
 		return TransportChatCompletions
@@ -320,22 +340,34 @@ func EffectiveReasoningEffort(p Profile) string {
 // transports — so an uncurated list is a list of ways to save a credential that
 // fails on its first turn. Filtering at the single shared call keeps
 // status.models and the verb's answer identical.
-func DiscoverModels(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
-	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	if base == "" {
-		base = DefaultBaseURL
-	}
+func DiscoverModels(ctx context.Context, profile Profile) ([]string, time.Duration, error) {
+	profile = profile.normalized()
+	base := strings.TrimRight(profile.BaseURL, "/")
 	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
 		return nil, 0, err
 	}
-	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+	if profile.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+profile.APIKey)
+	}
+	// Anthropic's OpenAI-compatible chat endpoint shares the native Models
+	// API, which requires a version even though chat completions does not.
+	if strings.EqualFold(req.URL.Hostname(), "api.anthropic.com") {
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := *http.DefaultClient
+	if profile.AnthropicWorkspaceID != "" {
+		baseTransport := client.Transport
+		if baseTransport == nil {
+			baseTransport = http.DefaultTransport
+		}
+		client.Transport = anthropicWorkspaceTransport{workspaceID: profile.AnthropicWorkspaceID, base: baseTransport}
 	}
 	start := time.Now()
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	latency := time.Since(start)
 	if err != nil {
 		return nil, latency, err
@@ -369,6 +401,26 @@ func DiscoverModels(ctx context.Context, baseURL, apiKey string) ([]string, time
 		}
 	}
 	return FilterChatModels(ids), latency, nil
+}
+
+// The same client handles verification, streaming and ordinary agent runs.
+// Restrict the workspace header to Anthropic, including on redirects.
+type anthropicWorkspaceTransport struct {
+	workspaceID string
+	base        http.RoundTripper
+}
+
+func isAnthropicEndpoint(baseURL string) bool {
+	endpoint, err := url.Parse(baseURL)
+	return err == nil && strings.EqualFold(endpoint.Hostname(), "api.anthropic.com")
+}
+
+func (t anthropicWorkspaceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.EqualFold(req.URL.Hostname(), "api.anthropic.com") {
+		req = req.Clone(req.Context())
+		req.Header.Set("anthropic-workspace-id", t.workspaceID)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // ProbeTimeout bounds one discovery call. A person is waiting on the verb and
@@ -467,6 +519,19 @@ func ReasoningEfforts(provider, baseURL, model string) []string {
 		return []string{}
 	}
 	return profile.Efforts
+}
+
+// DefaultReasoningEffortForConnection returns the documented default only
+// when the exact model is supported by the configured official endpoint. For
+// other connections, preserve the existing OpenAI-compatible model defaults.
+func DefaultReasoningEffortForConnection(provider, baseURL, model string) string {
+	if provider == ProviderOpenAI {
+		provider = ProviderOpenAICompatible
+	}
+	if profile, ok := modelcatalog.ReasoningProfileForConnection(provider, baseURL, model); ok && profile.AnthropicMessages {
+		return profile.DefaultEffort
+	}
+	return DefaultReasoningEffort(model)
 }
 
 func ValidateReasoningEffort(provider, baseURL, model, effort string) error {

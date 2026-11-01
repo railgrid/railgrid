@@ -95,7 +95,7 @@ const (
 
 // Prober performs one GET {baseURL}/models. Injected so tests never reach the
 // network; nil means llm.DiscoverModels.
-type Prober func(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error)
+type Prober func(ctx context.Context, profile llm.Profile) ([]string, time.Duration, error)
 
 // Reconciler keeps every ModelCredential's status true.
 type Reconciler struct {
@@ -113,11 +113,11 @@ func (r *Reconciler) now() time.Time {
 	return time.Now().UTC()
 }
 
-func (r *Reconciler) probe(ctx context.Context, baseURL, apiKey string) ([]string, time.Duration, error) {
+func (r *Reconciler) probe(ctx context.Context, profile llm.Profile) ([]string, time.Duration, error) {
 	if r.Probe != nil {
-		return r.Probe(ctx, baseURL, apiKey)
+		return r.Probe(ctx, profile)
 	}
-	return llm.DiscoverModels(ctx, baseURL, apiKey)
+	return llm.DiscoverModels(ctx, profile)
 }
 
 // SetupWithManager wires the reconciler into the multicluster manager.
@@ -242,7 +242,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			"this credential is a "+cred.Spec.Provider+" harness identity; there is no endpoint to call, and its Secret holds a usable one",
 			cred.Generation, now)
 	default:
-		models, latency, probeErr := r.probe(ctx, cred.Spec.BaseURL, apiKey)
+		models, latency, probeErr := r.probe(ctx, llm.Profile{BaseURL: cred.Spec.BaseURL, APIKey: apiKey, AnthropicWorkspaceID: cred.Spec.AnthropicWorkspaceID})
 		status.LastProbeTime = &metav1.Time{Time: now}
 		if probeErr != nil {
 			// ProbeSummary, not the error: an upstream body is quoted back to

@@ -49,6 +49,11 @@ const harness = computed(() => current.value.family === 'harness')
 const baseURL = ref(props.credential?.baseURL || DEFAULT_PROVIDER_PRESET.baseURL)
 const model = ref(props.credential?.model || '')
 const apiKey = ref('')
+const anthropicWorkspaceID = ref(props.credential?.anthropicWorkspaceID || '')
+const workspaceError = ref('')
+const anthropicEndpoint = computed(() => {
+  try { return new URL(baseURL.value).hostname === 'api.anthropic.com' } catch { return false }
+})
 // A stored credential keeps its family. Converting a chat endpoint into a
 // harness identity would mean rewriting its Secret into a different shape and
 // unsaying spec.secretKey, and the honest way to do that is a new credential —
@@ -97,7 +102,7 @@ const TEST_MODEL_NOTICE = 'Test this model before saving. The endpoint listing a
 const CODEX_JSON_NOTICE = 'This is not a JSON object. Paste the contents of the auth.json file created by codex login.'
 
 const fingerprint = computed(() => JSON.stringify([
-  provider.value, baseURL.value.trim(), model.value.trim(), apiKey.value.trim(),
+  provider.value, baseURL.value.trim(), model.value.trim(), apiKey.value.trim(), anthropicWorkspaceID.value.trim(),
   harnessKey.value, harnessSecret.value.trim(),
 ]))
 const baseline = fingerprint.value
@@ -121,7 +126,7 @@ const discoveredModels = computed(() => models.value.map(id => ({
 })))
 // A changed endpoint invalidates the stored key: it was issued for the old one
 // and must not be sent to a new one.
-const credentialChanged = computed(() => !props.credential || provider.value !== (props.credential.provider || initialPreset.provider) || baseURL.value.replace(/\/+$/, '') !== (props.credential.baseURL || DEFAULT_PROVIDER_PRESET.baseURL).replace(/\/+$/, ''))
+const credentialChanged = computed(() => !props.credential || provider.value !== (props.credential.provider || initialPreset.provider) || baseURL.value.replace(/\/+$/, '') !== (props.credential.baseURL || DEFAULT_PROVIDER_PRESET.baseURL).replace(/\/+$/, '') || anthropicWorkspaceID.value.trim() !== (props.credential.anthropicWorkspaceID || ''))
 const needsKey = computed(() => credentialChanged.value || props.credential?.secretResolved === false)
 const reuseSavedCredential = computed(() => saved.value && !credentialChanged.value && !apiKey.value.trim())
 const canProbe = computed(() => Boolean(baseURL.value.trim()) && (!needsKey.value || Boolean(apiKey.value.trim())))
@@ -185,16 +190,17 @@ watch(fingerprint, () => {
   probeDiagnostic.value = ''
   endpointValidationError.value = ''
   credentialError.value = ''
+  workspaceError.value = ''
   modelError.value = ''
   harnessSecretError.value = ''
 })
 watch(name, () => { nameError.value = '' })
 // A typed key belongs to the endpoint it was entered for. Never carry it to a
 // different provider or URL, even before the candidate has been saved.
-watch([provider, baseURL], () => { apiKey.value = '' }, { flush: 'sync' })
+watch([provider, baseURL], () => { apiKey.value = ''; anthropicWorkspaceID.value = '' }, { flush: 'sync' })
 // A changed endpoint or key means the discovered list belongs to something
 // else. A changed model does not: it was picked FROM that list.
-watch([baseURL, apiKey], () => { models.value = []; discoveryError.value = '' })
+watch([baseURL, apiKey, anthropicWorkspaceID], () => { models.value = []; discoveryError.value = '' })
 // A secret is issued for ONE identity. Crossing between the families — an API
 // key for an endpoint and a login for a harness are not the same kind of thing
 // at all — must not carry the typed value across.
@@ -215,6 +221,7 @@ function valid(requireModel: boolean, requireVerification = false): boolean {
   endpointValidationError.value = ''
   credentialError.value = ''
   modelError.value = ''
+  workspaceError.value = ''
   let ok = true
   try { const url = new URL(baseURL.value); if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error() }
   catch { endpointValidationError.value = 'Enter a valid HTTP or HTTPS API endpoint.'; ok = false }
@@ -223,6 +230,10 @@ function valid(requireModel: boolean, requireVerification = false): boolean {
   // contains whitespace. A pasted sentence — a copied error banner, a line of
   // a config file — is saved verbatim otherwise and only fails later as a 401.
   else if (/\s/.test(apiKey.value.trim())) { credentialError.value = 'The API key contains spaces or line breaks; paste only the key.'; ok = false }
+  if (anthropicEndpoint.value && !/^(wrkspc_[A-Za-z0-9]+)?$/.test(anthropicWorkspaceID.value.trim())) {
+    workspaceError.value = 'Enter an Anthropic workspace ID beginning with wrkspc_, or leave blank for a workspace-scoped key.'
+    ok = false
+  }
   if (requireModel && !model.value.trim()) { modelError.value = 'Choose or enter a model ID.'; ok = false }
   // The button is disabled for this too, but a form can also be submitted with
   // Enter, and an unproven model is exactly what this change exists to stop
@@ -270,10 +281,10 @@ async function probe(discover: boolean) {
     // written, not by the first run that uses it.
     const result = await (reuseSavedCredential.value && target
       ? discover ? props.api.discoverCredential(target) : props.api.testCredential(target, model.value.trim())
-      : props.api.probeCredentialDraft({ name: name.value.trim(), provider: provider.value, baseURL: baseURL.value.trim(), apiKey: apiKey.value.trim(), model: model.value.trim() }, discover))
+      : props.api.probeCredentialDraft({ name: name.value.trim(), provider: provider.value, baseURL: baseURL.value.trim(), apiKey: apiKey.value.trim(), model: model.value.trim(), ...(anthropicEndpoint.value ? { anthropicWorkspaceID: anthropicWorkspaceID.value.trim() } : {}) }, discover))
     if (serial !== generation || snapshot !== fingerprint.value) return
     if (!result.ok) {
-      const failure = presentModelProbeResult(result)
+      const failure = presentModelProbeResult(result, discover ? 'discover' : 'test')
       probeDiagnostic.value = failure.technicalDiagnostic || ''
       if (discover) discoveryError.value = failure.error || ''
       else testError.value = failure.error || ''
@@ -283,8 +294,9 @@ async function probe(discover: boolean) {
     else { testedFingerprint.value = snapshot; testResult.value = result }
   } catch (error) {
     if (serial !== generation) return
-    probeDiagnostic.value = errorTechnicalDiagnostic(error)
-    if (discover) discoveryError.value = (error as Error).message
+    const failure = presentModelProbeResult({ ok: false, latencyMS: 0, error: (error as Error).message, technicalDiagnostic: errorTechnicalDiagnostic(error) }, discover ? 'discover' : 'test')
+    probeDiagnostic.value = failure.technicalDiagnostic || ''
+    if (discover) discoveryError.value = failure.error || ''
     else testError.value = (error as Error).message
   } finally { if (serial === generation) { discovering.value = false; testing.value = false } }
 }
@@ -321,6 +333,7 @@ function submit() {
     name: name.value.trim(),
     provider: provider.value,
     baseURL: baseURL.value.trim(),
+    ...(anthropicEndpoint.value || props.credential?.anthropicWorkspaceID ? { anthropicWorkspaceID: anthropicEndpoint.value ? anthropicWorkspaceID.value.trim() : '' } : {}),
     model: model.value.trim(),
     ...(apiKey.value.trim() ? { apiKey: apiKey.value.trim() } : {}),
   }, verified.value ? testResult.value : undefined)
@@ -417,6 +430,25 @@ defineExpose({ cancel, locked })
   @cancel="cancel"
   @save="submit"
  >
+   <template #connection-extra>
+     <label v-if="anthropicEndpoint" for="anthropic-workspace-id" class="k-model-form-field">
+       Anthropic workspace ID (optional)
+       <input
+         id="anthropic-workspace-id"
+         v-model="anthropicWorkspaceID"
+         name="anthropicWorkspaceID"
+         class="k-input"
+         placeholder="wrkspc_…"
+         maxlength="253"
+         :disabled="locked"
+         :aria-invalid="Boolean(workspaceError)"
+         aria-describedby="anthropic-workspace-help"
+       >
+       <span id="anthropic-workspace-help" class="k-model-form-hint" :class="workspaceError ? 'text-danger' : ''" :role="workspaceError ? 'alert' : undefined">
+         {{ workspaceError || 'Required for Anthropic keys that are not scoped to a workspace. Use the workspace ID from Claude Console. Re-enter your API key to test a changed workspace ID.' }}
+       </span>
+     </label>
+   </template>
    <template #probe-details><TechnicalDetails :diagnostic="probeDiagnostic" /></template>
  </ModelConnectionForm>
 </template>

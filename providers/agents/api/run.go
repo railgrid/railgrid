@@ -1356,6 +1356,9 @@ func (k *turnSink) Assistant(message backend.AssistantMessage) {
 			metadata[historyResponsesContinuationKey] = continuation
 		}
 		metadata["modelOnly"] = strings.TrimSpace(message.Content) == ""
+		if message.Continuation != nil {
+			metadata[backend.ContinuationMetadataEnvelopeKey] = message.Continuation.Clone()
+		}
 		if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
 			ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 			Role: "assistant", Content: message.Content,

@@ -36,6 +36,61 @@ const credential = { name: 'main', model: 'gpt-4o', baseURL: 'https://api.openai
 const usage = { windowDays: 30, total: { runs: 0, errors: 0, inputTokens: 0, outputTokens: 0, usdMicros: 0 }, byAgent: [], byModel: [], series: [] }
 
 describe('focused model connection editor', () => {
+ it('carries an Anthropic workspace through discovery, verification and saving, and invalidates edits', async () => {
+  const save = vi.fn()
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, models: ['claude-sonnet-4'], latencyMS: 1 })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft }), busy: false, onSave: save })
+  expect(el.querySelector('#anthropic-workspace-id')).toBeNull()
+  await selectProvider(el, 'anthropic')
+  await input(el, 'name', 'claude')
+  await input(el, 'apiKey', 'test-key')
+  await input(el, 'anthropicWorkspaceID', 'wrkspc_team')
+  button(el, 'Find models').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({ anthropicWorkspaceID: 'wrkspc_team' }), true)
+  await selectModel(el, 'claude-sonnet-4')
+  button(el, 'Test connection').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({ anthropicWorkspaceID: 'wrkspc_team' }), false)
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ anthropicWorkspaceID: 'wrkspc_team' }), expect.objectContaining({ ok: true }))
+  await input(el, 'anthropicWorkspaceID', 'wrkspc_other')
+  expect(button(el, 'Connect model').disabled).toBe(true)
+  expect(el.textContent).not.toContain('Connection verified')
+  await selectProvider(el, 'openai')
+  expect(el.querySelector('#anthropic-workspace-id')).toBeNull()
+ })
+
+ it('loads a saved workspace, requires the key when it changes, and allows clearing it', async () => {
+  const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+  const save = vi.fn()
+  const { element: el } = await mountVue(Editor, {
+    api: stubApi({ testCredential, probeCredentialDraft }), busy: false, onSave: save,
+    credential: { ...credential, provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1', model: 'claude-sonnet-4', anthropicWorkspaceID: 'wrkspc_saved' },
+  })
+  expect(el.querySelector<HTMLInputElement>('#anthropic-workspace-id')!.value).toBe('wrkspc_saved')
+  button(el, 'Test connection').click(); await settleVue()
+  expect(testCredential).toHaveBeenCalledWith('main', 'claude-sonnet-4')
+  await input(el, 'anthropicWorkspaceID', '')
+  expect(button(el, 'Test connection').disabled).toBe(true)
+  expect(button(el, 'Save changes').disabled).toBe(true)
+  await input(el, 'apiKey', 'test-key')
+  button(el, 'Test connection').click(); await settleVue()
+  expect(probeCredentialDraft).toHaveBeenLastCalledWith(expect.objectContaining({ anthropicWorkspaceID: '' }), false)
+  await submitForm(el)
+  expect(save).toHaveBeenCalledWith(expect.objectContaining({ anthropicWorkspaceID: '' }), expect.objectContaining({ ok: true }))
+ })
+
+ it('rejects a malformed Anthropic workspace before probing', async () => {
+  const probeCredentialDraft = vi.fn()
+  const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft }), busy: false })
+  await selectProvider(el, 'anthropic')
+  await input(el, 'apiKey', 'test-key')
+  await input(el, 'anthropicWorkspaceID', 'wrong workspace')
+  button(el, 'Find models').click(); await settleVue()
+  expect(el.querySelector('[role="alert"]')?.textContent).toContain('beginning with wrkspc_')
+  expect(probeCredentialDraft).not.toHaveBeenCalled()
+ })
+
  it('clears a typed key before probing a different provider or endpoint', async () => {
   const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true })
   const { element: el } = await mountVue(Editor, { api: stubApi({ probeCredentialDraft }), busy: false })
@@ -236,6 +291,23 @@ describe('focused model connection editor', () => {
   expect(button(el, 'Save changes').disabled).toBe(true)
   await input(el, 'apiKey', 'new-key')
   expect(button(el, 'Save changes').disabled).toBe(true)
+ })
+
+ it.each([false, true])('reports catalog discovery failures separately from model verification (throws=%s)', async (throws) => {
+  const message = 'endpoint returned HTTP 400: anthropic-version header is required'
+  const discoverCredential = throws
+    ? vi.fn().mockRejectedValue(new Error(message))
+    : vi.fn().mockResolvedValue({ ok: false, error: message })
+  const { element: el } = await mountVue(Editor, { api: stubApi({ discoverCredential }), credential, busy: false })
+  button(el, 'Find models').click(); await settleVue()
+  const alert = el.querySelector('[role="alert"]')!
+  expect(alert.textContent).toContain('Could not load the model catalog')
+  expect(alert.textContent).not.toContain('did not pass verification')
+  expect(alert.textContent).not.toContain('HTTP 400')
+  expect(alert.textContent).toContain('enter a model ID manually')
+  const details = el.querySelector('details')!
+  expect(details.open).toBe(false)
+  expect(details.textContent).toContain(message)
  })
 
  it('creates the named connection only once after successful verification', async () => {

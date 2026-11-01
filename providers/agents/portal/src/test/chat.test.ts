@@ -2650,6 +2650,36 @@ describe('conversation model picker', () => {
     expect(text(el)).toContain('Chat model could not be saved')
   })
 
+  it('shows all Haiku effort levels from the backend and saves an explicit choice for this chat', async () => {
+    const capabilities = {
+      selectedCredential: 'haiku', modelCredential: 'haiku',
+      effortOptions: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium',
+    }
+    const saveSessionModel = vi.fn(async (_agent, _session, preferences) => ({ ...capabilities, ...preferences }))
+    const { el, store } = await mountChat(scripted([]), {
+      getSessionModel: async () => capabilities,
+      saveSessionModel,
+    })
+    store.credentials.data = [{ name: 'haiku', provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1', model: 'claude-haiku-5-5' }]
+    store.credentials.loaded = true
+    store.dispatchEvent(new Event('change'))
+    await settle(8)
+    picker(el).click()
+    await settle()
+    const slider = document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')!
+    expect(slider.max).toBe('5')
+    expect(slider.getAttribute('aria-valuetext')).toContain('Medium')
+    slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    slider.value = '3'
+    slider.dispatchEvent(new Event('input', { bubbles: true }))
+    slider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle(8)
+    expect(saveSessionModel).toHaveBeenCalledWith('scout', expect.any(String), expect.objectContaining({
+      modelCredential: 'haiku', reasoningEffortByModel: { haiku: 'high' },
+    }))
+    expect(picker(el).getAttribute('aria-label')).toContain('High')
+  })
+
   it('waits for an Agent default save and authoritative reload before refreshing inherited capabilities', async () => {
     const pendingAgentSave = deferred<unknown>()
     const order: string[] = []

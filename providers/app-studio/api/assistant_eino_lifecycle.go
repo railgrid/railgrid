@@ -55,6 +55,15 @@ type projectEinoAssistantLifecycle struct {
 	liveContextSections   map[string]string
 }
 
+const (
+	// These keys are emitted and consumed by Eino's native Claude adapter.
+	// Keep them in Eino's private replay state so approval resume can continue a
+	// signed thinking/tool-use turn. They are intentionally not part of the
+	// durable chat-message projection.
+	projectEinoAssistantAnthropicThinkingKey          = "_eino_claude_thinking"
+	projectEinoAssistantAnthropicThinkingSignatureKey = "_eino_claude_thinking_signature"
+)
+
 func projectEinoAssistantLifecycleMiddleware(
 	req projectAssistantRunRequest,
 	runState *projectEinoAssistantRunState,
@@ -681,11 +690,51 @@ func (m *projectEinoAssistantLifecycle) rewriteLiveContext(ctx context.Context, 
 	if err != nil {
 		return err
 	}
+	if projectLLMTransport(m.req.LLM) == projectLLMTransportAnthropic {
+		if err := projectEinoAssistantRestoreAnthropicContinuation(state.Messages, conversationMessages); err != nil {
+			return err
+		}
+	}
 	state.Messages = append(live, conversationMessages...)
 	m.liveContext = digest
 	m.liveContextReady = true
 	m.liveContextGeneration = contextGeneration
 	m.liveContextSections = projectEinoAssistantCloneLiveContextSections(sections)
+	return nil
+}
+
+// projectEinoAssistantRestoreAnthropicContinuation restores only the native
+// Claude fields required to replay a signed thinking block. The surrounding
+// chat conversion remains the sanitized durable projection used by history,
+// events, and compaction checkpoints.
+func projectEinoAssistantRestoreAnthropicContinuation(source, projected []*schema.Message) error {
+	sourceAssistants := make([]*schema.Message, 0)
+	projectedAssistants := make([]*schema.Message, 0)
+	for _, message := range source {
+		if message != nil && message.Role == schema.Assistant {
+			sourceAssistants = append(sourceAssistants, message)
+		}
+	}
+	for _, message := range projected {
+		if message != nil && message.Role == schema.Assistant {
+			projectedAssistants = append(projectedAssistants, message)
+		}
+	}
+	if len(sourceAssistants) != len(projectedAssistants) {
+		return fmt.Errorf("restore Anthropic continuation metadata: assistant message count changed during replay projection (%d to %d)", len(sourceAssistants), len(projectedAssistants))
+	}
+	for index, sourceMessage := range sourceAssistants {
+		for _, key := range []string{projectEinoAssistantAnthropicThinkingKey, projectEinoAssistantAnthropicThinkingSignatureKey} {
+			value, ok := sourceMessage.Extra[key].(string)
+			if !ok {
+				continue
+			}
+			if projectedAssistants[index].Extra == nil {
+				projectedAssistants[index].Extra = make(map[string]any)
+			}
+			projectedAssistants[index].Extra[key] = value
+		}
+	}
 	return nil
 }
 

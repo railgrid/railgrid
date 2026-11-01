@@ -18,6 +18,8 @@ const threadReasoning = await loadTS('./threadReasoning.ts')
 const catalog = [
   { id: 'gpt-6-luna', aliases: ['gpt-6-luna-2026-10-01'], efforts: ['low', 'medium', 'high', 'xhigh'] },
   { id: 'o4-mini', efforts: ['low', 'medium', 'high'] },
+  { id: 'claude-haiku-5-5', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium', anthropicMessages: true },
+  { id: 'claude-haiku-4-5-20251001', efforts: [], anthropicMessages: true },
 ]
 const endpointFixtures = JSON.parse(await readFile(
   new URL('../../../../provider-sdk/modelcatalog/testdata/endpoints.json', import.meta.url),
@@ -49,6 +51,57 @@ test('reasoning endpoint gate matches the shared Go fixture', () => {
 
 test('reasoning levels still require a known model profile', () => {
   assert.deepEqual(reasoning.reasoningEffortsForConnection({ model: 'vendor/unknown' }, catalog), [])
+})
+
+test('Anthropic effort choices require an exact supported model on the official Messages endpoint', () => {
+  const official = {
+    provider: 'openai-compatible',
+    baseURL: 'https://api.anthropic.com/v1',
+    model: 'claude-haiku-5-5',
+  }
+  const efforts = ['low', 'medium', 'high', 'xhigh', 'max']
+  assert.deepEqual(reasoning.reasoningEffortsForConnection(official, catalog), efforts)
+  assert.equal(reasoning.reasoningDefaultEffortForConnection(official, catalog), 'medium')
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...official, provider: 'openai' }, catalog), efforts)
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...official, baseURL: 'https://gateway.example.test/v1' }, catalog), [])
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...official, baseURL: 'https://api.openai.com/v1' }, catalog), [])
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...official, model: 'openrouter/anthropic/claude-haiku-5-5' }, catalog), [])
+  assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...official, model: 'claude-haiku-4-5-20251001' }, catalog), [])
+  assert.equal(reasoning.reasoningDefaultEffortForConnection({ ...official, baseURL: 'https://gateway.example.test/v1' }, catalog), '')
+})
+
+test('Anthropic endpoint matching rejects gateways, operation URLs, and URL lookalikes', () => {
+  const connection = {
+    provider: 'openai-compatible',
+    model: 'claude-haiku-5-5',
+  }
+  for (const baseURL of [
+    'https://api.anthropic.com/v1/',
+    'https://api.anthropic.com:443/v1',
+  ]) {
+    assert.deepEqual(
+      reasoning.reasoningEffortsForConnection({ ...connection, baseURL }, catalog),
+      ['low', 'medium', 'high', 'xhigh', 'max'],
+      baseURL,
+    )
+  }
+  for (const baseURL of [
+    'https://api.anthropic.com.evil.test/v1',
+    'https://gateway.api.anthropic.com/v1',
+    'http://api.anthropic.com/v1',
+    'https://api.anthropic.com:8443/v1',
+    'https://user@api.anthropic.com/v1',
+    'https://api.anthropic.com/proxy/v1',
+    'https://api.anthropic.com/v1/messages',
+    'https://api.anthropic.com/%76%31',
+    'https://api.anthropic.com/v1?tenant=one',
+  ]) {
+    assert.deepEqual(reasoning.reasoningEffortsForConnection({ ...connection, baseURL }, catalog), [], baseURL)
+  }
+  assert.deepEqual(
+    reasoning.reasoningEffortsForConnection({ ...connection, provider: 'google-ai-studio', baseURL: 'https://api.anthropic.com/v1' }, catalog),
+    [],
+  )
 })
 
 test('empty effort inherits the saved model default and stale values require an explicit reset', () => {
