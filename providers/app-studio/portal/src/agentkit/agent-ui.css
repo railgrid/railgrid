@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 32;
+  --railgrid-agent-ui-version: 33;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1180,10 +1180,10 @@ button.k-workbench-tab {
 .k-model-connection__actions{display:flex;align-items:center;flex-wrap:wrap;gap:4px;border-top:1px solid var(--km-b);padding-top:10px;margin-top:auto;}
 .k-model-connection__actions .k-btn{font-size:11px;padding:6px;}
 .k-model-connection__actions .k-icon-action{margin-left:auto;}
-.k-model-usage{display:grid;gap:16px;min-width:0;margin-top:8px;padding:20px;border:1px solid var(--km-b);border-radius:6px;background:var(--color-surface-raised, #111320);}
-.k-model-usage__heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;}
-.k-model-usage__heading h3{margin:0;font-size:16px;color:var(--km-p);}
-.k-model-usage__heading p,.k-model-usage__unavailable p{margin:4px 0 0;font-size:12px;color:var(--km-t);}
+.k-model-usage{margin-top:8px;}
+.k-model-usage__heading{flex-wrap:wrap;}
+.k-model-usage__body{display:grid;gap:16px;min-width:0;padding:20px;border:1px solid var(--km-b);border-radius:6px;background:var(--color-surface-raised, #111320);}
+.k-model-usage__unavailable p{margin:4px 0 0;font-size:12px;color:var(--km-t);}
 .k-model-usage__unavailable h4{margin:0;font-size:13px;color:var(--km-p);}
 .k-model-form-field{display:grid;align-content:start;min-width:0;gap:6px;font-size:11px;font-weight:500;color:var(--km-t);}
 .k-model-form-field>.k-input,.k-model-form-section>.k-input{height:40px;min-height:40px;line-height:20px;}

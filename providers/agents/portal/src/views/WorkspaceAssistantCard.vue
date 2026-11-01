@@ -48,8 +48,14 @@ function saveAssistant(): void {
 }
 </script>
 <template>
-    <section id="workspace-assistant-settings" ref="assistantPanel" class="k-card agents-assistant-settings" tabindex="-1" aria-label="Workspace assistant settings">
-      <h3>Workspace assistant</h3>
+    <section id="workspace-assistant-settings" ref="assistantPanel" class="k-resource-page k-resource-page--collection agents-assistant-settings" tabindex="-1" aria-label="Workspace assistant settings">
+      <header class="k-resource-page__header">
+        <div class="k-resource-page__heading">
+          <h3 class="k-resource-page__title">Workspace assistant</h3>
+          <p class="k-resource-page__subtitle">Only for you, in this browser and workspace.</p>
+        </div>
+      </header>
+      <div class="k-card agents-assistant-settings__card">
       <p v-if="agents.error" class="k-error" role="alert">Could not refresh agents. <button class="k-btn k-btn--text" type="button" :disabled="agents.loading" @click="store.load('agents')">Retry</button></p>
       <p v-else-if="!agents.hasSnapshot" role="status">Loading agents…</p>
       <p v-if="unavailableAgent" role="status">This agent is unavailable. Choose another agent or turn the assistant off.</p>
@@ -69,10 +75,10 @@ function saveAssistant(): void {
           </details>
         </div>
         <div class="agents-assistant-settings__footer">
-          <p>Only for you, in this browser and workspace.</p>
           <div class="agents-assistant-settings__actions"><button class="k-btn k-btn--text agents-assistant-settings__action" type="button" @click="cancelAssistant">Cancel</button><button class="k-btn k-btn--primary agents-assistant-settings__action" type="submit" :disabled="!canSave">Save assistant</button></div>
         </div>
       </form>
+      </div>
     </section>
 
 </template>

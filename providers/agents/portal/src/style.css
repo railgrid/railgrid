@@ -944,8 +944,8 @@ railgrid-provider-agents .agents-page-reference p { margin: 0 0 4px; line-height
   railgrid-provider-agents .agents-page-reference summary { min-height: 44px; }
 }
 
-railgrid-provider-agents .agents-assistant-settings { padding: 20px; margin-block: 20px; box-shadow: none; }
-railgrid-provider-agents .agents-assistant-settings h3 { margin: 0 0 16px; font-size: 14px; font-weight: 600; }
+railgrid-provider-agents .agents-assistant-settings { margin-top: 8px; }
+railgrid-provider-agents .agents-assistant-settings__card { padding: 20px; box-shadow: none; }
 railgrid-provider-agents .agents-assistant-settings form { padding: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 12px 24px; }
 railgrid-provider-agents .agents-assistant-settings__agent { display: grid; gap: 6px; min-width: 0; }
 railgrid-provider-agents .agents-assistant-settings__agent > label { font-size: 12px; font-weight: 600; }
@@ -957,8 +957,7 @@ railgrid-provider-agents .agents-assistant-settings__info summary::-webkit-detai
 railgrid-provider-agents .agents-assistant-settings__info summary:hover { color: var(--color-text-primary); background: var(--color-surface-hover); }
 railgrid-provider-agents .agents-assistant-settings__info summary:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 railgrid-provider-agents .agents-assistant-settings__info p { flex-basis: 100%; margin: 4px 0 0; font-size: 12px; line-height: 1.5; color: var(--color-text-muted); }
-railgrid-provider-agents .agents-assistant-settings__footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-railgrid-provider-agents .agents-assistant-settings__footer > p { margin: 0; font-size: 12px; color: var(--color-text-muted); }
+railgrid-provider-agents .agents-assistant-settings__footer { grid-column: 1 / -1; display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 railgrid-provider-agents .agents-assistant-settings__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 railgrid-provider-agents .agents-assistant-settings__action { padding: 5px 10px; min-height: 30px; font-size: 12px; box-shadow: none; }
 @media (max-width: 640px) {
