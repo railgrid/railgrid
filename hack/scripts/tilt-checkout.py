@@ -124,6 +124,92 @@ def settings(root=ROOT):
         return config
 
 
+def root_env_overrides(root):
+    """Read the preview settings from the root Makefile-style .env file.
+
+    `make tilt` imports .env itself. A direct `tilt up` does not, so the
+    checkout launcher reads these two settings for the shared prepare-env
+    path. Keep this deliberately narrow: the Makefile remains the loader for
+    the rest of the development environment.
+    """
+    path = Path(root) / '.env'
+    if not path.is_file():
+        return {}
+    overrides = {}
+    pattern = re.compile(r'^\s*(?:export\s+)?(RAILGRID_APP_BASE_DOMAIN|RAILGRID_APP_PUBLIC_PORT)\s*[:?+]?=(.*)$')
+    for line in path.read_text().splitlines():
+        match = pattern.match(line)
+        if not match:
+            continue
+        # Root .env is included as Make syntax, where an unescaped # starts a
+        # comment. These settings are plain values; preserving an empty value
+        # is meaningful for RAILGRID_APP_PUBLIC_PORT.
+        value = match.group(2).split('#', 1)[0].strip()
+        overrides[match.group(1)] = value
+    return overrides
+
+
+def preview_setting(name, source_name, default, root_env):
+    """Resolve a preview setting without mistaking Tiltfile output for input.
+
+    Tiltfile exports prepare-env values into its own process. On a file-watch
+    reload, its next prepare-env subprocess inherits those values, so source
+    markers tell us whether to preserve a shell setting or re-read .env/default.
+    """
+    is_domain = name == 'RAILGRID_APP_BASE_DOMAIN'
+
+    def normalize(value):
+        value = str(value)
+        if is_domain:
+            value = value.strip()
+            if not value:
+                return None
+        return value
+
+    def configured_file_or_default():
+        if name in root_env:
+            value = normalize(root_env[name])
+            if value is not None:
+                return value, 'dotenv'
+        return str(default), 'default'
+
+    marker = 'RAILGRID_TILT_CHECKOUT_' + source_name + '_SOURCE'
+    previous_source = os.environ.get(marker)
+    if previous_source == 'commandline':
+        # Make supplied an explicit argument, even when it matches .env or the
+        # generated default. Keep it fixed across reloads. An explicitly blank
+        # domain selects the checkout default rather than restoring .env.
+        value = normalize(os.environ.get(name, default))
+        return (str(default) if value is None else value), 'commandline'
+    if previous_source == 'environment' and name in os.environ:
+        value = normalize(os.environ[name])
+        if value is not None:
+            return value, 'environment'
+        return configured_file_or_default()
+    if previous_source in ('dotenv', 'default'):
+        return configured_file_or_default()
+
+    if name in os.environ:
+        inherited = normalize(os.environ[name])
+        if inherited is None:
+            return configured_file_or_default()
+        # A Tiltfile loaded before source markers existed can already have
+        # injected the generated per-checkout default. Let a newly configured
+        # root .env value replace that known generated value on its first
+        # reload; otherwise it would look indistinguishable from shell input.
+        if is_domain and inherited == str(default):
+            return configured_file_or_default()
+        # GNU Make exports its resolved variables to recipes. When .env
+        # supplied the same value, remember that provenance so Tilt reloads
+        # can observe edits to .env instead of freezing the first value.
+        if os.environ.get('MAKELEVEL') and name in root_env:
+            file_value = normalize(root_env[name])
+            if file_value is not None and inherited == file_value:
+                return file_value, 'dotenv'
+        return inherited, 'environment'
+    return configured_file_or_default()
+
+
 def environment(config):
     # One static development identity shared by Tilt and browser bootstrap.
     token = 'dev-token'
@@ -131,6 +217,15 @@ def environment(config):
     root = Path(config['root'])
     key = config['key']
     p = config['ports']
+    root_env = root_env_overrides(root)
+    app_base_domain, app_base_domain_source = preview_setting(
+        'RAILGRID_APP_BASE_DOMAIN', 'APP_BASE_DOMAIN',
+        'apps-' + key + '.127.0.0.1.sslip.io', root_env,
+    )
+    app_public_port, app_public_port_source = preview_setting(
+        'RAILGRID_APP_PUBLIC_PORT', 'APP_PUBLIC_PORT',
+        p['PREVIEW_GATEWAY_PORT'], root_env,
+    )
     env = dict(auth, **{k: str(v) for k, v in p.items()})
     # Git worktrees use a .git file; some Go toolchains only recognize a
     # directory and accidentally inspect an ancestor. Make stamps our version.
@@ -147,7 +242,10 @@ def environment(config):
                KRO_KIND_NAME='railgrid-kro-' + key,
                DEV_AGENT_KIND='railgrid-agent-' + key,
                KUBECONFIG=str(root / '.kcp/tilt-client.kubeconfig') + os.pathsep + str(root / '.railgrid-kro.kubeconfig'),
-               RAILGRID_APP_BASE_DOMAIN='apps-' + key + '.127.0.0.1.sslip.io',
+               RAILGRID_APP_BASE_DOMAIN=app_base_domain,
+               RAILGRID_APP_PUBLIC_PORT=str(app_public_port),
+               RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE=app_base_domain_source,
+               RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE=app_public_port_source,
                RAILGRID_TILT_KCP_LOOPBACK_PORT='6443' if os.environ.get('KCP_IMAGE') else str(p['KCP_PORT']),
                RAILGRID_TILT_CHECKOUT=key,
                KCP_EXTERNAL_CONTAINER='railgrid-kcp-' + key,

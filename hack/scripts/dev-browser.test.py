@@ -12,6 +12,22 @@ spec.loader.exec_module(m)
 
 
 class BrowserTest(unittest.TestCase):
+    def setUp(self):
+        self._root_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._root_dir.cleanup)
+        self.root = Path(self._root_dir.name).resolve()
+        self._root_patch = patch.object(m, 'ROOT', self.root)
+        self._root_patch.start()
+        self.addCleanup(self._root_patch.stop)
+
+        # Browser setup tests use the default timeout unless a test explicitly
+        # exercises an override. Keep a caller's invalid setting from changing
+        # unrelated fixture behavior.
+        self._env_patch = patch.dict(os.environ)
+        self._env_patch.start()
+        self.addCleanup(self._env_patch.stop)
+        os.environ.pop('DEV_BROWSER_TIMEOUT', None)
+
     def test_warm_prepare_uses_launchers_tilt_configuration(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
             root = Path(tmp)
@@ -133,6 +149,20 @@ class BrowserTest(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, 'TILT_DETACHED=1'):
                         setup.wait_resource('(Tiltfile)')
                 setup.tilt.assert_not_called()
+
+    def test_readiness_proceeds_for_matching_owner_identity(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(m, 'ROOT', Path(tmp)):
+            root = Path(tmp)
+            (root / '.kcp').mkdir()
+            (root / '.kcp/tilt-owner.json').write_text(json.dumps({
+                'root': tmp, 'pid': 1234, 'birth': 'current'}))
+            setup = m.Setup({'root': tmp, 'key': 'abc', 'ports': m.checkout.PORTS})
+            setup.tilt = Mock(return_value=json.dumps({'status': {'conditions': [
+                {'type': 'Ready', 'status': 'True'}]}}))
+            with patch.object(m.checkout, 'process_identity', return_value='current'):
+                setup.wait_resource('planner-init')
+            setup.tilt.assert_called_once_with(
+                'get', 'uiresource', 'planner-init', '-o', 'json')
 
     def test_timeout_and_url_ignore_host_overrides(self):
         config = {'root': str(m.ROOT), 'key': 'abc', 'ports': m.checkout.PORTS}
