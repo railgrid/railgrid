@@ -180,6 +180,11 @@ See [resource creation](../patterns/resource-creation.md) and
 
 ### Agents provider-first BYOK flow
 
+The Models navigation opens a section titled **Available models**, with its own
+explanation and **Add model** action above the cards. Provider connections uses
+the corresponding section header and **Connect provider** action below the
+sub-navigation. Page navigation and collection actions remain visually distinct.
+
 Agents connects an API provider once, then configures model bindings against it.
 A `ModelProviderConnection` owns the endpoint, workspace selection, and Secret
 reference. Each configured model has its own `ModelCredential` with

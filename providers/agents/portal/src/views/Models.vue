@@ -373,7 +373,6 @@ defineExpose({ loadCatalog, loadUsage })
           <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
           <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
         </div>
-        <button v-if="credentialView && !(connectionView ? showProviderFirstRun : showFirstRun)" class="k-btn k-btn--primary" @click="connectionView ? openProvider() : beginModel()"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
       </header>
       <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
@@ -383,13 +382,17 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-if="modelView && catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogError" class="k-stale" role="status">Could not refresh the model catalog. Showing the last loaded catalog. {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
+      <header class="k-resource-page__header" aria-labelledby="available-models-title">
+        <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models and harness identities you can assign to agents.</p></div>
+        <button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
+      </header>
       <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider or add a harness identity" description="Bring an API key and reuse its provider connection across models, or add a Claude Code or Codex login for an agent running on a machine." primary-label="Connect provider" :secondary-label="routeOwned ? 'Add harness identity' : ''" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @secondary="emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })" @primary="openProvider" />
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       </template>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
-        <header class="k-resource-page__header"><div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Each connection stores one key that its models reuse.</p></div></header>
+        <header class="k-resource-page__header"><div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Each connection stores one key that its models reuse.</p></div><button v-if="!showProviderFirstRun" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button></header>
         <div v-if="showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
         <FirstRunGuide v-if="showProviderFirstRun" title="No provider connections yet" description="Bring an API key to connect a provider once, then reuse its connection across models." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
         <ResourceTable

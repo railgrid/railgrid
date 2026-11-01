@@ -110,6 +110,8 @@ func migrateCredential(ctx context.Context, c client.Client, legacy *agentsv1alp
 		return err
 	} else if connection.Annotations[migratedFrom] != string(legacy.UID) {
 		return fmt.Errorf("provider connection %q already exists independently; legacy credential was preserved", legacy.Name)
+	} else if !sameConnectionConfiguration(connection.Spec, desired) {
+		return fmt.Errorf("provider connection %q and its migration source have different configurations; align their endpoint and secret configuration before retrying; legacy credential was preserved", legacy.Name)
 	}
 	// Key ownership is transferred before modifying the source. ResourceVersion
 	// protects every step; any failure leaves a source the next reconcile retries.
@@ -135,6 +137,20 @@ func migrateCredential(ctx context.Context, c client.Client, legacy *agentsv1alp
 		return c.Update(ctx, legacy)
 	}
 	return c.Delete(ctx, legacy, client.Preconditions{UID: &legacy.UID, ResourceVersion: &legacy.ResourceVersion})
+}
+
+// Server defaulting must not turn an otherwise identical retry into a conflict.
+func sameConnectionConfiguration(a, b agentsv1alpha1.ModelProviderConnectionSpec) bool {
+	normalize := func(spec agentsv1alpha1.ModelProviderConnectionSpec) agentsv1alpha1.ModelProviderConnectionSpec {
+		if spec.Provider == "" {
+			spec.Provider = agentsv1alpha1.ModelProviderOpenAICompatible
+		}
+		if spec.SecretKey == "" {
+			spec.SecretKey = agentsv1alpha1.DefaultModelSecretKey
+		}
+		return spec
+	}
+	return reflect.DeepEqual(normalize(a), normalize(b))
 }
 
 func (r *ProviderConnectionReconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ctrl.Result, error) {

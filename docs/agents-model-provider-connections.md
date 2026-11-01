@@ -31,6 +31,9 @@ verbs are declared on `modelproviderconnections` in the provider manifest.
 Editing a provider connection uses **Verify & save**. It verifies the configured
 models, or discovers models when no bindings exist. An optional verification
 model adds an inference check without creating or changing a model binding.
+MCP `save_model_credential` can update a binding's model ID by passing `name`
+and `model` only. Provider transport and key changes belong to the connection;
+a concurrent change to the binding causes a conflict rather than an overwrite.
 
 ## Access
 
@@ -110,6 +113,9 @@ migration can resume. A same-name independently created connection is never
 overwritten; the source is retained and the controller reports an error.
 Reconciliation resumes ownership transfer and source conversion even when the
 destination already exists or is waiting for deletion.
+If the source and destination configurations differ on retry, migration retains
+both objects and reports a conflict. Align their endpoint, provider, workspace,
+and Secret configuration to resume; neither side's edits are silently discarded.
 
 Direct legacy API credentials remain accepted for compatibility and are migrated
 by the controller. New portal connections use the new kind. Deployment applies

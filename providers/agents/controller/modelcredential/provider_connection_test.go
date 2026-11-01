@@ -325,3 +325,81 @@ func TestConnectionDeletionPreservesSharedSecrets(t *testing.T) {
 		})
 	}
 }
+
+func TestMigrationRetryPreservesConflictingEdits(t *testing.T) {
+	for _, side := range []string{"source", "destination"} {
+		t.Run(side, func(t *testing.T) {
+			legacy := credential()
+			legacy.UID = "source"
+			legacy.Spec.Model = "existing-model"
+			key := secret(true, map[string][]byte{"apiKey": []byte("unchanged")})
+			backing := migrationClient(legacy, key)
+			fault := &migrationConflictClient{Client: backing}
+			if err := migrateCredential(t.Context(), fault, legacy); err == nil {
+				t.Fatal("expected source update conflict")
+			}
+			var source agentsv1alpha1.ModelCredential
+			var destination agentsv1alpha1.ModelProviderConnection
+			if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &source); err != nil {
+				t.Fatal(err)
+			}
+			if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &destination); err != nil {
+				t.Fatal(err)
+			}
+			if side == "source" {
+				source.Spec.BaseURL = "https://changed.example/v1"
+				source.Spec.SecretRef.Name = "rotated-secret"
+				if err := backing.Update(t.Context(), &source); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				destination.Spec.BaseURL = "https://changed.example/v1"
+				destination.Spec.SecretRef.Name = "rotated-secret"
+				if err := backing.Update(t.Context(), &destination); err != nil {
+					t.Fatal(err)
+				}
+			}
+			expectedSource := source.Spec
+			expectedDestination := destination.Spec
+			if err := migrateCredential(t.Context(), backing, &source); err == nil {
+				t.Fatal("configuration drift was silently discarded")
+			}
+			if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &source); err != nil {
+				t.Fatal(err)
+			}
+			if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &destination); err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(source.Spec, expectedSource) || !reflect.DeepEqual(destination.Spec, expectedDestination) {
+				t.Fatal("conflicting source or destination was overwritten")
+			}
+			destination.Spec = agentsv1alpha1.ModelProviderConnectionSpec{Provider: source.Spec.Provider, BaseURL: source.Spec.BaseURL, SecretRef: source.Spec.SecretRef, SecretKey: source.Spec.SecretKey, AnthropicWorkspaceID: source.Spec.AnthropicWorkspaceID}
+			if err := backing.Update(t.Context(), &destination); err != nil {
+				t.Fatal(err)
+			}
+			if err := migrateCredential(t.Context(), backing, &source); err != nil {
+				t.Fatal(err)
+			}
+			if err := backing.Get(t.Context(), client.ObjectKeyFromObject(legacy), &source); err != nil {
+				t.Fatal(err)
+			}
+			if source.Spec.ConnectionRef != destination.Name || source.Spec.Model != "existing-model" {
+				t.Fatal("migration did not resume after conflict resolution")
+			}
+		})
+	}
+}
+
+func TestMigrationComparisonAcceptsServerDefaults(t *testing.T) {
+	base := agentsv1alpha1.ModelProviderConnectionSpec{BaseURL: "https://example.test/v1", SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: "key"}}
+	defaulted := base
+	defaulted.Provider = agentsv1alpha1.ModelProviderOpenAICompatible
+	defaulted.SecretKey = agentsv1alpha1.DefaultModelSecretKey
+	if !sameConnectionConfiguration(base, defaulted) {
+		t.Fatal("API defaults blocked migration retry")
+	}
+	defaulted.SecretKey = "different"
+	if sameConnectionConfiguration(base, defaulted) {
+		t.Fatal("key configuration change ignored")
+	}
+}

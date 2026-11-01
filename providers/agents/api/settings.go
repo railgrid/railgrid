@@ -58,12 +58,6 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	if req.Name == "" {
 		return nil, errBadRequest("name is required")
 	}
-	if req.Provider == "" {
-		req.Provider = llm.ProviderOpenAICompatible
-	}
-	if req.BaseURL == "" {
-		req.BaseURL = llm.DefaultBaseURL
-	}
 	if req.Model == "" {
 		return nil, errBadRequest("model is required")
 	}
@@ -76,7 +70,14 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	switch {
 	case err == nil:
 		if existing.Spec.ConnectionRef != "" {
-			return nil, errBadRequest("edit the provider connection to change its endpoint or key")
+			if req.Provider != "" || req.BaseURL != "" || req.APIKey != "" || req.AnthropicWorkspaceID != "" {
+				return nil, errBadRequest("edit the provider connection to change its endpoint or key; omit provider configuration to update only the model")
+			}
+			updated, err := c.UpdateModelBinding(ctx, existing, req.Model)
+			if err != nil {
+				return nil, err
+			}
+			return &modelCredential{Name: updated.Name, Model: updated.Spec.Model}, nil
 		}
 		if n := strings.TrimSpace(existing.Spec.SecretRef.Name); n != "" {
 			secretName = n
@@ -84,6 +85,12 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 		secretKey = llm.SecretKey(existing.Spec)
 	case !apierrors.IsNotFound(err):
 		return nil, err
+	}
+	if req.Provider == "" {
+		req.Provider = llm.ProviderOpenAICompatible
+	}
+	if req.BaseURL == "" {
+		req.BaseURL = llm.DefaultBaseURL
 	}
 
 	// Preserve an existing key when updating without a new one.

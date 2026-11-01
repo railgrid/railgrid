@@ -173,6 +173,25 @@ func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1
 	return agentsv1alpha1.ResolveModelConnection(credential, connection)
 }
 
+// UpdateModelBinding changes only the selected model, retaining the source
+// resourceVersion so a concurrent rebind or migration is never overwritten.
+func (c *Client) UpdateModelBinding(ctx context.Context, binding *agentsv1alpha1.ModelCredential, model string) (*agentsv1alpha1.ModelCredential, error) {
+	if binding.Spec.ConnectionRef == "" {
+		return nil, fmt.Errorf("model credential is not a connection binding")
+	}
+	desired := binding.DeepCopy()
+	desired.Spec.Model = model
+	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := c.scope.Dynamic().Resource(ModelCredentialGVR).Update(ctx, &unstructured.Unstructured{Object: object}, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromUnstructured[agentsv1alpha1.ModelCredential](updated)
+}
+
 // GetSecret fetches a Secret from the tenant workspace namespace.
 func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error) {
 	u, err := c.scope.Get(ctx, secretResource, namespace, name)
