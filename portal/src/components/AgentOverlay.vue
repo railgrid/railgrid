@@ -48,11 +48,34 @@ const error = ref('')
 const loading = ref(false)
 const retry = ref(0)
 const expanded = ref(false)
-function collapse(): void {
-  expanded.value = false
-  void nextTick(() => element?.dispatchEvent(new Event('railgrid-overlay-focus-composer')))
+const closing = ref(false)
+let closingAnimation: Animation | null = null
+function cancelClosingAnimation(): void {
+  closingAnimation?.cancel()
+  closingAnimation = null
+  closing.value = false
+  overlay.setSidePanelClosing(false)
 }
-function engage(): void { expanded.value = true }
+async function collapse(): Promise<void> {
+  if (closingAnimation || !expanded.value) return
+  closing.value = true
+  overlay.setSidePanelClosing(true)
+  if (panel.value && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    const animation = panel.value.animate([
+      { transform: 'translateX(0)', opacity: 1 },
+      { transform: 'translateX(32px)', opacity: 0 },
+    ], { duration: 160, easing: 'cubic-bezier(.4, 0, 1, 1)', fill: 'forwards' })
+    closingAnimation = animation
+    try { await animation.finished } catch { return }
+  }
+  expanded.value = false
+  // Keep the exit frame and scrollbar suppression until the compact provider
+  // and host layout have both rendered; never expose the full-height scroller.
+  await nextTick()
+  cancelClosingAnimation()
+  element?.dispatchEvent(new Event('railgrid-overlay-focus-composer'))
+}
+function engage(): void { cancelClosingAnimation(); expanded.value = true }
 let element: OverlayElement | null = null
 let generation = 0
 
@@ -110,6 +133,7 @@ const chatMenuItems = [
 ]
 
 function clear(): void {
+  cancelClosingAnimation()
   contextPreviewOpen.value = false
   generation++
   // Revoke in the same stack, before Vue unmounts or a pending confirmation resolves.
@@ -194,6 +218,7 @@ watch([authorityKey, () => overlay.selectedAgent], () => { expanded.value = fals
 watch([() => auth.token, () => theme.resolved], pushContext, { flush: 'sync' })
 
 watch(() => overlay.open, async open => {
+  cancelClosingAnimation()
   if (open) {
     await nextTick()
     panel.value?.focus()
@@ -297,7 +322,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--expanded': expanded && overlay.open, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing }"
+  <div v-if="visible" class="agent-overlay" :class="{ 'agent-overlay--ready': !expanded, 'agent-overlay--expanded': expanded && overlay.open, 'agent-overlay--minimized': !overlay.open, 'agent-overlay--resizing': resizing, 'agent-overlay--closing': closing }"
     :style="{ '--overlay-width': panelWidth + 'px', '--overlay-bottom': bottom, '--overlay-right': insets.right, '--overlay-left': insets.left, '--overlay-nav-top': insets.navigationTop, '--overlay-nav-right': insets.navigationRight, '--overlay-nav-bottom': insets.bottom }">
     <Transition name="agent-overlay-visibility">
     <section v-show="overlay.open" id="railgrid-agent-overlay" ref="panel" class="agent-overlay__panel" :class="{ 'agent-overlay__panel--context-preview': contextPreviewOpen }" tabindex="-1"
@@ -382,13 +407,18 @@ onBeforeUnmount(() => {
 .agent-overlay__brand { flex-shrink: 0; color: var(--color-accent); }
 .agent-overlay__bar-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 /* The panel is a sibling of the routed shell, never a provider overlay. */
-.agent-overlay--expanded { left: auto; right: var(--overlay-nav-right, 0px); top: var(--overlay-nav-top, 0px); bottom: var(--overlay-nav-bottom, 0px); width: var(--overlay-width); padding: 0; }
-.agent-overlay--expanded .agent-overlay__panel { width: 100%; height: 100%; max-height: 100%; overflow: visible; border-radius: 0; border-width: 0 0 0 1px; animation: agent-side-panel-enter 180ms cubic-bezier(.16, 1, .3, 1); }
+.agent-overlay--expanded { left: auto; right: var(--overlay-nav-right, 0px); top: var(--overlay-nav-top, 0px); bottom: var(--overlay-nav-bottom, 0px); width: var(--overlay-width); padding: 0; overflow: clip; }
+.agent-overlay--expanded .agent-overlay__panel { width: 100%; height: 100%; max-height: 100%; overflow: visible; border-radius: 0; border-width: 0 0 0 1px; animation: agent-side-panel-enter 240ms cubic-bezier(.16, 1, .3, 1); }
 .agent-overlay--expanded .agent-overlay__header { min-height: 52px; padding: 8px 12px; }
-@keyframes agent-side-panel-enter { from { transform: translateX(24px); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+@keyframes agent-side-panel-enter { from { transform: translateX(32px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 .agent-overlay-visibility-enter-active, .agent-overlay-visibility-leave-active { transition: opacity 160ms ease; }
 .agent-overlay-visibility-enter-from, .agent-overlay-visibility-leave-to { opacity: 0; }
 @media (max-width: 767px) { .agent-overlay--expanded { left: var(--overlay-left, 0px); width: auto; } .agent-overlay__resize { display: none; } }
+/* Native overlay scrollbars can outlive an opacity animation. Suppress their
+   chrome only during dismissal, retaining scroll positions and gutter space. */
+.agent-overlay--closing .agent-overlay__mount :deep(*) { scrollbar-color: transparent transparent; }
+.agent-overlay--closing .agent-overlay__mount :deep(*::-webkit-scrollbar-thumb),
+.agent-overlay--closing .agent-overlay__mount :deep(*::-webkit-scrollbar-track) { background: transparent; }
 .agent-overlay--resizing .agent-overlay__panel { transition: none; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .agent-overlay--expanded .agent-overlay__panel, .agent-overlay__panel, .agent-overlay__launcher { transition: none; animation: none; } }
 @media (max-width: 640px) { .agent-overlay__launcher { right: 8px; } .agent-overlay--ready .agent-overlay__panel { gap: 4px; padding: 6px; } .agent-overlay__brand { width: 16px; } }
