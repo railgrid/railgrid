@@ -30,6 +30,7 @@ import (
 
 	"github.com/cloudwego/eino/adk"
 	"github.com/cloudwego/eino/schema"
+	asclient "github.com/railgrid/provider-app-studio/client"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -143,6 +144,103 @@ func TestProjectEinoAnthropicReasoningEffortWirePayload(t *testing.T) {
 			}
 			if _, exists := payload["reasoning_effort"]; exists {
 				t.Fatalf("Anthropic request unexpectedly contains OpenAI reasoning_effort: %s", captured.body)
+			}
+		})
+	}
+}
+
+func TestProjectAnthropicPreflightAndThreadTitleOmitTemperature(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		response string
+		generate func(*testing.T, *Server, *asclient.Client)
+	}{
+		{
+			name:     "project-create preflight",
+			response: `{"displayName":"Customer Portal","repositoryName":"customer-portal","templateName":""}`,
+			generate: func(t *testing.T, server *Server, client *asclient.Client) {
+				t.Helper()
+				got, err := server.generateProjectCreatePreflight(context.Background(), client, "Build a customer portal", nil)
+				if err != nil {
+					t.Fatalf("generate project-create preflight: %v", err)
+				}
+				if got.Naming.RepositoryName != "customer-portal" {
+					t.Fatalf("preflight naming = %#v", got.Naming)
+				}
+			},
+		},
+		{
+			name:     "assistant thread title",
+			response: "Build Compact Thread Pane",
+			generate: func(t *testing.T, server *Server, client *asclient.Client) {
+				t.Helper()
+				got, err := server.generateAssistantThreadTitle(context.Background(), client, "build a compact thread pane")
+				if err != nil {
+					t.Fatalf("generate assistant thread title: %v", err)
+				}
+				if got != "Build Compact Thread Pane" {
+					t.Fatalf("thread title = %q", got)
+				}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan []byte, 1)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				body, err := io.ReadAll(req.Body)
+				if err != nil {
+					t.Errorf("read Anthropic request: %v", err)
+				}
+				requests <- body
+				responseBody, err := json.Marshal(map[string]any{
+					"id": "msg_fixture", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+					"content":     []any{map[string]string{"type": "text", "text": tc.response}},
+					"stop_reason": "end_turn", "stop_sequence": nil,
+					"usage": map[string]int{"input_tokens": 1, "output_tokens": 1},
+				})
+				if err != nil {
+					t.Errorf("encode Anthropic fixture response: %v", err)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(responseBody)
+			}))
+			defer upstream.Close()
+			target, err := url.Parse(upstream.URL)
+			if err != nil {
+				t.Fatalf("parse fixture endpoint: %v", err)
+			}
+			originalTransport := http.DefaultTransport
+			http.DefaultTransport = &projectOfficialAnthropicInterceptTransport{base: originalTransport, target: target}
+			t.Cleanup(func() { http.DefaultTransport = originalTransport })
+
+			settings := projectLLMSettings{
+				Provider:        defaultProjectLLMProvider,
+				BaseURL:         "https://api.anthropic.com/v1",
+				Model:           "claude-haiku-5-5",
+				APIKey:          "fixture-key",
+				ReasoningEffort: "high",
+			}
+			client := asclient.NewFromDynamic(projectSettingsDynamicClient{settings: settings})
+			tc.generate(t, &Server{}, client)
+
+			body := <-requests
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(body, &payload); err != nil {
+				t.Fatalf("decode Anthropic request: %v; body=%s", err, body)
+			}
+			if _, exists := payload["temperature"]; exists {
+				t.Fatalf("native Anthropic convenience request unexpectedly contains temperature: %s", body)
+			}
+			var outputConfig struct {
+				Effort string `json:"effort"`
+			}
+			if err := json.Unmarshal(payload["output_config"], &outputConfig); err != nil {
+				t.Fatalf("decode native Anthropic output_config: %v; body=%s", err, body)
+			}
+			if outputConfig.Effort != "high" {
+				t.Fatalf("native Anthropic effort = %q, want high", outputConfig.Effort)
 			}
 		})
 	}

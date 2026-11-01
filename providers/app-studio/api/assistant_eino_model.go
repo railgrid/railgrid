@@ -352,9 +352,12 @@ func projectModelSupportsTemperature(model string) bool {
 }
 
 // projectTemperatureOptions returns the per-call temperature option for the
-// given model, or nil when the model does not accept a custom temperature.
-func projectTemperatureOptions(model string, temperature float32) []einomodel.Option {
-	if !projectModelSupportsTemperature(model) {
+// configured model transport, or nil when it must not be sent. The native
+// Anthropic Messages adapter honors the caller's temperature option, but the
+// project preflight/title sampling default is not meaningful for Anthropic and
+// can conflict with model-specific reasoning defaults.
+func projectTemperatureOptions(settings projectLLMSettings, temperature float32) []einomodel.Option {
+	if projectLLMTransport(settings) == projectLLMTransportAnthropic || !projectModelSupportsTemperature(settings.Model) {
 		return nil
 	}
 	return []einomodel.Option{einomodel.WithTemperature(temperature)}

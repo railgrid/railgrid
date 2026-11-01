@@ -345,6 +345,29 @@ func DiscoverModels(ctx context.Context, profile Profile) ([]string, time.Durati
 	base := strings.TrimRight(profile.BaseURL, "/")
 	ctx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
+	client := *http.DefaultClient
+	if profile.AnthropicWorkspaceID != "" {
+		baseTransport := client.Transport
+		if baseTransport == nil {
+			baseTransport = http.DefaultTransport
+		}
+		client.Transport = anthropicWorkspaceTransport{workspaceID: profile.AnthropicWorkspaceID, base: baseTransport}
+	}
+	if usesOfficialAnthropicModelsEndpoint(profile) {
+		// The Models API is paginated, and a redirect must not move this
+		// credential-bearing request to a different host. Each page is built from
+		// the configured official endpoint and its documented after_id cursor.
+		client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		}
+		started := time.Now()
+		ids, err := discoverAnthropicModelIDs(ctx, &client, profile, base)
+		latency := time.Since(started)
+		if err != nil {
+			return nil, latency, err
+		}
+		return FilterChatModels(ids), latency, nil
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
 	if err != nil {
 		return nil, 0, err
@@ -357,14 +380,6 @@ func DiscoverModels(ctx context.Context, profile Profile) ([]string, time.Durati
 	if strings.EqualFold(req.URL.Hostname(), "api.anthropic.com") {
 		req.Header.Set("anthropic-version", "2023-06-01")
 		req.Header.Set("Content-Type", "application/json")
-	}
-	client := *http.DefaultClient
-	if profile.AnthropicWorkspaceID != "" {
-		baseTransport := client.Transport
-		if baseTransport == nil {
-			baseTransport = http.DefaultTransport
-		}
-		client.Transport = anthropicWorkspaceTransport{workspaceID: profile.AnthropicWorkspaceID, base: baseTransport}
 	}
 	start := time.Now()
 	resp, err := client.Do(req)
@@ -401,6 +416,150 @@ func DiscoverModels(ctx context.Context, profile Profile) ([]string, time.Durati
 		}
 	}
 	return FilterChatModels(ids), latency, nil
+}
+
+// The official Anthropic Models API accepts up to 1,000 models per page. Keep
+// both pagination work and accumulated response data bounded; discovery fails
+// rather than reporting a partial list when an endpoint exceeds either bound.
+const (
+	anthropicModelsPageLimit = 1000
+	maxAnthropicModelPages   = 10
+	maxAnthropicModelCount   = 5000
+	maxModelListResponseSize = 8 << 20
+	maxAnthropicModelIDSize  = 1024
+)
+
+type anthropicModelListPage struct {
+	Data *[]struct {
+		ID string `json:"id"`
+	} `json:"data"`
+	HasMore *bool   `json:"has_more"`
+	LastID  *string `json:"last_id"`
+}
+
+func usesOfficialAnthropicModelsEndpoint(profile Profile) bool {
+	if !strings.EqualFold(profile.Provider, ProviderOpenAICompatible) && !strings.EqualFold(profile.Provider, ProviderOpenAI) {
+		return false
+	}
+	return anthropicmodel.UsesEndpoint(profile.BaseURL)
+}
+
+func discoverAnthropicModelIDs(ctx context.Context, client *http.Client, profile Profile, base string) ([]string, error) {
+	ids := make([]string, 0)
+	seenIDs := make(map[string]struct{})
+	seenCursors := make(map[string]struct{})
+	afterID := ""
+
+	for pageNumber := 0; pageNumber < maxAnthropicModelPages; pageNumber++ {
+		pageURL, err := anthropicModelsPageURL(base, afterID)
+		if err != nil {
+			return nil, fmt.Errorf("build Anthropic models page URL: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		if profile.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+profile.APIKey)
+		}
+		req.Header.Set("anthropic-version", "2023-06-01")
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxModelListResponseSize+1))
+		_ = resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			msg := strings.TrimSpace(string(body))
+			if len(msg) > 200 {
+				msg = msg[:200]
+			}
+			return nil, &ProbeError{Status: resp.StatusCode, Msg: msg}
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("read Anthropic models page: %w", readErr)
+		}
+		if len(body) > maxModelListResponseSize {
+			return nil, fmt.Errorf("anthropic models page exceeds %d-byte limit", maxModelListResponseSize)
+		}
+
+		var page anthropicModelListPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			return nil, fmt.Errorf("decode Anthropic models page: %w", err)
+		}
+		if page.Data == nil || page.HasMore == nil {
+			return nil, fmt.Errorf("anthropic models page is missing data or has_more")
+		}
+		if afterID != "" && len(*page.Data) == 0 {
+			return nil, fmt.Errorf("anthropic models page after cursor contains no model data")
+		}
+		if len(*page.Data) > anthropicModelsPageLimit {
+			return nil, fmt.Errorf("anthropic models page exceeds %d-model limit", anthropicModelsPageLimit)
+		}
+		if len(ids)+len(*page.Data) > maxAnthropicModelCount {
+			return nil, fmt.Errorf("anthropic models result exceeds %d-model limit", maxAnthropicModelCount)
+		}
+		if *page.HasMore {
+			if len(*page.Data) == 0 {
+				return nil, fmt.Errorf("anthropic models page has_more is true with no model data")
+			}
+			if page.LastID == nil || strings.TrimSpace(*page.LastID) == "" {
+				return nil, fmt.Errorf("anthropic models page has_more is true without last_id")
+			}
+			cursor := strings.TrimSpace(*page.LastID)
+			if len(cursor) > maxAnthropicModelIDSize {
+				return nil, fmt.Errorf("anthropic models page contains an invalid last_id cursor")
+			}
+			if _, repeated := seenCursors[cursor]; repeated || cursor == afterID {
+				return nil, fmt.Errorf("anthropic models pagination repeated cursor %q", cursor)
+			}
+		}
+
+		pageIDs := make([]string, 0, len(*page.Data))
+		for _, model := range *page.Data {
+			id := strings.TrimSpace(model.ID)
+			if id == "" || len(id) > maxAnthropicModelIDSize {
+				return nil, fmt.Errorf("anthropic models page contains an invalid model ID")
+			}
+			if _, duplicate := seenIDs[id]; duplicate {
+				return nil, fmt.Errorf("anthropic models page repeats model ID %q", id)
+			}
+			seenIDs[id] = struct{}{}
+			pageIDs = append(pageIDs, id)
+			ids = append(ids, id)
+		}
+
+		if len(pageIDs) > 0 {
+			if page.LastID == nil || strings.TrimSpace(*page.LastID) == "" || strings.TrimSpace(*page.LastID) != pageIDs[len(pageIDs)-1] {
+				return nil, fmt.Errorf("anthropic models page has an invalid last_id cursor")
+			}
+		}
+
+		if !*page.HasMore {
+			return ids, nil
+		}
+		cursor := strings.TrimSpace(*page.LastID)
+		seenCursors[cursor] = struct{}{}
+		afterID = cursor
+	}
+
+	return nil, fmt.Errorf("anthropic models pagination exceeded %d pages", maxAnthropicModelPages)
+}
+
+func anthropicModelsPageURL(base, afterID string) (string, error) {
+	u, err := url.Parse(base + "/models")
+	if err != nil {
+		return "", err
+	}
+	query := u.Query()
+	query.Set("limit", strconv.Itoa(anthropicModelsPageLimit))
+	if afterID != "" {
+		query.Set("after_id", afterID)
+	}
+	u.RawQuery = query.Encode()
+	return u.String(), nil
 }
 
 // The same client handles verification, streaming and ordinary agent runs.

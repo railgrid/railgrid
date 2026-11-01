@@ -17,9 +17,11 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -135,9 +137,14 @@ func TestBuildModelReasoningEffortPayload(t *testing.T) {
 // that serves speech, embeddings and a responses-only family answers with all
 // of them; none of those reach a model picker.
 func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
+	requests := 0
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		if r.URL.Path != "/models" {
 			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		if r.URL.RawQuery != "" {
+			t.Errorf("non-Anthropic model list unexpectedly paginated with query %q", r.URL.RawQuery)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":[
@@ -152,6 +159,9 @@ func TestDiscoverModelsReturnsOnlyChatModels(t *testing.T) {
 	got, _, err := DiscoverModels(t.Context(), Profile{BaseURL: upstream.URL, APIKey: "private-key"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("GET /models requests = %d, want one for a non-Anthropic endpoint", requests)
 	}
 	want := []string{"gpt-4o", "gpt-4o-mini", "alpha-chat", "zeta-chat"}
 	if len(got) != len(want) {
@@ -179,6 +189,16 @@ func TestDiscoverModelsAnthropicHeaders(t *testing.T) {
 				if got := r.Header.Get("anthropic-workspace-id"); got != wantWorkspace {
 					t.Errorf("workspace header = %q, want %q", got, wantWorkspace)
 				}
+				if host == "api.anthropic.com" {
+					if got := r.URL.Query().Get("limit"); got != strconv.Itoa(anthropicModelsPageLimit) {
+						t.Errorf("Anthropic model limit = %q, want %d", got, anthropicModelsPageLimit)
+					}
+					if got := r.URL.Query().Get("after_id"); got != "" {
+						t.Errorf("first Anthropic page has unexpected after_id %q", got)
+					}
+				} else if r.URL.RawQuery != "" {
+					t.Errorf("non-official Anthropic host unexpectedly paginated with query %q", r.URL.RawQuery)
+				}
 				if host == "api.anthropic.com" && (version != "2023-06-01" || r.Header.Get("Content-Type") != "application/json") {
 					http.Error(w, "anthropic-version header is required", http.StatusBadRequest)
 					return
@@ -186,13 +206,17 @@ func TestDiscoverModelsAnthropicHeaders(t *testing.T) {
 				if host != "api.anthropic.com" && version != "" {
 					t.Errorf("Anthropic header sent to %s", host)
 				}
-				_, _ = io.WriteString(w, `{"data":[{"id":"claude-sonnet-4"}]}`)
+				body := `{"data":[{"id":"claude-sonnet-4"}]}`
+				if host == "api.anthropic.com" {
+					body = `{"data":[{"id":"claude-sonnet-4"}],"has_more":false,"last_id":"claude-sonnet-4"}`
+				}
+				_, _ = io.WriteString(w, body)
 			}))
 			defer upstream.Close()
 			// Exercise the public endpoint selection through a local HTTP server,
 			// without a live credential or external network request.
 			client := &http.Client{Transport: reasoningTransport(func(r *http.Request) (*http.Response, error) {
-				local, err := http.NewRequestWithContext(r.Context(), r.Method, upstream.URL+r.URL.Path, nil)
+				local, err := http.NewRequestWithContext(r.Context(), r.Method, upstream.URL+r.URL.RequestURI(), nil)
 				if err != nil {
 					return nil, err
 				}
@@ -208,6 +232,230 @@ func TestDiscoverModelsAnthropicHeaders(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDiscoverModelsAnthropicPaginatesToHaiku55(t *testing.T) {
+	var requests []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.RequestURI())
+		if r.URL.Path != "/v1/models" {
+			t.Errorf("request path = %q, want /v1/models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("anthropic-version") != "2023-06-01" ||
+			r.Header.Get("Content-Type") != "application/json" || r.Header.Get("anthropic-workspace-id") != "wrkspc_test" {
+			t.Errorf("page %d missing Anthropic headers: %#v", len(requests), r.Header)
+		}
+		if got := r.URL.Query().Get("limit"); got != strconv.Itoa(anthropicModelsPageLimit) {
+			t.Errorf("page %d limit = %q, want %d", len(requests), got, anthropicModelsPageLimit)
+		}
+		var body string
+		switch len(requests) {
+		case 1:
+			if got := r.URL.Query().Get("after_id"); got != "" {
+				t.Errorf("first page after_id = %q, want empty", got)
+			}
+			// A response next_url is not part of the API pagination contract and
+			// must never be used to select the destination for the next request.
+			body = `{"data":[{"id":"claude-opus-5-5"}],"has_more":true,"last_id":"claude-opus-5-5","next_url":"https://attacker.example/models"}`
+		case 2:
+			if got := r.URL.Query().Get("after_id"); got != "claude-opus-5-5" {
+				t.Errorf("second page after_id = %q, want claude-opus-5-5", got)
+			}
+			body = `{"data":[{"id":"claude-haiku-5-5"}],"has_more":false,"last_id":"claude-haiku-5-5"}`
+		default:
+			t.Errorf("unexpected extra model page %s", r.URL.RequestURI())
+			body = `{"data":[],"has_more":false}`
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, body)
+	}))
+	defer upstream.Close()
+	setAnthropicDiscoveryUpstream(t, upstream)
+
+	models, _, err := DiscoverModels(t.Context(), Profile{
+		Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1",
+		APIKey: "test-key", AnthropicWorkspaceID: "wrkspc_test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("model pages = %d, want 2: %v", len(requests), requests)
+	}
+	if !containsModel(models, "claude-haiku-5-5") || !containsModel(models, "claude-opus-5-5") {
+		t.Fatalf("discovered models = %v, want both Haiku 5.5 and Opus 5.5", models)
+	}
+}
+
+func TestDiscoverModelsAnthropicRejectsMalformedOrRepeatedPages(t *testing.T) {
+	firstPage := `{"data":[{"id":"claude-opus-5-5"}],"has_more":true,"last_id":"claude-opus-5-5"}`
+	for _, tc := range []struct {
+		name     string
+		pages    []string
+		wantPage int
+	}{
+		{name: "missing pagination metadata", pages: []string{`{"data":[{"id":"claude-haiku-5-5"}]}`}, wantPage: 1},
+		{name: "has_more without cursor", pages: []string{`{"data":[{"id":"claude-haiku-5-5"}],"has_more":true}`}, wantPage: 1},
+		{name: "last_id does not match final model", pages: []string{`{"data":[{"id":"claude-haiku-5-5"}],"has_more":true,"last_id":"other-model"}`}, wantPage: 1},
+		{name: "repeated cursor", pages: []string{firstPage, firstPage}, wantPage: 2},
+		{name: "malformed later page returns no partial models", pages: []string{firstPage, `not-json`}, wantPage: 2},
+		{name: "empty later page returns no partial models", pages: []string{firstPage, `{"data":[],"has_more":false}`}, wantPage: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("limit") != strconv.Itoa(anthropicModelsPageLimit) {
+					t.Errorf("page limit = %q, want %d", r.URL.Query().Get("limit"), anthropicModelsPageLimit)
+				}
+				if calls > 0 && r.URL.Query().Get("after_id") != "claude-opus-5-5" {
+					t.Errorf("after_id = %q, want claude-opus-5-5", r.URL.Query().Get("after_id"))
+				}
+				page := calls
+				calls++
+				if page >= len(tc.pages) {
+					t.Errorf("unexpected request for page %d", page+1)
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				_, _ = io.WriteString(w, tc.pages[page])
+			}))
+			defer upstream.Close()
+			setAnthropicDiscoveryUpstream(t, upstream)
+
+			models, _, err := DiscoverModels(t.Context(), Profile{
+				Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key",
+			})
+			if err == nil || len(models) != 0 {
+				t.Fatalf("DiscoverModels() = %v, %v; want error and no partial models", models, err)
+			}
+			if calls != tc.wantPage {
+				t.Fatalf("requested %d pages, want %d", calls, tc.wantPage)
+			}
+		})
+	}
+}
+
+func TestDiscoverModelsAnthropicPaginationBounds(t *testing.T) {
+	t.Run("rejects more than the requested page limit", func(t *testing.T) {
+		ids := make([]string, anthropicModelsPageLimit+1)
+		for i := range ids {
+			ids[i] = "fixture-model-" + strconv.Itoa(i)
+		}
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, anthropicModelPageJSON(ids, false))
+		}))
+		defer upstream.Close()
+		setAnthropicDiscoveryUpstream(t, upstream)
+
+		models, _, err := DiscoverModels(t.Context(), Profile{Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1"})
+		if err == nil || len(models) != 0 {
+			t.Fatalf("DiscoverModels() = %d models, %v; want bounded error", len(models), err)
+		}
+	})
+
+	t.Run("rejects a result larger than the total model bound", func(t *testing.T) {
+		calls := 0
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			pageNumber := calls
+			calls++
+			ids := make([]string, anthropicModelsPageLimit)
+			for i := range ids {
+				ids[i] = "fixture-model-" + strconv.Itoa(pageNumber*anthropicModelsPageLimit+i)
+			}
+			_, _ = io.WriteString(w, anthropicModelPageJSON(ids, pageNumber < 5))
+		}))
+		defer upstream.Close()
+		setAnthropicDiscoveryUpstream(t, upstream)
+
+		models, _, err := DiscoverModels(t.Context(), Profile{Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1"})
+		if err == nil || len(models) != 0 {
+			t.Fatalf("DiscoverModels() = %d models, %v; want bounded error", len(models), err)
+		}
+		if calls != 6 {
+			t.Fatalf("requested %d pages, want 6 before exceeding the model bound", calls)
+		}
+	})
+
+	t.Run("rejects too many pages", func(t *testing.T) {
+		calls := 0
+		upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := "fixture-model-" + strconv.Itoa(calls)
+			calls++
+			_, _ = io.WriteString(w, anthropicModelPageJSON([]string{id}, true))
+		}))
+		defer upstream.Close()
+		setAnthropicDiscoveryUpstream(t, upstream)
+
+		models, _, err := DiscoverModels(t.Context(), Profile{Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1"})
+		if err == nil || len(models) != 0 {
+			t.Fatalf("DiscoverModels() = %d models, %v; want pagination-bound error", len(models), err)
+		}
+		if calls != maxAnthropicModelPages {
+			t.Fatalf("requested %d pages, want limit %d", calls, maxAnthropicModelPages)
+		}
+	})
+}
+
+func TestDiscoverModelsAnthropicDoesNotFollowRedirects(t *testing.T) {
+	serverRequests := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverRequests++
+		http.Redirect(w, r, "/redirected-model-list", http.StatusFound)
+	}))
+	defer upstream.Close()
+	roundTrips := setAnthropicDiscoveryUpstream(t, upstream)
+
+	models, _, err := DiscoverModels(t.Context(), Profile{Provider: ProviderOpenAICompatible, BaseURL: "https://api.anthropic.com/v1", APIKey: "test-key"})
+	if err == nil || len(models) != 0 {
+		t.Fatalf("DiscoverModels() = %v, %v; want redirect error", models, err)
+	}
+	if serverRequests != 1 || *roundTrips != 1 {
+		t.Fatalf("redirect was followed: server requests = %d, transport requests = %d", serverRequests, *roundTrips)
+	}
+}
+
+func setAnthropicDiscoveryUpstream(t *testing.T, upstream *httptest.Server) *int {
+	t.Helper()
+	previous := http.DefaultClient
+	roundTrips := 0
+	http.DefaultClient = &http.Client{Transport: reasoningTransport(func(r *http.Request) (*http.Response, error) {
+		roundTrips++
+		if !strings.EqualFold(r.URL.Scheme, "https") || !strings.EqualFold(r.URL.Host, "api.anthropic.com") {
+			return nil, fmt.Errorf("unexpected model page destination %q", r.URL.String())
+		}
+		local, err := http.NewRequestWithContext(r.Context(), r.Method, upstream.URL+r.URL.RequestURI(), nil)
+		if err != nil {
+			return nil, err
+		}
+		local.Header = r.Header.Clone()
+		return http.DefaultTransport.RoundTrip(local)
+	})}
+	t.Cleanup(func() { http.DefaultClient = previous })
+	return &roundTrips
+}
+
+func anthropicModelPageJSON(ids []string, hasMore bool) string {
+	lastID := ""
+	if len(ids) > 0 {
+		lastID = ids[len(ids)-1]
+	}
+	models := make([]struct {
+		ID string `json:"id"`
+	}, len(ids))
+	for i, id := range ids {
+		models[i].ID = id
+	}
+	encodedModels, _ := json.Marshal(models)
+	return fmt.Sprintf(`{"data":%s,"has_more":%t,"last_id":%q}`, encodedModels, hasMore, lastID)
+}
+
+func containsModel(models []string, want string) bool {
+	for _, model := range models {
+		if model == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSelectedReasoningCapabilities(t *testing.T) {
