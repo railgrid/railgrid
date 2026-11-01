@@ -542,6 +542,10 @@ func (s *Server) Run(ctx context.Context) error {
 		heartbeatRecorder      providers.HeartbeatRecorder
 		heartbeatAuthenticator providers.HeartbeatAuthenticator
 	)
+	// billing is the metering billing seam. It stays nil without kcp or
+	// metering, and the webhook route registered after this block then
+	// answers 503, so a delivery never falls through to a 404.
+	var billing *metering.Billing
 	if kcpConfig != nil {
 		heartbeatRecorder, err = providers.NewCatalogHeartbeatRecorder(kcpConfig, providerRegistry)
 		if err != nil {
@@ -1083,9 +1087,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Metering is a standalone deployment discovered through kcp, not
 			// a provider: the hub learns where it is from the endpoints it
 			// publishes in its workspace, gives every organization its billing
-			// objects there, and lets the admin area read it. billing stays
-			// nil without metering; the webhook route below then answers 503.
-			var billing *metering.Billing
+			// objects there, and lets the admin area read it.
 			if s.opts.MeteringWorkspace != "" {
 				d, err := metering.NewDiscovery(kcpConfig, s.opts.MeteringWorkspace, logger)
 				if err != nil {
@@ -1123,13 +1125,6 @@ func (s *Server) Run(ctx context.Context) error {
 					}
 				}
 			}
-			// The billing provider's webhook: public, relayed to the metering
-			// deployment, which verifies its signature. Registered whether or
-			// not metering is configured, so a delivery to a hub without it is
-			// answered with the documented 503 instead of falling through to
-			// the generic API handling.
-			router.HandleFunc("/api/billing/webhook", billing.ForwardWebhook).Methods(http.MethodPost)
-
 			// Platform-admin surface (/api/admin/*, portal /bonkers). Only
 			// wired when --admin-users is set; gated so only allowlisted
 			// identities pass. Onboards providers (workspace + SA + kubeconfig)
@@ -1186,6 +1181,9 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}
 	}
+	// The billing provider's webhook is served on every hub, kcp or not;
+	// without metering the relay is nil and answers 503.
+	registerBillingWebhook(router, billing)
 
 	// 7. Create and start multicluster controllers (when kcp is configured)
 	if kcpConfig != nil {

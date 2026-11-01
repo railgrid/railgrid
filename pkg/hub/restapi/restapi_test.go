@@ -1531,11 +1531,12 @@ func TestDeleteWorkspace_ForceKeepsEarlierTimestampAndIsIdempotent(t *testing.T)
 	}
 }
 
-// "yes" is not a boolean, and "force=" or a bare "force" name the parameter
-// without a value (what a client with an unset variable sends). None of them
-// may silently become the recoverable delete the caller did not ask for.
+// "yes" is not a boolean, "force=" or a bare "force" name the parameter
+// without a value (what a client with an unset variable sends), and "%ZZ" or
+// a stray semicolon make a query URL.Query would drop the pair from. None of
+// them may silently become the recoverable delete the caller did not ask for.
 func TestDeleteWorkspace_RejectsMalformedForce(t *testing.T) {
-	for _, query := range []string{"?force=yes", "?force=", "?force"} {
+	for _, query := range []string{"?force=yes", "?force=", "?force", "?force=%ZZ", "?force=true;unused=x"} {
 		t.Run(query, func(t *testing.T) {
 			mgr, ops, _ := newTestManager(t)
 			_ = ops.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")

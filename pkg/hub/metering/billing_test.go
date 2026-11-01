@@ -69,6 +69,11 @@ func (d *deployment) handler() http.Handler {
 			_ = json.NewEncoder(w).Encode(map[string]string{"error": `plan "free" is not sold`})
 			return
 		}
+		if body["plan"] == "boom" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "pq: connection to /var/run/postgresql refused"})
+			return
+		}
 		if d.emptyURL {
 			_ = json.NewEncoder(w).Encode(map[string]string{"url": ""})
 			return
@@ -306,5 +311,36 @@ func TestForwardWebhookWithoutMeteringAnswers503(t *testing.T) {
 	b.ForwardWebhook(rec, httptest.NewRequest(http.MethodPost, "/api/billing/webhook", strings.NewReader(`{"id":"evt_1"}`)))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+// What the hub cannot answer for itself stays out of the message a member
+// sees: a transport failure comes back as a plain error naming the
+// deployment's address, for the route to log, and the deployment's own 5xx
+// text is logged here and replaced by a fixed sentence.
+func TestTransportAndServerFailuresKeepDetailOutOfTheMessage(t *testing.T) {
+	store := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+		gvrPlans: "PlanList", gvrEntitlements: "EntitlementList",
+	})
+	unreachable := NewBilling(discovered{PortalURL: "http://127.0.0.1:1", token: "tok"}, store, klog.Background())
+	_, err := unreachable.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel")
+	var be *BillingError
+	if err == nil || errors.As(err, &be) {
+		t.Fatalf("a transport failure must be a plain error for the route to log, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:1") {
+		t.Fatalf("the plain error should keep the address for the log: %v", err)
+	}
+
+	b, _ := newBillingFixture(t, true)
+	_, err = b.Checkout(context.Background(), "org-1", "boom", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadGateway || strings.Contains(be.Message, "postgresql") {
+		t.Fatalf("a 5xx from the deployment: %v", err)
+	}
+
+	// The deployment's own 4xx answer is meant for the caller and passes.
+	_, err = b.Checkout(context.Background(), "org-1", "free", "https://hub/ok", "https://hub/cancel")
+	if !errors.As(err, &be) || be.Status != http.StatusBadRequest || !strings.Contains(be.Message, "not sold") {
+		t.Fatalf("a 4xx from the deployment: %v", err)
 	}
 }
