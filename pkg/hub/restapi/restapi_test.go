@@ -748,7 +748,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 		&tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "someone-elses", Labels: map[string]string{tenancyv1alpha1.OrganizationCreatorLabel: "bob"}}, Spec: tenancyv1alpha1.OrganizationSpec{DisplayName: "x"}},
 	)
 	// alice has org-a, org-b and org-gone (in its grace window): three.
-	mgr.WithOrgCaps(quota.Caps{Organizations: 3, FreeOrganizations: 99}, "")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 3, FreeOrganizations: 99})
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 
@@ -775,7 +775,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 	}
 
 	// One more allowed raises the cap: the live count (3) is now under it.
-	mgr.WithOrgCaps(quota.Caps{Organizations: 4, FreeOrganizations: 99}, "")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 4, FreeOrganizations: 99})
 	// The create handler waits for controller conditions; the fake never sets
 	// them, so a short request timeout stands in for "got past the quota".
 	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/orgs", jsonBody(body))
@@ -797,7 +797,7 @@ func TestCreateOrg_RefusesAtTheOrganizationsCap(t *testing.T) {
 // written and the other request gets the 409. Run under -race.
 func TestCreateOrg_ConcurrentCreatesAtCapMinusOne(t *testing.T) {
 	mgr, _, dyn := newTestManager(t)
-	mgr.WithOrgCaps(quota.Caps{Organizations: 1, FreeOrganizations: 99}, "")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 1, FreeOrganizations: 99})
 	// The handler's quota count Lists Organizations through the typed client.
 	// Once a create has stored an unstructured object, neither the fake's
 	// List nor its tracker can convert the mixed contents, so record every
@@ -875,7 +875,7 @@ func TestCreateOrg_ConcurrentCreatesAtCapMinusOne(t *testing.T) {
 // instead of silently falling back to the hub default.
 func TestCreateOrg_ZeroCapDenies(t *testing.T) {
 	mgr, _, _ := newTestManager(t)
-	mgr.WithOrgCaps(quota.Caps{Organizations: 0, FreeOrganizations: 1}, "")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 0, FreeOrganizations: 1})
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "first"})
@@ -982,7 +982,7 @@ func expectPassedQuota(t *testing.T, url string, body []byte) {
 // creator who handed the organization over is not.
 func TestCreateOrg_RefusesAtTheFreeOrganizationsCap(t *testing.T) {
 	mgr := freeCapFixture(t)
-	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}, "free")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", nil)
 	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 	defer srv.Close()
 
@@ -990,19 +990,31 @@ func TestCreateOrg_RefusesAtTheFreeOrganizationsCap(t *testing.T) {
 	expectQuotaExceeded(t, srv.URL, body, "1 of 1", "free plan")
 
 	// One more allowed: alice is under the cap again.
-	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 2}, "free")
+	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 2})
 	expectPassedQuota(t, srv.URL, body)
 }
 
-// Without metering the hub does not know which plan is free, and the
-// free-organizations cap does not apply.
-func TestCreateOrg_FreeOrganizationsCapIsOffWithoutMetering(t *testing.T) {
-	mgr := freeCapFixture(t)
-	mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}, "")
-	srv := newTestServer(t, mgr, adminTC("alice", "", ""))
-	defer srv.Close()
-	body, _ := json.Marshal(CreateOrgRequest{DisplayName: "second free"})
-	expectPassedQuota(t, srv.URL, body)
+// Without metering there are no allowances to multiply, and the
+// free-organizations cap does not apply: neither on a hub with no metering
+// workspace configured, nor on one whose workspace has no deployment in it
+// (the e2e hubs, and a hub where metering went away).
+func TestCreateOrg_FreeOrganizationsCapWaitsForMetering(t *testing.T) {
+	t.Run("not configured", func(t *testing.T) {
+		mgr := freeCapFixture(t)
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1})
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		body, _ := json.Marshal(CreateOrgRequest{DisplayName: "second free"})
+		expectPassedQuota(t, srv.URL, body)
+	})
+	t.Run("not installed", func(t *testing.T) {
+		mgr := freeCapFixture(t)
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 1}).WithFreePlan("free", func() bool { return false })
+		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
+		defer srv.Close()
+		body, _ := json.Marshal(CreateOrgRequest{DisplayName: "second free"})
+		expectPassedQuota(t, srv.URL, body)
+	})
 }
 
 // User.spec.quota overrides the hub caps per user, a set 0 included.
@@ -1018,7 +1030,7 @@ func TestCreateOrg_UserQuotaOverridesTheHubCaps(t *testing.T) {
 			Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
 		}
 		mgr, _, _ := newTestManager(t, alice, created)
-		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 99}, "")
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 99})
 		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 		defer srv.Close()
 		expectQuotaExceeded(t, srv.URL, body, "1 of 1 organizations (")
@@ -1028,7 +1040,7 @@ func TestCreateOrg_UserQuotaOverridesTheHubCaps(t *testing.T) {
 		alice := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
 		alice.Spec.Quota = &tenancyv1alpha1.UserQuota{FreeOrganizations: &zero}
 		mgr := freeCapFixture(t, alice)
-		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 5}, "free")
+		mgr.WithOrgCaps(quota.Caps{Organizations: 10, FreeOrganizations: 5}).WithFreePlan("free", nil)
 		srv := newTestServer(t, mgr, adminTC("alice", "", ""))
 		defer srv.Close()
 		expectQuotaExceeded(t, srv.URL, body, "does not allow organizations on the free plan")

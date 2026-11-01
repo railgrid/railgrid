@@ -398,7 +398,7 @@ spec:
   `--default-orgs-per-user` (10) on the organizations the user created and
   `--free-orgs-per-user` (1) on the non-personal organizations on the free
   plan the user administers today, read from their membership index. The
-  free cap is off when metering is not configured. There is no
+  free cap is off while no metering deployment is discovered. There is no
   `organizations` meter and no MeteringConfig for Organizations: the hub is
   the only gate, and the caps are soft.
 - Which plan an org is on: `Organization.spec.plan` (manual, admin-only,

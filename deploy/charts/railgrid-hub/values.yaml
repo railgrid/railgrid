@@ -117,7 +117,7 @@ hub:
   # administer at once; creating another needs a plan on one of them
   # (PUT /api/admin/organizations/{uuid}/plan). Personal organizations do not
   # count, a platform admin can override it per user in User.spec.quota, and it
-  # applies only when metering is configured. 0 forbids free organizations
+  # applies only while a metering deployment is discovered. 0 forbids free organizations
   # beyond the personal one. null leaves the binary default of 1.
   freeOrgsPerUser: null
   # Additional Content-Security-Policy frame-src entries allowed in the portal.

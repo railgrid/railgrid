@@ -316,7 +316,7 @@ kind delete cluster --name railgrid
 | `hub.staticAuthToken` | Static bearer token (bypasses OIDC) | `""` |
 | `hub.softDeleteGracePeriod` | How long a deleted user, organization or workspace stays recoverable before the hub purges it (Go duration, e.g. `72h`). Unset leaves the binary default | `""` (binary: `720h`, 30 days) |
 | `hub.defaultOrgsPerUser` | Organizations one user may create; personal organizations do not count, and `User.spec.quota` overrides it per user | `null` (binary: `10`) |
-| `hub.freeOrgsPerUser` | Organizations on the default (free) metering plan one user may administer at once; creating another needs a plan on one of them. Personal organizations do not count, `User.spec.quota` overrides it per user, and it applies only when metering is configured | `null` (binary: `1`) |
+| `hub.freeOrgsPerUser` | Organizations on the default (free) metering plan one user may administer at once; creating another needs a plan on one of them. Personal organizations do not count, `User.spec.quota` overrides it per user, and it applies only while a metering deployment is discovered | `null` (binary: `1`) |
 | `hub.security.providerHeartbeatAuth` | Provider heartbeat auth: `warn` (log and accept) or `enforce` (reject). Unset leaves the binary default; next release defaults to `enforce` | `""` (binary: `warn`) |
 | `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all`. Next release defaults to `platform` | `""` (binary: `off`) |
 | `hub.security.providerHubAccessPlatformDefault` | Let platform providers use the hub capabilities they declare where no one has accepted or declined them; `false` requires acceptance for every provider | `null` (binary: `true`) |

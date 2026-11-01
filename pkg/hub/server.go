@@ -966,16 +966,12 @@ func (s *Server) Run(ctx context.Context) error {
 			logger.Info("provider delegated tokens", "mode", delegationMode, "exclude", s.opts.ProviderDelegatedTokensExclude)
 
 			// Step 10: Org / Workspace / Membership / User REST
-			// O-5: the organization caps. The free-organizations cap has to
-			// know which plan is free, which only a hub with metering
-			// configured does; elsewhere it is off.
-			freePlan := ""
-			if s.opts.MeteringWorkspace != "" {
-				freePlan = s.opts.MeteringDefaultPlan
-			}
+			// O-5: the organization caps. The free-organizations cap is
+			// switched on below, once metering discovery exists to say whether
+			// a deployment is there.
 			apiMgr := restapi.NewManager(userClient, bootstrapper).
 				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
-				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser}, freePlan)
+				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser})
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
@@ -1096,6 +1092,14 @@ func (s *Server) Run(ctx context.Context) error {
 					meteringDiscovery = d
 					go meteringDiscovery.Run(ctx)
 					logger.Info("Metering discovery enabled", "workspace", s.opts.MeteringWorkspace, "defaultPlan", s.opts.MeteringDefaultPlan)
+					// The free-organizations cap applies while a metering
+					// deployment is discovered: without one there are no
+					// allowances to multiply, and a hub whose metering
+					// workspace is configured but empty caps nothing.
+					apiMgr.WithFreePlan(s.opts.MeteringDefaultPlan, func() bool {
+						_, ok := meteringDiscovery.Current()
+						return ok
+					})
 					// The admin plan route checks the plan it is handed
 					// exists in the metering workspace.
 					if store, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {

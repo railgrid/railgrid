@@ -92,7 +92,7 @@ func main() {
 		"How many organizations one user may create; personal organizations do not count, and a platform admin can override it per user in User.spec.quota. Must be positive.")
 	cmd.Flags().Int32Var(&opts.FreeOrgsPerUser, "free-orgs-per-user", opts.FreeOrgsPerUser,
 		"How many organizations on the default (free) metering plan one user may administer at once; creating another needs a plan on one of them. "+
-			"Personal organizations do not count, a platform admin can override it per user in User.spec.quota, and it applies only when --metering-workspace is set. Zero forbids free organizations beyond the personal one.")
+			"Personal organizations do not count, a platform admin can override it per user in User.spec.quota, and it applies only while a metering deployment is discovered in --metering-workspace. Zero forbids free organizations beyond the personal one.")
 	cmd.Flags().DurationVar(&opts.SoftDeleteGracePeriod, "soft-delete-grace-period", opts.SoftDeleteGracePeriod,
 		"How long a soft-deleted user, organization or workspace stays recoverable before the hub cascades it away (Go duration, e.g. 720h, 72h). "+
 			"One window for every kind; the undelete endpoints refuse a restore once it has elapsed. Must be positive.")

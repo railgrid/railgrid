@@ -222,20 +222,30 @@ type Manager struct {
 	// orgCaps are the per-user organization caps createOrg applies (O-5),
 	// before User.spec.quota overrides; nil means the binary defaults.
 	// freePlan names the metering plan an Organization without spec.plan is
-	// on; empty means metering is not configured on this hub, which switches
-	// the free-organizations cap off.
-	orgCaps  *quota.Caps
-	freePlan string
+	// on, and meteringInstalled says whether metering is there at all; the
+	// free-organizations cap applies only with both, because without
+	// metering there are no allowances for a second free organization to
+	// multiply.
+	orgCaps           *quota.Caps
+	freePlan          string
+	meteringInstalled func() bool
 }
 
-// WithOrgCaps installs the organization caps createOrg applies. freePlan is
-// the metering plan an Organization without spec.plan is on (the hub's
-// --metering-default-plan); pass it empty when metering is not configured,
-// and the free-organizations cap does not apply, because without metering
-// there are no allowances for a second free organization to multiply.
-func (m *Manager) WithOrgCaps(caps quota.Caps, freePlan string) *Manager {
+// WithOrgCaps installs the organization caps createOrg applies.
+func (m *Manager) WithOrgCaps(caps quota.Caps) *Manager {
 	m.orgCaps = &caps
-	m.freePlan = freePlan
+	return m
+}
+
+// WithFreePlan switches the free-organizations cap on: plan is the metering
+// plan an Organization without spec.plan is on (the hub's
+// --metering-default-plan), and installed reports whether a metering
+// deployment is discovered right now (nil means always). The cap waits for
+// metering: a hub with the workspace configured but nothing installed there
+// caps nothing, and neither does one whose metering went away.
+func (m *Manager) WithFreePlan(plan string, installed func() bool) *Manager {
+	m.freePlan = plan
+	m.meteringInstalled = installed
 	return m
 }
 
