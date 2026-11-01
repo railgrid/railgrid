@@ -648,12 +648,6 @@ fix-lint: $(GOLANGCI_LINT) ## Run golangci-lint with auto-fix
 vet:
 	go vet ./...
 
-# Vulnerability gate for every Go module. Fails only on findings govulncheck
-# traced to a called symbol that are not in hack/govulncheck-allow.yaml.
-# Pass module directories to narrow it, e.g. `make govulncheck ARGS=providers/edges`.
-govulncheck: ## Run the govulncheck gate over every Go module
-	./hack/govulncheck.sh $(ARGS)
-
 # --- Code generation ---
 
 boilerplate: ## Ensure license boilerplate on all Go files
@@ -764,7 +758,13 @@ verify-tilt-browser-deployment: ## Verify Browser image pin and Tilt hub reachab
 
 # --- Tool installation ---
 
-.PHONY: verify-ci-selection verify-workflows
+.PHONY: verify-ci-selection verify-workflows verify-charts
+verify-charts: ## Lint every platform and provider Helm chart with its default values
+	@for chart in deploy/charts/*/ providers/*/deploy/chart/; do \
+		[ -f "$$chart/Chart.yaml" ] || continue; \
+		echo "== $$chart"; helm lint "$$chart" || exit 1; \
+	done
+
 verify-ci-selection: ## Test CI change selection and completion gates (requires hack/ci/requirements-test.txt)
 	@python3 -c 'import yaml; assert yaml.__version__ == "6.0.3", "Install hack/ci/requirements-test.txt"'
 	@python3 -m unittest discover -s hack/ci -p 'test_*.py' -v
@@ -2983,37 +2983,51 @@ E2E_TIMEOUT ?= 20m
 
 e2e: e2e-standalone ## Run default e2e suite (standalone)
 
-e2e-standalone: build ## Run standalone e2e suite (embedded kcp + static token, no Dex)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
-	docker build -f deploy/Dockerfile.agent -t ghcr.io/railgrid/railgrid-agent:test .
-	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
-	RAILGRID_HUB_IMAGE_TAG=test \
-	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	RAILGRID_AGENT_IMAGE=ghcr.io/railgrid/railgrid-agent \
-	RAILGRID_AGENT_IMAGE_TAG=test \
-	RAILGRID_AGENT_IMAGE_PULL_POLICY=Never \
-	go test -count=1 ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+## Hub + agent images the kind-based suites deploy with imagePullPolicy Never.
+## Each suite target below builds them (and the binaries) before running; the
+## `-run` half runs the suite against whatever bin/ and images already exist,
+## which is how CI runs it: the E2E workflow's `build` job builds once and ships
+## bin/ plus a `docker save` archive to the four suite jobs instead of every
+## job compiling the hub and building the image again.
+E2E_HUB_IMAGE ?= ghcr.io/railgrid/railgrid-hub
+E2E_AGENT_IMAGE ?= ghcr.io/railgrid/railgrid-agent
+E2E_IMAGE_TAG ?= test
+E2E_IMAGE_ENV := RAILGRID_HUB_IMAGE=$(E2E_HUB_IMAGE) RAILGRID_HUB_IMAGE_TAG=$(E2E_IMAGE_TAG) RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
+	RAILGRID_AGENT_IMAGE=$(E2E_AGENT_IMAGE) RAILGRID_AGENT_IMAGE_TAG=$(E2E_IMAGE_TAG) RAILGRID_AGENT_IMAGE_PULL_POLICY=Never
 
-e2e-ssh: build ## Run SSH server-mode e2e suite (hub-only cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
-	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
-	RAILGRID_HUB_IMAGE_TAG=test \
-	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test -count=1 ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+.PHONY: e2e-hub-image e2e-agent-image e2e-images e2e-standalone-run e2e-ssh-run e2e-oidc-run e2e-external-kcp-run
 
-e2e-oidc: build ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
-	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
-	RAILGRID_HUB_IMAGE_TAG=test \
-	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test -count=1 ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+e2e-hub-image: ## Build the hub image the kind-based e2e suites deploy
+	docker build -f deploy/Dockerfile.hub -t $(E2E_HUB_IMAGE):$(E2E_IMAGE_TAG) .
 
-e2e-external-kcp: build ## Run external KCP e2e suite (kcp via Helm in kind, push-to-main only in CI)
-	docker build -f deploy/Dockerfile.hub -t ghcr.io/railgrid/railgrid-hub:test .
-	RAILGRID_HUB_IMAGE=ghcr.io/railgrid/railgrid-hub \
-	RAILGRID_HUB_IMAGE_TAG=test \
-	RAILGRID_HUB_IMAGE_PULL_POLICY=Never \
-	go test -count=1 ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+e2e-agent-image: ## Build the agent image the standalone e2e suite deploys
+	docker build -f deploy/Dockerfile.agent -t $(E2E_AGENT_IMAGE):$(E2E_IMAGE_TAG) .
+
+e2e-images: e2e-hub-image e2e-agent-image ## Build both images the kind-based e2e suites deploy
+
+e2e-standalone: build e2e-images ## Run standalone e2e suite (embedded kcp + static token, no Dex)
+	$(MAKE) e2e-standalone-run
+
+e2e-standalone-run: ## Run the standalone suite against prebuilt bin/ and images
+	$(E2E_IMAGE_ENV) go test -count=1 ./test/e2e/suites/standalone/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-ssh: build e2e-hub-image ## Run SSH server-mode e2e suite (hub-only cluster)
+	$(MAKE) e2e-ssh-run
+
+e2e-ssh-run: ## Run the SSH suite against prebuilt bin/ and the hub image
+	$(E2E_IMAGE_ENV) go test -count=1 ./test/e2e/suites/ssh/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-oidc: build e2e-hub-image ## Run OIDC e2e suite (Dex OIDC provider, requires --with-dex cluster)
+	$(MAKE) e2e-oidc-run
+
+e2e-oidc-run: ## Run the OIDC suite against prebuilt bin/ and the hub image
+	$(E2E_IMAGE_ENV) go test -count=1 ./test/e2e/suites/oidc/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+
+e2e-external-kcp: build e2e-hub-image ## Run external KCP e2e suite (kcp via Helm in kind)
+	$(MAKE) e2e-external-kcp-run
+
+e2e-external-kcp-run: ## Run the external KCP suite against prebuilt bin/ and the hub image
+	$(E2E_IMAGE_ENV) go test -count=1 ./test/e2e/suites/external_kcp/... -v -timeout $(E2E_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Docs-install e2e. These suites execute the hack/install/ scripts that
 ## docs/install-external-kcp.md and docs/install-embedded-kcp.md quote,

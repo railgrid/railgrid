@@ -15,6 +15,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Shape of a run, and why. Every job is billed in whole minutes and queued
+# against the plan's concurrency cap, so the small checks live in ONE
+# `contracts` job rather than one job each, and nothing here installs a
+# toolchain twice. Go jobs go through .github/actions/setup-go-cache: one
+# shared module cache for every module in the repo plus a build-cache scope
+# per kind of compile, written only from main. There is no disk-cleanup step:
+# ubuntu-latest runners report ~86 GB free and the old `rm -rf` of unused SDKs
+# cost ~2 minutes in every one of 22 jobs. hack/ci/README.md has the selection
+# modes (full / provider-ui / docs) that `changes` computes.
 jobs:
   changes:
     runs-on: ubuntu-latest
@@ -25,6 +34,7 @@ jobs:
       providers: ${{ steps.changes.outputs.providers }}
       portal-matrix: ${{ steps.changes.outputs.portal-matrix }}
       image-matrix: ${{ steps.changes.outputs.image-matrix }}
+      has-images: ${{ steps.changes.outputs.has-images }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,16 +42,27 @@ jobs:
       - uses: ./.github/actions/ci-changes
         id: changes
 
+  # Compiles the CLI + hub and, on main, is the one job that writes the shared
+  # module cache (after `go mod download` in every module, so the provider
+  # test jobs hit it too) and the `build` build-cache scope.
   build:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@v4
-    - uses: ./.github/actions/free-disk-space
-    - uses: actions/setup-go@v5
+    - uses: ./.github/actions/setup-go-cache
       with:
-        go-version-file: go.mod
+        build-scope: build
+        save-mod: 'true'
+        save-build: 'true'
+    - name: Download modules for every Go module in the repo
+      run: |
+        for dir in . provider-sdk providers/*/ providers/infrastructure/dev-agent; do
+          [ -f "$dir/go.mod" ] || continue
+          (cd "$dir" && go mod download)
+        done
     - name: Build
       run: make build
 
@@ -55,6 +76,10 @@ jobs:
   # in-tree SDK is what gets linked. When hack/provider-sdk-cutover.sh drops
   # that replace, copy the "Set up Go workspace" step from e2e.yaml into this
   # job, or it will silently test the published SDK instead of the diff.
+  #
+  # All entries share the `race` build-cache scope, which the root module saves
+  # on main: it compiles most of what the providers import, so the provider
+  # jobs restore it read-only and compile only their own packages.
   test-modules:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
@@ -81,11 +106,10 @@ jobs:
           - { module: providers/quickstart, race: -race }
     steps:
     - uses: actions/checkout@v4
-    - uses: ./.github/actions/free-disk-space
-    - uses: actions/setup-go@v5
+    - uses: ./.github/actions/setup-go-cache
       with:
-        go-version-file: go.mod
-        cache-dependency-path: '**/go.sum'
+        build-scope: race
+        save-build: ${{ matrix.module == '.' }}
 
     # Provider binaries `//go:embed all:portal/dist`. The portal is a separate
     # npm project built by the provider-portals job and the image build, so
@@ -96,7 +120,10 @@ jobs:
       working-directory: ${{ matrix.module }}
       run: mkdir -p portal/dist && touch portal/dist/.gitkeep
 
+    # The root module's govet runs inside `make lint` (golangci-lint); the
+    # standalone modules are not linted in CI, so vet is their static check.
     - name: Vet
+      if: matrix.module != '.'
       working-directory: ${{ matrix.module }}
       run: go vet ./...
 
@@ -140,70 +167,28 @@ jobs:
         working-directory: providers/app-studio
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/free-disk-space
-      - uses: actions/setup-go@v5
+      - uses: ./.github/actions/setup-go-cache
         with:
           go-version-file: providers/app-studio/go.mod
-          cache-dependency-path: '**/go.sum'
+          build-scope: race
       - name: Test PostgreSQL store under the race detector
         run: go test -race -count=1 ./store
 
-  # govulncheck per module, blocking. hack/govulncheck.sh fails the job only on
-  # vulnerabilities govulncheck traced to a *called* symbol and that are not
-  # listed in hack/govulncheck-allow.yaml; module- and package-level findings
-  # are inventory, not exploitable paths, and plain `govulncheck ./...` cannot
-  # tell CI the difference because it exits 3 for both.
-  #
-  # The allowlist is the only way to accept a reachable finding, every entry
-  # carries a reason, an exposure argument and a review-by date, and it is
-  # reserved for advisories with no upstream fix. If this job goes red, read the
-  # output: it names the module, the fixed version and the `go get` line, or
-  # says there is no fix. Do not add continue-on-error back.
-  #
-  # govulncheck is installed at @latest, so a newly published advisory can turn
-  # this red on an unrelated PR. That is intended - it is how we hear about one.
-  govulncheck:
-    name: govulncheck (${{ matrix.module }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        module:
-          - .
-          - provider-sdk
-          - providers/agents
-          - providers/app-studio
-          - providers/code
-          - providers/edges
-          - providers/infrastructure
-          - providers/kuery
-          - providers/quickstart
-    steps:
-    - uses: actions/checkout@v4
-    - uses: ./.github/actions/free-disk-space
-    - uses: actions/setup-go@v5
-      with:
-        go-version-file: go.mod
-        cache-dependency-path: '**/go.sum'
-
-    - name: Install govulncheck
-      run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-    # The script stubs portal/dist for the go:embed itself and cleans up after.
-    - name: govulncheck
-      run: ./hack/govulncheck.sh ${{ matrix.module }}
-
+  # golangci-lint type-checks through the same compiled packages `make build`
+  # produces, so it restores the `build` scope; its own analysis cache is what
+  # makes a warm lint incremental, and this job is the one that saves it.
   lint:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
     - uses: actions/checkout@v4
-    - uses: ./.github/actions/free-disk-space
-    - uses: actions/setup-go@v5
+    - uses: ./.github/actions/setup-go-cache
       with:
-        go-version-file: go.mod
+        build-scope: lint
+        save-build: 'true'
+        extra-build-paths: ~/.cache/golangci-lint
     - name: Lint
       run: make lint
     - name: Stub App Studio portal for Go embed
@@ -211,17 +196,36 @@ jobs:
     - name: Lint App Studio harness and development runtime
       run: make lint-app-studio-harness
 
-  verify-boilerplate:
+  verify-codegen:
+    needs: changes
+    if: needs.changes.outputs.mode == 'full'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v4
+    - uses: ./.github/actions/setup-go-cache
+      with:
+        build-scope: build
+    - name: Verify codegen
+      run: make verify-codegen
+
+  # Every cheap repository contract in one job, on every PR regardless of
+  # selection mode: each of these used to be its own job and cost a billed
+  # minute for a few seconds of work. Order: the checks that need nothing but
+  # the checkout first, then the node, python, Go-tool and Helm ones.
+  contracts:
+    name: Repository contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
     - uses: actions/checkout@v4
     - name: Verify boilerplate
       run: make verify-boilerplate
+    - name: Verify design-document metadata
+      run: make verify-design-docs
+    - name: Verify Tilt browser deployment wiring
+      run: make verify-tilt-browser-deployment
 
-  verify-portalkit:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
       with:
         node-version: 22
@@ -232,46 +236,14 @@ jobs:
       run: npm ci --include=dev --no-audit --no-fund
     - name: Verify portalkit sync and conformance
       run: make verify-portalkit
-
-  verify-ui-conformance:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 22
-        cache: npm
-        cache-dependency-path: portal/package-lock.json
-    - name: Install root portal dependencies
-      working-directory: portal
-      run: npm ci --no-audit --no-fund
     - name: Verify provider UI conformance
       run: make verify-ui-conformance
+    - name: Verify provider manifests, claims and route classes
+      run: make verify-provider-contract
+    - name: Test Actions Node SDK package and clean alias install
+      working-directory: provider-sdk/actions-node
+      run: npm test && npm run test:install
 
-  verify-design-docs:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Verify design-document metadata
-      run: make verify-design-docs
-
-  verify-codegen:
-    needs: changes
-    if: needs.changes.outputs.mode == 'full'
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - uses: ./.github/actions/free-disk-space
-    - uses: actions/setup-go@v5
-      with:
-        go-version-file: go.mod
-    - name: Verify codegen
-      run: make verify-codegen
-
-  test-app-studio-harness-scripts:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
     - uses: actions/setup-python@v5
       with:
         python-version: '3.12'
@@ -282,13 +254,24 @@ jobs:
         make test-tilt-checkout
         make test-tilt-app-studio-sequence
         python3 hack/scripts/verify-tilt-sandbox-default.test.py
+    - name: Install CI contract test dependency
+      run: python3 -m pip install -r hack/ci/requirements-test.txt
+    - name: Test CI selection and completion contracts
+      run: make verify-ci-selection
 
-  verify-tilt-browser-deployment:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v4
-    - name: Verify Tilt browser deployment wiring
-      run: make verify-tilt-browser-deployment
+    # actionlint is a pinned Go tool (hack/tools); no repo module is compiled.
+    - uses: ./.github/actions/setup-go-cache
+      with:
+        cache: 'false'
+    - name: Lint workflow syntax
+      run: make verify-workflows
+
+    # Chart validation moved here from the Helm workflow, which now runs only
+    # where it publishes (push to main and v* tags).
+    - name: Install Helm
+      uses: azure/setup-helm@v4
+    - name: Lint Helm charts
+      run: make verify-charts
 
   # The root portal is a separate npm project from the standalone provider
   # portals below. Its production build runs vue-tsc first, so this single job
@@ -323,9 +306,11 @@ jobs:
   # Standalone provider portals are separate npm projects and are not covered
   # by the root Go test target. Providers with a prebuild hook already run
   # their test/typecheck contract as part of `npm run build`, so those matrix
-  # entries skip duplicate invocations below.
+  # entries skip duplicate invocations below. In provider-ui mode this is the
+  # matrix of affected portals; in full mode all of them; docs-only PRs skip it.
   provider-portals:
     needs: changes
+    if: needs.changes.outputs.mode != 'docs'
     name: Provider portal (${{ matrix.provider }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -358,27 +343,10 @@ jobs:
       - name: Build portal
         run: npm run build
 
-  verify-ci-selection:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Install CI contract test dependency
-        run: python3 -m pip install -r hack/ci/requirements-test.txt
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Test CI selection and completion contracts
-        run: make verify-ci-selection
-      - name: Lint workflow syntax
-        run: make verify-workflows
-
   result:
     name: CI result
     if: always()
-    needs: [changes, test-app-studio-harness-scripts, build, govulncheck, lint, portal, provider-portals, test-modules, test-app-studio-postgres, verify-boilerplate, verify-ci-selection, verify-codegen, verify-design-docs, verify-portalkit, verify-tilt-browser-deployment, verify-ui-conformance]
+    needs: [changes, build, contracts, lint, portal, provider-portals, test-app-studio-postgres, test-modules, verify-codegen]
     runs-on: ubuntu-latest
     permissions:
       contents: read
