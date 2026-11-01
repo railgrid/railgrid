@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 29;
+  --railgrid-agent-ui-version: 32;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1067,12 +1067,15 @@ button.k-workbench-tab {
 .k-ai-conversation-rail__list { min-height: 0; flex: 1; overflow-y: auto; padding: 6px; }
 .k-ai-conversation-rail__loading { display: grid; gap: 6px; padding: 4px; }
 .k-ai-conversation-rail__skeleton { display: block; height: 40px; border-radius: 4px; background: var(--color-surface-overlay, #171927); opacity: .7; }
-.k-ai-conversation-rail__sections { display: grid; gap: 8px; }
+.k-ai-conversation-rail__sections { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.k-ai-conversation-rail__sections section, .k-ai-conversation-rail__sections li { min-width: 0; }
 .k-ai-conversation-rail__section-label { padding: 4px 8px; color: var(--color-text-muted, #8587a1); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
-.k-ai-conversation-rail__sections ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.k-ai-conversation-rail__sections ul { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; margin: 0; padding: 0; list-style: none; }
 .k-ai-conversation-rail__item { position: relative; display: flex; min-width: 0; height: 32px; align-items: center; overflow: hidden; border-radius: 4px; color: var(--color-text-secondary, #8a8ca6); }
 .k-ai-conversation-rail__item.is-active { background: var(--color-accent-subtle, rgba(139, 107, 255, .14)); color: var(--color-accent-hover, #a18aff); }
 .k-ai-conversation-rail__item-select { display: flex; min-width: 0; height: 32px; flex: 1; align-items: center; gap: 8px; border: 0; border-radius: 4px; background: transparent; padding: 4px 4px 4px 8px; color: inherit; text-align: left; }
+.k-ai-conversation-rail__item.has-actions:hover .k-ai-conversation-rail__item-select,
+.k-ai-conversation-rail__item.has-actions:focus-within .k-ai-conversation-rail__item-select { padding-right: 72px; }
 .k-ai-conversation-rail__item-select:hover { background: transparent; }
 .k-ai-conversation-rail__item-select:focus-visible { position: relative; z-index: 2; outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent); outline-offset: -2px; }
 .k-ai-conversation-rail__item-select:disabled { cursor: not-allowed; opacity: .5; }
@@ -1084,7 +1087,7 @@ button.k-workbench-tab {
 .k-ai-conversation-rail__item-fade { pointer-events: none; position: absolute; inset: 0 0 0 auto; z-index: 1; width: 32px; transition: opacity .15s ease; }
 .k-ai-conversation-rail__item:hover .k-ai-conversation-rail__item-fade,
 .k-ai-conversation-rail__item:focus-within .k-ai-conversation-rail__item-fade { opacity: 0; }
-.k-ai-conversation-rail__item-actions { pointer-events: none; position: absolute; inset: 0 6px 0 auto; z-index: 2; display: flex; width: 96px; align-items: center; justify-content: flex-end; gap: 2px; padding-left: 28px; opacity: 0; transition: opacity .15s ease; }
+.k-ai-conversation-rail__item-actions { pointer-events: none; position: absolute; inset: 0 6px 0 auto; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 2px; opacity: 0; transition: opacity .15s ease; }
 .k-ai-conversation-rail__item:hover .k-ai-conversation-rail__item-actions,
 .k-ai-conversation-rail__item:focus-within .k-ai-conversation-rail__item-actions { pointer-events: auto; opacity: 1; }
 .k-ai-conversation-rail__item-action { display: inline-flex; width: 28px; height: 28px; min-width: 28px; align-items: center; justify-content: center; border: 0; border-radius: 4px; background: transparent; padding: 0; color: var(--color-text-secondary, #8a8ca6); }
@@ -1114,7 +1117,10 @@ button.k-workbench-tab {
   .k-ai-conversation-rail__resize { display: block; }
 }
 @media (hover: none), (any-pointer: coarse) {
-  .k-ai-conversation-rail__item-actions { width: 128px; opacity: 1; }
+  .k-ai-conversation-rail__item-actions { pointer-events: auto; opacity: 1; }
+  .k-ai-conversation-rail__item.has-actions .k-ai-conversation-rail__item-select,
+  .k-ai-conversation-rail__item.has-actions:hover .k-ai-conversation-rail__item-select,
+  .k-ai-conversation-rail__item.has-actions:focus-within .k-ai-conversation-rail__item-select { padding-right: 100px; }
   .k-ai-conversation-rail__item-action,
   .k-ai-conversation-rail__create,
   .k-ai-conversation-rail__search input,

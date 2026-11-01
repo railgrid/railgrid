@@ -40,7 +40,7 @@ test('renders the project-scoped shared rail with lifecycle actions and no manag
   assert.match(html, /Add toast notifications/)
   assert.match(html, /Fix authentication/)
   assert.match(html, /aria-current="page"/)
-  assert.match(html, /class="is-active k-ai-conversation-rail__item"/)
+  assert.match(html, /class="is-active has-actions k-ai-conversation-rail__item"/)
   assert.match(html, /aria-label="Unread thread"/)
   assert.match(html, /Pinned/)
   assert.match(html, /title="Unpin thread"/)

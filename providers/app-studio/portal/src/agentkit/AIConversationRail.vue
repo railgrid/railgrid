@@ -22,6 +22,7 @@ import {
   Search,
   Trash2,
 } from 'lucide-vue-next'
+import AIOverflowTitle from './AIOverflowTitle.vue'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import type { AIConversationItem, AIConversationRailCapabilities, AIConversationRailLabels } from './ai'
 
@@ -72,6 +73,12 @@ const emit = defineEmits<{
 
 ensureAgentUIStyles()
 
+const hoveredThreadID = ref('')
+const focusedThreadID = ref('')
+function leaveThreadFocus(event: FocusEvent): void {
+  if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) focusedThreadID.value = ''
+}
+
 const DEFAULT_WIDTH = 224
 const MIN_WIDTH = 192
 const MAX_WIDTH = 384
@@ -81,7 +88,6 @@ const ACTIVE_THREAD_FADE = [
   'linear-gradient(to left, var(--color-surface-raised) 0%, var(--color-surface-raised) 58%, transparent 100%)',
 ].join(', ')
 const RESTING_THREAD_FADE = 'linear-gradient(to left, var(--color-surface-raised) 0%, var(--color-surface-raised) 58%, transparent 100%)'
-const HOVER_THREAD_FADE = 'linear-gradient(to left, var(--color-surface-hover) 0%, var(--color-surface-hover) 58%, transparent 100%)'
 
 const root = ref<HTMLElement | null>(null)
 const railPanel = ref<HTMLElement | null>(null)
@@ -673,7 +679,11 @@ defineExpose({
                 <li v-for="thread in section.threads" :key="thread.id">
                   <div
                     class="k-ai-conversation-rail__item"
-                    :class="activeThreadID === thread.id ? 'is-active' : ''"
+                    :class="{ 'is-active': activeThreadID === thread.id, 'has-actions': capabilities.pin || capabilities.archive || capabilities.delete }"
+                    @mouseenter="hoveredThreadID = thread.id"
+                    @mouseleave="hoveredThreadID = ''"
+                    @focusin="focusedThreadID = thread.id"
+                    @focusout="leaveThreadFocus"
                     @contextmenu.prevent="openContextMenu($event, thread.id)"
                   >
                     <button
@@ -689,11 +699,11 @@ defineExpose({
                     >
                       <span v-if="unreadThreadIDSet.has(thread.id)" class="k-ai-conversation-rail__unread" :class="thread.status === 'active' ? 'is-live' : ''" :aria-label="labels.unread" />
                       <span v-else class="k-ai-conversation-rail__unread k-ai-conversation-rail__unread--empty" aria-hidden="true" />
-                      <span class="k-ai-conversation-rail__item-title">{{ displayTitle(thread) }}</span>
+                      <AIOverflowTitle class="k-ai-conversation-rail__item-title" :text="displayTitle(thread)" :active="hoveredThreadID === thread.id || focusedThreadID === thread.id" />
                       <Loader2 v-if="selectingThreadID === thread.id || actioningThreadID === thread.id" class="k-ai-conversation-rail__item-spinner" :stroke-width="1.75" :aria-label="labels.updating" />
                     </button>
                     <div aria-hidden="true" class="k-ai-conversation-rail__item-fade" :style="{ backgroundImage: activeThreadID === thread.id ? ACTIVE_THREAD_FADE : RESTING_THREAD_FADE }" />
-                    <div v-if="capabilities.pin || capabilities.archive || capabilities.delete" class="k-ai-conversation-rail__item-actions" :style="{ backgroundImage: activeThreadID === thread.id ? ACTIVE_THREAD_FADE : HOVER_THREAD_FADE }">
+                    <div v-if="capabilities.pin || capabilities.archive || capabilities.delete" class="k-ai-conversation-rail__item-actions">
                       <button
                         v-if="capabilities.pin"
                         type="button"
