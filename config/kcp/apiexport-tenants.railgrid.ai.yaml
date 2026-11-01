@@ -16,7 +16,7 @@ spec:
       crd: {}
   - group: tenants.railgrid.ai
     name: organizations
-    schema: v261031-783d1b7d.organizations.tenants.railgrid.ai
+    schema: v261031-a6adbb41.organizations.tenants.railgrid.ai
     storage:
       crd: {}
   - group: tenants.railgrid.ai
@@ -36,7 +36,7 @@ spec:
       crd: {}
   - group: tenants.railgrid.ai
     name: users
-    schema: v261031-783d1b7d.users.tenants.railgrid.ai
+    schema: v261031-a6adbb41.users.tenants.railgrid.ai
     storage:
       crd: {}
 status: {}

@@ -17,6 +17,7 @@ import { confirmDialog } from '@/portalkit/confirm'
 import { authFetch } from '@/auth/session'
 
 import MeteringLimitsEditor, { type Limit } from './MeteringLimitsEditor.vue'
+import MeteringUsageList, { type LimitRow, type UsageWindow } from './MeteringUsageList.vue'
 
 type Endpoints = { portalURL: string; webhookURL?: string; auditURL?: string; version?: string; workspace: string }
 type Status = {
@@ -42,26 +43,29 @@ const actionError = ref<string | null>(null)
 const writable = computed(() => !!status.value?.writable)
 const planNames = computed(() => (items.value.plans ?? []).map((p) => p.metadata.name))
 
+// Limits and usage render structured (MeteringUsageList) rather than as the
+// flattened text of cell(); the columns' fullValue is that text, for the
+// table's truncation disclosure, and their maxWidth fits one list row.
 const collections = [
   { key: 'plans', label: 'Plans', columns: [
     { key: 'name', label: 'Name', primary: true },
     { key: 'displayName', label: 'Display name' },
-    { key: 'limits', label: 'Limits' },
+    { key: 'limits', label: 'Limits', maxWidth: '24rem', fullValue: (row: Record<string, unknown>) => limitsText(limitsOf(row), null) },
     { key: 'actions', label: '', ariaLabel: 'Actions' },
   ] },
   { key: 'entitlements', label: 'Entitlements', columns: [
     { key: 'name', label: 'Name', primary: true },
     { key: 'account', label: 'Account' },
     { key: 'plan', label: 'Plan' },
-    { key: 'effectiveLimits', label: 'Effective limits' },
-    { key: 'usage', label: 'Usage' },
+    { key: 'state', label: 'State', fullValue: (row: Record<string, unknown>) => stateOf(row).status },
+    { key: 'limits', label: 'Limits and usage', maxWidth: '28rem', fullValue: (row: Record<string, unknown>) => limitsText(limitsOf(row), usageOf(row)) },
     { key: 'actions', label: '', ariaLabel: 'Actions' },
   ] },
   { key: 'accounts', label: 'Accounts', columns: [
     { key: 'name', label: 'Name', primary: true },
     { key: 'displayName', label: 'Display name' },
     { key: 'memberCount', label: 'Workspaces' },
-    { key: 'usage', label: 'Usage' },
+    { key: 'usage', label: 'Usage', maxWidth: '24rem', fullValue: (row: Record<string, unknown>) => limitsText([], usageOf(row)) },
     { key: 'customerRef', label: 'Customer' },
   ] },
   { key: 'membershipreports', label: 'Membership reports', columns: [
@@ -98,12 +102,72 @@ function cell(value: unknown): string {
   return JSON.stringify(value)
 }
 
+// The structured values the limits, usage and state cells render. They ride
+// on the row under their own keys; everything else stays the text of cell().
+function limitsOf(row: Record<string, unknown>): LimitRow[] {
+  return Array.isArray(row.limits) ? (row.limits as LimitRow[]) : []
+}
+function usageOf(row: Record<string, unknown>): Record<string, unknown> | null {
+  return row.usage && typeof row.usage === 'object' && !Array.isArray(row.usage) ? (row.usage as Record<string, unknown>) : null
+}
+function windowOf(row: Record<string, unknown>): UsageWindow | null {
+  return row.window && typeof row.window === 'object' ? (row.window as UsageWindow) : null
+}
+
+type Condition = { type?: string; status?: string; reason?: string; message?: string }
+type EntitlementState = { status: string; tone: 'success' | 'warning' | 'danger' | 'muted'; title: string }
+
+// entitlementState reads the controller's conditions into one badge: a hard
+// limit exceeded (creates denied) outranks a soft one (flagged), which
+// outranks plain readiness.
+function entitlementState(status: Record<string, unknown> | undefined): EntitlementState {
+  const conditions = Array.isArray(status?.conditions) ? (status?.conditions as Condition[]) : []
+  const find = (type: string) => conditions.find((c) => c.type === type)
+  const hard = find('OverHardLimit')
+  const soft = find('OverSoftLimit')
+  const ready = find('Ready')
+  if (hard?.status === 'True') return { status: 'over hard limit', tone: 'danger', title: 'A hard limit is exceeded: creates over it are denied' }
+  if (soft?.status === 'True') return { status: 'over soft limit', tone: 'warning', title: 'A soft limit is exceeded: flagged, nothing is blocked' }
+  if (ready?.status === 'True') return { status: 'ready', tone: 'success', title: 'Within every limit' }
+  if (ready?.status === 'False') return { status: 'not ready', tone: 'danger', title: ready.message || ready.reason || 'Not ready' }
+  return { status: 'pending', tone: 'warning', title: 'Not reconciled yet' }
+}
+function stateOf(row: Record<string, unknown>): EntitlementState {
+  return (row.state as EntitlementState | undefined) ?? { status: 'pending', tone: 'warning', title: 'Not reconciled yet' }
+}
+
+// limitsText is the one-line text of a limits/usage cell, for truncation
+// disclosure and anything else that needs it as a string.
+function limitsText(limits: LimitRow[], usage: Record<string, unknown> | null): string {
+  const parts = limits.map((l) => {
+    const used = usage?.[String(l.meter)]
+    const amount = used === undefined ? String(l.max ?? '') : `${used} of ${l.max ?? '∞'}`
+    return `${l.meter}: ${l.enforce ?? 'Meter'} ${amount}`.trim()
+  })
+  const limited = new Set(limits.map((l) => String(l.meter)))
+  for (const [meter, value] of Object.entries(usage ?? {}).sort(([a], [b]) => a.localeCompare(b))) {
+    if (!limited.has(meter)) parts.push(`${meter}: ${value}`)
+  }
+  return parts.join('; ')
+}
+
 function rowsFor(collection: string): Array<Record<string, unknown>> {
   return (items.value[collection] ?? []).map((item) => {
     const row: Record<string, unknown> = { name: item.metadata.name }
     for (const [k, v] of Object.entries(item.spec ?? {})) row[k] = cell(v)
     for (const [k, v] of Object.entries(item.status ?? {})) row[k] = cell(v)
     if (collection === 'membershipreports') row.members = cell((item.spec?.members as unknown[] | undefined)?.length ?? 0)
+    if (collection === 'plans') row.limits = item.spec?.limits ?? []
+    if (collection === 'entitlements') {
+      row.limits = item.status?.effectiveLimits ?? []
+      row.usage = item.status?.usage ?? null
+      row.window = item.status?.window ?? null
+      row.state = entitlementState(item.status)
+    }
+    if (collection === 'accounts') {
+      row.usage = item.status?.usage ?? null
+      row.window = item.status?.window ?? null
+    }
     return row
   })
 }
@@ -377,6 +441,19 @@ onMounted(() => void refresh())
         >
           <template v-if="c.key === 'plans'" #plan="{ value }">
             <span class="k-badge k-badge--muted">{{ value }}</span>
+          </template>
+          <template v-if="c.key === 'plans' || c.key === 'entitlements'" #limits="{ row }">
+            <MeteringUsageList
+              :limits="limitsOf(row)"
+              :usage="c.key === 'entitlements' ? usageOf(row) : null"
+              :window="windowOf(row)"
+            />
+          </template>
+          <template v-if="c.key === 'entitlements'" #state="{ row }">
+            <StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" />
+          </template>
+          <template v-if="c.key === 'accounts'" #usage="{ row }">
+            <MeteringUsageList :usage="usageOf(row)" :window="windowOf(row)" />
           </template>
           <template v-if="c.key === 'plans' && writable" #actions="{ row }">
             <div class="flex items-center justify-end gap-1">

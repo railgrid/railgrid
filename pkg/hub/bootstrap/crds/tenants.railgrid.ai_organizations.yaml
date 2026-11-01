@@ -100,14 +100,13 @@ spec:
                   rule: self == oldSelf
               plan:
                 description: |-
-                  Plan, when set, gives this Organization its own metering Account and
-                  Entitlement on the named Plan. Empty (the default) pools the
-                  Organization into the metering Account of the User who created it,
-                  so creating more organizations never multiplies that user's free
-                  allowances. Settable only by a platform admin
-                  (PUT /api/admin/organizations/{uuid}/plan); the hub's metering
-                  reconciler keeps the Entitlement's plan in step with it. See
-                  docs/organizations.md O-5.
+                  Plan names the metering Plan this Organization's Entitlement is on.
+                  Empty (the default) means the hub's default plan, the free one; an
+                  Organization without a plan counts against its admins'
+                  free-organizations cap (docs/organizations.md O-5). Settable only by a
+                  platform admin (PUT /api/admin/organizations/{uuid}/plan); the hub's
+                  metering reconciler keeps the Entitlement's plan in step with it and
+                  preserves any overrides an admin added.
                 type: string
               workspaceCreation:
                 default: members

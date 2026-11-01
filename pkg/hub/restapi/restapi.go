@@ -219,36 +219,42 @@ type Manager struct {
 	// window, or a restore would be accepted for a workspace whose
 	// cascade has already started.
 	softDeleteGracePeriod time.Duration
-	// orgQuota resolves a user's organizations-per-user cap (O-5). Nil means
-	// the hub default for everyone.
-	orgQuota OrgQuotaPolicy
+	// orgCaps are the per-user organization caps createOrg applies (O-5),
+	// before User.spec.quota overrides; nil means the binary defaults.
+	// freePlan names the metering plan an Organization without spec.plan is
+	// on, and meteringInstalled says whether metering is there at all; the
+	// free-organizations cap applies only with both, because without
+	// metering there are no allowances for a second free organization to
+	// multiply.
+	orgCaps           *quota.Caps
+	freePlan          string
+	meteringInstalled func() bool
 }
 
-// OrgQuotaPolicy answers how many Organizations a User may create. The
-// metering-backed implementation reads the `organizations` limit from the
-// user's Entitlement; the fallback is a constant.
-type OrgQuotaPolicy interface {
-	Cap(ctx context.Context, user string) (int32, error)
-}
-
-// ConstOrgQuota is an OrgQuotaPolicy with one cap for every user.
-type ConstOrgQuota int32
-
-// Cap implements OrgQuotaPolicy.
-func (c ConstOrgQuota) Cap(context.Context, string) (int32, error) { return int32(c), nil }
-
-// WithOrgQuota installs the organizations-per-user policy createOrg checks.
-func (m *Manager) WithOrgQuota(p OrgQuotaPolicy) *Manager {
-	m.orgQuota = p
+// WithOrgCaps installs the organization caps createOrg applies.
+func (m *Manager) WithOrgCaps(caps quota.Caps) *Manager {
+	m.orgCaps = &caps
 	return m
 }
 
-// OrgQuota returns the installed policy, or the hub default.
-func (m *Manager) OrgQuota() OrgQuotaPolicy {
-	if m.orgQuota == nil {
-		return ConstOrgQuota(quota.DefaultOrgsPerUser)
+// WithFreePlan switches the free-organizations cap on: plan is the metering
+// plan an Organization without spec.plan is on (the hub's
+// --metering-default-plan), and installed reports whether a metering
+// deployment is discovered right now (nil means always). The cap waits for
+// metering: a hub with the workspace configured but nothing installed there
+// caps nothing, and neither does one whose metering went away.
+func (m *Manager) WithFreePlan(plan string, installed func() bool) *Manager {
+	m.freePlan = plan
+	m.meteringInstalled = installed
+	return m
+}
+
+// OrgCaps returns the installed caps, or the binary defaults.
+func (m *Manager) OrgCaps() quota.Caps {
+	if m.orgCaps == nil {
+		return quota.Defaults()
 	}
-	return m.orgQuota
+	return *m.orgCaps
 }
 
 // NewManager builds a Manager from the userClient (typed railgrid client
@@ -321,8 +327,9 @@ type Handler struct {
 	userSearch *proxy.IPRateLimiter
 	// orgCreate serializes createOrg's count-then-create per user on this
 	// replica, so two concurrent creates at cap-1 cannot both pass the
-	// quota. Cross-replica, the metering webhook's `organizations` row is
-	// the backstop.
+	// quota. Across replicas the caps are soft: two hubs can each admit one
+	// create at cap-1, which a limit that exists to stop casual
+	// multiplication of free allowances can live with.
 	orgCreate keyedMutex
 }
 

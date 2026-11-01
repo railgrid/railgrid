@@ -385,29 +385,22 @@ spec:
   `status.effectiveLimits`), written only through `/api/admin`. Per-workspace
   overrides do not exist: usage is pooled per account, which is what an org
   is.
-- **The free Account belongs to the User, not the organization** (landed
-  31 October, uncommitted). The hub's user reconciler writes Account
-  `user-<name>` plus a default-plan Entitlement per User; every organization
-  the user creates reports its workspaces into that account
-  (`MembershipReport.spec.account`), so N organizations share one set of
-  allowances instead of multiplying them. `Organization.spec.plan` (admin
-  only, `PUT /api/admin/organizations/{uuid}/plan`) detaches an organization
-  onto its own Account and Entitlement, whose plan follows `spec.plan` while
-  overrides are preserved; an existing per-org Entitlement an admin already
-  customized is kept as-is and logged. `User.spec.orgQuota` and
-  `Organization.spec.workspaceQuota` are gone: per-user overrides are
-  `Entitlement.spec.overrides` on the user account, and workspaces are the
-  `workspaces` row.
-- **Orgs per user is the `organizations` meter** on the user's Entitlement.
-  Organizations are records in the shared users workspace, so the
-  MeteringConfig resolves the account with contrib-metering's `ObjectLabel`
-  strategy on the created-by label (`accountPrefix: user-`); personal
-  organizations weigh zero in the CEL quantity. The hub's `createOrg` reads
-  the row from `status.effectiveLimits` for the friendly 409
-  (`--default-orgs-per-user` when metering is absent or the plan has no row);
-  the webhook is the backstop at the shard, and it denies the hub's kcp-admin
-  write too, which is wanted here. Plans must keep `organizations` at 1 or
-  more or personal-org bootstrap is refused.
+- **One Account per organization; the free tier is bounded by a cap on free
+  organizations per user** (landed 31 October, uncommitted; it replaced, the
+  same day, a layout that pooled a user's organizations into an Account
+  `user-<name>`, see docs/organizations.md O-5a). The hub's organization
+  reconciler writes the Account, a MembershipReport and an Entitlement whose
+  plan follows `Organization.spec.plan` (admin only,
+  `PUT /api/admin/organizations/{uuid}/plan`; the default plan while empty;
+  overrides are preserved, and a plan an admin set on the Entitlement
+  directly is kept until spec.plan speaks). `createOrg` applies two per-user
+  caps, hub flags a platform admin overrides in `User.spec.quota`:
+  `--default-orgs-per-user` (10) on the organizations the user created and
+  `--free-orgs-per-user` (1) on the non-personal organizations on the free
+  plan the user administers today, read from their membership index. The
+  free cap is off while no metering deployment is discovered. There is no
+  `organizations` meter and no MeteringConfig for Organizations: the hub is
+  the only gate, and the caps are soft.
 - Which plan an org is on: `Organization.spec.plan` (manual, admin-only,
   wins), else `Organization.status.billing.entitledPlan` (Stripe, section
   10), else the default. The hub's billing reconciler resolves this and
@@ -633,15 +626,15 @@ cert-manager-issued CA bundles instead of the Tilt self-signed pair.
 |---|---|
 | `pkg/hub/options.go`, `cmd/railgrid-hub/main.go`, `pkg/hub/kcp/embedded.go` | `--metering-*` flags; write admission and audit files; set the kcp options (7.1) |
 | `pkg/hub/kcp/bootstrap.go`, `config/kcp/` | nothing new: the hub's org reconciler and config applier write into `root:railgrid:system:metering` as kcp-admin (the deployment self-binds its exports there) |
-| `pkg/hub/metering/organization.go` (landed 29 Oct, uncommitted) | **organization reconciler** on the same manager as the org bootstrap reconciler: per `Organization`, ensure `Account` (display name, server-side apply), `Entitlement` on `--metering-default-plan` (default `free`; create-only, so a plan an admin or billing later sets is never reset) and the `railgrid-hub.<org>` `MembershipReport` (org workspace plus every child workspace, `{cluster, path}`, written only when the set changes); all three deleted when the Organization is gone; a no-op until discovery reports metering installed, retried every minute until then. Existing organizations are covered on the first pass. Membership is refreshed on a 5-minute requeue; a `tenancy.kcp.io/workspaces` watch per org workspace is the follow-up that replaces the timer. Still to build here: `Organization.spec.plan`, `spec.suspended`, `status.billing` |
+| `pkg/hub/metering/organization.go` (landed 29 Oct, uncommitted) | **organization reconciler** on the same manager as the org bootstrap reconciler: per `Organization`, ensure `Account` (display name, server-side apply), `Entitlement` on `--metering-default-plan` (default `free`; create-only, so a plan an admin or billing later sets is never reset) and the `railgrid-hub.<org>` `MembershipReport` (org workspace plus every child workspace, `{cluster, path}`, written only when the set changes); all three deleted when the Organization is gone; a no-op until discovery reports metering installed, retried every minute until then. Existing organizations are covered on the first pass. Membership is refreshed on a 5-minute requeue; a `tenancy.kcp.io/workspaces` watch per org workspace is the follow-up that replaces the timer. `Organization.spec.plan` landed 31 Oct: the Entitlement's plan follows it (the default plan while empty, overrides preserved, a plan an admin set directly on the Entitlement kept until spec.plan speaks), written through `PUT /api/admin/organizations/{uuid}/plan`. Still to build here: `spec.suspended`, `status.billing` |
 | `pkg/hub/metering` (landed 29 Oct, uncommitted: discovery + read-only proxy) | **discovery**: polls `--metering-workspace` for the ConfigMap `default/metering-endpoints` and Secret `default/metering-admin` that `metering init` publishes; `GET /api/admin/metering` (installed, version, readyz) and `GET /api/admin/metering/{collection}` proxy the metering API with the published token behind the admin gate, which is what the Bonkers **Metering** section renders (the hub portal authenticates with a bearer in localStorage, so an iframe of the metering portal would have no auth; native tables over the proxy instead). Still to build: the workspace watch for the membership reporter (above); **config applier**: applies `config/metering/` (Plans into `store`, MeteringConfigs into the provider workspace) when the `metering` admin `Provider` is Ready and on file change at startup; **billing reconciler** (section 10) |
 | `pkg/hub/metering/provider.go` (landed 29 Oct, uncommitted) | **provider binding reconciler** on the admin multicluster manager, per `Provider`: once discovery reports metering installed (the feature gate; until then every Provider is retried a minute later and nothing is written), it creates the `metering-provider` APIBinding in `status.workspacePath` against `--metering-workspace`, labelled `metering.railgrid.ai/managed-by=railgrid-hub`, and re-checks until kcp reports it Bound. Additive only: a binding is never removed (kcp refuses while bound objects exist, and the records are the provider's usage history) and a same-named binding to another export is left alone and logged. The narrow `railgrid:provider` role gained `usagerecords` and `meteringconfigs` in `metering.contrib.kcp.io`. Verified live under Tilt: all nine platform provider workspaces Bound within a minute of the hub restart. Org-owned providers (`root:railgrid:tenants:<org>:providers:<name>`) are not covered |
 | `pkg/hub/providers` | still to build: Enable refuses `providers.<name>: 0` rows; bindings labelled `railgrid.ai/provider` |
 | `provider-sdk/install` | `ApplyBindGrant` subject becomes the hub identity |
 | `pkg/hub/metering/admin.go` (landed 29 Oct, uncommitted) | the admin writes, straight into the metering workspace as kcp-admin behind the admin gate, each logged with the caller: `PUT /api/admin/metering/plans/{name}` (create or update displayName and limits; the backend meter mapping is preserved), `DELETE …/plans/{name}` (refused for the default plan and for a plan an entitlement still uses), `PUT /api/admin/metering/entitlements/{name}` (plan, which must exist, and overrides). Limits are validated against the PlanLimit schema plus the rule the CRD cannot say: Soft and Hard need a numeric max. `GET /api/admin/metering` reports `writable` and `defaultPlan`. The metering controller recomputes `effectiveLimits` on its sample interval (one minute); a Plan watch in its entitlement reconciler would make that immediate |
 | `pkg/hub/admin`, `pkg/hub/restapi` | still to build: `GET/PATCH /api/admin/organizations/{org}/entitlement` (suspended); `POST …/resync`; `GET /api/orgs/{org}/billing` (plan, effective limits, usage, membership count, subscription state); the O-5 check in `createOrg` wired to `pkg/hub/quota` at last |
-| `pkg/hub/quota` | O-5 only (landed 31 Oct): the cap is supplied by the caller, from `pkg/hub/metering.OrgQuota` (the user's Entitlement) or the hub default; O-6 deleted |
-| `pkg/hub/metering/user.go`, `orgquota.go`, `plans.go` (landed 31 Oct) | user reconciler (Account + Entitlement per User; removal waits for the user's organizations to move off the account, and a startup sweep over `railgrid.ai/user`-labelled Accounts re-enqueues users deleted while the hub was down), the Entitlement-backed `organizations` cap, plan existence check for the admin plan route |
+| `pkg/hub/quota` | O-5 (landed 31 Oct): the two per-user caps (`Caps`, overridden by `User.spec.quota`, `IsFree` on `Organization.spec.plan`) and the checks `createOrg` runs, the free one counting the free organizations the user administers from their membership index; O-6 deleted |
+| `pkg/hub/metering/plans.go` (landed 31 Oct) | plan existence check for the admin plan route. A user reconciler (Account + Entitlement per User) and an Entitlement-backed `organizations` cap landed the same morning and were removed again that day with the move back to one Account per organization |
 | portal | Bonkers **Metering** section (landed 29 Oct: status, endpoints, and the five collections as read-only tables through the proxy; "not installed" with the Helm hint otherwise). Plan and entitlement editors landed 29 Oct: new/edit/delete plan with a per-meter limits editor, and per entitlement a plan select plus overrides, through the write routes above. Still to build: **Billing** per org (plan, overrides editor, usage bars from `Entitlement.status`, members, conditions, suspend, Stripe state, resync); org settings **Plan and usage** page; `portalkit` "limit reached" mapping for the `metering:` 403 prefix and `N of M` hints next to create buttons |
 | `Makefile`, Tilt, charts | `install-provider-metering`, `init-provider-metering`; `METERING_ENABLED` through the external-providers contract; hub chart `metering.*` values that set the flags |
 | e2e | `test/e2e/suites/metering` (section 11) |
@@ -826,11 +819,12 @@ entitlement reconciler close the two gaps.
    report; confirm nothing capped is written there.
 3. **Downgrade grace.** Freeze immediately or after a grace window; and
    whether suspension needs the audit-telemetry notification path.
-4. **Personal organizations**: settled 31 October. One Entitlement per
-   *user*; the personal org and every org the user creates share it until an
-   org is detached with `spec.plan`.
-5. **Who pays for a personal org** when a team org is on Stripe: the user's
-   own account, which stays free; the detached team org is the one on
+4. **Personal organizations**: settled 31 October. One Account and
+   Entitlement per *organization*, the personal one included; what bounds
+   the free tier is the hub's cap on free organizations per user (O-5), not
+   a shared allowance.
+5. **Who pays for a personal org** when a team org is on Stripe: its own
+   account, which stays on the free plan; the team org is the one on
    Stripe. Whether trials are a Stripe trial or a plan is still open.
 6. **Window granularity vs. storage.** Settled 29 October by making kcp a
    buffer: records are deleted once their sample is in the store, so window
