@@ -156,6 +156,8 @@ function prepareAgentCreateRouteChange(previous: Route, next: Route): void {
   if (isAgentCreateRoute(next)) clearAgentCreateSetup()
 }
 
+let modelCreateOwner: Route = { kind: 'menu', menu: 'models' }
+
 function go(next: Route, mode?: 'push' | 'replace'): void {
   if (props.overlay) {
     if (next.kind !== 'agent' || next.name !== props.overlay.agent || next.tab !== 'chat') {
@@ -164,6 +166,10 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
     return
   }
   const previous = route.value
+  if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
+    modelCreateOwner = previous.kind === 'menu' && previous.menu === 'models'
+      ? previous : { kind: 'menu', menu: 'models' }
+  }
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   prepareAgentCreateRouteChange(previous, next)
   advanceCreateSession(route.value, next)
@@ -276,6 +282,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   bindStore(nextStore)
   loadedTenant = null
   authority = nextApi.contextAuthority()
+  if (resetRoute) modelCreateOwner = { kind: 'menu', menu: 'models' }
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
   maybeLoad()
@@ -319,6 +326,13 @@ watch(() => props.ctx, () => {
   if (contextUsable.value && !props.overlay) restoreRouteFromHash(false)
 })
 
+// The host assistant settings shortcut still enters the Models destination.
+watch([() => props.ctx?.agentOverlay?.settingsOpen, () => hashFor(route.value)], ([open]) => {
+  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && route.value.modelsTab !== 'workspace-assistant') {
+    go({ kind: 'menu', menu: 'models', modelsTab: 'workspace-assistant' }, 'replace')
+  }
+}, { immediate: true })
+
 type SourceDetail = Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>
 
 function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): boolean {
@@ -331,7 +345,7 @@ function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): bool
 function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
     case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
-    case 'model': return { kind: 'menu', menu: 'models' }
+    case 'model': return modelCreateOwner
     // A webhook owns its URL and its delivery log: land on it, so the URL the
     // sender needs is the first thing the person sees.
     case 'webhook': return { kind: 'edit', resource: 'webhook', name: detail.name || '' }
@@ -341,7 +355,7 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
 }
 
 function createOwnerRoute(current: Extract<Route, { kind: 'create' }>): Route {
-  if (current.resource === 'model') return { kind: 'menu', menu: 'models' }
+  if (current.resource === 'model') return modelCreateOwner
   if (current.resource === 'agent') return { kind: 'menu', menu: 'agents' }
   if (current.resource === 'webhook') return { kind: 'menu', menu: 'webhooks' }
   return { kind: 'menu', menu: 'connections' }
@@ -555,6 +569,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
         :overlay-control="ctx.agentOverlay"
+        :models-tab="route.modelsTab"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"

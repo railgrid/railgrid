@@ -10,6 +10,7 @@
 //   #/activity                        run feed + approvals
 //   #/activity/<runID>                run trace
 //   #/connections #/webhooks #/models
+//   #/models/provider-connections|workspace-assistant|usage
 //   #/connections/<name>/edit         connection edit
 //   #/toolsets/<name>/edit            toolset edit
 //   #/webhooks/<name>/edit            webhook detail (URL, routes, deliveries)
@@ -22,6 +23,13 @@
 //   #/create/toolset #/create/webhook #/create/model
 
 export type MenuKey = 'agents' | 'activity' | 'connections' | 'webhooks' | 'models'
+export type ModelsTab = 'models' | 'provider-connections' | 'workspace-assistant' | 'usage'
+export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
+  { id: 'models', label: 'Models' },
+  { id: 'provider-connections', label: 'Provider connections' },
+  { id: 'workspace-assistant', label: 'Workspace assistant' },
+  { id: 'usage', label: 'Usage & cost' },
+]
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs'
 export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
@@ -31,7 +39,7 @@ export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'webhooks'
 const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs']
 
 export type Route =
-  | { kind: 'menu'; menu: MenuKey }
+  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: EditResource; name: string }
@@ -122,6 +130,9 @@ export function parseHash(hash = location.hash): Route {
   }
   if (head === 'activity' && second) return { kind: 'run', id: decodePart(second) }
   if (head === 'runs' && second) return { kind: 'run', id: decodePart(second) }
+  if (head === 'models' && MODELS_TABS.some(tab => tab.id === second) && second !== 'models') {
+    return { kind: 'menu', menu: 'models', modelsTab: second as ModelsTab }
+  }
   if ((MENUS as string[]).includes(head)) return { kind: 'menu', menu: head as MenuKey }
   // Legacy tabs fold into their absorbing surface.
   if (head === 'inbox' || head === 'runs') return { kind: 'menu', menu: 'activity' }
@@ -149,7 +160,8 @@ export function hashFor(route: Route): string {
         : `#/agents/${encodeURIComponent(route.agent)}/${collection}/${encodeURIComponent(route.name)}/edit`
     }
     default:
-      return `#/${route.menu}`
+      return route.menu === 'models' && route.modelsTab && route.modelsTab !== 'models'
+        ? `#/models/${route.modelsTab}` : `#/${route.menu}`
   }
 }
 

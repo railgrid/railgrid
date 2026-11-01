@@ -53,18 +53,18 @@ describe('models view on an empty workspace', () => {
     expect(header.classList.contains('agents-panel-head')).toBe(false)
   })
 
-  it('renders the dashboard and the Connect provider button when usage arrays are null', async () => {
+  it('renders Usage & cost when usage arrays are null', async () => {
     const api = stubApi({
       catalog: () => Promise.resolve([]),
       // Deliberately the raw (unnormalized) shape a pre-fix server sends.
       usage: () => Promise.resolve(usageWithNulls),
     })
     const store = makeStore(api)
-    const { element: el } = await mountVue(Models, { store, api })
+    const { element: el } = await mountVue(Models, { store, api, modelsTab: 'usage' })
     await settleVue()
 
     const text = el.textContent || ''
-    expect(text).toContain('Connect provider')
+    expect(el.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Usage & cost')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
     expect(text).toContain('most recent 5,000 runs')
@@ -85,7 +85,7 @@ describe('models view on an empty workspace', () => {
     const retry = deferred<typeof complete>()
     const usage = vi.fn().mockResolvedValueOnce(partial).mockReturnValueOnce(retry.promise)
     const api = stubApi({ catalog: () => Promise.resolve([]), usage })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     await settleVue()
 
     const notice = el.querySelector<HTMLElement>('.k-inline-notification--warning[role="status"]')!
@@ -117,7 +117,7 @@ describe('models view on an empty workspace', () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
       ...usageWithNulls, byAgent: rows, byModel: rows.map(row => ({ ...row, key: `model-${row.key}` })),
     }) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
     await settleVue()
 
@@ -134,7 +134,7 @@ describe('models view on an empty workspace', () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
       ...usageWithNulls, total: bucket, byModel: [{ ...bucket, key: 'main' }], byAgent: [], series: [],
     }) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     await settleVue()
     const cost = el.querySelector('.agents-stat')!
     expect(cost.textContent).toContain(value)
@@ -155,14 +155,17 @@ describe('models view on an empty workspace', () => {
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
+    const view = await mountVue(Models, { store, api })
+    const el = view.element
     await settleVue()
 
-    expect(el.querySelectorAll('[role="alert"]')).toHaveLength(2)
-    expect(el.textContent).toContain('Usage unavailable: usage offline')
+    expect(el.querySelectorAll('[role="alert"]')).toHaveLength(1)
     expect(el.textContent).toContain('Model catalog unavailable: catalog offline')
     expect(el.textContent).toContain('catalog unavailable — pricing unknown')
     expect(el.textContent).not.toContain('not in catalog — no pricing')
+    await view.setProps({ modelsTab: 'usage' })
+    expect(el.textContent).toContain('Usage unavailable: usage offline')
+    expect(el.textContent).not.toContain('Model catalog unavailable')
   })
 
   it('retains catalog and usage snapshots through same-authority refresh failures', async () => {
@@ -184,17 +187,20 @@ describe('models view on an empty workspace', () => {
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { ref: exposed, store, api })
+    const view = await mountVue(Models, { ref: exposed, store, api })
+    const el = view.element
     await settleVue()
 
-    expect(el.textContent).toContain('$5.00')
     expect(el.textContent).toContain('$2 input · $8 output')
+    await view.setProps({ modelsTab: 'usage' })
+    expect(el.textContent).toContain('$5.00')
     await Promise.all([exposed.value!.loadCatalog(), exposed.value!.loadUsage()])
     await settleVue()
 
     expect(el.textContent).toContain('Could not refresh usage. Showing usage from the last successful read.')
-    expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
     expect(el.textContent).toContain('$5.00')
+    await view.setProps({ modelsTab: 'models' })
+    expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
     expect(el.textContent).toContain('$2 input · $8 output')
   })
 
@@ -211,7 +217,9 @@ describe('models view on an empty workspace', () => {
     firstStore.credentials.loaded = firstStore.credentials.hasSnapshot = true
     const view = await mountVue(Models, { store: firstStore, api: first })
     await settleVue()
+    await view.setProps({ modelsTab: 'usage' })
     expect(view.element.textContent).toContain('$5.00')
+    await view.setProps({ modelsTab: 'models' })
     expect(view.element.textContent).toContain('$2 input · $8 output')
 
     const secondStore = makeStore(second)
@@ -219,23 +227,24 @@ describe('models view on an empty workspace', () => {
     secondStore.credentials.loaded = secondStore.credentials.hasSnapshot = true
     await view.setProps({ store: secondStore, api: second })
 
-    expect(view.element.textContent).toContain('Loading usage…')
     expect(view.element.textContent).toContain('Loading model catalog…')
     expect(view.element.textContent).not.toContain('$5.00')
     expect(view.element.textContent).not.toContain('$2 input · $8 output')
 
+    await view.setProps({ modelsTab: 'usage' })
+    expect(view.element.textContent).toContain('Loading usage…')
     nextCatalog.resolve([])
     nextUsage.resolve(usageWithNulls)
     await settleVue()
   })
 
-  it('opens the create form when Connect provider is clicked', async () => {
+  it('opens the create form when Add model is clicked', async () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
     const store = makeStore(api)
     const { element: el } = await mountVue(Models, { store, api })
 
-    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Connect provider'))
-    expect(btn, 'Connect provider button should be present').toBeTruthy()
+    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Add model'))
+    expect(btn, 'Add model button should be present').toBeTruthy()
     btn!.click()
     await settleVue()
 
@@ -359,7 +368,7 @@ describe('models view on an empty workspace', () => {
       ],
     }
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
     await settleVue()
     const label = el.querySelector<SVGElement>('.agents-spark')?.getAttribute('aria-label') || ''
@@ -628,5 +637,60 @@ describe('model collection layouts', () => {
     expect(next.element.querySelectorAll('.k-model-connection')).toHaveLength(2)
     next.unmount()
     localStorage.removeItem('railgrid:agents:models:layout')
+  })
+})
+
+describe('model management navigation', () => {
+  it('isolates the four views, loads usage on demand, and retains native link destinations', async () => {
+    const usage = vi.fn().mockResolvedValue(usageWithNulls)
+    const api = stubApi({ catalog: async () => [], usage })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'shared', displayName: 'Production', provider: 'openai', baseURL: 'https://api.openai.com/v1', isConnection: true },
+      { name: 'fast', model: 'gpt-6-luna', connectionRef: 'shared', connectionName: 'Production' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const overlayControl = { selectedAgent: '', followContext: true, settingsOpen: false, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
+    const view = await mountVue(Models, { store, api, overlayControl })
+    const nav = () => view.element.querySelector('nav[aria-label="Model management"]')!
+    expect([...nav().querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual([
+      '#/models', '#/models/provider-connections', '#/models/workspace-assistant', '#/models/usage',
+    ])
+    expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
+    expect(view.element.querySelector('.agents-provider-connection')).toBeNull()
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    expect(usage).not.toHaveBeenCalled()
+
+    const open = async (href: string) => {
+      nav().querySelector<HTMLAnchorElement>(`a[href="${href}"]`)!.click()
+      await settleVue()
+      expect(nav().querySelector('[aria-current="page"]')?.getAttribute('href')).toBe(href)
+    }
+    await open('#/models/provider-connections')
+    expect(view.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
+    expect(view.element.querySelector('.agents-provider-connection')?.textContent).toContain('Production')
+    expect(view.element.querySelector('.k-model-collection')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    await open('#/models/workspace-assistant')
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeTruthy()
+    expect(view.element.querySelector('.agents-provider-connection')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    await open('#/models/usage')
+    expect(usage).toHaveBeenCalledTimes(1)
+    expect(view.element.querySelector('.k-model-usage')).toBeTruthy()
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
+    await open('#/models')
+    expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
+  })
+
+  it('keeps the Provider connections action available in an empty workspace', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    expect(view.element.textContent).toContain('No provider connections yet')
+    expect([...view.element.querySelectorAll('button')].some(button => button.textContent?.includes('Connect provider'))).toBe(true)
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
   })
 })
