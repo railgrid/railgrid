@@ -48,6 +48,7 @@ type fakeProvisioner struct {
 	orgMembers        map[string][]string        // orgUUID → list of member user names
 	wsDeletionAnnos   map[workspaceKey]time.Time // present-keyed; missing means no annotation
 	wsDeletionForced  map[workspaceKey]bool      // deletion-forced annotation present
+	wsTerminating     map[workspaceKey]bool      // already terminating: a delete is a no-op
 	getDeletionErrors map[workspaceKey]error     // optional injected errors
 
 	// call recording
@@ -69,6 +70,7 @@ func newFakeProvisioner() *fakeProvisioner {
 		orgMembers:        map[string][]string{},
 		wsDeletionAnnos:   map[workspaceKey]time.Time{},
 		wsDeletionForced:  map[workspaceKey]bool{},
+		wsTerminating:     map[workspaceKey]bool{},
 		getDeletionErrors: map[workspaceKey]error{},
 	}
 }
@@ -80,12 +82,23 @@ func (f *fakeProvisioner) DeleteOrgWorkspace(_ context.Context, orgUUID string) 
 	return f.deleteOrgErr
 }
 
-func (f *fakeProvisioner) DeleteChildWorkspace(_ context.Context, orgUUID, wsUUID string) error {
+func (f *fakeProvisioner) DeleteChildWorkspace(_ context.Context, orgUUID, wsUUID string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteChildCalls = append(f.deleteChildCalls, workspaceKey{orgUUID, wsUUID})
 	if f.deleteChildErr != nil {
-		return f.deleteChildErr
+		return false, f.deleteChildErr
+	}
+	// A workspace kcp is still releasing keeps being listed; deleting it
+	// again changes nothing, as the bootstrapper reports.
+	if f.wsTerminating[workspaceKey{orgUUID, wsUUID}] {
+		return false, nil
+	}
+	deleted := false
+	for _, w := range f.childWorkspaces[orgUUID] {
+		if w == wsUUID {
+			deleted = true
+		}
 	}
 	// reflect deletion in our internal map so the next ListChildWorkspaces
 	// observes the removal.
@@ -100,7 +113,7 @@ func (f *fakeProvisioner) DeleteChildWorkspace(_ context.Context, orgUUID, wsUUI
 	}
 	delete(f.wsDeletionAnnos, workspaceKey{orgUUID, wsUUID})
 	delete(f.wsDeletionForced, workspaceKey{orgUUID, wsUUID})
-	return nil
+	return deleted, nil
 }
 
 func (f *fakeProvisioner) ListChildWorkspaces(_ context.Context, orgUUID string) ([]string, error) {
@@ -679,5 +692,39 @@ func TestGracePeriodFallsBackToDefault(t *testing.T) {
 	at := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	if got := r.gracePeriodFor(at); !got.Equal(at.Add(48 * time.Hour)) {
 		t.Errorf("gracePeriodFor: got %v, want %v", got, at.Add(48*time.Hour))
+	}
+}
+
+// A terminating workspace stays listed, with its annotations, until kcp's
+// finalizers release it; the sweep must not treat each pass as a new
+// deletion, or it would stamp the Organization every minute for nothing.
+func TestWorkspaceSoftDelete_TerminatingWorkspaceIsNotReportedAgain(t *testing.T) {
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	requestedAt := now.Add(-1 * time.Minute)
+
+	umi := newUMI("alice", "alice-org", "alice-ws", true, tenancyv1alpha1.MembershipRoleAdmin)
+	prov := newFakeProvisioner()
+	prov.orgs = []string{"alice-org"}
+	prov.childWorkspaces["alice-org"] = []string{"alice-ws"}
+	prov.orgMembers["alice-org"] = []string{"alice"}
+	prov.wsDeletionAnnos[workspaceKey{"alice-org", "alice-ws"}] = requestedAt
+	prov.wsDeletionForced[workspaceKey{"alice-org", "alice-ws"}] = true
+	prov.wsTerminating[workspaceKey{"alice-org", "alice-ws"}] = true
+
+	r, _ := newReconciler(t, prov, umi)
+	r.now = func() time.Time { return now }
+	var told []string
+	r.workspaceObserver = func(_ context.Context, org string) { told = append(told, org) }
+
+	for i := 0; i < 3; i++ {
+		if err := r.reconcileAllWorkspaces(context.Background()); err != nil {
+			t.Fatalf("reconcileAllWorkspaces #%d: %v", i+1, err)
+		}
+	}
+	if len(told) != 0 {
+		t.Errorf("a terminating workspace must not be reported as a change; observer told %v", told)
+	}
+	if len(prov.childWorkspaces["alice-org"]) != 1 {
+		t.Errorf("the fake must keep listing a terminating workspace; got %v", prov.childWorkspaces["alice-org"])
 	}
 }

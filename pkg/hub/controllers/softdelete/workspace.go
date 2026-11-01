@@ -131,10 +131,14 @@ func (r *Reconciler) handleWorkspaceCascade(ctx context.Context, state *workspac
 	if err != nil {
 		return fmt.Errorf("listing members: %w", err)
 	}
-	if err := r.provisioner.DeleteChildWorkspace(ctx, orgUUID, wsUUID); err != nil {
+	deleted, err := r.provisioner.DeleteChildWorkspace(ctx, orgUUID, wsUUID)
+	if err != nil {
 		return fmt.Errorf("deleting child Workspace %s/%s: %w", orgUUID, wsUUID, err)
 	}
-	if r.workspaceObserver != nil {
+	// The observer hears about the one sweep that started the deletion. The
+	// workspace stays listed, terminating, until kcp's finalizers release it,
+	// and those later sweeps change nothing worth a stamp.
+	if deleted && r.workspaceObserver != nil {
 		r.workspaceObserver(ctx, orgUUID)
 	}
 	for _, member := range members {
