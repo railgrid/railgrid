@@ -25,36 +25,114 @@ For the fastest local dev loop, use [Tilt](https://tilt.dev/) instead of running
 make tilt
 ```
 
-This wraps `tilt up -f Tiltfile` and first checks that no local kcp is running
-and that nothing already holds `:9443` or Tilt's own port — the two stacks
-(`make tilt` and `make tilt-cluster`) cannot run side by side. Plain `tilt up`
-still works if you want to skip the checks.
+Use `make tilt` to start the supported single-checkout development stack. It
+allocates checkout-specific ports and resource names, creates or reuses that
+checkout's kind cluster, and starts Tilt with the matching Kubernetes context
+and API port. `make tilt-status` prints the saved checkout key and ports.
 
-This starts two local resources:
+Bare `tilt up` still evaluates the Tiltfile's `prepare-env` helper, which
+allocates the checkout's child-service ports and resource names. It bypasses
+the launcher, though, so it skips the startup checks, pre-start kind-cluster
+creation, Kubernetes context selection, Tilt API-port selection, and ownership
+lifecycle. It uses Tilt's default API port and the current Kubernetes context,
+so it can collide with another stack or target the wrong cluster. `make tilt`
+and `make tilt-cluster` still cannot run side by side.
 
-1. **`portal`** — Vite dev server on `http://localhost:3000/ui/`  
-   Builds provider portal symlinks automatically and watches `portal/src/` for hot reload.
+The main browser-facing resources are:
+
+1. **`portal`** — Vite dev server on `http://localhost:<PORTAL_PORT>/ui/`; get
+   the allocated port from `make tilt-status`. Builds provider portal symlinks
+   automatically and watches `portal/src/` for hot reload.
 
 2. **`hub`** — `railgrid-hub` binary with embedded KCP, static auth, and portal dev proxy  
-   Serves HTTPS on `https://console.127.0.0.1.sslip.io:9443` (listening on :9443, so `https://localhost:9443` works too). The hub depends on the portal resource and rebuilds on Go file changes.
+   Serves HTTPS at `https://console-<checkout-key>.127.0.0.1.sslip.io:<HUB_PORT>`; `make tilt-status` shows the key and port. `https://localhost:<HUB_PORT>` also works. The hub depends on the portal resource and rebuilds on Go file changes.
 
 ### Smoke test
 
 ```bash
-curl -k https://console.127.0.0.1.sslip.io:9443/healthz   # hub healthz
-curl -k https://console.127.0.0.1.sslip.io:9443/ui/       # portal via hub proxy
-curl http://localhost:3000/ui/           # portal direct (Vite dev server)
+tilt_status="$(make -s tilt-status)"
+hub_port="$(printf '%s' "$tilt_status" | python3 -c 'import json, sys; print(json.load(sys.stdin)["ports"]["HUB_PORT"])')"
+portal_port="$(printf '%s' "$tilt_status" | python3 -c 'import json, sys; print(json.load(sys.stdin)["ports"]["PORTAL_PORT"])')"
+curl -k "https://localhost:${hub_port}/healthz"   # hub healthz
+curl -k "https://localhost:${hub_port}/ui/"       # portal via hub proxy
+curl "http://localhost:${portal_port}/ui/"         # portal direct (Vite dev server)
 ```
 
 ### Stop everything
 
+For Tilt-only shutdown, use the allocated API port:
+
 ```bash
-tilt down
+tilt_port="$(make -s tilt-status | python3 -c 'import json, sys; print(json.load(sys.stdin)["ports"]["TILT_PORT"])')"
+tilt down --port "$tilt_port"
 ```
+
+For checkout-scoped teardown of this Tilt stack's processes, kind clusters, and
+containers while retaining local evidence, run `make dev-browser-down`.
 
 ### Tips
 - The Tiltfile intentionally skips the slow provider-portal Vite builds (`make build-hub`) because `--portal-dev-url` proxies all UI traffic to the Vite dev server.
-- If port 3000 is already taken, kill the existing Vite process (`pkill -f vite`) before running `tilt up`.
+- If the portal's allocated port is already held, check `make tilt-status`, stop the process using that port, then retry `make tilt`.
+
+### Application preview domain
+
+Tilt generates a checkout-specific `apps-<checkout-key>.127.0.0.1.sslip.io`
+domain when `RAILGRID_APP_BASE_DOMAIN` is unset or empty. To use a custom
+wildcard zone, copy [`.env.example`](.env.example) to the ignored root `.env`
+file and set `RAILGRID_APP_BASE_DOMAIN` to the base zone, such as
+`apps.example.com` (omit `*.`). The domain must resolve to the local preview
+listener or to a trusted front proxy that forwards to it.
+
+For these settings, precedence is Make command-line assignment, then the root
+`.env`, then an inherited shell value, then the checkout default. For a
+one-run override, pass the value to Make:
+
+```bash
+make tilt RAILGRID_APP_BASE_DOMAIN=apps.example.com
+```
+
+Prefixing with `RAILGRID_APP_BASE_DOMAIN=apps.example.com make tilt` supplies
+only an inherited shell value; a value in root `.env` overrides it. Tilt
+watches `.env` and reloads the preview Gateway and Infrastructure provider
+when it changes. A Make command-line value stays in effect across those
+reloads even if it matches `.env`; an explicitly empty command-line domain
+keeps the checkout default, and an empty public port remains 443. Restart with
+`make tilt` and no override to use the updated `.env` value.
+
+Tilt uses this one value for the Infrastructure provider's generated app hosts,
+the preview Gateway's wildcard listener and certificate, the in-cluster browser
+DNS override, and the host-side tunnel probe. `RAILGRID_APP_PUBLIC_PORT` is
+optional: when unset, Tilt advertises its local preview listener port; when
+explicitly empty, app URLs use standard HTTPS on port 443.
+
+If you need to run `make dev-preview-gateway-up` manually while this checkout's
+Tilt stack is running, note that the standalone target's fallback domain is
+`apps.127.0.0.1.sslip.io`, not the checkout-specific domain. Prefer rerunning
+the Tilt-managed resource, which has the resolved domain and cluster settings:
+
+```bash
+tilt trigger preview-gateway-up --port <TILT_PORT>
+```
+
+Get `TILT_PORT`, `PREVIEW_GATEWAY_PORT`, and the checkout key from
+`make tilt-status`. If you use the manual target, pass its matching target
+context, listener port, wildcard hostname, and client-facing service port
+explicitly:
+
+```bash
+make dev-preview-gateway-up \
+  PREVIEW_GATEWAY_CONTEXT=kind-railgrid-kro-<checkout-key> \
+  PREVIEW_GATEWAY_PORT=<PREVIEW_GATEWAY_PORT> \
+  PREVIEW_GATEWAY_HOSTNAME='*.<base-domain>' \
+  PREVIEW_GATEWAY_SERVICE_PORT=<effective-public-port>
+```
+
+Use `apps-<checkout-key>.127.0.0.1.sslip.io` as `<base-domain>` when the
+resolved domain is the checkout default. The effective public port is 443 when
+`RAILGRID_APP_PUBLIC_PORT` is empty, its configured value when set, or the
+local listener port when unset. The target's kubeconfig defaults to
+`.railgrid-kro.kubeconfig`; override `PREVIEW_GATEWAY_KUBECONFIG` too if your
+running checkout uses a different file.
 
 ### Providers from other repositories
 
