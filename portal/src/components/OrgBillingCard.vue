@@ -101,18 +101,26 @@ const managedByOperator = computed(() => billing.value?.managedBy === 'operator'
 // A hosted page is requested for one organization from one place. The request
 // outlives neither: if the card unmounts, the route or the organization
 // changes, or the session is replaced (logout, re-login) while the hub is
-// answering, the URL that comes back is dropped instead of navigated to.
+// answering, the URL that comes back is dropped instead of navigated to. The
+// generation moves on every such change, so leaving and coming back to the
+// same URL while the hub was answering invalidates the request as well.
 let disposed = false
-onBeforeUnmount(() => { disposed = true })
+let hostedPageGeneration = 0
+onBeforeUnmount(() => {
+  disposed = true
+  hostedPageGeneration++
+})
+watch([() => route.fullPath, () => props.orgUuid, () => tenant.orgUUID], () => { hostedPageGeneration++ })
 
-interface HostedPageRequest { org: string; route: string; auth: number }
+interface HostedPageRequest { org: string; route: string; auth: number; generation: number }
 
 function hostedPageRequest(): HostedPageRequest {
-  return { org: props.orgUuid, route: route.fullPath, auth: authSessionRevision() }
+  return { org: props.orgUuid, route: route.fullPath, auth: authSessionRevision(), generation: hostedPageGeneration }
 }
 
 function hostedPageStillWanted(request: HostedPageRequest): boolean {
-  return !disposed && props.orgUuid === request.org && tenant.orgUUID === request.org &&
+  return !disposed && request.generation === hostedPageGeneration &&
+    props.orgUuid === request.org && tenant.orgUUID === request.org &&
     route.fullPath === request.route && authSessionRevision() === request.auth
 }
 
