@@ -688,7 +688,6 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 
 			// Keep the SA token — kcp authenticates it natively.
 			req.Header.Set("Authorization", "Bearer "+token)
-			logger.Info("SA: forwarding to kcp", "targetPath", req.URL.Path, "host", req.URL.Host)
 		},
 		Transport: p.passthroughTransport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
