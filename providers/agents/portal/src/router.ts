@@ -93,7 +93,7 @@ export function parseHash(hash = location.hash): Route {
       return {
         kind: 'create',
         resource: second,
-        ...(third === 'harness' ? { type: third } : {}),
+        ...(['harness', 'from-connection'].includes(third) ? { type: third } : {}),
       }
     }
     if (second === 'toolset') return { kind: 'create', resource: 'toolset' }

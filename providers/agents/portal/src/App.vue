@@ -666,6 +666,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :route-owned="true"
         :create-route="true"
         :initial-family="route.type === 'harness' ? 'harness' : 'chat'"
+        :select-connection="route.type === 'from-connection'"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"

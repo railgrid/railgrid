@@ -316,6 +316,7 @@ describe('focused model connection editor', () => {
   const api = stubApi({ saveCredential, probeCredentialDraft: () => Promise.resolve({ ok: true, models: ['gpt-5'], latencyMS: 4 }), listCredentials: () => Promise.resolve([saved]), catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
   const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
   button(el, 'Add model').click(); await settleVue()
+  el.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click(); await settleVue()
   await input(el, 'apiKey', 'sk-first')
   button(el, 'Continue').click(); await settleVue()
   await selectModel(el, 'gpt-5')

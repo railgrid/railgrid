@@ -28,7 +28,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat' })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; selectConnection?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat' })
 const emit = defineEmits<{
   navigate: [route: Route]
   'create-success': [detail: CreateSuccessDetail & Fence]
@@ -66,6 +66,7 @@ type CredentialAction = 'saving' | 'deleting'
 const credentialActions = ref(new Map<string, CredentialAction>())
 const editName = ref<string | null>(null)
 const initialConnection = ref('')
+const selectingConnection = ref(Boolean(props.selectConnection))
 const creating = ref(false)
 const createBusy = ref(false)
 const editorGeneration = ref(0)
@@ -120,7 +121,7 @@ watch([() => props.store, () => props.api, windowDays], resetUsageRead)
 watch([() => props.store, () => props.api, windowDays, activeTab], () => {
   if (activeTab.value === 'usage') void loadUsage()
 }, { immediate: true })
-watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
+watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
 async function loadUsage(): Promise<void> {
   const generation = ++usageGeneration
@@ -216,10 +217,10 @@ const editorIsHarness = computed(() => editingCredential.value
   : editorFamily.value === 'harness')
 const editorTitle = computed(() => editorIsHarness.value
   ? editingCredential.value ? 'Edit harness identity' : 'Add harness identity'
-  : editingCredential.value?.isConnection ? 'Edit provider connection' : editingCredential.value ? 'Edit model' : initialConnection.value ? 'Add model' : 'Connect provider')
+  : editingCredential.value?.isConnection ? 'Edit provider connection' : editingCredential.value ? 'Edit model' : initialConnection.value || selectingConnection.value ? 'Add model' : 'Connect provider')
 const editorDescription = computed(() => editorIsHarness.value
   ? 'The login a coding harness on an edge runs as.'
-  : 'Connect a provider once, then add models using its saved key.')
+  : selectingConnection.value || initialConnection.value ? 'Choose a saved provider connection and the model to add.' : 'Connect a provider once, then add models using its saved key.')
 function invalidateProbe(name: string): void {
   probeGenerations.set(name, (probeGenerations.get(name) || 0) + 1)
   if (testing.value.has(name)) {
@@ -288,6 +289,17 @@ function toggleEdit(credential: Credential): void {
   editName.value = credential.name
   saveError.value = null
 }
+function beginModel(): void {
+  if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
+  else { selectingConnection.value = true; creating.value = true }
+}
+function openProvider(): void {
+  if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model' })
+  else {
+    selectingConnection.value = false; initialConnection.value = ''; editingCredential.value = undefined
+    editName.value = null; saveError.value = null; editorGeneration.value++; creating.value = true
+  }
+}
 function cancelCreate(): void {
   if (createBusy.value) return
   initialConnection.value = ''
@@ -353,7 +365,7 @@ defineExpose({ loadCatalog, loadUsage })
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> Models</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>
-      <ProviderConnectionEditor v-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" />
+      <ProviderConnectionEditor v-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :select-connection="selectingConnection" :busy="createBusy" :error="saveError" @save="saveModel" @cancel="cancelCreate" @connect-provider="openProvider" />
       <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
@@ -362,7 +374,7 @@ defineExpose({ loadCatalog, loadUsage })
           <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
           <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
         </div>
-        <button v-if="credentialView && (!showFirstRun || connectionView)" class="k-btn k-btn--primary" @click="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
+        <button v-if="credentialView && (!showFirstRun || connectionView)" class="k-btn k-btn--primary" @click="connectionView ? openProvider() : beginModel()"><Plus :stroke-width="1.75" aria-hidden="true" /> {{ connectionView ? 'Connect provider' : 'Add model' }}</button>
       </header>
       <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
@@ -372,7 +384,7 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-if="modelView && catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogError" class="k-stale" role="status">Could not refresh the model catalog. Showing the last loaded catalog. {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
-      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider or add a harness identity" description="Bring an API key and reuse its provider connection across models, or add a Claude Code or Codex login for an agent running on a machine." primary-label="Connect provider" :secondary-label="routeOwned ? 'Add harness identity' : ''" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @secondary="emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })" @primary="routeOwned ? emit('navigate', { kind: 'create', resource: 'model' }) : creating = true" />
+      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider or add a harness identity" description="Bring an API key and reuse its provider connection across models, or add a Claude Code or Codex login for an agent running on a machine." primary-label="Connect provider" :secondary-label="routeOwned ? 'Add harness identity' : ''" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @secondary="emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })" @primary="openProvider" />
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>

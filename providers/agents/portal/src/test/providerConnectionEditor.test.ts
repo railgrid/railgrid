@@ -103,3 +103,34 @@ describe('provider-first BYOK flow', () => {
     expect(save).not.toHaveBeenCalled()
   })
 })
+
+describe('Add model from a saved provider connection', () => {
+  it('starts with saved connections and a separate Connect provider link', async () => {
+    const save = vi.fn()
+    const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const openProvider = vi.fn()
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi({ testCredential }), credentials: [account], selectConnection: true, busy: false, onSave: save, onConnectProvider: openProvider })
+    expect(view.element.querySelector('#model-provider')).toBeNull()
+    expect(view.element.querySelector('#model-credential')).toBeNull()
+    const selector = view.element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
+    expect([...selector.options].map(option => option.value)).toEqual(['', 'account'])
+    const link = view.element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!
+    expect(link.textContent).toBe('Connect provider')
+    selector.value = 'account'; selector.dispatchEvent(new Event('change')); await settleVue()
+    expect(view.element.querySelector('#model-credential')).toBeNull()
+    await choose(view.element, 'second-model')
+    button(view.element, 'Verify & connect').click(); await settleVue()
+    expect(testCredential).toHaveBeenCalledWith('account', 'second-model')
+    expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
+    expect(save.mock.calls[0][0].newConnection).toBeUndefined()
+  })
+
+  it('offers Connect provider when no saved connection exists', async () => {
+    const openProvider = vi.fn()
+    const view = await mountVue(ProviderConnectionEditor, { api: stubApi(), credentials: [], selectConnection: true, busy: false, onConnectProvider: openProvider })
+    expect(view.element.textContent).toContain('No saved provider connections yet')
+    expect(view.element.querySelector('#model-credential')).toBeNull()
+    view.element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click(); await settleVue()
+    expect(openProvider).toHaveBeenCalledOnce()
+  })
+})

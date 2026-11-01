@@ -21,6 +21,7 @@ describe('create routes', () => {
     ['#/create/toolset', { kind: 'create', resource: 'toolset' }],
     ['#/create/webhook', { kind: 'create', resource: 'webhook' }],
     ['#/create/model', { kind: 'create', resource: 'model' }],
+    ['#/create/model/from-connection', { kind: 'create', resource: 'model', type: 'from-connection' }],
     ['#/create/model/harness', { kind: 'create', resource: 'model', type: 'harness' }],
   ])('parses and formats %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route)

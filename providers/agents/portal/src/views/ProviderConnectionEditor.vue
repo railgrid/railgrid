@@ -10,8 +10,8 @@ import { presentModelProbeResult } from '../model-probe-result'
 import { confirmDialog } from '../portalkit/confirm'
 
 ensureAgentUIStyles()
-const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; initialConnection?: string; busy: boolean; error?: string | null }>()
-const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; cancel: [] }>()
+const props = defineProps<{ api: ApiClient; credentials: Credential[]; credential?: Credential; selectConnection?: boolean; initialConnection?: string; busy: boolean; error?: string | null }>()
+const emit = defineEmits<{ save: [body: CredentialWrite, result?: CredentialTestResult]; cancel: []; 'connect-provider': [] }>()
 const newID = `connection-${crypto.randomUUID()}`
 const connections = computed(() => props.credentials.filter(item => !item.connectionRef && !isHarnessProvider(item.provider)))
 const originalConnection = props.credential?.connectionRef
@@ -44,7 +44,7 @@ const fieldError = ref('')
 const verifiedFingerprint = ref('')
 let generation = 0
 const locked = computed(() => props.busy || testing.value || discovering.value)
-const editingDetails = computed(() => !selectedConnection.value || managingConnection)
+const editingDetails = computed(() => (!props.selectConnection && !selectedConnection.value) || managingConnection)
 const effectiveURL = computed(() => editingDetails.value ? baseURL.value.trim() : connection.value?.baseURL || '')
 const effectiveProvider = computed(() => editingDetails.value ? originalConnection && preset.value === presetFor(originalConnection).id ? originalConnection.provider || current.value.provider : current.value.provider : connection.value?.provider)
 const effectiveWorkspace = computed(() => editingDetails.value ? workspaceID.value.trim() : connection.value?.anthropicWorkspaceID || '')
@@ -133,6 +133,13 @@ async function connect(): Promise<void> {
   } catch (error) { if (serial === generation) testError.value = (error as Error).message }
   finally { if (serial === generation) testing.value = false }
 }
+async function requestProvider(event: MouseEvent): Promise<void> {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
+  event.preventDefault()
+  if (locked.value) return
+  if (model.value && !await confirmDialog({ title: 'Discard model selection?', message: 'Your unsaved model selection will be lost.', confirmLabel: 'Discard changes' })) return
+  emit('connect-provider')
+}
 async function cancel(): Promise<void> {
   if (locked.value) return
   if ((apiKey.value || model.value !== (props.credential?.model || '')) && !await confirmDialog({ title: 'Discard connection changes?', message: 'Your unsaved changes will be lost.', confirmLabel: 'Discard changes' })) return
@@ -146,9 +153,13 @@ defineExpose({ cancel, locked })
     <div class="k-create-body">
       <section class="k-provider-connect__section" aria-labelledby="provider-connect-heading">
         <h2 id="provider-connect-heading" class="k-model-form-heading">Provider connection</h2>
-        <label v-if="connections.length && !credential" class="k-model-form-field">Use a saved connection
-          <select v-model="selectedConnection" class="k-input" :disabled="locked"><option value="">Connect a new provider</option><option v-for="item in connections" :key="item.name" :value="item.name">{{ item.displayName || item.name }} · {{ presetFor(item).label }}</option></select>
-        </label>
+        <template v-if="selectConnection && !credential">
+          <label v-if="connections.length" for="saved-provider-connection" class="k-model-form-field">Saved provider connection
+            <select id="saved-provider-connection" v-model="selectedConnection" class="k-input" :disabled="locked"><option value="" disabled>Select a provider connection</option><option v-for="item in connections" :key="item.name" :value="item.name">{{ item.displayName || item.name }} · {{ presetFor(item).label }}</option></select>
+          </label>
+          <p v-else class="k-model-form-hint">No saved provider connections yet. Connect a provider to add your first model.</p>
+          <p class="k-model-form-hint">Need another provider? <a class="k-text-link" href="#/create/model" :aria-disabled="locked || undefined" @click="requestProvider">Connect provider</a></p>
+        </template>
         <template v-if="editingDetails">
           <label class="k-model-form-field"><span id="agents-model-provider-label">Provider</span>
             <select id="model-provider" aria-labelledby="agents-model-provider-label" v-model="preset" class="k-input" :disabled="locked"><option v-for="item in providers" :key="item.id" :value="item.id">{{ item.id === 'anthropic' ? 'Anthropic' : item.label }}</option></select>
@@ -159,7 +170,7 @@ defineExpose({ cancel, locked })
           </label>
           <details v-else class="k-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint">API endpoint: <span class="font-mono">{{ baseURL }}</span></p></details>
         </template>
-        <p v-else class="k-model-form-hint">{{ presetFor(connection).label }} · {{ connection?.baseURL }}<br>Uses the key stored with {{ connection?.displayName || connection?.name }}.</p>
+        <p v-else-if="connection" class="k-model-form-hint">{{ presetFor(connection).label }} · {{ connection?.baseURL }}<br>Uses the key stored with {{ connection?.displayName || connection?.name }}.</p>
       </section>
       <section v-if="editingDetails" class="k-model-form-section" aria-labelledby="provider-key-heading">
         <h2 id="provider-key-heading" class="k-model-form-heading">API key</h2>
@@ -200,6 +211,8 @@ defineExpose({ cancel, locked })
 </template>
 
 <style scoped>
+.k-provider-connect .k-text-link{color:var(--color-accent);text-decoration:underline;text-underline-offset:3px;}
+.k-provider-connect .k-text-link[aria-disabled="true"]{opacity:.6;cursor:default;}
 .k-provider-connect__section{display:grid;gap:12px;min-width:0;}
 .k-provider-connect__details{font-size:12px;color:var(--color-text-secondary);}
 .k-provider-connect__details summary{cursor:pointer;}

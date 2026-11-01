@@ -546,12 +546,12 @@ describe('context and create-session routing fences', () => {
     await settleVue()
     buttonWithText(element, 'Add model').click()
     await settleVue()
-    expect(location.hash).toBe('#/create/model')
+    expect(location.hash).toBe('#/create/model/from-connection')
 
     pending.resolve({ metadata: { name: 'stale-agent' }, spec: {} })
     await settleVue(8)
 
-    expect(location.hash).toBe('#/create/model')
+    expect(location.hash).toBe('#/create/model/from-connection')
     expect(element.store).toBe(store)
     expect(store.agents.data).toEqual([])
   })

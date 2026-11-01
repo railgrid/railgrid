@@ -249,9 +249,9 @@ describe('models view on an empty workspace', () => {
     await settleVue()
 
     expect(el.querySelector('form.agents-model-create'), 'create form should render after the click').toBeTruthy()
-    const provider = el.querySelector<HTMLSelectElement>('.agents-model-create #model-provider')!
-    expect(provider.getAttribute('aria-labelledby')?.split(' ')).toContain('agents-model-provider-label')
-    expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
+    expect(el.querySelector('#model-provider')).toBeNull()
+    expect(el.querySelector('#model-credential')).toBeNull()
+    expect(el.querySelector('a[href="#/create/model"]')?.textContent).toBe('Connect provider')
   })
 
   it.each(['claude-code', 'codex'])('keeps %s on the separate harness creation path', async provider => {
