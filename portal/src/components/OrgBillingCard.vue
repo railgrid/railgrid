@@ -110,7 +110,9 @@ onBeforeUnmount(() => {
   disposed = true
   hostedPageGeneration++
 })
-watch([() => route.fullPath, () => props.orgUuid, () => tenant.orgUUID], () => { hostedPageGeneration++ })
+// Synchronous, like the page's workspace-delete fence: a batched watcher
+// could miss a change that is undone again before the next flush.
+watch([() => route.fullPath, () => props.orgUuid, () => tenant.orgUUID], () => { hostedPageGeneration++ }, { flush: 'sync' })
 
 interface HostedPageRequest { org: string; route: string; auth: number; generation: number }
 
