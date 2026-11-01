@@ -1186,8 +1186,14 @@ KCP_IMAGE ?=
 ## local MinIO (built from source into hack/tools) instead of a local directory,
 ## so the multi-replica path can be tested; the default stays file (one replica).
 
+# Preserve Make's actual input provenance before passing values to the launcher.
+# Comparing values cannot distinguish a CLI override that happens to match .env.
+tilt_preview_source = $(if $(findstring command line,$(origin $(1))),commandline,$(if $(filter file,$(origin $(1))),dotenv,$(if $(filter undefined,$(origin $(1))),default,environment)))
+
 tilt: ## Run the dev stack with automatic checkout-specific ports and resource names
-	python3 hack/scripts/tilt-checkout.py
+	RAILGRID_TILT_CHECKOUT_APP_BASE_DOMAIN_SOURCE=$(call tilt_preview_source,RAILGRID_APP_BASE_DOMAIN) \
+	RAILGRID_TILT_CHECKOUT_APP_PUBLIC_PORT_SOURCE=$(call tilt_preview_source,RAILGRID_APP_PUBLIC_PORT) \
+		python3 hack/scripts/tilt-checkout.py
 
 # Browser setup leaves navigation and evidence selection to the coding agent.
 .PHONY: dev-browser-ready dev-browser-down test-dev-browser
@@ -2636,8 +2642,9 @@ PREVIEW_GATEWAY_NAME ?= app-studio-preview
 PREVIEW_GATEWAY_CLASS ?= eg
 PREVIEW_GATEWAY_CONTROLLER ?= gateway.envoyproxy.io/gatewayclass-controller
 PREVIEW_GATEWAY_PROXY_CONFIG ?= app-studio-preview-proxy
-# Keep a manual Gateway reconcile on the same domain as the infrastructure
-# provider; Tilt supplies its checkout-specific domain when no override exists.
+# Low-level standalone defaults. For an existing Tilt checkout, rerun its
+# preview-gateway-up resource or pass the checkout's resolved domain and ports
+# explicitly; the legacy fallback below is not the per-checkout Tilt domain.
 PREVIEW_GATEWAY_HOSTNAME ?= *.$(if $(strip $(RAILGRID_APP_BASE_DOMAIN)),$(RAILGRID_APP_BASE_DOMAIN),apps.127.0.0.1.sslip.io)
 PREVIEW_GATEWAY_LISTENER_NAME ?= https
 PREVIEW_GATEWAY_TLS_SECRET ?= app-studio-preview-tls

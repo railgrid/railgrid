@@ -130,10 +130,12 @@ app_studio_sandbox_force = app_studio_sandbox_mode == 'force'
 kcp_external_root = '.kcp-external'
 kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 
-# `tilt-checkout.py prepare-env` resolves the app domain once: inherited user
-# setting, root .env, then checkout-specific sslip.io. Use that same value for
-# the provider, Gateway listener, browser DNS, and tunnel probe. The public app
-# port may be explicitly empty when the external endpoint uses normal HTTPS.
+# `tilt-checkout.py prepare-env` resolves the app domain once. Supported startup
+# is `make tilt`: Make command-line values beat .env, which beats exported shell
+# values, then the checkout-specific sslip.io default applies. A direct `tilt up`
+# reaches the helper without Make's initial .env include. Pass resolved settings
+# as command-line variables to nested Make commands so .env cannot replace them.
+# The public app port may be empty when the external endpoint uses normal HTTPS.
 railgrid_hub_external_url = os.getenv('RAILGRID_HUB_EXTERNAL_URL', os.getenv('DEV_HUB_URL', 'https://console.127.0.0.1.sslip.io:9443'))
 preview_app_base_domain = os.getenv('RAILGRID_APP_BASE_DOMAIN', '')
 if not preview_app_base_domain:
@@ -914,9 +916,9 @@ local_resource(
 # wait for the Gateway, TLS secret, and Envoy Gateway controller together.
 local_resource(
     'preview-gateway-up',
-    cmd=(('PREVIEW_GATEWAY_CONTEXT=%s PREVIEW_GATEWAY_HOSTNAME="*.%s" ' +
-          'PREVIEW_GATEWAY_PORT=%s PREVIEW_GATEWAY_SERVICE_PORT=%s ' +
-          'make dev-preview-gateway-up') % (
+    cmd=(('make dev-preview-gateway-up ' +
+          'PREVIEW_GATEWAY_CONTEXT=%s PREVIEW_GATEWAY_HOSTNAME="*.%s" ' +
+          'PREVIEW_GATEWAY_PORT=%s PREVIEW_GATEWAY_SERVICE_PORT=%s') % (
              preview_kro_context,
              preview_app_base_domain,
              preview_gateway_port,
@@ -1060,14 +1062,14 @@ test -n "$host_gateway"
 {sandbox_digest_script}KRO_KUBECONFIG={kro_kubeconfig} \
 RAILGRID_GATEWAY_NAME={gateway_name} \
 RAILGRID_GATEWAY_NAMESPACE={gateway_namespace} \
-RAILGRID_APP_BASE_DOMAIN={base_domain} \
-RAILGRID_APP_PUBLIC_PORT={public_port} \
 RAILGRID_ACCESS_HUB_URL="https://$host_gateway:{hub_port}" \
 RAILGRID_ACCESS_HUB_PUBLIC_URL={hub_public_url} \
 RAILGRID_ACCESS_HUB_INSECURE=true \
 {access_proxy_env}
 {sandbox_env}
-make run-provider-infrastructure
+make run-provider-infrastructure \
+  RAILGRID_APP_BASE_DOMAIN='{base_domain}' \
+  RAILGRID_APP_PUBLIC_PORT='{public_port}'
 ''').format(
                    docker_gateway_format=docker_gateway_format,
                    kro_node=preview_kro_node,

@@ -175,6 +175,12 @@ def preview_setting(name, source_name, default, root_env):
 
     marker = 'RAILGRID_TILT_CHECKOUT_' + source_name + '_SOURCE'
     previous_source = os.environ.get(marker)
+    if previous_source == 'commandline':
+        # Make supplied an explicit argument, even when it matches .env or the
+        # generated default. Keep it fixed across reloads. An explicitly blank
+        # domain selects the checkout default rather than restoring .env.
+        value = normalize(os.environ.get(name, default))
+        return (str(default) if value is None else value), 'commandline'
     if previous_source == 'environment' and name in os.environ:
         value = normalize(os.environ[name])
         if value is not None:
