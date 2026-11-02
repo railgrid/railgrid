@@ -18,6 +18,7 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     tenant: () => ({ orgUUID: 'org', workspaceUUID: 'ws' }),
     context: () => null,
     setContext: () => undefined,
+    canConfigureChatModel: () => Promise.resolve(true),
     listAgents: empty,
     listConnections: empty,
     listToolsets: empty,

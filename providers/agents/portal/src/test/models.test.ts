@@ -2,7 +2,7 @@
 //   1. An empty workspace crashed the Models view. Go marshals a nil slice as
 //      JSON null, so /api/usage returned "byModel": null and the dashboard's
 //      .map() threw during render — taking the whole view down, including the
-//      "Connect model" button.
+//      "Connect provider" button.
 //   2. The nav showed "reconnecting" forever on a healthy stream, because
 //      liveness was only set when a parsed event arrived and the server sends
 //      nothing but comment frames until something happens.
@@ -14,7 +14,7 @@ import { ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
 import { AppStore } from '../store'
 import { makeStore, stubApi } from './helpers'
-import { mountVue, settleVue } from './vue-helper'
+import { mountVue, settleVue, type MountedVue } from './vue-helper'
 
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }))
 vi.mock('../ui/toast', () => ({ toast }))
@@ -53,18 +53,18 @@ describe('models view on an empty workspace', () => {
     expect(header.classList.contains('agents-panel-head')).toBe(false)
   })
 
-  it('renders the dashboard and the Connect model button when usage arrays are null', async () => {
+  it('renders Usage & cost when usage arrays are null', async () => {
     const api = stubApi({
       catalog: () => Promise.resolve([]),
       // Deliberately the raw (unnormalized) shape a pre-fix server sends.
       usage: () => Promise.resolve(usageWithNulls),
     })
     const store = makeStore(api)
-    const { element: el } = await mountVue(Models, { store, api })
+    const { element: el } = await mountVue(Models, { store, api, modelsTab: 'usage' })
     await settleVue()
 
     const text = el.textContent || ''
-    expect(text).toContain('Connect model')
+    expect(el.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Usage & cost')
     // The dashboard rendered rather than throwing before it.
     expect(text).not.toContain('Loading usage…')
     expect(text).toContain('most recent 5,000 runs')
@@ -85,7 +85,7 @@ describe('models view on an empty workspace', () => {
     const retry = deferred<typeof complete>()
     const usage = vi.fn().mockResolvedValueOnce(partial).mockReturnValueOnce(retry.promise)
     const api = stubApi({ catalog: () => Promise.resolve([]), usage })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     await settleVue()
 
     const notice = el.querySelector<HTMLElement>('.k-inline-notification--warning[role="status"]')!
@@ -117,7 +117,7 @@ describe('models view on an empty workspace', () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
       ...usageWithNulls, byAgent: rows, byModel: rows.map(row => ({ ...row, key: `model-${row.key}` })),
     }) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
     await settleVue()
 
@@ -134,7 +134,7 @@ describe('models view on an empty workspace', () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve({
       ...usageWithNulls, total: bucket, byModel: [{ ...bucket, key: 'main' }], byAgent: [], series: [],
     }) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     await settleVue()
     const cost = el.querySelector('.agents-stat')!
     expect(cost.textContent).toContain(value)
@@ -155,14 +155,17 @@ describe('models view on an empty workspace', () => {
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { store, api })
+    const view = await mountVue(Models, { store, api })
+    const el = view.element
     await settleVue()
 
-    expect(el.querySelectorAll('[role="alert"]')).toHaveLength(2)
-    expect(el.textContent).toContain('Usage unavailable: usage offline')
+    expect(el.querySelectorAll('[role="alert"]')).toHaveLength(1)
     expect(el.textContent).toContain('Model catalog unavailable: catalog offline')
     expect(el.textContent).toContain('catalog unavailable — pricing unknown')
     expect(el.textContent).not.toContain('not in catalog — no pricing')
+    await view.setProps({ modelsTab: 'usage' })
+    expect(el.textContent).toContain('Usage unavailable: usage offline')
+    expect(el.textContent).not.toContain('Model catalog unavailable')
   })
 
   it('retains catalog and usage snapshots through same-authority refresh failures', async () => {
@@ -184,17 +187,20 @@ describe('models view on an empty workspace', () => {
     const store = makeStore(api)
     store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
     store.credentials.loaded = store.credentials.hasSnapshot = true
-    const { element: el } = await mountVue(Models, { ref: exposed, store, api })
+    const view = await mountVue(Models, { ref: exposed, store, api })
+    const el = view.element
     await settleVue()
 
-    expect(el.textContent).toContain('$5.00')
     expect(el.textContent).toContain('$2 input · $8 output')
+    await view.setProps({ modelsTab: 'usage' })
+    expect(el.textContent).toContain('$5.00')
     await Promise.all([exposed.value!.loadCatalog(), exposed.value!.loadUsage()])
     await settleVue()
 
     expect(el.textContent).toContain('Could not refresh usage. Showing usage from the last successful read.')
-    expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
     expect(el.textContent).toContain('$5.00')
+    await view.setProps({ modelsTab: 'models' })
+    expect(el.textContent).toContain('Could not refresh the model catalog. Showing the last loaded catalog.')
     expect(el.textContent).toContain('$2 input · $8 output')
   })
 
@@ -211,7 +217,9 @@ describe('models view on an empty workspace', () => {
     firstStore.credentials.loaded = firstStore.credentials.hasSnapshot = true
     const view = await mountVue(Models, { store: firstStore, api: first })
     await settleVue()
+    await view.setProps({ modelsTab: 'usage' })
     expect(view.element.textContent).toContain('$5.00')
+    await view.setProps({ modelsTab: 'models' })
     expect(view.element.textContent).toContain('$2 input · $8 output')
 
     const secondStore = makeStore(second)
@@ -219,44 +227,40 @@ describe('models view on an empty workspace', () => {
     secondStore.credentials.loaded = secondStore.credentials.hasSnapshot = true
     await view.setProps({ store: secondStore, api: second })
 
-    expect(view.element.textContent).toContain('Loading usage…')
     expect(view.element.textContent).toContain('Loading model catalog…')
     expect(view.element.textContent).not.toContain('$5.00')
     expect(view.element.textContent).not.toContain('$2 input · $8 output')
 
+    await view.setProps({ modelsTab: 'usage' })
+    expect(view.element.textContent).toContain('Loading usage…')
     nextCatalog.resolve([])
     nextUsage.resolve(usageWithNulls)
     await settleVue()
   })
 
-  it('opens the create form when Connect model is clicked', async () => {
+  it('opens the create form when Add model is clicked', async () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
     const store = makeStore(api)
     const { element: el } = await mountVue(Models, { store, api })
 
-    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Connect model'))
-    expect(btn, 'Connect model button should be present').toBeTruthy()
+    const btn = [...el.querySelectorAll('button')].find((b) => (b.textContent || '').includes('Add model'))
+    expect(btn, 'Add model button should be present').toBeTruthy()
     btn!.click()
     await settleVue()
 
     expect(el.querySelector('form.agents-model-create'), 'create form should render after the click').toBeTruthy()
-    const provider = el.querySelector<HTMLSelectElement>('.agents-model-create #model-provider')!
-    expect(provider.getAttribute('aria-labelledby')?.split(' ')).toContain('agents-model-provider-label')
-    expect(el.querySelector('#agents-model-provider-label')?.textContent).toBe('Provider')
+    expect(el.querySelector('#model-provider')).toBeNull()
+    expect(el.querySelector('#model-credential')).toBeNull()
+    expect(el.querySelector('a[href="#/create/model"]')?.textContent).toBe('Connect provider')
   })
 
-  it.each(['claude-code', 'codex'])('updates the create heading when %s is selected', async provider => {
+  it.each(['claude-code', 'codex'])('keeps %s on the separate harness creation path', async provider => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true })
-    const heading = () => el.querySelector('h1.k-create-title')?.textContent?.trim()
-    expect(heading()).toBe('Connect model')
-
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true, initialFamily: 'harness' })
     const select = el.querySelector<HTMLSelectElement>('#model-provider')!
-    select.value = provider
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-    await settleVue()
-
-    expect(heading()).toBe('Add harness identity')
+    select.value = provider; select.dispatchEvent(new Event('change', { bubbles: true })); await settleVue()
+    expect(el.querySelector('h1.k-create-title')?.textContent?.trim()).toBe('Add harness identity')
+    expect([...select.options].map(item => item.value)).toEqual(['claude-code', 'codex'])
   })
 
   it('tells the two credential families apart in the list', async () => {
@@ -312,7 +316,7 @@ describe('models view on an empty workspace', () => {
     resolveConfirm(true)
     await settleVue()
 
-    expect(deleteCredential).toHaveBeenCalledTimes(1)
+    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('main')
     const deleting = el.querySelector<HTMLButtonElement>('[aria-label="Deleting main…"]')!
     expect(deleting.disabled).toBe(true)
     expect(deleting.getAttribute('aria-busy')).toBe('true')
@@ -364,7 +368,7 @@ describe('models view on an empty workspace', () => {
       ],
     }
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
-    const { element: el } = await mountVue(Models, { store: makeStore(api), api })
+    const { element: el } = await mountVue(Models, { store: makeStore(api), api, modelsTab: 'usage' })
     ;[...el.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Show usage breakdown'))!.click()
     await settleVue()
     const label = el.querySelector<SVGElement>('.agents-spark')?.getAttribute('aria-label') || ''
@@ -576,6 +580,31 @@ describe('event-stream liveness', () => {
 describe('model collection layouts', () => {
   beforeEach(() => localStorage.removeItem('railgrid:agents:models:layout'))
 
+  it('uses friendly action tooltips while sending the stable resource ID', async () => {
+    localStorage.setItem('railgrid:agents:models:layout', 'list')
+    const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls, testCredential })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'opaque-resource-id', displayName: 'Fast assistant', model: 'test-model', ready: true }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue()
+
+    await settleVue(4, 150)
+    const edit = view.element.querySelector<HTMLButtonElement>('[aria-label="Edit Fast assistant"]')!
+    expect(edit).not.toBeNull()
+    expect(view.element.querySelector('[aria-label="Delete Fast assistant"]')).not.toBeNull()
+    edit.dispatchEvent(new MouseEvent('mouseenter'))
+    await settleVue()
+    expect(document.querySelector('.k-table-action-tooltip')?.textContent).toBe('Edit Fast assistant')
+    edit.dispatchEvent(new MouseEvent('mouseleave'))
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Test connection for Fast assistant"]')!.click()
+    await settleVue()
+    expect(testCredential).toHaveBeenCalledWith('opaque-resource-id')
+    view.unmount()
+    localStorage.removeItem('railgrid:agents:models:layout')
+  })
+
   it('switches cards to ResourceTable, retains search, and remembers list layout', async () => {
     const api = stubApi({ catalog: async () => [], usage: async () => usageWithNulls })
     const store = makeStore(api)
@@ -633,5 +662,246 @@ describe('model collection layouts', () => {
     expect(next.element.querySelectorAll('.k-model-connection')).toHaveLength(2)
     next.unmount()
     localStorage.removeItem('railgrid:agents:models:layout')
+  })
+})
+
+describe('model management navigation', () => {
+  it('isolates the four views, loads usage on demand, and retains native link destinations', async () => {
+    const usage = vi.fn().mockResolvedValue(usageWithNulls)
+    const api = stubApi({ catalog: async () => [], usage })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'shared', displayName: 'Production', provider: 'openai', baseURL: 'https://api.openai.com/v1', isConnection: true },
+      { name: 'fast', model: 'gpt-6-luna', connectionRef: 'shared', connectionName: 'Production' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const overlayControl = { selectedAgent: '', followContext: true, settingsOpen: false, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
+    const view = await mountVue(Models, { store, api, overlayControl })
+    const nav = () => view.element.querySelector('nav[aria-label="Model management"]')!
+    expect([...nav().querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual([
+      '#/models', '#/models/provider-connections', '#/models/workspace-assistant', '#/models/usage',
+    ])
+    expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    expect(usage).not.toHaveBeenCalled()
+
+    const open = async (href: string) => {
+      nav().querySelector<HTMLAnchorElement>(`a[href="${href}"]`)!.click()
+      await settleVue()
+      expect(nav().querySelector('[aria-current="page"]')?.getAttribute('href')).toBe(href)
+    }
+    await open('#/models/provider-connections')
+    expect(view.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')?.textContent).toContain('Production')
+    expect(view.element.querySelector('.k-model-collection')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    await open('#/models/workspace-assistant')
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeTruthy()
+    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+    await open('#/models/usage')
+    expect(usage).toHaveBeenCalledTimes(1)
+    expect(view.element.querySelector('.k-model-usage')).toBeTruthy()
+    expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
+    await open('#/models')
+    expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
+  })
+
+  it('keeps the Provider connections action available in an empty workspace', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    expect(view.element.textContent).toContain('No provider connections yet')
+    expect([...view.element.querySelectorAll('button')].some(button => button.textContent?.includes('Connect provider'))).toBe(true)
+    expect(view.element.querySelector('.k-model-usage')).toBeNull()
+  })
+})
+
+describe('provider connection table', () => {
+  it('uses the shared searchable table and keeps Add model and Edit actions scoped to the connection', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'production', displayName: 'Production', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1', discovered: ['gpt-6-luna'] },
+      { name: 'fast', connectionRef: 'production', model: 'gpt-6-luna' },
+      { name: 'staging', displayName: 'Staging', isConnection: true, provider: 'openai', baseURL: 'https://staging.example/v1' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    const table = view.element.querySelector('table[aria-label="Provider connections"]')!
+    expect(table).toBeTruthy()
+    expect([...table.querySelectorAll('thead th')].map(cell => cell.textContent?.trim())).toEqual(['Name', 'Endpoint', 'Models'])
+    const production = [...table.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('Production'))!
+    expect(production.textContent).toContain('https://api.openai.com/v1')
+    expect(production.textContent).toContain('1')
+    const search = view.element.querySelector<HTMLInputElement>('.k-table__search-input')!
+    search.value = 'Production'
+    search.dispatchEvent(new Event('input'))
+    await settleVue(4, 150)
+    expect(table.textContent).toContain('Production')
+    expect(table.textContent).not.toContain('Staging')
+    table.querySelector<HTMLButtonElement>('[aria-label="Add model to Production"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.agents-provider-connect')).toBeTruthy()
+    expect(view.element.querySelector('#model-credential')).toBeNull()
+    ;[...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Cancel')!.click()
+    await settleVue()
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Edit provider connection Production"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-create-title')?.textContent).toBe('Edit provider connection')
+    expect(view.element.querySelector('.k-create-description')?.textContent).toBe('Update the connection name or provider settings.')
+  })
+})
+
+describe('same-name model and provider operation state', () => {
+  it('keeps a model probe active while its same-name provider connection is deleting', async () => {
+    const probe = deferred<{ok:boolean;latencyMS:number}>()
+    const deletion = deferred<void>()
+    const api = stubApi({ catalog: async () => [], testCredential: () => probe.promise, deleteProviderConnection: () => deletion.promise })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name:'shared',displayName:'Production',isConnection:true,provider:'openai',baseURL:'https://api.openai.com/v1' },
+      { name:'shared',displayName:'Fast model',connectionRef:'shared',model:'first-model' },
+    ]
+    store.credentials.loaded=store.credentials.hasSnapshot=true
+    const view=await mountVue(Models,{store,api})
+    const test = view.element.querySelector<HTMLButtonElement>('[aria-label="Test connection for Fast model"]') || [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent?.trim()==='Test connection')!
+    test.click();await settleVue()
+    await view.setProps({modelsTab:'provider-connections'})
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Delete provider connection Production"]')!.click()
+    resolveConfirm(true);await settleVue()
+    expect(view.element.querySelector('[aria-label="Deleting provider connection Production…"]')).toBeTruthy()
+    await view.setProps({modelsTab:'models'})
+    expect(view.element.querySelector<HTMLButtonElement>('[aria-label="Delete Fast model"]')!.disabled).toBe(false)
+    expect(view.element.textContent).toContain('Testing…')
+    probe.resolve({ok:true,latencyMS:7});await settleVue(8)
+    expect(view.element.textContent).toContain('Test passed · 7 ms')
+    deletion.resolve();await settleVue(8)
+  })
+
+  it('keeps an unmigrated model-less credential editable in Models', async () => {
+    const api=stubApi({catalog:async()=>[]})
+    const store=makeStore(api)
+    store.credentials.data=[{name:'legacy',displayName:'Legacy account',provider:'openai',baseURL:'https://api.openai.com/v1'}]
+    store.credentials.loaded=store.credentials.hasSnapshot=true
+    const view=await mountVue(Models,{store,api})
+    expect(view.element.textContent).toContain('Legacy account')
+    const edit=view.element.querySelector<HTMLButtonElement>('[aria-label="Edit Legacy account"]') || [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent?.trim()==='Edit')!
+    edit.click();await settleVue()
+    expect(view.element.textContent).toContain('Edit model')
+    expect(view.element.querySelector('#model-display-name')).toBeTruthy()
+  })
+})
+
+describe('credential display-name edits', () => {
+  const connection = { name: 'account', displayName: 'Production', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1', discovered: ['first-model'] }
+  const binding = { name: 'stable-binding-id', displayName: 'Fast model', connectionRef: 'account', connectionName: 'Production', model: 'first-model' }
+
+  async function editBinding(view: MountedVue) {
+    const edit = [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim() === 'Edit' || button.getAttribute('aria-label') === `Edit ${binding.displayName}`)!
+    edit.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-create-description')?.textContent).toBe('Update the display name or choose a different model.')
+    const input = view.element.querySelector<HTMLInputElement>('[name="modelLabel"]')!
+    input.value = 'Friendly model'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settleVue()
+  }
+
+  it('renames a binding without probing, preserves its resource ID and connection reference, then adopts it', async () => {
+    toast.mockReset()
+    const renamed = { ...binding, displayName: 'Friendly model' }
+    const renameCredential = vi.fn().mockResolvedValue(renamed)
+    const testProviderConnection = vi.fn()
+    const api = stubApi({
+      catalog: async () => [],
+      usage: async () => usageWithNulls,
+      renameCredential,
+      testProviderConnection,
+      listCredentials: async () => [connection, renamed],
+    })
+    const store = makeStore(api)
+    store.credentials.data = [connection, binding]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+
+    await editBinding(view)
+    expect(view.element.querySelector<HTMLInputElement>('[name="modelLabel"]')?.value).toBe('Friendly model')
+    view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settleVue(8)
+
+    expect(renameCredential).toHaveBeenCalledExactlyOnceWith(binding, 'Friendly model')
+    expect(testProviderConnection).not.toHaveBeenCalled()
+    expect(store.credentials.data.filter(item => item.name === binding.name)).toHaveLength(1)
+    expect(store.credentials.data.find(item => item.name === binding.name)).toMatchObject({ name: binding.name, connectionRef: 'account', model: 'first-model', displayName: 'Friendly model' })
+    expect(view.element.querySelector('[name="modelLabel"]')).toBeNull()
+    expect(toast).toHaveBeenCalledWith('ok', 'Model display name updated.')
+  })
+
+  it('adopts an acknowledged rename after the editor view unmounts, without a stale toast', async () => {
+    toast.mockReset()
+    const request = deferred<typeof binding>()
+    const renamed = { ...binding, displayName: 'Friendly model' }
+    const renameCredential = vi.fn(() => request.promise)
+    const api = stubApi({
+      catalog: async () => [],
+      usage: async () => usageWithNulls,
+      renameCredential,
+      listCredentials: async () => [connection, binding],
+    })
+    const store = makeStore(api)
+    store.credentials.data = [connection, binding]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+
+    await editBinding(view)
+    view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settleVue()
+    expect(renameCredential).toHaveBeenCalledExactlyOnceWith(binding, 'Friendly model')
+
+    view.unmount()
+    request.resolve(renamed)
+    await settleVue(8)
+
+    expect(store.credentials.data.find(item => item.name === binding.name)?.displayName).toBe('Friendly model')
+    expect(toast).not.toHaveBeenCalled()
+
+    const returned = await mountVue(Models, { store, api })
+    expect(returned.element.textContent).toContain('Friendly model')
+    expect(returned.element.textContent).not.toContain('Fast model')
+    returned.unmount()
+  })
+
+  it('keeps the editor open with an error after rename failure and retries successfully', async () => {
+    const renamed = { ...binding, displayName: 'Friendly model' }
+    let listedBinding = binding
+    const renameCredential = vi.fn()
+      .mockRejectedValueOnce(new Error('Annotation update failed'))
+      .mockImplementationOnce(async () => { listedBinding = renamed; return renamed })
+    const api = stubApi({
+      catalog: async () => [],
+      usage: async () => usageWithNulls,
+      renameCredential,
+      listCredentials: async () => [connection, listedBinding],
+    })
+    const store = makeStore(api)
+    store.credentials.data = [connection, binding]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+
+    await editBinding(view)
+    view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settleVue(8)
+    expect(view.element.querySelector('[role="alert"]')?.textContent).toContain('Annotation update failed')
+    expect(view.element.querySelector('[name="modelLabel"]')).toBeTruthy()
+
+    view.element.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settleVue(8)
+    expect(renameCredential).toHaveBeenCalledTimes(2)
+    expect(view.element.querySelector('[name="modelLabel"]')).toBeNull()
+    expect(store.credentials.data.find(item => item.name === binding.name)?.displayName).toBe('Friendly model')
   })
 })
