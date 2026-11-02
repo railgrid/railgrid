@@ -39,7 +39,7 @@ trigger_mode(TRIGGER_MODE_AUTO)
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers
 #   make tilt EXTERNAL_PROVIDERS_DIR=../providers EXTERNAL_PROVIDERS=planner
 config.define_string('external-providers-dir', usage='Comma-separated external provider checkout paths')
-config.define_string('external-providers')
+config.define_string('external-providers', usage='External provider selection: all, a provider name, or none for BYO hosting')
 config.define_string('app-studio-sandbox-mode', usage='Private per-run sandbox mode (project runtime remains sandboxed): off, byo-only, force')
 config.define_string('host-log-path', usage='Explicit Tilt console log to bound to 256 MiB plus one 8 MiB diagnostic tail')
 # Run kcp from a published image instead of the server compiled into the hub,
@@ -209,7 +209,7 @@ local_resource(
 make certs && \
 make build-hub
 ''',
-    serve_cmd=('''./bin/railgrid-hub \
+    serve_cmd=('''RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS=1 ./bin/railgrid-hub \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
   --hub-external-url=%s \
@@ -221,6 +221,19 @@ make build-hub
   --listen-addr=:%s \
   --data-dir=%s \
   --portal-dev-url=http://localhost:%s \
+  --org-max-object-bytes=262144 \
+  --org-max-request-bytes=1048576 \
+  --org-requests-per-second=1000 \
+  --org-request-burst=2000 \
+  --org-max-concurrent-requests=256 \
+  --org-max-concurrent-streams=128 \
+  --org-max-active-organizations=32 \
+  --org-request-timeout=30s \
+  --org-stream-timeout=5m \
+  --org-max-consumer-workspaces=8 \
+  --org-max-resource-types=32 \
+  --org-max-objects-per-resource=32 \
+  --org-max-live-bytes=8589934592 \
   --portal-frame-source=%s \
   --published-apps-domain=%s \
   --kubeconfig=.railgrid-kro.kubeconfig \
@@ -1547,6 +1560,10 @@ for external_providers_dir in external_providers_dirs.split(','):
     if external_providers_dir in external_providers_seen:
         continue
     external_providers_seen.append(external_providers_dir)
+    # Keep checkout metadata available while running providers on BYO Edges.
+    if (cfg.get('external-providers', '') or os.getenv('RAILGRID_EXTERNAL_PROVIDERS', '')) == 'none':
+        continue
+
     external_providers_lib = os.path.join(external_providers_dir, 'hack', 'tilt', 'providers.tilt')
     if not os.path.exists(external_providers_lib):
         fail('--external-providers-dir %s has no hack/tilt/providers.tilt; see docs/external-providers-tilt.md' % external_providers_dir)

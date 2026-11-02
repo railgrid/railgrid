@@ -24,6 +24,7 @@ package restapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -244,6 +245,7 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := h.mgr.orgProviderConsumerPolicy(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, prov); err != nil {
+			klog.ErrorS(err, "Preparing organization provider consumer containment", "provider", providerName, "organization", tc.OrgUUID, "workspace", tc.WorkspaceUUID)
 			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider consumer containment could not be prepared")
 			return
 		}
@@ -325,6 +327,10 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		prov.APIExportName,
 		claims,
 	); err != nil {
+		if errors.Is(err, kcp.ErrProviderBindingSourceConflict) {
+			writeStatus(w, http.StatusConflict, "Conflict", "a provider binding with this name already references a different APIExport; disable the existing provider, wait for its binding to be removed, and enable the self-hosted provider again")
+			return
+		}
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "ensure APIBinding: "+err.Error())
 		return
 	}

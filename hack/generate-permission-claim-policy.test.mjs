@@ -363,7 +363,7 @@ test('the emitted header says where each field comes from', () => {
   assert.match(yaml, /^#   providers\/fixture$/m)
 })
 
-test('spec.providers stays in lockstep with the ServiceAccount the hub provisions', () => {
+test('spec.providers permits hub-mediated bootstrap and the provisioned ServiceAccount', () => {
   // The subject is not a choice this generator makes; it is the identity
   // pkg/hub/providers mints for every provider. If those constants move, this
   // file has to move with them.
@@ -372,6 +372,7 @@ test('spec.providers stays in lockstep with the ServiceAccount the hub provision
   const namespace = provision.match(/const ProviderSANamespace = "([^"]+)"/)
   assert.ok(name && namespace, 'ProviderSAName/ProviderSANamespace not found in pkg/hub/providers/provision.go')
   assert.deepEqual(PROVIDER_SUBJECTS.map((subject) => ({ ...subject })), [
+    { kind: 'User', name: 'kcp-admin' },
     { kind: 'User', name: `system:serviceaccount:${namespace[1]}:${name[1]}` },
   ])
 })

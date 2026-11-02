@@ -109,3 +109,49 @@ func TestInvalidOrgBackendTokenIsTerminalAtHubAccessGate(t *testing.T) {
 		t.Fatalf("status=%d human=%d next=%d; opaque failure must not fall through", recorder.Code, humanCalls, nextCalls)
 	}
 }
+
+func TestOrgBackendTokenCannotCrossTenantPath(t *testing.T) {
+	grants := &orgBackendTestGrants{uncachedResult: &tenancyv1alpha1.Grant{Spec: tenancyv1alpha1.GrantSpec{Capabilities: []tenancyv1alpha1.GrantedCapability{
+		{Capability: "memberships.read", Scope: "org"},
+		{Capability: "memberships.read", Scope: "workspace"},
+	}}}}
+	newGate := func() *Gate {
+		return &Gate{
+			Verify: func(*http.Request) (Caller, error) {
+				return Caller{User: "user-alice", OrgUUID: "org-a", WorkspaceUUID: "team-a", Delegated: true, Provider: "custom", ProviderOrgUUID: "org-a"}, nil
+			},
+			Providers: orgBackendTestProviderLookup{provider: providers.Provider{
+				Name: "custom", OrgUUID: "org-a",
+				HubAccess: []providersv1alpha1.ProviderHubAccess{
+					{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeOrg},
+					{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeWorkspace},
+				},
+			}},
+			Grants: grants,
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+		org  string
+		ws   string
+	}{
+		{name: "wrong organization", path: "/api/orgs/org-b/memberships", org: "org-b"},
+		{name: "wrong workspace", path: "/api/orgs/org-a/workspaces/team-b/memberships", org: "org-a", ws: "team-b"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			request.Header.Set("Authorization", "Bearer rgbyo1.signed")
+			request.Header.Set("X-Railgrid-Org", tc.org)
+			if tc.ws != "" {
+				request.Header.Set("X-Railgrid-Workspace", tc.ws)
+			}
+			recorder := httptest.NewRecorder()
+			nextCalls := 0
+			newGate().Middleware(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { nextCalls++ })).ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusForbidden || nextCalls != 0 {
+				t.Fatalf("status=%d next=%d, want forbidden without dispatch", recorder.Code, nextCalls)
+			}
+		})
+	}
+}

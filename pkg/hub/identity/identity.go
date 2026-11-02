@@ -80,7 +80,11 @@ var ErrNotFound = errors.New("scoped identity not found")
 
 // Owner is the tenant object an identity exists for.
 type Owner struct {
-	Provider  string `json:"provider"`
+	Provider string `json:"provider"`
+	// OrgUUID is stamped from the authenticated principal and is not accepted
+	// from provider request JSON. It prevents same-name platform and org
+	// providers from sharing identity accounts or records.
+	OrgUUID   string `json:"-"`
 	Kind      string `json:"kind"`
 	Group     string `json:"group,omitempty"`
 	Version   string `json:"version"`
@@ -109,6 +113,9 @@ type Request struct {
 	// providers, but must be supplied together.
 	ExpectedOwnerGeneration      int64  `json:"expectedOwnerGeneration,omitempty"`
 	ExpectedOwnerResourceVersion string `json:"expectedOwnerResourceVersion,omitempty"`
+	// OrgUUID is populated only from a verified org-provider attestation by
+	// the hub. It is deliberately excluded from the wire representation.
+	OrgUUID string `json:"-"`
 }
 
 // Token is what a caller gets back. The hub keeps no copy.
@@ -191,6 +198,9 @@ type Options struct {
 	Clients serviceaccounts.ClusterClientFactory
 	// Policy decides which rules a provider may ask for.
 	Policy *Policy
+	// OrgPolicies resolves a fresh org-scoped policy and validates the active
+	// provider source, target workspace, APIBinding, and dependency consent.
+	OrgPolicies OrgPolicyResolver
 	// Owners probes owner objects. Required for the provider-asserted path.
 	Owners OwnerProbe
 	// Now is overridable in tests.
@@ -199,11 +209,12 @@ type Options struct {
 
 // Service is the scoped-identity service.
 type Service struct {
-	records RecordStore
-	clients serviceaccounts.ClusterClientFactory
-	policy  *Policy
-	owners  OwnerProbe
-	now     func() time.Time
+	records     RecordStore
+	clients     serviceaccounts.ClusterClientFactory
+	policy      *Policy
+	orgPolicies OrgPolicyResolver
+	owners      OwnerProbe
+	now         func() time.Time
 }
 
 // New constructs a Service.
@@ -212,7 +223,7 @@ func New(opts Options) *Service {
 	if now == nil {
 		now = time.Now
 	}
-	return &Service{records: opts.Records, clients: opts.Clients, policy: opts.Policy, owners: opts.Owners, now: now}
+	return &Service{records: opts.Records, clients: opts.Clients, policy: opts.Policy, orgPolicies: opts.OrgPolicies, owners: opts.Owners, now: now}
 }
 
 // ServiceAccountName is the deterministic account name for an owner tuple:
@@ -221,9 +232,11 @@ func New(opts Options) *Service {
 // not be reflected in cluster-wide RBAC object names — and it includes the UID
 // so a deleted-and-recreated owner never inherits its predecessor's identity.
 func ServiceAccountName(owner Owner) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		owner.Provider, owner.Group, owner.Kind, owner.Name, owner.UID,
-	}, "\x00")))
+	parts := []string{owner.Provider, owner.Group, owner.Kind, owner.Name, owner.UID}
+	if owner.OrgUUID != "" {
+		parts = append([]string{"org", owner.OrgUUID}, parts...)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return serviceAccountPrefix + hex.EncodeToString(sum[:20])
 }
 
@@ -241,9 +254,11 @@ func RecordName(clusterID, serviceAccount string) string {
 // OwnerHash is the label value records are listed and released by. It keys on
 // the owner tuple, so releasing an owner releases every account minted for it.
 func OwnerHash(clusterID string, owner Owner) string {
-	sum := sha256.Sum256([]byte(strings.Join([]string{
-		clusterID, owner.Provider, owner.Group, owner.Kind, owner.Name, owner.UID,
-	}, "\x00")))
+	parts := []string{clusterID, owner.Provider, owner.Group, owner.Kind, owner.Name, owner.UID}
+	if owner.OrgUUID != "" {
+		parts = append([]string{"org", owner.OrgUUID}, parts...)
+	}
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(sum[:20])
 }
 
@@ -259,6 +274,17 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 	if clusterID == "" {
 		clusterID = strings.TrimSpace(req.Owner.ClusterID)
 	}
+	// OrgUUID comes only from the attestor-facing request field. Ignore any
+	// in-memory Owner value so it cannot become a second caller-controlled
+	// source of identity scope.
+	req.Owner.OrgUUID = req.OrgUUID
+	// An organization identity must bind to the exact owner incarnation. The
+	// sweep cannot ask the provider source to disambiguate a same-name platform
+	// object after the organization owner is gone, so an omitted UID could keep
+	// a stale organization ServiceAccount alive against a live platform owner.
+	if req.OrgUUID != "" && strings.TrimSpace(req.Owner.UID) == "" {
+		return nil, Refusal{Code: CodeInvalidRequest, Reason: "owner.uid is required for organization-scoped identities"}
+	}
 	if err := validateOwner(req.Owner, clusterID); err != nil {
 		return nil, err
 	}
@@ -267,6 +293,21 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 		return nil, err
 	}
 	versioned := revision != nil
+
+	policy := s.policy
+	if req.OrgUUID != "" {
+		if s.orgPolicies == nil {
+			return nil, Refusal{Code: CodeUnboundProvider, Reason: "organization-scoped identity issuance is unavailable"}
+		}
+		policy, err = s.orgPolicies.Resolve(ctx, req.OrgUUID, req.Owner.Provider, clusterID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	rules, err := policy.Authorize(req.Owner.Provider, clusterID, req.Rules)
+	if err != nil {
+		return nil, err
+	}
 
 	// The owner must exist, with the UID the caller named, BEFORE anything is
 	// written. This is the provider-asserted equivalent of the workload path's
@@ -292,11 +333,6 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 	}
 	if versioned && !ownerRevisionMatches(revision, observation) {
 		return nil, RevisionConflict{Code: CodeStaleOwner, Reason: "the owner changed after the request rules were derived"}
-	}
-
-	rules, err := s.policy.Authorize(req.Owner.Provider, clusterID, req.Rules)
-	if err != nil {
-		return nil, err
 	}
 
 	account := ServiceAccountName(owner)
@@ -328,6 +364,14 @@ func (s *Service) Ensure(ctx context.Context, req Request, mode tenancyv1alpha1.
 		return nil, err
 	}
 	return token, nil
+}
+
+// EnsureForOrg is the only org-provider issuance entry point exposed to the
+// REST layer. It overwrites any supplied scope with the authenticated org and
+// delegates to Ensure, which revalidates that scope and policy for this call.
+func (s *Service) EnsureForOrg(ctx context.Context, orgUUID string, req Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*Token, error) {
+	req.OrgUUID = orgUUID
+	return s.Ensure(ctx, req, mode, subject)
 }
 
 // materialize reconciles the record's ServiceAccount, ClusterRole and binding
@@ -416,6 +460,9 @@ func Shape(record *tenancyv1alpha1.ScopedIdentity) serviceaccounts.ScopedIdentit
 		Rules:                record.Spec.Rules,
 		TokenTTL:             time.Duration(record.Spec.TTLSeconds) * time.Second,
 	}
+	if orgUUID := record.Labels[labelScopedIdentityOrg]; orgUUID != "" {
+		shape.Labels[labelScopedIdentityOrg] = orgUUID
+	}
 	if record.UID != "" && record.Generation > 0 {
 		shape.MaterializationFence = &serviceaccounts.ScopedIdentityMaterializationFence{
 			RecordUID:        string(record.UID),
@@ -430,11 +477,12 @@ func Shape(record *tenancyv1alpha1.ScopedIdentity) serviceaccounts.ScopedIdentit
 // belongs to, so an operator reading a tenant workspace can tell what a
 // railgrid-si-* account is for without hunting for the hash preimage.
 const (
-	AnnotationRecord    = "railgrid.ai/scoped-identity"
-	AnnotationProvider  = "railgrid.ai/scoped-identity-provider"
-	AnnotationOwnerKind = "railgrid.ai/scoped-identity-owner-kind"
-	AnnotationOwnerName = "railgrid.ai/scoped-identity-owner-name"
-	AnnotationOwnerUID  = "railgrid.ai/scoped-identity-owner-uid"
+	labelScopedIdentityOrg = "tenants.railgrid.ai/scoped-identity-org"
+	AnnotationRecord       = "railgrid.ai/scoped-identity"
+	AnnotationProvider     = "railgrid.ai/scoped-identity-provider"
+	AnnotationOwnerKind    = "railgrid.ai/scoped-identity-owner-kind"
+	AnnotationOwnerName    = "railgrid.ai/scoped-identity-owner-name"
+	AnnotationOwnerUID     = "railgrid.ai/scoped-identity-owner-uid"
 )
 
 func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owner, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string, shape serviceaccounts.ScopedIdentityShape, revision *OwnerRevision, expectedRecord *identityRecordRevision) (*tenancyv1alpha1.ScopedIdentity, error) {
@@ -457,6 +505,9 @@ func (s *Service) upsertRecord(ctx context.Context, clusterID string, owner Owne
 		tenancyv1alpha1.LabelScopedIdentityProvider: owner.Provider,
 		tenancyv1alpha1.LabelScopedIdentityOwner:    OwnerHash(clusterID, owner),
 		tenancyv1alpha1.LabelScopedIdentityMode:     string(mode),
+	}
+	if owner.OrgUUID != "" {
+		labels[labelScopedIdentityOrg] = owner.OrgUUID
 	}
 
 	for attempt := 0; attempt < maxIdentityRecordWriteAttempts; attempt++ {
@@ -552,6 +603,13 @@ func (s *Service) Release(ctx context.Context, clusterID string, owner Owner) er
 	if s == nil || s.records == nil {
 		return fmt.Errorf("identity service is unavailable")
 	}
+	if strings.TrimSpace(owner.OrgUUID) != "" {
+		// Silently succeeding here would be a revocation failure: the org-aware
+		// record is intentionally invisible to List, so the platform release path
+		// would return nil without deleting anything. Make the unsafe call
+		// explicit instead of preserving that trap for a future caller.
+		return Refusal{Code: CodeInvalidRequest, Reason: "organization-scoped identity release requires ReleaseForOrg"}
+	}
 	// An owner can have more than one account, so release everything labelled
 	// for it rather than one name.
 	records, err := s.List(ctx, owner.Provider, clusterID, &owner)
@@ -560,6 +618,53 @@ func (s *Service) Release(ctx context.Context, clusterID string, owner Owner) er
 	}
 	for i := range records {
 		if err := s.deleteRecord(ctx, &records[i]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReleaseForOrg deletes every identity for one owner in exactly one
+// organization and target workspace. It is the revocation counterpart to
+// EnsureForOrg: it deliberately does not consult the live provider policy, so
+// an operator or provider can still revoke after consent is withdrawn, the
+// provider is disabled, or its source declaration is being replaced.
+func (s *Service) ReleaseForOrg(ctx context.Context, orgUUID, clusterID string, owner Owner) error {
+	if s == nil || s.records == nil {
+		return fmt.Errorf("identity service is unavailable")
+	}
+	orgUUID = strings.TrimSpace(orgUUID)
+	clusterID = strings.TrimSpace(clusterID)
+	if orgUUID == "" {
+		return Refusal{Code: CodeInvalidRequest, Reason: "organization-scoped identity release requires an organization"}
+	}
+	if clusterID == "" {
+		return Refusal{Code: CodeInvalidRequest, Reason: "clusterID is required for an organization identity release"}
+	}
+	if owner.OrgUUID != "" && owner.OrgUUID != orgUUID {
+		return Refusal{Code: CodeInvalidRequest, Reason: "owner organization does not match the release scope"}
+	}
+	if err := validateOwner(owner, clusterID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(owner.UID) == "" {
+		return Refusal{Code: CodeInvalidRequest, Reason: "owner.uid is required for organization-scoped identities"}
+	}
+	owner.OrgUUID = orgUUID
+	selector := tenancyv1alpha1.LabelScopedIdentityProvider + "=" + owner.Provider + "," + labelScopedIdentityOrg + "=" + orgUUID +
+		"," + tenancyv1alpha1.LabelScopedIdentityOwner + "=" + OwnerHash(clusterID, owner)
+	list, err := s.records.List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return fmt.Errorf("listing organization scoped identities for release: %w", err)
+	}
+	for i := range list.Items {
+		record := &list.Items[i]
+		if record.Labels[labelScopedIdentityOrg] != orgUUID || record.Spec.ClusterID != clusterID ||
+			record.Spec.Owner.Provider != owner.Provider || record.Spec.Owner.Kind != owner.Kind ||
+			record.Spec.Owner.Name != owner.Name || record.Spec.Owner.UID != owner.UID {
+			continue
+		}
+		if err := s.deleteRecord(ctx, record); err != nil {
 			return err
 		}
 	}
@@ -582,6 +687,38 @@ func (s *Service) ReleaseByName(ctx context.Context, provider, name string) erro
 	if record.Spec.Owner.Provider != provider {
 		// Do not distinguish "not yours" from "not there": a provider must not
 		// be able to probe for another provider's identities by name.
+		return nil
+	}
+	if record.Labels[labelScopedIdentityOrg] != "" {
+		// A platform-scoped attestation must never release an organization-owned
+		// record by guessing its name. The organization path checks both the
+		// hub-written organization label and the exact provider before deleting.
+		return nil
+	}
+	return s.deleteRecord(ctx, record)
+}
+
+// ReleaseByNameForOrg deletes one record after checking both its provider and
+// its organization label. It deliberately does not require the provider source
+// or target APIBinding to still be live: revocation must remain available while
+// an operator is disabling a provider or replacing its declaration. The labels
+// are written by the hub from the authenticated org scope, never by the caller.
+func (s *Service) ReleaseByNameForOrg(ctx context.Context, orgUUID, provider, name string) error {
+	if s == nil || s.records == nil {
+		return fmt.Errorf("identity service is unavailable")
+	}
+	if strings.TrimSpace(orgUUID) == "" {
+		return Refusal{Code: CodeInvalidRequest, Reason: "organization identity release requires an organization"}
+	}
+	record, err := s.records.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("reading scoped identity record: %w", err)
+	}
+	if record.Spec.Owner.Provider != provider || record.Labels[labelScopedIdentityOrg] != orgUUID {
+		// Do not distinguish another organization's record from a missing one.
 		return nil
 	}
 	return s.deleteRecord(ctx, record)
@@ -615,6 +752,7 @@ func (s *Service) List(ctx context.Context, provider, clusterID string, owner *O
 		return nil, fmt.Errorf("identity service is unavailable")
 	}
 	selector := tenancyv1alpha1.LabelScopedIdentityProvider + "=" + provider
+	selector += ",!" + labelScopedIdentityOrg
 	if owner != nil {
 		selector += "," + tenancyv1alpha1.LabelScopedIdentityOwner + "=" + OwnerHash(clusterID, *owner)
 	}
@@ -626,10 +764,45 @@ func (s *Service) List(ctx context.Context, provider, clusterID string, owner *O
 	for _, item := range list.Items {
 		// The label is tenant-invisible but the filter still verifies the spec:
 		// a listing is an authorization decision, and a label is metadata.
-		if item.Spec.Owner.Provider != provider {
+		if item.Spec.Owner.Provider != provider || item.Labels[labelScopedIdentityOrg] != "" {
 			continue
 		}
 		if clusterID != "" && item.Spec.ClusterID != clusterID {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items, nil
+}
+
+// ListForOrg only lists records for a provider after revalidating its current
+// org source and the exact active target workspace/binding. An org list must
+// name one target cluster; an empty cluster would turn a scoped query into a
+// cross-workspace inventory.
+func (s *Service) ListForOrg(ctx context.Context, orgUUID, provider, clusterID string, owner *Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	if s == nil || s.orgPolicies == nil {
+		return nil, Refusal{Code: CodeUnboundProvider, Reason: "organization-scoped identity listing is unavailable"}
+	}
+	if strings.TrimSpace(clusterID) == "" {
+		return nil, Refusal{Code: CodeInvalidRequest, Reason: "clusterID is required for an organization provider listing"}
+	}
+	if _, err := s.orgPolicies.Resolve(ctx, orgUUID, provider, clusterID); err != nil {
+		return nil, err
+	}
+	selector := tenancyv1alpha1.LabelScopedIdentityProvider + "=" + provider + "," + labelScopedIdentityOrg + "=" + orgUUID
+	if owner != nil {
+		orgOwner := *owner
+		orgOwner.OrgUUID = orgUUID
+		selector += "," + tenancyv1alpha1.LabelScopedIdentityOwner + "=" + OwnerHash(clusterID, orgOwner)
+	}
+	list, err := s.records.List(ctx, metav1.ListOptions{LabelSelector: selector})
+	if err != nil {
+		return nil, fmt.Errorf("listing organization scoped identities: %w", err)
+	}
+	items := make([]tenancyv1alpha1.ScopedIdentity, 0, len(list.Items))
+	for _, item := range list.Items {
+		if item.Labels[labelScopedIdentityOrg] != orgUUID || item.Spec.Owner.Provider != provider || item.Spec.ClusterID != clusterID {
 			continue
 		}
 		items = append(items, item)

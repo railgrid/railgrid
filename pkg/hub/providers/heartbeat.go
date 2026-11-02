@@ -128,7 +128,9 @@ func NewHeartbeatHandler(reg *Registry, record HeartbeatRecorder, authenticate H
 		}
 		// Carry the selected catalog workspace through authentication and
 		// persistence. Selection is only a hint; TokenReview must verify it.
-		ctx := context.WithValue(r.Context(), heartbeatTargetKey{}, heartbeatTarget{name: name, cluster: previous.CatalogEntryCluster})
+		ctx := context.WithValue(r.Context(), heartbeatTargetKey{}, heartbeatTarget{
+			name: name, cluster: previous.CatalogEntryCluster, orgUUID: previous.OrgUUID,
+		})
 		r = r.WithContext(ctx)
 		if err := authenticate(ctx, r, name); err != nil {
 			// Warn mode preserves legacy platform compatibility only. An org
@@ -197,6 +199,7 @@ type heartbeatTargetKey struct{}
 type heartbeatTarget struct {
 	name    string
 	cluster string
+	orgUUID string
 }
 
 // A kcp service-account JWT carries its issuing workspace. Use this untrusted
@@ -247,6 +250,15 @@ func heartbeatCatalogCluster(ctx context.Context, clusters ClusterResolver, name
 		return target.cluster, target.cluster != ""
 	}
 	return clusters.CatalogEntryCluster(name)
+}
+
+// heartbeatTargetOrgUUID returns the organization selected by the handler from
+// the verified catalog workspace. It is not read from a request header or JWT.
+func heartbeatTargetOrgUUID(ctx context.Context, name string) string {
+	if target, ok := ctx.Value(heartbeatTargetKey{}).(heartbeatTarget); ok && target.name == name {
+		return target.orgUUID
+	}
+	return ""
 }
 
 // parseHeartbeatPath extracts the provider name from

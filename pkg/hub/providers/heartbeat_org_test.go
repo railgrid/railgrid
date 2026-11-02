@@ -43,8 +43,8 @@ func TestHeartbeatTargetsTokenWorkspaceAndPreservesOtherScopes(t *testing.T) {
 			if withPlatform {
 				reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
 			}
-			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
-			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-b", CatalogEntryCluster: "org-b-cluster"})
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-b", CatalogEntryCluster: "org-b-cluster", WorkspaceCluster: "org-b-cluster"})
 			now := time.Now()
 			f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername}}}
 			a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -91,7 +91,7 @@ func TestHeartbeatTargetsTokenWorkspaceAndPreservesOtherScopes(t *testing.T) {
 
 func TestHeartbeatClusterHintDoesNotAuthenticateOrBroadenTarget(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 	now := time.Now()
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -134,7 +134,7 @@ func TestOrgHeartbeatPersistsInTheAuthenticatedCatalogWorkspace(t *testing.T) {
 	defer srv.Close()
 	reg := NewRegistry()
 	reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
-	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 	record, err := NewCatalogHeartbeatRecorder(&rest.Config{Host: srv.URL + "/clusters/root"}, reg)
 	if err != nil {
 		t.Fatal(err)
@@ -159,7 +159,7 @@ func TestOrgHeartbeatPersistsInTheAuthenticatedCatalogWorkspace(t *testing.T) {
 
 func TestOrgHeartbeatRejectsAnotherServiceAccount(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 	now := time.Now()
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: "system:serviceaccount:default:other"}}}
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -182,7 +182,7 @@ func TestOrgHeartbeatWarnModeStillRequiresAuthentication(t *testing.T) {
 	} {
 		reg := NewRegistry()
 		reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
-		reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+		reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 		now := time.Now()
 		f := &tokenReviewFake{status: status}
 		a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -215,7 +215,7 @@ func TestHeartbeatUnmatchedWorkspaceHintPreservesPlatformAuthPolicy(t *testing.T
 		t.Run(string(tc.mode), func(t *testing.T) {
 			reg := NewRegistry()
 			reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
-			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 			now := time.Now()
 			f := &tokenReviewFake{omitClusterExtra: true, status: authnv1.TokenReviewStatus{
 				Authenticated: true,
@@ -298,7 +298,7 @@ func TestHeartbeatRejectsVerifiedServiceAccountFromAnotherWorkspace(t *testing.T
 		{"authentication.kcp.io/cluster-name": {"org-a-cluster", "another-cluster"}},
 	} {
 		reg := NewRegistry()
-		reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+		reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster", WorkspaceCluster: "org-a-cluster"})
 		now := time.Now()
 		f := &tokenReviewFake{omitClusterExtra: true, status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: extra}}}
 		a := newTestTokenReviewAuthenticator(reg, f, &now)

@@ -17,6 +17,7 @@ package kcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -353,5 +354,48 @@ func TestEnsureProviderAPIBindingUpdatesTheClaimsOfAnExistingBinding(t *testing.
 	path, _, _ := unstructured.NestedString(got.Object, "spec", "reference", "export", "path")
 	if path != "root:providers:app-studio" {
 		t.Errorf("reference was disturbed: %q", path)
+	}
+}
+
+// A same-name platform and organization provider cannot share an APIBinding.
+// kcp references are not rewritten in place, so updating the old binding's
+// claims would report a successful Enable while the platform export stayed
+// bound.
+func TestEnsureProviderAPIBindingRefusesAReferenceChange(t *testing.T) {
+	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+	existing := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": "apis.kcp.io/v1alpha2",
+		"kind":       "APIBinding",
+		"metadata":   map[string]interface{}{"name": "edges"},
+		"spec": map[string]interface{}{
+			"reference": map[string]interface{}{"export": map[string]interface{}{"path": "root:railgrid:providers:edges", "name": "edges.railgrid.ai"}},
+			"permissionClaims": []interface{}{map[string]interface{}{
+				"resource": "secrets", "verbs": []interface{}{"get"}, "selector": map[string]interface{}{"matchAll": true}, "state": "Accepted",
+			}},
+		},
+		"status": map[string]interface{}{"phase": "Bound"},
+	}}
+	if _, err := dyn.Resource(apiBindingGVR).Create(context.Background(), existing, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureProviderAPIBinding(context.Background(), dyn, "edges", "root:railgrid:tenants:org-a:providers:edges", "edges.railgrid.ai", []ProviderClaim{
+		{Resource: "secrets", Verbs: []string{"get"}, Accepted: false},
+	})
+	if !errors.Is(err, ErrProviderBindingSourceConflict) {
+		t.Fatalf("ensureProviderAPIBinding error = %v, want ErrProviderBindingSourceConflict", err)
+	}
+
+	got, err := dyn.Resource(apiBindingGVR).Get(context.Background(), "edges", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path, _, _ := unstructured.NestedString(got.Object, "spec", "reference", "export", "path")
+	if path != "root:railgrid:providers:edges" {
+		t.Fatalf("binding reference changed despite the conflict: %q", path)
+	}
+	claims, _, _ := unstructured.NestedSlice(got.Object, "spec", "permissionClaims")
+	if len(claims) != 1 {
+		t.Fatalf("permission claims changed despite the conflict: %v", claims)
 	}
 }

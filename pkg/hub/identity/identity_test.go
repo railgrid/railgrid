@@ -80,12 +80,30 @@ func matchesSelector(labels map[string]string, selector string) bool {
 		return true
 	}
 	for _, term := range strings.Split(selector, ",") {
+		if strings.HasPrefix(term, "!") {
+			if _, exists := labels[strings.TrimPrefix(term, "!")]; exists {
+				return false
+			}
+			continue
+		}
 		parts := strings.SplitN(term, "=", 2)
 		if len(parts) != 2 || labels[parts[0]] != parts[1] {
 			return false
 		}
 	}
 	return true
+}
+
+func TestOrgIdentityTuplesCannotCollideWithPlatformIdentityTuples(t *testing.T) {
+	platform := Owner{Provider: "factory", Group: "factory.example", Kind: "Run", Name: "run-a", UID: "uid-1"}
+	organization := platform
+	organization.OrgUUID = "org-a"
+	if ServiceAccountName(platform) == ServiceAccountName(organization) {
+		t.Fatal("same-name platform and org providers received the same identity account")
+	}
+	if OwnerHash("team-a", platform) == OwnerHash("team-a", organization) {
+		t.Fatal("same-name platform and org providers received the same record owner hash")
+	}
 }
 
 func (m *memoryRecords) Create(_ context.Context, obj *tenancyv1alpha1.ScopedIdentity, _ metav1.CreateOptions) (*tenancyv1alpha1.ScopedIdentity, error) {
@@ -230,6 +248,18 @@ func testService(t *testing.T) (*Service, *memoryRecords, *fake.Clientset, *fake
 	return service, records, cs, owners
 }
 
+type staticOrgPolicyResolver struct{ policy *Policy }
+
+func (r staticOrgPolicyResolver) Resolve(context.Context, string, string, string) (*Policy, error) {
+	return r.policy, nil
+}
+
+type failingOrgPolicyResolver struct{ err error }
+
+func (r failingOrgPolicyResolver) Resolve(context.Context, string, string, string) (*Policy, error) {
+	return nil, r.err
+}
+
 func agentRequest() Request {
 	return Request{
 		Owner: Owner{
@@ -279,6 +309,159 @@ func TestEnsureIsIdempotentOnTheOwnerTuple(t *testing.T) {
 	if len(accounts.Items) != 1 {
 		t.Fatalf("accounts created = %d, want 1", len(accounts.Items))
 	}
+}
+
+func TestOrgAndPlatformIdentityRecordsStaySeparatelyScoped(t *testing.T) {
+	service, records, _, _ := testService(t)
+	service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+	platformRequest := agentRequest()
+	platformToken, err := service.Ensure(context.Background(), platformRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("platform Ensure: %v", err)
+	}
+	orgRequest := agentRequest()
+	orgRequest.OrgUUID = "org-a"
+	orgToken, err := service.Ensure(context.Background(), orgRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("org Ensure: %v", err)
+	}
+	if platformToken.Name == orgToken.Name || platformToken.ServiceAccount == orgToken.ServiceAccount {
+		t.Fatalf("platform and org identities collided: platform=%#v org=%#v", platformToken, orgToken)
+	}
+	platformItems, err := service.List(context.Background(), "agents", "cluster-1", nil)
+	if err != nil {
+		t.Fatalf("platform List: %v", err)
+	}
+	if len(platformItems) != 1 || platformItems[0].Name != platformToken.Name {
+		t.Fatalf("platform list included an org identity: %v", recordNames(platformItems))
+	}
+	orgItems, err := service.ListForOrg(context.Background(), "org-a", "agents", "cluster-1", nil)
+	if err != nil {
+		t.Fatalf("org List: %v", err)
+	}
+	if len(orgItems) != 1 || orgItems[0].Name != orgToken.Name {
+		t.Fatalf("org list included a platform identity: %v", recordNames(orgItems))
+	}
+	if records.items[orgToken.Name].Labels[labelScopedIdentityOrg] != "org-a" {
+		t.Fatalf("org identity record label = %q", records.items[orgToken.Name].Labels[labelScopedIdentityOrg])
+	}
+	if err := service.ReleaseByName(context.Background(), "agents", orgToken.Name); err != nil {
+		t.Fatalf("platform ReleaseByName: %v", err)
+	}
+	if _, ok := records.items[orgToken.Name]; !ok {
+		t.Fatal("platform attestation released an org-owned identity")
+	}
+}
+
+func TestOrgIdentityRequiresOwnerUID(t *testing.T) {
+	service, _, _, _ := testService(t)
+	service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+	request := agentRequest()
+	request.OrgUUID = "org-a"
+	request.Owner.UID = ""
+	_, err := service.Ensure(context.Background(), request, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	var refusal Refusal
+	if !errors.As(err, &refusal) || refusal.Code != CodeInvalidRequest {
+		t.Fatalf("err = %v, want invalid-request refusal", err)
+	}
+}
+
+func TestReleaseByNameForOrgIsScopedToTheAuthenticatedOrganization(t *testing.T) {
+	service, records, cs, _ := testService(t)
+	service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+	ctx := context.Background()
+	platform, err := service.Ensure(ctx, agentRequest(), tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("platform Ensure: %v", err)
+	}
+	orgRequest := agentRequest()
+	orgRequest.OrgUUID = "org-a"
+	orgToken, err := service.Ensure(ctx, orgRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("org Ensure: %v", err)
+	}
+	if err := service.ReleaseByNameForOrg(ctx, "org-a", "agents", platform.Name); err != nil {
+		t.Fatalf("cross-owner release: %v", err)
+	}
+	if _, ok := records.items[platform.Name]; !ok {
+		t.Fatal("an organization released a platform identity")
+	}
+	if err := service.ReleaseByNameForOrg(ctx, "org-b", "agents", orgToken.Name); err != nil {
+		t.Fatalf("cross-org release: %v", err)
+	}
+	if _, ok := records.items[orgToken.Name]; !ok {
+		t.Fatal("another organization released the identity")
+	}
+	if err := service.ReleaseByNameForOrg(ctx, "org-a", "edges", orgToken.Name); err != nil {
+		t.Fatalf("wrong-provider release: %v", err)
+	}
+	if _, ok := records.items[orgToken.Name]; !ok {
+		t.Fatal("another provider released the identity")
+	}
+	if err := service.ReleaseByNameForOrg(ctx, "org-a", "agents", orgToken.Name); err != nil {
+		t.Fatalf("scoped release: %v", err)
+	}
+	if _, ok := records.items[orgToken.Name]; ok {
+		t.Fatal("the organization identity record survived release")
+	}
+	assertIdentityGone(t, ctx, cs, orgToken.ServiceAccount)
+}
+
+func TestReleaseForOrgIsScopedToTheAuthenticatedOrganizationAndOwner(t *testing.T) {
+	service, records, cs, _ := testService(t)
+	service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+	ctx := context.Background()
+	owner := agentRequest().Owner
+
+	platform, err := service.Ensure(ctx, agentRequest(), tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("platform Ensure: %v", err)
+	}
+	orgARequest := agentRequest()
+	orgARequest.OrgUUID = "org-a"
+	orgA, err := service.Ensure(ctx, orgARequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("org-a Ensure: %v", err)
+	}
+	orgBRequest := agentRequest()
+	orgBRequest.OrgUUID = "org-b"
+	orgB, err := service.Ensure(ctx, orgBRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("org-b Ensure: %v", err)
+	}
+
+	orgOwner := owner
+	orgOwner.OrgUUID = "org-a"
+	err = service.Release(ctx, "cluster-1", orgOwner)
+	var refusal Refusal
+	if !errors.As(err, &refusal) || refusal.Code != CodeInvalidRequest {
+		t.Fatalf("platform Release accepted an org owner: %v", err)
+	}
+	if len(records.items) != 3 {
+		t.Fatalf("refused platform Release changed records: %d", len(records.items))
+	}
+
+	if err := service.ReleaseForOrg(ctx, "org-a", "cluster-1", owner); err != nil {
+		t.Fatalf("ReleaseForOrg: %v", err)
+	}
+	if _, ok := records.items[platform.Name]; !ok {
+		t.Fatal("organization release removed the platform identity")
+	}
+	if _, ok := records.items[orgB.Name]; !ok {
+		t.Fatal("organization release removed another organization's identity")
+	}
+	if _, ok := records.items[orgA.Name]; ok {
+		t.Fatal("selected organization identity survived release")
+	}
+	assertIdentityGone(t, ctx, cs, orgA.ServiceAccount)
+}
+
+func recordNames(records []tenancyv1alpha1.ScopedIdentity) []string {
+	names := make([]string, 0, len(records))
+	for _, record := range records {
+		names = append(names, record.Name)
+	}
+	return names
 }
 
 func TestEnsureMaterializesOnlyPolicyCheckedRules(t *testing.T) {

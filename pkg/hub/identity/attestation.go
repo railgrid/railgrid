@@ -18,6 +18,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -41,7 +42,8 @@ import (
 // right. The heartbeat authenticator's positive and negative caches come along
 // with it, which matters: this endpoint is reached on every token refresh.
 type ProviderAttestor struct {
-	authenticate providers.HeartbeatAuthenticator
+	authenticate    providers.HeartbeatAuthenticator
+	orgAuthenticate providers.OrgProviderBootstrapAuthenticator
 }
 
 // NewProviderAttestor wraps a heartbeat authenticator.
@@ -49,19 +51,54 @@ func NewProviderAttestor(authenticate providers.HeartbeatAuthenticator) *Provide
 	return &ProviderAttestor{authenticate: authenticate}
 }
 
+// ProviderAttestation is the authenticated principal for an identity request.
+// OrgUUID is empty only for platform providers. It is never read from a request
+// field or header.
+type ProviderAttestation struct {
+	Subject string
+	OrgUUID string
+}
+
+// NewOrgAwareProviderAttestor accepts either the platform heartbeat identity
+// or an organization provider bootstrap identity. The bootstrap verifier is
+// attempted first because org-owned providers intentionally do not exist in
+// the platform provider registry.
+func NewOrgAwareProviderAttestor(platform providers.HeartbeatAuthenticator, org providers.OrgProviderBootstrapAuthenticator) *ProviderAttestor {
+	return &ProviderAttestor{authenticate: platform, orgAuthenticate: org}
+}
+
+// AttestIdentity verifies the provider bearer and returns its authoritative
+// organization scope when the token belongs to a registered org provider.
+func (a *ProviderAttestor) AttestIdentity(ctx context.Context, r *http.Request, provider string) (ProviderAttestation, error) {
+	if a == nil {
+		return ProviderAttestation{}, fmt.Errorf("provider attestation is unavailable")
+	}
+	if strings.TrimSpace(provider) == "" {
+		return ProviderAttestation{}, providers.ErrHeartbeatWrongIdentity
+	}
+	if a.orgAuthenticate != nil {
+		principal, err := a.orgAuthenticate(ctx, r, provider)
+		if err == nil {
+			return ProviderAttestation{Subject: providers.ProviderSAUsername, OrgUUID: principal.OrgUUID}, nil
+		}
+		if !errors.Is(err, providers.ErrOrgProviderBootstrapUnauthorized) {
+			return ProviderAttestation{}, err
+		}
+	}
+	if a.authenticate == nil {
+		return ProviderAttestation{}, fmt.Errorf("provider attestation is unavailable")
+	}
+	if err := a.authenticate(ctx, r, provider); err != nil {
+		return ProviderAttestation{}, err
+	}
+	return ProviderAttestation{Subject: providers.ProviderSAUsername}, nil
+}
+
 // Attest verifies that r's bearer is provider's own service account and
 // returns the authenticated subject.
 func (a *ProviderAttestor) Attest(ctx context.Context, r *http.Request, provider string) (string, error) {
-	if a == nil || a.authenticate == nil {
-		return "", fmt.Errorf("provider attestation is unavailable")
-	}
-	if strings.TrimSpace(provider) == "" {
-		return "", providers.ErrHeartbeatWrongIdentity
-	}
-	if err := a.authenticate(ctx, r, provider); err != nil {
-		return "", err
-	}
-	return providers.ProviderSAUsername, nil
+	principal, err := a.AttestIdentity(ctx, r, provider)
+	return principal.Subject, err
 }
 
 // DynamicOwnerProbe reads owner objects in a tenant workspace with the hub's

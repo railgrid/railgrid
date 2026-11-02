@@ -62,6 +62,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/identity"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/leaderelection"
+	"github.com/railgrid/railgrid/pkg/hub/localdev"
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 	"github.com/railgrid/railgrid/pkg/hub/metering"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
@@ -129,6 +130,13 @@ func NewServer(opts *Options) (*Server, error) {
 // Run starts the hub server and blocks until the context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
 	logger := klog.FromContext(ctx)
+	if localdev.BYOQuotaBypass() {
+		if !s.opts.DevMode || !s.opts.EmbeddedKCP {
+			return fmt.Errorf("local BYO quota bypass requires dev mode and embedded KCP")
+		}
+		logger.Info("LOCAL E2E ONLY: native ResourceQuota admission is disabled; quota security acceptance is not established")
+	}
+
 	logger.Info("Starting railgrid hub server",
 		"listenAddr", s.opts.ListenAddr,
 		"embeddedKCP", s.opts.EmbeddedKCP,
@@ -201,7 +209,8 @@ func (s *Server) Run(ctx context.Context) error {
 		// controllers on a kcp-direct URL, which this field cannot express.
 		// See docs/byo-providers.md.
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
-			BYOLimits: s.opts.OrganizationLimits,
+			BYOLimits:           s.opts.OrganizationLimits,
+			LocalE2EQuotaBypass: localdev.BYOQuotaBypass(),
 			ProviderRelayTransport: func(next http.RoundTripper) http.RoundTripper {
 				return providers.EmbeddedRelayTransport(next, providerRelayDelegate)
 			},
@@ -1149,11 +1158,16 @@ func (s *Server) Run(ctx context.Context) error {
 			if err != nil {
 				return fmt.Errorf("creating scoped identity binding checker: %w", err)
 			}
+			orgIdentityPolicies, err := identity.NewOrgIdentityPolicyResolver(kcpConfig, providerRegistry, hubAccessGrants)
+			if err != nil {
+				return fmt.Errorf("creating organization scoped identity policy: %w", err)
+			}
 			identityService := identity.New(identity.Options{
-				Records: userClient.ScopedIdentities(),
-				Clients: identityClients,
-				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
-				Owners:  identityOwners,
+				Records:     userClient.ScopedIdentities(),
+				Clients:     identityClients,
+				Policy:      identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
+				OrgPolicies: orgIdentityPolicies,
+				Owners:      identityOwners,
 			})
 			projectScopeResolver := workloadidentity.NewKCPProjectScopeResolver(bootstrapper)
 			// The sweep is what collects an identity whose holder stopped
@@ -1165,12 +1179,16 @@ func (s *Server) Run(ctx context.Context) error {
 				WorkloadScopes: projectScopeResolver,
 				Logger:         logger.WithName("scoped-identity"),
 			}).Start(ctx)
-			// Provider-asserted identities authenticate exactly as heartbeats
-			// do, with the same authenticator instance and therefore the same
-			// TokenReview caches.
+			// Platform provider identities share the heartbeat authenticator and
+			// its TokenReview cache. Org-owned providers use the bootstrap verifier,
+			// which validates their org-scoped service account and live source.
+			orgIdentityBootstrapAuth, err := providers.NewOrgProviderBootstrapAuthenticator(kcpConfig)
+			if err != nil {
+				return fmt.Errorf("creating organization provider identity attestor: %w", err)
+			}
 			restapi.NewIdentityHandler(
 				identityService,
-				identity.NewProviderAttestor(heartbeatAuthenticator),
+				identity.NewOrgAwareProviderAttestor(heartbeatAuthenticator, orgIdentityBootstrapAuth),
 				logger.WithName("scoped-identity"),
 			).Register(router)
 
@@ -1680,13 +1698,13 @@ func (s *Server) Run(ctx context.Context) error {
 // enforcement, and a supported KCP quota implementation before an organization
 // provider receives new authority. Keep the quota gate source-controlled: it
 // must not be operator-overridable while the pinned dependency is known-bad.
-// Flip this only after the explicit quota diagnostic passes against an
-// unmodified supported dependency.
+// The only exception is the explicit local E2E switch, which Run refuses unless
+// the hub is in dev mode with embedded KCP.
 const organizationQuotaSelectionSupported = false
 
 func (s *Server) orgProviderAvailability(ready func() error) func(context.Context) error {
 	return func(context.Context) error {
-		if !organizationQuotaSelectionSupported {
+		if !organizationQuotaSelectionSupported && !localdev.BYOQuotaBypass() {
 			return fmt.Errorf("hosted BYO enrollment is disabled until supported KCP ResourceQuota accounting is verified")
 		}
 		if !s.opts.OrganizationLimits.Enabled() {

@@ -63,7 +63,8 @@ func NewUIProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		// UI proxy reserves only asset-shaped paths; portal SPA routes fall
 		// through (see SetFallback). Backend proxy keeps the default "always
 		// proxy" behaviour by leaving fallbackForSPA false.
-		fallbackForSPA: true,
+		fallbackForSPA:       true,
+		denyHubOnlyEndpoints: true,
 	}
 }
 

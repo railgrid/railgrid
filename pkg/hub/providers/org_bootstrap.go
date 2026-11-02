@@ -264,6 +264,12 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 	if entry.Spec.Export == nil || entry.Spec.Export.Name == "" {
 		return out, fmt.Errorf("provider requires spec.export")
 	}
+	for _, resource := range entry.Spec.Export.Resources {
+		group := strings.Split(resource.APIVersion, "/")[0]
+		if err := validateOrgProviderGroupOwnership(org, name, group, reg); err != nil {
+			return out, err
+		}
+	}
 	if err := (&CatalogReconciler{reg: reg}).validateRequiresDeclaration(org, &entry); err != nil {
 		return out, err
 	}
@@ -306,6 +312,9 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 		if err := ValidateOrgProviderPrivateResource(schema.GroupResource{Group: group, Resource: resource}); err != nil {
 			return out, err
 		}
+		if err := validateOrgProviderGroupOwnership(org, name, group, reg); err != nil {
+			return out, err
+		}
 		if _, ok := schemas[s.GetName()]; ok {
 			return out, fmt.Errorf("duplicate schema %s", s.GetName())
 		}
@@ -344,6 +353,9 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 			return out, fmt.Errorf("invalid resource coordinate")
 		}
 		if err := ValidateOrgProviderPrivateResource(schema.GroupResource{Group: group, Resource: parts[0]}); err != nil {
+			return out, err
+		}
+		if err := validateOrgProviderGroupOwnership(org, name, group, reg); err != nil {
 			return out, err
 		}
 		key := group + "/" + resource
@@ -416,6 +428,9 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 		if err := ValidateOrgProviderPrivateResource(schema.GroupResource{Group: group, Resource: resource}); err != nil {
 			return out, err
 		}
+		if err := validateOrgProviderGroupOwnership(org, name, group, reg); err != nil {
+			return out, err
+		}
 		if crd.GetName() != resource+"."+group || privateSeen[crd.GetName()] {
 			return out, fmt.Errorf("invalid or duplicate private CRD name")
 		}
@@ -426,6 +441,19 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 		out.PrivateCRDs = append(out.PrivateCRDs, crd)
 	}
 	return out, nil
+}
+
+// validateOrgProviderGroupOwnership permits the deliberate same-name
+// self-hosted override but refuses an organization provider taking over an API
+// group already served by a differently named provider visible in its Org.
+func validateOrgProviderGroupOwnership(org, name, group string, reg *Registry) error {
+	if reg == nil {
+		return nil
+	}
+	if owner, ok := reg.ForeignGroupOwner(org, name, group); ok {
+		return fmt.Errorf("API group %q is already served by provider %q; self-host that provider under its own name instead", group, owner)
+	}
+	return nil
 }
 
 func rejectConversion(object *unstructured.Unstructured) error {

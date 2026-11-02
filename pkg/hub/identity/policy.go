@@ -101,19 +101,20 @@ func (r Refusal) Error() string { return r.Code + ": " + r.Reason }
 
 // Refusal codes. They are part of the API: the SDK client surfaces them.
 const (
-	CodeEmptyRule        = "empty_rule"
-	CodeMultiGroup       = "multi_group_rule"
-	CodeCoreGroup        = "core_group_forbidden"
-	CodeWildcard         = "wildcard_forbidden"
-	CodeUnnamedForeign   = "unnamed_foreign_rule"
-	CodeForeignWrite     = "foreign_write_forbidden"
-	CodeForeignList      = "foreign_list_not_name_scoped"
-	CodeUnknownProvider  = "unknown_group"
-	CodeUnboundProvider  = "provider_not_bound"
-	CodeUndeclaredVerb   = "undeclared_verb"
-	CodeNonResourceRule  = "non_resource_rule"
-	CodeRuleLimit        = "too_many_rules"
-	CodeUnknownRequester = "unknown_requester"
+	CodeEmptyRule          = "empty_rule"
+	CodeMultiGroup         = "multi_group_rule"
+	CodeCoreGroup          = "core_group_forbidden"
+	CodeWildcard           = "wildcard_forbidden"
+	CodeUnnamedForeign     = "unnamed_foreign_rule"
+	CodeForeignWrite       = "foreign_write_forbidden"
+	CodeForeignList        = "foreign_list_not_name_scoped"
+	CodeUnknownProvider    = "unknown_group"
+	CodeUnexportedResource = "resource_not_exported"
+	CodeUnboundProvider    = "provider_not_bound"
+	CodeUndeclaredVerb     = "undeclared_verb"
+	CodeNonResourceRule    = "non_resource_rule"
+	CodeRuleLimit          = "too_many_rules"
+	CodeUnknownRequester   = "unknown_requester"
 	// CodeUnknownOwner means the owner object the caller named does not exist
 	// in the tenant workspace (or exists with a different UID).
 	CodeUnknownOwner = "unknown_owner"
@@ -141,6 +142,24 @@ type ProviderCatalog interface {
 	// its verbs and its action names together. They are the only
 	// {resource}/{verb} subresources anybody may be granted create on.
 	DeclaredVerbs(provider, resource string) []string
+}
+
+// ForeignRuleAuthorizer is an optional per-request narrowing hook for scoped
+// catalogs. It allows an org identity policy to require the requester's own
+// declaration and current consent for each dependency coordinate before the
+// generic foreign-read/verb policy considers it.
+type ForeignRuleAuthorizer interface {
+	AllowsForeignRule(requester, provider, apiGroup string, resources []string) bool
+}
+
+// OwnRuleAuthorizer is an optional live-surface narrowing hook for clause A.
+// The platform catalog treats an exported group as one provider-owned API
+// surface. An org policy can additionally require every requested own-group
+// resource to be present in the provider's current APIExport, so an identity
+// minted before a resource existed does not silently acquire it when the
+// provider later expands the same group.
+type OwnRuleAuthorizer interface {
+	AllowsOwnRule(requester, apiGroup string, resources []string) bool
 }
 
 // BindingChecker answers whether a provider's API is bound in a tenant
@@ -232,6 +251,9 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 
 	// Clause A: the requester's own exported group.
 	if own[group] {
+		if scoped, ok := p.catalog.(OwnRuleAuthorizer); ok && !scoped.AllowsOwnRule(requester, group, rule.Resources) {
+			return refuse(CodeUnexportedResource, "the provider's live APIExport does not serve every requested resource")
+		}
 		return rbacv1.PolicyRule{
 			APIGroups:     []string{group},
 			Resources:     dedupeSorted(rule.Resources),
@@ -244,6 +266,9 @@ func (p *Policy) authorizeRule(requester, clusterID string, own map[string]bool,
 	owner, ok := p.catalog.GroupOwner(group)
 	if !ok {
 		return refuse(CodeUnknownProvider, fmt.Sprintf("no provider in the catalog exports API group %q", group))
+	}
+	if scoped, ok := p.catalog.(ForeignRuleAuthorizer); ok && !scoped.AllowsForeignRule(requester, owner, group, rule.Resources) {
+		return refuse(CodeUnboundProvider, "the provider's current declaration and accepted dependency grant do not authorize this resource")
 	}
 
 	// Every foreign rule is name-scoped and read-only-or-declared.

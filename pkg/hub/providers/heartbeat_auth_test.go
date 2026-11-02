@@ -827,3 +827,100 @@ func TestBearerToken(t *testing.T) {
 		}
 	}
 }
+
+func TestTokenReviewAuthenticatorUsesRuntimeIdentityForSeededCatalog(t *testing.T) {
+	for _, issuer := range []string{"runtime-cluster", "catalog-cluster", "org-cluster"} {
+		t.Run(issuer, func(t *testing.T) {
+			reg := NewRegistry()
+			reg.Upsert(Provider{Name: "edges", CatalogEntryCluster: "catalog-cluster", WorkspaceCluster: "runtime-cluster"})
+			reg.Upsert(Provider{Name: "edges", OrgUUID: "org-a", CatalogEntryCluster: "org-cluster", WorkspaceCluster: "org-cluster"})
+			f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
+				Authenticated: true,
+				User:          authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {issuer}}},
+			}}
+			now := time.Now()
+			a := newTestTokenReviewAuthenticator(reg, f, &now)
+			ctx := context.WithValue(context.Background(), heartbeatTargetKey{}, heartbeatTarget{name: "edges", cluster: "catalog-cluster"})
+			err := a.Authenticate(ctx, heartbeatRequestWithBearer("edges", "tok"), "edges")
+			if issuer == "runtime-cluster" && err != nil {
+				t.Fatal(err)
+			}
+			if issuer != "runtime-cluster" && !errors.Is(err, ErrHeartbeatWrongIdentity) {
+				t.Fatalf("err = %v, want wrong identity", err)
+			}
+			if len(f.clusters) != 1 || f.clusters[0] != "runtime-cluster" {
+				t.Fatalf("review clusters = %v", f.clusters)
+			}
+			if cluster, _ := heartbeatCatalogCluster(ctx, reg, "edges"); cluster != "catalog-cluster" {
+				t.Fatalf("recorder cluster = %q", cluster)
+			}
+			if cluster := reg.ProviderIdentityCluster("edges", "org-cluster"); cluster != "org-cluster" {
+				t.Fatalf("organization identity cluster = %q", cluster)
+			}
+		})
+	}
+}
+
+func TestTokenReviewAuthenticatorKeepsOrgAndPlatformIdentityWorkspacesSeparate(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "shared-catalog", WorkspaceCluster: "platform-runtime"})
+	reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "shared-catalog", WorkspaceCluster: "org-runtime"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
+		Authenticated: true,
+		User:          authnv1.UserInfo{Username: ProviderSAUsername},
+	}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+
+	orgCtx := context.WithValue(context.Background(), heartbeatTargetKey{}, heartbeatTarget{
+		name: "planner", cluster: "shared-catalog", orgUUID: "org-a",
+	})
+	if err := a.Authenticate(orgCtx, heartbeatRequestWithBearer("planner", "org-token"), "planner"); err != nil {
+		t.Fatalf("organization beat: %v", err)
+	}
+	platformCtx := context.WithValue(context.Background(), heartbeatTargetKey{}, heartbeatTarget{
+		name: "planner", cluster: "shared-catalog",
+	})
+	if err := a.Authenticate(platformCtx, heartbeatRequestWithBearer("planner", "platform-token"), "planner"); err != nil {
+		t.Fatalf("platform beat: %v", err)
+	}
+	if len(f.clusters) != 2 || f.clusters[0] != "org-runtime" || f.clusters[1] != "platform-runtime" {
+		t.Fatalf("review clusters = %v, want [org-runtime platform-runtime]", f.clusters)
+	}
+}
+
+func TestTokenReviewAuthenticatorFailsClosedWhenOrgIdentityWorkspaceIsUnresolved(t *testing.T) {
+	tests := map[string]func(*Registry){
+		"missing organization record": func(reg *Registry) {
+			reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "shared-catalog", WorkspaceCluster: "platform-runtime"})
+		},
+		"missing runtime workspace": func(reg *Registry) {
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "shared-catalog"})
+		},
+		"catalog cluster changed": func(reg *Registry) {
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "replacement-catalog", WorkspaceCluster: "org-runtime"})
+		},
+	}
+	for name, seed := range tests {
+		t.Run(name, func(t *testing.T) {
+			reg := NewRegistry()
+			seed(reg)
+			f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
+				Authenticated: true,
+				User:          authnv1.UserInfo{Username: ProviderSAUsername},
+			}}
+			now := time.Now()
+			a := newTestTokenReviewAuthenticator(reg, f, &now)
+			ctx := context.WithValue(context.Background(), heartbeatTargetKey{}, heartbeatTarget{
+				name: "planner", cluster: "shared-catalog", orgUUID: "org-a",
+			})
+			err := a.Authenticate(ctx, heartbeatRequestWithBearer("planner", "tok"), "planner")
+			if !errors.Is(err, ErrHeartbeatAuthUnavailable) || heartbeatAuthStatus(err) != http.StatusServiceUnavailable {
+				t.Fatalf("err = %v, want ErrHeartbeatAuthUnavailable/503", err)
+			}
+			if f.reviews != 0 {
+				t.Fatalf("reviewed an organization token in an unresolved workspace: %v", f.clusters)
+			}
+		})
+	}
+}

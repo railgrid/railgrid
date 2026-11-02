@@ -47,6 +47,10 @@ type EmbeddedKCPOptions struct {
 	// BYOLimits is supported only by one embedded shard/process. All-zero
 	// leaves organization-provider enrollment without an enforcement capability.
 	BYOLimits byolimits.Config
+	// LocalE2EQuotaBypass disables KCP ResourceQuota admission for the approved
+	// local E2E path. The hub may set this only after validating dev mode and
+	// embedded KCP; direct embedded-KCP callers leave it false.
+	LocalE2EQuotaBypass bool
 	// ProviderRelayTransport wraps only the shard's virtual-resource transport.
 	// The hub uses it for in-process org-provider relay without a public ingress.
 	ProviderRelayTransport func(http.RoundTripper) http.RoundTripper
@@ -188,6 +192,8 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)
+	configureLocalE2EQuotaBypass(kcpOpts, e.opts.LocalE2EQuotaBypass)
+
 	if err := e.opts.BYOLimits.Validate(); err != nil {
 		return err
 	}
@@ -450,6 +456,16 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	// Run the server (blocks until context is cancelled).
 	return e.server.Run(ctx)
+}
+
+func configureLocalE2EQuotaBypass(kcpOpts *serveroptions.Options, enabled bool) {
+	if !enabled {
+		return
+	}
+	// This explicit local test override avoids the pinned KCP double-charge
+	// defect. The hub passes it only after the dev-mode startup guard succeeds.
+	admissionOptions := kcpOpts.GenericControlPlane.Admission.GenericAdmission
+	admissionOptions.DisablePlugins = append(admissionOptions.DisablePlugins, "ResourceQuota", "KCPKubeResourceQuota")
 }
 
 // Ready returns a channel that is closed when kcp is ready to serve requests.

@@ -121,7 +121,10 @@ export const POLICY_NAME = 'railgrid'
  * runtime, not the workspace path. Narrowing this is a question for the kcp
  * side; see the TODO in the emitted header.
  */
+// Org BYO bootstrap is applied by the hub after declaration validation.
+// Its existing cluster administrator identity must also pass group reservation.
 export const PROVIDER_SUBJECTS = Object.freeze([
+  Object.freeze({ kind: 'User', name: 'kcp-admin' }),
   Object.freeze({ kind: 'User', name: 'system:serviceaccount:default:provider' }),
 ])
 

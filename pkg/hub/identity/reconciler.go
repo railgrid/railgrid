@@ -18,6 +18,7 @@ package identity
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -176,6 +177,34 @@ func (r *Reconciler) reconcileOne(ctx context.Context, record *tenancyv1alpha1.S
 		UID: record.Spec.Owner.UID, ClusterID: record.Spec.ClusterID,
 	}
 
+	// A ScopedIdentity records the authority that was true when it was minted,
+	// not the authority that is true now. Organization records therefore have to
+	// re-resolve their live source, binding and consent before the owner probe:
+	// a surviving owner does not keep a provider enabled, a composition Grant in
+	// force, or a deployment dependency present. Treat a definitive policy loss
+	// as revocation; preserve the credential only when the live check itself
+	// could not complete.
+	if orgUUID := record.Labels[labelScopedIdentityOrg]; orgUUID != "" {
+		if err := r.authorizeOrgRecord(ctx, record); err != nil {
+			var refusal Refusal
+			if !errors.As(err, &refusal) {
+				result.Failed++
+				r.log.V(4).Info("scoped identity organization policy check failed; leaving record alone",
+					"record", record.Name, "provider", owner.Provider, "org", orgUUID, "err", err.Error())
+				return
+			}
+			if err := r.service.deleteRecord(ctx, record); err != nil {
+				result.Failed++
+				r.log.Error(err, "revoking scoped identity after organization authority changed", "record", record.Name, "provider", owner.Provider, "org", orgUUID)
+				return
+			}
+			result.Collected++
+			r.log.Info("revoked scoped identity after organization authority changed",
+				"record", record.Name, "provider", owner.Provider, "org", orgUUID, "reason", refusal.Reason)
+			return
+		}
+	}
+
 	found, _, err := r.service.owners.Exists(ctx, record.Spec.ClusterID, owner)
 	if err != nil {
 		// An unreachable workspace is not a deleted owner. Leaving the record
@@ -233,4 +262,21 @@ func (r *Reconciler) reconcileOne(ctx context.Context, record *tenancyv1alpha1.S
 		return
 	}
 	result.Rematerial++
+}
+
+// authorizeOrgRecord re-runs the same live organization policy that issuance
+// uses against the rules already recorded. This deliberately happens before the
+// token-window fast path: a live token must not keep RBAC after consent, the
+// binding, the provider source or a dependency disappears.
+func (r *Reconciler) authorizeOrgRecord(ctx context.Context, record *tenancyv1alpha1.ScopedIdentity) error {
+	if r.service.orgPolicies == nil {
+		return Refusal{Code: CodeUnboundProvider, Reason: "organization-scoped identity policy is unavailable"}
+	}
+	orgUUID := record.Labels[labelScopedIdentityOrg]
+	policy, err := r.service.orgPolicies.Resolve(ctx, orgUUID, record.Spec.Owner.Provider, record.Spec.ClusterID)
+	if err != nil {
+		return err
+	}
+	_, err = policy.Authorize(record.Spec.Owner.Provider, record.Spec.ClusterID, record.Spec.Rules)
+	return err
 }

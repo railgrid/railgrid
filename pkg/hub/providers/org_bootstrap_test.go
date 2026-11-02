@@ -174,6 +174,69 @@ func TestOrgBootstrapRejectsControlPlaneEscapes(t *testing.T) {
 	}
 }
 
+func TestOrgBootstrapRejectsForeignGroupOwnershipButAllowsSameNameSelfHosting(t *testing.T) {
+	registry := NewRegistry()
+	registry.Upsert(Provider{Name: "edges", APIGroups: []string{"edges.railgrid.ai"}})
+
+	tests := map[string]func(*sdkinstall.OrganizationBootstrap){
+		"declared export resource": func(r *sdkinstall.OrganizationBootstrap) {
+			resources, _, _ := unstructured.NestedSlice(r.CatalogEntry.Object, "spec", "export", "resources")
+			resources[0].(map[string]any)["apiVersion"] = "edges.railgrid.ai/v1alpha1"
+			_ = unstructured.SetNestedSlice(r.CatalogEntry.Object, resources, "spec", "export", "resources")
+		},
+		"schema": func(r *sdkinstall.OrganizationBootstrap) {
+			_ = unstructured.SetNestedField(r.Schemas[0].Object, "edges.railgrid.ai", "spec", "group")
+		},
+		"APIExport resource": func(r *sdkinstall.OrganizationBootstrap) {
+			resources, _, _ := unstructured.NestedSlice(r.APIExport.Object, "spec", "resources")
+			resources[0].(map[string]any)["group"] = "edges.railgrid.ai"
+			_ = unstructured.SetNestedSlice(r.APIExport.Object, resources, "spec", "resources")
+		},
+		"private CRD": func(r *sdkinstall.OrganizationBootstrap) {
+			r.PrivateCRDs = []*unstructured.Unstructured{privateBootstrapCRD("edges.railgrid.ai", "workitems")}
+		},
+	}
+	for name, change := range tests {
+		t.Run(name, func(t *testing.T) {
+			request := quickstartBootstrap(t)
+			change(&request)
+			_, err := validateOrgBootstrap("quickstart", "org", registry, request)
+			if err == nil || !strings.Contains(err.Error(), "already served by provider") {
+				t.Fatalf("foreign group declaration admitted: %v", err)
+			}
+		})
+	}
+
+	t.Run("same-name self-hosted copy", func(t *testing.T) {
+		request := quickstartBootstrap(t)
+		request.CatalogEntry.SetName("edges")
+		const group = "edges.railgrid.ai"
+		resources, _, _ := unstructured.NestedSlice(request.CatalogEntry.Object, "spec", "export", "resources")
+		for _, raw := range resources {
+			raw.(map[string]any)["apiVersion"] = group + "/v1alpha1"
+		}
+		if err := unstructured.SetNestedSlice(request.CatalogEntry.Object, resources, "spec", "export", "resources"); err != nil {
+			t.Fatal(err)
+		}
+		exportResources, _, _ := unstructured.NestedSlice(request.APIExport.Object, "spec", "resources")
+		for _, raw := range exportResources {
+			raw.(map[string]any)["group"] = group
+		}
+		if err := unstructured.SetNestedSlice(request.APIExport.Object, exportResources, "spec", "resources"); err != nil {
+			t.Fatal(err)
+		}
+		for _, schema := range request.Schemas {
+			if err := unstructured.SetNestedField(schema.Object, group, "spec", "group"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		request.PrivateCRDs = []*unstructured.Unstructured{privateBootstrapCRD(group, "workitems")}
+		if _, err := validateOrgBootstrap("edges", "org", registry, request); err != nil {
+			t.Fatalf("same-name self-hosted provider was refused ownership of %s: %v", group, err)
+		}
+	})
+}
+
 func TestOrgBootstrapRefusesDifferentExistingImmutableSchema(t *testing.T) {
 	request := quickstartBootstrap(t)
 	existing := request.Schemas[0].DeepCopy()

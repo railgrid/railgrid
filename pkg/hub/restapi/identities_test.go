@@ -30,6 +30,7 @@ import (
 type stubAttestor struct {
 	err      error
 	provider string
+	orgUUID  string
 }
 
 func (s *stubAttestor) Attest(_ context.Context, _ *http.Request, provider string) (string, error) {
@@ -40,14 +41,38 @@ func (s *stubAttestor) Attest(_ context.Context, _ *http.Request, provider strin
 	return providers.ProviderSAUsername, nil
 }
 
+func (s *stubAttestor) AttestIdentity(_ context.Context, _ *http.Request, provider string) (identity.ProviderAttestation, error) {
+	s.provider = provider
+	if s.err != nil {
+		return identity.ProviderAttestation{}, s.err
+	}
+	return identity.ProviderAttestation{Subject: providers.ProviderSAUsername, OrgUUID: s.orgUUID}, nil
+}
+
 type stubIdentityService struct {
 	ensured          int
 	released         []string
+	orgReleased      []string
 	mode             tenancyv1alpha1.ScopedIdentityAttestationMode
 	subject          string
 	request          identity.Request
 	ensureErr        error
 	revisionVerified bool
+	orgListed        []string
+}
+
+type platformOnlyIdentityService struct{ delegate *stubIdentityService }
+
+func (s platformOnlyIdentityService) Ensure(ctx context.Context, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error) {
+	return s.delegate.Ensure(ctx, req, mode, subject)
+}
+
+func (s platformOnlyIdentityService) ReleaseByName(ctx context.Context, provider, name string) error {
+	return s.delegate.ReleaseByName(ctx, provider, name)
+}
+
+func (s platformOnlyIdentityService) List(ctx context.Context, provider, clusterID string, owner *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	return s.delegate.List(ctx, provider, clusterID, owner)
 }
 
 func (s *stubIdentityService) Ensure(_ context.Context, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error) {
@@ -60,12 +85,27 @@ func (s *stubIdentityService) Ensure(_ context.Context, req identity.Request, mo
 	return &identity.Token{Token: "minted", TokenType: "Bearer", ServiceAccount: "railgrid-si-x", Name: "si-x", OwnerRevisionVerified: s.revisionVerified}, nil
 }
 
+func (s *stubIdentityService) EnsureForOrg(ctx context.Context, orgUUID string, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error) {
+	req.OrgUUID = orgUUID
+	return s.Ensure(ctx, req, mode, subject)
+}
+
 func (s *stubIdentityService) ReleaseByName(_ context.Context, provider, name string) error {
 	s.released = append(s.released, provider+"/"+name)
 	return nil
 }
 
+func (s *stubIdentityService) ReleaseByNameForOrg(_ context.Context, orgUUID, provider, name string) error {
+	s.orgReleased = append(s.orgReleased, orgUUID+"/"+provider+"/"+name)
+	return nil
+}
+
 func (s *stubIdentityService) List(_ context.Context, _, _ string, _ *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	return nil, nil
+}
+
+func (s *stubIdentityService) ListForOrg(_ context.Context, orgUUID, provider, clusterID string, _ *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	s.orgListed = append(s.orgListed, orgUUID+"/"+provider+"/"+clusterID)
 	return nil, nil
 }
 
@@ -108,6 +148,54 @@ func TestCreateAttestsBeforeMinting(t *testing.T) {
 	}
 	if response.Token != "minted" || response.TokenType != "Bearer" || response.Name != "si-x" {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestCreateCarriesOnlyAttestedOrganizationScope(t *testing.T) {
+	service := &stubIdentityService{}
+	attestor := &stubAttestor{orgUUID: "org-a"}
+	recorder := postIdentity(identityRouter(service, attestor), identityBody)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if service.request.OrgUUID != "org-a" {
+		t.Fatalf("request org UUID = %q, want attested org-a", service.request.OrgUUID)
+	}
+}
+
+func TestOrgCreateFailsClosedWithoutOrgAwareService(t *testing.T) {
+	delegate := &stubIdentityService{}
+	service := platformOnlyIdentityService{delegate: delegate}
+	attestor := &stubAttestor{orgUUID: "org-a"}
+	recorder := postIdentity(identityRouter(service, attestor), identityBody)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if delegate.ensured != 0 {
+		t.Fatal("org request reached a platform-only identity service")
+	}
+}
+
+func TestListForOrgRequiresAndUsesAnAttestedTargetScope(t *testing.T) {
+	service := &stubIdentityService{}
+	attestor := &stubAttestor{orgUUID: "org-a"}
+	request := httptest.NewRequest(http.MethodGet, PathIdentities+"?provider=factory&clusterID=cluster-a", nil)
+	request.Header.Set("Authorization", "Bearer provider-token")
+	recorder := httptest.NewRecorder()
+	identityRouter(service, attestor).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if len(service.orgListed) != 1 || service.orgListed[0] != "org-a/factory/cluster-a" {
+		t.Fatalf("org-scoped listing calls = %v", service.orgListed)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, PathIdentities+"?provider=factory", nil)
+	request.Header.Set("Authorization", "Bearer provider-token")
+	recorder = httptest.NewRecorder()
+	identityRouter(service, attestor).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unscoped org list status = %d, want 400; body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -258,5 +346,38 @@ func TestDeleteIsAttestedAndScopedToTheCallingProvider(t *testing.T) {
 	unattested.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, PathIdentities+"/si-x?provider=agents", nil))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("unattested delete status = %d, want 401", recorder.Code)
+	}
+}
+
+func TestOrgDeleteUsesOrganizationScopedRelease(t *testing.T) {
+	service := &stubIdentityService{}
+	attestor := &stubAttestor{orgUUID: "org-a"}
+	request := httptest.NewRequest(http.MethodDelete, PathIdentities+"/si-x?provider=factory", nil)
+	request.Header.Set("Authorization", "Bearer provider-token")
+	recorder := httptest.NewRecorder()
+	identityRouter(service, attestor).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(service.released) != 0 {
+		t.Fatalf("org delete reached the platform release path: %v", service.released)
+	}
+	if len(service.orgReleased) != 1 || service.orgReleased[0] != "org-a/factory/si-x" {
+		t.Fatalf("org releases = %v", service.orgReleased)
+	}
+}
+
+func TestOrgDeleteFailsClosedWhenTheServiceCannotScopeIt(t *testing.T) {
+	service := platformOnlyIdentityService{delegate: &stubIdentityService{}}
+	attestor := &stubAttestor{orgUUID: "org-a"}
+	request := httptest.NewRequest(http.MethodDelete, PathIdentities+"/si-x?provider=factory", nil)
+	request.Header.Set("Authorization", "Bearer provider-token")
+	recorder := httptest.NewRecorder()
+	identityRouter(service, attestor).ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body=%s", recorder.Code, recorder.Body.String())
+	}
+	if len(service.delegate.released) != 0 {
+		t.Fatalf("org delete reached unscoped release: %v", service.delegate.released)
 	}
 }

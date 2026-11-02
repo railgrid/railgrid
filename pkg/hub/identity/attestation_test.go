@@ -18,6 +18,9 @@ package identity
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -25,6 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 func TestDynamicOwnerProbeRejectsDeletingOwnerAndReturnsRevision(t *testing.T) {
@@ -70,4 +75,57 @@ func dynamicOwnerFixture(owner Owner, deletionTimestamp string, generation int64
 		"kind":       owner.Kind,
 		"metadata":   metadata,
 	}}
+}
+
+func TestOrgAwareProviderAttestorKeepsScopesDistinct(t *testing.T) {
+	t.Run("org principal", func(t *testing.T) {
+		platformCalls := 0
+		attestor := NewOrgAwareProviderAttestor(func(context.Context, *http.Request, string) error {
+			platformCalls++
+			return nil
+		}, func(context.Context, *http.Request, string) (providers.OrgBootstrapIdentity, error) {
+			return providers.OrgBootstrapIdentity{OrgUUID: "org-a"}, nil
+		})
+		principal, err := attestor.AttestIdentity(context.Background(), httptest.NewRequest("GET", "/", nil), "factory")
+		if err != nil {
+			t.Fatalf("AttestIdentity: %v", err)
+		}
+		if principal.OrgUUID != "org-a" || principal.Subject != providers.ProviderSAUsername || platformCalls != 0 {
+			t.Fatalf("principal=%#v platform calls=%d", principal, platformCalls)
+		}
+	})
+
+	t.Run("only an org miss may fall back", func(t *testing.T) {
+		platformCalls := 0
+		attestor := NewOrgAwareProviderAttestor(func(context.Context, *http.Request, string) error {
+			platformCalls++
+			return nil
+		}, func(context.Context, *http.Request, string) (providers.OrgBootstrapIdentity, error) {
+			return providers.OrgBootstrapIdentity{}, providers.ErrOrgProviderBootstrapUnauthorized
+		})
+		principal, err := attestor.AttestIdentity(context.Background(), httptest.NewRequest("GET", "/", nil), "agents")
+		if err != nil {
+			t.Fatalf("AttestIdentity: %v", err)
+		}
+		if principal.OrgUUID != "" || platformCalls != 1 {
+			t.Fatalf("principal=%#v platform calls=%d", principal, platformCalls)
+		}
+	})
+
+	t.Run("org verifier outage cannot downgrade", func(t *testing.T) {
+		platformCalls := 0
+		outage := errors.Join(providers.ErrOrgProviderBootstrapUnavailable, errors.New("token review backend unavailable"))
+		attestor := NewOrgAwareProviderAttestor(func(context.Context, *http.Request, string) error {
+			platformCalls++
+			return nil
+		}, func(context.Context, *http.Request, string) (providers.OrgBootstrapIdentity, error) {
+			return providers.OrgBootstrapIdentity{}, outage
+		})
+		if _, err := attestor.AttestIdentity(context.Background(), httptest.NewRequest("GET", "/", nil), "factory"); !errors.Is(err, providers.ErrOrgProviderBootstrapUnavailable) {
+			t.Fatalf("error = %v, want org verifier outage", err)
+		}
+		if platformCalls != 0 {
+			t.Fatalf("platform verifier ran during org verifier outage: %d calls", platformCalls)
+		}
+	})
 }

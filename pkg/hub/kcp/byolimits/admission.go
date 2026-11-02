@@ -21,6 +21,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apiserver/pkg/admission"
 	"k8s.io/apiserver/pkg/endpoints/request"
+
+	"github.com/railgrid/railgrid/pkg/hub/localdev"
 )
 
 const PluginName = "railgrid.ai/OrganizationLimits"
@@ -227,6 +229,9 @@ func isNilRuntimeObject(object runtime.Object) bool {
 // requireConsumerQuotaCoverage applies to persisted writes in a consumer
 // workspace whose LogicalCluster carries the trusted lifecycle marker.
 func (g *Guard) requireConsumerQuotaCoverage(ctx context.Context, attributes admission.Attributes) error {
+	if localdev.BYOQuotaBypass() {
+		return nil
+	}
 	if isConsumerControlWrite(attributes) {
 		return nil
 	}

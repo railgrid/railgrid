@@ -27,6 +27,7 @@ import (
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/kcp/byolimits"
+	"github.com/railgrid/railgrid/pkg/hub/localdev"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -469,6 +470,11 @@ func (p *OrgConsumerPolicy) PrepareEnable(ctx context.Context, orgUUID, workspac
 	if err != nil {
 		return err
 	}
+	// Quota inventory is intentionally outside this approved local E2E run.
+	// Source ownership and the authoritative target workspace were checked above.
+	if localdev.BYOQuotaBypass() {
+		return nil
+	}
 	consumer, err := p.clientFor(cluster)
 	if err != nil {
 		return err
@@ -519,6 +525,10 @@ func (p *OrgConsumerPolicy) PrepareEnable(ctx context.Context, orgUUID, workspac
 func (p *OrgConsumerPolicy) PrepareBootstrap(ctx context.Context, orgUUID, providerName string, admitted sdkinstall.OrganizationBootstrap) error {
 	if len(validation.IsDNS1123Label(orgUUID)) != 0 || len(validation.IsDNS1123Label(providerName)) != 0 || admitted.CatalogEntry == nil {
 		return fmt.Errorf("invalid organization bootstrap identity")
+	}
+	// The authenticated, validated declaration is still installed by the hub.
+	if localdev.BYOQuotaBypass() {
+		return nil
 	}
 	if err := p.ValidateProviderStorage(ctx, kcppaths.OrgProviderPath(orgUUID, providerName)); err != nil {
 		return fmt.Errorf("auditing existing provider storage before bootstrap: %w", err)

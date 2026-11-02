@@ -110,6 +110,65 @@ func TestSweepRematerializesWhenTheTokenWindowHasLapsed(t *testing.T) {
 	}
 }
 
+func TestSweepRevokesOrgIdentityWhenLiveAuthorityIsWithdrawn(t *testing.T) {
+	tests := map[string]func() OrgPolicyResolver{
+		"binding or source refusal": func() OrgPolicyResolver {
+			return failingOrgPolicyResolver{err: Refusal{Code: CodeUnboundProvider, Reason: "provider is no longer bound"}}
+		},
+		"stored rule no longer authorized": func() OrgPolicyResolver {
+			return staticOrgPolicyResolver{policy: NewPolicy(fakeCatalog{}, fakeBindings{})}
+		},
+		"policy resolver unavailable": func() OrgPolicyResolver { return nil },
+	}
+	for name, resolver := range tests {
+		t.Run(name, func(t *testing.T) {
+			service, records, cs, _ := testService(t)
+			service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+			ctx := context.Background()
+			request := agentRequest()
+			request.OrgUUID = "org-a"
+			token, err := service.Ensure(ctx, request, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+			if err != nil {
+				t.Fatalf("Ensure: %v", err)
+			}
+			service.orgPolicies = resolver()
+
+			result := mustSweep(t, NewReconciler(ReconcilerOptions{Service: service, Logger: logr.Discard()}), ctx)
+			if result.Collected != 1 || result.Failed != 0 {
+				t.Fatalf("sweep result = %+v, want one collected identity", result)
+			}
+			if _, ok := records.items[token.Name]; ok {
+				t.Fatal("record survived withdrawn organization authority")
+			}
+			assertIdentityGone(t, ctx, cs, token.ServiceAccount)
+		})
+	}
+}
+
+func TestSweepPreservesOrgIdentityWhenPolicyCannotBeRead(t *testing.T) {
+	service, records, cs, _ := testService(t)
+	service.orgPolicies = staticOrgPolicyResolver{policy: testPolicy()}
+	ctx := context.Background()
+	request := agentRequest()
+	request.OrgUUID = "org-a"
+	token, err := service.Ensure(ctx, request, tenancyv1alpha1.ScopedIdentityAttestationProvider, "subject")
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	service.orgPolicies = failingOrgPolicyResolver{err: errors.New("kcp unavailable")}
+
+	result := mustSweep(t, NewReconciler(ReconcilerOptions{Service: service, Logger: logr.Discard()}), ctx)
+	if result.Collected != 0 || result.Failed != 1 {
+		t.Fatalf("sweep result = %+v, want one transient failure", result)
+	}
+	if _, ok := records.items[token.Name]; !ok {
+		t.Fatal("record was revoked on a transient policy read")
+	}
+	if _, err := cs.CoreV1().ServiceAccounts("default").Get(ctx, token.ServiceAccount, metav1.GetOptions{}); err != nil {
+		t.Fatalf("account was removed on a transient policy read: %v", err)
+	}
+}
+
 func mustSweep(t *testing.T, reconciler *Reconciler, ctx context.Context) SweepResult {
 	t.Helper()
 	result, err := reconciler.Sweep(ctx)

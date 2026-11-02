@@ -478,6 +478,10 @@ func (g *Gate) admit(r *http.Request, caller Caller) (tenant.DelegatedCall, int,
 		return tenant.DelegatedCall{}, http.StatusForbidden,
 			fmt.Sprintf("provider %q cannot call %s %s with a delegated token: the route is not part of the provider hub-access contract", caller.Provider, r.Method, r.URL.Path)
 	}
+	if !routeBindsCaller(r.URL.Path, caller) {
+		return tenant.DelegatedCall{}, http.StatusForbidden,
+			fmt.Sprintf("provider %q cannot call %s %s with a delegated token for another tenant", caller.Provider, r.Method, r.URL.Path)
+	}
 
 	prov, ok := g.resolveProvider(caller)
 	if !ok {
@@ -542,6 +546,28 @@ func (g *Gate) admit(r *http.Request, caller Caller) (tenant.DelegatedCall, int,
 		MaxRole:         limits.MaxRole,
 		AllowInvite:     limits.AllowInvite,
 	}, 0, ""
+}
+
+// routeBindsCaller requires a delegated request to address the exact
+// organization and workspace named by its proof. Without this check the
+// tenant middleware would authorize the target it is given, while the
+// provider grant was evaluated for the caller's own tenant.
+func routeBindsCaller(urlPath string, caller Caller) bool {
+	parts := strings.Split(strings.Trim(path.Clean("/"+urlPath), "/"), "/")
+	if len(parts) < 4 || parts[0] != "api" || parts[1] != "orgs" || parts[2] == "" || parts[2] != caller.OrgUUID {
+		return false
+	}
+	switch {
+	case len(parts) == 4 && parts[3] == "memberships":
+		return true
+	case len(parts) == 6 && parts[3] == "workspaces" && parts[4] != "" && parts[5] == "memberships":
+		return parts[4] == caller.WorkspaceUUID
+	case len(parts) == 7 && parts[3] == "workspaces" && parts[4] != "" && parts[5] == "app-auth" &&
+		(parts[6] == "user" || parts[6] == "grants"):
+		return parts[4] == caller.WorkspaceUUID
+	default:
+		return false
+	}
 }
 
 func requestBearer(r *http.Request) string {

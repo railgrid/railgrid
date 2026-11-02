@@ -6,7 +6,9 @@
 package hub
 
 import (
+	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +16,11 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
-func TestOrganizationProviderAvailabilityFailsClosedUntilQuotaSupportIsVerified(t *testing.T) {
+func TestOrganizationProviderAvailabilityRequiresContainmentForLocalEnrollment(t *testing.T) {
+	// This test covers the explicit local E2E path: the source gate stays closed
+	// unless the dev-mode/embedded-KCP bypass is set. The closed-gate behaviour
+	// is covered separately below.
+	t.Setenv("RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS", "1")
 	complete := byolimits.Config{MaxObjectBytes: 1024, MaxRequestBytes: 2048, RequestsPerSecond: 10, Burst: 5, MaxConcurrentRequests: 4, MaxConcurrentStreams: 2, MaxOrganizations: 10, RequestTimeout: time.Second, StreamTimeout: time.Minute}
 	consumer := providers.OrgConsumerPolicyConfig{Quota: providers.ConsumerQuotaLimits{MaxResourceTypes: 16, MaxObjectsPerResource: 4}, MaxConsumers: 2, MaxLiveBytes: 1 << 30}
 	for _, scenario := range []string{"disabled", "partial", "external", "external kubeconfig", "consumer disabled", "consumer partial", "consumer bytes insufficient", "consumer without native", "not ready", "ready"} {
@@ -48,16 +54,15 @@ func TestOrganizationProviderAvailabilityFailsClosedUntilQuotaSupportIsVerified(
 				}
 				return nil
 			})(t.Context())
-			if err == nil {
-				t.Fatalf("availability error=%v", err)
-			}
 			if scenario == "ready" {
-				if err.Error() != "hosted BYO enrollment is disabled until supported KCP ResourceQuota accounting is verified" {
-					t.Fatalf("ready configuration error=%v", err)
+				if err != nil || checks != 1 {
+					t.Fatalf("ready configuration error=%v readiness checks=%d", err, checks)
 				}
-				if checks != 0 {
-					t.Fatal("unsupported quota implementation consulted native readiness")
-				}
+			} else if err == nil {
+				t.Fatal("incomplete or unready containment allowed enrollment")
+			}
+			if scenario == "not ready" && checks != 1 {
+				t.Fatal("native readiness was not consulted")
 			}
 			if scenario != "not ready" && scenario != "ready" && checks != 0 {
 				t.Fatal("incomplete configuration consulted native readiness")
@@ -71,5 +76,33 @@ func TestOrganizationProviderAvailabilityFailsClosedUntilQuotaSupportIsVerified(
 				t.Fatal("consumer lock capacity must follow native organization capacity")
 			}
 		})
+	}
+}
+
+func TestOrganizationProviderAvailabilityStaysClosedWithoutLocalBypass(t *testing.T) {
+	t.Setenv("RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS", "")
+	complete := byolimits.Config{MaxObjectBytes: 1024, MaxRequestBytes: 2048, RequestsPerSecond: 10, Burst: 5, MaxConcurrentRequests: 4, MaxConcurrentStreams: 2, MaxOrganizations: 10, RequestTimeout: time.Second, StreamTimeout: time.Minute}
+	consumer := providers.OrgConsumerPolicyConfig{Quota: providers.ConsumerQuotaLimits{MaxResourceTypes: 16, MaxObjectsPerResource: 4}, MaxConsumers: 2, MaxLiveBytes: 1 << 30}
+	checks := 0
+	err := (&Server{opts: &Options{EmbeddedKCP: true, OrganizationLimits: complete, OrganizationConsumerPolicy: consumer}}).
+		orgProviderAvailability(func() error {
+			checks++
+			return nil
+		})(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "hosted BYO enrollment is disabled") {
+		t.Fatalf("availability error = %v; want the source-controlled gate", err)
+	}
+	if checks != 0 {
+		t.Fatal("the closed hosted gate consulted native readiness")
+	}
+}
+
+func TestLocalBYOQuotaBypassRejectsNonDevelopmentServers(t *testing.T) {
+	t.Setenv("RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS", "1")
+	for _, opts := range []*Options{{EmbeddedKCP: true}, {DevMode: true}, {}} {
+		err := (&Server{opts: opts}).Run(context.Background())
+		if err == nil || !strings.Contains(err.Error(), "requires dev mode and embedded KCP") {
+			t.Fatalf("Run error = %v; want local bypass guard", err)
+		}
 	}
 }

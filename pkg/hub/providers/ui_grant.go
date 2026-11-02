@@ -280,6 +280,14 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "provider has no org-owned UI bundle: "+name, http.StatusNotFound)
 		return
 	}
+	// The grant is an asset credential, not a second route into the provider's
+	// hub-only backend. Check the joined path too: spec.serving.ui.url may
+	// itself point at a reserved prefix, which the request-relative check in
+	// ServeHTTP cannot see.
+	if isHubOnlyProviderPath(orgUIAssetPath(prov, rest)) {
+		http.NotFound(w, r)
+		return
+	}
 	if !prov.Ready() {
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
@@ -403,9 +411,11 @@ type uiGrantResponse struct {
 	// injects it as a classic <script src> exactly like a platform bundle.
 	URL string `json:"url"`
 	// Integrity is the SRI pin for that bundle, hashed through the same
-	// route. Empty when the hash fetch failed; the portal then loads unpinned
-	// and logs it, as it does for a platform bundle the hub could not hash.
-	Integrity string `json:"integrity,omitempty"`
+	// route. It is always present: a grant is never issued for an unpinned
+	// org-owned bundle. The portal refuses to execute one without a pin, so
+	// returning an unpinned URL would only replace a clear failure with a
+	// broken script tag.
+	Integrity string `json:"integrity"`
 	// ExpiresAt is when the grant stops being redeemable.
 	ExpiresAt time.Time `json:"expiresAt"`
 }
@@ -459,6 +469,12 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider UI is not reachable over its edge route: "+name, http.StatusNotFound)
 		return
 	}
+	if isHubOnlyProviderPath(orgUIAssetPath(prov, "/main.js")) {
+		// A provider's UI endpoint must not be able to turn the hub into a
+		// caller of its own hub-only backend, even during the pin fetch.
+		http.NotFound(w, r)
+		return
+	}
 	if !prov.Ready() {
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
@@ -486,7 +502,16 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	integrity := h.pinOrgUIIntegrity(r.Context(), prov, claims.caller())
+	integrity, err := h.pinOrgUIIntegrity(r.Context(), prov, claims.caller())
+	if err != nil {
+		// Fail closed. An org bundle runs as trusted code in the portal
+		// document; the portal already refuses an unpinned bundle, so the
+		// only honest answer is that the bundle cannot be loaded right now.
+		h.log.Error(err, "refusing provider UI grant: could not pin the org-owned bundle",
+			"provider", name, "org", orgUUID, "version", uiIntegrityVersion(prov.Version, prov.ReportedVersion))
+		http.Error(w, "provider UI bundle could not be verified; retry shortly", http.StatusServiceUnavailable)
+		return
+	}
 
 	bundle := url.URL{
 		Path:     apiurl.PathPrefixProvidersUI + "/" + prov.Name + "/main.js",
@@ -518,11 +543,19 @@ func parseUIGrantPath(p string) (string, bool) {
 }
 
 // pinOrgUIIntegrity returns the SRI pin for prov's bundle, fetching it through
-// the caller's own delegated route when no fresh pin is cached for the running
-// version. A fetch failure keeps a cached pin for the same version and
-// otherwise yields "" (unpinned), logged — the same policy as
-// CatalogReconciler.pinUIIntegrity for platform bundles.
-func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, caller DelegatedCaller) string {
+// the caller's own delegated route when there is no reusable pin for the
+// running version.
+//
+// A cached pin WITH an upstream ETag is revalidated on every grant with a
+// conditional GET; a 304 keeps it, a 200 re-pins. That is what catches a
+// bundle rebuilt at an unchanged version (the common Tilt/rolling-restart
+// case) before a browser is handed a pin its bytes can no longer match.
+//
+// A fetch failure keeps a cached pin for the same version: a stale pin makes
+// the browser refuse the bundle, which is safe, whereas returning "" would be
+// an invitation to execute it unpinned. With no pin for this version the error
+// is returned and the caller refuses the grant.
+func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, caller DelegatedCaller) (string, error) {
 	version := uiIntegrityVersion(prov.Version, prov.ReportedVersion)
 	key := providerKey{Org: prov.OrgUUID, Name: prov.Name}
 	now := h.now()
@@ -530,43 +563,62 @@ func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, c
 	h.uiIntegrityMu.Lock()
 	cached, ok := h.uiIntegrity[key]
 	h.uiIntegrityMu.Unlock()
-	if ok && cached.version == version && now.Sub(cached.hashedAt) < UIIntegrityResync {
-		return cached.integrity
+	fresh := ok && cached.version == version
+	if fresh && cached.etag == "" && now.Sub(cached.hashedAt) < UIIntegrityResync {
+		// Nothing to revalidate against, so the interval is the only guard.
+		return cached.integrity, nil
 	}
 
-	integrity, err := h.hashOrgProviderMainJS(ctx, prov, caller)
+	ifNoneMatch := ""
+	if fresh && cached.integrity != "" {
+		ifNoneMatch = cached.etag
+	}
+	read, err := h.readOrgProviderMainJS(ctx, prov, caller, ifNoneMatch)
 	if err != nil {
-		h.log.Info("WARNING could not pin org-owned provider UI bundle; portal loads it unpinned",
-			"provider", prov.Name, "org", prov.OrgUUID, "version", version, "err", err.Error())
-		if ok && cached.version == version {
-			return cached.integrity
+		if fresh && cached.integrity != "" {
+			h.log.Info("could not revalidate org-owned provider UI bundle; keeping the pin for this version",
+				"provider", prov.Name, "org", prov.OrgUUID, "version", version, "err", err.Error())
+			return cached.integrity, nil
 		}
-		return ""
+		return "", fmt.Errorf("pin org provider UI bundle: %w", err)
+	}
+	if read.notModified {
+		if cached.integrity == "" {
+			return "", errors.New("pin org provider UI bundle: upstream confirmed a pin that was not held")
+		}
+		h.uiIntegrityMu.Lock()
+		if current, currentOK := h.uiIntegrity[key]; currentOK && current == cached {
+			current.hashedAt = now
+			h.uiIntegrity[key] = current
+		}
+		h.uiIntegrityMu.Unlock()
+		return cached.integrity, nil
 	}
 	h.uiIntegrityMu.Lock()
 	if h.uiIntegrity == nil {
 		h.uiIntegrity = map[providerKey]uiIntegrityRecord{}
 	}
-	h.uiIntegrity[key] = uiIntegrityRecord{version: version, integrity: integrity, hashedAt: now}
+	h.uiIntegrity[key] = uiIntegrityRecord{version: version, integrity: read.integrity, hashedAt: now, etag: read.etag}
 	h.uiIntegrityMu.Unlock()
-	if !ok || cached.integrity != integrity {
-		h.log.Info("Pinned org-owned provider UI bundle", "provider", prov.Name, "org", prov.OrgUUID, "version", version, "integrity", integrity)
+	if !ok || cached.integrity != read.integrity {
+		h.log.Info("Pinned org-owned provider UI bundle", "provider", prov.Name, "org", prov.OrgUUID, "version", version, "integrity", read.integrity)
 	}
-	return integrity
+	return read.integrity, nil
 }
 
-// hashOrgProviderMainJS GETs the bundle over the provider's edge hop as
+// readOrgProviderMainJS GETs the bundle over the provider's edge hop as
 // caller — OrgProviderRoute, the one hub-originated path to an org-owned
 // provider — and returns its SRI metadata. It reads exactly the bytes the UI
-// proxy will later forward for the same path.
-func (h *UIGrantHandler) hashOrgProviderMainJS(ctx context.Context, prov Provider, caller DelegatedCaller) (string, error) {
+// proxy will later forward for the same path. ifNoneMatch makes the edge GET
+// conditional so an unchanged bundle can answer 304 without a body.
+func (h *UIGrantHandler) readOrgProviderMainJS(ctx context.Context, prov Provider, caller DelegatedCaller, ifNoneMatch string) (uiBundleRead, error) {
 	route, err := h.proxy.OrgProviderRoute(ctx, prov, caller)
 	if err != nil {
-		return "", err
+		return uiBundleRead{}, err
 	}
 	base, err := url.Parse(route.BaseURL)
 	if err != nil {
-		return "", fmt.Errorf("parse org provider route: %w", err)
+		return uiBundleRead{}, fmt.Errorf("parse org provider route: %w", err)
 	}
 	ui := *base
 	ui.Path = singleJoiningSlash(base.Path, strings.TrimSuffix(prov.UIURL.Path, "/"))
@@ -578,12 +630,5 @@ func (h *UIGrantHandler) hashOrgProviderMainJS(ctx context.Context, prov Provide
 		// anyway; this keeps the failure legible.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	// Unconditional: an org bundle is fetched per grant against a
-	// transport built for that grant, so there is no cached validator to
-	// revalidate with here.
-	read, err := fetchProviderMainJS(ctx, client, &ui, "")
-	if err != nil {
-		return "", err
-	}
-	return read.integrity, nil
+	return fetchProviderMainJS(ctx, client, &ui, ifNoneMatch)
 }

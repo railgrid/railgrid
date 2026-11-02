@@ -170,6 +170,72 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 
 }
 
+// The UI proxy serves provider assets through the same provider origin as the
+// backend proxy. A dotted path under the reserved /workload-identities prefix
+// is still an asset-shaped request, so both proxies must reserve the prefix.
+func TestUIProxyHubOnlyReservations(t *testing.T) {
+	reg := NewRegistry()
+	upstreamCalled := false
+	target, err := url.Parse("http://provider.invalid")
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	reg.Upsert(Provider{Name: "infrastructure", UIURL: target, EndpointsValid: true})
+	proxy := NewUIProxy(reg, logr.Discard())
+	proxy.pick = func(Provider) *url.URL {
+		upstreamCalled = true
+		return nil
+	}
+
+	for _, requestPath := range []string{
+		"/ui/providers/infrastructure/workload-identities/review.json",
+		"/ui/providers/infrastructure/other/../workload-identities/review.json",
+		"/ui/providers/infrastructure/Workload-Identities/review.json",
+		"/ui/providers/infrastructure/other/%2e%2e/workload-identities/review.json",
+	} {
+		t.Run(requestPath, func(t *testing.T) {
+			upstreamCalled = false
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, requestPath, nil)
+			proxy.ServeHTTP(response, request)
+			if response.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", response.Code)
+			}
+			if upstreamCalled {
+				t.Fatal("hub-only provider path reached UI upstream")
+			}
+		})
+	}
+}
+
+// A provider UI URL may carry its own prefix. The reservation check runs on
+// the request-relative path before the proxy joins that prefix, so prove a
+// dot-segment cannot use the prefix to escape back to a hub-only backend path.
+func TestUIProxyHubOnlyReservationsWithUIPathPrefix(t *testing.T) {
+	reg := NewRegistry()
+	upstreamCalled := false
+	target, err := url.Parse("http://provider.invalid/ui")
+	if err != nil {
+		t.Fatalf("parse upstream URL: %v", err)
+	}
+	reg.Upsert(Provider{Name: "infrastructure", UIURL: target, EndpointsValid: true})
+	proxy := NewUIProxy(reg, logr.Discard())
+	proxy.pick = func(Provider) *url.URL {
+		upstreamCalled = true
+		return nil
+	}
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/ui/providers/infrastructure/../workload-identities/review.json", nil)
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
+	}
+	if upstreamCalled {
+		t.Fatal("hub-only provider path escaped through the UI URL prefix")
+	}
+}
+
 // TestUIProxyLocalAssets exercises the first-party-provider path:
 // when Provider.LocalUIAssets is set, asset requests serve from the
 // embedded FS without ever touching an upstream URL. The catalog SPA

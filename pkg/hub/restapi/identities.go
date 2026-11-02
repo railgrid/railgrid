@@ -34,13 +34,10 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
-// The scoped-identity REST surface. It is NOT mounted under the tenant-scoped
-// subrouter: its callers are providers holding their own service-account
-// token, not humans holding an org membership, so it authenticates itself the
-// way the heartbeat does — bearer → TokenReview in the provider's workspace →
-// subject must be that workspace's provider service account. A caller is
-// therefore always exactly one provider, and that provider is the only one
-// whose identities it can create, list or delete.
+// The scoped-identity REST surface is mounted outside the tenant-scoped
+// subrouter. It authenticates the provider's own service-account bearer. Org
+// providers also carry a hub-verified org identity, which the service uses to
+// recheck live source, target workspace, APIBinding, and dependency consent.
 const (
 	// PathIdentities is the collection: POST to create-or-refresh, GET to
 	// list.
@@ -57,11 +54,26 @@ type IdentityAttestor interface {
 	Attest(ctx context.Context, r *http.Request, provider string) (string, error)
 }
 
+// IdentityPrincipalAttestor is implemented by attestors that can return the
+// verified org scope in addition to the service-account subject. Legacy
+// platform-only test seams continue to implement IdentityAttestor.
+type IdentityPrincipalAttestor interface {
+	AttestIdentity(ctx context.Context, r *http.Request, provider string) (identity.ProviderAttestation, error)
+}
+
 // IdentityService is the seam the handler drives.
 type IdentityService interface {
 	Ensure(ctx context.Context, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error)
 	ReleaseByName(ctx context.Context, provider, name string) error
 	List(ctx context.Context, provider, clusterID string, owner *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error)
+}
+
+// OrgIdentityService supports explicitly scoped organization requests. The
+// handler fails closed when an org attestation reaches a service without it.
+type OrgIdentityService interface {
+	EnsureForOrg(ctx context.Context, orgUUID string, req identity.Request, mode tenancyv1alpha1.ScopedIdentityAttestationMode, subject string) (*identity.Token, error)
+	ListForOrg(ctx context.Context, orgUUID, provider, clusterID string, owner *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error)
+	ReleaseByNameForOrg(ctx context.Context, orgUUID, provider, name string) error
 }
 
 // IdentityHandler serves /api/identities.
@@ -132,7 +144,7 @@ func (h *IdentityHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "owner.provider is required")
 		return
 	}
-	subject, err := h.attestor.Attest(r.Context(), r, provider)
+	principal, err := attestIdentityPrincipal(h.attestor, r, provider)
 	if err != nil {
 		status, code := identityAuthStatus(err)
 		h.log.V(4).Info("scoped identity request not attested", "provider", provider, "err", err.Error())
@@ -140,10 +152,21 @@ func (h *IdentityHandler) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := h.service.Ensure(r.Context(), identity.Request{
+	serviceRequest := identity.Request{
 		Owner: req.Owner, ClusterID: req.ClusterID, Rules: req.Rules, TTLSeconds: req.TTLSeconds,
 		ExpectedOwnerGeneration: req.ExpectedOwnerGeneration, ExpectedOwnerResourceVersion: req.ExpectedOwnerResourceVersion,
-	}, tenancyv1alpha1.ScopedIdentityAttestationProvider, subject)
+	}
+	var token *identity.Token
+	if principal.OrgUUID != "" {
+		orgService, ok := h.service.(OrgIdentityService)
+		if !ok {
+			writeIdentityError(w, http.StatusServiceUnavailable, "identity_service_unavailable", "organization-scoped identity issuance is unavailable")
+			return
+		}
+		token, err = orgService.EnsureForOrg(r.Context(), principal.OrgUUID, serviceRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, principal.Subject)
+	} else {
+		token, err = h.service.Ensure(r.Context(), serviceRequest, tenancyv1alpha1.ScopedIdentityAttestationProvider, principal.Subject)
+	}
 	if err != nil {
 		// A policy refusal is the caller's problem and names the offending
 		// rule; anything else is the hub's and says nothing about tenant state.
@@ -186,15 +209,17 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "provider is required")
 		return
 	}
-	subject, err := h.attestor.Attest(r.Context(), r, provider)
+	principal, err := attestIdentityPrincipal(h.attestor, r, provider)
 	if err != nil {
 		status, code := identityAuthStatus(err)
 		writeIdentityError(w, status, code, identityAuthMessage(status))
 		return
 	}
-	_ = subject
-
 	clusterID := strings.TrimSpace(query.Get("clusterID"))
+	if principal.OrgUUID != "" && clusterID == "" {
+		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "clusterID is required for an organization provider listing")
+		return
+	}
 	var owner *identity.Owner
 	// ?owner=<kind>/<name>[/<uid>] narrows to one object. The provider and
 	// group are the caller's own, so they are not part of the selector.
@@ -214,8 +239,27 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 		owner = &candidate
 	}
 
-	records, err := h.service.List(r.Context(), provider, clusterID, owner)
+	var records []tenancyv1alpha1.ScopedIdentity
+	if principal.OrgUUID != "" {
+		orgService, ok := h.service.(OrgIdentityService)
+		if !ok {
+			writeIdentityError(w, http.StatusServiceUnavailable, "identity_service_unavailable", "organization-scoped identity listing is unavailable")
+			return
+		}
+		records, err = orgService.ListForOrg(r.Context(), principal.OrgUUID, provider, clusterID, owner)
+	} else {
+		records, err = h.service.List(r.Context(), provider, clusterID, owner)
+	}
 	if err != nil {
+		var refusal identity.Refusal
+		if errors.As(err, &refusal) {
+			status := http.StatusForbidden
+			if refusal.Code == identity.CodeInvalidRequest {
+				status = http.StatusBadRequest
+			}
+			writeIdentityError(w, status, refusal.Code, refusal.Reason)
+			return
+		}
 		h.log.Error(err, "listing scoped identities", "provider", provider)
 		writeIdentityError(w, http.StatusBadGateway, "identity_list_failed", "scoped identities could not be listed")
 		return
@@ -239,7 +283,8 @@ func (h *IdentityHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "provider is required")
 		return
 	}
-	if _, err := h.attestor.Attest(r.Context(), r, provider); err != nil {
+	principal, err := attestIdentityPrincipal(h.attestor, r, provider)
+	if err != nil {
 		status, code := identityAuthStatus(err)
 		writeIdentityError(w, status, code, identityAuthMessage(status))
 		return
@@ -249,7 +294,18 @@ func (h *IdentityHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "name is required")
 		return
 	}
-	if err := h.service.ReleaseByName(r.Context(), provider, name); err != nil {
+	release := h.service.ReleaseByName
+	if principal.OrgUUID != "" {
+		orgService, ok := h.service.(OrgIdentityService)
+		if !ok {
+			writeIdentityError(w, http.StatusServiceUnavailable, "identity_service_unavailable", "organization-scoped identity release is unavailable")
+			return
+		}
+		release = func(ctx context.Context, provider, name string) error {
+			return orgService.ReleaseByNameForOrg(ctx, principal.OrgUUID, provider, name)
+		}
+	}
+	if err := release(r.Context(), provider, name); err != nil {
 		h.log.Error(err, "releasing scoped identity", "provider", provider, "record", name)
 		writeIdentityError(w, http.StatusBadGateway, "identity_release_failed", "the scoped identity could not be released")
 		return
@@ -258,6 +314,14 @@ func (h *IdentityHandler) delete(w http.ResponseWriter, r *http.Request) {
 	// provider, is reported the same way. Deleting twice is not an error and
 	// a caller cannot probe for other providers' records.
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func attestIdentityPrincipal(attestor IdentityAttestor, r *http.Request, provider string) (identity.ProviderAttestation, error) {
+	if scoped, ok := attestor.(IdentityPrincipalAttestor); ok {
+		return scoped.AttestIdentity(r.Context(), r, provider)
+	}
+	subject, err := attestor.Attest(r.Context(), r, provider)
+	return identity.ProviderAttestation{Subject: subject}, err
 }
 
 func identityListItemFor(record *tenancyv1alpha1.ScopedIdentity) identityListItem {

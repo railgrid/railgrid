@@ -222,6 +222,31 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	if !ok || cluster == "" {
 		return fmt.Errorf("%w: no CatalogEntry cluster known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
 	}
+	// Platform catalog entries may be seeded outside the provider's runtime
+	// workspace. Authenticate against the trusted runtime identity while the
+	// heartbeat recorder continues to address the selected catalog entry.
+	//
+	// Select the exact organization record when the handler did. A platform
+	// record of the same name may share this catalog cluster; resolving by name
+	// alone would then review the platform provider's workspace and let its
+	// token move the organization record's liveness state.
+	orgUUID := heartbeatTargetOrgUUID(ctx, providerName)
+	if orgUUID != "" {
+		resolver, ok := a.clusters.(interface {
+			ProviderIdentityClusterForOrg(string, string, string) string
+		})
+		if !ok {
+			return fmt.Errorf("%w: organization provider identity resolver is unavailable", ErrHeartbeatAuthUnavailable)
+		}
+		cluster = resolver.ProviderIdentityClusterForOrg(orgUUID, providerName, cluster)
+		if cluster == "" {
+			return fmt.Errorf("%w: organization provider identity workspace is not resolved yet", ErrHeartbeatAuthUnavailable)
+		}
+	} else if resolver, ok := a.clusters.(interface {
+		ProviderIdentityCluster(string, string) string
+	}); ok {
+		cluster = resolver.ProviderIdentityCluster(providerName, cluster)
+	}
 	key := heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: providerName, cluster: cluster}
 	now := a.now()
 	if a.cached(key, now) {
@@ -253,7 +278,7 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	// issuing cluster returned by the authenticator, not just the URL or JWT hint.
 	verifiedClusters := review.Status.User.Extra[dataplane.ClusterNameExtra]
 	if len(verifiedClusters) != 1 || verifiedClusters[0] != cluster {
-		return a.reject(key, now, fmt.Errorf("%w: authenticated workspace does not match provider catalog workspace", ErrHeartbeatWrongIdentity))
+		return a.reject(key, now, fmt.Errorf("%w: authenticated workspace does not match provider identity workspace", ErrHeartbeatWrongIdentity))
 	}
 
 	a.mu.Lock()

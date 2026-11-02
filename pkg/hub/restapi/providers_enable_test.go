@@ -17,12 +17,19 @@ limitations under the License.
 package restapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gorilla/mux"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
@@ -271,5 +278,62 @@ func TestEnableProvider_NoCompositionsReportsNone(t *testing.T) {
 	}
 	if appStudioGrant(t, mgr) != nil {
 		t.Fatal("a provider declaring nothing still got a grant")
+	}
+}
+
+type providerBindingErrorOps struct {
+	*fakeOps
+	err error
+}
+
+func (o *providerBindingErrorOps) EnsureProviderAPIBinding(context.Context, string, string, string, string, string, []kcp.ProviderClaim) error {
+	return o.err
+}
+
+func TestEnableProviderMapsBindingErrorsToHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		err      error
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "binding source conflict",
+			err:      fmt.Errorf("ensure provider binding: %w", kcp.ErrProviderBindingSourceConflict),
+			wantCode: http.StatusConflict,
+			wantBody: "different APIExport",
+		},
+		{
+			name:     "ordinary binding error",
+			err:      fmt.Errorf("write provider binding: transient failure"),
+			wantCode: http.StatusInternalServerError,
+			wantBody: "ensure APIBinding",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, ops, _ := newTestManager(t)
+			reg := hubproviders.NewRegistry()
+			reg.Upsert(hubproviders.Provider{
+				Name:          "portal",
+				APIExportPath: "root:railgrid:tenants:org-a:providers:portal",
+				APIExportName: "portal.export",
+			})
+			mgr.WithProviderRegistry(reg)
+			mgr.bootstrapper = &providerBindingErrorOps{fakeOps: ops, err: tc.err}
+
+			req := httptest.NewRequest(http.MethodPost, "/api/orgs/org-a/workspaces/ws-1/providers/portal/enable", strings.NewReader("{}"))
+			req = req.WithContext(tenant.WithContext(req.Context(), adminTC("alice", "org-a", "ws-1")))
+			req = mux.SetURLVars(req, map[string]string{"org": "org-a", "ws": "ws-1", "name": "portal"})
+			rec := httptest.NewRecorder()
+
+			NewHandler(mgr).enableProvider(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d; body=%s", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tc.wantBody) {
+				t.Fatalf("body = %q, want it to contain %q", rec.Body.String(), tc.wantBody)
+			}
+		})
 	}
 }

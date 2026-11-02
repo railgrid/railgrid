@@ -137,6 +137,37 @@ func TestRegistryListForOrgShadowsPlatformProvider(t *testing.T) {
 	}
 }
 
+func TestRegistryForeignGroupOwnerAllowsOnlySameNameSelfHosting(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "edges", APIGroups: []string{"edges.railgrid.ai"}})
+	reg.Upsert(Provider{Name: "edges", OrgUUID: "org1", APIGroups: []string{"edges.railgrid.ai"}})
+	reg.Upsert(Provider{Name: "alpha", OrgUUID: "org1", APIGroups: []string{"shared.example"}})
+	reg.Upsert(Provider{Name: "zeta", OrgUUID: "org1", APIGroups: []string{"shared.example"}})
+	reg.Upsert(Provider{Name: "other", OrgUUID: "org2", APIGroups: []string{"other.example"}})
+
+	for _, tc := range []struct {
+		name         string
+		org          string
+		providerName string
+		group        string
+		wantOwner    string
+		wantForeign  bool
+	}{
+		{name: "same-name platform override", org: "org1", providerName: "edges", group: "edges.railgrid.ai"},
+		{name: "differently named org provider", org: "org1", providerName: "quickstart", group: "edges.railgrid.ai", wantOwner: "edges", wantForeign: true},
+		{name: "differently named org provider collision", org: "org1", providerName: "omega", group: "shared.example", wantOwner: "alpha", wantForeign: true},
+		{name: "other org is invisible", org: "org1", providerName: "quickstart", group: "other.example"},
+		{name: "other org sees its own provider", org: "org2", providerName: "quickstart", group: "other.example", wantOwner: "other", wantForeign: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, foreign := reg.ForeignGroupOwner(tc.org, tc.providerName, tc.group)
+			if owner != tc.wantOwner || foreign != tc.wantForeign {
+				t.Fatalf("ForeignGroupOwner(%q, %q, %q) = (%q, %v), want (%q, %v)", tc.org, tc.providerName, tc.group, owner, foreign, tc.wantOwner, tc.wantForeign)
+			}
+		})
+	}
+}
+
 func TestRegistryDeleteScoped(t *testing.T) {
 	reg := newScopedRegistry()
 

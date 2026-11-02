@@ -45,7 +45,12 @@ type uiGrantFixture struct {
 	edge    *edgeUpstream
 	edgeURL *url.URL
 	// edgeStatus lets a test make the edge answer something other than 200.
-	edgeStatus  int
+	edgeStatus int
+	// edgeETag, when set, makes the fake edge honour If-None-Match with a 304.
+	edgeETag        string
+	edgeIfNoneMatch string
+	// edgeBody overrides the bundle bytes served by the fake edge.
+	edgeBody    string
 	edgeHeaders http.Header
 }
 
@@ -59,6 +64,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		f.edge.tenant = r.Header.Get("X-Railgrid-Tenant")
 		f.edge.authorization = r.Header.Get("Authorization")
 		f.edge.upstreamAuth = r.Header.Get(dataplane.HeaderUpstreamAuthorization)
+		f.edgeIfNoneMatch = r.Header.Get("If-None-Match")
 		if r.URL.Query().Get(UIGrantQueryParam) != "" {
 			t.Errorf("the grant reached the tenant's cluster: query %q", r.URL.RawQuery)
 		}
@@ -66,12 +72,24 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 			http.Error(w, "edge says no", f.edgeStatus)
 			return
 		}
+		if f.edgeETag != "" && f.edgeIfNoneMatch == f.edgeETag {
+			w.Header().Set("ETag", f.edgeETag)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		w.Header().Set("Content-Type", "application/javascript")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		if f.edgeETag != "" {
+			w.Header().Set("ETag", f.edgeETag)
+		}
 		for key, values := range f.edgeHeaders {
 			w.Header()[key] = append([]string(nil), values...)
 		}
-		_, _ = w.Write([]byte(orgBundleBody))
+		body := f.edgeBody
+		if body == "" {
+			body = orgBundleBody
+		}
+		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
 	edgesURL, err := url.Parse(srv.URL)
@@ -300,20 +318,81 @@ func TestUIGrantRefusals(t *testing.T) {
 	}
 }
 
-// A failed hash fetch must not fail the grant: the bundle loads unpinned, as
-// a platform bundle the hub could not hash does.
-func TestUIGrantSurvivesFailedHash(t *testing.T) {
+// An org bundle with no pin is never handed to the portal: the portal refuses
+// to execute it, so a grant here would only turn a clear refusal into a broken
+// script tag.
+func TestUIGrantRefusesUnhashableBundle(t *testing.T) {
 	f := newUIGrantFixture(t, testOrg, testWS)
 	f.edgeStatus = http.StatusBadGateway
 	w, grant := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 (body %q)", w.Code, w.Body.String())
+	}
+	if grant.Integrity != "" {
+		t.Errorf("integrity = %q, want no grant body", grant.Integrity)
+	}
+	if grant.URL != "" {
+		t.Errorf("url = %q, want no bundle URL after a failed pin", grant.URL)
+	}
+}
+
+// A transient fetch failure at an unchanged version keeps the pin already
+// issued for that version: the browser then refuses a changed bundle instead
+// of executing it unpinned.
+func TestUIGrantKeepsSameVersionPinWhenRevalidationFails(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	_, first := f.requestGrant(t, "infrastructure")
+	want := wantSRI(t, orgBundleBody)
+	if first.Integrity != want {
+		t.Fatalf("first grant pin = %q, want %q", first.Integrity, want)
+	}
+	f.edgeStatus = http.StatusBadGateway
+	w, second := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 from the cached pin (body %q)", w.Code, w.Body.String())
+	}
+	if second.Integrity != want {
+		t.Errorf("second grant pin = %q, want the cached %q", second.Integrity, want)
+	}
+}
+
+// A bundle rebuilt at an unchanged version must be re-pinned before a browser
+// can be handed the old hash. With an upstream ETag every grant revalidates,
+// so the second grant asks conditionally and the 304 keeps the pin.
+func TestUIGrantRevalidatesSameVersionWithETag(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	f.edgeETag = `"bundle-v1"`
+	_, first := f.requestGrant(t, "infrastructure")
+	if first.Integrity != wantSRI(t, orgBundleBody) {
+		t.Fatalf("first grant pin = %q", first.Integrity)
+	}
+	if f.edgeIfNoneMatch != "" {
+		t.Errorf("first If-None-Match = %q, want none", f.edgeIfNoneMatch)
+	}
+
+	*f.edge = edgeUpstream{}
+	w, second := f.requestGrant(t, "infrastructure")
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
-	if grant.Integrity != "" {
-		t.Errorf("integrity = %q, want none after a failed fetch", grant.Integrity)
+	if !f.edge.hit {
+		t.Fatal("a cached ETag did not trigger a conditional revalidation")
 	}
-	if grant.URL == "" {
-		t.Error("no bundle URL")
+	if f.edgeIfNoneMatch != f.edgeETag {
+		t.Errorf("If-None-Match = %q, want %q", f.edgeIfNoneMatch, f.edgeETag)
+	}
+	if second.Integrity != first.Integrity {
+		t.Errorf("pin changed across a 304: %q -> %q", first.Integrity, second.Integrity)
+	}
+
+	// A 200 means the bytes behind the URL changed at the same version. The
+	// grant must carry the new pin, not the one cached a moment ago.
+	f.edgeETag = `"bundle-v2"`
+	f.edgeBody = orgBundleBody + "\n// rebuilt"
+	*f.edge = edgeUpstream{}
+	_, third := f.requestGrant(t, "infrastructure")
+	if third.Integrity != wantSRI(t, f.edgeBody) {
+		t.Errorf("third pin = %q, want the rebuilt bundle's pin %q", third.Integrity, wantSRI(t, f.edgeBody))
 	}
 }
 
@@ -437,6 +516,24 @@ func TestUIProxyRefusesBadGrants(t *testing.T) {
 			path:       "/ui/providers/infrastructure/some-route",
 			wantStatus: http.StatusNotFound,
 		},
+		{
+			name:       "hub-only path is not an asset",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/workload-identities/review.json",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "cleaned hub-only path is not an asset",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/other/../workload-identities/review.json",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "encoded hub-only path is not an asset",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/other/%2e%2e/workload-identities/review.json",
+			wantStatus: http.StatusNotFound,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -480,6 +577,24 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 	wantIcon := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/ui/icon.svg"
 	if f.edge.path != wantIcon {
 		t.Errorf("asset path %q, want %q", f.edge.path, wantIcon)
+	}
+}
+
+func TestUIGrantRefusesHubOnlyUIPathPrefix(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	p, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+	p.UIURL, _ = url.Parse("http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081/workload-identities")
+	f.reg.Upsert(p)
+
+	w, grant := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("grant status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	if grant.URL != "" || grant.Integrity != "" {
+		t.Fatalf("refused grant returned a bundle: %+v", grant)
+	}
+	if f.edge.hit {
+		t.Fatal("grant issuance fetched a hub-only UI path")
 	}
 }
 

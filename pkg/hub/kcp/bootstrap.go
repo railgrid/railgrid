@@ -755,6 +755,13 @@ const WorkspaceDeletionForcedAnnotation = "tenants.railgrid.ai/deletion-forced"
 // the cascade.
 var ErrWorkspaceDeletionForced = stderrors.New("workspace deletion was forced and cannot be restored")
 
+// ErrProviderBindingSourceConflict means an APIBinding already uses the
+// provider's binding name but references a different APIExport. kcp binding
+// references are not updated in place, so this is an explicit Disable/re-Enable
+// migration rather than a claim update that can report success while the old
+// provider remains bound.
+var ErrProviderBindingSourceConflict = stderrors.New("provider APIBinding already references a different APIExport")
+
 // DeleteOrgWorkspace removes the kcp Workspace at
 // root:railgrid:tenants:{orgUUID}. Idempotent on NotFound. Cascade callers
 // should ensure all child Workspaces and the in-workspace Memberships
@@ -2040,8 +2047,9 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 // decided this time. Enable is the consent dialog: re-running it with a
 // different set of ticks must reach kcp, since a claim the binding does not
 // accept is a kind the provider's virtual workspace does not serve in that
-// workspace. The reference is left alone; a binding pointing at another export
-// is not this binding.
+// workspace. The reference is left alone, but it must name the expected export:
+// otherwise a same-name platform and organization provider would silently share
+// a binding and Enable would report success against the wrong source.
 func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, bindingName, exportPath, exportName string, claims []ProviderClaim) error {
 	specClaims := make([]apisv1alpha2.AcceptablePermissionClaim, 0, len(claims))
 	for _, c := range claims {
@@ -2087,6 +2095,9 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 	_, err = wsClient.Resource(apiBindingGVR).Create(ctx, u, metav1.CreateOptions{})
 	switch {
 	case errors.IsAlreadyExists(err):
+		if err := verifyProviderBindingSource(ctx, wsClient, bindingName, exportPath, exportName); err != nil {
+			return err
+		}
 		if _, err := updateAPIBindingClaims(ctx, wsClient, bindingName, specClaims); err != nil {
 			return err
 		}
@@ -2095,6 +2106,24 @@ func ensureProviderAPIBinding(ctx context.Context, wsClient dynamic.Interface, b
 	}
 	if err := waitForAPIBindingBound(ctx, wsClient, bindingName); err != nil {
 		return fmt.Errorf("waiting for APIBinding %q to bind: %w", bindingName, err)
+	}
+	return nil
+}
+
+// verifyProviderBindingSource checks the reference before any existing binding
+// is mutated. In particular, re-Enable must not rewrite claims on a binding that
+// points at a platform provider when the caller selected an organization-owned
+// same-name provider (or vice versa).
+func verifyProviderBindingSource(ctx context.Context, wsClient dynamic.Interface, bindingName, exportPath, exportName string) error {
+	u, err := wsClient.Resource(apiBindingGVR).Get(ctx, bindingName, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("getting APIBinding %q before updating claims: %w", bindingName, err)
+	}
+	gotPath, _, _ := unstructured.NestedString(u.Object, "spec", "reference", "export", "path")
+	gotName, _, _ := unstructured.NestedString(u.Object, "spec", "reference", "export", "name")
+	if gotPath != exportPath || gotName != exportName {
+		return fmt.Errorf("%w: binding %q references %s:%s, not %s:%s; disable the existing provider and enable it again after registration",
+			ErrProviderBindingSourceConflict, bindingName, gotPath, gotName, exportPath, exportName)
 	}
 	return nil
 }

@@ -145,11 +145,7 @@ type Provider struct {
 	// — the same cluster name kcp embeds in the provider SA's token claims.
 	// Set via SetWorkspaceCluster after provisioning; empty until then.
 	//
-	// Its one reader today is the admin providers API (pkg/hub/admin), which
-	// shows an operator which workspace a registered provider actually lives
-	// in. It used to anchor the qualified RBAC subject of the Enable-time
-	// edges-proxy grant; that grant was deleted (no provider authenticates as
-	// its own SA against a tenant workspace any more).
+	// Used by the admin API and provider service-account authentication.
 	WorkspaceCluster string
 
 	// CatalogEntryCluster is the logical cluster the provider's CatalogEntry
@@ -614,6 +610,30 @@ func (r *Registry) GetForOrg(orgUUID, name string) (Provider, bool) {
 	return cloneProvider(*p), true
 }
 
+// ForeignGroupOwner returns the visible provider that already serves group,
+// ignoring a provider with the same name as providerName. A same-name provider
+// is the intended self-hosted override: an Org may run its own copy of edges
+// and serve the edges group, while a differently named provider must not take
+// over another provider's API group.
+//
+// The answer is deterministic when more than one foreign owner exists. Callers
+// use this as a refusal guard, not as a general ownership resolver.
+func (r *Registry) ForeignGroupOwner(orgUUID, providerName, group string) (string, bool) {
+	if r == nil || group == "" {
+		return "", false
+	}
+	owner := ""
+	for _, provider := range r.ListForOrg(orgUUID) {
+		if provider.Name == providerName || !containsString(provider.APIGroups, group) {
+			continue
+		}
+		if owner == "" || provider.Name < owner {
+			owner = provider.Name
+		}
+	}
+	return owner, owner != ""
+}
+
 // List returns a snapshot of every registered provider across all scopes.
 // Callers serving a tenant must use ListForOrg instead; this is for the
 // sweeper and admin surfaces that legitimately span orgs.
@@ -771,6 +791,45 @@ func (r *Registry) CatalogEntryCluster(name string) (string, bool) {
 		return "", false
 	}
 	return p.CatalogEntryCluster, true
+}
+
+// ProviderIdentityCluster resolves a selected catalog entry to its trusted
+// runtime workspace. Organization entries live in their identity workspace;
+// platform entries can instead be seeded in the shared catalog workspace.
+// Until runtime provisioning resolves, retain the catalog identity only.
+func (r *Registry) ProviderIdentityCluster(name, catalogCluster string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.byKey[providerKey{Name: name}]
+	if ok && p.CatalogEntryCluster == catalogCluster && p.WorkspaceCluster != "" {
+		return p.WorkspaceCluster
+	}
+	return catalogCluster
+}
+
+// ProviderIdentityClusterForOrg is the organization-aware form of
+// ProviderIdentityCluster. An org-owned record is selected by its exact
+// organization key and never falls back to a same-name platform record: those
+// may share a catalog cluster while running in different identity workspaces.
+func (r *Registry) ProviderIdentityClusterForOrg(orgUUID, name, catalogCluster string) string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if orgUUID == "" {
+		p, ok := r.byKey[providerKey{Name: name}]
+		if ok && p.CatalogEntryCluster == catalogCluster && p.WorkspaceCluster != "" {
+			return p.WorkspaceCluster
+		}
+		return catalogCluster
+	}
+	p, ok := r.byKey[providerKey{Org: orgUUID, Name: name}]
+	if ok && p.CatalogEntryCluster == catalogCluster && p.WorkspaceCluster != "" {
+		return p.WorkspaceCluster
+	}
+	// A selected organization record must never fall back to the catalog
+	// workspace or to a same-name platform provider. Those are different
+	// identities; authenticating in either would let one move the other's
+	// liveness state. An unresolved runtime workspace is a retryable 503.
+	return ""
 }
 
 // SetWorkspaceCluster records the logical cluster ID of the provider's
