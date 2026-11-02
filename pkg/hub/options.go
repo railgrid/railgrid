@@ -116,9 +116,10 @@ type Options struct {
 	//   all      — every platform provider receives the delegated token;
 	//              the exclusion list is ignored.
 	//
-	// Default "off" for this release. The next release defaults to
-	// "platform"; deployments should run "platform" ahead of that to
-	// confirm their providers need nothing beyond /clusters/{id} access.
+	// Default "platform" so the caller's bearer does not cross the
+	// platform-provider backend boundary. "off" remains an explicit
+	// compatibility override for providers that need more than
+	// /clusters/{id} access.
 	ProviderDelegatedTokens string
 	// ProviderDelegatedTokensExclude names platform providers that keep
 	// receiving the caller's bearer under ProviderDelegatedTokens=platform.
@@ -128,11 +129,9 @@ type Options struct {
 	// ProviderHubAccessPlatformDefault lets a platform provider use the hub
 	// capabilities it declares (CatalogEntry.spec.hub.access) in a workspace
 	// where no tenant decision was recorded yet. Platform providers are
-	// operator-installed and, under ProviderDelegatedTokens=off, hold the
-	// caller's own bearer anyway; this keeps them working across the upgrade
-	// to the hub-access contract. An explicit decision (Enable with or
-	// without accepting) always wins, and org-owned providers always need
-	// one. Set false to require acceptance for every provider.
+	// operator-installed, but they still use hub capabilities on the tenant's
+	// behalf. Defaults to false so every provider needs an explicit tenant
+	// decision; an accepted or declined decision always wins.
 	ProviderHubAccessPlatformDefault bool
 
 	// AdminUsers is the allowlist of platform-admin identities permitted to
@@ -173,22 +172,14 @@ type Options struct {
 	// ProviderHeartbeatAuth is what the hub does with a provider heartbeat
 	// whose bearer token does not verify as that provider's own service
 	// account: "warn" logs and records the beat, "enforce" rejects it. The
-	// default is "warn" for this release so providers installed from charts
-	// that predate the authenticated heartbeat keep reporting alive while
-	// they are rolled forward; the next release flips the default to
-	// "enforce". See providers.HeartbeatAuthMode.
+	// default is "enforce"; operators rolling forward legacy charts may opt
+	// into "warn" deliberately. See providers.HeartbeatAuthMode.
 	ProviderHeartbeatAuth string
 	// ProviderWorkspaceClusterAdmin selects the role the provider ServiceAccount
-	// is bound to inside its own provider workspace: true (the default this
-	// release) keeps cluster-admin, false binds the generated, narrower
-	// railgrid:provider ClusterRole.
-	//
-	// The default is the wide one for one release so an operator can stage the
-	// change — flip it, watch their providers, flip back if one of them needed
-	// a right the narrow role does not grant (the infrastructure provider, which
-	// serves its own CRDs from this workspace, is the known case). The NEXT
-	// release defaults this to false. Flipping either way replaces the existing
-	// binding: RoleRef is immutable, so the hub deletes and recreates it.
+	// is bound to inside its own provider workspace: false (the default) binds
+	// the generated, narrower railgrid:provider ClusterRole; true keeps
+	// cluster-admin. Flipping either way replaces the existing binding:
+	// RoleRef is immutable, so the hub deletes and recreates it.
 	ProviderWorkspaceClusterAdmin bool
 
 	// PortalDevURL, when set, reverse-proxies /ui/* to this URL (typically
@@ -276,12 +267,11 @@ func NewOptions() *Options {
 		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,
 		FreeOrgsPerUser:       quota.DefaultFreeOrgsPerUser,
 
-		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
-		// Wide for this release; the next one defaults to false. See the field.
-		ProviderWorkspaceClusterAdmin:  true,
-		ProviderDelegatedTokens:        string(providers.DelegationOff),
+		ProviderHeartbeatAuth: string(providers.HeartbeatAuthEnforce),
+		ProviderWorkspaceClusterAdmin:  false,
+		ProviderDelegatedTokens:        string(providers.DelegationPlatform),
 		ProviderDelegatedTokensExclude: append([]string(nil), providers.DefaultDelegationExclude...),
 
-		ProviderHubAccessPlatformDefault: true,
+		ProviderHubAccessPlatformDefault: false,
 	}
 }

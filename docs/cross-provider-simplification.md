@@ -98,7 +98,7 @@ section); audit body 2026-08-08
 
 | Surface | Now | Anchor |
 |---|---|---|
-| `POST /api/providers/{name}/heartbeat` | Authenticated as the provider's own SA, verified by TokenReview in the provider's workspace. **Not yet fail-closed by default**: `--provider-heartbeat-auth` ships as `warn` (log and accept) this release, `enforce` next | `pkg/hub/providers/heartbeat_auth.go`, `pkg/hub/options.go:205` |
+| `POST /api/providers/{name}/heartbeat` | Authenticated as the provider's own SA, verified by TokenReview in the provider's workspace. `--provider-heartbeat-auth` defaults to `enforce`; `warn` is an explicit legacy compatibility mode | `pkg/hub/providers/heartbeat_auth.go`, `pkg/hub/options.go:180` |
 | `GET /api/providers` | Authenticated upstream of the handler; catalog visibility scoped to the verified Org | `pkg/hub/providers/api.go:29-34`, `pkg/hub/server.go:452,727` |
 | MCP aggregate | Bearer verified against the addressed cluster before any fan-out; enumeration runs for the verified caller | `pkg/hub/mcpaggregate/verifier.go`, `enumerator.go` |
 | UI proxy / backend proxy | Inbound `X-Railgrid-User`/`-Tenant`/`-Cluster` are **always** stripped on both. A resolver failure still forwards without identity headers, which is safe only because no provider authorizes on a header — every one of them gates on the bearer | `pkg/hub/providers/proxy.go:115-126,144` |

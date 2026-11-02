@@ -87,12 +87,12 @@ func main() {
 		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on the hub's backend proxy (/services/providers/{name}/*: MCP, browser OAuth, webhooks; data-plane verbs are kcp custom subresources under /clusters/{id} and never carry this token): "+
 			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+
 			"platform (also platform providers, except --provider-delegated-tokens-exclude), or all (every platform provider). "+
-			"Default off for this release; the next release defaults to platform.")
+			"Default platform; use off only as an explicit compatibility override.")
 	cmd.Flags().StringSliceVar(&opts.ProviderDelegatedTokensExclude, "provider-delegated-tokens-exclude", opts.ProviderDelegatedTokensExclude,
 		"Platform providers that keep receiving the caller's bearer under --provider-delegated-tokens=platform (comma-separated or repeat).")
 	cmd.Flags().BoolVar(&opts.ProviderHubAccessPlatformDefault, "provider-hub-access-platform-default", opts.ProviderHubAccessPlatformDefault,
 		"Let platform providers use the hub capabilities they declare (spec.hub.access) in workspaces where no one has accepted or declined them yet. "+
-			"Org-owned providers always need an explicit acceptance. Set false to require acceptance for every provider.")
+			"Org-owned providers always need an explicit acceptance. Default false: every provider requires acceptance.")
 
 	cmd.Flags().Int32Var(&opts.DefaultOrgsPerUser, "default-orgs-per-user", opts.DefaultOrgsPerUser,
 		"How many organizations one user may create; personal organizations do not count, and a platform admin can override it per user in User.spec.quota. Must be positive.")
@@ -102,11 +102,11 @@ func main() {
 	cmd.Flags().DurationVar(&opts.SoftDeleteGracePeriod, "soft-delete-grace-period", opts.SoftDeleteGracePeriod,
 		"How long a soft-deleted user, organization or workspace stays recoverable before the hub cascades it away (Go duration, e.g. 720h, 72h). "+
 			"One window for every kind; the undelete endpoints refuse a restore once it has elapsed. Must be positive.")
-	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
+	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default enforce; warn is an explicit legacy compatibility opt-in.")
 	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,
 		"Bind each provider's ServiceAccount to cluster-admin inside its own provider workspace. "+
-			"False binds the narrower generated railgrid:provider ClusterRole instead. Default true for this release so "+
-			"operators can stage the change; the next release defaults to false. Changing it replaces the existing binding.")
+			"False binds the narrower generated railgrid:provider ClusterRole instead. Default false. "+
+			"Changing it replaces the existing binding.")
 	cmd.Flags().StringVar(&opts.PortalDevURL, "portal-dev-url", "", "Reverse-proxy /ui/* to this URL (e.g. http://localhost:3000 for Vite dev server); takes precedence over embedded portal dist")
 	cmd.Flags().StringSliceVar(&opts.PortalFrameSources, "portal-frame-source", nil, "Additional CSP frame-src source expressions allowed by the portal, e.g. https://*.preview.example.com")
 

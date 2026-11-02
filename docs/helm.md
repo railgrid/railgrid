@@ -165,27 +165,24 @@ ingress:
           pathType: ImplementationSpecific
 ```
 
-### Turning on the hardened defaults early
+### Hardened provider defaults
 
-Three provider-facing hub flags shipped in this release with deliberately soft
-defaults so providers installed from older charts keep working while they are
-rolled forward; the next release flips each one. The chart leaves all three
-unset by default (nothing is rendered, the binary default applies), and
-`hub.security` lets you move to the hardened posture now instead of waiting
-for the flip. Recommended production values, safe with every provider this
-release ships:
+The provider-facing hub flags now default to the hardened posture:
+heartbeats are enforced, platform backends receive delegated tokens, and
+platform hub-access capabilities require explicit acceptance. The chart leaves
+the flags unset so the binary defaults apply; `hub.security` remains available
+for an explicit compatibility override during a provider migration.
 
 ```yaml
 hub:
   security:
     # Reject provider heartbeats not signed by that provider's own service
-    # account (binary default this release: warn). Needs every provider on a
-    # chart that sends its service-account token as the heartbeat bearer.
+    # account. Use `warn` only while migrating legacy charts.
     providerHeartbeatAuth: enforce
     # Hand platform providers a short-lived workspace-scoped token instead of
-    # the caller's own hub bearer (binary default: off). Org-owned providers
-    # are always delegated. `edges` stays excluded unless you replace the
-    # list with providerDelegatedTokensExclude.
+    # the caller's own hub bearer. Org-owned providers are always delegated;
+    # `edges` stays excluded unless you replace the list with
+    # providerDelegatedTokensExclude.
     providerDelegatedTokens: platform
 ```
 
@@ -317,11 +314,11 @@ kind delete cluster --name railgrid
 | `hub.softDeleteGracePeriod` | How long a deleted user, organization or workspace stays recoverable before the hub purges it (Go duration, e.g. `72h`). Unset leaves the binary default | `""` (binary: `720h`, 30 days) |
 | `hub.defaultOrgsPerUser` | Organizations one user may create; personal organizations do not count, and `User.spec.quota` overrides it per user | `null` (binary: `10`) |
 | `hub.freeOrgsPerUser` | Organizations on the default (free) metering plan one user may administer at once; creating another needs a plan on one of them. Personal organizations do not count, `User.spec.quota` overrides it per user, and it applies only while a metering deployment is discovered | `null` (binary: `1`) |
-| `hub.security.providerHeartbeatAuth` | Provider heartbeat auth: `warn` (log and accept) or `enforce` (reject). Unset leaves the binary default; next release defaults to `enforce` | `""` (binary: `warn`) |
-| `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all`. Next release defaults to `platform` | `""` (binary: `off`) |
-| `hub.security.providerHubAccessPlatformDefault` | Let platform providers use the hub capabilities they declare where no one has accepted or declined them; `false` requires acceptance for every provider | `null` (binary: `true`) |
+| `hub.security.providerHeartbeatAuth` | Provider heartbeat auth: `warn` (log and accept) or `enforce` (reject) | `""` (binary: `enforce`) |
+| `hub.security.providerDelegatedTokens` | Delegated tokens for platform providers: `off`, `platform`, or `all` | `""` (binary: `platform`) |
+| `hub.security.providerHubAccessPlatformDefault` | Let platform providers use the hub capabilities they declare where no one has accepted or declined them; `false` requires acceptance for every provider | `null` (binary: `false`) |
 | `hub.security.providerDelegatedTokensExclude` | Platform providers kept on the caller's bearer under `platform`; replaces the built-in list | `[]` (binary: `[edges]`) |
-| `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `railgrid:provider` role. Next release defaults to `false` | `null` (binary: `true`) |
+| `hub.security.providerWorkspaceClusterAdmin` | `true` binds provider service accounts to cluster-admin in their workspace, `false` to the narrow `railgrid:provider` role | `null` (binary: `false`) |
 | `hub.extraArgs` | Extra hub flags appended after the modelled ones; entries repeating a modelled flag are refused | `[]` |
 
 ### Identity Provider

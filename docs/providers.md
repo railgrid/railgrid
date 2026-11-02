@@ -848,10 +848,10 @@ Content-Type: application/json
   hub minted into the provider kubeconfig. Any other identity is rejected with
   403, a missing or unrecognised token with 401. The endpoint has no auth
   middleware in front of it; this check is the whole of its authentication.
-  `--provider-heartbeat-auth=warn` (this release's default) logs failures
-  and still records the beat so providers on older charts keep reporting
-  alive while they are rolled forward; `enforce` (next release's default)
-  rejects them, and such a provider goes stale after the TTL.
+  `enforce` is the default and rejects failed authentication; `warn` remains
+  an explicit compatibility opt-in that logs failures and still records the
+  beat while older charts are rolled forward. A provider that cannot prove its
+  identity goes stale after the TTL.
 - A rejection body says only which class of failure it was (`heartbeat not
   authenticated` / `forbidden` / `heartbeat verification unavailable`); the
   reason — logical cluster, expected service account, TokenReview error —
@@ -1679,8 +1679,8 @@ Which role is a hub flag:
 
 | `--provider-workspace-cluster-admin` | Bound to | |
 |---|---|---|
-| `true` (default this release) | `cluster-admin` | The historical behaviour. |
-| `false` (default next release) | generated `railgrid:provider` | Explicit allow-list. |
+| `true` (explicit compatibility opt-in) | `cluster-admin` | The historical behaviour. |
+| `false` (default) | generated `railgrid:provider` | Explicit allow-list. |
 
 `railgrid:provider` is generated from what providers actually do with this
 kubeconfig (`providerClusterRoleRules` in `pkg/hub/providers/provision.go`):

@@ -429,12 +429,12 @@ and on several boundaries the self-hosted BYO path is materially stronger:
 
 | Boundary | Platform provider | Organization BYO provider |
 | --- | --- | --- |
-| Caller credential at the backend | Receives the caller's hub bearer by default (`--provider-delegated-tokens=off`) | Never receives the hub bearer or a KCP ServiceAccount token; receives a short-lived, live-checked opaque relay credential |
+| Caller credential at the backend | Receives a workspace-scoped delegated token by default (`--provider-delegated-tokens=platform`), with explicit exclusions such as Edges SSH | Never receives the hub bearer or a KCP ServiceAccount token; receives a short-lived, live-checked opaque relay credential |
 | UI execution | Trusted custom element in the portal document; the platform bundle path still has an unpinned fallback | Opaque-origin iframe with `sandbox="allow-scripts"`, a token-free MessageChannel context, and a host-verified `/main.js` pin |
-| Heartbeat identity | `warn` is the default and accepts a beat whose token does not verify | Authentication is always required, even when the hub is in `warn` mode |
+| Heartbeat identity | `enforce` is the default; `warn` is an explicit legacy compatibility opt-in | Authentication is always required, even when the hub is in `warn` mode |
 | Provider authorization | Registry and binding policy, with platform-only compatibility defaults | Rechecks the live provider source, exact target workspace, exact APIBinding, applied/accepted claims and uncached composition Grant on each identity request |
-| Provider workspace role | Cluster administrator by default for this release | Restricted bootstrap policy; no direct declaration or RBAC write access |
-| Declared hub capabilities | Allowed by default until a tenant records a decision | Require an explicit tenant decision |
+| Provider workspace role | Narrow `railgrid:provider` role by default; cluster-admin is an explicit compatibility override | Restricted bootstrap policy; no direct declaration or RBAC write access |
+| Declared hub capabilities | Require an explicit tenant decision by default | Require an explicit tenant decision |
 
 The honest conclusion is narrower than "BYO is safer". BYO is stronger at the
 caller-credential, browser, heartbeat and workspace-privilege boundaries. Its
@@ -685,31 +685,29 @@ accepted/applied claim, and have current Grant consent.
   provider name, and document the maximum credential lifetime after disable or
   consent loss.
 
-### Host-side defaults weaker than BYO
+### Host-side defaults and remaining asymmetries
 
-- **Platform heartbeats still accept unverified identities in `warn` mode.**
-  The default for this release logs a failed TokenReview and records the beat;
-  organization-owned beats are rejected even in that mode. A caller able to
-  reach the hub can therefore keep a platform provider's liveness state fresh
-  without its service-account token. Follow-up: make `enforce` the default and
-  require deployments to opt into `warn` explicitly during migration.
-- **Platform backends receive the caller's bearer by default.** With
-  `--provider-delegated-tokens=off`, a platform provider can use that bearer for
-  the caller's other hub capabilities, not just the provider API. Organization
-  BYO backends receive neither the user bearer nor a KCP ServiceAccount token.
-  Follow-up: default to `platform` delegation, finish the provider exclusions,
-  and then remove the bearer-forwarding path.
-- **Platform provider workspaces remain cluster-administrators by default.**
-  `--provider-workspace-cluster-admin=true` gives operator-installed providers
-  more authority than the restricted organization provider workspace. This is
-  host trust, not an organization boundary, and must not be used as a model for
-  BYO. Follow-up: move providers to the narrow role as their CRD seeding is
-  removed, then flip the default.
-- **Platform hub capabilities default to allowed.** A platform provider's
-  declared `spec.hub.access` is usable before a tenant records acceptance;
-  organization providers require an explicit decision. Follow-up: require the
-  same consent record for platform providers, with a migration that records the
-  current decision rather than silently preserving it.
+- **Platform heartbeat authentication is now enforced by default.** `warn` is
+  retained only as an explicit migration opt-in. Organization-owned beats were
+  always rejected on a failed TokenReview. A live post-change probe returned
+  `401` for an invalid bearer and `200` for the valid organization providers;
+  the legacy `agents` and `infrastructure` platform providers became stale
+  because their runtime credentials are not the provider ServiceAccount. Those
+  legacy charts must be updated or use an explicit `warn` migration window.
+- **Platform backends use delegated tokens by default.** The default is now
+  `--provider-delegated-tokens=platform`; only explicit exclusions such as
+  Edges SSH retain the caller bearer. Organization BYO backends receive neither
+  the user bearer nor a KCP ServiceAccount token. Deployments that still need
+  bearer forwarding must opt into `off`.
+- **Platform provider workspaces use the narrow role by default.** The default
+  is now `--provider-workspace-cluster-admin=false`; cluster-admin is an
+  explicit compatibility override. The infrastructure provider is the known
+  migration case because it seeds its own CRDs, and must be validated before
+  the default is treated as complete.
+- **Platform hub capabilities require explicit acceptance by default.** A
+  platform provider's declared `spec.hub.access` is no longer usable before a
+  tenant records a decision; the platform-default compatibility path is now an
+  explicit opt-in.
 
 ### Quota and claim authority
 
@@ -789,6 +787,11 @@ accepted/applied claim, and have current Grant consent.
 
 ### Resolved in this pass
 
+- **Security defaults now fail closed.** Provider heartbeat authentication
+  defaults to `enforce`; invalid bearers return `401`. Platform backend
+  delegation defaults to `platform`, platform hub capabilities require an
+  explicit tenant decision, and platform provider workspaces use the narrow
+  `railgrid:provider` role unless cluster-admin is explicitly requested.
 - **Delegated hub-access routes are bound to the proof's tenant.** A
   `rgbyo1` token proved `org-a/team-a`, but the hub-access gate evaluated the
   provider grant without comparing that proof to the REST path. The tenant
@@ -887,7 +890,7 @@ accepted/applied claim, and have current Grant consent.
 | P1 | Legacy organization identities stay outside org list/delete semantics | Add a label/migration and an operator cleanup keyed by organization provider |
 | P1 | Consent loss does not terminate in-flight responses | Define the revocation contract; cancel streams and emit audit markers if required |
 | P2 | Mixed-catalog heartbeat selection is ambiguous | Select from the verified token workspace and platform identity cluster; remove stale platform entries |
-| P2 | Platform `warn` heartbeat accepts invalid bearers | Make `enforce` the default and keep an explicit compatibility exception, with a regression test for an anonymous invalid-token beat |
+| P1 | Legacy platform providers `agents` and `infrastructure` use non-provider heartbeat credentials | Mount the hub-minted provider kubeconfig or set the provider token for heartbeat use, then revalidate under `enforce` |
 | P2 | UI assets other than `/main.js` are unpinned and the asset grammar is heuristic | Ship a per-file asset manifest or one integrity-pinned bundle |
 | P2 | UI grants and relay tokens are replayable | Add single-use or request-bound redemption while keeping the short TTL |
 | P2 | Secret selectors have no breadth bound | Limit selector keys/values and show the matched Secret count at Enable |
