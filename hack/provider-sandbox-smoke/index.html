@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>BYO provider sandbox smoke test</title>
+  </head>
+  <body>
+    <h1>BYO provider sandbox smoke test</h1>
+    <p>The hostile bundle must fail to read host storage, receive a token, use the bridge for an admin route, or connect directly.</p>
+    <pre id="result">Running…</pre>
+    <iframe id="provider" title="isolated test provider" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+    <script type="module" src="/ui/src/providers/providerSandbox.smoke.ts"></script>
+  </body>
+</html>

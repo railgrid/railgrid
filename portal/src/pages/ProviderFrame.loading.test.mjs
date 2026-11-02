@@ -222,7 +222,11 @@ test('query-only navigation advances the page epoch and republishes current scop
   assert.match(routeWatch, /flush: 'sync'/)
   assert.ok(contextWatch)
   assert.match(contextWatch, /JSON\.stringify\(auth\.user\)/)
+  assert.match(contextWatch, /JSON\.stringify\(entry\.value\?\.requires\)/)
+  assert.match(contextWatch, /bindingsByProvider\[props\.providerName\]\?\.claims/)
+  assert.match(contextWatch, /bindingsByProvider\[props\.providerName\]\?\.compositions\?\.granted/)
   assert.match(contextWatch, /router\.currentRoute\.value\.fullPath/)
+  assert.match(source, /sandboxController\.update\(isolatedContext\(\)\)/)
 })
 
 test('A-B-A navigation retires page callbacks while same-owner transport and token refresh stay current', () => {
@@ -283,7 +287,7 @@ test('mounted-element cleanup clears the override and removes the mount listener
   const makeCleanup = new Function(
     'pageResource', 'resourceSource', 'routeFocus', 'boundMount',
     'onRouteReady', 'onNavigate', 'onLayoutChange', 'onProviderBootstrapRetry',
-    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride',
+    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride', 'entry', 'sandboxController',
     `let mountGeneration = 0; return function () { ${body} }`,
   )
   const removedListeners = []
@@ -305,6 +309,8 @@ test('mounted-element cleanup clears the override and removes the mount listener
     loadState,
     loadError,
     state,
+    { value: null },
+    null,
   )
 
   clear()

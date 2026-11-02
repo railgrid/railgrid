@@ -12,6 +12,8 @@ import { authFetch } from '@/auth/session'
 export type ProviderScope = 'global' | 'org'
 
 export interface ProviderDTO {
+  // Snapshot of the permissions displayed for explicit organization-provider consent.
+  consentDigest?: string
   name: string
   // 'global' for a platform provider, 'org' for one this organization
   // registered and runs itself.
@@ -265,11 +267,20 @@ export interface ClaimRef {
   resource: string
 }
 
+export interface AcceptedClaimScope extends ClaimRef {
+  verbs: string[]
+  selector: { matchAll?: boolean; matchLabels?: Record<string, string> }
+}
+
 // ClaimState mirrors pkg/hub/restapi.ClaimState — how a binding's accepted
 // permission claims stand against what the provider's export declares today.
 // The hub keeps a provider's own requirements accepted on its own; what is
 // left here needs a person.
 export interface ClaimState {
+  // Current export claims the hub observed kcp apply to this exact binding.
+  // This positive snapshot is required before an isolated provider UI may
+  // bridge a dependency; absence never means accepted.
+  accepted?: AcceptedClaimScope[]
   // Declared by the export, absent from the binding: a composition nobody
   // consented to (lasting), or a claim written moments ago (transient).
   pending?: ClaimRef[]
@@ -463,14 +474,14 @@ export const useProvidersStore = defineStore('providers', () => {
         if (!p.ready || !p.serving?.ui) return false
         // Legacy in-tree route OR new-style first-party provider:
         // always shown, no binding required.
-        if (p.serving.ui.builtinRoute || p.builtin) return true
+        if (p.scope !== 'org' && (p.serving.ui.builtinRoute || p.builtin)) return true
         return !!bindingNamesByProvider.value[p.name]
       })
       .map((p) => {
         // builtinRoute → in-tree SPA route (legacy).
         // builtin (no route) → ProviderFrame at /providers/{name}.
         // third-party → ProviderFrame at /providers/{name}.
-        const builtinRoute = p.serving?.ui?.builtinRoute ?? ''
+        const builtinRoute = p.scope === 'org' ? '' : p.serving?.ui?.builtinRoute ?? ''
         const parentTo = scopedPath(builtinRoute ? `/${builtinRoute}` : `/providers/${p.name}`, useTenantStore())
         return {
           name: p.name,
@@ -478,14 +489,14 @@ export const useProvidersStore = defineStore('providers', () => {
           to: parentTo,
           iconURL: p.iconURL ?? null,
           version: p.version ?? '',
-          builtin: !!builtinRoute || !!p.builtin,
+          builtin: p.scope !== 'org' && (!!builtinRoute || !!p.builtin),
           category: p.category ?? '',
           // Child routes nest UNDER the parent for new-style providers
           // (so kubernetes-edges' Workloads child lands at
           // /providers/kubernetes-edges/workloads), while legacy
           // builtinRoute providers keep their top-level child URLs
           // (/workloads).
-          children: (p.serving?.ui?.children ?? []).map((c) => ({
+          children: (p.serving?.ui?.children ?? []).filter((c) => p.scope !== 'org' || /^(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+$/.test(c.builtinRoute)).map((c) => ({
             label: c.displayName,
             to: builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
           })),
@@ -609,7 +620,7 @@ export const useProvidersStore = defineStore('providers', () => {
     const p = byName(name)
     if (!p) return isEnabled(name)
     if (!p.ready) return false
-    if (!p.export?.name || p.serving?.ui?.builtinRoute || p.builtin) return true
+    if (!p.export?.name || (p.scope !== 'org' && (p.serving?.ui?.builtinRoute || p.builtin))) return true
     return isEnabled(p.name)
   }
 
@@ -877,6 +888,9 @@ export const useProvidersStore = defineStore('providers', () => {
     if (!p.export?.path || !p.export?.name) {
       throw new Error(`${p.name}: provider declares no APIExport to bind`)
     }
+    if (p.scope === 'org' && !p.consentDigest) {
+      throw new Error('Refresh the provider catalog and review its current permissions before enabling it.')
+    }
 
     // Capture this tab's resolved selection before starting the mutation.
     const t = readTenantSelection()
@@ -892,6 +906,7 @@ export const useProvidersStore = defineStore('providers', () => {
       sameTenantSelection(t, readTenantSelection())
 
     const body = {
+      ...(p.scope === 'org' ? { consentDigest: p.consentDigest } : {}),
       acceptedClaims: accept.map((c) => ({ group: c.group ?? '', resource: c.resource })),
       acceptedHubAccess: acceptHubAccess.map((h) => ({ capability: h.capability, scope: h.scope })),
       acceptedCompositions: acceptCompositions.map((c) => ({ provider: c.provider, group: c.group, resource: c.resource })),

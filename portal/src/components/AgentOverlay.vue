@@ -20,7 +20,7 @@ import { authFetch, notifySessionExpired } from '@/auth/session'
 import { createProviderContext, type ProviderContext } from '@/providers/providerContext'
 import { pageContextForOverlay, pageResourceForScope, providerAgentContextForScope } from '@/providers/agentOverlayContext'
 import { loadProviderScript } from '@/providers/providerScriptLoader'
-import { resolveProviderBundle } from '@/providers/providerBundle'
+import { isOrgOwnedProvider, resolveProviderBundle } from '@/providers/providerBundle'
 
 interface OverlayElement extends HTMLElement {
   railgridContext: ProviderContext | null
@@ -80,6 +80,7 @@ let element: OverlayElement | null = null
 let generation = 0
 
 const entry = computed(() => providers.byName('agents'))
+const isOrgOwnedAgents = computed(() => !!entry.value && isOrgOwnedProvider(entry.value))
 const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName &&
   tenant.activeWorkspaceUsable && routeContext.state === 'ready' &&
   !route.meta.public && !routeContext.blocksRoute(route.path, false) &&
@@ -178,6 +179,10 @@ async function mountAgent(): Promise<void> {
   loading.value = true
   try {
     const provider = entry.value
+    if (isOrgOwnedProvider(provider)) {
+      error.value = 'Organization-owned Agents runs on its isolated provider page. Open Agents to continue.'
+      return
+    }
     const bundle = await resolveProviderBundle(provider, authFetch)
     if (!current()) return
     await loadProviderScript('agents', provider.version, document, undefined, {
@@ -357,7 +362,7 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
-      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><button class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
+      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><router-link v-if="isOrgOwnedAgents" class="k-btn k-btn--ghost" :to="scopePath('/providers/agents')">Open Agents</router-link><button v-else class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
       <Hexagon v-show="!expanded" class="agent-overlay__brand" :size="20" aria-hidden="true" />
       <div ref="mount" class="agent-overlay__mount" v-show="!error && !loading" />
       <div v-show="!expanded" class="agent-overlay__bar-actions">

@@ -244,3 +244,22 @@ test('enable keeps the current projection until its post-write refresh completes
   assert.equal(store.bindingsStale, false)
   assert.deepEqual(store.bindingNamesByProvider, { edges: 'binding-edges' })
 })
+
+test('organization enable submits the reviewed snapshot and never retries changed consent', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const provider = {
+    name: 'planner', scope: 'org', consentDigest: 'reviewed-permissions',
+    export: { name: 'planner.example', path: 'root:railgrid:tenants:org-a:providers:planner' },
+  }
+  let calls = 0
+  globalThis.__providerAuthFetch = async (_url, init) => {
+    calls++
+    assert.equal(JSON.parse(init.body).consentDigest, 'reviewed-permissions')
+    return response(null, { ok: false, status: 412, statusText: 'Precondition Failed' })
+  }
+  await assert.rejects(store.enable(provider, []), /412/)
+  assert.equal(calls, 1)
+  await assert.rejects(store.enable({ ...provider, consentDigest: undefined }, []), /Refresh the provider catalog/)
+  assert.equal(calls, 1, 'missing consent snapshot must not issue a write')
+})

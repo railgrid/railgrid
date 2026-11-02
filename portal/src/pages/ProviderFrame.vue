@@ -23,6 +23,8 @@ import { createAgentContextPublisher } from '@/providers/agentContextPublisher'
 import { createProviderContext, createProviderContextEpoch, guardProviderContextCallback } from '@/providers/providerContext'
 import { AlertCircle, Puzzle } from 'lucide-vue-next'
 import { useDelayedLoading } from '@/portalkit/useDelayedLoading'
+import { acceptedSandboxDependencies, createProviderSandboxFrame, fetchVerifiedProviderBundle, type IsolatedProviderContext } from '@/providers/providerSandbox'
+import portalStyles from '@/assets/main.css?inline'
 
 const pageResource = usePageResourceStore()
 const resourceSource = {}
@@ -32,19 +34,10 @@ const routeFocus = createProviderRouteFocus()
 const routeContext = useRouteContextStore()
 const { scopePath } = useScopedNavigation()
 
-// Micro-frontend mount: instead of dropping an iframe, we load the
-// provider's /main.js (which defines a custom element railgrid-provider-{name})
-// and render that element directly in the portal's DOM tree. The provider
-// shares our stylesheet — CSS variables from :root cascade in — so there's
-// no visible boundary, no scrollbars, and no postMessage shuttle.
-//
-// Trust statement: a provider bundle therefore executes as fully trusted code
-// in this document. Two things bound what a bundle gets by default: the
-// script is pinned with the SRI hash the hub computed at registration
-// (catalog serving.ui.mainJSIntegrity), and the bundle talks to the hub through the
-// host-owned `railgridContext.fetch` (providerFetch.ts) rather than holding the
-// user's raw id token. A sandboxed iframe with a postMessage bridge is the
-// larger follow-up for untrusted third-party providers.
+// Platform provider elements mount into this document and are trusted code.
+// Org-owned bundles take a separate path below: the host verifies granted
+// bytes, then runs them in an opaque-origin iframe behind a narrow MessagePort
+// bridge. They never receive the user's bearer or the UI-grant URL.
 
 const props = defineProps<{ providerName: string; subPath: string }>()
 
@@ -65,6 +58,8 @@ watch(
 
 // Mount point the custom element is appended into.
 const mountRef = ref<HTMLDivElement | null>(null)
+const sandboxFrameRef = ref<HTMLIFrameElement | null>(null)
+let sandboxController: ReturnType<typeof createProviderSandboxFrame> | null = null
 // The custom element instance (or null while not yet defined / mounted).
 const elementRef = ref<HTMLElement | null>(null)
 // Loading state covers script fetch + customElements.whenDefined.
@@ -136,14 +131,14 @@ const isFullBleedProvider = computed(() =>
 
 const isBuiltinProvider = computed(() => {
   const p = entry.value
-  return !!p && (!!p.builtin || !!p.serving?.ui?.builtinRoute)
+  return !!p && p.scope !== 'org' && (!!p.builtin || !!p.serving?.ui?.builtinRoute)
 })
 
 // Only providers that publish an APIExport need a workspace APIBinding. A
 // builtin provider is shipped with the portal and remains usable without one.
 const requiresBinding = computed(() => {
   const p = entry.value
-  return !!p && !!p.serving?.ui && !isBuiltinProvider.value && !!(p.export?.name || p.export?.path)
+  return !!p && !!p.serving?.ui && (isOrgOwnedProviderEntry.value || (!isBuiltinProvider.value && !!(p.export?.name || p.export?.path)))
 })
 
 const bindingRequestCurrent = computed(() =>
@@ -183,6 +178,7 @@ const providerBound = computed(() =>
 const canRetryProviderBundleInDocument = computed(() =>
   !!entry.value && canReloadProviderScriptInDocument(entry.value.name),
 )
+const isOrgOwnedProviderEntry = computed(() => !!entry.value && (entry.value.scope === 'org' || !!entry.value.ownerOrg))
 const bindingMissing = computed(() =>
   requiresBinding.value &&
   !bindingNoWorkspace.value &&
@@ -239,6 +235,13 @@ watch(
     catalogSettled.value,
     accessAllowed.value,
     mountRef.value,
+    entry.value?.scope,
+    entry.value?.ownerOrg,
+    JSON.stringify(entry.value?.export?.apiGroups),
+    auth.clusterName,
+    tenant.orgUUID,
+    tenant.workspaceUUID,
+    JSON.stringify(auth.user),
   ] as const,
   async ([name, version, ready, settled, allowed, mount]) => {
     clearMountedElement()
@@ -253,7 +256,7 @@ watch(
 // query-only navigation even when subPath and hash are unchanged; token
 // refreshes retain the route epoch.
 watch(
-  () => [theme.resolved, JSON.stringify(auth.user), auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.fullPath] as const,
+  () => [theme.resolved, JSON.stringify(auth.user), auth.token, auth.clusterName, tenant.orgUUID, tenant.workspaceUUID, entry.value?.scope, entry.value?.ownerOrg, JSON.stringify(entry.value?.export?.apiGroups), JSON.stringify(entry.value?.requires), JSON.stringify(providers.bindingsByProvider[props.providerName]?.claims), JSON.stringify(providers.bindingsByProvider[props.providerName]?.compositions?.granted), ...(entry.value?.name === 'agents' ? [agentOverlay.selectedAgent, agentOverlay.settingsOpen, agentOverlay.followContext] : []), props.subPath, router.currentRoute.value.fullPath] as const,
   () => {
     if (elementRef.value) routeFocus.before(elementRef.value, props.subPath || '')
     pushContext()
@@ -327,9 +330,13 @@ function clearMountedElement() {
   boundMount?.removeEventListener('railgrid-layout-change', onLayoutChange)
   boundMount?.removeEventListener('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry)
   boundMount = null
+  if (typeof sandboxController !== 'undefined') {
+    sandboxController?.close()
+    sandboxController = null
+  }
   const element = elementRef.value
   if (element?.parentNode) element.parentNode.removeChild(element)
-  mountRef.value?.replaceChildren()
+  if (!(entry.value?.scope === 'org' || entry.value?.ownerOrg)) mountRef.value?.replaceChildren()
   elementRef.value = null
   loadState.value = 'idle'
   loadError.value = null
@@ -355,6 +362,11 @@ function mountElement(name: string, generation?: number): boolean {
 
 async function loadAndMount(name: string, version: string | undefined, mount: HTMLDivElement) {
   const generation = ++mountGeneration
+  const mountPrincipal = JSON.stringify(auth.user)
+  const mountCluster = auth.clusterName
+  const mountOrg = tenant.orgUUID
+  const mountWorkspace = tenant.workspaceUUID
+  const mountOwnerOrg = entry.value?.ownerOrg
   loadState.value = 'loading'
   loadError.value = null
 
@@ -371,6 +383,38 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
       ? await resolveProviderBundle(entry.value, authFetch)
       : {}
     if (!isCurrentMount(generation, name)) return
+    if (entry.value && (entry.value.scope === 'org' || !!entry.value.ownerOrg)) {
+      const frame = sandboxFrameRef.value
+      if (!frame || !bundle.src || !bundle.integrity) throw new Error('The isolated provider grant is incomplete.')
+      const verified = await fetchVerifiedProviderBundle(bundle, name,
+        (url, init) => authFetch(url, { ...init, tenant: true }), window.location.origin)
+      if (!isCurrentMount(generation, name)) return
+      const sandboxContext = isolatedContext()
+      const isSandboxCurrent = () => isCurrentMount(generation, name) &&
+        mountPrincipal === JSON.stringify(auth.user) &&
+        mountCluster === auth.clusterName &&
+        mountOrg === tenant.orgUUID &&
+        mountWorkspace === tenant.workspaceUUID &&
+        mountOwnerOrg === entry.value?.ownerOrg
+      sandboxController = createProviderSandboxFrame(frame, verified, sandboxContext, {
+        isCurrent: isSandboxCurrent,
+        scope: () => ({ tenant: auth.clusterName, orgUUID: tenant.orgUUID, workspaceUUID: tenant.workspaceUUID }),
+        getToken: () => auth.getValidToken(),
+        onUnauthorized: () => notifySessionExpired(),
+        onNavigate: (path, replace) => navigateFromSandbox(path, replace),
+        onLayoutChange: fullBleed => { providerFullBleedOverride.value = fullBleed },
+        onRouteReady: () => {},
+        onPublishPageResource: value => publishSandboxPageResource(value, generation, name),
+        onPublishAgentContext: value => publishSandboxAgentContext(value, generation, name),
+        onAgentOverlay: (action, value) => handleSandboxAgentOverlay(action, value, generation, name),
+        onRetry: () => retryProviderBundle(),
+        onReady: () => { if (isCurrentMount(generation, name)) loadState.value = 'ready' },
+        onError: error => { if (isCurrentMount(generation, name)) { loadState.value = 'error'; loadError.value = error.message } },
+      }, { css: portalStyles })
+      loadState.value = 'loading'
+      sandboxController.update(sandboxContext)
+      return
+    }
     // refreshIntegrity lets one refused load recover on its own: a bundle
     // rebuilt at an unchanged version leaves this page holding a pin the
     // browser rejects, and the hub re-pins from what it served.
@@ -396,7 +440,7 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
       invalidateProviderScript(name, version)
       loadState.value = 'error'
       loadError.value = e instanceof Error ? e.message : String(e)
-      mountRef.value?.replaceChildren()
+      if (!(entry.value?.scope === 'org' || entry.value?.ownerOrg)) mountRef.value?.replaceChildren()
       elementRef.value = null
     }
     return
@@ -415,6 +459,10 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
 }
 
 function pushContext() {
+  if (typeof sandboxController !== 'undefined' && sandboxController && entry.value && (entry.value.scope === 'org' || !!entry.value.ownerOrg)) {
+    sandboxController.update(isolatedContext())
+    return
+  }
   const contextGeneration = routeContext.generation
   const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el || !entry.value || !accessAllowed.value) return
@@ -496,6 +544,78 @@ function pushContext() {
   )
 }
 
+function isolatedContext(): IsolatedProviderContext {
+  const providerName = entry.value?.name || props.providerName
+  return {
+    providerName,
+    apiGroups: [...(entry.value?.export?.apiGroups || [])],
+    dependencies: acceptedSandboxDependencies(
+      entry.value?.requires,
+      providers.bindingsByProvider[providerName]?.claims,
+      providers.bindingsByProvider[providerName]?.compositions?.granted,
+    ),
+    tenant: auth.clusterName,
+    orgUUID: tenant.orgUUID,
+    workspaceUUID: tenant.workspaceUUID,
+    theme: theme.resolved,
+    subPath: props.subPath,
+    user: auth.user ? { email: auth.user.email, userId: auth.user.userId } : null,
+    basePath: `/ui/providers/${providerName}`,
+    navigationBasePath: '/ui' + scopePath(`/providers/${providerName}`),
+    ...(providerName === 'agents' ? { agentOverlay: {
+      selectedAgent: agentOverlay.selectedAgent,
+      settingsOpen: agentOverlay.settingsOpen,
+      followContext: agentOverlay.followContext,
+    } } : {}),
+  }
+}
+
+function navigateFromSandbox(path: string, replace: boolean) {
+  if (!entry.value) return
+  if (entry.value.name === 'agents' && path.startsWith('#/')) {
+    void router.push(scopePath('/providers/agents') + path)
+    return
+  }
+  const target = scopePath(`/providers/${entry.value.name}/${path.replace(/^\//, '')}`)
+  if (replace) void router.replace(target)
+  else void router.push(target)
+}
+
+function publishSandboxPageResource(value: unknown, generation: number, providerName: string) {
+  if (generation !== mountGeneration || entry.value?.name !== providerName || !accessAllowed.value) return
+  const epoch = providerRouteEpoch.capture()
+  const scope = JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath])
+  const publisher = createPageResourcePublisher(providerName, () => generation === mountGeneration &&
+    providerRouteEpoch.isCurrent(epoch) && scope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath]),
+  resource => pageResource.publish(resourceSource, scope, resource))
+  publisher?.(value as never)
+}
+
+function publishSandboxAgentContext(value: unknown, generation: number, providerName: string) {
+  if (generation !== mountGeneration || providerName !== 'agents' || entry.value?.name !== providerName || !accessAllowed.value) return
+  const scope = JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath])
+  const publisher = createAgentContextPublisher(() => generation === mountGeneration &&
+    scope === JSON.stringify([agentOverlay.preferenceKey, auth.clusterName, router.currentRoute.value.fullPath]),
+  context => pageResource.publishAgentContext(resourceSource, scope, context))
+  publisher?.(value as never)
+}
+
+function handleSandboxAgentOverlay(action: string, value: unknown, generation: number, providerName: string) {
+  if (generation !== mountGeneration || providerName !== 'agents' || entry.value?.name !== 'agents' || !accessAllowed.value) return
+  if (action === 'setSettingsOpen' && typeof value === 'boolean') agentOverlay.setSettingsOpen(value)
+  else if (action === 'configure' && value && typeof value === 'object') {
+    const config = value as { name?: unknown; followContext?: unknown }
+    if ((typeof config.name === 'string' || config.name === null) && typeof config.followContext === 'boolean') {
+      agentOverlay.setFollowContext(config.followContext)
+      agentOverlay.select(config.name)
+      agentOverlay.setSettingsOpen(false)
+    }
+  } else if (action === 'select' && (typeof value === 'string' || value === null)) {
+    agentOverlay.select(value)
+    if (value) void router.push(scopePath('/providers/agents') + '#/agents')
+  }
+}
+
 function onRouteReady(e: Event) {
   const element = elementRef.value
   if (element && element.contains(e.target as Node)) routeFocus.ready(element)
@@ -539,6 +659,12 @@ function retryProviderBundle() {
   const provider = entry.value
   const mount = mountRef.value
   if (!provider || !mount || !accessAllowed.value) return
+  if (isOrgOwnedProviderEntry.value) {
+    sandboxController?.close()
+    sandboxController = null
+    void loadAndMount(provider.name, provider.version, mount)
+    return
+  }
   if (!canReloadProviderScriptInDocument(provider.name)) {
     window.location.reload()
     return
@@ -732,18 +858,25 @@ onBeforeUnmount(() => {
           <div class="font-medium">Failed to load provider bundle</div>
           <div class="mt-1 text-xs font-mono">{{ loadError }}</div>
           <button type="button" class="k-btn k-btn--text mt-3 text-[11px]" @click="retryProviderBundle">
-            {{ canRetryProviderBundleInDocument ? 'Retry' : 'Reload page' }}
+            {{ canRetryProviderBundleInDocument || isOrgOwnedProviderEntry ? 'Retry' : 'Reload page' }}
           </button>
         </div>
       </div>
 
-      <!-- The provider's custom element mounts here. No iframe, no border,
-           no scrollbars; it's just DOM in the portal's tree. -->
       <div
         v-if="accessAllowed"
         ref="mountRef"
         class="min-h-0 min-w-0 flex-1"
-      />
+      >
+        <iframe
+          v-if="entry && (entry.scope === 'org' || entry.ownerOrg)"
+          ref="sandboxFrameRef"
+          title="Isolated organization provider"
+          class="h-full min-h-[24rem] w-full border-0 bg-surface"
+          sandbox="allow-scripts"
+          referrerpolicy="no-referrer"
+        />
+      </div>
     </div>
   </AppLayout>
 </template>

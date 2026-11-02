@@ -16,7 +16,7 @@ import {
   loadProviderScript,
 } from '@/providers/providerScriptLoader'
 import { createProviderContext } from '@/providers/providerContext'
-import { resolveProviderBundle } from '@/providers/providerBundle'
+import { isOrgOwnedProvider, resolveProviderBundle } from '@/providers/providerBundle'
 import { useProvidersStore } from '@/stores/providers'
 import { authFetch, notifySessionExpired } from '@/auth/session'
 import type { ProviderDTO } from '@/stores/providers'
@@ -76,12 +76,12 @@ const tagFor = (name: string) => `railgrid-dashboard-tile-${name}`
 // everything else to /providers/{name}, with children hung off that. Used by
 // the fallback body so a provider without its own tile element is still a
 // useful launcher rather than a blank card.
-const builtinRoute = computed(() => props.provider.serving?.ui?.builtinRoute ?? '')
+const builtinRoute = computed(() => isOrgOwnedProvider(props.provider) ? '' : props.provider.serving?.ui?.builtinRoute ?? '')
 const parentTo = computed(() =>
   scopePath(builtinRoute.value ? `/${builtinRoute.value}` : `/providers/${props.provider.name}`),
 )
 const quickLinks = computed(() =>
-  (props.provider.serving?.ui?.children ?? []).map((c) => ({
+  (isOrgOwnedProvider(props.provider) ? [] : props.provider.serving?.ui?.children ?? []).map((c) => ({
     label: c.displayName,
     to: builtinRoute.value ? scopePath(`/${c.builtinRoute}`) : `${parentTo.value}/${c.builtinRoute}`,
   })),
@@ -134,6 +134,12 @@ function clearMountedTile() {
 
 async function loadAndMount(name: string, version: string | undefined, generation: number) {
   if (!isCurrentLoad(generation, name, version)) return
+  if (isOrgOwnedProvider(props.provider)) {
+    // The tile bundle would execute in the authenticated portal. Keep BYO
+    // code confined to ProviderFrame's sandbox and make the launcher explicit.
+    loadState.value = 'no-tile'
+    return
+  }
   loadState.value = 'loading'
 
   const tag = tagFor(name)
@@ -350,7 +356,7 @@ onBeforeUnmount(() => {
         >{{ l.label }}</router-link>
       </div>
       <p v-else :class="tileClass.empty">
-        No dashboard summary yet — open {{ provider.displayName }} to manage its resources.
+        {{ isOrgOwnedProvider(provider) ? 'Dashboard previews for organization providers are available on the isolated provider page.' : `No dashboard summary yet — open ${provider.displayName} to manage its resources.` }}
       </p>
 
       <router-link

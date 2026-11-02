@@ -32,7 +32,8 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   // The bundle (URL + SRI pin) is resolved first — an org-owned provider's
   // comes from a hub-issued grant — and the generation is re-checked after
   // that await before the shared loader runs.
-  assert.match(tile, /import \{ resolveProviderBundle \} from '@\/providers\/providerBundle'/)
+  assert.match(tile, /import \{ isOrgOwnedProvider, resolveProviderBundle \} from '@\/providers\/providerBundle'/)
+  assert.match(tile, /if \(isOrgOwnedProvider\(props\.provider\)\)[\s\S]*?loadState\.value = 'no-tile'[\s\S]*?return/)
   // The loader also gets refreshIntegrity, so a bundle rebuilt at an unchanged
   // version — which leaves this page holding a pin the browser refuses — can be
   // retried once against the pin the hub corrected from what it served.
