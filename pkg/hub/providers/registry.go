@@ -83,10 +83,10 @@ type Provider struct {
 	// could not (yet) hash the bundle; the portal then loads it unpinned.
 	MainJSIntegrity string
 	BackendURL      *url.URL // proxy target for /services/providers/{name}/*; nil → 404
-	// BackendHealthRequired is set only for platform-operated providers that
-	// declare a backend. BackendHealthy is the latest bounded healthPath probe
-	// result. Org-owned provider backends travel through an edge tunnel and are
-	// deliberately never dialled directly by the hub.
+	// BackendHealthRequired is set for every provider that declares a backend.
+	// Platform providers are probed directly; org-owned providers are probed
+	// only through the hub-owned Edge route. BackendHealthy is the latest
+	// bounded healthPath probe result.
 	BackendHealthRequired bool
 	BackendHealthy        bool
 	Actions               []ProviderAction
