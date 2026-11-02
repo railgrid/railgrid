@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -860,6 +861,21 @@ func (b *Bootstrapper) ListChildTeamWorkspaces(ctx context.Context, orgUUID stri
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+// WatchChildWorkspaces opens a watch on the child Workspaces of one
+// organization, for the soft-delete Workspace branch (it implements
+// softdelete.WorkspaceWatcher). The watch replays existing Workspaces as
+// ADDED when it opens.
+func (b *Bootstrapper) WatchChildWorkspaces(ctx context.Context, orgUUID string) (watch.Interface, error) {
+	if orgUUID == "" {
+		return nil, fmt.Errorf("WatchChildWorkspaces: orgUUID is required")
+	}
+	orgClient, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.OrgPath(orgUUID)))
+	if err != nil {
+		return nil, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	return orgClient.Resource(workspaceGVR).Watch(ctx, metav1.ListOptions{AllowWatchBookmarks: true})
 }
 
 // ListOrgWorkspaces returns the names (UUIDs) of every Organization
