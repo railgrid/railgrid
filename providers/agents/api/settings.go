@@ -10,13 +10,14 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
 
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
@@ -36,20 +37,16 @@ type modelCredential struct {
 	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
 }
 
-// CredentialSecretName is the Secret a ModelCredential written through this
-// provider points at. It is a default for the objects this code creates, not a
-// convention anything reads back: a ModelCredential says where its key is in
-// spec.secretRef, and a hand-written one may name any Secret it likes.
+// CredentialSecretName is the legacy deterministic Secret name for a
+// ModelCredential. New keys use a random generated name; existing objects
+// still decide which Secret currently holds their key through spec.secretRef.
 func CredentialSecretName(name string) string { return agentsv1alpha1.ModelCredentialSecretName(name) }
 
-// applyCredentialUpsert writes a ModelCredential and the Secret it points at
-// (create-or-update), preserving an existing key when none is supplied.
-//
-// The Secret goes first, the object second — the same order
-// applyConnectionCreate uses, and for the same reason: the reconciler reacts
-// to the object, and a ModelCredential whose Secret does not exist yet parks
-// with SecretResolved=False until one does. The other order would flag a
-// credential that is about to be fine.
+// applyCredentialUpsert creates or updates a direct ModelCredential and its
+// key. New keys are immutable Secrets created after the protected parent; an
+// update reserves a fresh Secret name, creates the owned key, then activates
+// it with UID, resourceVersion, reservation, and original-spec tests. When no
+// key is supplied on update, the existing value is copied into the new Secret.
 func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *modelCredential) (*modelCredential, error) {
 	req.Name = strings.TrimSpace(req.Name)
 	req.Provider = strings.TrimSpace(req.Provider)
@@ -64,24 +61,84 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 		return nil, errBadRequest("model is required")
 	}
 
-	// Bindings inherit their endpoint and key from a ModelProviderConnection.
-	// They may change only their model; reject attempts to edit connection-owned
-	// fields before any Secret reads or writes.
-	existing, err := c.GetModelCredential(ctx, req.Name)
+	// New keys get an unguessable, unique Secret name. Creating the credential
+	// first makes its UID available for the Secret owner reference, so deleting
+	// it before the first controller reconcile cannot orphan the key.
+	existing, err := c.ModelCredentials().Get(ctx, req.Name, metav1.GetOptions{})
 	switch {
-	case err == nil && existing.Spec.ConnectionRef != "":
-		if req.Provider != "" || req.BaseURL != "" || req.APIKey != "" || req.AnthropicWorkspaceID != "" {
-			return nil, errBadRequest("a model connection binding can only change its model; edit the referenced provider connection to change its provider, base URL, key, or workspace ID")
+	case apierrors.IsNotFound(err):
+		if req.Provider == "" {
+			req.Provider = llm.ProviderOpenAICompatible
 		}
-		updated, err := c.UpdateModelBinding(ctx, existing, req.Model)
+		if req.BaseURL == "" {
+			req.BaseURL = llm.DefaultBaseURL
+		}
+		if req.APIKey == "" {
+			return nil, errBadRequest("apiKey is required")
+		}
+		id, err := newGeneratedKeyID()
 		if err != nil {
 			return nil, err
 		}
-		return &modelCredential{Name: updated.Name, Model: updated.Spec.Model}, nil
-	case err != nil && !apierrors.IsNotFound(err):
+		secretName := agentsv1alpha1.GeneratedModelCredentialSecretName(id)
+		credential := &agentsv1alpha1.ModelCredential{
+			TypeMeta: metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential"},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       req.Name,
+				Finalizers: []string{agentsv1alpha1.ModelCredentialSecretProtectionFinalizer},
+				Annotations: map[string]string{
+					agentsv1alpha1.PendingKeySecretAnnotation: secretName,
+				},
+			},
+			Spec: agentsv1alpha1.ModelCredentialSpec{
+				Provider:             req.Provider,
+				BaseURL:              req.BaseURL,
+				AnthropicWorkspaceID: req.AnthropicWorkspaceID,
+				Model:                req.Model,
+				SecretRef:            agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
+				SecretKey:            agentsv1alpha1.DefaultModelSecretKey,
+			},
+		}
+		created, err := c.ModelCredentials().Create(ctx, credential, metav1.CreateOptions{})
+		if err != nil {
+			return nil, err
+		}
+		if created.UID == "" {
+			return nil, fmt.Errorf("creating ModelCredential %q returned no UID; refusing to write an unowned key", req.Name)
+		}
+		if _, err := createModelKeySecret(ctx, c, created, id, secretName, created.Spec.SecretKey, req.APIKey); err != nil {
+			return nil, fmt.Errorf("creating key Secret for ModelCredential %q: %w", req.Name, err)
+		}
+		if _, err := c.ActivateModelCredentialKey(ctx, created, created.Spec, created.Spec, secretName, id); err != nil {
+			return nil, fmt.Errorf("activating key Secret for ModelCredential %q: %w", req.Name, err)
+		}
+		return &modelCredential{
+			Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model,
+			AnthropicWorkspaceID: req.AnthropicWorkspaceID, HasAPIKey: true,
+		}, nil
+	case err == nil:
+		if existing.Spec.ConnectionRef != "" {
+			if req.Provider != "" || req.BaseURL != "" || req.APIKey != "" || req.AnthropicWorkspaceID != "" {
+				return nil, errBadRequest("edit the provider connection to change its endpoint or key; omit provider configuration to update only the model")
+			}
+			updated, err := c.UpdateModelBinding(ctx, existing, req.Model)
+			if err != nil {
+				return nil, err
+			}
+			return &modelCredential{Name: updated.Name, Model: updated.Spec.Model}, nil
+		}
+	default:
 		return nil, err
 	}
 
+	// An edit reads the existing key when one was omitted, then writes a fresh
+	// immutable generated Secret. A custom tenant Secret remains unchanged and
+	// unowned; the credential moves only after the staged key is ready.
+	secretName := strings.TrimSpace(existing.Spec.SecretRef.Name)
+	if secretName == "" {
+		secretName = CredentialSecretName(req.Name)
+	}
+	secretKey := llm.SecretKey(existing.Spec)
 	if req.Provider == "" {
 		req.Provider = llm.ProviderOpenAICompatible
 	}
@@ -89,15 +146,9 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 		req.BaseURL = llm.DefaultBaseURL
 	}
 
-	// The existing object decides which Secret to write into: an edit must not
-	// silently move a credential onto this provider's default name when it was
-	// pointed somewhere else.
-	secretName, secretKey := CredentialSecretName(req.Name), agentsv1alpha1.DefaultModelSecretKey
-	if existing != nil {
-		if n := strings.TrimSpace(existing.Spec.SecretRef.Name); n != "" {
-			secretName = n
-		}
-		secretKey = llm.SecretKey(existing.Spec)
+	protected, err := ensureModelCredentialSecretProtection(ctx, c, existing)
+	if err != nil {
+		return nil, err
 	}
 
 	// Preserve an existing key when updating without a new one.
@@ -110,36 +161,76 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 			return nil, errBadRequest("apiKey is required")
 		}
 	}
-	sec := &corev1.Secret{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: llm.SecretNamespace},
-		Type:       corev1.SecretTypeOpaque,
-		StringData: map[string]string{secretKey: apiKey},
+	newSpec := agentsv1alpha1.ModelCredentialSpec{
+		Provider:             req.Provider,
+		BaseURL:              req.BaseURL,
+		AnthropicWorkspaceID: req.AnthropicWorkspaceID,
+		Model:                req.Model,
+		SecretRef:            agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
+		SecretKey:            secretKey,
 	}
-	// ApplySecret stamps railgrid.ai/owner: agents, without which the
-	// provider's label-scoped claim hides the Secret from every unattended run.
-	if _, err := c.ApplySecret(ctx, sec); err != nil {
+	id, err := newGeneratedKeyID()
+	if err != nil {
 		return nil, err
 	}
-
-	cred := &agentsv1alpha1.ModelCredential{
-		TypeMeta:   metav1.TypeMeta{APIVersion: agentsv1alpha1.SchemeGroupVersion.String(), Kind: "ModelCredential"},
-		ObjectMeta: metav1.ObjectMeta{Name: req.Name},
-		Spec: agentsv1alpha1.ModelCredentialSpec{
-			Provider:             req.Provider,
-			BaseURL:              req.BaseURL,
-			AnthropicWorkspaceID: req.AnthropicWorkspaceID,
-			Model:                req.Model,
-			SecretRef:            agentsv1alpha1.ModelCredentialSecretRef{Name: secretName},
-			SecretKey:            secretKey,
-		},
+	pendingName := agentsv1alpha1.GeneratedModelCredentialSecretName(id)
+	reserved, err := reserveModelCredentialKey(ctx, c, protected, pendingName)
+	if err != nil {
+		return nil, errors.Join(err, releaseModelCredentialKeyReservation(ctx, c, req.Name, protected.UID, pendingName))
 	}
-	if _, err := c.ModelCredentials().Update(ctx, cred, metav1.UpdateOptions{}); err != nil {
-		return nil, err
+	newSpec.SecretRef.Name = pendingName
+	if _, err := createModelKeySecret(ctx, c, reserved, id, pendingName, secretKey, apiKey); err != nil {
+		return nil, errors.Join(fmt.Errorf("creating rotated key Secret for ModelCredential %q: %w", req.Name, err), releaseModelCredentialKeyReservation(ctx, c, req.Name, reserved.UID, pendingName))
+	}
+	if _, err := c.ActivateModelCredentialKey(ctx, reserved, reserved.Spec, newSpec, pendingName, id); err != nil {
+		return nil, errors.Join(fmt.Errorf("activating rotated key Secret for ModelCredential %q: %w", req.Name, err), releaseModelCredentialKeyReservation(ctx, c, req.Name, reserved.UID, pendingName))
 	}
 	return &modelCredential{
 		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, AnthropicWorkspaceID: req.AnthropicWorkspaceID, HasAPIKey: true,
 	}, nil
+}
+
+func reserveModelCredentialKey(ctx context.Context, c *agentsclient.Client, credential *agentsv1alpha1.ModelCredential, pendingName string) (*agentsv1alpha1.ModelCredential, error) {
+	if credential == nil || credential.UID == "" || credential.ResourceVersion == "" || pendingName == "" {
+		return nil, fmt.Errorf("ModelCredential key reservation requires name, UID, resourceVersion, and Secret name")
+	}
+	reserved := credential.DeepCopy()
+	reserved.Finalizers = appendMissingFinalizer(reserved.Finalizers, agentsv1alpha1.ModelCredentialSecretProtectionFinalizer)
+	if reserved.Annotations == nil {
+		reserved.Annotations = map[string]string{}
+	}
+	reserved.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] = pendingName
+	updated, err := c.UpdateModelCredentialWithPreconditions(ctx, reserved)
+	if err != nil {
+		return nil, err
+	}
+	if updated.UID != credential.UID || updated.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] != pendingName ||
+		!slices.Contains(updated.Finalizers, agentsv1alpha1.ModelCredentialSecretProtectionFinalizer) {
+		return nil, fmt.Errorf("reserving key Secret for ModelCredential %q returned unexpected identity or protection", credential.Name)
+	}
+	return updated, nil
+}
+
+func releaseModelCredentialKeyReservation(ctx context.Context, c *agentsclient.Client, name string, uid types.UID, pendingName string) error {
+	if name == "" || uid == "" || pendingName == "" {
+		return nil
+	}
+	current, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if current.UID != uid || !current.DeletionTimestamp.IsZero() ||
+		current.Spec.SecretRef.Name == pendingName ||
+		current.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] != pendingName {
+		return nil
+	}
+	updated := current.DeepCopy()
+	delete(updated.Annotations, agentsv1alpha1.PendingKeySecretAnnotation)
+	_, err = c.UpdateModelCredentialWithPreconditions(ctx, updated)
+	return err
 }
 
 // deleteCredential removes a ModelCredential. A credential protection
