@@ -27,15 +27,15 @@ the how):
 |---|---|---|
 | 0 | API group = **`providers.railgrid.ai`** (separate from `railgrid.ai`) | Catalog entries and bindings are platform-owner-only. Excluding them from the `core.railgrid.ai` merged APIExport keeps them out of tenant workspaces. Tenants interact via portal/hub mediation, not raw CR access |
 | 1 | Terminology = **provider** (not "addon") | `root:railgrid:providers` already exists; first-party railgrid `APIExport`s already live there |
-| 2 | UI embedding = **custom element loaded from the hub proxy** (`<railgrid-provider-{name}>` from `/ui/providers/{name}/main.js`, SRI-pinned) | Same-origin → no CORS, shared stylesheet, no iframe seams. Any frontend stack that can register a custom element. The bundle runs as trusted code in the portal document; a sandboxed iframe + postMessage bridge is the (L) follow-up if untrusted third-party providers become a goal. Module Federation rejected (Vue lock-in + build coupling) |
+| 2 | Platform UIs mount as trusted custom elements; org-owned BYO UIs mount in an opaque-origin sandbox iframe after host-side SHA-384 verification | Platform bundles share the portal document and railgridContext. BYO bundle bytes and a token-free context cross a MessageChannel; the host keeps the grant URL and bearer. The narrow host bridge enforces the active workspace and accepted APIBinding capabilities. Module Federation rejected (Vue lock-in + build coupling) |
 | 3 | Provider workspace = `root:railgrid:providers:{name}`, **auto-created by hub** on `CatalogEntry` admission | Chart needs no kcp credentials |
 | 4 | Distribution = **one Helm chart per provider**, targets *host cluster only* | All kcp work owned by hub catalog controller |
 | 5 | Registration = **hybrid**: chart creates `CatalogEntry` shell; provider pod heartbeats every 30s (`POST /api/providers/{name}/heartbeat`, TTL 90s) | Declarative install + runtime liveness |
 | 6 | VW = **APIExport-only.** `spec.virtualWorkspace.url` is **removed** from the `CatalogEntry`: the hub never routed `/services/providers/{name}/vw/*`, so the field and its `/vw/*` story are gone rather than deprecated | Custom verbs belong on the resource itself. Each declared verb is published as a kcp **custom subresource** `{resource}/{verb}` on the provider's own APIExport and reached at `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}` on the kcp front door — the only transport. The hub-proxied grammar `/services/providers/{name}/{dataplane,actions}/clusters/…` is gone |
-| 7 | Provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `railgrid-provider-kubeconfig` in the provider's host namespace; a legacy non-expiring ServiceAccount token, rotated on demand via the credentials-rotate endpoints (see §"Credentials and rotation") | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go` |
+| 7 | Platform provider→kcp identity = SA `provider` in the provider's workspace; hub mints kubeconfig and writes it as Secret `railgrid-provider-kubeconfig` in the provider's host namespace; a legacy non-expiring ServiceAccount token, rotated on demand via the credentials-rotate endpoints (see §"Credentials and rotation"). Org-owned BYO backends are the exception: they receive a short-lived opaque relay credential, never this native SA token. | Reuses existing exec-credential pattern from `pkg/server/proxy/proxy.go`; keeps BYO backend authentication separate from platform provider installation |
 | 8 | Schema delivery = **the provider's own `init`**, from the generated files its chart bakes in at `RAILGRID_KCP_DIR`. Inline schemas are gone: `CatalogEntry.spec.export` carries the export's `name` and its `resources[]` (each with the verbs and actions served on it) and nothing else | The chart already ships the generated `APIResourceSchema`s and `APIExport`; carrying their bodies in a watched catalog object made the CatalogEntry a second copy of a generated artifact |
 | 9 | Claim acceptance = **per-requirement, in the Enable dialog**. Everything under `spec.requires` is tenant-scoped by definition — there is no `tenantScoped` flag and no out-of-tenant claim to refuse — and a claim on core `secrets` must carry a `selector`. A catalog update that adds or widens a requirement stays pending until someone accepts it again | Declaring grants nothing, so a provider cannot widen itself by shipping a new chart; the selector rule is what stops "reads every Secret the tenant holds" |
-| 10 | Tenant Enable = **a kcp `APIBinding` in the tenant workspace, created by the hub**. No `ProviderBinding` CRD — kcp-native. The portal never talks to kcp for this: it `POST`s the hub's Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which checks workspace membership and that every provider named by `spec.requires[].provider` is already enabled, then creates the `APIBinding` **as kcp-admin**. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | Simpler, kcp-native; fewer moving parts. The hub's kcp user-proxy pre-checks the cluster path against the user's default workspace, so a user-credentialed create would 403 on every other workspace — the membership check moves into the Enable handler instead. Audit/inventory queries fan out across tenant workspaces (acceptable). |
+| 10 | Tenant Enable = **a kcp `APIBinding` in the tenant workspace, created by the hub**. No `ProviderBinding` CRD — kcp-native. The portal never talks to kcp for this: it `POST`s the hub's Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which checks current workspace membership and that every provider named by `spec.requires[].provider` is already enabled, then creates the `APIBinding` **as kcp-admin**. Permission-claim safety enforced by `MaximalPermissionPolicy` on the APIExport (kcp). | The hub checks membership at the Enable boundary and authorizes tenant data requests against live membership and native KCP RBAC; no default-workspace exception is needed. |
 
 **Deferred (do NOT block phase 1):**
 
@@ -283,8 +283,9 @@ workload audience in the selected tenant workspace and checks the backing
 ServiceAccount. Delegated user identities also require the hub's signed proof.
 Catalog visibility is scoped to the verified organization; this read does not
 grant a membership role, mutation access, or bypass action authorization. The
-only hub REST calls a delegated token can make beyond it are the hub-access
-capabilities a tenant accepted for the provider (see *Hub access* below).
+provider's remaining tenant-facing Hub REST calls are limited to declared
+hub-access capabilities and the applicable provider Grant (see *Hub access*
+below).
 Anonymous callers remain rejected, and human catalog discovery retains its
 optional-organization behavior.
 
@@ -322,11 +323,12 @@ target is retired in favor of reserved prefixes on
 
 ### Hub access
 
-A provider that receives a delegated user token in place of the caller's bearer
-(always for org-owned providers; for platform providers per
-`--provider-delegated-tokens`) cannot use it on the hub REST surface — except
-for the capabilities it declares in `CatalogEntry.spec.hub.access` **and** a
-tenant accepted for it. Declaring grants nothing on its own.
+The hub REST surface is closed to arbitrary backend requests. An org-owned BYO
+backend may call only declared `CatalogEntry.spec.hub.access` capabilities,
+with the current user's roles and an uncached organization Grant checked on each
+request. Declaring a capability alone grants nothing. This is separate from the
+opaque `rgbyo1` credential used for its KCP relay; it is not a general hub token
+and cannot be exchanged through another provider or a UI grant.
 
 ```yaml
 spec:
@@ -368,7 +370,7 @@ from the provider. Grant creation requires an existing platform User; App
 Studio completes any invite or membership flow first.
 
 Membership removals, role changes, workspace membership writes and org or
-workspace management are not in the set and are refused for delegated tokens.
+workspace management are not in the set and are refused for BYO backends.
 
 **Consent.** The Enable dialog lists each requested capability with its
 reason. Accepting an org-scoped one needs an org admin; a workspace-scoped one
@@ -384,7 +386,7 @@ per provider, which capabilities are granted and which are still pending (new
 in its catalog entry, or declined); the Providers page offers *Review access*
 for the latter.
 
-**Enforcement.** A gate in front of the tenant routes admits a delegated call
+**Enforcement.** A gate in front of the tenant routes admits a provider call
 only when the route maps to a capability the provider currently declares and
 the grant for that provider in that workspace includes. The narrower of
 declaration and grant wins, so a catalog update never widens access until
@@ -395,10 +397,10 @@ at `member`, never changes an existing member's role, and honours
 `allowInvite`. Invitations are rate-limited per provider and organization, and
 every delegated mutation is logged with provider, person, target and role.
 
-**Provider identity.** The hub's proof on a delegated account covers the
-provider's name and, since proof v2, its owner org, so an org-owned provider
-that shadows a platform provider of the same name never uses the platform
-provider's grant (or vice versa).
+**Provider identity.** The hub's proof on a platform delegated account covers
+the provider name. Org-owned BYO backends use their own opaque relay credential
+and exact provider binding/source-cluster checks; they do not receive a native
+delegated ServiceAccount token.
 
 **Upgrade default.** `--provider-hub-access-platform-default` (default `true`)
 lets a *platform* provider use a capability it declares that nobody entitled to
@@ -713,10 +715,16 @@ Enable endpoint (`pkg/hub/restapi/providers_enable.go`), which:
    request); and
 4. creates the `APIBinding` **as kcp-admin**.
 
-The portal never calls kcp for Enable. It cannot: the hub's kcp user-proxy
-pre-checks the cluster path against the user's default workspace and 403s
-every other workspace before the request reaches kcp, so the membership
-check the proxy would have done implicitly is done by this handler instead.
+For an organization-owned provider, the request must also include the
+`consentDigest` from the catalog entry the caller reviewed. The digest covers
+the provider owner, export identity, requirements, and hub-access declaration.
+A missing or stale digest returns `412 PreconditionFailed` before any grant or
+binding write; refresh the catalog and review the changed permissions before
+trying again. Platform providers retain compatibility with older callers.
+
+The portal never calls kcp for Enable. The handler checks the caller's current
+workspace membership and creates the binding as kcp-admin; ordinary user proxy
+requests are independently gated by current membership and KCP RBAC.
 
 ```yaml
 # Created in the tenant's workspace (e.g. root:railgrid:tenants:alice)
@@ -966,7 +974,7 @@ Both become provider-aware.
 | `portal/src/stores/providers.ts` | Pinia store: catalog list, current user's bindings, derived nav items, route registration |
 | `portal/src/router/providers.ts` | `registerProviderRoutes(bindings)` — idempotent `router.addRoute()` calls |
 | `portal/src/pages/ProvidersPage.vue` | The `/providers` catalog view (grid of cards, Enable/Disable) |
-| `portal/src/pages/ProviderFrame.vue` | Per-provider custom-element host; loads the SRI-pinned bundle, mounts `<railgrid-provider-{name}>`, pushes `railgridContext` (host fetch, tenant, theme, subPath), bubbles `railgrid-navigate` |
+| `portal/src/pages/ProviderFrame.vue` | Platform providers mount as custom elements; org-owned bundles run in an opaque-origin frame with a scoped host bridge |
 | `portal/src/components/ProviderEnableDialog.vue` | Modal listing the requirements to accept (read from `CatalogEntry.spec.requires` via `/api/providers`); on confirm, the portal POSTs the hub's Enable endpoint with the accepted claims, and the hub creates the `APIBinding` in the user's workspace as kcp-admin |
 | `portal/sdk/index.ts` (new package `@railgrid/provider-sdk`) | `useRailgrid()` composable for providers' UIs: token, user, tenant, theme, `onNavigate` |
 | `portal/sdk/package.json`, `tsconfig.json`, `README.md` | SDK packaging — publish to npm or include as workspace |
@@ -1016,8 +1024,9 @@ ProviderFrame's existing catalog/binding checks gate mounting and access.
 The real implementation is
 [portal/src/pages/ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue);
 [portal/src/components/DashboardTile.vue](../portal/src/components/DashboardTile.vue)
-is the same lifecycle for the optional `<railgrid-dashboard-tile-{name}>`
-element. There is no iframe and no postMessage handshake. The shape:
+mounts the optional tile element for platform providers. BYO page UIs use a
+separate isolated frame; BYO dashboard tiles show an explicit Open-provider
+fallback. The shape:
 
 1. **Load the bundle, pinned.** `providerScriptLoader.ts` injects
    `/ui/providers/{name}/main.js?v={version}` as a classic `<script>` into the
@@ -1032,21 +1041,25 @@ element. There is no iframe and no postMessage handshake. The shape:
    fail to load. Without a pin it loads anyway and logs a warning. The `?v=`
    cache-buster does not interact with SRI, which hashes the response body.
 
-   An org-owned provider (`scope: "org"`) is loaded from the same path shape
-   but with a grant: the portal first `POST`s `/api/providers/{name}/ui-grant`
-   as the user (`providerBundle.ts`), and the hub answers with
-   `/ui/providers/{name}/main.js?v=…&grant=…` plus the bundle's pin, hashed
-   through the caller's delegated edge route. The UI proxy redeems the grant
-   into a delegated token and serves the bundle over the org's edge tunnel;
-   a grant-less URL stays platform-scoped. See
-   [byo-providers.md](./byo-providers.md) §"Known gaps" and
+   An org-owned provider (scope: org) uses the same grant request, but the
+   host fetches the bytes instead of creating a script element. It verifies
+   SHA-384 with WebCrypto before transferring the source into the isolated
+   shell. The grant URL and bearer remain in the host. See
+   [byo-providers.md](./byo-providers.md) and
    [pkg/hub/providers/ui_grant.go](../pkg/hub/providers/ui_grant.go).
-2. **Mount the element.** After `customElements.whenDefined('railgrid-provider-{name}')`
-   the host appends `<railgrid-provider-{name}>` into its own DOM. The provider
-   shares the portal stylesheet (CSS variables cascade in), so there is no
-   visible boundary.
-3. **Push context.** The host sets `element.railgridContext` (a JS property, not
-   an attribute) and re-pushes it on every theme / workspace / route change:
+2. **Mount the element or frame.** Platform code mounts after
+   customElements.whenDefined('railgrid-provider-{name}') and the host appends
+   the custom element into its own DOM. The provider shares the portal
+   stylesheet (CSS variables cascade in). Org-owned code runs in
+   /ui/provider-sandbox.html with sandbox="allow-scripts"; the shell frame
+   uses its own CSP with connect-src 'none', no nested frames, workers, objects
+  or form targets. The shell policy allows its bootstrap asset only from the
+  configured hub origin (or a validated local request origin when unset)
+  because `'self'` does not match an opaque frame origin. The verified bundle runs from a Blob URL and creates its
+   custom element inside that document.
+3. **Push context.** Platform code receives element.railgridContext (a JS
+   property, not an attribute) and re-pushes it on every theme / workspace /
+   route change:
 
 ```ts
 // What the host pushes (portal/src/providers/providerContext.ts).
@@ -1063,6 +1076,29 @@ interface ProviderContext {
   /** @deprecated one release; read `fetch` instead */ token: string | null
 }
 ```
+
+Org-owned BYO frames receive a structured-clone-safe context without a token
+or host function. Their fetch method sends requests over a per-frame
+MessageChannel. Kubernetes API requests are rewritten by the host to
+`/api/orgs/{org}/workspaces/{ws}/providers/{name}/sandbox/{rest}`. The hub
+checks the authenticated tenant scope, the exact provider binding/export, and
+effective accepted/applied claims before dispatch through the ordinary
+user-authenticated KCP API handler; native caller RBAC still applies. For a
+foreign provider dependency it also checks the exact dependency binding and
+reads the composition Grant uncached. Missing, pending, rejected, mismatched,
+or unavailable authorization state fails closed. The hub checks again before
+response writes and stream flushes. Core Secret reads are GET-only, name-only
+in the default namespace, buffered as identity-encoded JSON, and withheld
+unless the latest accepted selector and returned labels match. Bytes already
+delivered cannot be retracted, and a mutation that already ran is not rolled
+back if consent changes afterward.
+
+This bridge constrains browser UI code; backend requests from an org-owned
+provider use a short-lived opaque hub credential, not a KCP ServiceAccount
+token. The hub checks the exact provider binding and current tenant membership
+on each request, then dispatches the KCP request as the live user so native
+KCP RBAC applies. The backend does not receive the user's hub bearer or a
+tenant-admin ServiceAccount credential.
 
 4. **Navigate.** The element dispatches a bubbling
    `railgrid-navigate` CustomEvent (`{ path, replace? }`); the host translates it
@@ -1153,10 +1189,11 @@ tenant scope, no theme, and no synced URL. Vendor `provider-sdk/portalkit/`
 into the portal (`make sync-portalkit`) rather than re-implementing the tenant
 header contract; see AGENTS.md §5.7.
 
-**No iframe, no `postMessage` bridge to the host.** The element renders into
-light DOM in the portal's own document; a provider that wraps itself in an
-iframe and talks to the host over `postMessage` is reimplementing the
-contract badly. Exactly **three** exceptions are sanctioned:
+**Platform custom elements do not use an iframe or host postMessage bridge.**
+They render into the portal document. The host-owned BYO frame described above
+is a separate controlled surface; provider code must not wrap itself in an
+iframe or invent another host bridge. Three additional narrow exceptions are
+sanctioned:
 
 1. **An OAuth popup posting its result to `window.opener`.** The browser
    OAuth routes (Pillar 2 class (d)) open a popup for the identity provider;
@@ -1190,7 +1227,10 @@ contract badly. Exactly **three** exceptions are sanctioned:
    asset route exists. See [Agents host contract](../providers/agents/portal/README.md)
    and [AI evidence contract](design/ai/evidence-and-status.md).
 
-Anything else that reaches for `postMessage` or an iframe is a deviation.
+For platform elements, anything else that reaches for `postMessage` or an
+iframe is a deviation. Org-owned BYO provider pages use only the host-owned
+opaque frame and bridge described above; providers cannot supply or configure
+the bridge.
 
 ### Deep-link behavior
 
@@ -1727,21 +1767,24 @@ a per-rollout step:
   ConfigMaps, ServiceAccounts, RBAC and Workspaces read-write through the
   core export's existing claims, so the read-only `apibindings` claim exposes
   nothing new to anyone who could not already read far more.
-- Own requirements are accepted for platform and org-owned providers alike. An
-  org-owned provider's CatalogEntry is written by that Org's admins, who already
-  hold admin in every workspace of the Org, so a claim they declare widens
-  nothing they could not grant directly; compositions still need the
-  workspace's consent either way.
+- Platform providers' own requirements are accepted automatically. Organization
+  provider declarations submitted with a runtime credential cannot approve new
+  access: existing accepted claims retain their exact verbs and selector, and new
+  claims or expanded verbs require a workspace or organization admin to re-run
+  Enable. Registration approves the provider code, not all its future claims.
 - A `CatalogEntry` whose `spec.requires` changed fans out, through the
   provider registry, to every binding of that export the manager sees; a
   binding that appears or changes reconciles itself. There is no timer and no
   fleet walk.
 - The target is one policy, shared with the Enable flow and the admin
   endpoint below: every requirement the provider declares, with the provider's
-  own requirements **Accepted**, compositions (requirements naming another
+  own platform requirements **Accepted**, platform compositions (requirements naming another
   provider) Accepted only where the workspace's Grant records consent and
   **Rejected** otherwise, a claim the tenant explicitly Rejected left Rejected,
-  an existing claim's selector kept, and undeclared claims dropped.
+  an existing claim's selector kept, and undeclared claims dropped. Organization
+  providers preserve only previously accepted claims; a removed composition
+  Grant still revokes access. The merge reads the latest binding on each retry
+  so concurrent revocations and narrower consent are never overwritten.
 - The hub's own `railgrid` binding in each tenant workspace is reconciled the
   same way to the embedded core export's claims, which is also how the
   `apibindings` claim reaches workspaces created before it existed.
@@ -1749,7 +1792,7 @@ a per-rollout step:
 What the reconciler deliberately does **not** do, and what the portal shows
 instead (`GET .../providers/enabled` → `claims`):
 
-- **Consent to a new composition.** It is written Rejected until a workspace
+- **Consent to new or expanded organization-provider access, or a new composition.** New claims are written Rejected until a workspace
   or organization admin accepts it; the provider card shows it under
   "Permissions not in force here" with a *Review access* button that re-runs
   Enable.
@@ -1808,9 +1851,20 @@ CatalogEntry).
   the separate trust decision. This backend policy does not itself create a
   browser host or sandbox.
 
-- **Auth token forwarding** (backend proxy): the user's bearer token is
-  forwarded to the provider backend. Operators MUST trust the providers
-  they install. Same trust model as installing any cluster operator.
+- **Backend authentication.** Platform provider routing may use its configured
+  native delegated identity (`railgrid-pdu-`) under
+  `--provider-delegated-tokens=platform|all`; with `off`, the caller's bearer
+  remains the platform backend credential. Org-owned BYO backends receive a short-lived opaque
+  `rgbyo1` relay credential, not the user's bearer or a KCP ServiceAccount
+  token. The relay verifies the live user UID and membership, provider source
+  cluster and restricted policy, current binding, and exact selected cluster;
+  it allows only the provider's own APIs and applied, approved dependencies.
+  Composition access requires a current uncached Grant. Core Secret access is
+  a named GET in the default namespace and the hub checks returned labels
+  against the accepted selector. Hub REST requests separately pass the
+  provider's declared capabilities, the current user's roles, and an uncached
+  organization Grant. Cookies, proxy authorization, impersonation headers, and
+  bearer-bearing WebSocket protocols are removed before upstream forwarding.
 - **Provider→kcp isolation**: provider SAs are scoped to their own
   workspace. Cross-tenant access only via the APIExport mechanism, which
   kcp gates by `permissionClaims`.
@@ -1842,12 +1896,11 @@ CatalogEntry).
   check. A requirement on core `secrets` must carry a `selector`, refused by
   `provider-sdk/install` at provider init and by
   `hack/verify-provider-contract.mjs` (`claim-selector`) at review time.
-- **Provider bundles are fully trusted code.** A provider UI is a classic
-  script the portal loads into its own document (no iframe, no sandbox). Once
-  it runs it can read anything the portal can, including the DOM of other
-  mounted providers. Installing a provider is therefore the same trust
-  decision as installing a cluster operator. Two controls bound the default
-  exposure, neither is a sandbox:
+- **Platform provider bundles are trusted code.** A platform provider UI is a
+  classic script loaded into the portal document. Once it runs it can read the
+  portal DOM and other mounted providers, so installing one is a trust decision
+  like installing a cluster operator. Org-owned BYO bundles use the isolated
+  path below and do not execute in the console document:
   - **SRI pin.** At registration (and again whenever `spec.version` or the
     heartbeat's `status.reportedVersion` changes, plus a 10-minute resync) the
     catalog reconciler fetches `<spec.serving.ui.url>/main.js` — or reads it from the
@@ -1859,24 +1912,32 @@ CatalogEntry).
     without one and CORS mode would be refused by the UI proxy), so a bundle
     swapped behind the URL after registration is refused by the browser
     until the hub re-admits it.
-    Org-owned providers are served over the edge tunnel and never dialled by
-    the reconciler; their pin is computed at grant time instead
-    (`POST /api/providers/{name}/ui-grant` hashes the bundle through the
-    caller's delegated route, `pkg/hub/providers/ui_grant.go`) and returned
-    with the bundle URL, so they load pinned too.
-  - **Host fetch, no raw token.** The host hands the bundle
-    `railgridContext.fetch` (Authorization + tenant headers injected by the host,
-    same-origin allow list) instead of the user's id token. `token` is still
-    exposed, deprecated, for one release.
-- **CSP**: `script-src 'self'` with no `'unsafe-inline'` — the portal ships no
-  inline script and an injected one is refused. `frame-src 'self'` plus
-  explicitly configured platform-owned frame sources (App Studio preview
-  hosts) covers App Studio previews and the Agents MCP App proxy asset. The
-  three scoped exceptions under §"Portal changes" do not permit replacing a
-  provider's custom-element UI with an iframe.
-- **Follow-up (L)**: a sandboxed iframe with a postMessage bridge and a
-  hub-minted per-provider token, if third-party providers written by parties
-  the operator does not trust become a product goal.
+    The hub does not fetch org-owned provider bundles. The host redeems a
+    one-use UI grant and computes SHA-384 over the response bytes itself before
+    transferring them to the sandbox.
+  - **Platform host fetch.** Platform elements receive the host-owned
+    `railgridContext.fetch`; the deprecated `token` remains a one-release
+    fallback for this trusted compatibility path. BYO frames receive neither
+    that function nor a token. Their per-frame MessagePort applies route,
+    method, active-cluster, provider-export, accepted-dependency, response-size
+    and concurrency checks. Core Secret reads are name-only GETs in the default
+    namespace and are withheld unless response labels match the accepted
+    selector. See [BYO provider UI security](./byo-providers.md).
+- **CSP**: the portal keeps `script-src 'self'` without `'unsafe-inline'`.
+  Its `frame-src 'self'` admits the static provider sandbox shell and the
+  Agents MCP App proxy. The provider shell has its own stricter policy,
+  including the configured hub origin (or validated local request origin)
+  only for trusted bootstrap/assets,
+  `connect-src 'none'`, no nested frames, workers, objects or forms.
+  App Studio preview hosts remain explicitly configured.
+- **BYO scope limitations.** The sandbox API route checks current binding and
+  composition authority for each request; the browser-side allowlist is an
+  additional guard. It does not expose hub admin, authentication,
+  organization-management, arbitrary provider, or raw Secret list/watch
+  routes. A BYO UI feature requiring another capability must have that
+  capability declared and accepted; policy is not widened from bundle
+  metadata alone. Backend API access follows the relay checks described above,
+  with no native ServiceAccount token issued to the BYO backend.
 - **Internal-only services**: providers should be `ClusterIP`. Hub is the
   only public ingress. Network policies recommended.
 - **Heartbeat token**: the heartbeat is authenticated as the provider's own

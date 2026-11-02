@@ -126,11 +126,14 @@ func EnsureIdentity(ctx context.Context, c client.Client, name string, refs []me
 
 // RESTConfig builds the rest.Config every workspace-scoped client shares: the
 // hub's kcp proxy at {hubBase}/clusters/{clusterID}, authenticating as the
-// given bearer token. The proxy authorizes the caller against their workspace
-// membership and forwards to kcp as that identity, so a provider reaches any
-// workspace the caller belongs to — the same path kubectl and the portals
-// use. insecure relaxes TLS for in-cluster hub certs (the RAILGRID_HUB_INSECURE
-// knob).
+// given bearer token. For native caller credentials, the proxy authorizes
+// workspace membership and forwards to kcp as that identity, so the caller
+// can reach any workspace they belong to — the same path kubectl and the
+// portals use. Org-owned BYO backend requests are mediated separately: the
+// hub checks live user identity and membership, provider binding/source policy,
+// approved dependencies, and the exact selected workspace before dispatching
+// as the user's current RBAC identity. insecure relaxes TLS for in-cluster hub
+// certs (the RAILGRID_HUB_INSECURE knob).
 func RESTConfig(hubBase, clusterID, token string, insecure bool) (*rest.Config, error) {
 	if hubBase == "" {
 		return nil, fmt.Errorf("hub base URL is empty (RAILGRID_HUB_URL)")

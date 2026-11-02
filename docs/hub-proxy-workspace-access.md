@@ -19,24 +19,29 @@
 ## Why this doc exists
 
 The hub's user-facing kcp proxy
-([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) forwards a user's
-own bearer token to kcp so the request runs with the user's identity and kcp
-enforces their RBAC natively. Before it forwards, it does a **cluster pre-check**:
-it only lets a request through to the **one** workspace recorded in
-`User.Spec.DefaultCluster`. Every other workspace is rejected with a 403
-`cluster access denied` — *before* the request ever reaches kcp, and regardless
-of whether the user actually has RBAC there.
+([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) authorizes a
+requested workspace against the caller's current membership before forwarding
+ordinary kube requests to kcp, where native RBAC remains authoritative. This
+replaced the former `DefaultCluster`-only pre-check that rejected every other
+workspace before kcp could evaluate the user's RBAC.
 
-That single-workspace funnel is the right default for the simplest case, but it
-breaks any user-facing flow that needs a **non-default** workspace. App Studio
-hit it head-on and had to route around the proxy entirely (see
-[Relationship to App Studio](#relationship-to-app-studio-option-b)). This doc
-proposes the platform-wide fix: **authorize the requested cluster against the
-user's membership, not against a single fixed `DefaultCluster`.**
+Org-owned BYO backend traffic is a separate path: the hub intercepts the
+provider's `/clusters/{id}` SDK requests and authorizes them against current
+membership, binding, source-cluster policy, and the exact selected cluster. It
+then dispatches as the live user's current RBAC identity. The backend presents
+only a short-lived opaque `rgbyo1` relay credential; it never receives the
+user's hub bearer or a native KCP ServiceAccount token. See
+[BYO provider security](./byo-providers.md).
+
+The change was driven by user-facing flows that need a **non-default** workspace.
+App Studio first routed around the proxy through the interim GraphQL path (see
+[Relationship to App Studio](#relationship-to-app-studio-option-b)); Option A
+removed that workaround and made the membership-gated proxy the tenant data
+path.
 
 ---
 
-## Current model
+## Historical model (before Option A)
 
 ### `DefaultCluster` is a fixed "home" pointer
 
@@ -88,16 +93,15 @@ kcp-admin client instead of the user proxy.
 
 ---
 
-## Proposal (Option A)
+## Implemented behavior (Option A)
 
-Make the proxy authorize the requested cluster against the **caller's
-membership**, and let kcp RBAC remain the real enforcement boundary.
+The proxy authorizes the requested cluster against the **caller's membership**,
+and kcp RBAC remains the enforcement boundary.
 
 ### A-1 — Authorize against `UserMembershipIndex`, not a single `DefaultCluster`
 
-`resolveKCPPath` changes from "is this the default cluster?" to "is this a
-workspace the caller is a member of?" (the SA path is handled separately in
-A-6). Concretely:
+`resolveKCPPath` accepts a workspace the caller is a member of (the supported
+native ServiceAccount path is handled separately in A-6). Concretely:
 
 - For `/clusters/{id}/...`: allow when `{id}` maps to a workspace in the
   caller's `UserMembershipIndex` (or an **edge** under such a workspace —
@@ -233,11 +237,10 @@ workspaces.
 - **Failure mode is closed:** unknown cluster, non-member, or index-lookup
   error → 403, same as today.
 - **Blast radius is the most security-sensitive path in the system** (every
-  user, every `kubectl`, every portal kcp call). This is the reason to document
-  and review the design before implementing, and to land it behind tests that
-  assert: member→allowed, non-member→403, Org-workspace→403, cross-Org
-  isolation, bare-path→**rejected** (no default), SA→only its claim cluster
-  (other cluster→403), and edge-under-member-workspace→allowed.
+  user, every `kubectl`, every portal kcp call). The proxy tests cover:
+  member→allowed, non-member→403, Org-workspace→403, cross-Org isolation,
+  bare-path→**rejected** (no default), SA→only its claim cluster (other
+  cluster→403), and edge-under-member-workspace→allowed.
 
 ---
 
@@ -305,41 +308,30 @@ acting as the caller all share the one membership-gated proxy path.
   railgrid terms as `{id}:{edgeName}`, authorized by the parent workspace's
   membership (A-3).
 
-## Delegated tokens on the provider backend proxy
+## Provider backend credentials
 
-**Implemented**, and worth reading alongside A-6 because it is the same
-mechanism pointed the other way.
+An org-owned BYO backend's `/clusters/{id}` calls use the opaque `rgbyo1` HMAC
+credential, valid for ten minutes. The hub checks live user UID and membership,
+the provider source cluster and restricted policy, the current binding, and the
+exact selected cluster before dispatching as the live user. The relay permits
+the provider's own APIs and dependencies that are applied and approved; a
+composition also needs an uncached current Grant. Secret access is limited to a
+named GET in the default namespace and the response labels must match the
+accepted selector. The hub does not issue the backend a native ServiceAccount
+token Secret.
 
-A-6 says a ServiceAccount token is authorized only in the cluster its own claim
-names — the token *is* the scope. The provider backend proxy now uses that
-property deliberately: instead of forwarding the caller's hub bearer (which A-1
-lets reach *every* workspace they are a member of), it mints a ServiceAccount in
-the caller's **current** workspace and sends that
-(`pkg/hub/serviceaccounts/delegated_user_token.go`,
-`pkg/hub/providers/proxy.go`, `proxy_edge.go`). A provider that calls back into
-the hub with it lands on the SA path in A-6, pinned to that one workspace, and
-the tenant resolver maps the account back to the human for `X-Railgrid-User`
-(`pkg/hub/provider_tenant_resolver.go`).
+Native platform-provider tokens remain optional and use the `railgrid-pdu-`
+prefix. The retired `railgrid-du-` identity is rejected before impersonation by
+both the hub and embedded KCP authentication paths. There is no synchronous
+startup inventory scan; operators clean up known old objects explicitly.
 
-So the two halves compose: A-1 widens what a **user's own** token may address to
-the workspaces they belong to; delegation narrows what a **provider acting for
-them** may address to the one workspace the request was made in. The blast radius
-of a compromised or buggy provider stops being "everything this user can reach".
-
-- Org-owned providers always receive the delegated token.
-- Platform providers follow `--provider-delegated-tokens=off|platform|all`
-  (default `off` this release, `platform` next), with
-  `--provider-delegated-tokens-exclude` for backends that cannot use one.
-- Every failure is closed — no path falls back to forwarding the bearer.
-- A request with no workspace selection (`X-Railgrid-Workspace`) cannot be
-  delegated and is refused. This follows A-1's "no bare-path default": with no
-  workspace selector there is nothing to authorize against, so the answer is a
-  refusal rather than a guess.
-
-Per-provider verdicts and the flag's semantics are in
-[provider-scoping.md](./provider-scoping.md#delegated-tokens--what-credential-a-provider-receives).
+For the BYO UI bridge and lifecycle limits, see
+[BYO provider security](./byo-providers.md). External KCP deployments do not
+receive the embedded-shard retired-prefix restriction, and historical
+arbitrary child credentials require operator audit.
 
 ## Open questions
 
-None outstanding — the design decisions above cover the proposal. Remaining work
-is implementation (A-1…A-6) and the test matrix in [Security analysis](#security-analysis).
+None outstanding for the membership-gate design. The separate BYO relay and
+embedded KCP identity restrictions are implemented; see
+[BYO provider security](./byo-providers.md) for their scope and lifecycle.

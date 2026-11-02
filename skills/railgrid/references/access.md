@@ -145,8 +145,9 @@ every child workspace; members are added by email or ID of an existing user
 membership row binds the user as `cluster-admin` of that workspace's kcp
 cluster, so the role only matters for org/workspace management
 (`pkg/hub/restapi/workspace_rbac.go`). `workspaceCreation: members|admin`
-(default `members`) and `catalogEntryCreation` (default `admin`) are per-org
-policies.
+(default `members`) is a per-org policy. Organization provider registration,
+mutations, and credential retrieval require Org admin. `catalogEntryCreation`
+is deprecated; legacy `members` values do not authorize those operations.
 
 ## 4. URL grammar
 
@@ -186,9 +187,13 @@ against your memberships.
 What the hub injects toward providers on `/services/providers/*`, after
 stripping anything you sent: `X-Railgrid-User`, `X-Railgrid-Tenant` and
 `X-Railgrid-Cluster` (both the kcp cluster ID — tenant identity is never a
-workspace path). Org-owned providers always receive a 10-minute delegated
-ServiceAccount token instead of your bearer; platform providers follow the
-hub's `--provider-delegated-tokens` policy. Verbs under `/clusters/{id}`
+workspace path). Org-owned BYO backends use a short-lived opaque `rgbyo1`
+credential instead of your bearer or a native ServiceAccount token; platform
+providers follow the hub's `--provider-delegated-tokens` policy. For intercepted
+`/clusters/{id}` SDK requests, the hub checks current user identity and
+membership, provider binding/source policy, dependencies, and the exact
+selected cluster before dispatching as the user's current RBAC identity. Verbs
+under `/clusters/{id}`
 reach the provider with kcp's `X-Remote-User`/`X-Remote-Group` identity and
 no bearer at all.
 

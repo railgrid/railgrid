@@ -255,22 +255,23 @@ routing/heartbeat state; the provider's own `init` creates the kcp side
 > binding through the `core.railgrid.ai` virtual workspace (the core export
 > claims `apis.kcp.io/apibindings`) and, whenever a CatalogEntry's
 > `spec.requires` changes or a binding appears, brings the binding's
-> `spec.permissionClaims` to the current declaration — the provider's own
-> requirements Accepted, compositions Accepted only where the workspace's Grant
-> consents, explicit rejections preserved, dropped claims removed. A provider
-> that adds a requirement therefore needs no migration and no re-Enable; the
+> `spec.permissionClaims` to the current declaration — platform providers' own
+> requirements Accepted, platform compositions Accepted only where the workspace's
+> Grant consents, explicit rejections preserved, dropped claims removed. A platform
+> provider that adds an own requirement needs no migration or re-Enable; the
 > admin `POST /api/admin/providers/{name}/claims/reaccept` remains as a manual
-> retry with counts. Own requirements are accepted for platform **and**
-> org-owned providers alike: an Org's provider is registered by that Org's
-> admins, who already hold admin in every workspace of the Org, so a claim they
-> declare widens nothing they could not grant directly. Two invariants the
+> retry with counts. Organization provider upgrades require explicit Enable
+> consent for new claims or expanded verbs. Background reconciliation preserves
+> existing accepted claims verbatim and never expands them from a runtime
+> credential's declaration; composition consent removal still revokes access.
+> Registering provider code does not approve all its future claims. Two invariants the
 > design rests on: a tenant binding is rewritten only in the tenant's own
 > workspace with claims the binding's author could have written themselves
 > (compositions stay Grant-gated), and `apiexports/content` on
 > `core.railgrid.ai` in `system:controllers` is hub-only — that virtual
 > workspace already serves every tenant's core-group objects read-write, and
 > the read-only `apibindings` claim adds the binding list to it, nothing more.
-> Two things still need a person: a **new composition**
+> Changes needing a person include **new or expanded organization-provider claims**, a **new composition**
 > (consent, offered on the provider card and by re-Enabling) and a **narrowed
 > selector** (kcp makes an accepted selector immutable, so only Disable +
 > Enable applies it; kcp reports it as `PermissionClaimsValid=False`). Symptom
@@ -309,7 +310,7 @@ routing/heartbeat state; the provider's own `init` creates the kcp side
 | File | Role |
 |------|------|
 | `provision.go` | Creates the kcp sub-workspace and the `provider` ServiceAccount, and mints the provider kubeconfig. It does **not** apply schemas or the APIExport — the provider's own `init` does, from `RAILGRID_KCP_DIR` (§5.1) |
-| `proxy.go`, `proxy_edge.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`, MCP / OAuth / webhooks / agent tunnel / health only — no verbs); injects tenant/user headers, strips `X-Remote-*`. An org-owned provider is reached through kcp at the edges `services/{name}/proxy` verb with a delegated token in `X-Railgrid-Upstream-Authorization` |
+| `proxy.go`, `proxy_edge.go` | UI reverse-proxy (`/ui/providers/{name}/*`) + backend proxy (`/services/providers/{name}/*`, MCP / OAuth / webhooks / agent tunnel / health only — no verbs); injects tenant/user headers, strips `X-Remote-*`. Org-owned BYO backend KCP requests use the `/clusters/{id}` relay with a short-lived opaque `rgbyo1` credential; the hub rechecks live user, membership, provider binding/source policy, dependencies and the selected cluster before dispatching as the user's current RBAC identity. No native ServiceAccount token or user's hub bearer reaches the BYO backend; see [docs/byo-providers.md](docs/byo-providers.md). |
 | registry / controller / heartbeat | In-memory routing table, catalog reconcile, `POST /api/providers/{name}/heartbeat` liveness (TTL ~90s) |
 | `pkg/hub/provider_tenant_resolver.go` + `provider_cluster_resolver.go` | Resolves caller identity → tenant workspace → kcp logical-cluster ID; the proxy injects `X-Railgrid-User` and the ID as both `X-Railgrid-Tenant` / `X-Railgrid-Cluster` (never the path), strips spoofed inbound copies |
 
@@ -334,24 +335,26 @@ have started) not stale.
 ### 5.3 Provider portal micro-frontends
 
 Provider UIs are independent Vite/TS bundles in `providers/{name}/portal/`,
-built to `dist/` and embedded via `//go:embed` in the provider's `assets.go`. The
-portal loads each `/ui/providers/{name}/main.js` as a classic script into its
-own document — pinned with the SRI hash the hub computed at registration
-(`CatalogEntry.status.ui.mainJSIntegrity`, exposed as `mainJSIntegrity` on
-`/api/providers`) — and renders the **custom element** it registers
-(`<railgrid-provider-{name}>`). The host sets `element.railgridContext` (user, tenant,
-orgUUID/workspaceUUID, resolved theme, basePath, subPath, and a host-owned
-`fetch`) as a JS property and re-pushes it on every change; there is no iframe
-or postMessage bridge for this ordinary provider-element mount. **A provider
-bundle executes as fully trusted code in the portal document.** Bundles must
-reach the hub through
-`railgridContext.fetch` (`portalkit/tenant.ts` `providerFetch(ctx)`), which injects
-`Authorization` + tenant headers and allows only the provider's own
-`/services/providers/{name}/` and `/ui/providers/{name}/`, `/clusters/`,
-`/api/orgs/{org}/`, and GET/HEAD `/api/providers`. `railgridContext.token`
-is deprecated (one-release fallback) and will be removed. See
-[`docs/providers.md`](docs/providers.md) §"Portal changes" and §"Security
-considerations".
+built to `dist/` and embedded via `//go:embed` in the provider's `assets.go`.
+Platform bundles load as classic scripts into the portal document, pinned with
+the hub's SRI hash, and render their registered custom element. They are trusted
+portal code and receive the ordinary host-owned `railgridContext`.
+
+Org-owned BYO bundles use a separate path. The host redeems the UI grant,
+fetches the bytes, verifies the returned SHA-384 pin with WebCrypto, then sends
+the verified bytes to `/ui/provider-sandbox.html` in an opaque-origin iframe
+with `sandbox="allow-scripts"`. The grant URL and user's bearer never enter
+the frame. A MessageChannel bridge checks every request against the active
+principal/workspace and allows the provider's export API groups, own
+health/MCP/assets, and dependency claims that the current APIBinding reports
+as applied and accepted. Core Secret GETs additionally require an accepted
+selector, and the host verifies response labels before forwarding bytes. The
+bridge denies hub admin/auth endpoints, other groups, redirects and
+cross-origin requests, and bounds concurrent request/response data. BYO
+dashboard tiles and the Agents overlay show an explicit Open-provider
+fallback instead of loading org JavaScript in the portal document. See
+[`docs/providers.md`](docs/providers.md) §"ProviderFrame.vue" and
+[`docs/byo-providers.md`](docs/byo-providers.md).
 
 The Agents portal has one narrow nested-frame exception for attended MCP App
 result views. It is limited to app HTML whose provider/resource identity and
@@ -370,7 +373,7 @@ a later document may make network requests, so this view is only for reviewed
 providers; app HTML, recorded arguments, and captured results must not contain
 secrets. The Hub portal CSP
 must allow `frame-src 'self'` for the Agents sandbox proxy asset. This exception
-does not change the trusted-code status of the provider bundle itself.
+is separate from the BYO provider-page isolation described above.
 
 Build chain (Makefile):
 - `make build-{name}-provider-portal` — `vite build` only.

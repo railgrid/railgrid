@@ -252,101 +252,35 @@ no permission-claim dialog, one-click — but never an auto-bind.
 
 ---
 
-## Delegated tokens — what credential a provider receives
+## Org-owned backend authentication
 
-**Implemented.** Separate from *which* copy of a provider a request reaches
-(above), there is the question of *what credential* crosses when it gets there.
+Org-owned BYO backends receive a short-lived opaque `rgbyo1` HMAC credential
+(10-minute lifetime), not a native KCP ServiceAccount token or the caller's hub
+bearer. On each `/clusters/{id}` request, the hub relay verifies the live user
+UID and membership, the provider's source cluster and restricted policy, the
+current provider binding UID, and the exact selected cluster. Access is limited to
+the provider's own API groups and dependency claims that are both applied and
+approved; composition access also requires an uncached current Grant. Core
+Secret access is a named GET in the default namespace, with labels checked
+against the accepted selector. The relay never returns a native ServiceAccount
+token Secret.
 
-The backend proxy used to forward the caller's own `Authorization` header to
-every provider. That header is a full hub credential: it reaches every workspace
-the user is a member of and every REST endpoint they can call. A provider needs
-far less — it acts in one workspace, on the caller's behalf.
+Hub REST calls are separately limited to the provider's declared capabilities,
+the current user's roles, and an uncached organization Grant. The relay does not
+exchange tokens through another provider or a UI grant. Cookies, proxy
+authorization, impersonation headers, and bearer-bearing WebSocket protocols are
+stripped before forwarding. See [BYO provider security](./byo-providers.md) for
+the full route and lifecycle contract.
 
-A **delegated user token** replaces it: a ServiceAccount token minted by the hub
-in the caller's *current* workspace (`railgrid-du-<hash>` in `default`,
-`pkg/hub/serviceaccounts/delegated_user_token.go`), audience-bound, ten minutes
-long, bound to the same role the caller holds there, and annotated with the human
-it stands in for. `X-Railgrid-User` / `X-Railgrid-Tenant` / `X-Railgrid-Cluster` are
-unchanged, so a provider still attributes work to the person. A provider calling
-back into the hub with it resolves to that person
-(`pkg/hub/provider_tenant_resolver.go`).
-
-Who gets one:
-
-| Provider scope | Credential |
-|---|---|
-| Org-owned (`root:railgrid:tenants:{org}:providers:{name}`) | **Always** the delegated token. Its backend runs in a tenant's own cluster; the caller's hub bearer must never cross that line. |
-| Platform (`root:railgrid:providers`) | Per `--provider-delegated-tokens`. |
-
-`--provider-delegated-tokens=off|platform|all` (hub flag, `pkg/hub/options.go`):
-
-- `off` — platform providers receive the caller's bearer, as they always have.
-  **The default for this release.**
-- `platform` — platform providers receive the delegated token, except those
-  named in `--provider-delegated-tokens-exclude` (default: `edges`). **The
-  default from the next release**; run it now to confirm your providers need
-  nothing beyond `/clusters/{id}` access.
-- `all` — every platform provider, exclusion list ignored.
-
-Fail-closed on every path, same as the org-owned one: an unresolvable caller or
-a caller with no workspace selection is refused (403), a missing issuer or a mint
-error is a 503. Nothing falls back to forwarding the bearer. Anonymous requests
-(health probes) carry no credential and are forwarded as-is.
-
-**Requests need a workspace.** The delegated account lives in a team workspace,
-so a request made in the portal's organization-only mode (no `X-Railgrid-Workspace`)
-has nowhere to mint one and is refused. Org workspaces are hub-mediated only
-(P-2 / O-10) and kcp will not honour an SA token bound there, so minting in the
-org workspace is not an option. In practice the portal's provider frames require
-a selected workspace before they mount, and `portalkit`'s `tenantHeaders()` sends
-both headers.
-
-### Provider identity and hub access
-
-The delegated account's proof (`railgrid.ai/delegated-user-proof`, version 2)
-covers the provider's name **and its owner org**
-(`railgrid.ai/delegated-provider-org`, absent for platform providers), and the
-account name hashes the owner in too. An org-owned provider sharing a platform
-provider's name is therefore a different identity everywhere it matters. Accounts
-signed before version 2 are re-signed in place on the next mint (platform
-providers) or replaced by a new account (org-owned); tokens from them verify as
-*legacy* until they expire, and the hub resolves their provider the way the
-proxy did when it issued them.
-
-What a delegated token may do on the hub REST surface is the provider's
-declared-and-accepted `spec.hub.access` (`docs/providers.md`, *Hub access*), enforced
-by `pkg/hub/hubaccess`.
-
-### Per-provider audit
-
-Every consumer of the forwarded bearer, and whether a workspace-scoped SA token
-serves it. The recurring answer is yes, because no provider parses the bearer as
-a JWT — a repo-wide search for `ParseUnverified` / `jwt.Parse` / `ParseSigned`
-under `providers/` and `provider-sdk/` finds nothing that inspects the *caller's*
-token — and every provider takes identity from `X-Railgrid-User` / `X-Railgrid-Tenant`
-instead.
-
-| Consumer | What it does with the bearer | Verdict |
-|---|---|---|
-| `provider-sdk/tenantaccess` `NewClient` | `rest.Config{Host: {hub}/clusters/{id}, BearerToken: …}` | **Works.** Also never fed a caller bearer today — its four callers pass a reconciler-minted SA token. |
-| Data-plane verbs (every provider, `provider-sdk/dataplane.Gate`) | none — a verb carries no bearer. kcp authenticates the caller on `/clusters/{id}/apis/…/{resource}/{name}/{verb}` and stamps the identity; the gate runs a `SubjectAccessReview` on it | **Unaffected.** A verb never goes through the backend proxy, so no delegated token is ever substituted on it; the identity kcp stamps is the one that presented the credential to the front door. |
-| `providers/infrastructure/tenant/`, `providers/code/tenant/` | `{hub}/clusters/{X-Railgrid-Cluster}` dynamic + authorization clients | **Works.** Opaque credential; the provider's own kubeconfig credentials are deliberately dropped from the config. |
-| `providers/edges` — tunnel, k8s subresource, `services/{name}/proxy` | TokenReview then SAR (`verb: proxy`) through the APIExport VW for the addressed cluster | **Works.** A delegated token authenticates in the workspace that minted it — the same one being addressed — keeps its groups, and its `cluster-admin` binding passes the SAR. Already exercised: the org-provider tunnel carries delegated tokens today. |
-| `providers/edges` — SSH with `spec.sshUserMapping: identity` | TokenReview'd username becomes the **Linux login name** | **Breaks.** Resolves to `system:serviceaccount:default:railgrid-du-<hash>`, which is not the human's account. `edges` is therefore in the default exclusion list. Lifting it means taking that identity from `X-Railgrid-User`. |
-| `providers/app-studio` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards the bearer to the hub MCP aggregate. Another provider's verb is called **as app-studio** through its own export virtual workspace, never with the caller's token | **Works.** The remaining hop is a hub surface that accepts an SA token and re-forwards `X-Railgrid-*` alongside. |
-| `providers/agents` (`tenant/scope.go`, MCP only) | Dynamic client over `{hub}/clusters/{X-Railgrid-Cluster}` as the caller (`tenantaccess.NewDynamicClient`); forwards it to the edges MCP endpoint. Infrastructure verbs are called as the provider (`Callers.ExportVerbURL`) | **Works.** |
-| `providers/databricks` | `{hub}/clusters/{id}` client + SSAR per action | **Works.** The Databricks-facing PAT is a workspace Secret, unrelated to the caller's bearer. |
-| `providers/kuery`, `providers/quickstart` | Echo the token's length/fingerprint only | **Works.** Neither uses it as a credential. |
-| Hub kcp proxy (`/clusters/{cluster}`, `pkg/server/proxy/proxy.go`) | Dispatches by token shape and dials `{front-proxy}/clusters/{cluster}` as the caller; user tokens are gated by workspace membership | **Works.** kcp pins an SA token to its own cluster claim, which is the workspace the delegated account was minted in. |
-
-Two consequences worth stating. First, a delegated token is **pinned to one
-workspace** by kcp, so a provider that (today) could follow the caller's bearer
-into another of their workspaces no longer can — that is the point of the change,
-but it will surface as a 403 in any provider that was relying on it. Second,
-several providers hold the caller's credential past the request (`agents` for the
-lifetime of a detached run, `app-studio` for a sandbox's lifetime, `databricks`
-in a 10-minute client cache); with delegation on, what they hold expires in ten
-minutes and is scoped to one workspace instead of being a live hub credential.
+Native platform-provider tokens are optional and use the `railgrid-pdu-`
+identity prefix when `--provider-delegated-tokens=platform|all` is selected;
+`off` keeps the caller bearer for platform backends. The retired
+`railgrid-du-` native identity is rejected before impersonation by both the hub
+and embedded KCP authentication paths. Historical credentials outside this
+managed path require operator audit; external KCP deployments do not receive the
+embedded-shard restriction. The hub does not run a synchronous startup
+inventory scan: operators clean up known old objects through the documented
+cleanup path.
 
 ## Proxy gating
 
