@@ -55,12 +55,30 @@ const (
 // written (portal/src/resources.ts saveCredential).
 const DefaultModelSecretKey = "apiKey"
 
-// ModelCredentialSecretName is the Secret this provider's own writers (portal,
-// REST, MCP) create for a ModelCredential of the given name. It is a default
-// for what they create, not a rule anything enforces on spec.secretRef — a
-// hand-written credential may name any Secret. The reconciler uses it to tell
-// a Secret the provider minted, which it may own and garbage-collect with the
-// credential, from one the tenant brought, which it must leave alone.
+// ModelCredentialSecretProtectionFinalizer keeps a credential present until its
+// controller has preserved any owned Secrets referenced by other resources.
+const ModelCredentialSecretProtectionFinalizer = "agents.railgrid.ai/model-credential-secret-protection"
+
+// GeneratedKeySecretIDAnnotation identifies a provider-generated key Secret.
+// The same random ID is written to the Secret and its owning model credential
+// or provider connection so callers can distinguish an in-flight generated
+// key from an arbitrary tenant Secret with a coincidental name.
+const GeneratedKeySecretIDAnnotation = "agents.railgrid.ai/generated-secret-id"
+
+// PendingKeySecretAnnotation reserves the next generated Secret name while a
+// key is rotated. The owner remains protected until the new Secret is created
+// and the resource atomically switches to it.
+const PendingKeySecretAnnotation = "agents.railgrid.ai/pending-key-secret"
+
+// GeneratedModelCredentialSecretName returns the name for a provider-generated
+// model key Secret. id must be a unique lowercase hexadecimal token.
+func GeneratedModelCredentialSecretName(id string) string { return "railgrid-agents-model-" + id }
+
+// ModelCredentialSecretName is the deterministic Secret name used by older
+// provider writers. New generated keys use GeneratedModelCredentialSecretName
+// with a random ID. This remains only for legacy adoption compatibility; a
+// hand-written credential may name any Secret and the name is not a deletion
+// authority.
 func ModelCredentialSecretName(name string) string { return "railgrid-agents-model-" + name }
 
 // Secret keys a harness identity is carried in. They are keys rather than
@@ -125,8 +143,24 @@ type ModelCredential struct {
 // syntax error and make the apiserver reject the whole CRD — silently, on
 // whoever next runs the formatter.
 //
-// +kubebuilder:validation:XValidation:rule="self.provider in ['claude-code','codex'] || (has(self.baseURL) && size(self.baseURL) > 0)",message="spec.baseURL is required for a chat endpoint provider"
+// +kubebuilder:validation:XValidation:rule="(has(self.connectionRef) && size(self.connectionRef) > 0) || self.provider in ['claude-code','codex'] || (has(self.baseURL) && size(self.baseURL) > 0)",message="spec.baseURL is required for a chat endpoint provider"
+// +kubebuilder:validation:XValidation:rule="(has(self.connectionRef) && size(self.connectionRef) > 0) || (has(self.secretRef) && has(self.secretRef.name) && size(self.secretRef.name) > 0)",message="a direct connection needs spec.secretRef"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || ((has(self.model) && size(self.model) > 0) && (!has(self.baseURL) || size(self.baseURL) == 0) && (!has(self.secretRef) || !has(self.secretRef.name)) && !(self.provider in ['claude-code','codex']))",message="a referenced model inherits its endpoint and secret from a chat connection"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.anthropicWorkspaceID) || size(self.anthropicWorkspaceID) == 0",message="a referenced model inherits its Anthropic workspace from its connection"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.secretKey) || self.secretKey == 'apiKey'",message="a referenced model inherits its Secret key from its connection"
+// +kubebuilder:validation:XValidation:rule="!has(self.connectionRef) || size(self.connectionRef) == 0 || !has(self.provider) || self.provider == 'openai-compatible'",message="a referenced model inherits its provider from its connection"
 type ModelCredentialSpec struct {
+	// ConnectionRef names a ModelProviderConnection in this workspace that owns
+	// the provider endpoint, workspace, and Secret. A model binding supplies only
+	// its Model; references cannot be chained or point at a coding-harness
+	// identity. The provider and Secret key defaults are admitted for the
+	// Kubernetes defaults inserted on every object, but a binding cannot override
+	// either value.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`
+	ConnectionRef string `json:"connectionRef,omitempty"`
+
 	// Provider selects what kind of credential this is: a chat endpoint
 	// ("openai-compatible", the default, or "openai") or a coding-harness
 	// identity ("claude-code", "codex"). See the provider constants.
@@ -169,8 +203,8 @@ type ModelCredentialSpec struct {
 	// (manifest.yaml, provider-sdk/claimscope), so kcp hides anything without
 	// it from the provider's APIExport virtual workspace — an unlabelled
 	// Secret saves cleanly and is then invisible to every unattended run.
-	// +kubebuilder:validation:Required
-	SecretRef ModelCredentialSecretRef `json:"secretRef"`
+	// +optional
+	SecretRef ModelCredentialSecretRef `json:"secretRef,omitempty"`
 
 	// SecretKey is the key inside the referenced Secret holding the API key.
 	// +optional
@@ -183,10 +217,9 @@ type ModelCredentialSpec struct {
 // workspace this ModelCredential lives in.
 type ModelCredentialSecretRef struct {
 	// Name is the Secret's name.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
+	// +optional
 	// +kubebuilder:validation:MaxLength=253
-	Name string `json:"name"`
+	Name string `json:"name,omitempty"`
 }
 
 // ModelCredentialStatus is what the reconciler observed about the pair.

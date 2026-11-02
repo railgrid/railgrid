@@ -123,6 +123,9 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		credential, err := c.GetModelCredential(r.Context(), selected)
+		if err == nil {
+			credential, err = llm.ResolveModelCredentialForRuntime(r.Context(), c, credential)
+		}
 		if err != nil && (r.Method == http.MethodPatch || !apierrors.IsNotFound(err)) {
 			writeResourceError(w, err)
 			return
@@ -241,7 +244,11 @@ func (s *Server) authorizeFreshChatModelCredential(ctx context.Context, run *tas
 		if err != nil {
 			return nil, err
 		}
-		return fromU[agentsv1alpha1.ModelCredential](object)
+		credential, err := fromU[agentsv1alpha1.ModelCredential](object)
+		if err != nil {
+			return nil, err
+		}
+		return llm.ResolveModelCredentialForRuntime(ctx, vwSecrets{dyn: gate.provider}, credential)
 	}
 
 	// The only other fresh chat transport is MCP, where the client uses the
@@ -258,7 +265,7 @@ func (s *Server) authorizeFreshChatModelCredential(ctx context.Context, run *tas
 	if err != nil {
 		return nil, err
 	}
-	return credential, nil
+	return llm.ResolveModelCredentialForRuntime(ctx, run.Creds, credential)
 }
 
 func sessionModelCredentialNotFound() error {
@@ -290,6 +297,9 @@ func (s *Server) resolveChatModelSettings(ctx context.Context, run *taskRun) err
 	if selectedCredential == nil && credential != "" {
 		if run.Creds != nil {
 			selectedCredential, err = run.Creds.GetModelCredential(ctx, credential)
+			if err == nil {
+				selectedCredential, err = llm.ResolveModelCredentialForRuntime(ctx, run.Creds, selectedCredential)
+			}
 			if err != nil {
 				// Agent defaults have always been resolved by buildModelForPurpose,
 				// which skips an unreadable primary and tries its configured
