@@ -30,6 +30,12 @@ captures both the initial OpenAI state and a `custom` state reached by changing
 the real provider control. Screenshot values are not filled, normalized, masked,
 or cropped to hide differences.
 
+Agents now uses the provider-first BYOK flow, so its initial form is checked
+independently for API-only choices, progressive model selection, credential
+destination changes, and the non-sticky mobile action area. App Studio retains
+the shared model configuration form. The comparator checks shared route
+typography; cross-provider pixel differences remain observational.
+
 The gate checks the contracts in `docs/design/components/model-connections.md`:
 the fluid creation root and explicit typography, the shared header and back
 icon, the route's heading focus, section hierarchy, named fields and help,

@@ -37,6 +37,14 @@ without running the agent again, and a full executor queue answers `503` with
 
 ## Model credentials
 
+Reusable BYOK accounts use `ModelProviderConnection`; configured models reference
+them through `ModelCredential.spec.connectionRef`. See
+[provider connection lifecycle and migration](../../docs/agents-model-provider-connections.md).
+
+The direct endpoint shape below remains accepted for legacy configurations and
+is migrated automatically; harness identities remain direct credentials.
+
+
 An agent reaches a model through a **`ModelCredential`** — a cluster-scoped
 object in the tenant's own workspace carrying the provider flavour
 (`openai-compatible` or `openai`), the base URL, a default model id, and a

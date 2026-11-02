@@ -169,7 +169,7 @@ func runControllerManager(ctx context.Context, deps api.ControllerDeps, ready *v
 	if err := (&modelcredential.Reconciler{}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("model credential controller: %w", err)
 	}
-	if err := (&modelcredential.ProviderConnectionReconciler{}).SetupWithManager(mgr); err != nil {
+	if err := (&modelcredential.ProviderConnectionReconciler{MigrateLegacy: true}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("model provider connection controller: %w", err)
 	}
 	if err := newRunReconciler(deps).SetupWithManager(mgr); err != nil {

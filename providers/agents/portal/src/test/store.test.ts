@@ -218,6 +218,23 @@ describe('create-result adoption refresh races', () => {
     expect(store.credentials.data).toEqual([created])
   })
 
+  it('keeps a same-named connection when a renamed model meets an older list response', async () => {
+    const pending = deferred<Credential[]>()
+    const connection: Credential = { name: 'shared', isConnection: true, displayName: 'Provider' }
+    const model: Credential = { name: 'shared', connectionRef: 'shared', model: 'test-model', displayName: 'Before' }
+    const renamed = { ...model, displayName: 'After' }
+    const store = makeStore(stubApi({ listCredentials: () => pending.promise }))
+    store.credentials.data = [connection, model]
+
+    const refresh = store.load('credentials')
+    store.adopt('credentials', renamed)
+    expect(store.credentials.data).toEqual([connection, renamed])
+    pending.resolve([connection, model])
+    await refresh
+
+    expect(store.credentials.data).toEqual([connection, renamed])
+  })
+
   it('lets a later refresh remove an adopted item once it is authoritative', async () => {
     const pending = deferred<Agent[]>()
     const created: Agent = { metadata: { name: 'created' }, spec: {} }
@@ -350,5 +367,32 @@ describe('SSE parsing', () => {
     const out: unknown[] = []
     for await (const ev of readSSE(body)) out.push(ev.data)
     expect(out).toEqual([{ text: 'a' }, { text: 'b' }])
+  })
+})
+
+describe('credential read access state', () => {
+  it('retains a forbidden status for recovery and clears it after a successful retry', async () => {
+    const listCredentials = vi.fn().mockRejectedValueOnce(Object.assign(new Error('Forbidden'), { status: 403 })).mockResolvedValue([])
+    const store = makeStore(stubApi({ listCredentials }))
+    await store.load('credentials')
+    expect(store.credentials.errorStatus).toBe(403)
+    expect(store.credentials.hasSnapshot).toBe(false)
+    await store.load('credentials')
+    expect(store.credentials.errorStatus).toBeUndefined()
+    expect(store.credentials.error).toBeNull()
+    expect(store.credentials.hasSnapshot).toBe(true)
+  })
+})
+
+describe('chat setup draft handoff', () => {
+  it('keeps the original session and draft scoped to the agent and retires them with authority', () => {
+    const store = makeStore(stubApi())
+    store.offerChatSetupDraft('scout', 'Unsent draft', 'session-one')
+    expect(store.takeChatSetupDraft('other-agent')).toBeUndefined()
+    expect(store.takeChatSetupDraft('scout')).toEqual({ draft: 'Unsent draft', session: 'session-one' })
+    expect(store.takeChatSetupDraft('scout')).toBeUndefined()
+    store.offerChatSetupDraft('scout', 'Private draft', 'session-two')
+    store.retire()
+    expect(store.takeChatSetupDraft('scout')).toBeUndefined()
   })
 })

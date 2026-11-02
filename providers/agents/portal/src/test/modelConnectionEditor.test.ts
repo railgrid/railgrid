@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import Models from '../views/Models.vue'
 import Editor from '../views/ModelConnectionEditor.vue'
 import { makeStore, stubApi } from './helpers'
+import type { Credential, CredentialWrite } from '../types'
 import { mountVue, settleVue } from './vue-helper'
 
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
@@ -310,23 +311,31 @@ describe('focused model connection editor', () => {
   expect(details.textContent).toContain(message)
  })
 
- it('creates the named connection only once after successful verification', async () => {
-  const saved = { name: 'first', baseURL: 'https://api.openai.com/v1', model: 'gpt-5', ready: true, secretResolved: true }
-  const saveCredential = vi.fn().mockResolvedValue(saved)
-  const listCredentials = vi.fn().mockResolvedValue([saved])
-  const probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, models: ['gpt-5'], latencyMS: 4 })
-  const api = stubApi({ saveCredential, probeCredentialDraft, listCredentials, catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
+ it('saves the provider first, then verifies its selected model with the saved key', async () => {
+  const saved: Credential[] = []
+  const saveCredential = vi.fn(async (body: CredentialWrite) => {
+    const { apiKey: _key, ...rest } = body
+    const result = { ...rest, ...(body.model === '' ? { isConnection: true, discovered: ['gpt-5'] } : {}), ready: true, secretResolved: true }
+    saved.push(result)
+    return result
+  })
+  const testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+  const api = stubApi({ saveCredential, testProviderConnection, probeCredentialDraft: () => Promise.resolve({ ok: true, models: ['gpt-5'], latencyMS: 4 }), listCredentials: () => Promise.resolve([...saved]), catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
   const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
-  button(el, 'Connect model').click(); await settleVue()
-  await input(el, 'name', 'first')
+  button(el, 'Add model').click(); await settleVue()
+  el.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click(); await settleVue()
   await input(el, 'apiKey', 'sk-first')
-  button(el, 'Find models').click(); await settleVue()
+  expect(el.querySelector('#model-id')).toBeNull()
+  button(el, 'Verify & connect').click(); await settleVue(12)
+  expect(saveCredential).toHaveBeenCalledTimes(1)
+  expect(saveCredential.mock.calls[0][0]).toMatchObject({ model: '', apiKey: 'sk-first' })
+  expect(el.querySelector('[name="apiKey"]')).toBeNull()
   await selectModel(el, 'gpt-5')
-  expect(saveCredential).not.toHaveBeenCalled()
-  expect(button(el, 'Connect model').disabled).toBe(true)
-  button(el, 'Test connection').click(); await settleVue()
-  await submitForm(el, 8)
-  expect(saveCredential).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'first', model: 'gpt-5', apiKey: 'sk-first' }))
+  button(el, 'Verify & connect').click(); await settleVue(12)
+  expect(testProviderConnection).toHaveBeenCalledWith(saved[0].name, 'gpt-5', expect.any(AbortSignal))
+  expect(saveCredential).toHaveBeenCalledTimes(2)
+  expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: saveCredential.mock.calls[0][0].name, model: 'gpt-5' })
+  expect(saveCredential.mock.calls[1][0]).not.toHaveProperty('apiKey')
   expect(el.querySelector('form')).toBeNull()
  })
 
@@ -340,11 +349,11 @@ describe('focused model connection editor', () => {
   const store = makeStore(api); store.credentials.data = [credential]; store.credentials.loaded = store.credentials.hasSnapshot = true
   const { element: el } = await mountVue(Models, { api, store })
   button(el, 'Test connection').click(); await settleVue(); button(el, 'Edit').click(); await settleVue()
-  button(el, 'Find models').click(); await settleVue()
+  button(el, 'Refresh models').click(); await settleVue()
   await selectModel(el, 'new-model')
   store.credentials.data = [{ ...credential, model: 'server-model' }]; store.dispatchEvent(new Event('change')); await settleVue()
   expect(el.querySelector('#model-id')?.textContent).toContain('new-model')
-  button(el, 'Test connection').click(); await settleVue()
+  button(el, 'Verify & connect').click(); await settleVue()
   const form = el.querySelector('form')!; form.dispatchEvent(new Event('submit', { cancelable: true })); form.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue()
   expect(saveCredential).toHaveBeenCalledTimes(1)
   expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({ name: 'main', model: 'new-model' }))
@@ -517,8 +526,7 @@ describe('focused model connection editor', () => {
   // machine away from whoever pasted it.
   const saveCredential = vi.fn().mockResolvedValue({ name: 'my-codex', provider: 'codex' })
   const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage), saveCredential })
-  const { element: el } = await mountVue(Models, { api, store: makeStore(api) })
-  button(el, 'Connect model').click(); await settleVue()
+  const { element: el } = await mountVue(Models, { api, store: makeStore(api), createRoute: true, initialFamily: 'harness' })
   await selectProvider(el, 'codex')
   await input(el, 'name', 'my-codex')
   await field(el, 'auth.json', 'sk-ant-oat01-pasted-in-the-wrong-box')
@@ -566,7 +574,7 @@ describe('focused model connection editor', () => {
   const first = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage), testCredential: () => probe.promise })
   const store = makeStore(first); store.credentials.data = [credential]; store.credentials.loaded = store.credentials.hasSnapshot = true
   const view = await mountVue(Models, { api: first, store })
-  button(view.element, 'Edit').click(); await settleVue(); await input(view.element, 'apiKey', 'old-secret'); button(view.element, 'Test connection').click(); await settleVue()
+  button(view.element, 'Edit').click(); await settleVue(); await input(view.element, 'apiKey', 'old-secret'); button(view.element, 'Verify & connect').click(); await settleVue()
   const second = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usage) })
   await view.setProps({ api: second, store: makeStore(second) }); probe.resolve({ ok: true }); await settleVue()
   expect(view.element.querySelector('input[name="apiKey"]')).toBeNull()
