@@ -244,7 +244,7 @@ async function connect(): Promise<void> {
     verifiedFingerprint.value = snapshot
     if (standaloneConnection.value) { emit('save', { ...draft(), model: '' }, result); return }
     if (editingProviderConnection) { emit('save', { ...draft(), model: '' }, result); return }
-    if (props.credential && !props.credential.connectionRef && props.credential.model) {
+    if (props.credential && !props.credential.connectionRef) {
       emit('save', draft(), result)
       return
     }
@@ -335,7 +335,7 @@ defineExpose({ cancel, locked })
         <label v-if="editingModelCredential" for="model-display-name" class="k-model-form-field">Display name
           <input id="model-display-name" :value="modelLabel" class="k-input" name="modelLabel" :disabled="locked" maxlength="253" :aria-invalid="Boolean(modelLabelError)" :aria-describedby="modelLabelError ? 'model-label-error' : 'model-label-help'" @input="updateModelLabel(($event.target as HTMLInputElement).value)">
           <span v-if="modelLabelError" id="model-label-error" class="k-model-form-hint text-danger" role="alert">{{ modelLabelError }}</span>
-          <span v-else id="model-label-help" class="k-model-form-hint">Shown in model lists and chat pickers.</span>
+          <span v-else id="model-label-help" class="k-model-form-hint">Shown in model lists.</span>
         </label>
         <p v-if="model && !editingProviderConnection" class="k-model-form-hint">{{ model }} will use {{ connection?.displayName || connectionLabel || suggestedName }}.</p>
         <p v-if="alreadyConfigured" class="k-model-form-hint" role="status">This model is already configured for this connection. Choose another model to add.</p>
