@@ -576,6 +576,30 @@ test-util:
 test-provider-catalog-auth: ## Verify tenant-scoped workload catalog authentication
 	go test -count=1 ./pkg/hub -run 'TestProviderCatalog|TestKCPTenantResolver'
 	go test -count=1 ./pkg/hub/tenant ./pkg/hub/providers ./pkg/hub/serviceaccounts
+.PHONY: test-org-provider-security
+test-org-provider-security: ## Verify organization provider registration, bootstrap, authority, and claim consent
+	go test -p 1 -count=1 ./pkg/hub/providers ./pkg/hub/providerclaims ./pkg/hub/hubaccess ./pkg/hub/kcp ./pkg/hub/restapi ./pkg/hub/serviceaccounts ./pkg/hub/tenant ./pkg/kcppaths ./pkg/server/proxy
+.PHONY: test-byo-providers
+test-byo-providers: test-org-provider-security ## Verify BYO control plane, relay, and isolated portal contracts
+	python3 hack/audit-historical-credentials.test.py
+	go test -p 1 -count=1 ./pkg/hub -run 'TestOrganizationProviderAvailability|TestProviderRelay|TestProviderAppSandbox|TestWithPortalSecurityHeaders|TestSandboxPolicy|TestPortalFrameSources|TestOrgBackend|TestKCPTenantResolver|TestHubAccessGate'
+	cd provider-sdk && go test -p 1 -count=1 ./install ./providerrelay
+	cd providers/edges && go test -p 1 -count=1 ./internal/tunnel
+	cd portal && node --test src/providers/providerSandbox.test.mjs src/providers/providerSandboxBootstrap.test.mjs src/stores/orgProviders-install-targets.test.mjs src/stores/providers-binding-state.test.mjs src/components/DashboardTile.conformance.test.mjs src/components/ProviderNavigation.conformance.test.mjs src/pages/ProviderFrame.loading.test.mjs src/pages/ProvidersPage.self-hosting.test.mjs src/pages/ProviderCreatePage.security.test.mjs src/lib/onboarding.test.mjs
+.PHONY: test-byo-availability
+test-byo-availability: ## Verify native org limits on isolated embedded kcp (no Docker or quota workaround)
+	go test -p 1 -count=1 ./pkg/hub/kcp/byolimits
+	RAILGRID_E2E_ORG_LIMITS=true go test -p 1 -count=1 ./test/e2e/suites/orglimits -timeout 5m
+
+.PHONY: test-kcp-quota-diagnostic
+test-kcp-quota-diagnostic: ## Diagnose pinned KCP cluster-scoped ResourceQuota selection (expected to fail until upstream is fixed)
+	go test -p 1 -tags kcp_quota_diagnostic -count=1 ./pkg/hub/providers -run '^TestPinnedKCPQuotaEnforcesClusterScopedPrivateResourceCount$$' -v
+
+.PHONY: test-native-delegation-retirement
+test-native-delegation-retirement: ## Verify retired delegated credentials against unmodified embedded KCP
+	go test -p 1 -count=1 ./pkg/hub/kcp -run 'TestRetiredDelegation'
+	RAILGRID_E2E_ORG_DELEGATION=true go test -p 1 -count=1 ./test/e2e/suites/orgdelegation -run '^TestNativeDelegationRetirement$$' -timeout 5m
+
 test-app-studio-mcp-access: ## Verify MCP workload authorization and App Studio identity provisioning
 	go test -count=1 ./pkg/hub/mcpaggregate
 	cd providers/app-studio && go test -count=1 ./controller/project ./hubmcp
