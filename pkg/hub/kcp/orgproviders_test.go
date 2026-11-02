@@ -183,6 +183,71 @@ func TestDeleteOrgProviderWorkspaceRetryWaitsForOrphanedOwnedCache(t *testing.T)
 	}
 }
 
+func TestDeleteOrgProviderWorkspaceRetryWaitsForTerminatingExportAndOwnedCache(t *testing.T) {
+	export := orgProviderDeleteExport("kuery.providers.railgrid.ai", "export-uid")
+	export["metadata"].(map[string]any)["deletionTimestamp"] = "2026-11-01T12:00:00Z"
+	state := &orgProviderDeleteState{
+		workspaceExists: true,
+		clusterID:       "org-provider-cluster",
+		exports:         []map[string]any{export},
+		cachedResources: []map[string]any{orgProviderDeleteCachedResource("cached-endpoints", "export-uid")},
+	}
+	server := newOrgProviderDeleteServer(t, state)
+	defer server.Close()
+
+	b := NewBootstrapper(&rest.Config{Host: server.URL})
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	err := b.DeleteOrgProviderWorkspace(ctx, "org-a", "kuery")
+	cancel()
+	if err == nil {
+		t.Fatal("DeleteOrgProviderWorkspace succeeded while a terminating APIExport and its owned cache remained")
+	}
+	if state.workspaceDeleted {
+		t.Fatal("provider Workspace was deleted while its APIExport was still terminating")
+	}
+	if state.exportDeleteCalls != 0 {
+		t.Fatalf("reissued DELETE %d times for an APIExport already terminating", state.exportDeleteCalls)
+	}
+	if state.cacheListCalls == 0 {
+		t.Fatal("teardown did not continue checking the terminating export's owned cache")
+	}
+
+	// A later request can observe the export gone while its cached-resource
+	// owner remains. It must continue waiting rather than deleting the Workspace.
+	state.exports = nil
+	ctx, cancel = context.WithTimeout(context.Background(), 40*time.Millisecond)
+	err = b.DeleteOrgProviderWorkspace(ctx, "org-a", "kuery")
+	cancel()
+	if err == nil {
+		t.Fatal("retry succeeded while an APIExport-owned cached resource remained")
+	}
+	if state.workspaceDeleted {
+		t.Fatal("retry deleted the provider Workspace before the APIExport-owned cache drained")
+	}
+	if state.exportDeleteCalls != 0 {
+		t.Fatalf("retry issued %d DELETEs for an APIExport that was already terminating", state.exportDeleteCalls)
+	}
+
+	// A final retry after both resources disappear should complete the original
+	// UID-fenced Workspace deletion.
+	state.cachedResources = nil
+	if err := b.DeleteOrgProviderWorkspace(context.Background(), "org-a", "kuery"); err != nil {
+		t.Fatalf("retry after export and cache removal: %v", err)
+	}
+	if !state.workspaceDeleted || !state.workspaceDeleteUIDPrecondition {
+		t.Fatalf("final retry did not delete the original Workspace with its UID fence: deleted=%v uidFenced=%v", state.workspaceDeleted, state.workspaceDeleteUIDPrecondition)
+	}
+	if state.exportDeleteCalls != 0 {
+		t.Fatalf("retry issued %d unnecessary APIExport DELETEs", state.exportDeleteCalls)
+	}
+	if state.workspaceDeleteBeforeCacheDrain {
+		t.Fatal("provider Workspace was deleted before the APIExport and owned cache were gone")
+	}
+	if state.cacheListCalls < 3 {
+		t.Fatalf("expected cache checks across retries, got %d", state.cacheListCalls)
+	}
+}
+
 func TestDeleteOrgProviderWorkspaceDoesNotDeleteWorkspaceOnCacheTimeout(t *testing.T) {
 	state := &orgProviderDeleteState{
 		workspaceExists: true,

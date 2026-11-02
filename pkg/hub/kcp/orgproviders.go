@@ -346,6 +346,11 @@ func deleteAndWaitForOrgProviderAPIExports(ctx context.Context, provider dynamic
 
 	for i := range initial.Items {
 		export := &initial.Items[i]
+		if export.GetDeletionTimestamp() != nil {
+			// A previous cleanup may already have started foreground deletion.
+			// Leave it alone and let the bounded wait below observe its removal.
+			continue
+		}
 		uid := export.GetUID()
 		if uid == "" {
 			return fmt.Errorf("APIExport %s has no UID; refusing an unfenced delete", export.GetName())
@@ -371,6 +376,11 @@ func deleteAndWaitForOrgProviderAPIExports(ctx context.Context, provider dynamic
 		// that appeared during teardown, fencing each delete to the UID observed.
 		for i := range remainingExports {
 			export := &remainingExports[i]
+			if export.GetDeletionTimestamp() != nil {
+				// Repeated DELETEs do not help an export already waiting on its
+				// foreground dependents. It still counts as remaining below.
+				continue
+			}
 			uid := export.GetUID()
 			if uid == "" {
 				return false, fmt.Errorf("APIExport %s has no UID during teardown; refusing an unfenced delete", export.GetName())
