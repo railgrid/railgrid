@@ -177,3 +177,19 @@ onto the serve Deployment it owns.
   value: {{ join "," . | quote }}
 {{- end }}
 {{- end -}}
+
+{{/*
+Pod annotations that let an annotation-driven scraper (Prometheus' classic
+prometheus.io convention, Grafana Alloy's k8s-monitoring annotationAutodiscovery)
+find the /metrics listener. Nothing when metrics are disabled.
+*/}}
+{{- define "infrastructure.metricsAnnotations" -}}
+{{- if .Values.metrics.enabled -}}
+prometheus.io/scrape: "true"
+prometheus.io/port: {{ .port | quote }}
+prometheus.io/path: /metrics
+k8s.grafana.com/scrape: "true"
+k8s.grafana.com/metrics.portName: {{ .portName | quote }}
+k8s.grafana.com/metrics.path: /metrics
+{{- end }}
+{{- end }}

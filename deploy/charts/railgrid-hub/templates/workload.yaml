@@ -37,9 +37,15 @@ spec:
       {{- include "railgrid-hub.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- $metricsAnnotations := include "railgrid-hub.metricsAnnotations" (dict "Values" .Values "portName" "metrics" "port" .Values.metrics.port) }}
+      {{- if or $metricsAnnotations .Values.podAnnotations }}
       annotations:
+        {{- with $metricsAnnotations }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "railgrid-hub.selectorLabels" . | nindent 8 }}
@@ -61,6 +67,7 @@ spec:
           imagePullPolicy: {{ .Values.image.hub.pullPolicy }}
           args:
             - --listen-addr={{ .Values.hub.listenAddr }}
+            - --metrics-listen-addr={{ if .Values.metrics.enabled }}:{{ .Values.metrics.port }}{{ end }}
             {{- if .Values.kcp.external.enabled }}
             # External kcp mode: connect to kcp running outside the cluster.
             # The front-proxy kubeconfig is used for everything (control-plane
@@ -213,6 +220,11 @@ spec:
             - name: https
               containerPort: 9443
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz

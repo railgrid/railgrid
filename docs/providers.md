@@ -1482,6 +1482,17 @@ A provider's backend (if it declares one) MUST:
   outside it**. There is no `/api/*`: a provider cannot add one by accident,
   and `hack/verify-provider-contract.mjs` fails the build on an `"/api/` route
   literal (check `adhoc-rest`).
+- **Serve metrics with `provider-sdk/metrics`, never on the serving port.**
+  `go metrics.Serve(ctx, metrics.ListenFromEnv())` exposes controller-runtime's
+  registry — reconcile, workqueue and client-go request metrics of every
+  manager, plus the Go runtime — on a separate plain-HTTP listener
+  (`RAILGRID_METRICS_LISTEN`, default `:9090`; the chart's `metrics.enabled` /
+  `metrics.port`), and the chart annotates the pod (`prometheus.io/*`,
+  `k8s.grafana.com/*`) so an annotation-driven scraper finds it. `serve.New`
+  has no route class for `/metrics` on purpose: the public port is reachable
+  through the hub proxy and operational counters are not a tenant surface. A
+  provider's own collectors register on `metrics.Registry`; one that already
+  renders Prometheus text by hand merges it with `metrics.TextGatherer`.
 - **Serve every tenant verb through `provider-sdk/dataplane`**, and register
   each one exactly once. A verb is reachable one way:
   - the **kube path**

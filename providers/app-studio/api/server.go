@@ -387,7 +387,8 @@ func (s *Server) projectAssistantSandboxManager() *projectAssistantSandboxManage
 // MetricsHandler is the assistant's Prometheus surface. It is NOT part of the
 // tenant-facing server: serve.New has no route class for it, and it never had
 // one — it was mounted beside /api/* and reachable by any caller the hub
-// proxied. main.go serves it on the internal listener instead.
+// proxied. main.go merges it into the provider-sdk metrics listener
+// (metrics.TextGatherer), next to the controller-runtime registry.
 func (s *Server) MetricsHandler() http.Handler {
 	return http.HandlerFunc(projectAssistantMetricsHandler)
 }

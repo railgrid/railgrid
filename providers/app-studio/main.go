@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/metrics"
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -353,13 +354,14 @@ func runServe() {
 		}
 	}()
 
-	// The internal listener carries peer-forwarded project requests AND
-	// /metrics. Metrics used to sit beside /api/* on the public port, where
-	// any caller the hub proxied could scrape the assistant's operational
-	// counters; it is not a Pillar 2 route class and serve.New has no field
-	// for it, which is the contract saying the same thing.
+	// Prometheus metrics go to the provider-sdk metrics listener
+	// (RAILGRID_METRICS_LISTEN): controller-runtime's registry merged with the
+	// assistant's hand-rendered counters. Never on the public port, which
+	// serve.New keeps free of operational routes by construction.
+	go metrics.ServeWith(ctx, metrics.ListenFromEnv(), metrics.TextGatherer(apiServer.MetricsHandler()))
+
+	// The internal listener carries peer-forwarded project requests.
 	internalMux := http.NewServeMux()
-	internalMux.Handle("/metrics", apiServer.MetricsHandler())
 	internalMux.Handle("/", apiServer.InternalReplicaHandler(core))
 	if replicaAddr != "" {
 		internalSrv := &http.Server{

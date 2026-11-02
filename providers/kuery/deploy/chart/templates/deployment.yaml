@@ -19,9 +19,15 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- $metricsAnnotations := include "kuery.metricsAnnotations" (dict "Values" .Values "portName" "metrics" "port" .Values.metrics.port) }}
+      {{- if or $metricsAnnotations .Values.podAnnotations }}
       annotations:
+        {{- with $metricsAnnotations }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "kuery.serviceAccountName" . }}
@@ -67,6 +73,11 @@ spec:
             - name: http
               containerPort: 8081
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           # Liveness is deliberately NOT /readyz: a provider that cannot reach
           # its virtual workspace is still serving queries from the store and
           # still holding its engagements, so restarting it would take away the
@@ -79,6 +90,8 @@ spec:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           env:
+            - name: RAILGRID_METRICS_LISTEN
+              value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}""{{ end }}
             - name: PORT
               value: "8081"
             - name: RAILGRID_HUB_URL
