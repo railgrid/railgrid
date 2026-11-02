@@ -160,19 +160,11 @@ func (c *Client) GetModelProviderConnection(ctx context.Context, name string) (*
 	return c.ModelProviderConnections().Get(ctx, name, metav1.GetOptions{})
 }
 
-// GetModelCredential reads one ModelCredential by name, which is what
-// llm.CredentialResolver needs. It is spelled out rather than left to the
-// caller so the whole provider resolves a credential name the same way.
+// GetModelCredential reads the stored ModelCredential by name. It does not
+// resolve a ModelProviderConnection or read its Secret; callers that need to
+// use the credential must resolve the connection explicitly.
 func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
-	credential, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
-	if err != nil || credential.Spec.ConnectionRef == "" {
-		return credential, err
-	}
-	connection, err := c.GetModelProviderConnection(ctx, credential.Spec.ConnectionRef)
-	if err != nil {
-		return nil, err
-	}
-	return agentsv1alpha1.ResolveModelConnection(credential, connection)
+	return c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
 }
 
 // UpdateModelBinding changes only the selected model, retaining the source

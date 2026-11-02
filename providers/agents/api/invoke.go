@@ -182,6 +182,11 @@ func (s *Server) invokeAgentRun(w http.ResponseWriter, r *http.Request) {
 			writeResourceError(w, err)
 			return
 		}
+		cred, err = llm.ResolveModelCredentialForRuntime(r.Context(), c, cred)
+		if err != nil {
+			writeResourceError(w, err)
+			return
+		}
 		if err := runnerharness.ValidateReasoningEffort(llm.HarnessAdvertisedName(cred.Spec.Provider), settings.ReasoningEffort); err != nil {
 			writeStatus(w, http.StatusBadRequest, "BadRequest", err.Error())
 			return

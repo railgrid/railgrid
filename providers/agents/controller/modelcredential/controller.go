@@ -132,6 +132,7 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		Named("agents-modelcredential").
 		For(&agentsv1alpha1.ModelCredential{}).
 		Watches(&corev1.Secret{}, credentialsForSecret).
+		Watches(&agentsv1alpha1.ModelProviderConnection{}, modelsForConnection).
 		Complete(r)
 }
 
@@ -206,6 +207,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// irreversible. Release the reservation and leave the object/Secret
 		// untouched; finalizing probes are handled above from their snapshot.
 		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
+	}
+	if strings.TrimSpace(cred.Spec.ConnectionRef) != "" {
+		return r.reconcileModelBinding(ctx, c, &cred)
 	}
 
 	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)
@@ -314,8 +318,10 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
-	if err := adoptSecret(ctx, c, cred, &sec); err != nil {
-		return "", "", "", err
+	if strings.TrimSpace(cred.Spec.ConnectionRef) == "" {
+		if err := adoptSecret(ctx, c, cred, &sec); err != nil {
+			return "", "", "", err
+		}
 	}
 	// A harness identity is a different shape and a different check: which key
 	// is present decides how the harness is handed the credential, so "exactly
@@ -462,6 +468,10 @@ func trueReasonFor(condType string) string {
 		return agentsv1alpha1.ReasonSecretResolved
 	case agentsv1alpha1.ConditionReachable:
 		return agentsv1alpha1.ReasonReachable
+	case conditionConnectionReady:
+		return conditionConnectionReady
+	case conditionModelConfigured:
+		return conditionModelConfigured
 	default:
 		return agentsv1alpha1.ReasonReady
 	}

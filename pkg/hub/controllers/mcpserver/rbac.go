@@ -304,7 +304,10 @@ func buildRules(bound []BoundResource, grants []SubresourceGrant, readOnly bool)
 
 	// Writable MCP clients retain credential discovery after ModelCredentials
 	// migrate to connection references. Read-only clients may list metadata but
-	// must not use the provider account. Pin this grant to the first-party export.
+	// must not use the provider account. Writable servers intentionally receive
+	// workspace-wide use (including future connections); a per-name Role cannot
+	// narrow this additive grant. See docs/mcp-architecture.md. Pin the grant to
+	// the first-party export.
 	if !readOnly {
 		for _, b := range bound {
 			if b.Group == "agents.railgrid.ai" && b.Resource == "modelproviderconnections" && b.APIExportPath == "root:railgrid:providers:agents" && b.APIExportName == "agents.railgrid.ai" {
