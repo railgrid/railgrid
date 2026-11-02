@@ -6,13 +6,52 @@
 An organization can register a provider it runs itself — typically inside its
 own Kubernetes cluster, reached over an edge — and have it appear in that
 organization's provider catalog alongside the platform ones. Its Workspaces
-Enable it through the ordinary Enable flow.
+enable it through the ordinary Catalog Enable flow after the provider is Ready.
+Installation does not create or retarget workspace APIBindings. After Ready,
+Continue returns to the Self-Hosting list; an authorized organization member can
+explicitly open Installation details on the provider row to retrieve generated
+commands and its scoped credential.
 
 > **How the hub reaches an org-owned provider's backend** is a separate design:
 > [byo-provider-edge-transport.md](./byo-provider-edge-transport.md). It makes
 > the edge tunnel the transport (the hub cannot dial into a tenant cluster) and
 > makes a connected edge a **precondition of registration**, so an install that
 > could not work is refused before a credential is minted.
+
+## Console installation through an Edge
+
+Providers → Self-Hosting lets an authorized organization member choose a connected
+Kubernetes Edge and install a platform provider's published Helm chart. The caller
+must also have Kubernetes API access to that exact Edge. Installation creates the
+provider workspace and credential on the server; the browser receives only progress.
+
+The hub records the selected Edge and pinned chart plan on the sealed provider
+Workspace and submits a Helm Job on the target cluster. Closing the console does
+not stop the Job. Its real Kubernetes status drives progress; successful Helm
+completion is followed by a separate provider health check through the Edge.
+A failed attempt can be retried with the same chart version and values. Concurrent
+starts reuse the active attempt. A disconnected Edge leaves status unavailable,
+not successful; reconnect it before retrying.
+
+The runner has no local Kubernetes ServiceAccount token or cluster role. Its
+execution kubeconfig holds a 15-minute kcp token restricted to the selected
+Edge's Kubernetes proxy. The Job has a 10-minute deadline and uses Helm's bounded
+wait and atomic rollback. Observing completion revokes the runner identity and
+removes its execution Secret; the token expires even if nobody returns to the
+console. The provider's own scoped credential stays in its runtime Secret.
+
+Installing does not create, disable, or retarget any workspace APIBinding.
+Workspace enablement and migration remain explicit actions after Ready.
+The secondary **Install manually** action opens generated commands for operators
+who manage Helm themselves. Once those steps are open, continue the manual path;
+the console cannot adopt a partially completed manual installation.
+Console installation refuses incomplete recipes and
+unowned installation namespaces rather than overwriting an existing deployment.
+
+Removing a registration drains its APIExports and their cached resources before
+deleting the provider workspace. This keeps API discovery available to kcp's
+cache cleanup controller. Teardown is bounded and retryable; it does not force
+finalizers or uninstall the Helm release on the Edge.
 
 ## Relationship to provider-scoping.md
 
@@ -35,7 +74,11 @@ backend URL. Two consequences worth stating plainly:
   *Name collisions* below).
 
 Still unimplemented from that doc, and still relevant here: the per-Org `bind`
-ClusterRole (P-3), `MaximalPermissionPolicy`, and the Disable confirm-gate (P-7).
+ClusterRole (P-3) and `MaximalPermissionPolicy`. In a workspace where an org
+entry shadows a platform provider, the Catalog distinguishes which copy the
+current APIBinding actually uses. Disabling the platform copy requires a
+confirmation that warns it can delete provider resources; enabling the org copy
+is a separate action after Disable completes.
 
 ## Workspace layout
 
@@ -92,7 +135,7 @@ the REST surface is where the membership and role checks live.
    workspace path from the cluster's `LogicalCluster` (`kcp.io/path`), attributes
    it to the Org, and upserts it into the registry under that Org's scope.
 4. `GET /api/providers` now returns it for members of that Org, with
-   `scope: "org"`. The portal renders it under **Self-managed**.
+   `scope: "org"`. The portal renders it under **Self-hosted**.
 5. A Workspace enables it with the ordinary
    `POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable`, including the
    same permission-claim consent dialog a platform provider gets.
@@ -588,8 +631,12 @@ copy can never capture a platform provider's proxy or heartbeat route by name;
 only the tenant-scoped lookups (`GetForOrg`, `ListForOrg`) see it. Tests pin both
 halves. `ListForOrg` flags such a copy with `shadowsPlatform: true` on the
 catalog DTO, and the portal shows an **Overrides platform provider** tag next
-to **Self-managed**, so the override is visible to the Org rather than being
-inferred from a card that quietly changed.
+to **Self-hosted**. That tag describes the catalog entries; it does not claim
+existing bindings use the org copy. A separate status uses the current,
+workspace-scoped binding projection to say **Enabled · platform copy** or
+**Enabled · org copy**, and reports the copy as unknown while that projection is
+stale or unavailable. The **Open** action is offered only when the current
+workspace actually binds the org copy.
 
 Names must be RFC1123 labels: the name becomes a kcp workspace name and appears
 in URL paths.

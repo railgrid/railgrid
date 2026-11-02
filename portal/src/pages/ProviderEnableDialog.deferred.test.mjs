@@ -54,10 +54,48 @@ async function loadCaller(fileName) {
 const useScopedNavigation = () => ({ scopePath: (path) => path })
 
 const ref = (value) => ({ value })
-const computed = (getter) => ({ get value() { return getter() } })
+const computed = (getter) => typeof getter === 'function'
+  ? ({ get value() { return getter() } })
+  : ({ get value() { return getter.get() }, set value(value) { getter.set(value) } })
 const watchCalls = []
 const watch = (source, callback) => watchCalls.push({ source, callback })
+const routeState = { query: {}, hash: '', params: { orgID: 'org-a', workspaceID: 'workspace-a' } }
+const routeHistory = [{ query: {}, hash: '' }]
+let routeHistoryIndex = 0
+function applyRoute(location, replace = false) {
+  const current = { query: { ...location.query }, hash: location.hash ?? routeState.hash }
+  if (replace) routeHistory[routeHistoryIndex] = current
+  else {
+    routeHistory.splice(routeHistoryIndex + 1)
+    routeHistory.push(current)
+    routeHistoryIndex++
+  }
+  routeState.query = { ...current.query }
+  routeState.hash = current.hash
+}
+const routerState = {
+  push: async location => applyRoute(location),
+  replace: async location => applyRoute(location, true),
+  back: () => { if (routeHistoryIndex > 0) { routeHistoryIndex--; routeState.query = { ...routeHistory[routeHistoryIndex].query }; routeState.hash = routeHistory[routeHistoryIndex].hash } },
+  forward: () => { if (routeHistoryIndex + 1 < routeHistory.length) { routeHistoryIndex++; routeState.query = { ...routeHistory[routeHistoryIndex].query }; routeState.hash = routeHistory[routeHistoryIndex].hash } },
+}
+function resetRouteState() {
+  routeState.query = {}
+  routeState.hash = ''
+  routeHistory.splice(0, routeHistory.length, { query: {}, hash: '' })
+  routeHistoryIndex = 0
+}
+const useRoute = () => routeState
+const useRouter = () => routerState
+const document = { visibilityState: 'visible', addEventListener() {}, removeEventListener() {} }
 const onMounted = () => {}
+const unmountCallbacks = []
+const onUnmounted = (callback) => unmountCallbacks.push(callback)
+const timers = new Map()
+let nextTimer = 1
+const setTimeout = (callback) => { const id = nextTimer++; timers.set(id, callback); return id }
+const clearTimeout = (id) => timers.delete(id)
+const nextTick = async () => {}
 const defineEmits = () => () => {}
 const defineProps = () => ({ startAtGoal: false })
 const AlertCircle = {}
@@ -89,11 +127,27 @@ const Sparkles = {}
 const X = {}
 const toastCalls = []
 const toast = (...args) => { toastCalls.push(args) }
-const confirmDialog = async () => false
+let confirmBehavior = false
+const confirmCalls = []
+const confirmDialog = options => {
+  confirmCalls.push(options)
+  const result = typeof confirmBehavior === 'function' ? confirmBehavior(options) : confirmBehavior
+  return Promise.resolve(result)
+}
+const setConfirmBehavior = value => { confirmBehavior = value }
 const categoryIcons = {}
 const fallbackCategoryIcon = null
 const providerBindingAction = () => null
 const providerStore = {
+  loaded: false,
+  bindingsByProvider: {},
+  bindingsLoadState: 'ready',
+  bindingsStale: false,
+  bindingsOrgUUID: 'org-a',
+  bindingsWorkspace: 'workspace-a',
+  bindingsRequestOrgUUID: 'org-a',
+  bindingsRequestWorkspaceUUID: 'workspace-a',
+  refreshBindings: async () => {},
   enableable: [],
   selfHostable: [],
   items: [],
@@ -110,7 +164,16 @@ const providerStore = {
   load: () => undefined,
 }
 const orgProviderStore = {
+  resetForOrganization: () => {
+    orgProviderStore.items = []
+    orgProviderStore.byName = {}
+    orgProviderStore.loaded = false
+    orgProviderStore.loading = false
+  },
   supported: false,
+  loaded: false,
+  loading: false,
+  byName: {},
   items: [],
   eligibleInstallTargets: [],
   installTargetsEligible: false,
@@ -119,7 +182,7 @@ const orgProviderStore = {
   installTargetsLoading: false,
   installTargetsError: null,
   isSelfHosted: () => false,
-  load: () => undefined,
+  load: async () => false,
   loadInstallTargets: () => undefined,
   register: async () => null,
   instructions: async () => null,
@@ -135,6 +198,7 @@ const welcomeIdentity = (auth) => auth.user?.userId || auth.user?.email || auth.
 ${helpers}
 ${flowSource}
 ${sourceWithoutImports}
+${isWizard ? '' : 'function setInventoryPollingMounted(value) { inventoryPollingMounted = value }'}
 export {
   actionError,
   busy,
@@ -144,11 +208,15 @@ export {
   dialogScope,
   onDialogConfirm,
   providerStore,
+  orgProviderStore,
   tenantStore,
   authStore,
   watchCalls,
+  timers, unmountCallbacks,
   toastCalls,
-  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations,'}
+  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations, hasPendingDeletion, route, router, setTab, startInstall, cancelInstall, resumeManualInstall, showInstructions, canManageSelfHostedCredentials, activeRegistration, finishInstall, selfHostedHeading, selfHostNotice, removeSelfHosted, selfHostRemoval, confirmingRemoval, selfHostError, trackDeletingSelfHostedProviders, normalizeProviderRoute, installProvider, inventoryScope, currentTenantScope, refreshOrgProviderInventory, restartInventoryPolling, stopInventoryPolling, onInventoryVisibilityChange, document, setInventoryPollingMounted, resetRouteState,'}
+  confirmCalls,
+  setConfirmBehavior,
 }
 `
   const { outputText } = ts.transpileModule(harness, {
@@ -166,6 +234,9 @@ export {
       for (const watchCall of caller.watchCalls) {
         if (watchCall.source === caller.dialogScope) watchCall.callback()
       }
+    },
+    resetRoute() {
+      caller.resetRouteState()
     },
   }
 }
@@ -553,4 +624,495 @@ test('wizard progress is isolated between accounts in the same Workspace', () =>
     caller.authStore.user.userId = 'alice'
     globalThis.localStorage = original
   }
+})
+
+
+test('ProvidersPage refreshes terminating bindings through completion and cancels pending work on unmount', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  const deletionWatch = caller.watchCalls.find(w => typeof w.source === 'function' && String(w.source).includes('hasPendingDeletion'))
+  assert.ok(deletionWatch)
+  caller.providerStore.bindingsByProvider = { kuery: { terminating: true } }
+  let refreshes = 0
+  const pending = deferred()
+  caller.providerStore.refreshBindings = async () => {
+    refreshes++
+    await pending.promise
+    caller.providerStore.bindingsByProvider = {}
+  }
+  deletionWatch.callback()
+  assert.equal(caller.timers.size, 1)
+  const [id, tick] = [...caller.timers.entries()][0]
+  caller.timers.delete(id)
+  const read = tick()
+  assert.equal(refreshes, 1)
+  assert.equal(caller.timers.size, 0, 'no overlapping poll while the read is pending')
+  pending.resolve()
+  await read
+  assert.equal(caller.hasPendingDeletion(), false)
+  assert.equal(caller.timers.size, 0, 'completion stops polling')
+
+  caller.providerStore.bindingsByProvider = { kuery: { terminating: true } }
+  deletionWatch.callback()
+  const [nextId, nextTick] = [...caller.timers.entries()][0]
+  caller.timers.delete(nextId)
+  const late = deferred()
+  caller.providerStore.refreshBindings = () => late.promise
+  const lateRead = nextTick()
+  caller.unmountCallbacks.forEach(callback => callback())
+  late.resolve()
+  await lateRead
+  assert.equal(caller.timers.size, 0, 'unmount fences an in-flight read from rescheduling')
+})
+
+test('ProvidersPage restores Self-Hosting navigation and normalizes legacy management URLs without reading credentials', () => {
+  const caller = callers[0]
+  caller.resetRoute()
+  caller.route.hash = '#providers'
+  caller.route.query = { billing: 'portal' }
+
+  caller.setTab('self-hosting')
+  assert.deepEqual(caller.route.query, { billing: 'portal', tab: 'self-hosting' })
+  caller.startInstall({ name: 'kuery' })
+  assert.deepEqual(caller.route.query, { billing: 'portal', tab: 'self-hosting', install: 'kuery' })
+  caller.resumeManualInstall()
+  assert.deepEqual(caller.route.query, { billing: 'portal', tab: 'self-hosting', install: 'kuery', manual: '1' })
+  assert.equal(caller.route.hash, '#providers')
+
+  caller.router.back()
+  assert.deepEqual(caller.route.query, { billing: 'portal', tab: 'self-hosting' })
+  caller.router.forward()
+  assert.equal(caller.route.query.install, 'kuery')
+  assert.equal(caller.route.query.manual, '1', 'manual choice shares the install history entry')
+  caller.cancelInstall()
+  assert.equal(caller.route.query.install, undefined)
+  assert.equal(caller.route.query.manual, undefined)
+  assert.equal(caller.route.query.tab, 'self-hosting')
+
+  caller.orgProviderStore.supported = true
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.items = [{ name: 'kuery', displayName: 'Kuery' }]
+  caller.orgProviderStore.byName = { kuery: caller.orgProviderStore.items[0] }
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  let instructionReads = 0
+  caller.orgProviderStore.instructions = async () => { instructionReads++; return { kubeconfig: 'must-not-be-read' } }
+  caller.route.query = { billing: 'portal', manage: 'kuery' }
+  caller.normalizeProviderRoute()
+  assert.deepEqual(caller.route.query, { billing: 'portal', tab: 'self-hosting' })
+  assert.equal(instructionReads, 0, 'legacy links return to the list without fetching scoped credentials')
+})
+
+test('ProvidersPage Ready completion clears wizard route state and returns focus to the list', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  caller.resetRoute()
+  caller.route.query = { tab: 'self-hosting', install: 'quickstart', manual: '1', manage: 'quickstart', keep: 'yes' }
+  caller.orgProviderStore.items = [{ name: 'quickstart', displayName: 'Quickstart' }]
+  caller.orgProviderStore.loaded = true
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  let focusCount = 0
+  caller.selfHostedHeading.value = { focus: () => { focusCount++ } }
+
+  await caller.finishInstall('quickstart')
+
+  assert.deepEqual(caller.route.query, { tab: 'self-hosting', keep: 'yes' })
+  assert.match(caller.selfHostNotice.value, /Quickstart is ready\. Workspace access is managed in Catalog\./)
+  assert.equal(focusCount, 1)
+
+  caller.route.query = { tab: 'self-hosting', install: 'quickstart' }
+  caller.selfHostNotice.value = null
+  focusCount = 0
+  const resolveNavigations = []
+  const originalReplace = caller.router.replace
+  caller.router.replace = () => new Promise(resolve => { resolveNavigations.push(resolve) })
+  const completion = caller.finishInstall('quickstart')
+  caller.setScope('org-b', 'workspace-b')
+  for (const resolve of resolveNavigations) resolve()
+  await completion
+  assert.equal(caller.selfHostNotice.value, null, 'a stale Ready response cannot announce completion in another org')
+  assert.equal(focusCount, 0)
+  caller.router.replace = originalReplace
+  caller.setScope('org-a', 'workspace-a')
+})
+
+test('ProvidersPage refuses to disable a changed workspace binding after migration confirmation', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  caller.setScope('org-a', 'workspace-a')
+  caller.tenantStore.activeOrg = { role: 'admin', catalogEntryCreation: 'admins' }
+  const provider = { name: 'quickstart', displayName: 'Quickstart', scope: 'org', shadowsPlatform: true, ready: true, export: { name: 'quickstart.providers.railgrid.ai' } }
+  caller.providerStore.items = [provider]
+  caller.providerStore.byName = name => name === provider.name ? provider : null
+  caller.providerStore.isSelfManaged = item => item?.scope === 'org'
+  caller.providerStore.isEnabled = () => true
+  const originalBinding = { bindingName: 'binding-quickstart', exportPath: 'root:providers:quickstart', selfHosted: false }
+  const changedBinding = { ...originalBinding, bindingName: 'binding-quickstart-new', selfHosted: true }
+  caller.providerStore.bindingsByProvider = { quickstart: originalBinding }
+  let writes = 0
+  caller.providerStore.disable = async () => { writes++ }
+  const pendingRefresh = deferred()
+  caller.providerStore.refreshBindings = async () => {
+    await pendingRefresh.promise
+    caller.providerStore.bindingsByProvider = { quickstart: changedBinding }
+  }
+  caller.setConfirmBehavior(true)
+
+  const disabling = caller.onDisable(provider)
+  await Promise.resolve()
+  assert.equal(caller.confirmCalls.at(-1).title, 'Disable the platform copy of Quickstart?')
+  pendingRefresh.resolve()
+  await disabling
+
+  assert.equal(writes, 0, 'a binding that changed during confirmation is never disabled')
+  assert.match(caller.actionError.value, /binding changed while confirmation was open/)
+})
+
+test('ProvidersPage waits for a fresh organization inventory before choosing install review or resume', async () => {
+  const caller = callers[0]
+  caller.resetRoute()
+  caller.route.query = { tab: 'self-hosting', install: 'kuery' }
+  caller.orgProviderStore.supported = true
+  caller.orgProviderStore.loaded = false
+  caller.orgProviderStore.loading = false
+  caller.orgProviderStore.items = []
+  caller.orgProviderStore.byName = {}
+  caller.providerStore.loaded = true
+  caller.providerStore.selfHostable = [{ name: 'kuery', displayName: 'Kuery' }]
+
+  const pending = deferred()
+  caller.orgProviderStore.load = async () => {
+    await pending.promise
+    caller.orgProviderStore.items = [{ name: 'kuery', displayName: 'Kuery', registered: true, ready: false }]
+    caller.orgProviderStore.byName = { kuery: caller.orgProviderStore.items[0] }
+    caller.orgProviderStore.loaded = true
+    return true
+  }
+  const request = caller.refreshOrgProviderInventory()
+  assert.equal(caller.installProvider.value, null, 'stale or absent inventory must not decide whether to resume')
+  pending.resolve()
+  await request
+  assert.equal(caller.installProvider.value.resume, true, 'an existing org provider opens in status-only resume mode')
+  assert.equal(caller.installProvider.value.manual, false)
+  assert.equal(caller.route.query.install, 'kuery', 'the intent remains in the URL across refresh')
+
+  caller.inventoryScope.value = null
+  caller.orgProviderStore.loaded = false
+  caller.orgProviderStore.items = []
+  caller.orgProviderStore.byName = {}
+  caller.orgProviderStore.load = async () => {
+    caller.orgProviderStore.loaded = true
+    return true
+  }
+  await caller.refreshOrgProviderInventory()
+  caller.normalizeProviderRoute()
+  assert.equal(caller.installProvider.value.resume, false, 'a missing registration preserves the initial review step')
+  assert.equal(caller.route.query.install, 'kuery')
+})
+
+test('ProvidersPage keeps routed install mounted during same-scope readiness polling', () => {
+  const caller = callers[0]
+  caller.resetRoute()
+  const provider = { name: 'kuery', displayName: 'Kuery', registered: true, ready: false }
+  caller.orgProviderStore.supported = true
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.loading = false
+  caller.orgProviderStore.items = [provider]
+  caller.orgProviderStore.byName = { kuery: provider }
+  caller.providerStore.loaded = true
+  caller.providerStore.selfHostable = [{ name: 'kuery', displayName: 'Kuery' }]
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  caller.route.query = { tab: 'self-hosting', install: 'kuery' }
+
+  assert.equal(caller.installProvider.value.resume, true)
+  caller.orgProviderStore.loading = true
+  assert.equal(caller.installProvider.value.resume, true, 'a status poll cannot unmount the running wizard')
+
+  caller.route.query = { tab: 'self-hosting', install: 'kuery', manage: 'kuery' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.route.query.install, undefined, 'legacy management routes exit the wizard to the Self-Hosting list')
+  assert.equal(caller.route.query.manage, undefined)
+  assert.equal(caller.route.query.tab, 'self-hosting')
+})
+
+test('ProvidersPage clears malformed, unknown, and old-scope route state safely', () => {
+  const caller = callers[0]
+  caller.resetRoute()
+  caller.orgProviderStore.supported = true
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.loading = false
+  caller.orgProviderStore.items = []
+  caller.orgProviderStore.byName = {}
+  caller.providerStore.loaded = true
+  caller.providerStore.selfHostable = []
+  caller.inventoryScope.value = caller.currentTenantScope.value
+
+  caller.route.query = { keep: 'yes', tab: ['self-hosting', 'catalog'], install: '../kuery' }
+  caller.normalizeProviderRoute()
+  assert.deepEqual(caller.route.query, { keep: 'yes' }, 'duplicate or malformed query values return to the safe default')
+
+  caller.route.query = { tab: 'self-hosting', manage: 'missing-provider' }
+  caller.normalizeProviderRoute()
+  assert.deepEqual(caller.route.query, { tab: 'self-hosting' }, 'legacy management routes normalize to the list')
+
+  caller.route.query = { tab: 'self-hosting', install: 'kuery', manage: 'kuery' }
+  caller.setScope('org-b', 'workspace-b')
+  assert.deepEqual(caller.route.query, {}, 'a tenant-scope change removes old tab and provider selections')
+
+  caller.resetRoute()
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.items = [{ name: 'kuery', displayName: 'Kuery', registered: true, ready: false }]
+  caller.orgProviderStore.byName = { kuery: caller.orgProviderStore.items[0] }
+  caller.providerStore.loaded = true
+  caller.providerStore.selfHostable = [{ name: 'kuery', displayName: 'Kuery' }]
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  caller.route.query = { tab: 'self-hosting', install: 'kuery', manual: '1' }
+  assert.equal(caller.installProvider.value.resume, true)
+  assert.equal(caller.installProvider.value.manual, true, 'a persisted manual selection resumes the manual progress path')
+
+  caller.orgProviderStore.items = []
+  caller.orgProviderStore.byName = {}
+  caller.route.query = { tab: 'self-hosting', install: 'kuery', manual: '1' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.installProvider.value.resume, true, 'a successful manual registration marker survives a stale inventory response')
+  assert.equal(caller.installProvider.value.manual, true)
+
+  caller.route.query = { tab: 'self-hosting', install: 'kuery', manual: ['1', '1'] }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.route.query.manual, undefined, 'malformed manual route markers are discarded')
+
+  caller.route.query = { tab: 'self-hosting', manual: '1' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.route.query.manual, undefined, 'manual mode cannot outlive its install route')
+
+  caller.providerStore.selfHostable = []
+  caller.route.query = { tab: 'self-hosting', install: 'missing', manual: '1' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.route.query.install, undefined, 'unknown manual routes are discarded')
+  assert.equal(caller.route.query.manual, undefined)
+})
+
+test('ProvidersPage does not fetch self-hosted credentials for members under admin-only policy, even when the handler is called directly', async () => {
+  const caller = callers[0]
+  caller.activeRegistration.value = null
+  caller.tenantStore.activeOrg = { role: 'member', catalogEntryCreation: 'admins' }
+  let reads = 0
+  caller.orgProviderStore.instructions = async () => {
+    reads++
+    return { provider: { name: 'kuery' }, kubeconfig: 'must-not-be-read' }
+  }
+
+  assert.equal(caller.canManageSelfHostedCredentials.value, false)
+  await caller.showInstructions('kuery')
+  assert.equal(reads, 0)
+  assert.equal(caller.activeRegistration.value, null)
+})
+
+test('ProvidersPage preserves credential access for admins and members allowed by organization policy', async () => {
+  const caller = callers[0]
+  let reads = 0
+  caller.orgProviderStore.instructions = async name => {
+    reads++
+    return { provider: { name }, kubeconfig: 'fixture-secret' }
+  }
+
+  for (const activeOrg of [
+    { role: 'admin', catalogEntryCreation: 'admins' },
+    { role: 'member', catalogEntryCreation: 'members' },
+  ]) {
+    caller.activeRegistration.value = null
+    caller.tenantStore.activeOrg = activeOrg
+    assert.equal(caller.canManageSelfHostedCredentials.value, true)
+    await caller.showInstructions('kuery')
+    assert.equal(caller.activeRegistration.value.provider.name, 'kuery')
+  }
+  assert.equal(reads, 2)
+})
+
+test('ProvidersPage serializes removal confirmations and leaves the provider untouched when canceled', async () => {
+  const caller = callers[0]
+  caller.tenantStore.activeOrg = { role: 'admin', catalogEntryCreation: 'admins' }
+  caller.tenantStore.orgUUID = 'org-a'
+  caller.tenantStore.workspaceUUID = 'workspace-a'
+  caller.confirmCalls.length = 0
+  let resolveConfirmation
+  caller.setConfirmBehavior(() => new Promise(resolve => { resolveConfirmation = resolve }))
+  let removes = 0
+  caller.orgProviderStore.remove = async () => { removes++ }
+
+  const first = caller.removeSelfHosted('quickstart')
+  await Promise.resolve()
+  assert.equal(caller.confirmingRemoval.value, true)
+  assert.equal(caller.confirmCalls.length, 1)
+  assert.equal(caller.selfHostRemoval.value.quickstart, 'confirming')
+
+  await caller.removeSelfHosted('quickstart')
+  assert.equal(caller.confirmCalls.length, 1, 'a repeated click must not replace the pending singleton confirmation')
+  resolveConfirmation(false)
+  await first
+  assert.equal(removes, 0)
+  assert.equal(caller.confirmingRemoval.value, false)
+  assert.equal(caller.selfHostRemoval.value.quickstart, undefined)
+})
+
+test('ProvidersPage keeps an accepted workspace deletion visible and polls until inventory confirms removal', async () => {
+  const caller = callers[0]
+  caller.tenantStore.activeOrg = { role: 'admin', catalogEntryCreation: 'admins' }
+  caller.tenantStore.orgUUID = 'org-a'
+  caller.tenantStore.workspaceUUID = 'workspace-a'
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.items = [{ name: 'quickstart', displayName: 'Quickstart', deleting: false }]
+  caller.orgProviderStore.byName = { quickstart: caller.orgProviderStore.items[0] }
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  caller.setConfirmBehavior(true)
+  caller.confirmCalls.length = 0
+  let removes = 0
+  caller.orgProviderStore.remove = async () => {
+    removes++
+    const deleting = { name: 'quickstart', displayName: 'Quickstart', deleting: true, ready: false }
+    caller.orgProviderStore.items = [deleting]
+    caller.orgProviderStore.byName = { quickstart: deleting }
+  }
+
+  await caller.removeSelfHosted('quickstart')
+  assert.equal(removes, 1)
+  assert.equal(caller.orgProviderStore.byName.quickstart.deleting, true)
+  assert.equal(caller.selfHostRemoval.value.quickstart, 'deleting')
+  assert.equal(caller.selfHostNotice.value, null)
+  assert.equal(caller.timers.size, 1)
+
+  caller.orgProviderStore.load = async () => {
+    caller.orgProviderStore.items = []
+    caller.orgProviderStore.byName = {}
+    return true
+  }
+  const [timerID, poll] = caller.timers.entries().next().value
+  caller.timers.delete(timerID)
+  await poll()
+  assert.equal(caller.selfHostRemoval.value.quickstart, undefined)
+  assert.equal(caller.selfHostNotice.value, null, 'removal completion does not leave a persistent inline notice')
+  assert.equal(caller.toastCalls.length, 1)
+  assert.equal(caller.toastCalls[0][0], 'ok')
+  assert.match(caller.toastCalls[0][1], /Quickstart was removed from self-hosting/)
+  assert.equal(caller.toastCalls[0][2].scope, 'org-a/workspace-a/workspace')
+  assert.equal(caller.timers.size, 0)
+})
+
+test('ProvidersPage restarts polling for a deleting workspace restored from inventory and stops it on scope exit', async () => {
+  const caller = callers[0]
+  caller.tenantStore.orgUUID = 'org-a'
+  caller.tenantStore.workspaceUUID = 'workspace-a'
+  caller.orgProviderStore.loaded = true
+  const deleting = { name: 'quickstart', deleting: true, ready: false }
+  caller.orgProviderStore.items = [deleting]
+  caller.orgProviderStore.byName = { quickstart: deleting }
+  caller.inventoryScope.value = caller.currentTenantScope.value
+
+  caller.trackDeletingSelfHostedProviders()
+  assert.equal(caller.selfHostRemoval.value.quickstart, 'deleting')
+  assert.equal(caller.timers.size, 1)
+
+  caller.setScope('org-b', 'workspace-b')
+  assert.equal(caller.selfHostRemoval.value.quickstart, undefined)
+  assert.equal(caller.timers.size, 0, 'leaving the organization scope must stop stale deletion polls')
+})
+
+test('ProvidersPage rechecks role and organization after removal confirmation before issuing DELETE', async () => {
+  const caller = callers[0]
+  caller.tenantStore.activeOrg = { role: 'admin', catalogEntryCreation: 'admins' }
+  caller.tenantStore.orgUUID = 'org-a'
+  caller.tenantStore.workspaceUUID = 'workspace-a'
+  caller.confirmCalls.length = 0
+  let resolveConfirmation
+  caller.setConfirmBehavior(() => new Promise(resolve => { resolveConfirmation = resolve }))
+  let removes = 0
+  caller.orgProviderStore.remove = async () => { removes++ }
+
+  const pending = caller.removeSelfHosted('quickstart')
+  await Promise.resolve()
+  caller.tenantStore.activeOrg = { role: 'member', catalogEntryCreation: 'admins' }
+  resolveConfirmation(true)
+  await pending
+  assert.equal(removes, 0, 'a role revoked while confirmation is open must block the request')
+  assert.equal(caller.selfHostRemoval.value.quickstart, undefined)
+})
+
+test('ProvidersPage clears deletion polling when the page unmounts', () => {
+  const caller = callers[0]
+  caller.tenantStore.orgUUID = 'org-a'
+  caller.tenantStore.workspaceUUID = 'workspace-a'
+  caller.orgProviderStore.loaded = true
+  const deleting = { name: 'quickstart', deleting: true, ready: false }
+  caller.orgProviderStore.items = [deleting]
+  caller.orgProviderStore.byName = { quickstart: deleting }
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  caller.trackDeletingSelfHostedProviders()
+  assert.equal(caller.timers.size, 1)
+
+  caller.unmountCallbacks.forEach(callback => callback())
+  assert.equal(caller.selfHostRemoval.value.quickstart, undefined)
+  assert.equal(caller.timers.size, 0)
+})
+
+test('ProvidersPage blocks install, management, and credential actions while a provider workspace is deleting', async () => {
+  const caller = callers[0]
+  caller.resetRoute()
+  caller.tenantStore.activeOrg = { role: 'admin', catalogEntryCreation: 'admins' }
+  caller.orgProviderStore.loaded = true
+  caller.orgProviderStore.items = [{ name: 'quickstart', deleting: true, ready: false }]
+  caller.orgProviderStore.byName = { quickstart: caller.orgProviderStore.items[0] }
+  caller.inventoryScope.value = caller.currentTenantScope.value
+  caller.providerStore.loaded = true
+  caller.providerStore.selfHostable = [{ name: 'quickstart' }]
+  let reads = 0
+  caller.orgProviderStore.instructions = async () => { reads++; return { kubeconfig: 'secret' } }
+
+  caller.route.query = { tab: 'self-hosting', install: 'quickstart', manual: '1' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.installProvider.value, null)
+  assert.equal(caller.route.query.install, undefined)
+  assert.equal(caller.route.query.manual, undefined)
+
+  caller.route.query = { tab: 'self-hosting', manage: 'quickstart' }
+  caller.normalizeProviderRoute()
+  assert.equal(caller.route.query.manage, undefined)
+  caller.startInstall({ name: 'quickstart' })
+  await caller.showInstructions('quickstart')
+  assert.equal(caller.route.query.install, undefined)
+  assert.equal(caller.route.query.manage, undefined)
+  assert.equal(reads, 0)
+})
+
+
+test('ProvidersPage refreshes idle health only while visible and fences polling after leaving', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  caller.route.query = { tab: 'self-hosting' }
+  caller.setInventoryPollingMounted(true)
+  let reads = 0
+  const pending = deferred()
+  caller.orgProviderStore.load = async () => { reads++; await pending.promise; return true }
+  caller.restartInventoryPolling(false)
+  assert.equal(caller.timers.size, 1)
+  const [id, tick] = [...caller.timers.entries()][0]
+  caller.timers.delete(id)
+  const request = tick()
+  assert.equal(reads, 1)
+  assert.equal(caller.timers.size, 0, 'wait for the read before scheduling the next poll')
+  caller.document.visibilityState = 'hidden'
+  caller.onInventoryVisibilityChange()
+  pending.resolve()
+  await request
+  assert.equal(caller.timers.size, 0, 'hidden tabs do not restart an in-flight poll')
+  caller.document.visibilityState = 'visible'
+  caller.orgProviderStore.load = async () => { reads++; return true }
+  caller.onInventoryVisibilityChange()
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
+  assert.equal(reads, 2, 'returning to the visible tab refreshes immediately')
+  caller.route.query = { tab: 'self-hosting', install: 'kuery' }
+  caller.restartInventoryPolling()
+  assert.equal(caller.timers.size, 0, 'the wizard owns its own status polling')
+  caller.route.query = { tab: 'catalog' }
+  caller.restartInventoryPolling()
+  assert.equal(reads, 2, 'Catalog does not poll the self-hosting list')
+  caller.route.query = { tab: 'self-hosting' }
+  caller.restartInventoryPolling(false)
+  assert.equal(caller.timers.size, 1)
+  for (const unmount of caller.unmountCallbacks) unmount()
+  assert.equal(caller.timers.size, 0, 'unmount removes scheduled polling')
 })
