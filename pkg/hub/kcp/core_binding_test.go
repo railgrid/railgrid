@@ -18,15 +18,18 @@ package kcp
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 )
 
 // The embedded core export is the single source for the hub's own binding
@@ -195,13 +198,16 @@ func TestBindingClaimState(t *testing.T) {
 	item := &unstructured.Unstructured{Object: map[string]interface{}{
 		"spec": map[string]interface{}{
 			"permissionClaims": []interface{}{
-				map[string]interface{}{"resource": "secrets", "state": "Accepted"},
+				map[string]interface{}{"resource": "secrets", "state": "Accepted", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}},
 				map[string]interface{}{"group": "code.railgrid.ai", "resource": "repositories", "state": "Rejected"},
 			},
 		},
 		"status": map[string]interface{}{
+			"appliedPermissionClaims": []interface{}{
+				map[string]interface{}{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}},
+			},
 			"exportPermissionClaims": []interface{}{
-				map[string]interface{}{"resource": "secrets"},
+				map[string]interface{}{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}},
 				map[string]interface{}{"group": "code.railgrid.ai", "resource": "repositories"},
 				map[string]interface{}{"group": "authentication.k8s.io", "resource": "tokenreviews"},
 			},
@@ -212,6 +218,7 @@ func TestBindingClaimState(t *testing.T) {
 	}}
 	got := bindingClaimState(item)
 	want := BindingClaimState{
+		Accepted: []AcceptedClaimScope{{Resource: "secrets", Verbs: []string{"get"}, Selector: AcceptedClaimSelector{MatchAll: true}}},
 		Pending:  []ClaimRef{{Group: "authentication.k8s.io", Resource: "tokenreviews"}},
 		Rejected: []ClaimRef{{Group: "code.railgrid.ai", Resource: "repositories"}},
 		Mismatch: "secrets. (selector differs from defaultSelector)",
@@ -221,10 +228,97 @@ func TestBindingClaimState(t *testing.T) {
 	}
 
 	clean := &unstructured.Unstructured{Object: map[string]interface{}{
-		"spec":   map[string]interface{}{"permissionClaims": []interface{}{map[string]interface{}{"resource": "secrets", "state": "Accepted"}}},
-		"status": map[string]interface{}{"exportPermissionClaims": []interface{}{map[string]interface{}{"resource": "secrets"}}, "conditions": []interface{}{map[string]interface{}{"type": "PermissionClaimsValid", "status": "True"}}},
+		"spec": map[string]interface{}{"permissionClaims": []interface{}{map[string]interface{}{"resource": "secrets", "state": "Accepted", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}}},
+		"status": map[string]interface{}{
+			"exportPermissionClaims":  []interface{}{map[string]interface{}{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}},
+			"appliedPermissionClaims": []interface{}{map[string]interface{}{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}},
+			"conditions":              []interface{}{map[string]interface{}{"type": "PermissionClaimsValid", "status": "True"}},
+		},
 	}}
-	if got := bindingClaimState(clean); !reflect.DeepEqual(got, BindingClaimState{}) {
+	if got := bindingClaimState(clean); !reflect.DeepEqual(got, BindingClaimState{Accepted: []AcceptedClaimScope{{Resource: "secrets", Verbs: []string{"get"}, Selector: AcceptedClaimSelector{MatchAll: true}}}}) {
 		t.Fatalf("clean binding reports %+v", got)
+	}
+
+	notApplied := &unstructured.Unstructured{Object: map[string]interface{}{
+		"spec":   map[string]interface{}{"permissionClaims": []interface{}{map[string]interface{}{"resource": "secrets", "state": "Accepted", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}}},
+		"status": map[string]interface{}{"exportPermissionClaims": []interface{}{map[string]interface{}{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchAll": true}}}},
+	}}
+	if got := bindingClaimState(notApplied); len(got.Accepted) != 0 {
+		t.Fatalf("accepted spec claim was exposed before kcp applied it: %+v", got)
+	}
+}
+
+func TestOrgClaimReconciliationPreservesLatestConsentAfterConflict(t *testing.T) {
+	for _, scenario := range []string{"narrowed", "revoked"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx := context.Background()
+			dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{apiBindingGVR: "APIBindingList"})
+			existing := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "planner"},
+				"spec": map[string]any{"permissionClaims": []any{map[string]any{"resource": "secrets", "verbs": []any{"get", "list"}, "selector": map[string]any{"matchLabels": map[string]any{"owner": "planner"}}, "state": "Accepted"}}},
+			}}
+			if _, err := dyn.Resource(apiBindingGVR).Create(ctx, existing, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			updates := 0
+			dyn.PrependReactor("update", "apibindings", func(action ktesting.Action) (bool, runtime.Object, error) {
+				updates++
+				if updates != 1 {
+					return false, nil, nil
+				}
+				latest := existing.DeepCopy()
+				state := "Accepted"
+				if scenario == "revoked" {
+					state = "Rejected"
+				}
+				_ = unstructured.SetNestedSlice(latest.Object, []any{map[string]any{"resource": "secrets", "verbs": []any{"get"}, "selector": map[string]any{"matchLabels": map[string]any{"owner": "planner"}}, "state": state}}, "spec", "permissionClaims")
+				if err := dyn.Tracker().Update(apiBindingGVR, latest, ""); err != nil {
+					t.Fatal(err)
+				}
+				return true, nil, apierrors.NewConflict(apiBindingGVR.GroupResource(), "planner", fmt.Errorf("concurrent consent change"))
+			})
+			claims := []ProviderClaim{
+				{Resource: "secrets", Verbs: []string{"get", "list", "delete"}, PreserveExistingAcceptance: true},
+				{Resource: "configmaps", Verbs: []string{"get"}, PreserveExistingAcceptance: true},
+			}
+			if _, err := reacceptClaimsOnBinding(ctx, dyn, "planner", claims); err != nil {
+				t.Fatal(err)
+			}
+			got, err := dyn.Resource(apiBindingGVR).Get(ctx, "planner", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var binding apisv1alpha2.APIBinding
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(got.Object, &binding); err != nil {
+				t.Fatal(err)
+			}
+			if len(binding.Spec.PermissionClaims) != 2 {
+				t.Fatalf("claims=%+v", binding.Spec.PermissionClaims)
+			}
+			held := binding.Spec.PermissionClaims[0]
+			if scenario == "narrowed" {
+				if held.State != apisv1alpha2.ClaimAccepted || !reflect.DeepEqual(held.Verbs, []string{"get"}) || held.Selector.MatchLabels["owner"] != "planner" {
+					t.Fatalf("narrowed consent widened: %+v", held)
+				}
+			} else if held.State != apisv1alpha2.ClaimRejected {
+				t.Fatalf("revocation restored: %+v", held)
+			}
+			if binding.Spec.PermissionClaims[1].State != apisv1alpha2.ClaimRejected {
+				t.Fatal("new claim was accepted without Enable")
+			}
+		})
+	}
+}
+
+func TestOrgClaimMergeDoesNotExpandCompositionAndHonorsConsentRemoval(t *testing.T) {
+	current := []apisv1alpha2.AcceptablePermissionClaim{{ScopedPermissionClaim: apisv1alpha2.ScopedPermissionClaim{PermissionClaim: apisv1alpha2.PermissionClaim{GroupResource: apisv1alpha2.GroupResource{Group: "code.railgrid.ai", Resource: "repositories"}, Verbs: []string{"get"}}, Selector: apisv1alpha2.PermissionClaimSelector{MatchAll: true}}, State: apisv1alpha2.ClaimAccepted}}
+	claim := ProviderClaim{Group: "code.railgrid.ai", Resource: "repositories", Verbs: []string{"get", "delete"}, PreserveExistingAcceptance: true}
+	got := mergeBindingClaims(current, []ProviderClaim{claim})
+	if !reflect.DeepEqual(got, current) {
+		t.Fatalf("composition widened: %+v", got)
+	}
+	claim.PreserveExistingAcceptance = false
+	if got := mergeBindingClaims(current, []ProviderClaim{claim}); got[0].State != apisv1alpha2.ClaimRejected {
+		t.Fatal("composition consent removal was ignored")
 	}
 }

@@ -26,9 +26,11 @@ limitations under the License.
 //
 // The policy, in one place:
 //
-//   - A requirement that names no provider (a platform builtin, a core kind) is
-//     the provider's own machinery; the tenant consented to the provider, so
-//     the hub accepts it on their behalf.
+//   - A platform provider's requirement that names no provider (a platform
+//     builtin, a core kind) is accepted on the tenant's behalf.
+//   - Organization provider declarations never expand acceptance in the
+//     background. Existing accepted claims keep their exact verbs and selector;
+//     new claims require explicit Enable consent.
 //   - A requirement that names another provider is a composition: a claim on
 //     somebody else's kinds. It is Accepted only where the workspace's Grant
 //     records that consent, and Rejected otherwise — never silently granted.
@@ -78,14 +80,13 @@ func RequiredClaims(requires []providersv1alpha1.ProviderRequirement, isAccepted
 }
 
 // Desired is the claim set the hub keeps on a tenant's binding to prov's
-// export: every requirement the provider declares, with the provider's own
-// requirements Accepted and compositions Accepted only where grant records the
-// workspace's consent. grant may be nil (no consent recorded).
+// export: platform requirements are accepted and platform compositions follow
+// grant consent. Organization requirements preserve only acceptance already
+// written by Enable, without widening verbs or selectors. grant may be nil.
 //
-// Own requirements are accepted for platform and org-owned providers alike: an
-// org-owned provider is registered by the Org's own admins, who already hold
-// admin in every workspace of that Org, so a claim they declare widens nothing
-// they could not grant directly. AGENTS.md §5.1 records that decision.
+// Registering organization provider code does not approve every future claim
+// submitted with its runtime credential. Its bootstrap may declare an upgrade,
+// but a workspace or organization admin must accept new access through Enable.
 //
 // A composition the grant consents to is marked Consented, so the merge in
 // pkg/hub/kcp knows the Rejected it may be replacing was the hub's own
@@ -100,6 +101,14 @@ func Desired(prov providers.Provider, grant *tenancyv1alpha1.Grant) []kcp.Provid
 	})
 	coordinates := providersv1alpha1.RequiredCoordinates(prov.Requires)
 	for i := range claims {
+		if prov.OrgUUID != "" {
+			// The merge re-reads current acceptance under its conflict retry;
+			// using the reconciler's older snapshot could restore a revocation.
+			// Removing composition consent must still revoke an accepted claim.
+			claims[i].PreserveExistingAcceptance = coordinates[i].Provider == "" || claims[i].Accepted
+			claims[i].Accepted = false
+			continue
+		}
 		if coordinates[i].Provider != "" && claims[i].Accepted {
 			claims[i].Consented = true
 		}

@@ -33,6 +33,8 @@ func newCRBClient(t *testing.T) dynamic.Interface {
 	t.Helper()
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		clusterRoleBindingGVR: "ClusterRoleBindingList",
+		apiBindingGVR:         "APIBindingList",
+		tenantAdminRoleGVR:    "ClusterRoleList",
 	})
 }
 

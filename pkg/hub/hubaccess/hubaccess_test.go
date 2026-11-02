@@ -198,6 +198,53 @@ func TestStoreRefusesMismatchedGrant(t *testing.T) {
 	}
 }
 
+func TestStoreGetUncachedObservesRevocationBehindCachedGrant(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	key := GrantKey{OrgUUID: "o", WorkspaceUUID: "w", Provider: "p", ProviderOrgUUID: "o"}
+	accepted := []tenancyv1alpha1.GrantedCapability{{Capability: ComposeCapability("code.example", "repositories"), Scope: "workspace"}}
+	if _, err := s.Put(ctx, key, accepted, nil, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put(ctx, key, nil, nil, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate another replica still holding the earlier grant in its cache.
+	s.cache[key.Name()] = cachedGrant{grant: &tenancyv1alpha1.Grant{Spec: tenancyv1alpha1.GrantSpec{
+		Subject: tenancyv1alpha1.GrantSubject{Kind: tenancyv1alpha1.GrantSubjectProvider, Name: key.Provider, OrgUUID: key.ProviderOrgUUID},
+		OrgUUID: key.OrgUUID, WorkspaceUUID: key.WorkspaceUUID, Capabilities: accepted,
+	}}, expires: time.Now().Add(time.Hour)}
+	if cached, err := s.Get(ctx, key); err != nil || cached == nil || len(cached.Spec.Capabilities) != 1 {
+		t.Fatalf("Get cache simulation = %+v, %v; want stale accepted entry", cached, err)
+	}
+	if current, err := s.GetUncached(ctx, key); err != nil || current == nil || len(current.Spec.Capabilities) != 0 {
+		t.Fatalf("GetUncached = %+v, %v; want current revoked grant", current, err)
+	}
+}
+
+func TestStoreGetUncachedTreatsDeletingGrantAsRevoked(t *testing.T) {
+	ctx := context.Background()
+	s := newTestStore(t)
+	key := GrantKey{OrgUUID: "o", WorkspaceUUID: "w", Provider: "p", ProviderOrgUUID: "o"}
+	deletingAt := metav1.Now()
+	_, err := s.client.Grants().Create(ctx, &tenancyv1alpha1.Grant{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name(), Finalizers: []string{"test/finalizer"}, DeletionTimestamp: &deletingAt},
+		Spec: tenancyv1alpha1.GrantSpec{
+			Subject:       tenancyv1alpha1.GrantSubject{Kind: tenancyv1alpha1.GrantSubjectProvider, Name: key.Provider, OrgUUID: key.ProviderOrgUUID},
+			OrgUUID:       key.OrgUUID,
+			WorkspaceUUID: key.WorkspaceUUID,
+			Capabilities:  []tenancyv1alpha1.GrantedCapability{{Capability: ComposeCapability("code.example", "repositories"), Scope: "workspace"}},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := s.GetUncached(ctx, key)
+	if err != nil || grant != nil {
+		t.Fatalf("GetUncached deleting grant = %+v, %v; want no authority", grant, err)
+	}
+}
+
 // TestRecordWithoutDecisionsWritesNothing: a caller who may decide nothing
 // leaves every capability undecided rather than recording an empty grant.
 func TestRecordWithoutDecisionsWritesNothing(t *testing.T) {

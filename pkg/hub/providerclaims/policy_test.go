@@ -120,3 +120,22 @@ func TestDesired_NoRequirementsIsEmpty(t *testing.T) {
 		t.Fatalf("Desired() = %+v, want empty", got)
 	}
 }
+
+func TestDesiredOrgProviderRequiresNewEnableConsent(t *testing.T) {
+	prov := agentsProvider()
+	prov.OrgUUID = "org-a"
+	prov.APIExportPath = kcppaths.OrgProviderPath("org-a", prov.Name)
+	for _, grant := range []*tenancyv1alpha1.Grant{nil, grantWith(hubaccess.ComposeCapability("code.railgrid.ai", "repositories"))} {
+		claims := Desired(prov, grant)
+		for _, claim := range claims {
+			if claim.Accepted || claim.Consented {
+				t.Errorf("background reconciliation grants new org claim: %+v", claim)
+			}
+			own := claim.Group == "" || claim.Group == "authentication.k8s.io"
+			compositionConsent := grant != nil && claim.Group == "code.railgrid.ai" && claim.Resource == "repositories"
+			if claim.PreserveExistingAcceptance != (own || compositionConsent) {
+				t.Errorf("wrong preservation policy: %+v", claim)
+			}
+		}
+	}
+}

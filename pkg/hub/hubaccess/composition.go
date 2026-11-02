@@ -36,15 +36,13 @@ import (
 // infrastructure.railgrid.ai/instances here" — and so the capability
 // vocabulary stays one flat namespace that `kubectl get grant -o yaml` can be
 // read against. The scope is always workspace: a composition is a reconciler
-// writing objects into ONE tenant workspace, which is the whole point of the
-// scoped identity that carries it. There is no org-wide composition.
+// writing objects into ONE tenant workspace through its export virtual
+// workspace. There is no org-wide composition or minted composition identity.
 //
 // Unlike a hub-access capability, a composition carries no limits in the grant
-// entry. What bounds it is the declaration (the verbs in
-// spec.requires[].resources[].verbs), which the identity policy reads fresh on
-// every mint — so narrowing a chart narrows live identities on the next
-// refresh, and widening one is pending consent until an admin accepts it
-// again.
+// entry. Access is bounded by the permission claim accepted on the tenant
+// APIBinding. For org-owned providers, reconciliation preserves that exact
+// accepted scope; declaration widening needs a new explicit Enable decision.
 
 // ComposeCapabilityPrefix marks a composition capability inside a Grant.
 const ComposeCapabilityPrefix = "compose:"

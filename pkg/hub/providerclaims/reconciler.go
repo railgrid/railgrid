@@ -46,6 +46,8 @@ import (
 // serves APIBindings read-only; every write goes to the workspace by its
 // logical cluster with the hub's own credential.
 type BindingOps interface {
+	// RefreshTenantAdminAccess keeps the restricted tenant role in step with bound API groups.
+	RefreshTenantAdminAccess(ctx context.Context, clusterName string) error
 	// EnsureCoreBindingClaims brings the hub's own `railgrid` binding in the
 	// cluster to the embedded core export's claim set.
 	EnsureCoreBindingClaims(ctx context.Context, clusterName, bindingName string) (bool, error)
@@ -145,7 +147,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	var binding apisv1alpha2.APIBinding
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &binding); err != nil {
 		if apierrors.IsNotFound(err) {
-			return ctrl.Result{}, nil
+			return ctrl.Result{}, r.ops.RefreshTenantAdminAccess(ctx, string(req.ClusterName))
 		}
 		return ctrl.Result{}, err
 	}
@@ -156,6 +158,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 // become and writes it. It is the whole policy of the controller and takes
 // the binding as read so tests can drive it without a manager.
 func (r *Reconciler) reconcileBinding(ctx context.Context, clusterName string, binding *apisv1alpha2.APIBinding) (ctrl.Result, error) {
+	if err := r.ops.RefreshTenantAdminAccess(ctx, clusterName); err != nil {
+		return ctrl.Result{}, err
+	}
 	logger := klog.FromContext(ctx).WithValues("apibinding", binding.Name, "cluster", clusterName)
 	if binding.DeletionTimestamp != nil {
 		// A disabling provider keeps serving until kcp's cascade finishes;

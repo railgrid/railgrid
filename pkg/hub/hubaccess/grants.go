@@ -77,6 +77,27 @@ func (s *Store) Get(ctx context.Context, key GrantKey) (*tenancyv1alpha1.Grant, 
 	s.mu.Unlock()
 
 	grant, err := s.client.Grants().Get(ctx, name, metav1.GetOptions{})
+	grant, err = validateGrant(key, grant, err)
+	if err != nil {
+		return nil, err
+	}
+	s.remember(name, grant)
+	return grant, nil
+}
+
+// GetUncached reads the current Grant directly from the API. Use this only at
+// request authorization boundaries where a cached revocation would extend
+// authority past the visible decision. Ordinary provider hub-access checks
+// retain Get's short cache.
+func (s *Store) GetUncached(ctx context.Context, key GrantKey) (*tenancyv1alpha1.Grant, error) {
+	if s == nil || s.client == nil {
+		return nil, fmt.Errorf("provider access grant store unavailable")
+	}
+	grant, err := s.client.Grants().Get(ctx, key.Name(), metav1.GetOptions{})
+	return validateGrant(key, grant, err)
+}
+
+func validateGrant(key GrantKey, grant *tenancyv1alpha1.Grant, err error) (*tenancyv1alpha1.Grant, error) {
 	if apierrors.IsNotFound(err) {
 		grant, err = nil, nil
 	}
@@ -85,12 +106,17 @@ func (s *Store) Get(ctx context.Context, key GrantKey) (*tenancyv1alpha1.Grant, 
 	}
 	// The object name is a hash; refuse one whose spec names another tuple
 	// rather than trust it.
+	if grant != nil && grant.DeletionTimestamp != nil {
+		// A finalizer may leave the object readable after Delete has started.
+		// Its accepted capabilities stop being authority as soon as deletion is
+		// visible, especially on request paths that deliberately bypass cache.
+		grant = nil
+	}
 	if grant != nil && (grant.Spec.Subject.Kind != tenancyv1alpha1.GrantSubjectProvider ||
 		grant.Spec.OrgUUID != key.OrgUUID || grant.Spec.WorkspaceUUID != key.WorkspaceUUID ||
 		grant.Spec.Subject.Name != key.Provider || grant.Spec.Subject.OrgUUID != key.ProviderOrgUUID) {
 		grant = nil
 	}
-	s.remember(name, grant)
 	return grant, nil
 }
 

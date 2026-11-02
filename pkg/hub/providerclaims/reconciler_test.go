@@ -42,6 +42,8 @@ type fakeOps struct {
 	pathErr       error
 }
 
+func (f *fakeOps) RefreshTenantAdminAccess(context.Context, string) error { return nil }
+
 type providerCall struct {
 	cluster, binding string
 	claims           []kcp.ProviderClaim

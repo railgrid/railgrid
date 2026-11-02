@@ -711,7 +711,7 @@ func ensureDefaultNamespace(ctx context.Context, wsClient dynamic.Interface) err
 	return nil
 }
 
-// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
+// EnsureChildWorkspaceAdmin grants tenant data administration in the child team
 // Workspace to the given rbacIdentity. Thin wrapper over
 // EnsureWorkspaceAdmin with the canonical child-workspace path.
 // Idempotent.
@@ -1718,9 +1718,12 @@ func ensureExportBinding(ctx context.Context, bindDynamic dynamic.Interface, exp
 	return nil
 }
 
-// EnsureWorkspaceAdmin ensures cluster-admin is granted to rbacIdentity in the
+// EnsureWorkspaceAdmin ensures tenant data administration is granted to rbacIdentity in the
 // workspace identified by clusterName. Idempotent — safe to call on every login.
 func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
+	if _, _, ok := kcppaths.SplitWorkspacePath(clusterName); !ok {
+		return fmt.Errorf("tenant admin requires a team workspace path")
+	}
 	if clusterName == "" || rbacIdentity == "" {
 		return nil
 	}
@@ -1732,7 +1735,7 @@ func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rb
 	return ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity)
 }
 
-// RevokeWorkspaceAdmin removes the cluster-admin grant for rbacIdentity in
+// RevokeWorkspaceAdmin removes the tenant-admin grant for rbacIdentity in
 // the workspace identified by clusterName. Idempotent on NotFound. Only the
 // caller's own per-user binding is touched; every other member keeps theirs.
 func (b *Bootstrapper) RevokeWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
@@ -1769,13 +1772,13 @@ var clusterRoleBindingGVR = schema.GroupVersionResource{
 // next grant or revoke in that workspace and then deletes it.
 const legacyWorkspaceAdminCRB = "railgrid-cluster-admin"
 
-// userAdminCRBPrefix prefixes the per-user cluster-admin bindings. The
+// userAdminCRBPrefix prefixes the per-user tenant-admin bindings. The
 // suffix is a hash of the rbacIdentity: identities are emails, which are
 // not valid object names, and the hash keeps the name stable across the
 // identity's spelling while never colliding between users.
 const userAdminCRBPrefix = "railgrid-user-admin-"
 
-// userAdminCRBName returns the per-user cluster-admin binding name for an
+// userAdminCRBName returns the per-user tenant-admin binding name for an
 // rbacIdentity.
 func userAdminCRBName(rbacIdentity string) string {
 	sum := sha256.Sum256([]byte(rbacIdentity))
@@ -1799,7 +1802,7 @@ func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
 			"roleRef": map[string]interface{}{
 				"apiGroup": "rbac.authorization.k8s.io",
 				"kind":     "ClusterRole",
-				"name":     "cluster-admin",
+				"name":     TenantAdminRoleName,
 			},
 			"subjects": []interface{}{
 				map[string]interface{}{
@@ -1812,11 +1815,14 @@ func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
 	}
 }
 
-// ensureWorkspaceAdmin creates a per-user cluster-admin ClusterRoleBinding for
+// ensureWorkspaceAdmin creates a per-user tenant-admin ClusterRoleBinding for
 // the given rbacIdentity in the workspace targeted by tenantClient. Grants are
 // additive: each member holds their own binding, so granting one user never
 // disturbs another's access. Idempotent.
 func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := ensureTenantAdminRole(ctx, tenantClient); err != nil {
+		return err
+	}
 	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
 		return err
 	}
@@ -1846,10 +1852,13 @@ func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, r
 	return nil
 }
 
-// revokeWorkspaceAdmin deletes the per-user cluster-admin binding for
+// revokeWorkspaceAdmin deletes the per-user tenant-admin binding for
 // rbacIdentity. The legacy shared binding is migrated first so a user who
 // only ever held access through it is revoked too. Idempotent on NotFound.
 func revokeWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := ensureTenantAdminRole(ctx, tenantClient); err != nil {
+		return err
+	}
 	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
 		return err
 	}
@@ -1980,6 +1989,11 @@ type ProviderClaim struct {
 	// while a provider's own claim (never Consented) keeps the tenant's
 	// rejection.
 	Consented bool
+	// PreserveExistingAcceptance keeps the latest binding's accepted claim
+	// verbatim during background reconciliation. An organization provider's
+	// runtime credential may change its declaration but cannot expand a tenant's
+	// earlier consent. Only the explicit Enable path writes new acceptance.
+	PreserveExistingAcceptance bool
 }
 
 // EnsureProviderAPIBinding creates (or no-ops on AlreadyExists) an
@@ -2015,7 +2029,10 @@ func (b *Bootstrapper) EnsureProviderAPIBinding(
 	if err != nil {
 		return fmt.Errorf("creating child workspace client: %w", err)
 	}
-	return ensureProviderAPIBinding(ctx, wsClient, bindingName, exportPath, exportName, claims)
+	if err := ensureProviderAPIBinding(ctx, wsClient, bindingName, exportPath, exportName, claims); err != nil {
+		return err
+	}
+	return ensureTenantAdminRole(ctx, wsClient)
 }
 
 // ensureProviderAPIBinding creates the binding, or — when the tenant already
@@ -2167,6 +2184,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 	out := make(map[string]ProviderBinding, len(list.Items))
 	for _, item := range list.Items {
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
+		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		providerName, ok := providerNameFromExportPath(path, orgUUID)
 		if !ok {
 			continue
@@ -2180,13 +2198,29 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		if phase != "Bound" && !terminating {
 			continue
 		}
+		var boundResources []BoundResource
+		resources, _, _ := unstructured.NestedSlice(item.Object, "status", "boundResources")
+		for _, raw := range resources {
+			resource, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			group, _ := resource["group"].(string)
+			name, _ := resource["resource"].(string)
+			if name != "" {
+				boundResources = append(boundResources, BoundResource{Group: group, Resource: name})
+			}
+		}
 		out[providerName] = ProviderBinding{
 			Name:            item.GetName(),
+			UID:             string(item.GetUID()),
 			ExportPath:      path,
+			ExportName:      exportName,
 			SelfHosted:      strings.HasPrefix(path, kcppaths.TenantsParent+":"),
 			Terminating:     terminating,
 			DeletionBlocked: deletionBlockedMessage(&item),
 			Claims:          bindingClaimState(&item),
+			BoundResources:  boundResources,
 		}
 	}
 	return out, nil
@@ -2234,6 +2268,11 @@ func deletionBlockedMessage(item *unstructured.Unstructured) string {
 type ProviderBinding struct {
 	// Name is the APIBinding's metadata.name (by convention, the provider name).
 	Name string
+	// UID identifies this exact APIBinding instance. A deleted and recreated
+	// binding must not inherit a credential minted for the previous binding.
+	UID string
+	// ExportName is the exact APIExport name referenced by spec.reference.export.
+	ExportName string
 	// ExportPath is the workspace path of the APIExport it binds.
 	ExportPath string
 	// SelfHosted is true when ExportPath is under the tenant fleet, i.e. the
@@ -2251,6 +2290,16 @@ type ProviderBinding struct {
 	// Claims is how the binding's accepted claims stand against what the
 	// export declares today. See BindingClaimState.
 	Claims BindingClaimState
+	// BoundResources are the exact group/resource pairs kcp reports as served
+	// by this APIBinding. Group ownership alone is insufficient when exports
+	// share an API group.
+	BoundResources []BoundResource
+}
+
+// BoundResource is one exact group/resource pair in APIBinding.status.boundResources.
+type BoundResource struct {
+	Group    string
+	Resource string
 }
 
 // ClaimRef names one permission claim by what identifies it on a binding.
@@ -2266,6 +2315,12 @@ type ClaimRef struct {
 // Enable is simply never applied and nothing on the binding says so — this is
 // where the hub says so.
 type BindingClaimState struct {
+	// Accepted are effective claim scopes the tenant accepted and kcp applied.
+	// Only claims in the intersection of status.exportPermissionClaims,
+	// spec.permissionClaims (state Accepted), and status.appliedPermissionClaims
+	// appear here. Verbs and selectors are intersected; unsupported scopes
+	// are omitted. The portal never derives approved scope from the catalog.
+	Accepted []AcceptedClaimScope
 	// Pending are export claims the binding does not list at all. The hub's
 	// binding-claims reconciler accepts a provider's own requirements on the
 	// tenant's behalf, so after rollout this holds only what still needs a
@@ -2314,6 +2369,8 @@ func bindingClaimState(item *unstructured.Unstructured) BindingClaimState {
 			state.Pending = append(state.Pending, ref)
 		}
 	}
+	appliedClaims, _, _ := unstructured.NestedSlice(item.Object, "status", "appliedPermissionClaims")
+	state.Accepted = effectiveAcceptedClaims(specClaims, appliedClaims, exportClaims)
 	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
 	for _, c := range conditions {
 		cond, ok := c.(map[string]any)
@@ -2541,6 +2598,10 @@ func mergeBindingClaims(current []apisv1alpha2.AcceptablePermissionClaim, claims
 			entry.State = apisv1alpha2.ClaimRejected
 		}
 		if prev, ok := existing[key(c.Group, c.Resource)]; ok {
+			if c.PreserveExistingAcceptance && prev.State == apisv1alpha2.ClaimAccepted {
+				desired = append(desired, prev)
+				continue
+			}
 			entry.Selector = prev.Selector
 			if prev.State == apisv1alpha2.ClaimRejected && !c.Consented {
 				entry.State = apisv1alpha2.ClaimRejected
@@ -2566,7 +2627,7 @@ func (b *Bootstrapper) DeleteProviderAPIBinding(ctx context.Context, orgUUID, ws
 	if err := wsClient.Resource(apiBindingGVR).Delete(ctx, bindingName, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("deleting APIBinding %q in %s/%s: %w", bindingName, orgUUID, wsUUID, err)
 	}
-	return nil
+	return ensureTenantAdminRole(ctx, wsClient)
 }
 
 // appAccessGrantLabel marks the ClusterRoleBindings that invite one platform
