@@ -86,6 +86,38 @@ hub:
   # cluster (e.g. local kind, where they need https://host.docker.internal:9443).
   internalURL: ""
   listenAddr: ":9443"
+  # Resource containment for organization workspaces, installed inside the
+  # single embedded kcp shard and its virtual-workspace listeners. All-zero
+  # disables BYO registration, credential issuance, bootstrap and Enable;
+  # read/list and audited cleanup remain available. Enabling requires all fields
+  # explicitly sized for this deployment. External kcp is unsupported.
+  organizationLimits:
+    maxObjectBytes: 0
+    maxRequestBytes: 0
+    requestsPerSecond: 0
+    requestBurst: 0
+    maxConcurrentRequests: 0
+    maxConcurrentStreams: 0
+    maxActiveOrganizations: 0
+    requestTimeout: 0
+    streamTimeout: 0
+    maxConsumerWorkspaces: 0
+    maxResourceTypes: 0
+    maxObjectsPerResource: 0
+    # Conservative quota-governed object-count times maxObjectBytes allocation.
+    # Physical etcd encoding/MVCC/tombstone/compaction/backup reserve is separate.
+    maxLiveBytes: 0
+  # External kcp only: shards reach this dedicated mTLS listener for custom
+  # subresources of org-owned providers. Embedded kcp dispatches in-process.
+  providerRelay:
+    enabled: false
+    url: ""
+    port: 9444
+    # Existing Secret: tls.crt, tls.key and client-ca.crt. Serving certificate
+    # must be trusted by kcp's --shard-virtual-workspace-ca-file.
+    secretName: ""
+    # Exact CNs from kcp --shard-client-cert-file certificates.
+    allowedShardNames: []
   devMode: false
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []

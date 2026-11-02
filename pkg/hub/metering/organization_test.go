@@ -18,6 +18,9 @@ package metering
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -96,9 +100,14 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 	clients := map[string]dynamic.Interface{"root:railgrid:tenants": tenants, "root:railgrid:tenants:org-1": orgWS}
 
 	r := &OrganizationReconciler{Client: users, opts: OrganizationOptions{
-		Discovery:   installed(true),
-		Metering:    meteringWS,
-		Workspaces:  func(path string) (dynamic.Interface, error) { return clients[path], nil },
+		Discovery: installed(true),
+		Metering:  meteringWS,
+		Workspaces: func(path string) (dynamic.Interface, error) {
+			if c, ok := clients[path]; ok {
+				return c, nil
+			}
+			return nil, fmt.Errorf("unexpected workspace lookup %q", path)
+		},
 		DefaultPlan: "free",
 		Logger:      klog.Background(),
 	}}
@@ -237,6 +246,134 @@ func TestNewOrganizationGetsItsOwnAccountOnTheDefaultPlan(t *testing.T) {
 	}
 	if reporter, _, _ := unstructured.NestedString(rep.Object, "spec", "reporter"); reporter != Reporter {
 		t.Fatalf("reporter = %q", reporter)
+	}
+}
+
+func addOrgProviders(t *testing.T, r *OrganizationReconciler, objects ...runtime.Object) *dynamicfake.FakeDynamicClient {
+	t.Helper()
+	const orgPath = "root:railgrid:tenants:org-1"
+	orgWS, err := r.opts.Workspaces(orgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orgWS.Resource(gvrWorkspaces).Create(context.Background(), workspace("providers", "lc-providers"), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	providers := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvrWorkspaces: "WorkspaceList"}, objects...)
+	base := r.opts.Workspaces
+	r.opts.Workspaces = func(path string) (dynamic.Interface, error) {
+		if path == orgPath+":providers" {
+			return providers, nil
+		}
+		return base(path)
+	}
+	return providers
+}
+
+func membershipMembers(t *testing.T, ws dynamic.Interface) []any {
+	t.Helper()
+	report, err := ws.Resource(gvrMembershipReports).Get(context.Background(), Reporter+".org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	members, _, err := unstructured.NestedSlice(report.Object, "spec", "members")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return members
+}
+
+func TestOrganizationMembershipIncludesOnlyItsProviderWorkspaces(t *testing.T) {
+	r, metering := newFixture(t, org("org-1"))
+	// Provider-controlled metadata must not supply a foreign path or cluster.
+	provider := workspace("zeta", "lc-zeta")
+	provider.SetAnnotations(map[string]string{"kcp.io/path": "root:railgrid:tenants:other-org:providers:zeta", "kcp.io/cluster": "lc-foreign"})
+	providers := addOrgProviders(t, r)
+	providers.PrependReactor("list", "workspaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		// List order and duplicate entries must not change report membership.
+		return true, &unstructured.UnstructuredList{Items: []unstructured.Unstructured{
+			*provider, *workspace("alpha", "lc-alpha"), *provider.DeepCopy(), *workspace("unready", ""),
+		}}, nil
+	})
+	base := r.opts.Workspaces
+	var lookups []string
+	r.opts.Workspaces = func(path string) (dynamic.Interface, error) {
+		lookups = append(lookups, path)
+		return base(path)
+	}
+	reconcile(t, r, "org-1")
+	const orgPath = "root:railgrid:tenants:org-1"
+	want := []any{
+		map[string]any{"cluster": "lc-org", "path": orgPath},
+		map[string]any{"cluster": "lc-providers", "path": orgPath + ":providers"},
+		map[string]any{"cluster": "lc-alpha", "path": orgPath + ":providers:alpha"},
+		map[string]any{"cluster": "lc-zeta", "path": orgPath + ":providers:zeta"},
+		map[string]any{"cluster": "lc-a", "path": orgPath + ":ws-a"},
+		map[string]any{"cluster": "lc-b", "path": orgPath + ":ws-b"},
+	}
+	if got := membershipMembers(t, metering); !reflect.DeepEqual(got, want) {
+		t.Fatalf("members = %v, want %v", got, want)
+	}
+	// Neither foreign orgs/platform providers nor team/edge/provider children
+	// are consulted; the only extra list is this org's reserved container.
+	if want := []string{"root:railgrid:tenants", orgPath, orgPath + ":providers"}; !reflect.DeepEqual(lookups, want) {
+		t.Fatalf("workspace lookups = %v, want %v", lookups, want)
+	}
+}
+
+func TestOrganizationMembershipRemovesDeletedProviderWorkspace(t *testing.T) {
+	r, metering := newFixture(t, org("org-1"))
+	providers := addOrgProviders(t, r, workspace("byo", "lc-byo"))
+	reconcile(t, r, "org-1")
+	key := "lc-byo root:railgrid:tenants:org-1:providers:byo"
+	if !normalize(membershipMembers(t, metering))[key] {
+		t.Fatal("provider workspace was not attributed before deletion")
+	}
+	if err := providers.Resource(gvrWorkspaces).Delete(context.Background(), "byo", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	if normalize(membershipMembers(t, metering))[key] {
+		t.Fatal("deleted provider workspace remains attributed")
+	}
+}
+
+func TestOrganizationMembershipSkipsUnreadyProviderContainer(t *testing.T) {
+	r, metering := newFixture(t, org("org-1"))
+	orgWS, err := r.opts.Workspaces("root:railgrid:tenants:org-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := orgWS.Resource(gvrWorkspaces).Create(context.Background(), workspace("providers", ""), metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	reconcile(t, r, "org-1")
+	if got := membershipMembers(t, metering); len(got) != 3 {
+		t.Fatalf("unready provider container should be skipped: %v", got)
+	}
+}
+
+func TestOrganizationMembershipPreservesReportWhenProviderListFails(t *testing.T) {
+	r, metering := newFixture(t, org("org-1"))
+	providers := addOrgProviders(t, r, workspace("byo", "lc-byo"))
+	reconcile(t, r, "org-1")
+	before, err := metering.Resource(gvrMembershipReports).Get(context.Background(), Reporter+".org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	providers.PrependReactor("list", "workspaces", func(k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("provider list unavailable")
+	})
+	_, err = r.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: "org-1"}})
+	if err == nil || !strings.Contains(err.Error(), "root:railgrid:tenants:org-1:providers") {
+		t.Fatalf("expected scoped provider-list error, got %v", err)
+	}
+	after, err := metering.Resource(gvrMembershipReports).Get(context.Background(), Reporter+".org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(before.Object, after.Object) {
+		t.Fatalf("incomplete provider discovery replaced the membership report: before %v, after %v", before.Object, after.Object)
 	}
 }
 

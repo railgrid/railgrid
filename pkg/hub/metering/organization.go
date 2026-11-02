@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 const (
@@ -194,9 +196,9 @@ func (r *OrganizationReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return ctrl.Result{RequeueAfter: membershipRefresh}, nil
 }
 
-// members lists the organization's workspace and every child workspace as
-// {cluster, path}. Edge workspaces (children of children) are not user
-// intent and are left out, matching the design.
+// members lists the organization's workspace, its direct children, and the
+// org-owned provider workspaces under its reserved providers container as
+// {cluster, path}. Other grandchildren (such as edge workspaces) are left out.
 func (r *OrganizationReconciler) members(ctx context.Context, org *tenancyv1alpha1.Organization) ([]map[string]any, error) {
 	path := org.Status.WorkspacePath
 	i := strings.LastIndex(path, ":")
@@ -217,6 +219,14 @@ func (r *OrganizationReconciler) members(ctx context.Context, org *tenancyv1alph
 		return nil, fmt.Errorf("organization workspace %s has no cluster yet", path)
 	}
 	members := []map[string]any{{"cluster": cluster, "path": path}}
+	seen := map[string]bool{cluster + " " + path: true}
+	addMember := func(cluster, path string) {
+		key := cluster + " " + path
+		if cluster != "" && !seen[key] {
+			members = append(members, map[string]any{"cluster": cluster, "path": path})
+			seen[key] = true
+		}
+	}
 	orgClient, err := r.opts.Workspaces(path)
 	if err != nil {
 		return nil, err
@@ -230,8 +240,30 @@ func (r *OrganizationReconciler) members(ctx context.Context, org *tenancyv1alph
 		if c == "" {
 			continue
 		}
-		members = append(members, map[string]any{"cluster": c, "path": path + ":" + ws.GetName()})
+		childPath := path + ":" + ws.GetName()
+		addMember(c, childPath)
+		if ws.GetName() != kcppaths.OrgProvidersWorkspaceName {
+			continue
+		}
+		providersClient, err := r.opts.Workspaces(childPath)
+		if err != nil {
+			return nil, fmt.Errorf("provider workspace client for %s: %w", childPath, err)
+		}
+		providers, err := providersClient.Resource(gvrWorkspaces).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("list provider workspaces of %s: %w", childPath, err)
+		}
+		for _, provider := range providers.Items {
+			c, _, _ := unstructured.NestedString(provider.Object, "spec", "cluster")
+			addMember(c, childPath+":"+provider.GetName())
+		}
 	}
+	sort.Slice(members, func(i, j int) bool {
+		if members[i]["path"] == members[j]["path"] {
+			return members[i]["cluster"].(string) < members[j]["cluster"].(string)
+		}
+		return members[i]["path"].(string) < members[j]["path"].(string)
+	})
 	return members, nil
 }
 

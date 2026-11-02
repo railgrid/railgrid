@@ -13,6 +13,45 @@ Workload kind depends on the kcp mode:
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.kcp.external.enabled) }}
 {{- fail "replicaCount > 1 requires kcp.external.enabled=true: embedded kcp keeps a per-replica etcd on its own PVC and cannot be scaled." }}
 {{- end }}
+{{- $orgLimits := default dict .Values.hub.organizationLimits }}
+{{- $orgLimitsEnabled := false }}
+{{- range $key := list "maxObjectBytes" "maxRequestBytes" "requestsPerSecond" "requestBurst" "maxConcurrentRequests" "maxConcurrentStreams" "maxActiveOrganizations" "requestTimeout" "streamTimeout" "maxConsumerWorkspaces" "maxResourceTypes" "maxObjectsPerResource" "maxLiveBytes" }}
+{{- if not (has (toString (default 0 (get $orgLimits $key))) (list "0" "0s")) }}
+{{- $orgLimitsEnabled = true }}
+{{- end }}
+{{- end }}
+{{- if $orgLimitsEnabled }}
+{{- if .Values.kcp.external.enabled }}
+{{- fail "hub.organizationLimits requires the single embedded kcp shard; external kcp is unsupported" }}
+{{- end }}
+{{- range $key := list "maxObjectBytes" "maxRequestBytes" "requestBurst" "maxConcurrentRequests" "maxConcurrentStreams" "maxActiveOrganizations" "maxConsumerWorkspaces" "maxResourceTypes" "maxObjectsPerResource" "maxLiveBytes" }}
+{{- $raw := get $orgLimits $key }}
+{{- $number := toString $raw }}
+{{- if kindIs "float64" $raw }}
+{{- if ne (floor $raw) $raw }}
+{{- fail (printf "hub.organizationLimits.%s must be an integer" $key) }}
+{{- end }}
+{{- $number = printf "%.0f" $raw }}
+{{- end }}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" $number)) (le (int64 $number) 0) }}
+{{- fail (printf "hub.organizationLimits.%s must be a positive integer; a complete policy is required" $key) }}
+{{- end }}
+{{- $_ := set $orgLimits $key $number }}
+{{- end }}
+{{- $qps := toString (get $orgLimits "requestsPerSecond") }}
+{{- if or (not (regexMatch "^([0-9]+(\\.[0-9]+)?|\\.[0-9]+)$" $qps)) (le (float64 $qps) 0.0) }}
+{{- fail "hub.organizationLimits.requestsPerSecond must be a finite positive number" }}
+{{- end }}
+{{- if lt (int64 $orgLimits.maxRequestBytes) (int64 $orgLimits.maxObjectBytes) }}
+{{- fail "hub.organizationLimits.maxRequestBytes must cover maxObjectBytes" }}
+{{- end }}
+{{- range $key := list "requestTimeout" "streamTimeout" }}
+{{- $duration := toString (get $orgLimits $key) }}
+{{- if or (not (regexMatch "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$" $duration)) (regexMatch "^(0+(\\.0+)?(ns|us|µs|ms|s|m|h))+$" $duration) }}
+{{- fail (printf "hub.organizationLimits.%s must be a positive Go duration" $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 {{- if .Values.kcp.external.enabled }}
 kind: Deployment
@@ -61,6 +100,21 @@ spec:
           imagePullPolicy: {{ .Values.image.hub.pullPolicy }}
           args:
             - --listen-addr={{ .Values.hub.listenAddr }}
+            {{- if $orgLimitsEnabled }}
+            - --org-max-object-bytes={{ $orgLimits.maxObjectBytes }}
+            - --org-max-request-bytes={{ $orgLimits.maxRequestBytes }}
+            - --org-requests-per-second={{ $orgLimits.requestsPerSecond }}
+            - --org-request-burst={{ $orgLimits.requestBurst }}
+            - --org-max-concurrent-requests={{ $orgLimits.maxConcurrentRequests }}
+            - --org-max-concurrent-streams={{ $orgLimits.maxConcurrentStreams }}
+            - --org-max-active-organizations={{ $orgLimits.maxActiveOrganizations }}
+            - --org-request-timeout={{ $orgLimits.requestTimeout }}
+            - --org-stream-timeout={{ $orgLimits.streamTimeout }}
+            - --org-max-consumer-workspaces={{ $orgLimits.maxConsumerWorkspaces }}
+            - --org-max-resource-types={{ $orgLimits.maxResourceTypes }}
+            - --org-max-objects-per-resource={{ $orgLimits.maxObjectsPerResource }}
+            - --org-max-live-bytes={{ $orgLimits.maxLiveBytes }}
+            {{- end }}
             {{- if .Values.kcp.external.enabled }}
             # External kcp mode: connect to kcp running outside the cluster.
             # The front-proxy kubeconfig is used for everything (control-plane
@@ -198,7 +252,9 @@ spec:
             refuse those so the modelled value stays the single source of
             truth. Keep this list in step with the flags rendered above.
             */}}
-            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-relay-url" "provider-relay-listen-addr" "provider-relay-cert-file" "provider-relay-key-file" "provider-relay-client-ca-file" "provider-relay-allowed-names" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled = concat $modelled (list "org-max-object-bytes" "org-max-request-bytes" "org-requests-per-second" "org-request-burst" "org-max-concurrent-requests" "org-max-concurrent-streams" "org-max-active-organizations" "org-request-timeout" "org-stream-timeout") }}
+            {{- $modelled = concat $modelled (list "org-max-consumer-workspaces" "org-max-resource-types" "org-max-objects-per-resource" "org-max-live-bytes") }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
             {{- if has $flag $modelled }}
@@ -207,12 +263,33 @@ spec:
             - {{ . | quote }}
             {{- end }}
             - --data-dir=/data/hub
+            {{- if .Values.hub.providerRelay.enabled }}
+            {{- if not .Values.kcp.external.enabled }}
+            {{- fail "hub.providerRelay.enabled is for external kcp; embedded kcp uses in-process relay" }}
+            {{- end }}
+            {{- if not .Values.hub.providerRelay.allowedShardNames }}
+            {{- fail "hub.providerRelay.allowedShardNames is required" }}
+            {{- end }}
+            - --provider-relay-url={{ required "hub.providerRelay.url is required" .Values.hub.providerRelay.url }}
+            - --provider-relay-listen-addr=:{{ .Values.hub.providerRelay.port }}
+            - --provider-relay-cert-file=/provider-relay/tls.crt
+            - --provider-relay-key-file=/provider-relay/tls.key
+            - --provider-relay-client-ca-file=/provider-relay/client-ca.crt
+            {{- range .Values.hub.providerRelay.allowedShardNames }}
+            - --provider-relay-allowed-names={{ . | quote }}
+            {{- end }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: https
               containerPort: 9443
               protocol: TCP
+            {{- if .Values.hub.providerRelay.enabled }}
+            - name: provider-relay
+              containerPort: {{ .Values.hub.providerRelay.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -232,6 +309,11 @@ spec:
           resources:
             {{- toYaml .Values.hub.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.hub.providerRelay.enabled }}
+            - name: provider-relay
+              mountPath: /provider-relay
+              readOnly: true
+            {{- end }}
             - name: kcp-data
               mountPath: /data
             {{- if include "railgrid-hub.tlsEnabled" . }}
@@ -256,6 +338,11 @@ spec:
             {{- end }}
 
       volumes:
+        {{- if .Values.hub.providerRelay.enabled }}
+        - name: provider-relay
+          secret:
+            secretName: {{ required "hub.providerRelay.secretName is required" .Values.hub.providerRelay.secretName }}
+        {{- end }}
         {{- if .Values.kcp.external.enabled }}
         # External kcp mode is stateless; /data is scratch only (the hub keeps
         # no persistent state here), so an emptyDir replaces the PVC.

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
+	"github.com/railgrid/railgrid/pkg/hub/kcp/byolimits"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
 )
@@ -56,7 +57,15 @@ type Options struct {
 	IDPCAFile       string
 	ServingCertFile string
 	ServingKeyFile  string
-	HubExternalURL  string
+	// ProviderRelay is a separate mTLS listener for external kcp shards. The
+	// browser-facing server never trusts shard identity headers.
+	ProviderRelayURL          string
+	ProviderRelayListenAddr   string
+	ProviderRelayCertFile     string
+	ProviderRelayKeyFile      string
+	ProviderRelayClientCAFile string
+	ProviderRelayAllowedNames []string
+	HubExternalURL            string
 	// HubInternalURL, when set, is the address in-cluster components use to
 	// reach this hub instead of HubExternalURL. It is baked into minted provider
 	// kubeconfigs and offered as the "internal" option by the admin kubeconfig
@@ -192,15 +201,22 @@ type Options struct {
 	PortalFrameSources []string
 
 	// Embedded kcp options
-	EmbeddedKCP         bool   // Enable embedded kcp server
-	KCPRootDir          string // Root directory for kcp data (default: <DataDir>/kcp)
-	KCPEtcdClientPort   int    // Embedded etcd client port (0 keeps kcp default: 2379)
-	KCPEtcdPeerPort     int    // Embedded etcd peer port (0 keeps kcp default: 2380)
-	KCPSecurePort       int    // Secure port for kcp API server (default: 6443)
-	KCPBindAddress      string // Bind address for kcp API server (default: "127.0.0.1")
-	KCPBatteriesInclude string // Comma-separated list of batteries to include (default: "admin,user")
-	KCPTLSCertFile      string // TLS certificate file for kcp API server
-	KCPTLSKeyFile       string // TLS key file for kcp API server
+	EmbeddedKCP bool // Enable embedded kcp server
+	// OrganizationLimits is enforced inside the embedded shard, including its
+	// virtual-workspace listener. Zero leaves hosted BYO unavailable; operators
+	// must supply a complete policy appropriate to their shared capacity.
+	OrganizationLimits byolimits.Config
+	// OrganizationConsumerPolicy bounds quota-governed live allocations per org.
+	// Its lifecycle-lock capacity always follows OrganizationLimits.MaxOrganizations.
+	OrganizationConsumerPolicy providers.OrgConsumerPolicyConfig
+	KCPRootDir                 string // Root directory for kcp data (default: <DataDir>/kcp)
+	KCPEtcdClientPort          int    // Embedded etcd client port (0 keeps kcp default: 2379)
+	KCPEtcdPeerPort            int    // Embedded etcd peer port (0 keeps kcp default: 2380)
+	KCPSecurePort              int    // Secure port for kcp API server (default: 6443)
+	KCPBindAddress             string // Bind address for kcp API server (default: "127.0.0.1")
+	KCPBatteriesInclude        string // Comma-separated list of batteries to include (default: "admin,user")
+	KCPTLSCertFile             string // TLS certificate file for kcp API server
+	KCPTLSKeyFile              string // TLS key file for kcp API server
 	// KCPShardExternalURL is the URL kcp publishes into APIExportEndpointSlice
 	// and CachedResourceEndpointSlice statuses for outside consumers to dial.
 	// Empty defaults to kcp's auto-detected external address, which for an
