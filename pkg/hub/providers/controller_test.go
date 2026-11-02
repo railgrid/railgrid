@@ -409,9 +409,26 @@ func TestCatalogReconcilerDoesNotDirectlyProbeOrgOwnedBackend(t *testing.T) {
 		WithObjects(entry).
 		Build()
 	probes := 0
+	edgeHealthy := true
+	edgeProbes := 0
+	edgeClient := httpDoerFunc(func(req *http.Request) (*http.Response, error) {
+		edgeProbes++
+		if req.URL.Host != "kcp.invalid" || !strings.Contains(req.URL.Path, "/services/provider-database/proxy/readyz") {
+			t.Fatalf("probe escaped hub-owned edge route: %s", req.URL)
+		}
+		if req.Header.Get("Authorization") != "" {
+			t.Fatal("upstream bearer attached")
+		}
+		if !edgeHealthy {
+			return nil, fmt.Errorf("provider stopped")
+		}
+		return healthyHTTPDoer().Do(req)
+	})
 	r := &CatalogReconciler{
 		mgr: testfakes.NewManager(c), reg: reg, prov: &Provisioner{},
-		clusterPaths: map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		clusterPaths:     map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		edgeHealthTarget: &url.URL{Scheme: "https", Host: "kcp.invalid"},
+		edgeHealthClient: edgeClient,
 		edgeRoutes: edgeRouteResolverFunc(func(context.Context, string, string, string) (*EdgeRoute, error) {
 			return &EdgeRoute{Cluster: "tenant-cluster", ServiceName: "provider-database"}, nil
 		}),
@@ -426,10 +443,32 @@ func TestCatalogReconcilerDoesNotDirectlyProbeOrgOwnedBackend(t *testing.T) {
 	if probes != 0 {
 		t.Fatalf("org-owned backend received %d direct probes", probes)
 	}
+	if edgeProbes == 0 {
+		t.Fatal("edge health was never checked")
+	}
 	got, ok := reg.GetForOrg("org-1", "database")
-	if !ok || got.BackendHealthRequired || !got.Ready() {
+	if !ok || !got.BackendHealthRequired || !got.Ready() {
 		t.Fatalf("org-owned registry provider = %+v, found=%v", got, ok)
 	}
+	edgeHealthy = false
+	result, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "database"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reg.GetForOrg("org-1", "database"); got.Ready() {
+		t.Fatal("stopped provider remained Ready")
+	}
+	if result.RequeueAfter != SweepInterval {
+		t.Fatal("health check must repeat")
+	}
+	edgeHealthy = true
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "database")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := reg.GetForOrg("org-1", "database"); !got.Ready() {
+		t.Fatal("provider did not recover readiness")
+	}
+
 }
 
 func TestCatalogReconcilerRetriesOrgOwnedEdgeRouteAndRecovers(t *testing.T) {
@@ -449,7 +488,9 @@ func TestCatalogReconcilerRetriesOrgOwnedEdgeRouteAndRecovers(t *testing.T) {
 	routeReady := false
 	r := &CatalogReconciler{
 		mgr: testfakes.NewManager(c), reg: reg, prov: &Provisioner{},
-		clusterPaths: map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		clusterPaths:     map[string]string{"cluster": kcppaths.OrgProviderPath("org-1", "database")},
+		edgeHealthTarget: &url.URL{Scheme: "https", Host: "kcp.invalid"},
+		edgeHealthClient: healthyHTTPDoer(),
 		edgeRoutes: edgeRouteResolverFunc(func(context.Context, string, string, string) (*EdgeRoute, error) {
 			if !routeReady {
 				return nil, fmt.Errorf("temporary route lookup failure")
