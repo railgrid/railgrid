@@ -51,8 +51,8 @@ const installProvider = computed(() => {
   return {
     name,
     displayName: providerDisplayName(existing ?? providers.byName(name) ?? { name }),
-    resume: !!existing || route.query.manual === '1',
-    manual: route.query.manual === '1',
+    resume: !!existing,
+    manual: !!existing && route.query.manual === '1',
   }
 })
 const canManageSelfHostedCredentials = computed(() => tenant.activeOrg?.role === 'admin' || tenant.activeOrg?.catalogEntryCreation === 'members')
@@ -70,6 +70,9 @@ let selfHostRequestGeneration = 0
 const removalPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const removalOperations = new Map<string, symbol>()
 const removalLabels = new Map<string, string>()
+const removalPollProgress = new Map<string, { checks: number; failures: number }>()
+const removalPollInFlight = new Map<string, symbol>()
+let removalInventoryLoad: { scope: string; promise: Promise<boolean> } | null = null
 
 watch(canManageSelfHostedCredentials, allowed => {
   if (!allowed) {
@@ -158,7 +161,10 @@ function normalizeProviderRoute() {
       } else if (providers.loaded && !existing && !providers.selfHostable.some(provider => provider.name === name)) {
         patch.install = null
         patch.manual = null
-      } else if (hasManual && route.query.manual !== '1') {
+      } else if (hasManual && (route.query.manual !== '1' || !existing)) {
+        // A manual marker only records a choice for a provider that already
+        // exists. With a fresh inventory the install route stays open in its
+        // review step; the stale marker must never auto-register on mount.
         patch.manual = null
       }
     }
@@ -225,14 +231,17 @@ async function refreshOrgProviderInventory() {
 let inventoryPollTimer: ReturnType<typeof setTimeout> | null = null
 let inventoryPollGeneration = 0
 let inventoryPollingMounted = false
+function canPollSelfHostingList() {
+  return inventoryPollingMounted && document.visibilityState !== 'hidden' &&
+    tab.value === 'self-hosting' && !requestedInstallName.value && !!tenant.orgUUID
+}
 function stopInventoryPolling() {
   inventoryPollGeneration += 1
   if (inventoryPollTimer) clearTimeout(inventoryPollTimer)
   inventoryPollTimer = null
 }
 function canPollInventory() {
-  return inventoryPollingMounted && document.visibilityState !== 'hidden' &&
-    tab.value === 'self-hosting' && !requestedInstallName.value && !!tenant.orgUUID
+  return canPollSelfHostingList() && removalOperations.size === 0
 }
 function scheduleInventoryPoll(generation: number) {
   if (!canPollInventory() || generation !== inventoryPollGeneration) return
@@ -248,7 +257,14 @@ function scheduleInventoryPoll(generation: number) {
 }
 function restartInventoryPolling(refresh = true) {
   stopInventoryPolling()
-  if (!canPollInventory()) return
+  if (!canPollSelfHostingList()) {
+    pauseSelfHostRemovalPolling()
+    return
+  }
+  if (removalOperations.size) {
+    resumeSelfHostRemovalPolling()
+    return
+  }
   const generation = inventoryPollGeneration
   if (refresh) {
     void loadOrgProviderInventory().finally(() => scheduleInventoryPoll(generation))
@@ -425,6 +441,8 @@ async function removeSelfHosted(name: string) {
   const operation = Symbol(name)
   removalOperations.set(name, operation)
   removalLabels.set(name, providerDisplayName(orgProviders.items.find(provider => provider.name === name) ?? providers.byName(name) ?? { name }))
+  removalPollProgress.set(name, { checks: 0, failures: 0 })
+  stopInventoryPolling()
   selfHostRemoval.value = { ...selfHostRemoval.value, [name]: 'confirming' }
   selfHostError.value = null
   try {
@@ -474,9 +492,11 @@ function clearSelfHostRemoval(name: string, operation: symbol): void {
   removalPollTimers.delete(name)
   removalOperations.delete(name)
   removalLabels.delete(name)
+  removalPollProgress.delete(name)
   const next = { ...selfHostRemoval.value }
   delete next[name]
   selfHostRemoval.value = next
+  if (!removalOperations.size) restartInventoryPolling(false)
 }
 
 async function finishSelfHostRemoval(name: string, operation: symbol, targetOrgUUID: string | null, targetScope: string): Promise<void> {
@@ -487,25 +507,78 @@ async function finishSelfHostRemoval(name: string, operation: symbol, targetOrgU
   await refreshSelfHostingCatalog(targetOrgUUID, targetScope)
 }
 
-function scheduleSelfHostRemovalPoll(name: string, operation: symbol, targetOrgUUID: string | null, targetScope: string): void {
-  if (removalOperations.get(name) !== operation || removalPollTimers.has(name)) return
+const removalPollFastChecks = 5
+const removalPollFastInterval = 2000
+const removalPollSteadyInterval = 15000
+function removalPollDelay(name: string): number {
+  const progress = removalPollProgress.get(name) ?? { checks: 0, failures: 0 }
+  if (progress.failures) return Math.min(removalPollFastInterval * 2 ** progress.failures, removalPollSteadyInterval)
+  return progress.checks < removalPollFastChecks ? removalPollFastInterval : removalPollSteadyInterval
+}
+
+function loadSelfHostRemovalInventory(targetScope: string): Promise<boolean> {
+  if (removalInventoryLoad?.scope === targetScope) return removalInventoryLoad.promise
+  const entry: { scope: string; promise: Promise<boolean> } = {
+    scope: targetScope,
+    promise: Promise.resolve(false),
+  }
+  entry.promise = orgProviders.load()
+    .then(loaded => loaded && !orgProviders.error)
+    .catch(() => false)
+    .finally(() => {
+      if (removalInventoryLoad === entry) removalInventoryLoad = null
+    })
+  removalInventoryLoad = entry
+  return entry.promise
+}
+
+function scheduleSelfHostRemovalPoll(name: string, operation: symbol, targetOrgUUID: string | null, targetScope: string, delay = removalPollDelay(name)): void {
+  if (removalOperations.get(name) !== operation || removalPollTimers.has(name) || removalPollInFlight.has(name) || !canPollSelfHostingList()) return
   const timer = setTimeout(async () => {
     removalPollTimers.delete(name)
-    if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+    if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope || !canPollSelfHostingList()) return
+    removalPollInFlight.set(name, operation)
     try {
-      const loaded = await orgProviders.load()
+      const loaded = await loadSelfHostRemovalInventory(targetScope)
       if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
       if (loaded && !orgProviders.error && !orgProviders.byName[name]) {
         await finishSelfHostRemoval(name, operation, targetOrgUUID, targetScope)
         return
       }
+      const progress = removalPollProgress.get(name)
+      if (progress) {
+        if (loaded && !orgProviders.error) {
+          progress.checks += 1
+          progress.failures = 0
+        } else {
+          progress.failures += 1
+        }
+      }
     } finally {
-      if (removalOperations.get(name) === operation && dialogScope.value === targetScope) {
+      if (removalPollInFlight.get(name) === operation) removalPollInFlight.delete(name)
+      const currentOperation = removalOperations.get(name)
+      if (currentOperation === operation && dialogScope.value === targetScope) {
         scheduleSelfHostRemovalPoll(name, operation, targetOrgUUID, targetScope)
+      } else if (currentOperation && selfHostRemoval.value[name] === 'deleting') {
+        // A resumed operation may have waited behind this stale request. Once
+        // the old request settles, give the current operation its own check.
+        scheduleSelfHostRemovalPoll(name, currentOperation, tenant.orgUUID, dialogScope.value, 0)
       }
     }
-  }, 2000)
+  }, delay)
   removalPollTimers.set(name, timer)
+}
+
+function pauseSelfHostRemovalPolling(): void {
+  for (const timer of removalPollTimers.values()) clearTimeout(timer)
+  removalPollTimers.clear()
+}
+
+function resumeSelfHostRemovalPolling(): void {
+  for (const [name, operation] of removalOperations) {
+    if (selfHostRemoval.value[name] !== 'deleting') continue
+    scheduleSelfHostRemovalPoll(name, operation, tenant.orgUUID, dialogScope.value, 0)
+  }
 }
 
 function stopSelfHostRemovalPolling(): void {
@@ -513,6 +586,8 @@ function stopSelfHostRemovalPolling(): void {
   removalPollTimers.clear()
   removalOperations.clear()
   removalLabels.clear()
+  removalPollProgress.clear()
+  removalPollInFlight.clear()
   selfHostRemoval.value = {}
 }
 
@@ -523,6 +598,8 @@ function trackDeletingSelfHostedProviders(): void {
     const operation = Symbol(provider.name)
     removalOperations.set(provider.name, operation)
     removalLabels.set(provider.name, providerDisplayName(provider))
+    removalPollProgress.set(provider.name, { checks: 0, failures: 0 })
+    stopInventoryPolling()
     selfHostRemoval.value = { ...selfHostRemoval.value, [provider.name]: 'deleting' }
     scheduleSelfHostRemovalPoll(provider.name, operation, tenant.orgUUID, dialogScope.value)
   }

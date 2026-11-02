@@ -39,6 +39,7 @@ const app = createApp({
   setup() {
     const selfHosting = new URLSearchParams(location.search).get('surface') === 'self-hosting'
     const manualResume = new URLSearchParams(location.search).get('manual') === '1'
+      && new URLSearchParams(location.search).get('fixture-registration') !== 'missing'
     const open = ref(!selfHosting)
     const startAtGoal = ref(false)
     useGettingStartedFocus(open)

@@ -145,6 +145,16 @@ try {
     assert.deepEqual(legacyErrors, [])
     await legacyPage.close()
 
+    const staleManualPage = await browser.newPage({ viewport: { width, height: 900 } })
+    await stubPortalAPI(staleManualPage)
+    await staleManualPage.goto(`${fixtureURL}/?surface=self-hosting&tab=self-hosting&install=code&manual=1&fixture-registration=missing`)
+    await staleManualPage.getByRole('heading', { name: 'Review installation', exact: true }).waitFor()
+    await staleManualPage.waitForFunction(() => !new URL(location.href).searchParams.has('manual'))
+    assert.equal(await staleManualPage.evaluate(() => window.fixture.requests.some(request => ['instructions', 'register', 'install', 'enable'].includes(request[0]))), false,
+      'a stale manual route returns to review without fetching credentials or registering a provider')
+    await staleManualPage.getByRole('button', { name: 'Install manually', exact: true }).waitFor()
+    await staleManualPage.close()
+
     const manualPage = await browser.newPage({ viewport: { width, height: 900 } })
     await manualPage.addInitScript(value => localStorage.setItem('railgrid-theme', value), theme)
     const manualErrors = []

@@ -12,10 +12,10 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing' } = {}) {
+function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing', registered = false, hidden = false } = {}) {
   const provider = { name: 'code', registered: false, ready: false }
   const calls = { register: 0, registerTarget: null, instructions: 0, load: 0, install: 0, status: 0 }
-  const store = Vue.reactive({ byName: {}, error: null, installTargetsEligible: true, installTargetsLoaded: true,
+  const store = Vue.reactive({ byName: registered ? { code: { ...provider, registered: true } } : {}, error: null, installTargetsEligible: true, installTargetsLoaded: true,
     eligibleInstallTargets: [{ name: 'edge', workspace: 'ws' }, ...(multiple ? [{ name: 'other', workspace: 'ws' }] : [])],
     register: async (name, sourceProvider, target) => { calls.register++; calls.registerTarget = target; store.byName.code = { ...provider }; return { provider, kubeconfig: 'fixture-secret' } },
     instructions: async () => { calls.instructions++; return { provider, kubeconfig: 'fixture-secret' } },
@@ -27,6 +27,13 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
   let focused
   const events = []
   const timers = new Map()
+  const visibilityListeners = new Set()
+  const fakeDocument = {
+    hidden,
+    addEventListener(type, listener) { if (type === 'visibilitychange') visibilityListeners.add(listener) },
+    removeEventListener(type, listener) { if (type === 'visibilitychange') visibilityListeners.delete(listener) },
+    dispatchVisibility() { for (const listener of [...visibilityListeners]) listener() },
+  }
   let timerID = 0
   const stub = { setup: (_, { slots }) => () => Vue.h('div', slots.default?.()) }
   const modules = {
@@ -39,9 +46,9 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
     './SelfHostInstructions.vue': { default: { props: ['registration'], setup: props => () => Vue.h('div', { 'data-instructions': true }, props.registration.kubeconfig) } },
   }
   const exports = {}
-  new Function('require', 'exports', 'setTimeout', 'clearTimeout', code)(
+  new Function('require', 'exports', 'setTimeout', 'clearTimeout', 'document', code)(
     id => modules[id] ?? new Proxy({ default: stub }, { get: (o, k) => o[k] ?? stub }), exports,
-    fn => { timers.set(++timerID, fn); return timerID }, id => timers.delete(id),
+    (fn, delay) => { timers.set(++timerID, { fn, delay }); return timerID }, id => timers.delete(id), fakeDocument,
   )
   const renderer = Vue.createRenderer({
     createElement: type => Vue.markRaw({ type, props: {}, children: [], selectedIndex: -1,
@@ -58,8 +65,9 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
   const app = renderer.createApp(exports.default, { name: 'code', displayName: 'Code', resume, manual: manualResume,
     onCancel: () => events.push(['cancel']), onCompleted: name => events.push(['completed', name]), onManual: () => events.push(['manual']) })
   app.mount(root)
-  return { root, store, calls, events, timers, manual, focused: () => focused, cleanup: () => app.unmount(),
-    async poll() { const [id, fn] = timers.entries().next().value; timers.delete(id); await fn(); await settle() } }
+  return { root, store, calls, events, timers, manual, document: fakeDocument, visibilityListeners, focused: () => focused, cleanup: () => app.unmount(),
+    setHidden(value) { fakeDocument.hidden = value; fakeDocument.dispatchVisibility() },
+    async poll() { const [id, timeout] = timers.entries().next().value; timers.delete(id); await timeout.fn(); await settle() } }
 }
 const nodes = n => [n, ...(n.children ?? []).flatMap(nodes)]
 const text = n => (n.text ?? '') + (n.children ?? []).map(text).join('')
@@ -111,7 +119,7 @@ test('Back to providers leaves pending registration and stops monitoring', async
 })
 
 test('Resume reads the durable console operation without registering or fetching a credential', async () => {
-  const s = scenario({ resume: true })
+  const s = scenario({ resume: true, registered: true })
   try {
     let resolveStatus
     s.store.getInstallation = () => { s.calls.status++; return new Promise(resolve => { resolveStatus = resolve }) }
@@ -132,6 +140,141 @@ test('Resume reads the durable console operation without registering or fetching
   } finally { s.cleanup() }
 })
 
+test('a stale manual resume stays on Review without creating a provider or fetching instructions', async () => {
+  const s = scenario({ resume: true, manualResume: true })
+  try {
+    await settle()
+    assert.match(text(s.root), /Review installation/)
+    assert.equal(s.calls.register, 0)
+    assert.equal(s.calls.instructions, 0)
+    assert.equal(s.calls.install, 0)
+    assert.equal(s.calls.status, 0)
+    assert.equal(s.calls.load, 0)
+    assert.equal(s.timers.size, 0)
+  } finally { s.cleanup() }
+})
+
+test('hidden mounts defer status requests until the wizard becomes visible', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false, hidden: true })
+  try {
+    await settle()
+    assert.equal(s.calls.load, 0)
+    assert.equal(s.calls.status, 0)
+    assert.equal(s.timers.size, 0)
+
+    s.setHidden(false)
+    await settle()
+    assert.equal(s.calls.load, 1)
+    assert.equal(s.calls.status, 1)
+    assert.equal(s.timers.size, 1)
+  } finally { s.cleanup() }
+})
+
+test('hidden manual resume never fetches credentials on mount or visibility restoration', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false, manualResume: true, hidden: true })
+  try {
+    await settle()
+    assert.equal(s.calls.instructions, 0)
+    assert.equal(s.calls.load, 0)
+    assert.equal(s.calls.status, 0)
+
+    s.setHidden(false)
+    await settle()
+    assert.equal(s.calls.instructions, 0)
+    assert.equal(s.calls.load, 1)
+    assert.equal(s.calls.status, 0)
+    assert.match(text(s.root), /Show manual commands/)
+
+    await button(s, 'Show manual commands').props.onClick()
+    await settle()
+    assert.equal(s.calls.instructions, 1, 'a visible explicit action retrieves manual commands')
+    assert.match(text(s.root), /fixture-secret/)
+  } finally { s.cleanup() }
+})
+
+test('pending readiness polling pauses while hidden and resumes immediately without fetching credentials', async () => {
+  const s = scenario()
+  try {
+    await create(s)
+    const loadsBeforeHide = s.calls.load
+    const instructionsBeforeHide = s.calls.instructions
+    assert.equal(s.timers.size, 1)
+    assert.equal(s.timers.values().next().value.delay, 2500)
+
+    s.setHidden(true)
+    assert.equal(s.timers.size, 0)
+    assert.equal(s.calls.load, loadsBeforeHide)
+
+    s.setHidden(false)
+    await settle()
+    assert.equal(s.calls.load, loadsBeforeHide + 1)
+    assert.equal(s.calls.instructions, instructionsBeforeHide)
+    assert.equal(s.timers.size, 1)
+  } finally { s.cleanup() }
+})
+
+test('sustained readiness polling backs off after five fast checks', async () => {
+  const s = scenario()
+  try {
+    await create(s)
+    assert.equal(s.timers.values().next().value.delay, 2500)
+    for (let i = 0; i < 4; i++) await s.poll()
+    assert.equal(s.timers.values().next().value.delay, 2500)
+    await s.poll()
+    assert.equal(s.timers.values().next().value.delay, 15000)
+  } finally { s.cleanup() }
+})
+
+test('visibility restoration during an in-flight check runs one immediate follow-up without overlap', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false })
+  try {
+    await settle()
+    const loadCount = s.calls.load
+    let resolvePendingLoad
+    let first = true
+    s.store.load = () => {
+      s.calls.load++
+      if (first) {
+        first = false
+        return new Promise(resolve => { resolvePendingLoad = resolve })
+      }
+      return Promise.resolve(true)
+    }
+
+    const pendingCheck = s.poll()
+    await settle()
+    assert.equal(s.calls.load, loadCount + 1)
+    s.setHidden(true)
+    s.setHidden(false)
+    await settle()
+    assert.equal(s.calls.load, loadCount + 1, 'visible restoration waits for the active request instead of overlapping it')
+
+    resolvePendingLoad(true)
+    await pendingCheck
+    await settle()
+    assert.equal(s.calls.load, loadCount + 2, 'one immediate check starts after the active request settles')
+    assert.equal(s.timers.size, 1)
+  } finally { s.cleanup() }
+})
+
+test('a refresh that settles while hidden does not start another request or rearm polling', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false })
+  let resolveLoad
+  try {
+    await settle()
+    const statuses = s.calls.status
+    s.store.load = () => new Promise(resolve => { resolveLoad = resolve })
+    const pendingCheck = s.poll()
+    await settle()
+    s.setHidden(true)
+    resolveLoad(true)
+    await pendingCheck
+
+    assert.equal(s.calls.status, statuses, 'the installation status request is skipped after the page becomes hidden')
+    assert.equal(s.timers.size, 0)
+  } finally { s.cleanup() }
+})
+
 test('Console progress stays concise during normal phases and exposes diagnostics on failure', async () => {
   const cases = [
     { phase: 'Preparing', headline: 'Getting things ready', status: 'Your provider is being set up' },
@@ -141,7 +284,7 @@ test('Console progress stays concise during normal phases and exposes diagnostic
     { phase: 'Ready', headline: 'Waiting for Code to be ready', status: 'Waiting for Code to report ready' },
   ]
   for (const { phase, headline, status } of cases) {
-    const s = scenario({ resume: true, manual: false, installationPhase: phase })
+    const s = scenario({ resume: true, registered: true, manual: false, installationPhase: phase })
     try {
       await settle()
       assert.match(text(s.root), new RegExp(headline), phase)
@@ -152,7 +295,7 @@ test('Console progress stays concise during normal phases and exposes diagnostic
     } finally { s.cleanup() }
   }
 
-  const failed = scenario({ resume: true, manual: false, installationPhase: 'Failed' })
+  const failed = scenario({ resume: true, registered: true, manual: false, installationPhase: 'Failed' })
   try {
     await settle()
     assert.match(text(failed.root), /Installation needs attention/)
@@ -190,7 +333,7 @@ test('Install manually advances directly to generated commands while console ins
 })
 
 test('read-only members can resume status but cannot retry a failed installation', async () => {
-  const s = scenario({ resume: true, role: 'member' })
+  const s = scenario({ resume: true, registered: true, role: 'member' })
   try {
     await settle()
     assert.equal(s.calls.status, 1)
@@ -226,7 +369,7 @@ test('A failed readiness refresh preserves instructions and cannot complete from
 })
 
 test('A failed console status refresh offers Check again instead of promising an automatic retry', async () => {
-  const s = scenario({ resume: true, manual: false, installationPhase: 'Failed' })
+  const s = scenario({ resume: true, registered: true, manual: false, installationPhase: 'Failed' })
   try {
     await settle()
     assert.equal(s.timers.size, 0)
@@ -238,6 +381,29 @@ test('A failed console status refresh offers Check again instead of promising an
     assert.doesNotMatch(text(s.root), /We’ll retry automatically/)
     assert.match(text(s.root), /Installation needs attention/)
     assert.equal(s.timers.size, 0)
+  } finally { s.cleanup() }
+})
+
+test('terminal installation failure stays stopped on visibility changes until Check again is explicit', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false, installationPhase: 'Failed' })
+  try {
+    await settle()
+    const loads = s.calls.load
+    const statuses = s.calls.status
+    assert.equal(s.timers.size, 0)
+
+    s.setHidden(true)
+    s.setHidden(false)
+    await settle()
+    assert.equal(s.calls.load, loads)
+    assert.equal(s.calls.status, statuses)
+    assert.equal(s.timers.size, 0)
+
+    await button(s, 'Check again').props.onClick()
+    await settle()
+    assert.equal(s.calls.load, loads + 1)
+    assert.equal(s.calls.status, statuses + 1)
+    assert.equal(s.timers.size, 0, 'a repeated terminal failure remains stopped')
   } finally { s.cleanup() }
 })
 
@@ -266,6 +432,25 @@ test('unmount during console start ignores the late status and never starts moni
   await pending
   assert.equal(s.timers.size, 0)
   assert.equal(s.events.length, 0)
+})
+
+test('unmount during readiness refresh removes the listener and never rearms polling', async () => {
+  const s = scenario({ resume: true, registered: true, manual: false })
+  let resolveLoad
+  try {
+    await settle()
+    assert.equal(s.timers.size, 1)
+    s.store.load = () => new Promise(resolve => { resolveLoad = resolve })
+    const pending = s.poll()
+    await settle()
+    assert.equal(s.visibilityListeners.size, 1)
+
+    s.cleanup()
+    assert.equal(s.visibilityListeners.size, 0)
+    resolveLoad(true)
+    await pending
+    assert.equal(s.timers.size, 0)
+  } finally { s.cleanup() }
 })
 
 test('Organization members cannot register under admin-only policy', async () => {
@@ -461,8 +646,50 @@ test('a failed manual instruction request retries instructions instead of retryi
  } finally { s.cleanup() }
 })
 
+test('a resumed manual wizard returns to Review when its provider disappears before credential retry', async () => {
+ const s = scenario({ resume: true, registered: true, manual: false, manualResume: true, multiple: true })
+ try {
+  s.store.instructions = async () => { s.calls.instructions++; throw new Error('credential service unavailable') }
+  await settle()
+  assert.equal(s.calls.instructions, 1)
+  assert.match(text(s.root), /credential service unavailable/)
+  assert.equal(button(s, 'Retry manual instructions').props.disabled, false)
+
+  delete s.store.byName.code
+  await button(s, 'Retry manual instructions').props.onClick()
+  await settle()
+
+  assert.match(text(s.root), /Choose a cluster/)
+  assert.equal(s.calls.instructions, 1)
+  assert.equal(s.calls.register, 0)
+  assert.equal(s.calls.install, 0)
+  assert.equal(s.calls.status, 0)
+  assert.equal(s.timers.size, 0)
+  assert.doesNotMatch(text(s.root), /fixture-secret/)
+ } finally { s.cleanup() }
+})
+
+test('a readiness refresh that confirms provider removal clears manual instructions and stops polling', async () => {
+ const s = scenario({ resume: true, registered: true, manual: false, manualResume: true })
+ try {
+  await settle()
+  assert.equal(s.calls.instructions, 1)
+  assert.equal(s.timers.size, 1)
+  assert.match(text(s.root), /fixture-secret/)
+
+  delete s.store.byName.code
+  await s.poll()
+
+  assert.match(text(s.root), /Review installation/)
+  assert.equal(s.calls.instructions, 1)
+  assert.equal(s.calls.register, 0)
+  assert.equal(s.timers.size, 0)
+  assert.doesNotMatch(text(s.root), /fixture-secret/)
+ } finally { s.cleanup() }
+})
+
 test('a resumed operation with no console Job monitors readiness and requires an explicit manual credential fetch', async () => {
- const s = scenario({ resume: true, manual: false, installationPhase: 'NotStarted' })
+ const s = scenario({ resume: true, registered: true, manual: false, installationPhase: 'NotStarted' })
  try {
   await settle()
   assert.equal(s.calls.status, 1)
@@ -481,7 +708,7 @@ test('a resumed operation with no console Job monitors readiness and requires an
 })
 
 test('an explicit manual route restores instructions and readiness; a viewer receives no credential', async () => {
- const admin = scenario({ resume: true, manual: false, manualResume: true })
+ const admin = scenario({ resume: true, registered: true, manual: false, manualResume: true })
  try {
   await settle()
   assert.equal(admin.calls.instructions, 1)
@@ -492,7 +719,7 @@ test('an explicit manual route restores instructions and readiness; a viewer rec
   assert.equal(admin.timers.size, 1)
  } finally { admin.cleanup() }
 
- const member = scenario({ resume: true, role: 'member', manual: false, manualResume: true })
+ const member = scenario({ resume: true, registered: true, role: 'member', manual: false, manualResume: true })
  try {
   await settle()
   assert.equal(member.calls.instructions, 0)

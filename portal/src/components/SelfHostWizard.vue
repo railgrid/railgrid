@@ -11,9 +11,9 @@ const emit = defineEmits<{ cancel: []; completed: [name: string]; manual: [] }>(
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
 const id = useId()
-const step = ref<1 | 2 | 3>(props.resume ? 2 : 1)
+const step = ref<1 | 2 | 3>(props.resume && orgProviders.byName[props.name] ? 2 : 1)
 const registration = ref<OrgProviderRegistration | null>(null)
-const manualMode = ref(!!props.manual)
+const manualMode = ref(!!props.manual && !!orgProviders.byName[props.name])
 const installation = ref<ProviderInstallation | null>(null)
 const refreshError = ref(false)
 const selectedTarget = ref('')
@@ -34,7 +34,7 @@ const canManage = computed(() => tenant.activeOrg?.role === 'admin' || tenant.ac
 const current = computed(() => orgProviders.byName[props.name] ?? registration.value?.provider)
 const progressDescription = computed(() => {
   if (registration.value) return 'Run these commands in your cluster. Readiness updates automatically.'
-  if (props.manual) {
+  if (manualMode.value) {
     return canManage.value
       ? 'Manual installation is selected. Readiness updates automatically; retrieve the commands if you need them again.'
       : 'Manual installation is being tracked. Ask an organization admin for the commands; readiness updates automatically.'
@@ -91,14 +91,36 @@ const announcement = computed(() => {
 })
 let active = true
 let timer: ReturnType<typeof setTimeout> | null = null
+let pollingAttempts = 0
+let visibilityCheckPending = false
+
+function documentIsVisible() {
+  return typeof document === 'undefined' || !document.hidden
+}
+function terminalFailure() {
+  return !manualMode.value && installation.value?.phase === 'Failed'
+}
 
 function stopMonitoring() {
   if (timer) clearTimeout(timer)
   timer = null
 }
+function returnToReview() {
+  stopMonitoring()
+  visibilityCheckPending = false
+  pollingAttempts = 0
+  registration.value = null
+  installation.value = null
+  manualMode.value = false
+  refreshError.value = false
+  error.value = null
+  retryManual.value = false
+  step.value = 1
+}
 function leave(completed = false) {
   active = false
   stopMonitoring()
+  visibilityCheckPending = false
   registration.value = null
   if (completed) emit('completed', props.name)
   else emit('cancel')
@@ -106,6 +128,8 @@ function leave(completed = false) {
 onUnmounted(() => {
   active = false
   stopMonitoring()
+  visibilityCheckPending = false
+  if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibilityChange)
   registration.value = null
 })
 watch(step, async () => {
@@ -115,13 +139,43 @@ watch(step, async () => {
 
 // One request at a time; only the non-secret inventory is polled. A failed
 // check preserves the instructions and last known state instead of implying success.
-async function checkReadiness() {
-  if (!active || step.value !== 2 || checking.value) return
+function scheduleNextCheck() {
+  if (!active || step.value !== 2 || !documentIsVisible() || terminalFailure()) return
+  const delay = pollingAttempts < 5 ? 2500 : 15000
+  pollingAttempts += 1
+  timer = setTimeout(() => {
+    timer = null
+    return checkReadiness()
+  }, delay)
+}
+
+function onVisibilityChange() {
+  if (!documentIsVisible()) {
+    stopMonitoring()
+    visibilityCheckPending = false
+    return
+  }
+  if (!active || step.value !== 2 || terminalFailure()) return
+  stopMonitoring()
+  if (checking.value) {
+    visibilityCheckPending = true
+    return
+  }
+  visibilityCheckPending = false
+  void checkReadiness()
+}
+
+async function checkReadiness(explicit = false) {
+  if (!active || step.value !== 2 || !documentIsVisible() || checking.value || (!explicit && terminalFailure())) return
   stopMonitoring()
   checking.value = true
   try {
     const refreshed = await orgProviders.load()
-    if (!active) return
+    if (!active || !documentIsVisible()) return
+    if (refreshed && !orgProviders.error && !orgProviders.byName[props.name]) {
+      returnToReview()
+      return
+    }
     if (!manualMode.value) {
       const result = await orgProviders.getInstallation(props.name)
       if (!active) return
@@ -142,28 +196,49 @@ async function checkReadiness() {
     if (active) refreshError.value = true
   } finally {
     checking.value = false
-    if (active && step.value === 2 && (manualMode.value || installation.value?.phase !== 'Failed')) timer = setTimeout(checkReadiness, 2500)
+    if (!active || step.value !== 2 || !documentIsVisible()) return
+    if (visibilityCheckPending) {
+      visibilityCheckPending = false
+      if (!terminalFailure()) {
+        void checkReadiness()
+        return
+      }
+    }
+    scheduleNextCheck()
   }
 }
 
 async function install(retry = false, manual = manualMode.value) {
-  const needsTarget = step.value === 1 && !orgProviders.byName[props.name]
+  const existing = orgProviders.byName[props.name]
+  if (step.value === 2 && !existing) {
+    returnToReview()
+    return
+  }
+  const needsTarget = step.value === 1 && !existing
   if (saving.value || !canManage.value || (needsTarget && (!target.value || !orgProviders.installTargetsEligible || (targets.value.length > 1 && !selectedTarget.value)))) return
   saving.value = true
   error.value = null
   retryManual.value = false
   try {
     if (manual) {
-      const result = props.resume || orgProviders.byName[props.name]
+      const result = existing
         ? await orgProviders.instructions(props.name)
         : await orgProviders.register(props.name, props.name, target.value!)
       if (!active) return
+      if (step.value === 2 && !orgProviders.byName[props.name]) {
+        returnToReview()
+        return
+      }
       registration.value = result
       manualMode.value = true
       emit('manual')
     } else {
-      const result = await orgProviders.startInstallation(props.name, props.resume || orgProviders.byName[props.name] ? undefined : target.value ?? undefined, retry)
+      const result = await orgProviders.startInstallation(props.name, existing ? undefined : target.value ?? undefined, retry)
       if (!active) return
+      if (step.value === 2 && !orgProviders.byName[props.name]) {
+        returnToReview()
+        return
+      }
       installation.value = result
       manualMode.value = false
     }
@@ -189,10 +264,19 @@ function retry() {
   void install(true, retryManual.value)
 }
 onMounted(async () => {
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisibilityChange)
   await nextTick()
   if (!active) return
   titleHeading.value?.focus()
   if (props.resume) {
+    // A stale deep link is a fresh install flow. Resuming must never recreate
+    // a missing provider or fetch instructions for one that is not registered.
+    if (!orgProviders.byName[props.name]) {
+      step.value = 1
+      manualMode.value = false
+      return
+    }
+    if (!documentIsVisible()) return
     if (manualMode.value && canManage.value) void install()
     else void checkReadiness()
   }
@@ -270,7 +354,7 @@ onMounted(async () => {
             <div v-if="orgProviders.error || refreshError" class="flex flex-wrap items-center gap-2 text-sm text-warning" role="status" aria-live="polite">
               <span>Could not refresh status. The last reported status is still shown.</span>
               <template v-if="installation?.phase !== 'Failed'">We’ll retry automatically.</template>
-              <button v-else type="button" class="k-btn k-btn--text text-sm underline underline-offset-2" :disabled="checking || saving" @click="checkReadiness">Check again</button>
+              <button v-else type="button" class="k-btn k-btn--text text-sm underline underline-offset-2" :disabled="checking || saving" @click="checkReadiness(true)">Check again</button>
             </div>
             <details v-if="showInstallationDiagnostics && installation" class="text-sm text-text-secondary">
               <summary>Installation details</summary>
@@ -283,7 +367,7 @@ onMounted(async () => {
               <summary>Readiness details and troubleshooting</summary>
               <p class="mt-2">Registration: {{ current?.registered ? 'Detected' : 'Awaiting provider' }} · Readiness: {{ current?.ready ? 'Ready' : 'Pending' }}</p>
               <p class="mt-2">If the provider stays pending, inspect its Helm release and logs in your cluster. Registration alone does not confirm a healthy provider.</p>
-              <button type="button" class="k-btn k-btn--ghost mt-2" :disabled="checking || saving" @click="checkReadiness">Check again</button>
+              <button type="button" class="k-btn k-btn--ghost mt-2" :disabled="checking || saving" @click="checkReadiness(true)">Check again</button>
             </details>
           </div>
           <CreateGuidance
@@ -312,7 +396,7 @@ onMounted(async () => {
             <summary>Readiness details and troubleshooting</summary>
             <p class="mt-2">Registration: {{ current?.registered ? 'Detected' : 'Awaiting provider' }} · Readiness: {{ current?.ready ? 'Ready' : 'Pending' }}</p>
             <p class="mt-2">If the provider stays pending, inspect its Helm release and logs in your cluster. Registration alone does not confirm a healthy provider.</p>
-            <button type="button" class="k-btn k-btn--ghost mt-2" :disabled="checking || saving" @click="checkReadiness">Check again</button>
+            <button type="button" class="k-btn k-btn--ghost mt-2" :disabled="checking || saving" @click="checkReadiness(true)">Check again</button>
           </details>
         </template>
       </div>
