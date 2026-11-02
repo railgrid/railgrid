@@ -461,15 +461,7 @@ func (v vwSecrets) GetModelCredential(ctx context.Context, name string) (*agents
 	if err != nil {
 		return nil, err
 	}
-	credential, err := fromU[agentsv1alpha1.ModelCredential](u)
-	if err != nil || credential.Spec.ConnectionRef == "" {
-		return credential, err
-	}
-	connection, err := v.GetModelProviderConnection(ctx, credential.Spec.ConnectionRef)
-	if err != nil {
-		return nil, err
-	}
-	return agentsv1alpha1.ResolveModelConnection(credential, connection)
+	return fromU[agentsv1alpha1.ModelCredential](u)
 }
 
 func fromU[T any](u *unstructured.Unstructured) (*T, error) {

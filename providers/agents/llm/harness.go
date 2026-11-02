@@ -177,6 +177,10 @@ func LoadHarnessIdentity(ctx context.Context, c CredentialResolver, name string)
 	if err != nil {
 		return HarnessIdentity{}, err
 	}
+	cred, err = ResolveModelCredentialForRuntime(ctx, c, cred)
+	if err != nil {
+		return HarnessIdentity{}, err
+	}
 	if !agentsv1alpha1.IsHarnessProvider(cred.Spec.Provider) {
 		return HarnessIdentity{}, fmt.Errorf("model credential %q has provider %q, which is a chat endpoint rather than a harness identity", name, cred.Spec.Provider)
 	}

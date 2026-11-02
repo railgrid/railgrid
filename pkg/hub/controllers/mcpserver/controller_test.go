@@ -724,6 +724,9 @@ func TestBuildRules_ConnectionUseOnlyForWritableFirstPartyBinding(t *testing.T) 
 			for _, rule := range rules {
 				if slices.Contains(rule.APIGroups, "agents.railgrid.ai") && slices.Contains(rule.Resources, "modelproviderconnections") && slices.Contains(rule.Verbs, "use") {
 					allowed = true
+					if len(rule.ResourceNames) != 0 {
+						t.Fatalf("writable MCP provider-account use must cover the workspace: %+v", rule)
+					}
 				}
 			}
 			if allowed != (mode == "writable") {

@@ -49,15 +49,17 @@ type SecretGetter interface {
 	GetSecret(ctx context.Context, namespace, name string) (*corev1.Secret, error)
 }
 
-// CredentialGetter reads one ModelCredential from the tenant workspace.
+// CredentialGetter reads the stored ModelCredential from the tenant workspace.
 type CredentialGetter interface {
 	GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error)
 }
 
-// CredentialResolver is everything LoadCredential needs: the object and the
-// Secret it points at, both read with the same identity. The agents client
-// satisfies it as the caller; the virtual-workspace adapter in api/ satisfies
-// it as the provider, for unattended runs that have no caller to borrow.
+// CredentialResolver is everything LoadCredential needs: the stored object
+// and the Secret it points at, both read with the same identity. For a binding,
+// ProfileFor also uses GetModelProviderConnection (which must enforce use
+// authorization) before reading that Secret. The agents client satisfies it
+// as the caller; the virtual-workspace adapter in api/ satisfies it as the
+// provider, for unattended runs that have no caller to borrow.
 type CredentialResolver interface {
 	SecretGetter
 	CredentialGetter
@@ -163,25 +165,37 @@ func APIKeyFromSecret(sec *corev1.Secret, spec agentsv1alpha1.ModelCredentialSpe
 	return ""
 }
 
-// ProfileFor builds the profile for an already-read ModelCredential, reading
-// its Secret through c.
-func ProfileFor(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelCredential) (Profile, error) {
+// ResolveModelCredentialForRuntime resolves a stored model binding to its
+// provider connection. Reading a connection requires its separate use
+// permission; the returned object contains endpoint metadata and a Secret
+// reference, never the Secret data itself.
+func ResolveModelCredentialForRuntime(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelCredential) (*agentsv1alpha1.ModelCredential, error) {
 	if cred.Spec.ConnectionRef != "" {
 		getter, ok := c.(interface {
 			GetModelProviderConnection(context.Context, string) (*agentsv1alpha1.ModelProviderConnection, error)
 		})
 		if !ok {
-			return Profile{}, fmt.Errorf("provider connection cannot be resolved: %w", ErrNotConfigured)
+			return nil, fmt.Errorf("provider connection cannot be resolved: %w", ErrNotConfigured)
 		}
 		connection, err := getter.GetModelProviderConnection(ctx, cred.Spec.ConnectionRef)
 		if err != nil {
-			return Profile{}, err
+			return nil, err
 		}
 		resolved, err := agentsv1alpha1.ResolveModelConnection(cred, connection)
 		if err != nil {
-			return Profile{}, err
+			return nil, err
 		}
 		cred = resolved
+	}
+	return cred, nil
+}
+
+// ProfileFor builds the profile for an already-read ModelCredential, resolving
+// any provider connection and reading its Secret through c.
+func ProfileFor(ctx context.Context, c SecretGetter, cred *agentsv1alpha1.ModelCredential) (Profile, error) {
+	cred, err := ResolveModelCredentialForRuntime(ctx, c, cred)
+	if err != nil {
+		return Profile{}, err
 	}
 	sec, err := c.GetSecret(ctx, SecretNamespace, strings.TrimSpace(cred.Spec.SecretRef.Name))
 	if err != nil {
