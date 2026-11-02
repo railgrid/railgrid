@@ -16,7 +16,9 @@ package modelcredential
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -48,6 +50,79 @@ func protectCredentialSecretOwnership(ctx context.Context, c client.Client, cred
 	if err := c.Update(ctx, cred); err != nil {
 		return fmt.Errorf("installing model credential Secret protection finalizer: %w", err)
 	}
+	return nil
+}
+
+// secretEventOwnsCredential also routes rotated-away keys to their owner.
+// Such keys no longer match secretRef but still require cleanup on watch events.
+func secretEventOwnsCredential(obj client.Object, cred *agentsv1alpha1.ModelCredential) bool {
+	for _, owner := range obj.GetOwnerReferences() {
+		if isLegacyCredentialOwner(owner, cred) {
+			return true
+		}
+	}
+	return false
+}
+
+// The cache is only a work detector. Destructive cleanup still performs its
+// existing ordered live reads and dependency checks. A stale cache can postpone
+// work until its Secret watch catches up, but cannot authorize a deletion.
+func reconcileActiveCredentialSecrets(ctx context.Context, c client.Client, reader client.Reader, cred *agentsv1alpha1.ModelCredential, keepName string) (bool, error) {
+	var keys corev1.SecretList
+	if err := c.List(ctx, &keys, client.InNamespace(llm.SecretNamespace)); err != nil {
+		return false, err
+	}
+	for i := range keys.Items {
+		key := &keys.Items[i]
+		if hasLegacyCredentialOwner(key, cred) && key.Name != keepName && key.Name != cred.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] {
+			return reconcileCredentialSecretOwnership(ctx, c, reader, cred, keepName)
+		}
+	}
+	return false, nil
+}
+
+// recoverInitialCredentialKey completes the durable first-write intent after
+// a crash between creating an immutable owned key and activating its parent.
+// A missing key cannot be reconstructed: the caller can retry with its key, or
+// delete the failed credential. No deadline can safely distinguish a slow writer
+// from a dead one, so we never expire a live reservation by time alone.
+func recoverInitialCredentialKey(ctx context.Context, c client.Client, reader client.Reader, cred *agentsv1alpha1.ModelCredential) error {
+	pending := cred.Annotations[agentsv1alpha1.PendingKeySecretAnnotation]
+	if pending == "" || pending != cred.Spec.SecretRef.Name || cred.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] != "" {
+		return nil
+	}
+	id := strings.TrimPrefix(pending, agentsv1alpha1.GeneratedModelCredentialSecretName(""))
+	if decoded, err := hex.DecodeString(id); err != nil || len(decoded) != 16 {
+		return nil
+	}
+	var current agentsv1alpha1.ModelCredential
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(cred), &current); err != nil {
+		return err
+	}
+	if current.UID != cred.UID || !current.DeletionTimestamp.IsZero() ||
+		current.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] != pending ||
+		current.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] != "" || !reflect.DeepEqual(current.Spec, cred.Spec) {
+		return apierrors.NewConflict(agentsv1alpha1.Resource("modelcredentials"), cred.Name, fmt.Errorf("initial key reservation changed"))
+	}
+	var key corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: llm.SecretNamespace, Name: pending}, &key); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if key.Immutable == nil || !*key.Immutable || !key.DeletionTimestamp.IsZero() ||
+		key.Labels[claimscope.OwnerLabel] != "agents" ||
+		key.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] != id ||
+		!hasLegacyCredentialOwner(&key, &current) || llm.APIKeyFromSecret(&key, current.Spec) == "" {
+		return nil
+	}
+	current.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] = id
+	delete(current.Annotations, agentsv1alpha1.PendingKeySecretAnnotation)
+	if err := c.Update(ctx, &current); err != nil {
+		return err
+	}
+	*cred = current
 	return nil
 }
 

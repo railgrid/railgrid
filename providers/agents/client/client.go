@@ -24,6 +24,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -230,6 +231,14 @@ func (c *Client) ActivateModelCredentialKey(
 	if credential == nil || credential.Name == "" || credential.UID == "" || pendingName == "" || secretID == "" {
 		return nil, fmt.Errorf("ModelCredential key activation requires name, UID, pending Secret name, and generated Secret ID")
 	}
+	// The reconciler may finish this exact intent before the writer sees its
+	// response. A matching activation is an acknowledgement, not a conflict.
+	activationMatches := func(current *agentsv1alpha1.ModelCredential) bool {
+		return current != nil && current.Name == credential.Name && current.UID == credential.UID &&
+			current.ResourceVersion != "" && current.DeletionTimestamp.IsZero() && reflect.DeepEqual(current.Spec, newSpec) &&
+			current.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] == secretID &&
+			current.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] == ""
+	}
 	current, err := c.ModelCredentials().Get(ctx, credential.Name, metav1.GetOptions{})
 	if err != nil {
 		return nil, err
@@ -239,6 +248,9 @@ func (c *Client) ActivateModelCredentialKey(
 	}
 	if current.ResourceVersion == "" {
 		return nil, fmt.Errorf("ModelCredential %q has no resourceVersion before key activation", credential.Name)
+	}
+	if activationMatches(current) {
+		return current, nil
 	}
 	originalJSON, err := json.Marshal(originalSpec)
 	if err != nil {
@@ -269,6 +281,9 @@ func (c *Client) ActivateModelCredentialKey(
 	}
 	updated, err := c.scope.Dynamic().Resource(ModelCredentialGVR).Patch(ctx, credential.Name, k8stypes.JSONPatchType, patch, metav1.PatchOptions{})
 	if err != nil {
+		if acknowledged, readErr := c.ModelCredentials().Get(ctx, credential.Name, metav1.GetOptions{}); readErr == nil && activationMatches(acknowledged) {
+			return acknowledged, nil
+		}
 		return nil, err
 	}
 	result, err := fromUnstructured[agentsv1alpha1.ModelCredential](updated)

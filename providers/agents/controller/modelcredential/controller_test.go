@@ -101,7 +101,7 @@ func newReconciler(t *testing.T, probe Prober, objs ...client.Object) (*Reconcil
 	t.Helper()
 	c := fake.NewClientBuilder().
 		WithScheme(agentsscheme.NewScheme()).
-		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}).
+		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}, &agentsv1alpha1.ModelProviderConnection{}).
 		WithObjects(objs...).
 		Build()
 	return &Reconciler{
@@ -345,7 +345,7 @@ func TestReconcileIsIdempotent(t *testing.T) {
 func TestReconcileSecretReadFailureIsNotAVerdict(t *testing.T) {
 	base := fake.NewClientBuilder().
 		WithScheme(agentsscheme.NewScheme()).
-		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}).
+		WithStatusSubresource(&agentsv1alpha1.ModelCredential{}, &agentsv1alpha1.ModelProviderConnection{}).
 		WithObjects(credential(), secret(true, map[string][]byte{"apiKey": []byte("k")})).
 		Build()
 	c := interceptor.NewClient(base, interceptor.Funcs{
@@ -434,6 +434,50 @@ func TestReconcileAdoptsItsSecret(t *testing.T) {
 	}
 }
 
+func TestReconcileAdoptsMatchingGeneratedKeyIdentity(t *testing.T) {
+	const id = "0123456789abcdef0123456789abcdef"
+	cred := credential()
+	cred.UID = "cred-uid-generated"
+	cred.Spec.SecretRef.Name = agentsv1alpha1.GeneratedModelCredentialSecretName(id)
+	cred.Annotations = map[string]string{agentsv1alpha1.GeneratedKeySecretIDAnnotation: id}
+	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
+	sec.Name = cred.Spec.SecretRef.Name
+	sec.Annotations = map[string]string{agentsv1alpha1.GeneratedKeySecretIDAnnotation: id}
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		return []string{"one"}, 0, nil
+	}, cred, sec)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !hasLegacyCredentialOwner(&got, cred) {
+		t.Fatalf("matching generated ID did not establish exact owner reference: %+v", got.OwnerReferences)
+	}
+}
+
+func TestReconcileDoesNotAdoptRandomSecretWithMismatchedGeneratedID(t *testing.T) {
+	const parentID = "0123456789abcdef0123456789abcdef"
+	cred := credential()
+	cred.UID = "cred-uid-generated"
+	cred.Spec.SecretRef.Name = agentsv1alpha1.GeneratedModelCredentialSecretName(parentID)
+	cred.Annotations = map[string]string{agentsv1alpha1.GeneratedKeySecretIDAnnotation: parentID}
+	sec := secret(true, map[string][]byte{"apiKey": []byte("k")})
+	sec.Name = cred.Spec.SecretRef.Name
+	sec.Annotations = map[string]string{agentsv1alpha1.GeneratedKeySecretIDAnnotation: "fedcba9876543210fedcba9876543210"}
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		return []string{"one"}, 0, nil
+	}, cred, sec)
+	reconcileOnce(t, r)
+	var got corev1.Secret
+	if err := c.Get(t.Context(), types.NamespacedName{Namespace: llm.SecretNamespace, Name: sec.Name}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if hasLegacyCredentialOwner(&got, cred) {
+		t.Fatal("a random name without a matching staged ID was adopted")
+	}
+}
+
 // An unlabelled Secret is outside the provider's claim and is not adopted.
 func TestReconcileDoesNotAdoptAnUnlabelledSecret(t *testing.T) {
 	cred := credential()
@@ -475,5 +519,42 @@ func TestReconcileDoesNotAdoptATenantNamedSecret(t *testing.T) {
 	}
 	if cond := condition(t, read(t, c), agentsv1alpha1.ConditionReady); cond.Status != metav1.ConditionTrue {
 		t.Errorf("a tenant-named secret must still resolve: Ready = %+v", cond)
+	}
+}
+
+func TestReferencedModelTracksConnectionReadinessWithoutReadingItsSecret(t *testing.T) {
+	source := credential()
+	connection := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "account"}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{Provider: source.Spec.Provider, BaseURL: source.Spec.BaseURL, SecretRef: source.Spec.SecretRef}, Status: agentsv1alpha1.ModelCredentialStatus{Conditions: []metav1.Condition{{Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionTrue}}}}
+	model := credential()
+	model.Spec = agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "account", Model: "bound-model"}
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		t.Fatal("binding must not discover models or read a key")
+		return nil, 0, nil
+	}, connection, model)
+	reconcileOnce(t, r)
+	got := read(t, c)
+	if got.Spec.SecretRef.Name != "" || condition(t, got, agentsv1alpha1.ConditionReady).Status != metav1.ConditionTrue {
+		t.Fatal("binding did not follow its ready connection")
+	}
+	connection.Status.Conditions[0].Status = metav1.ConditionFalse
+	if err := c.Status().Update(t.Context(), connection); err != nil {
+		t.Fatal(err)
+	}
+	reconcileOnce(t, r)
+	if condition(t, read(t, c), agentsv1alpha1.ConditionReady).Status != metav1.ConditionFalse {
+		t.Fatal("binding ignored failed connection")
+	}
+}
+
+func TestMissingConnectionReportsNotReadyWithoutProbing(t *testing.T) {
+	model := credential()
+	model.Spec = agentsv1alpha1.ModelCredentialSpec{ConnectionRef: "missing", Model: "bound-model"}
+	r, c := newReconciler(t, func(context.Context, llm.Profile) ([]string, time.Duration, error) {
+		t.Fatal("called endpoint without a valid connection")
+		return nil, 0, nil
+	}, model)
+	reconcileOnce(t, r)
+	if condition(t, read(t, c), agentsv1alpha1.ConditionReady).Status != metav1.ConditionFalse {
+		t.Fatal("missing connection reported ready")
 	}
 }

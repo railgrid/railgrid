@@ -152,15 +152,30 @@ func credentialsForSecret(clusterName multicluster.ClusterName, cl cluster.Clust
 			klog.FromContext(ctx).Error(err, "listing model credentials for a secret event")
 			return nil
 		}
+		var parents agentsv1alpha1.ModelProviderConnectionList
+		if err := cl.GetClient().List(ctx, &parents); err != nil {
+			return nil
+		}
+		connections := make(map[string]string)
+		for _, item := range parents.Items {
+			connections[item.Name] = item.Spec.SecretRef.Name
+		}
 		var reqs []reconcile.Request
 		for i := range list.Items {
 			credential := &list.Items[i]
 			cleanupSecret := strings.TrimSpace(credential.Annotations[credentialProbeCleanupSecretAnnotation])
-			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() {
+			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() || credential.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] == obj.GetName() || secretEventOwnsCredential(obj, credential) || (credential.Spec.ConnectionRef != "" && connections[credential.Spec.ConnectionRef] == obj.GetName()) {
 				reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
 			}
 		}
 		return reqs
+	}))(clusterName, cl)
+}
+
+// modelsForConnection rechecks model bindings when the shared connection changes.
+func modelsForConnection(clusterName multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		return modelRequestsForConnection(ctx, cl, obj)
 	}))(clusterName, cl)
 }
 
@@ -215,7 +230,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		// untouched; finalizing probes are handled above from their snapshot.
 		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
 	}
-	if strings.TrimSpace(cred.Spec.ConnectionRef) != "" {
+
+	if cred.Spec.ConnectionRef != "" {
 		if hasCredentialSecretProtectionFinalizer(&cred) {
 			result, err := r.releaseCredentialSecretProtection(ctx, c, reader, &cred)
 			if err != nil || result.RequeueAfter > 0 {
@@ -224,9 +240,21 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		}
 		return r.reconcileModelBinding(ctx, c, &cred)
 	}
-
+	// Persist protection before resolveSecret can adopt this credential as a
+	// Secret owner. This also upgrades previously-created direct credentials
+	// before the controller next changes ownership.
 	if err := protectCredentialSecretOwnership(ctx, c, &cred); err != nil {
 		return ctrl.Result{}, err
+	}
+	if err := recoverInitialCredentialKey(ctx, c, reader, &cred); err != nil {
+		return ctrl.Result{}, err
+	}
+	cleanupPending := false
+	if keepName := strings.TrimSpace(cred.Spec.SecretRef.Name); keepName != "" && cred.UID != "" {
+		cleanupPending, err = reconcileActiveCredentialSecrets(ctx, c, reader, &cred, keepName)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)
 	if err != nil {
@@ -295,6 +323,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if !ready {
 		result.RequeueAfter = backoffFor(status, now)
 	}
+	if cleanupPending {
+		result.RequeueAfter = backoffInitial
+	}
 	if equalStatus(&cred.Status, status) {
 		return result, nil
 	}
@@ -334,7 +365,7 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 			"secret %q needs the label %s=%s; without it this provider cannot read the key on an unattended run",
 			name, claimscope.OwnerLabel, agentsclient.ProviderName), nil
 	}
-	if strings.TrimSpace(cred.Spec.ConnectionRef) == "" {
+	if cred.Spec.ConnectionRef == "" {
 		if err := adoptSecret(ctx, c, cred, &sec); err != nil {
 			return "", "", "", err
 		}
@@ -362,32 +393,27 @@ func (r *Reconciler) resolveSecret(ctx context.Context, c client.Client, cred *a
 	return key, "", "", nil
 }
 
-// adoptSecret makes the credential an owner of its Secret, so deleting the
-// credential — from the portal, an MCP tool, kubectl, anything — garbage
-// collects the Secret with it. Without this a Secret outlived its credential
-// whenever the deleter was not the portal, and the next credential created
-// under the same name inherited its keys: a claude-code credential found both
-// an apiKey and an oauthToken waiting for it and was refused as two
-// identities. Only the Secret the provider's own writers named for this
-// credential is adopted (a labelled Secret the tenant brought is theirs), the
-// reference is added rather than replacing any other owner, and a reference
-// already present costs no write.
+// adoptSecret adds an owner reference for legacy deterministic provider keys
+// and new keys whose random generated ID matches both objects. A tenant key
+// with a coincidental name or provider label remains unowned. Existing owner
+// references are preserved, and a reference already present costs no write.
 func adoptSecret(ctx context.Context, c client.Client, cred *agentsv1alpha1.ModelCredential, sec *corev1.Secret) error {
 	if cred.UID == "" {
 		return nil
 	}
-	// The owner label is not enough to call a Secret ours: every Secret the
-	// provider can read has to carry it, including one the tenant created and
-	// pointed spec.secretRef at, and adopting that would delete the tenant's
-	// Secret with the credential. The name the provider's own writers mint is
-	// the marker; anything else stays un-owned.
-	if sec.Name != agentsv1alpha1.ModelCredentialSecretName(cred.Name) {
+	// Keep the old deterministic name as a migration compatibility marker. New
+	// generated keys use a random suffix and are adopted only when both the
+	// resource and Secret carry the matching staged ID. A provider owner label
+	// alone is never enough to adopt a tenant-supplied Secret.
+	id := strings.TrimSpace(cred.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation])
+	legacyGenerated := sec.Name == agentsv1alpha1.ModelCredentialSecretName(cred.Name)
+	randomGenerated := id != "" && sec.Name == agentsv1alpha1.GeneratedModelCredentialSecretName(id) &&
+		sec.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] == id
+	if !legacyGenerated && !randomGenerated {
 		return nil
 	}
-	for _, owner := range sec.OwnerReferences {
-		if owner.UID == cred.UID {
-			return nil
-		}
+	if hasLegacyCredentialOwner(sec, cred) {
+		return nil
 	}
 	sec.OwnerReferences = append(sec.OwnerReferences, metav1.OwnerReference{
 		APIVersion: agentsv1alpha1.SchemeGroupVersion.String(),
@@ -484,10 +510,6 @@ func trueReasonFor(condType string) string {
 		return agentsv1alpha1.ReasonSecretResolved
 	case agentsv1alpha1.ConditionReachable:
 		return agentsv1alpha1.ReasonReachable
-	case conditionConnectionReady:
-		return conditionConnectionReady
-	case conditionModelConfigured:
-		return conditionModelConfigured
 	default:
 		return agentsv1alpha1.ReasonReady
 	}
