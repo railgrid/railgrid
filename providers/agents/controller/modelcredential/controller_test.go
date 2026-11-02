@@ -46,6 +46,7 @@ var now = time.Date(2026, 9, 20, 9, 0, 0, 0, time.UTC)
 type fakeManager struct {
 	mcmanager.Manager
 	c        client.Client
+	reader   client.Reader
 	clusters map[multicluster.ClusterName]client.Client
 }
 
@@ -54,15 +55,22 @@ func (m fakeManager) GetCluster(_ context.Context, name multicluster.ClusterName
 	if routed := m.clusters[name]; routed != nil {
 		c = routed
 	}
-	return fakeCluster{c: c}, nil
+	return fakeCluster{c: c, apiReader: m.reader}, nil
 }
 
 type fakeCluster struct {
 	cluster.Cluster
-	c client.Client
+	c         client.Client
+	apiReader client.Reader
 }
 
 func (c fakeCluster) GetClient() client.Client { return c.c }
+func (c fakeCluster) GetAPIReader() client.Reader {
+	if c.apiReader != nil {
+		return c.apiReader
+	}
+	return c.c
+}
 
 func credential() *agentsv1alpha1.ModelCredential {
 	return &agentsv1alpha1.ModelCredential{

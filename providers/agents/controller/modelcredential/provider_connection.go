@@ -50,11 +50,9 @@ const (
 )
 
 // ProviderConnectionReconciler publishes health for shared provider
-// connections. MigrateLegacy is reserved for the later migration layer; this
-// foundation deliberately leaves it false and does not migrate credentials.
+// connections. Legacy migration is implemented in the key-lifecycle layer.
 type ProviderConnectionReconciler struct {
 	Reconciler
-	MigrateLegacy bool
 }
 
 // SetupWithManager watches connection configuration and the Secret containing
