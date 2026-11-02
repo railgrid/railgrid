@@ -376,7 +376,7 @@ type OrgProviderInstaller interface {
 	Target(context.Context, string, string) (*kcp.EdgeRoute, error)
 	Start(context.Context, string, string, *providerinstall.Plan, []byte, bool) (*providerinstall.Status, error)
 	Status(context.Context, string, string, bool) (*providerinstall.Status, error)
-	Cleanup(context.Context, string, string, string)
+	PrepareDeleteWithUID(context.Context, string, string, string) (string, error)
 }
 
 func (m *Manager) WithProviderInstaller(installer OrgProviderInstaller) *Manager {

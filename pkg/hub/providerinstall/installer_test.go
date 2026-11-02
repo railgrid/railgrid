@@ -345,6 +345,71 @@ func TestConcurrentStartUsesPreparationLease(t *testing.T) {
 	}
 }
 
+func TestPrepareDeleteDuringPreparationReleasesLeaseAndCancelsStart(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, p := fixture(t)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var unblock sync.Once
+	finishPreparation := func() { unblock.Do(func() { close(release) }) }
+	defer finishPreparation()
+	local.PrependReactor("create", "serviceaccounts", func(action kt.Action) (bool, runtime.Object, error) {
+		if action.GetSubresource() != "token" {
+			return false, nil, nil
+		}
+		close(entered)
+		<-release
+		request := action.(kt.CreateAction).GetObject().(*authnv1.TokenRequest)
+		request.Status.Token = "short-lived-runner-token"
+		request.Status.ExpirationTimestamp = metav1.NewTime(time.Now().Add(15 * time.Minute))
+		return true, request, nil
+	})
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false)
+		startResult <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Start did not reach runner token creation")
+	}
+	deleteResult := make(chan error, 1)
+	go func() { deleteResult <- i.PrepareDelete(ctx, "org", "kuery") }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		plan, _, err := i.readPlan(ctx, "org", "kuery")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if plan.Deleting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("PrepareDelete did not publish deletion intent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	finishPreparation()
+	if err := <-startResult; err == nil {
+		t.Fatal("Start succeeded after PrepareDelete fenced its attempt")
+	}
+	if err := <-deleteResult; err != nil {
+		t.Fatalf("PrepareDelete remained blocked on the aborted preparation lease: %v", err)
+	}
+	plan, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil || !plan.Deleting || !plan.CleanedUp || plan.PreparationID != "" {
+		t.Fatalf("deletion did not complete after Start released its lease: plan=%+v err=%v", plan, err)
+	}
+	jobs, err := edge.BatchV1().Jobs(p.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil || len(jobs.Items) != 0 {
+		t.Fatalf("superseded Start created an installer Job: jobs=%v err=%v", jobs, err)
+	}
+	if _, err := local.CoreV1().ServiceAccounts("default").Get(ctx, "railgrid-"+plan.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("superseded Start left its runner ServiceAccount: %v", err)
+	}
+}
+
 func TestMissingJobWithActivePodCannotRetry(t *testing.T) {
 	ctx := context.Background()
 	i, edge, _, p := fixture(t)
@@ -497,6 +562,563 @@ func TestNamespaceCollisionNeverOverwritesCredentials(t *testing.T) {
 		t.Fatal("wrote a credential to an unowned namespace")
 	}
 }
+
+func TestForeignProviderKubeconfigSecretIsNeverOverwritten(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	labels := map[string]string{ownerLabel: "provider-workspace-uid", orgLabel: "org", providerLabel: "kuery", edgeWorkspaceLabel: "team", edgeNameLabel: "devbox"}
+	if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: labels}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	foreign := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: providers.KubeconfigSecretName, Namespace: p.Namespace, Labels: map[string]string{ownerLabel: "another-registration"}}, Data: map[string][]byte{"kubeconfig": []byte("foreign-credential")}}
+	if _, err := edge.CoreV1().Secrets(p.Namespace).Create(ctx, foreign, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false); err == nil {
+		t.Fatal("installer overwrote a foreign provider kubeconfig Secret")
+	}
+	stored, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || stored.Labels[ownerLabel] != "another-registration" || string(stored.Data["kubeconfig"]) != "foreign-credential" {
+		t.Fatalf("foreign provider kubeconfig Secret changed: secret=%+v err=%v", stored, err)
+	}
+}
+
+func TestPrepareDeleteAndReregisterRetainedNamespace(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, p := fixture(t)
+	started, err := i.Start(ctx, "org", "kuery", p, []byte("old-provider-kubeconfig"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+		Name:      started.Job + "-running",
+		Namespace: p.Namespace,
+		Labels:    map[string]string{ownerLabel: plan.Owner, attemptLabel: plan.Job},
+		Annotations: map[string]string{
+			attemptIDAnnotation: plan.AttemptID,
+		},
+	}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+	if _, err := edge.CoreV1().Pods(p.Namespace).Create(ctx, pod, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.PrepareDelete(ctx, "org", "kuery"); err != nil {
+		t.Fatalf("preparing provider deletion: %v", err)
+	}
+	if _, err := edge.BatchV1().Jobs(started.Namespace).Get(ctx, started.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("installer Job survived deletion: %v", err)
+	}
+	if _, err := edge.CoreV1().Pods(p.Namespace).Get(ctx, pod.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("owned active installer Pod survived deletion: %v", err)
+	}
+	if _, err := local.CoreV1().ServiceAccounts("default").Get(ctx, "railgrid-"+started.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("runner ServiceAccount survived deletion: %v", err)
+	}
+	if _, err := local.RbacV1().ClusterRoles().Get(ctx, "railgrid-"+started.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("runner ClusterRole survived deletion: %v", err)
+	}
+	if _, err := local.RbacV1().ClusterRoleBindings().Get(ctx, "railgrid-"+started.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("runner ClusterRoleBinding survived deletion: %v", err)
+	}
+	if _, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, runnerSecret(plan), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("runner Secret survived deletion: %v", err)
+	}
+	providerSecret, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || string(providerSecret.Data["kubeconfig"]) != "old-provider-kubeconfig" {
+		t.Fatalf("provider kubeconfig should remain with the retained release: secret=%+v err=%v", providerSecret, err)
+	}
+	ns, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, want := range map[string]string{orgLabel: "org", providerLabel: "kuery", edgeWorkspaceLabel: "team", edgeNameLabel: "devbox", ownerLabel: "provider-workspace-uid"} {
+		if ns.Labels[key] != want {
+			t.Fatalf("deletion did not stamp namespace identity %s=%q: labels=%v", key, want, ns.Labels)
+		}
+	}
+
+	parent, err := i.parent("org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Delete(ctx, "kuery", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	newWorkspace := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "tenancy.kcp.io/v1alpha1",
+		"kind":       "Workspace",
+		"metadata":   map[string]any{"name": "kuery", "uid": "provider-workspace-new-uid"},
+	}}
+	if _, err := parent.Create(ctx, newWorkspace, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	newStarted, err := i.Start(ctx, "org", "kuery", p, []byte("new-provider-kubeconfig"), false)
+	if err != nil {
+		t.Fatalf("re-registering on the retained namespace failed: %v", err)
+	}
+	ns, err = edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Labels[ownerLabel] != "provider-workspace-new-uid" || ns.Labels[orgLabel] != "org" || ns.Labels[providerLabel] != "kuery" {
+		t.Fatalf("namespace was not safely adopted by the new registration: %v", ns.Labels)
+	}
+	providerSecret, err = edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || string(providerSecret.Data["kubeconfig"]) != "new-provider-kubeconfig" || providerSecret.Labels[ownerLabel] != "provider-workspace-new-uid" {
+		t.Fatalf("provider kubeconfig was not rotated for the new registration: secret=%+v err=%v", providerSecret, err)
+	}
+	runnerSecretObject, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, runnerSecret(&Plan{Job: newStarted.Job}), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(runnerSecretObject.Data["values.json"], &values); err != nil {
+		t.Fatal(err)
+	}
+	podAnnotations, ok := values["podAnnotations"].(map[string]any)
+	if !ok || podAnnotations[registrationRolloutAnnotation] != "provider-workspace-new-uid" {
+		t.Fatalf("registration UID did not force a provider workload rollout: %v", values["podAnnotations"])
+	}
+}
+
+func TestNamespaceAdoptionFailsClosedForLegacyAndForeignIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		labels map[string]string
+	}{
+		{name: "legacy owner without stable identity", labels: map[string]string{ownerLabel: "old-registration"}},
+		{name: "different organization", labels: map[string]string{ownerLabel: "old-registration", orgLabel: "foreign-org", providerLabel: "kuery", edgeWorkspaceLabel: "team", edgeNameLabel: "devbox"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			i, edge, _, p := fixture(t)
+			parent, err := i.parent("org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := parent.Delete(ctx, "kuery", metav1.DeleteOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			ws := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace",
+				"metadata": map[string]any{"name": "kuery", "uid": "new-registration"},
+			}}
+			if _, err := parent.Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: tc.labels}}, metav1.CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := i.Start(ctx, "org", "kuery", p, []byte("new-kubeconfig"), false); err == nil {
+				t.Fatal("installer adopted a legacy or foreign namespace")
+			}
+			ns, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+			if err != nil || ns.Labels[ownerLabel] != tc.labels[ownerLabel] {
+				t.Fatalf("rejected namespace ownership was changed: labels=%v err=%v", ns.GetLabels(), err)
+			}
+			if _, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+				t.Fatalf("installer wrote credentials into a rejected namespace: %v", err)
+			}
+		})
+	}
+}
+
+func TestPrepareDeleteAfterRejectedNamespaceOnlyRevokesOwnedLocalCredentials(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, p := fixture(t)
+	foreignLabels := map[string]string{"foreign": "keep"}
+	if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: foreignLabels}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	foreignSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      providers.KubeconfigSecretName,
+		Namespace: p.Namespace,
+		Labels:    map[string]string{ownerLabel: "foreign-registration"},
+	}, Data: map[string][]byte{"kubeconfig": []byte("foreign-kubeconfig")}}
+	if _, err := edge.CoreV1().Secrets(p.Namespace).Create(ctx, foreignSecret, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false); err == nil {
+		t.Fatal("Start adopted an unlabelled namespace")
+	}
+	plan, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.NamespaceAdmissionKnown || plan.NamespaceAdmitted {
+		t.Fatalf("failed namespace gate was not persisted: %+v", plan)
+	}
+
+	// These exact attempt-owned hub credentials are safe to revoke even though
+	// the Edge namespace itself was rejected. The unrelated local identity and
+	// all objects in the foreign namespace must remain untouched.
+	identity := "railgrid-" + plan.Job
+	meta := attemptObjectMeta(identity, plan)
+	if _, err := local.CoreV1().ServiceAccounts("default").Create(ctx, &corev1.ServiceAccount{ObjectMeta: meta}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{ObjectMeta: meta}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{ObjectMeta: meta}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := local.CoreV1().ServiceAccounts("default").Create(ctx, &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: "unrelated-runner", Labels: map[string]string{ownerLabel: "other-registration"}}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	foreignJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name:      plan.Job,
+		Namespace: p.Namespace,
+		Labels:    map[string]string{ownerLabel: "foreign-registration", attemptLabel: plan.Job},
+	}, Status: batchv1.JobStatus{Active: 1}}
+	if _, err := edge.BatchV1().Jobs(p.Namespace).Create(ctx, foreignJob, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := i.PrepareDelete(ctx, "org", "kuery"); err != nil {
+		t.Fatalf("deleting a rejected registration should not need ownership of the foreign namespace: %v", err)
+	}
+	storedNS, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil || storedNS.Labels["foreign"] != "keep" || storedNS.Labels[ownerLabel] != "" || len(storedNS.Labels) != len(foreignLabels) {
+		t.Fatalf("PrepareDelete changed the rejected namespace: labels=%v err=%v", storedNS.GetLabels(), err)
+	}
+	storedSecret, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || storedSecret.Labels[ownerLabel] != "foreign-registration" || string(storedSecret.Data["kubeconfig"]) != "foreign-kubeconfig" {
+		t.Fatalf("PrepareDelete changed the foreign provider credential: secret=%+v err=%v", storedSecret, err)
+	}
+	if _, err := edge.BatchV1().Jobs(p.Namespace).Get(ctx, plan.Job, metav1.GetOptions{}); err != nil {
+		t.Fatalf("PrepareDelete touched a foreign installer Job: %v", err)
+	}
+	for _, resource := range []string{"serviceaccount", "clusterrole", "clusterrolebinding"} {
+		t.Run(resource, func(t *testing.T) {
+			var err error
+			switch resource {
+			case "serviceaccount":
+				_, err = local.CoreV1().ServiceAccounts("default").Get(ctx, identity, metav1.GetOptions{})
+			case "clusterrole":
+				_, err = local.RbacV1().ClusterRoles().Get(ctx, identity, metav1.GetOptions{})
+			case "clusterrolebinding":
+				_, err = local.RbacV1().ClusterRoleBindings().Get(ctx, identity, metav1.GetOptions{})
+			}
+			if !apierrors.IsNotFound(err) {
+				t.Fatalf("registration-owned %s was not revoked: %v", resource, err)
+			}
+		})
+	}
+	if _, err := local.CoreV1().ServiceAccounts("default").Get(ctx, "unrelated-runner", metav1.GetOptions{}); err != nil {
+		t.Fatalf("PrepareDelete removed an unrelated local ServiceAccount: %v", err)
+	}
+	plan, _, err = i.readPlan(ctx, "org", "kuery")
+	if err != nil || !plan.Deleting || !plan.CleanedUp {
+		t.Fatalf("failed registration did not reach a durable cleaned state: plan=%+v err=%v", plan, err)
+	}
+}
+
+func TestNamespaceAdoptionWaitsForPriorAttemptToStop(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	parent, err := i.parent("org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Delete(ctx, "kuery", metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	ws := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace",
+		"metadata": map[string]any{"name": "kuery", "uid": "new-registration"},
+	}}
+	if _, err := parent.Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]string{ownerLabel: "old-registration", orgLabel: "org", providerLabel: "kuery", edgeWorkspaceLabel: "team", edgeNameLabel: "devbox"}
+	if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: labels}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	activeJob := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{
+		Name:      "old-installer",
+		Namespace: p.Namespace,
+		Labels:    map[string]string{ownerLabel: "old-registration", attemptLabel: "old-installer"},
+		Annotations: map[string]string{
+			attemptIDAnnotation: "old-attempt-id",
+		},
+	}, Status: batchv1.JobStatus{Active: 1}}
+	if _, err := edge.BatchV1().Jobs(p.Namespace).Create(ctx, activeJob, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("new-kubeconfig"), false); err == nil {
+		t.Fatal("installer adopted a namespace with a live prior attempt")
+	}
+	if _, err := edge.BatchV1().Jobs(p.Namespace).Get(ctx, activeJob.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("failed adoption changed the prior installer Job: %v", err)
+	}
+	ns, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil || ns.Labels[ownerLabel] != "old-registration" {
+		t.Fatalf("failed adoption changed namespace ownership: labels=%v err=%v", ns.GetLabels(), err)
+	}
+}
+
+func TestNamespaceAdoptionRetryAcceptsCurrentPriorSecretOwner(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	labels := map[string]string{
+		ownerLabel:         "registration-b",
+		previousOwnerLabel: "registration-a",
+		orgLabel:           "org",
+		providerLabel:      "kuery",
+		edgeWorkspaceLabel: "team",
+		edgeNameLabel:      "devbox",
+	}
+	if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: labels}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := edge.CoreV1().Secrets(p.Namespace).Create(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      providers.KubeconfigSecretName,
+		Namespace: p.Namespace,
+		Labels:    map[string]string{ownerLabel: "registration-b"},
+	}, Data: map[string][]byte{"kubeconfig": []byte("registration-b-kubeconfig")}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	failFirstSecretUpdate := true
+	edge.PrependReactor("update", "secrets", func(kt.Action) (bool, runtime.Object, error) {
+		if failFirstSecretUpdate {
+			failFirstSecretUpdate = false
+			return true, nil, fmt.Errorf("temporary Secret update failure")
+		}
+		return false, nil, nil
+	})
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("registration-c-kubeconfig"), false); err == nil {
+		t.Fatal("first credential rotation should report the injected update failure")
+	}
+	ns, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Labels[ownerLabel] != "provider-workspace-uid" || ns.Labels[previousOwnerLabel] != "registration-b" {
+		t.Fatalf("namespace did not retain the actual prior credential owner: %v", ns.Labels)
+	}
+	secret, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || secret.Labels[ownerLabel] != "registration-b" {
+		t.Fatalf("failed credential rotation changed the prior Secret owner: secret=%+v err=%v", secret, err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", nil, []byte("registration-c-kubeconfig"), false); err != nil {
+		t.Fatalf("retry after the interrupted credential rotation failed: %v", err)
+	}
+	secret, err = edge.CoreV1().Secrets(p.Namespace).Get(ctx, providers.KubeconfigSecretName, metav1.GetOptions{})
+	if err != nil || secret.Labels[ownerLabel] != "provider-workspace-uid" || string(secret.Data["kubeconfig"]) != "registration-c-kubeconfig" {
+		t.Fatalf("retry did not finish the credential rotation: secret=%+v err=%v", secret, err)
+	}
+	ns, err = edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
+	if err != nil || ns.Labels[previousOwnerLabel] != "" {
+		t.Fatalf("completed rotation retained stale namespace ownership: labels=%v err=%v", ns.GetLabels(), err)
+	}
+}
+
+func TestPrepareDeleteFencesStartWithoutAPlan(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	if err := i.PrepareDelete(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false); err == nil {
+		t.Fatal("Start ignored durable deletion intent when no plan existed")
+	}
+	if _, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("Start prepared resources after deletion intent: %v", err)
+	}
+}
+
+func TestPrepareDeleteFailureRetainsWorkspaceAndAttemptOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ambiguous  bool
+		failRunner bool
+	}{
+		{name: "credential revocation failure", failRunner: true},
+		{name: "ambiguous pod is preserved", ambiguous: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			i, edge, local, p := fixture(t)
+			started, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, _, err := i.readPlan(ctx, "org", "kuery")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var ambiguousPod *corev1.Pod
+			if tc.ambiguous {
+				ambiguousPod = &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+					Name:      started.Job + "-ambiguous",
+					Namespace: p.Namespace,
+					Labels:    map[string]string{"batch.kubernetes.io/job-name": started.Job},
+				}, Status: corev1.PodStatus{Phase: corev1.PodRunning}}
+				if _, err := edge.CoreV1().Pods(p.Namespace).Create(ctx, ambiguousPod, metav1.CreateOptions{}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.failRunner {
+				local.PrependReactor("delete", "serviceaccounts", func(kt.Action) (bool, runtime.Object, error) {
+					return true, nil, fmt.Errorf("revocation unavailable")
+				})
+			}
+			if err := i.PrepareDelete(ctx, "org", "kuery"); err == nil {
+				t.Fatal("provider deletion proceeded despite incomplete installer cleanup")
+			}
+			parent, err := i.parent("org")
+			if err != nil {
+				t.Fatal(err)
+			}
+			ws, err := parent.Get(ctx, "kuery", metav1.GetOptions{})
+			if err != nil {
+				t.Fatalf("provider workspace was lost after partial cleanup: %v", err)
+			}
+			if ws.GetAnnotations()[deletingAnnotation] != plan.Owner {
+				t.Fatal("partial delete did not retain its durable Start fence")
+			}
+			stored := &Plan{}
+			if err := json.Unmarshal([]byte(ws.GetAnnotations()[planAnnotation]), stored); err != nil || !stored.Deleting || stored.CleanedUp || stored.Owner != plan.Owner {
+				t.Fatalf("partial delete lost its owner-fenced plan: plan=%+v err=%v", stored, err)
+			}
+			if _, err := i.Start(ctx, "org", "kuery", nil, []byte("credential"), true); err == nil {
+				t.Fatal("Start proceeded after deletion intent was recorded")
+			}
+			if tc.ambiguous {
+				if _, err := edge.CoreV1().Pods(p.Namespace).Get(ctx, ambiguousPod.Name, metav1.GetOptions{}); err != nil {
+					t.Fatalf("ambiguous Pod was deleted without exact ownership: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestTerminalResultSurvivesJobTTLAndCleanupIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	started, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := edge.BatchV1().Jobs(started.Namespace).Get(ctx, started.Job, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil || *job.Spec.TTLSecondsAfterFinished != 24*60*60 || !containsString(job.Finalizers, jobResultFinalizer) {
+		t.Fatalf("installer Job lacks TTL/finalizer protection: ttl=%v finalizers=%v", job.Spec.TTLSecondsAfterFinished, job.Finalizers)
+	}
+	if _, _, err := i.readPlan(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := i.parent("org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.Get(ctx, "kuery", metav1.GetOptions{})
+	if err != nil || !containsString(ws.GetFinalizers(), sealedWorkspaceFinalizer) {
+		t.Fatalf("sealed provider workspace lacks cleanup finalizer: finalizers=%v err=%v", ws.GetFinalizers(), err)
+	}
+	jobCondition(t, edge, started, batchv1.JobComplete)
+	if err := i.ReconcileCleanup(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil || plan.JobResult != string(batchv1.JobComplete) || plan.FinishedAt.IsZero() || !plan.CleanedUp || plan.JobUID != string(job.UID) {
+		t.Fatalf("terminal result or cleanup marker was not persisted: plan=%+v err=%v", plan, err)
+	}
+	finishedJob, err := edge.BatchV1().Jobs(started.Namespace).Get(ctx, started.Job, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsString(finishedJob.Finalizers, jobResultFinalizer) {
+		t.Fatal("result finalizer remained after durable cleanup")
+	}
+	if err := edge.BatchV1().Jobs(started.Namespace).Delete(ctx, started.Job, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	jobGetsBefore := countActions(edge.Actions(), "get", "jobs")
+	status, err := i.Status(ctx, "org", "kuery", false)
+	if err != nil || status.Phase != "Checking" {
+		t.Fatalf("Job TTL changed the checking status: status=%+v err=%v", status, err)
+	}
+	ready, err := i.Status(ctx, "org", "kuery", true)
+	if err != nil || ready.Phase != "Ready" {
+		t.Fatalf("Job TTL changed readiness reporting: status=%+v err=%v", ready, err)
+	}
+	plan.FinishedAt = time.Now().Add(-6 * time.Minute)
+	encodedPlan, err := json.Marshal(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, err = workspace.Get(ctx, "kuery", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := ws.GetAnnotations()
+	annotations[planAnnotation] = string(encodedPlan)
+	ws.SetAnnotations(annotations)
+	if _, err := workspace.Update(ctx, ws, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := i.Status(ctx, "org", "kuery", false)
+	if err != nil || stale.Phase != "Failed" || !stale.CanRetry {
+		t.Fatalf("lost readiness was frozen as Ready after the checking timeout: status=%+v err=%v", stale, err)
+	}
+	stillReady, err := i.Status(ctx, "org", "kuery", true)
+	if err != nil || stillReady.Phase != "Ready" {
+		t.Fatalf("current provider readiness was not reflected after timeout: status=%+v err=%v", stillReady, err)
+	}
+	if err := i.ReconcileCleanup(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	if countActions(edge.Actions(), "get", "jobs") != jobGetsBefore {
+		t.Fatal("read-only Status or repeated cleanup GET the expired installer Job")
+	}
+}
+
+func TestExpiredPreparationWithMissingJobIsReconciledAsFailure(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, p := fixture(t)
+	started, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := edge.BatchV1().Jobs(started.Namespace).Delete(ctx, started.Job, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := i.ReconcileCleanup(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	plan, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil || plan.JobResult != string(batchv1.JobFailed) || plan.FinishedAt.IsZero() || !plan.CleanedUp {
+		t.Fatalf("expired missing Job did not become a durable failed result: plan=%+v err=%v", plan, err)
+	}
+	if _, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, runnerSecret(plan), metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("orphaned runner Secret was not cleaned: %v", err)
+	}
+	if _, err := local.CoreV1().ServiceAccounts("default").Get(ctx, "railgrid-"+started.Job, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("orphaned runner ServiceAccount was not cleaned: %v", err)
+	}
+	status, err := i.Status(ctx, "org", "kuery", false)
+	if err != nil || status.Phase != "Failed" || !status.CanRetry {
+		t.Fatalf("missing Job failure did not survive through Status: status=%+v err=%v", status, err)
+	}
+}
+
+func countActions(actions []kt.Action, verb, resource string) int {
+	count := 0
+	for _, action := range actions {
+		if action.GetVerb() == verb && action.GetResource().Resource == resource {
+			count++
+		}
+	}
+	return count
+}
+
 func TestInstallRequiresAllEdgeAPIVerbs(t *testing.T) {
 	i, _, local, _ := fixture(t)
 	local.PrependReactor("create", "subjectaccessreviews", func(a kt.Action) (bool, runtime.Object, error) {
@@ -531,15 +1153,15 @@ func TestInstallAuthorizationFailsClosedOnSARDenialAndEvaluationError(t *testing
 	}
 }
 func TestResolvePlanRefusesUnresolvedValues(t *testing.T) {
-	_, err := ResolvePlan(providers.InstallInstructions{Warnings: []string{"missing chart"}})
+	_, err := ResolvePlan(context.Background(), providers.InstallInstructions{Warnings: []string{"missing chart"}})
 	if err == nil {
 		t.Fatal("incomplete recipe accepted")
 	}
-	_, err = ResolvePlan(providers.InstallInstructions{ChartVersion: "1.0.0", Values: []providers.ResolvedValue{{Name: "custom", Unresolved: true}}})
+	_, err = ResolvePlan(context.Background(), providers.InstallInstructions{ChartVersion: "1.0.0", Values: []providers.ResolvedValue{{Name: "custom", Unresolved: true}}})
 	if err == nil {
 		t.Fatal("unresolved values accepted")
 	}
-	if _, err := ResolvePlan(providers.InstallInstructions{ChartRef: "oci://example.invalid/charts/provider", ChartVersion: ">=1.0.0"}); err == nil {
+	if _, err := ResolvePlan(context.Background(), providers.InstallInstructions{ChartRef: "oci://example.invalid/charts/provider", ChartVersion: ">=1.0.0"}); err == nil {
 		t.Fatal("a version range was accepted for a retry-pinned installation")
 	}
 }

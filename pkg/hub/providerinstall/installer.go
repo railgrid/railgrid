@@ -31,12 +31,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Masterminds/semver/v3"
-	"helm.sh/helm/v3/pkg/action"
-	"helm.sh/helm/v3/pkg/chart/loader"
-	"helm.sh/helm/v3/pkg/cli"
-	"helm.sh/helm/v3/pkg/registry"
-	"helm.sh/helm/v3/pkg/strvals"
 	authnv1 "k8s.io/api/authentication/v1"
 	authzv1 "k8s.io/api/authorization/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -57,14 +51,21 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 const planAnnotation = "providers.railgrid.ai/installation"
+const deletingAnnotation = "providers.railgrid.ai/registration-deleting"
 const ownerLabel = "railgrid.ai/provider-installation"
 const attemptLabel = "providers.railgrid.ai/installation-attempt"
 const attemptIDAnnotation = "providers.railgrid.ai/installation-attempt-id"
+const orgLabel = "providers.railgrid.ai/installation-org"
+const providerLabel = "providers.railgrid.ai/installation-provider"
+const edgeWorkspaceLabel = "providers.railgrid.ai/installation-edge-workspace"
+const edgeNameLabel = "providers.railgrid.ai/installation-edge"
+const previousOwnerLabel = "providers.railgrid.ai/previous-registration"
+const jobResultFinalizer = "providers.railgrid.ai/installer-result"
+const sealedWorkspaceFinalizer = "providers.railgrid.ai/installer-cleanup"
 const installerImage = "alpine/helm:3.20.0"
 
 const preparationLeaseDuration = 5 * time.Minute
@@ -109,17 +110,30 @@ func New(admin *rest.Config, workspaces WorkspaceAccess, hubURL string, insecure
 }
 
 type Plan struct {
-	Namespace            string         `json:"namespace"`
-	Release              string         `json:"release"`
-	Chart                string         `json:"chart"`
-	Version              string         `json:"version"`
-	Values               map[string]any `json:"values"`
-	Job                  string         `json:"job"`
-	Attempt              int            `json:"attempt"`
-	Owner                string         `json:"owner"`
-	AttemptID            string         `json:"attemptID,omitempty"`
-	PreparationID        string         `json:"preparationID,omitempty"`
-	PreparationExpiresAt time.Time      `json:"preparationExpiresAt,omitzero"`
+	Namespace               string         `json:"namespace"`
+	Release                 string         `json:"release"`
+	Chart                   string         `json:"chart"`
+	Version                 string         `json:"version"`
+	Values                  map[string]any `json:"values"`
+	Org                     string         `json:"org,omitempty"`
+	Provider                string         `json:"provider,omitempty"`
+	EdgeWorkspaceUUID       string         `json:"edgeWorkspaceUUID,omitempty"`
+	EdgeName                string         `json:"edgeName,omitempty"`
+	Cluster                 string         `json:"cluster,omitempty"`
+	NamespaceAdmissionKnown bool           `json:"namespaceAdmissionKnown,omitempty"`
+	NamespaceAdmitted       bool           `json:"namespaceAdmitted,omitempty"`
+	NamespaceUID            string         `json:"namespaceUID,omitempty"`
+	Job                     string         `json:"job"`
+	JobUID                  string         `json:"jobUID,omitempty"`
+	Attempt                 int            `json:"attempt"`
+	Owner                   string         `json:"owner"`
+	AttemptID               string         `json:"attemptID,omitempty"`
+	PreparationID           string         `json:"preparationID,omitempty"`
+	PreparationExpiresAt    time.Time      `json:"preparationExpiresAt,omitzero"`
+	Deleting                bool           `json:"deleting,omitempty"`
+	JobResult               string         `json:"jobResult,omitempty"`
+	FinishedAt              time.Time      `json:"finishedAt,omitzero"`
+	CleanedUp               bool           `json:"cleanedUp,omitempty"`
 }
 type Status struct {
 	Phase     string `json:"phase"`
@@ -177,12 +191,19 @@ func (i *Installer) edgeClients(ctx context.Context, org, name string) (kubernet
 		return nil, nil, nil, err
 	}
 	route.Cluster = cluster
+	return i.edgeClientsForRoute(org, route)
+}
+
+func (i *Installer) edgeClientsForRoute(org string, route *kcp.EdgeRoute) (kubernetes.Interface, kubernetes.Interface, *kcp.EdgeRoute, error) {
+	if route == nil || route.WorkspaceUUID == "" || route.EdgeName == "" || route.Cluster == "" {
+		return nil, nil, nil, fmt.Errorf("provider installation Edge target is incomplete")
+	}
 	local, err := i.kubeClient(i.workspaces.ChildWorkspaceConfig(org, route.WorkspaceUUID))
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	cfg := rest.CopyConfig(i.admin)
-	cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster) + "/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/" + route.EdgeName + "/k8s"
+	cfg.Host = apiurl.KCPClusterURL(cfg.Host, route.Cluster) + "/apis/edges.railgrid.ai/v1alpha1/kubernetesclusters/" + route.EdgeName + "/k8s"
 	cfg.Timeout = 20 * time.Second
 	edge, err := i.kubeClient(cfg)
 	return edge, local, route, err
@@ -219,54 +240,46 @@ func (i *Installer) readPlan(ctx context.Context, org, name string) (*Plan, stri
 	if plan != nil && plan.Owner != owner {
 		return nil, "", fmt.Errorf("installation belongs to an earlier provider registration")
 	}
+	if deleting := ws.GetAnnotations()[deletingAnnotation]; deleting != "" {
+		if deleting != owner {
+			return nil, "", fmt.Errorf("provider registration is being deleted")
+		}
+		if plan != nil {
+			plan.Deleting = true
+		}
+	}
+	if ws.GetDeletionTimestamp() != nil && plan != nil {
+		plan.Deleting = true
+	}
 	return plan, owner, nil
-}
-
-// ResolvePlan takes only the platform's declared recipe. No shell text, chart
-// URLs, Kubernetes objects, or values supplied by a browser are executed.
-func ResolvePlan(in providers.InstallInstructions) (*Plan, error) {
-	if len(in.Warnings) > 0 {
-		return nil, fmt.Errorf("this provider needs manual installation: %s", strings.Join(in.Warnings, " "))
-	}
-	p := &Plan{Namespace: in.Namespace, Release: in.ReleaseName, Chart: in.ChartRef, Version: in.ChartVersion, Values: map[string]any{}}
-	for _, v := range in.Values {
-		if v.Unresolved {
-			return nil, fmt.Errorf("set %s using manual installation", v.Name)
-		}
-		if err := strvals.ParseInto(v.Name+"="+v.Value, p.Values); err != nil {
-			return nil, fmt.Errorf("invalid installation value %s", v.Name)
-		}
-	}
-	if p.Version == "" {
-		rc, err := registry.NewClient()
-		if err != nil {
-			return nil, err
-		}
-		options := action.NewInstall(&action.Configuration{RegistryClient: rc})
-		path, err := options.LocateChart(p.Chart, cli.New())
-		if err != nil {
-			return nil, fmt.Errorf("could not resolve the provider chart")
-		}
-		ch, err := loader.Load(path)
-		if err != nil {
-			return nil, fmt.Errorf("could not load the provider chart")
-		}
-		p.Version = ch.Metadata.Version
-	}
-	if _, err := semver.StrictNewVersion(p.Version); err != nil {
-		return nil, fmt.Errorf("provider chart version must be an exact semantic version")
-	}
-	return p, nil
 }
 
 // Start is idempotent while an attempt is active. A retry creates a new Job
 // only after the previous one has failed, using its original pinned recipe.
 func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan, credential []byte, retryFailed bool) (*Status, error) {
-	edge, local, route, err := i.edgeClients(ctx, org, name)
+	old, owner, err := i.readPlan(ctx, org, name)
 	if err != nil {
 		return nil, err
 	}
-	old, owner, err := i.readPlan(ctx, org, name)
+	if old != nil {
+		if err := validatePlanKey(old, org, name); err != nil {
+			return nil, err
+		}
+		if old.Deleting {
+			return nil, fmt.Errorf("provider registration is being deleted")
+		}
+		if err := i.ensureWorkspaceCleanupFinalizer(ctx, org, name, owner); err != nil {
+			return nil, err
+		}
+	}
+	var edge, local kubernetes.Interface
+	var route *kcp.EdgeRoute
+	if old != nil { // A retry and any cleanup must stay on the Edge that received the
+		// original credential, even if the provider's selected Edge changed.
+		edge, local, route, err = i.edgeClientsForPlan(ctx, org, name, old)
+	} else {
+		edge, local, route, err = i.edgeClients(ctx, org, name)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -287,6 +300,22 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 		proposed = old
 		attempt = old.Attempt
 		if status.CanRetry && (retryFailed || status.Phase == "Preparing") {
+			if status.Phase == "Failed" {
+				// Persist the terminal result and release the Job finalizer before
+				// the next attempt replaces this plan.
+				if err := i.ReconcileCleanup(ctx, org, name); err != nil {
+					return nil, fmt.Errorf("cleaning previous installer attempt: %w", err)
+				}
+				old, owner, err = i.readPlan(ctx, org, name)
+				if err != nil {
+					return nil, err
+				}
+				if old == nil {
+					return nil, fmt.Errorf("installation plan disappeared during retry")
+				}
+				proposed = old
+				attempt = old.Attempt
+			}
 			// A missing Job can mean that preparation failed before Job creation.
 			// Revoke its credentials before starting another durable attempt.
 			if err := i.cleanupAttempt(ctx, org, name, old.Job); err != nil {
@@ -300,7 +329,23 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 	}
 	plan := *proposed
 	plan.Owner = owner
+	plan.Org = org
+	plan.Provider = name
+	plan.EdgeWorkspaceUUID = route.WorkspaceUUID
+	plan.EdgeName = route.EdgeName
+	plan.Cluster = route.Cluster
+	plan.NamespaceAdmissionKnown = true
+	plan.NamespaceAdmitted = false
+	plan.NamespaceUID = ""
 	plan.Attempt = attempt
+	plan.Deleting = false
+	plan.JobResult = ""
+	plan.JobUID = ""
+	plan.FinishedAt = time.Time{}
+	plan.CleanedUp = false
+	if err := stampRegistrationRollout(&plan, owner); err != nil {
+		return nil, err
+	}
 	plan.AttemptID, err = newInstallationID()
 	if err != nil {
 		return nil, err
@@ -322,9 +367,21 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 		if string(ws.GetUID()) != owner {
 			return apierrors.NewConflict(workspaceGVR.GroupResource(), name, fmt.Errorf("provider registration changed; reload before installing"))
 		}
+		if ws.GetAnnotations()[deletingAnnotation] != "" || ws.GetDeletionTimestamp() != nil {
+			return fmt.Errorf("provider registration is being deleted")
+		}
 		// Compare the durable plan, not a process-local lock: concurrent POSTs on
 		// different hub replicas must agree on the same attempt.
 		current := ws.GetAnnotations()[planAnnotation]
+		if current != "" {
+			currentPlan := &Plan{}
+			if err := json.Unmarshal([]byte(current), currentPlan); err != nil {
+				return fmt.Errorf("invalid stored installation plan")
+			}
+			if currentPlan.Deleting {
+				return fmt.Errorf("provider registration is being deleted")
+			}
+		}
 		previous := ""
 		if old != nil {
 			raw, _ := json.Marshal(old)
@@ -341,6 +398,7 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 		raw, _ := json.Marshal(plan)
 		annotations[planAnnotation] = string(raw)
 		ws.SetAnnotations(annotations)
+		ws.SetFinalizers(appendFinalizer(ws.GetFinalizers(), sealedWorkspaceFinalizer))
 		_, err = cl.Update(ctx, ws, metav1.UpdateOptions{})
 		return err
 	})
@@ -357,10 +415,11 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 		// an ambiguous successful Job Create is left intact.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.WithoutCancel(ctx), preparationCleanupTimeout)
 		defer cleanupCancel()
-		var releaseErr error
-		if !errors.Is(prepareErr, errPreparationSuperseded) {
-			releaseErr = i.releasePreparation(cleanupCtx, org, name, &plan)
-		}
+		// releasePreparation rechecks owner, attempt, and preparation IDs in the
+		// durable plan before clearing the lease. It is safe after supersession:
+		// the matching attempt's lease is released, while a newer plan is left
+		// untouched.
+		releaseErr := i.releasePreparation(cleanupCtx, org, name, &plan)
 		cleanupErr := cleanupAttemptResources(cleanupCtx, edge, local, &plan)
 		return nil, errors.Join(prepareErr, releaseErr, cleanupErr)
 	}
@@ -380,7 +439,13 @@ func (i *Installer) Status(ctx context.Context, org, name string, ready bool) (*
 	if plan == nil {
 		return &Status{Phase: "NotStarted", Message: "Installation has not started."}, nil
 	}
-	edge, _, _, err := i.edgeClients(ctx, org, name)
+	if err := validatePlanKey(plan, org, name); err != nil {
+		return nil, err
+	}
+	if plan.JobResult != "" && plan.CleanedUp {
+		return terminalStatus(plan, ready), nil
+	}
+	edge, _, _, err := i.edgeClientsForPlan(ctx, org, name, plan)
 	if err != nil {
 		return nil, err
 	}
@@ -388,6 +453,20 @@ func (i *Installer) Status(ctx context.Context, org, name string, ready bool) (*
 }
 func (i *Installer) status(ctx context.Context, edge kubernetes.Interface, plan *Plan, ready bool) (*Status, error) {
 	out := &Status{Phase: "Queued", Message: "Waiting for the installer to start.", Namespace: plan.Namespace, Job: plan.Job, Version: plan.Version, Attempt: plan.Attempt}
+	if plan.JobResult != "" && !plan.FinishedAt.IsZero() {
+		if !plan.CleanedUp {
+			active, err := attemptStillActive(ctx, edge, plan)
+			if err != nil {
+				return nil, err
+			}
+			if active {
+				out.Phase = "Installing"
+				out.Message = "The installer is stopping. Wait for it to stop before retrying."
+				return out, nil
+			}
+		}
+		return terminalStatus(plan, ready), nil
+	}
 	job, err := edge.BatchV1().Jobs(plan.Namespace).Get(ctx, plan.Job, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		out.Phase = "Preparing"
@@ -454,17 +533,16 @@ func (i *Installer) prepare(ctx context.Context, org, name string, edge, local k
 	if err := i.assertPreparation(ctx, org, name, p); err != nil {
 		return err
 	}
-	ns, err := edge.CoreV1().Namespaces().Get(ctx, p.Namespace, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		ns, err = edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace, Labels: map[string]string{ownerLabel: p.Owner}}}, metav1.CreateOptions{})
-	}
+	previousOwners, namespaceUID, err := i.ensureInstallationNamespace(ctx, edge, p)
 	if err != nil {
-		return fmt.Errorf("preparing installation namespace: %w", err)
+		return err
 	}
-	if ns.Labels[ownerLabel] != p.Owner {
-		return fmt.Errorf("namespace %s already exists outside this installation; use manual installation or choose a clean namespace", p.Namespace)
+	if err := i.recordNamespaceAdmission(ctx, org, name, p, namespaceUID); err != nil {
+		return err
 	}
-	if err := putSecret(ctx, edge, p.Namespace, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: providers.KubeconfigSecretName, Labels: map[string]string{ownerLabel: p.Owner}}, Data: map[string][]byte{"kubeconfig": credential}}, p.Owner); err != nil {
+	p.NamespaceAdmitted = true
+	p.NamespaceUID = namespaceUID
+	if err := putProviderKubeconfig(ctx, edge, p.Namespace, p.Owner, previousOwners, credential); err != nil {
 		return err
 	}
 	// The runner has no local Kubernetes role or automounted token. Its only
@@ -526,7 +604,7 @@ func (i *Installer) prepare(ctx context.Context, org, name string, edge, local k
 		return err
 	}
 	desiredJob := installerJob(p)
-	_, err = edge.BatchV1().Jobs(p.Namespace).Create(ctx, desiredJob, metav1.CreateOptions{})
+	created, err := edge.BatchV1().Jobs(p.Namespace).Create(ctx, desiredJob, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
 		existing, getErr := edge.BatchV1().Jobs(p.Namespace).Get(ctx, p.Job, metav1.GetOptions{})
 		if getErr != nil {
@@ -535,9 +613,15 @@ func (i *Installer) prepare(ctx context.Context, org, name string, edge, local k
 		if !jobBelongsToPlan(existing, p) || !installerJobSpecMatches(existing, desiredJob) {
 			return fmt.Errorf("installer Job %s already exists with different ownership or configuration", p.Job)
 		}
-		return nil
+		if err := ensureJobResultFinalizer(ctx, edge, existing, p); err != nil {
+			return err
+		}
+		return i.recordJobUID(ctx, org, name, p, string(existing.UID))
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	return i.recordJobUID(ctx, org, name, p, string(created.UID))
 }
 func putSecret(ctx context.Context, edge kubernetes.Interface, namespace string, secret *corev1.Secret, owner string) error {
 	existing, err := edge.CoreV1().Secrets(namespace).Get(ctx, secret.Name, metav1.GetOptions{})
@@ -637,7 +721,7 @@ func (i *Installer) assertPreparation(ctx context.Context, org, name string, p *
 	if err != nil {
 		return err
 	}
-	if current == nil || current.Owner != p.Owner || current.Job != p.Job || current.AttemptID != p.AttemptID || current.PreparationID != p.PreparationID {
+	if current == nil || current.Deleting || current.Owner != p.Owner || current.Job != p.Job || current.AttemptID != p.AttemptID || current.PreparationID != p.PreparationID {
 		return errPreparationSuperseded
 	}
 	return nil
@@ -704,7 +788,8 @@ func jobBelongsToPlan(job *batchv1.Job, p *Plan) bool {
 
 func installerJobSpecMatches(got, want *batchv1.Job) bool {
 	if got == nil || want == nil || got.Spec.ActiveDeadlineSeconds == nil || want.Spec.ActiveDeadlineSeconds == nil || *got.Spec.ActiveDeadlineSeconds != *want.Spec.ActiveDeadlineSeconds ||
-		got.Spec.BackoffLimit == nil || want.Spec.BackoffLimit == nil || *got.Spec.BackoffLimit != *want.Spec.BackoffLimit {
+		got.Spec.BackoffLimit == nil || want.Spec.BackoffLimit == nil || *got.Spec.BackoffLimit != *want.Spec.BackoffLimit ||
+		got.Spec.TTLSecondsAfterFinished == nil || want.Spec.TTLSecondsAfterFinished == nil || *got.Spec.TTLSecondsAfterFinished != *want.Spec.TTLSecondsAfterFinished {
 		return false
 	}
 	gotPod, wantPod := got.Spec.Template.Spec, want.Spec.Template.Spec
@@ -820,6 +905,7 @@ func deleteOwnedSecret(ctx context.Context, edge kubernetes.Interface, namespace
 func installerJob(p *Plan) *batchv1.Job {
 	no, yes := false, true
 	uid, deadline, backoff, mode := int64(1000), int64(600), int32(0), int32(0440)
+	ttlAfterFinished := int32(24 * 60 * 60)
 	container := corev1.Container{
 		Name: "helm", Image: installerImage, Command: []string{"helm"},
 		Args: []string{"upgrade", "--install", p.Release, p.Chart, "--namespace", p.Namespace,
@@ -835,10 +921,12 @@ func installerJob(p *Plan) *batchv1.Job {
 		},
 		VolumeMounts: []corev1.VolumeMount{{Name: "config", MountPath: "/run/install", ReadOnly: true}, {Name: "tmp", MountPath: "/tmp"}},
 	}
+	meta := attemptObjectMeta(p.Job, p)
+	meta.Finalizers = []string{jobResultFinalizer}
 	return &batchv1.Job{
-		ObjectMeta: attemptObjectMeta(p.Job, p),
+		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
-			BackoffLimit: &backoff, ActiveDeadlineSeconds: &deadline,
+			BackoffLimit: &backoff, ActiveDeadlineSeconds: &deadline, TTLSecondsAfterFinished: &ttlAfterFinished,
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: attemptObjectMeta("", p),
 				Spec: corev1.PodSpec{
@@ -858,7 +946,11 @@ func installerJob(p *Plan) *batchv1.Job {
 // Cleanup removes the expired runner's remaining execution identity after a
 // terminal result is observed. The provider credential remains for its runtime.
 func (i *Installer) Cleanup(ctx context.Context, org, name, job string) {
-	if err := i.cleanupAttempt(ctx, org, name, job); err != nil {
+	p, _, err := i.readPlan(ctx, org, name)
+	if err == nil && p != nil && p.Job == job {
+		err = i.ReconcileCleanup(ctx, org, name)
+	}
+	if err != nil {
 		klog.FromContext(ctx).Error(err, "failed to clean up provider installer credentials", "org", org, "provider", name, "job", job)
 	}
 }
@@ -868,13 +960,16 @@ func (i *Installer) cleanupAttempt(ctx context.Context, org, name, job string) e
 	if err != nil || p == nil || p.Job != job {
 		return err
 	}
+	if p.CleanedUp {
+		return nil
+	}
 	// A cleanup call can be delayed or arrive after a same-name Job was
 	// recreated. Never revoke credentials while this attempt is still being
 	// prepared, has a live Job, or has a live orphan Pod.
 	if preparationLeaseActive(p) {
 		return nil
 	}
-	edge, local, _, err := i.edgeClients(ctx, org, name)
+	edge, local, _, err := i.edgeClientsForPlan(ctx, org, name, p)
 	if err != nil {
 		return err
 	}
@@ -900,6 +995,12 @@ func cleanupResources(ctx context.Context, edge, local kubernetes.Interface, p *
 }
 
 func cleanupAttemptResources(ctx context.Context, edge, local kubernetes.Interface, p *Plan) error {
+	if p.NamespaceAdmissionKnown && !p.NamespaceAdmitted {
+		// The namespace gate failed before any Edge-side credential or Job write.
+		// Clean only attempt-owned hub RBAC/ServiceAccount objects and never inspect
+		// or mutate the foreign namespace that caused admission to fail.
+		return cleanupLocalAttemptResources(ctx, local, p)
+	}
 	job, err := edge.BatchV1().Jobs(p.Namespace).Get(ctx, p.Job, metav1.GetOptions{})
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err

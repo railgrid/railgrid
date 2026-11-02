@@ -146,6 +146,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
+	var providerInstaller *providerinstall.Installer
 	// workspaceNotifier, set when metering is configured, records the hub's
 	// own child workspace creates and deletes on the Organization for the
 	// (leader-only) metering organization reconciler to pick up.
@@ -1005,7 +1006,8 @@ func (s *Server) Run(ctx context.Context) error {
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
 			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
-			apiMgr.WithProviderInstaller(providerinstall.New(kcpConfig, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode))
+			providerInstaller = providerinstall.New(kcpConfig, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
+			apiMgr.WithProviderInstaller(providerInstaller)
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
@@ -1380,6 +1382,15 @@ func (s *Server) Run(ctx context.Context) error {
 			if err := organization.SetupWithManager(orgMgr, bootstrapper); err != nil {
 				logger.Error(err, "Setting up organization bootstrap controller failed")
 				return
+			}
+			// Installer cleanup watches organization/provider Workspaces and the
+			// selected Edge's Jobs and Pods. It runs under the same leader term,
+			// so completed attempts are reclaimed without any browser polling.
+			if providerInstaller != nil {
+				if err := providerinstall.SetupCleanupController(orgMgr, providerInstaller); err != nil {
+					logger.Error(err, "Setting up provider installation cleanup failed")
+					return
+				}
 			}
 			// Every organization gets its own billing objects in the metering
 			// workspace (Account, Entitlement on spec.plan or the default

@@ -120,7 +120,7 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 			writeError(w, newValidationError("this provider has no installable platform recipe"))
 			return
 		}
-		plan, err = providerinstall.ResolvePlan(*recipe)
+		plan, err = providerinstall.ResolvePlan(r.Context(), *recipe)
 		if err != nil {
 			writeError(w, newValidationError(err.Error()))
 			return
@@ -178,11 +178,6 @@ func (h *Handler) getOrgProviderInstallation(w http.ResponseWriter, r *http.Requ
 	if err != nil {
 		writeError(w, err)
 		return
-	}
-	// Job completion means Helm no longer uses the runner credential. Revoking
-	// it is safe while readiness checks continue for the installed provider.
-	if status.Phase == "Ready" || status.Phase == "Checking" || status.Phase == "Failed" {
-		h.mgr.providerInstaller.Cleanup(r.Context(), tc.OrgUUID, name, status.Job)
 	}
 	writeJSON(w, http.StatusOK, status)
 }

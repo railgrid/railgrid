@@ -19,6 +19,7 @@ package restapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -35,11 +36,15 @@ import (
 )
 
 type fakeConsoleInstaller struct {
-	deny      bool
-	started   bool
-	identity  string
-	retry     bool
-	startHook func(context.Context)
+	deny               bool
+	started            bool
+	identity           string
+	retry              bool
+	startHook          func(context.Context)
+	prepareDeleteHook  func(context.Context) error
+	cleanupCalls       int
+	prepareDeleteCalls int
+	status             *providerinstall.Status
 }
 
 func (f *fakeConsoleInstaller) Authorize(_ context.Context, _, _, _, user string) error {
@@ -60,10 +65,22 @@ func (f *fakeConsoleInstaller) Start(ctx context.Context, _, _ string, p *provid
 	f.retry = retry
 	return &providerinstall.Status{Phase: "Queued", Message: "Waiting for installer.", Version: p.Version, Attempt: 1}, nil
 }
-func (*fakeConsoleInstaller) Status(context.Context, string, string, bool) (*providerinstall.Status, error) {
+func (f *fakeConsoleInstaller) Status(context.Context, string, string, bool) (*providerinstall.Status, error) {
+	if f.status != nil {
+		return f.status, nil
+	}
 	return &providerinstall.Status{Phase: "NotStarted"}, nil
 }
-func (*fakeConsoleInstaller) Cleanup(context.Context, string, string, string) {}
+func (f *fakeConsoleInstaller) Cleanup(context.Context, string, string, string) { f.cleanupCalls++ }
+func (f *fakeConsoleInstaller) PrepareDeleteWithUID(ctx context.Context, _, _, _ string) (string, error) {
+	f.prepareDeleteCalls++
+	if f.prepareDeleteHook != nil {
+		if err := f.prepareDeleteHook(ctx); err != nil {
+			return "", err
+		}
+	}
+	return "registration-uid", nil
+}
 
 func TestConsoleInstallAuthorizesBeforeProvisioningAndReturnsNoCredential(t *testing.T) {
 	for _, denied := range []bool{false, true} {
@@ -213,5 +230,119 @@ func TestClosingConsoleDoesNotCancelAuthorizedJobSubmission(t *testing.T) {
 	close(release)
 	if err := <-finished; err != nil {
 		t.Fatalf("browser cancellation aborted Job submission: %v", err)
+	}
+}
+
+func TestDeleteOrgProviderCleansInstallerBeforeDeletingWorkspace(t *testing.T) {
+	for _, cleanupFails := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanupFails=%t", cleanupFails), func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+			user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
+			mgr, workspaces, _ := newTestManager(t, org, user)
+			_ = workspaces.EnsureOrgMembership(context.Background(), "org-a", "alice", tenancyv1alpha1.MembershipRoleAdmin)
+			ops := &fakeOrgProviderOps{workspaces: []kcp.OrgProviderWorkspace{{Name: "kuery", Cluster: "provider-cluster"}}}
+			installer := &fakeConsoleInstaller{}
+			installer.prepareDeleteHook = func(ctx context.Context) error {
+				if len(ops.deleted) != 0 {
+					t.Fatal("workspace was deleted before installer cleanup")
+				}
+				if _, ok := ctx.Deadline(); !ok {
+					t.Fatal("cleanup must use bounded authorized deletion context")
+				}
+				if cleanupFails {
+					return fmt.Errorf("edge unavailable")
+				}
+				return nil
+			}
+			mgr.WithOrgProviders(ops, &fakeCredMinter{}).WithProviderInstaller(installer)
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+			defer srv.Close()
+			req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/providers/kuery", nil)
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = res.Body.Close() }()
+			if installer.prepareDeleteCalls != 1 {
+				t.Fatalf("cleanup calls=%d", installer.prepareDeleteCalls)
+			}
+			if cleanupFails {
+				if res.StatusCode < 400 || len(ops.deleted) != 0 {
+					t.Fatalf("cleanup failure lost registration: status=%d deletes=%v", res.StatusCode, ops.deleted)
+				}
+			} else if res.StatusCode != http.StatusNoContent || len(ops.deleted) != 1 {
+				t.Fatalf("successful cleanup did not delete registration: status=%d deletes=%v", res.StatusCode, ops.deleted)
+			}
+		})
+	}
+}
+
+func TestConsoleProgressReadsDoNotPerformPrivilegedCleanup(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+	user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
+	mgr, workspaces, _ := newTestManager(t, org, user)
+	_ = workspaces.EnsureOrgMembership(context.Background(), "org-a", "alice", tenancyv1alpha1.MembershipRoleMember)
+	ops := &fakeOrgProviderOps{workspaces: []kcp.OrgProviderWorkspace{{Name: "kuery", Cluster: "provider-cluster"}}}
+	installer := &fakeConsoleInstaller{status: &providerinstall.Status{Phase: "Checking", Job: "install-kuery"}}
+	mgr.WithOrgProviders(ops, &fakeCredMinter{}).WithProviderInstaller(installer)
+	srv := newTestServer(t, mgr, memberTC("alice", "org-a", ""))
+	defer srv.Close()
+	for range 2 {
+		res, err := http.Get(srv.URL + "/api/orgs/org-a/providers/kuery/installation")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("status read returned %d", res.StatusCode)
+		}
+		_ = res.Body.Close()
+	}
+	if installer.cleanupCalls != 0 || installer.prepareDeleteCalls != 0 || installer.started {
+		t.Fatal("read-only status performed installer mutations")
+	}
+}
+
+func TestDeleteOrgProviderKeepsCleanedUIDAndIsIdempotentWhenAbsent(t *testing.T) {
+	for _, absent := range []bool{false, true} {
+		t.Run(fmt.Sprintf("absent=%t", absent), func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+			user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}}
+			mgr, workspaces, _ := newTestManager(t, org, user)
+			_ = workspaces.EnsureOrgMembership(context.Background(), "org-a", "alice", tenancyv1alpha1.MembershipRoleAdmin)
+			ops := &fakeOrgProviderOps{}
+			installer := &fakeConsoleInstaller{prepareDeleteHook: func(context.Context) error {
+				if absent {
+					return apierrors.NewNotFound(schema.GroupResource{Resource: "workspaces"}, "kuery")
+				}
+				return nil
+			}}
+			ops.deleteIfUIDHook = func(uid string) error {
+				if uid != "registration-uid" {
+					t.Fatalf("deleted UID=%q, want the registration cleaned by PrepareDelete", uid)
+				}
+				// A same-name replacement appeared after cleanup. The fenced
+				// deleter rejects it rather than selecting it by name again.
+				return apierrors.NewConflict(schema.GroupResource{Resource: "workspaces"}, "kuery", fmt.Errorf("replacement registration"))
+			}
+			mgr.WithOrgProviders(ops, &fakeCredMinter{}).WithProviderInstaller(installer)
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+			defer srv.Close()
+			req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/providers/kuery", nil)
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = res.Body.Close() }()
+			want := http.StatusConflict
+			if absent {
+				want = http.StatusNoContent
+			}
+			if res.StatusCode != want {
+				t.Fatalf("DELETE status=%d, want %d", res.StatusCode, want)
+			}
+			if len(ops.deleted) != 0 {
+				t.Fatal("stale or absent registration triggered an unfenced delete")
+			}
+		})
 	}
 }
