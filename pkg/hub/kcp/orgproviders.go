@@ -281,6 +281,19 @@ func orgProviderWorkspace(workspace *unstructured.Unstructured) OrgProviderWorks
 // are NOT removed here; per kcp's semantics they go NotReady. Callers that want
 // a clean teardown should Disable the provider in each workspace first.
 func (b *Bootstrapper) DeleteOrgProviderWorkspace(ctx context.Context, orgUUID, name string) error {
+	return b.deleteOrgProviderWorkspace(ctx, orgUUID, name, "")
+}
+
+// DeleteOrgProviderWorkspaceIfUID removes only the registration whose cleanup
+// was authorized. A delayed delete must never act on a same-name replacement.
+func (b *Bootstrapper) DeleteOrgProviderWorkspaceIfUID(ctx context.Context, orgUUID, name, expectedUID string) error {
+	if expectedUID == "" {
+		return fmt.Errorf("provider registration UID is required for deletion")
+	}
+	return b.deleteOrgProviderWorkspace(ctx, orgUUID, name, expectedUID)
+}
+
+func (b *Bootstrapper) deleteOrgProviderWorkspace(ctx context.Context, orgUUID, name, expectedUID string) error {
 	if orgUUID == "" || name == "" {
 		return fmt.Errorf("DeleteOrgProviderWorkspace: orgUUID and name are required")
 	}
@@ -300,6 +313,9 @@ func (b *Bootstrapper) DeleteOrgProviderWorkspace(ctx context.Context, orgUUID, 
 	workspaceUID := workspace.GetUID()
 	if workspaceUID == "" {
 		return fmt.Errorf("org provider workspace %s in org %s has no UID; refusing an unfenced delete", name, orgUUID)
+	}
+	if expectedUID != "" && string(workspaceUID) != expectedUID {
+		return errors.NewConflict(workspaceGVR.GroupResource(), name, fmt.Errorf("provider registration changed before deletion"))
 	}
 	clusterID, _, _ := unstructured.NestedString(workspace.Object, "spec", "cluster")
 	if clusterID != "" {

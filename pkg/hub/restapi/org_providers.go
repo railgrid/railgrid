@@ -912,12 +912,37 @@ func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
 	// background operation.
 	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), orgProviderDeleteRequestTimeout)
 	defer cancel()
-	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(deleteCtx, tc.OrgUUID, name); err != nil {
+	// Keep the sealed plan available until its runner identity and attempt
+	// resources are cleaned up. Removing registration intentionally retains the
+	// provider's Helm release and data for a later explicit reinstall.
+	var deleteErr error
+	if h.mgr.providerInstaller != nil {
+		owner, err := h.mgr.providerInstaller.PrepareDeleteWithUID(deleteCtx, tc.OrgUUID, name, "")
 		if apierrors.IsNotFound(err) {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "deleting provider workspace: "+err.Error())
+		if err != nil {
+			writeError(w, err)
+			return
+		}
+		deleter, ok := h.mgr.orgProviders.(interface {
+			DeleteOrgProviderWorkspaceIfUID(context.Context, string, string, string) error
+		})
+		if !ok || owner == "" {
+			writeStatus(w, http.StatusInternalServerError, "InternalError", "provider deletion requires a registration UID fence")
+			return
+		}
+		deleteErr = deleter.DeleteOrgProviderWorkspaceIfUID(deleteCtx, tc.OrgUUID, name, owner)
+	} else {
+		deleteErr = h.mgr.orgProviders.DeleteOrgProviderWorkspace(deleteCtx, tc.OrgUUID, name)
+	}
+	if deleteErr != nil {
+		if apierrors.IsNotFound(deleteErr) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		writeError(w, deleteErr)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

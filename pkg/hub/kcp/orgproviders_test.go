@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -551,5 +552,19 @@ func TestProviderNameFromExportPath(t *testing.T) {
 				t.Errorf("providerNameFromExportPath(%q, %q) = %q, want %q", tc.path, tc.orgUUID, got, tc.wantName)
 			}
 		})
+	}
+}
+
+func TestDeleteOrgProviderWorkspaceIfUIDRejectsReplacementBeforeDraining(t *testing.T) {
+	state := &orgProviderDeleteState{workspaceExists: true, clusterID: "replacement-cluster", exports: []map[string]any{orgProviderDeleteExport("kuery.providers.railgrid.ai", "replacement-export")}}
+	server := newOrgProviderDeleteServer(t, state)
+	defer server.Close()
+	b := NewBootstrapper(&rest.Config{Host: server.URL})
+	err := b.DeleteOrgProviderWorkspaceIfUID(context.Background(), "org-a", "kuery", "earlier-registration-uid")
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("stale delete returned %v, want conflict", err)
+	}
+	if state.workspaceDeleted || state.exportDeleteCalls != 0 {
+		t.Fatal("stale cleanup touched the replacement registration")
 	}
 }
