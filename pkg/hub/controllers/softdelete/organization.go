@@ -50,9 +50,17 @@ func (r *Reconciler) reconcileOrganization(ctx context.Context, req ctrl.Request
 	var org tenancyv1alpha1.Organization
 	if err := r.client.Get(ctx, req.NamespacedName, &org); err != nil {
 		if apierrors.IsNotFound(err) {
+			if r.workspaces != nil {
+				r.workspaces.forgetOrg(req.Name)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, fmt.Errorf("getting Organization: %w", err)
+	}
+	if r.workspaces != nil {
+		// Every organization's child Workspaces are watched from the moment
+		// the organization is seen; a restart replays them all.
+		r.workspaces.ensureOrg(ctx, org.Name)
 	}
 
 	if org.Status.DeletionRequestedAt == nil {

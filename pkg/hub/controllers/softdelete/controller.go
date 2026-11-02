@@ -129,6 +129,9 @@ const (
 type Reconciler struct {
 	client      client.Client
 	provisioner Provisioner
+	// workspaces drives the Workspace branch from watches when the
+	// provisioner can open them (WorkspaceWatcher); nil means the sweep.
+	workspaces *workspaceWatch
 	// gracePeriod is how long a soft-deleted User, Org or Workspace
 	// stays recoverable before the cascade runs. Zero means
 	// DefaultGracePeriod.
@@ -189,6 +192,14 @@ func SetupWithManager(mgr manager.Manager, provisioner Provisioner, gracePeriod 
 		return fmt.Errorf("setting up organization soft-delete controller: %w", err)
 	}
 
+	// The Workspace branch has no Workspace informer: child Workspaces live
+	// in every organization's workspace. A provisioner that can watch them
+	// gets one watch per organization and a per-Workspace reconcile with a
+	// timer only for the grace period; one that cannot keeps the sweep.
+	if ww, ok := provisioner.(WorkspaceWatcher); ok {
+		r.workspaces = newWorkspaceWatch(r, ww)
+		return mgr.Add(manager.RunnableFunc(r.workspaces.Run))
+	}
 	return mgr.Add(manager.RunnableFunc(r.runWorkspacePoll))
 }
 
