@@ -296,7 +296,7 @@ async function remove(): Promise<void> {
             @close="closeWorkbench"
           >
             <template #conversation>
-              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
+              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :overlay="overlay" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
                 <template #leading>
                   <ResourceBackLink
                     v-if="!overlay"

@@ -21,8 +21,9 @@
 //
 // Every mutation is a create (409 on a duplicate name, as before) or a JSON
 // merge patch (list and map fields replace wholesale, matching the Go patch
-// semantics exactly). A Secret is upserted with server-side apply when the
-// whole thing is being written and merge-patched when only some keys are.
+// semantics exactly). Legacy channel Secrets still use apply/merge patch;
+// generated model keys use immutable versioned Secrets and an atomic parent
+// switch below.
 
 import {
   createKubeClient,
@@ -32,7 +33,7 @@ import {
   type KubeObject,
   type KubeResourceRef,
 } from './portalkit/kube'
-import { providerFetch } from './portalkit/tenant'
+import { providerFetch, type ProviderFetch } from './portalkit/tenant'
 import { presentRequestFailure } from './request-errors'
 import {
   AGENT_BACKEND_HARNESS,
@@ -103,6 +104,7 @@ export const RUNS: KubeResourceRef = { group: GROUP, version: VERSION, resource:
 // reconciler writes the verdict. They used to be a Secret with a magic name
 // and the endpoint stuffed into its keys, which nothing could validate and
 // nothing could address a probe at.
+export const MODELPROVIDERCONNECTIONS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelproviderconnections' }
 export const MODELCREDENTIALS: KubeResourceRef = { group: GROUP, version: VERSION, resource: 'modelcredentials' }
 /**
  * Host edges, in the edges provider's OWN group — the machines a harness-backed
@@ -127,6 +129,8 @@ const LABEL_CREDENTIAL_PROBE = 'agents.railgrid.ai/credential-probe'
 const ANNOTATION_CREDENTIAL_PROBE_ID = 'agents.railgrid.ai/credential-probe-id'
 const ANNOTATION_CREDENTIAL_PROBE_EXPIRY = 'agents.railgrid.ai/credential-probe-expires-at'
 const CREDENTIAL_PROBE_TTL_MS = 10 * 60 * 1000
+const CREDENTIAL_PROBE_REQUEST_TIMEOUT_MS = 15 * 1000
+const CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS = 10 * 1000
 // DEFAULT_MCPSERVER is the conventional endpoint every workspace gets.
 const DEFAULT_MCPSERVER = 'default'
 
@@ -140,10 +144,9 @@ const FIELD_MANAGER = 'railgrid-agents-portal'
 // They are a wire contract between this file and the provider: rename one side
 // and the provider stops finding the credential the portal just stored.
 const SECRET_NAMESPACE = 'default'
-// CREDENTIAL_PREFIX is only the DEFAULT name this writer gives a new model
-// credential's Secret. It is not a convention anything reads back any more:
-// the ModelCredential says where its key is in spec.secretRef, so an edit
-// follows the object rather than recomputing the name.
+// CREDENTIAL_PREFIX names generated model-key versions and temporary probe
+// Secrets. A saved credential's random suffix is recorded on the parent and
+// its Secret; the probe helper keeps its own short-lived name.
 const CREDENTIAL_PREFIX = 'railgrid-agents-model-'
 const CONNECTION_PREFIX = 'railgrid-agents-conn-'
 
@@ -161,6 +164,12 @@ const CONNECTION_PREFIX = 'railgrid-agents-conn-'
 const OWNER_LABELS = { 'railgrid.ai/owner': 'agents' } as const
 /** The Secret key a model credential's API key is written under by default. */
 const DEFAULT_CREDENTIAL_KEY = 'apiKey'
+const ANNOTATION_CREDENTIAL_DISPLAY_NAME = 'agents.railgrid.ai/display-name'
+const CREDENTIAL_SECRET_PROTECTION = 'agents.railgrid.ai/model-credential-secret-protection'
+const CONNECTION_SECRET_PROTECTION = 'agents.railgrid.ai/model-provider-connection-protection'
+const ANNOTATION_GENERATED_SECRET_ID = 'agents.railgrid.ai/generated-secret-id'
+const ANNOTATION_PENDING_KEY_SECRET = 'agents.railgrid.ai/pending-key-secret'
+const ANNOTATION_MIGRATED_CREDENTIAL_UID = 'agents.railgrid.ai/migrated-model-credential-uid'
 /** Conditions the ModelCredential reconciler writes. Mirrors apis/v1alpha1/conditions.go. */
 const CONDITION_READY = 'Ready'
 const CONDITION_SECRET_RESOLVED = 'SecretResolved'
@@ -183,6 +192,116 @@ const SCHEDULE_TYPES = ['cron', 'wakeup', 'heartbeat']
 const WEBHOOK_SOURCES = ['webhook', 'github']
 // The schema's ceiling on Webhook spec.deliveryRetention.
 const MAX_DELIVERY_RETENTION = 1000
+
+interface BoundedFetchOptions {
+  signal?: AbortSignal
+  timeoutMs: number
+  timeoutMessage?: string
+  // A shared deadline lets a multi-request cleanup phase have one total
+  // budget instead of receiving a fresh timeout for each GET and DELETE.
+  deadline?: number
+}
+
+function probeAbortError(signal?: AbortSignal): Error {
+  const reason = signal?.reason
+  if (reason instanceof Error && (reason.name === 'AbortError' || reason.name === 'TimeoutError')) return reason
+  const error = new Error('The credential probe was aborted')
+  error.name = reason instanceof Error && /timed? out|timeout/i.test(reason.message) ? 'TimeoutError' : 'AbortError'
+  if (error.name === 'TimeoutError' && reason instanceof Error) error.message = reason.message
+  return error
+}
+
+function probeTimeoutError(message = 'Verification request timed out. Check the connection and try again.'): Error {
+  const error = new Error(message)
+  error.name = 'TimeoutError'
+  return error
+}
+
+function throwIfProbeAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw probeAbortError(signal)
+}
+
+function raceProbeOperation<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(probeAbortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener('abort', onAbort)
+      reject(probeAbortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    operation.then(
+      value => { signal.removeEventListener('abort', onAbort); resolve(value) },
+      error => { signal.removeEventListener('abort', onAbort); reject(error) },
+    )
+  })
+}
+
+/**
+ * createBoundedRequestFetch is deliberately local to the Agents portal. A
+ * bounded request has a finite frontend budget, including when the host fetch
+ * ignores AbortSignal and when a response arrives but its body never does. The
+ * wrapped request signal still reaches the host transport whenever it supports
+ * abort.
+ */
+export function createBoundedRequestFetch(fetcher: ProviderFetch, options: BoundedFetchOptions): ProviderFetch {
+  return async (input, init = {}) => {
+    const externalSignals = [...new Set([options.signal, init.signal].filter((signal): signal is AbortSignal => !!signal))]
+    const aborted = externalSignals.find(signal => signal.aborted)
+    if (aborted) throw probeAbortError(aborted)
+
+    const remaining = options.deadline === undefined ? options.timeoutMs : Math.min(options.timeoutMs, options.deadline - Date.now())
+    if (remaining <= 0) throw probeTimeoutError(options.timeoutMessage)
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(probeTimeoutError(options.timeoutMessage)), remaining)
+    const listeners = externalSignals.map(signal => {
+      const listener = () => controller.abort(probeAbortError(signal))
+      signal.addEventListener('abort', listener, { once: true })
+      return { signal, listener }
+    })
+    let finished = false
+    const finish = () => {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      for (const { signal, listener } of listeners) signal.removeEventListener('abort', listener)
+    }
+
+    try {
+      const response = await raceProbeOperation(
+        Promise.resolve().then(() => fetcher(input, { ...init, signal: controller.signal })),
+        controller.signal,
+      )
+      // These are the body readers used by the kcp client and probe verbs.
+      // Keep their promises on the same deadline as the request itself.
+      const bodyReaders = new Set(['text', 'json', 'arrayBuffer', 'blob', 'formData'])
+      return new Proxy(response, {
+        get(target, property) {
+          if (bodyReaders.has(String(property))) {
+            const reader = Reflect.get(target, property, target) as () => Promise<unknown>
+            return () => raceProbeOperation(Promise.resolve().then(() => reader.call(target)), controller.signal).finally(finish)
+          }
+          const value = Reflect.get(target, property, target)
+          return typeof value === 'function' ? value.bind(target) : value
+        },
+      })
+    } catch (error) {
+      finish()
+      throw error
+    }
+  }
+}
+
+/**
+ * createBoundedProbeFetch keeps the credential-probe timeout message and
+ * behavior explicit at its call sites while sharing the request machinery.
+ */
+export function createBoundedProbeFetch(fetcher: ProviderFetch, options: BoundedFetchOptions): ProviderFetch {
+  return createBoundedRequestFetch(fetcher, options)
+}
+
+export const AGENT_PATCH_TIMEOUT_MS = 15 * 1000
+export const AGENT_RECONCILE_TIMEOUT_MS = 15 * 1000
 
 // checkRetention mirrors the schema's bounds on spec.deliveryRetention so a
 // typo is refused before the request rather than by a 422 from kcp.
@@ -256,6 +375,10 @@ function asResourceError(error: unknown): ResourceError {
   }
   if (isAbortError(error)) {
     return new ResourceError(409, 'ContextChanged', 'workspace changed while the request was in flight')
+  }
+  if (error instanceof Error && error.name === 'TimeoutError') {
+    const failure = presentRequestFailure(504, error.message)
+    return new ResourceError(504, 'Timeout', error.message, failure.technicalDiagnostic)
   }
   const diagnostic = error instanceof Error ? error.message : String(error)
   const failure = presentRequestFailure(0, diagnostic)
@@ -462,6 +585,59 @@ function defined<T extends object>(obj: T): T {
   return obj
 }
 
+function newCredentialSecretIdentity(): { id: string; name: string } {
+  const id = crypto.randomUUID().replaceAll('-', '').toLowerCase()
+  if (!/^[0-9a-f]{32}$/.test(id)) throw new Error('the browser could not create a credential identity')
+  return { id, name: `${CREDENTIAL_PREFIX}${id}` }
+}
+
+function stableJSONValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJSONValue)
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    return Object.fromEntries(Object.keys(record).sort().map(key => [key, stableJSONValue(record[key])]))
+  }
+  return value
+}
+
+function sameJSONValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(stableJSONValue(left)) === JSON.stringify(stableJSONValue(right))
+}
+
+function credentialKind(ref: KubeResourceRef): 'ModelCredential' | 'ModelProviderConnection' {
+  return ref.resource === MODELPROVIDERCONNECTIONS.resource ? 'ModelProviderConnection' : 'ModelCredential'
+}
+
+/**
+ * A failed activation may have reached kcp even when its response did not.
+ * Clear only this writer's still-current reservation after a fresh same-UID
+ * read proves the staged key is not active. The parent controller owns Secret
+ * cleanup because it can check all models and connections before deleting it.
+ */
+async function clearUnusedCredentialReservation(
+  client: KubeClient,
+  parentRef: KubeResourceRef,
+  parentName: string,
+  parentUID: string,
+  secretName: string,
+): Promise<void> {
+  try {
+    const parent = await client.get<KubeModelCredential & KubeObject>(parentRef, parentName)
+    if (parent.metadata.uid !== parentUID || parent.metadata.deletionTimestamp) return
+    if (parent.spec?.secretRef?.name === secretName) return
+    if (parent.metadata.annotations?.[ANNOTATION_PENDING_KEY_SECRET] !== secretName) return
+    await client.patch(parentRef, parentName, [
+      { op: 'test', path: '/metadata/uid', value: parentUID },
+      { op: 'test', path: `/metadata/annotations/${ANNOTATION_PENDING_KEY_SECRET.replaceAll('/', '~1')}`, value: secretName },
+      { op: 'test', path: '/spec', value: parent.spec },
+      { op: 'remove', path: `/metadata/annotations/${ANNOTATION_PENDING_KEY_SECRET.replaceAll('/', '~1')}` },
+    ], { type: 'json' })
+  } catch {
+    // Preserve the reservation for the controller if identity or ownership
+    // cannot be confirmed, including an ambiguous response to the cleanup.
+  }
+}
+
 /**
  * Resources is the kube-backed half of the portal's data access. It is
  * constructed per call from the live RailgridContext, so a workspace switch can
@@ -486,15 +662,15 @@ export class Resources {
     return !!(this.ctx?.tenant || '').trim()
   }
 
-  private client(): KubeClient {
-    const cluster = (this.ctx?.tenant || '').trim()
+  private client(context: RailgridContext | null = this.ctx, transport?: ProviderFetch): KubeClient {
+    const cluster = (context?.tenant || '').trim()
     if (!cluster) throw new ResourceError(400, 'TenantMissing', 'no workspace selected')
     // The context is captured at construction and re-checked after the
     // response is read: a reply that lands after the user switched workspace
     // belongs to the workspace it was asked of, not the one now on screen.
     const expected = cluster
     return createKubeClient({
-      fetch: providerFetch(this.ctx),
+      fetch: transport ?? providerFetch(context),
       cluster,
       fieldManager: FIELD_MANAGER,
       onResponse: () => {
@@ -505,9 +681,9 @@ export class Resources {
     })
   }
 
-  private async run<T>(work: (client: KubeClient) => Promise<T>): Promise<T> {
+  private async run<T>(work: (client: KubeClient) => Promise<T>, getClient?: () => KubeClient): Promise<T> {
     try {
-      return await work(this.client())
+      return await work(getClient ? getClient() : this.client())
     } catch (error) {
       throw asResourceError(error)
     }
@@ -570,7 +746,17 @@ export class Resources {
 
   // ---- agents --------------------------------------------------------------
 
-  listAgents = (): Promise<Agent[]> => this.run((c) => c.listAll<Agent & KubeObject>(AGENTS))
+  listAgents = (signal?: AbortSignal): Promise<Agent[]> => {
+    const context = this.ctx
+    const work = (client: KubeClient) => client.listAll<Agent & KubeObject>(AGENTS)
+    if (!signal) return this.run(work)
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      signal,
+      timeoutMs: AGENT_RECONCILE_TIMEOUT_MS,
+      timeoutMessage: 'Agent settings refresh timed out. The saved change may still be present; refresh to confirm it.',
+    })
+    return this.run(work, () => this.client(context, bounded))
+  }
 
   createAgent = (body: AgentCreate): Promise<Agent> =>
     this.run(async (client) => {
@@ -649,8 +835,13 @@ export class Resources {
       return { agent: created, createdSchedules, warnings }
     })
 
-  patchAgent = (name: string, body: AgentPatch): Promise<Agent> =>
-    this.run(async (client) => {
+  patchAgent = (name: string, body: AgentPatch): Promise<Agent> => {
+    const context = this.ctx
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      timeoutMs: AGENT_PATCH_TIMEOUT_MS,
+      timeoutMessage: 'Saving agent settings timed out. The change may still have been saved; refresh to confirm it.',
+    })
+    return this.run(async (client) => {
       const spec: Record<string, unknown> = {}
       // Budget and the model map are merges against what is stored, so they are
       // the only fields that need the current object. Everything else is a
@@ -706,7 +897,8 @@ export class Resources {
       if (Object.keys(tools).length > 0) spec.tools = tools
 
       return client.patch<Agent & KubeObject>(AGENTS, name, { spec }, { type: 'merge' })
-    })
+    }, () => this.client(context, bounded))
+  }
 
   deleteAgent = (name: string): Promise<void> =>
     this.run(async (client) => {
@@ -1154,6 +1346,31 @@ export class Resources {
 
   // ---- model credentials ---------------------------------------------------
 
+  canConfigureChatModel = (connections: string[]): Promise<boolean> =>
+    this.run(async client => {
+      const can = async (group: string, resource: string, verb: string, name?: string, namespace?: string): Promise<boolean> => {
+        const review = await client.create<KubeObject & { status?: { allowed?: boolean } }>(
+          { group: 'authorization.k8s.io', version: 'v1', resource: 'selfsubjectaccessreviews' },
+          { apiVersion: 'authorization.k8s.io/v1', kind: 'SelfSubjectAccessReview', metadata: {}, spec: { resourceAttributes: { group, resource, verb, ...(name ? { name } : {}), ...(namespace ? { namespace } : {}) } } } as KubeObject & { status?: { allowed?: boolean } },
+        )
+        return review.status?.allowed === true
+      }
+      if (!await can(GROUP, 'modelcredentials', 'create')) return false
+      for (const name of connections) {
+        if (await can(GROUP, 'modelproviderconnections', 'get', name) && await can(GROUP, 'modelproviderconnections', 'use', name) && await can(GROUP, 'modelproviderconnections/test', 'create', name)) return true
+      }
+      const checks = await Promise.all([
+        can(GROUP, 'modelproviderconnections', 'get'),
+        can(GROUP, 'modelproviderconnections', 'create'),
+        can(GROUP, 'modelcredentials', 'get'),
+        can(GROUP, 'modelcredentials', 'delete'),
+        can(GROUP, 'modelcredentials/test', 'create'),
+        can(GROUP, 'modelcredentials/discover', 'create'),
+        ...['get', 'create', 'patch', 'delete'].map(verb => can('', 'secrets', verb, undefined, SECRET_NAMESPACE)),
+      ])
+      return checks.every(Boolean)
+    })
+
   /**
    * listCredentials reads the ModelCredential objects and projects them onto
    * the view the Models page renders.
@@ -1166,10 +1383,86 @@ export class Resources {
    */
   listCredentials = (): Promise<Credential[]> =>
     this.run(async (client) => {
-      const items = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
-      const out = items.filter(item => item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true').map(credentialView)
+      const [items, listedConnections] = await Promise.all([
+        client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS),
+        client.listAll<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS).catch(error => {
+          if (isKubeError(error) && error.status === 403) return null
+          throw error
+        }),
+      ])
+      const unreadableConnections = new Set<string>()
+      // A role can use named connections without permission to enumerate all
+      // provider accounts. Resolve only the model references it can see.
+      const connections = listedConnections ?? (await Promise.all(
+        [...new Set(items.map(item => item.spec?.connectionRef).filter((name): name is string => !!name))].map(async name => {
+          try { return await client.get<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS, name) }
+          catch (error) {
+            if (isKubeError(error) && error.status === 403) { unreadableConnections.add(name); return null }
+            if (isKubeNotFound(error)) return null
+            throw error
+          }
+        }),
+      )).filter((connection): connection is KubeModelCredential & KubeObject => connection !== null)
+      const visible = items.filter(item => {
+        if (item.metadata?.labels?.[LABEL_CREDENTIAL_PROBE] === 'true') return false
+        // A migration source is hidden only after its same-name destination
+        // positively records the exact source UID. Same-name legacy accounts
+        // and harness identities are independent resources and remain visible.
+        if (item.spec?.model || item.spec?.connectionRef || isHarnessProvider(item.spec?.provider)) return true
+        const sourceUID = item.metadata?.uid?.trim()
+        if (!sourceUID) return true
+        return !connections.some(parent => parent.metadata?.name === item.metadata?.name && parent.metadata?.annotations?.[ANNOTATION_MIGRATED_CREDENTIAL_UID] === sourceUID)
+      })
+      const out = visible.map(item => {
+        const view = credentialView(item)
+        if (!view.connectionRef) return view
+        const connection = connections.find(parent => parent.metadata?.name === view.connectionRef)
+        if (!connection && unreadableConnections.has(view.connectionRef)) return view
+        if (!connection || connection.metadata?.deletionTimestamp || connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider)) return { ...view, connectionUnavailable: true, ready: false, statusMessage: 'Provider connection is missing or invalid.' }
+        const parent = credentialView(connection)
+        return { ...view, ...(parent.secretResolved !== undefined ? { secretResolved: parent.secretResolved } : {}), provider: parent.provider, baseURL: parent.baseURL, anthropicWorkspaceID: parent.anthropicWorkspaceID, secretRef: parent.secretRef, secretKey: parent.secretKey, discovered: parent.discovered, connectionName: parent.displayName || parent.name }
+      })
+      out.push(...connections.map(item => ({ ...credentialView(item), isConnection: true })))
       out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
       return out
+    })
+
+  /**
+   * Rename a credential by changing only its display-name annotation. This
+   * stays independent of provider/model writes so a caller with annotation
+   * access does not need Secret, probe, or provider-use permissions.
+   */
+  renameCredential = (credential: Credential, displayName: string): Promise<Credential> =>
+    this.run(async client => {
+      const normalizedName = typeof displayName === 'string' ? displayName.trim() : ''
+      if (!normalizedName) throw validationError('A display name is required.')
+      if (normalizedName.length > 253) throw validationError('A display name must be 253 characters or fewer.')
+      if (!credential.name) throw validationError('The credential identity could not be confirmed. Refresh before renaming it.')
+
+      const ref = credential.isConnection ? MODELPROVIDERCONNECTIONS : MODELCREDENTIALS
+      const existing = await client.get<KubeModelCredential & KubeObject>(ref, credential.name)
+      const uid = existing.metadata.uid
+      const resourceVersion = existing.metadata.resourceVersion
+      if (!uid || !resourceVersion) throw validationError('The credential identity could not be confirmed. Refresh before renaming it.')
+
+      const updated = await client.patch<KubeModelCredential & KubeObject>(ref, credential.name, {
+        metadata: {
+          uid,
+          resourceVersion,
+          annotations: {
+            ...(existing.metadata.annotations || {}),
+            [ANNOTATION_CREDENTIAL_DISPLAY_NAME]: normalizedName,
+          },
+        },
+      }, { type: 'merge' })
+
+      // The annotation is the only user-editable field in this operation.
+      // Keep the caller's full view so a model that references a provider
+      // connection retains the parent details hydrated by listCredentials.
+      return {
+        ...credential,
+        displayName: updated.metadata.annotations?.[ANNOTATION_CREDENTIAL_DISPLAY_NAME] ?? normalizedName,
+      }
     })
 
   /**
@@ -1180,8 +1473,16 @@ export class Resources {
    * The caller supplies a scoped verb client. The host authority guard still
    * cancels requests after a workspace switch; it is never bypassed for cleanup.
    */
-  withCredentialProbe = <T>(body: CredentialWrite, probe: (name: string) => Promise<T>): Promise<T> =>
-    this.run(async client => {
+  withCredentialProbe = <T>(body: CredentialWrite, probe: (name: string) => Promise<T>, signal?: AbortSignal): Promise<T> => {
+    // Pin the original context and transport for both setup and cleanup. A
+    // workspace switch still trips client.onResponse and the captured host
+    // fetch still enforces the authority it received; cleanup never reuses the
+    // user's cancellation signal.
+    const context = this.ctx
+    const baseFetch = providerFetch(context)
+    const setupFetch = createBoundedProbeFetch(baseFetch, { signal, timeoutMs: CREDENTIAL_PROBE_REQUEST_TIMEOUT_MS })
+    return this.run(async client => {
+      throwIfProbeAborted(signal)
       const provider = body.provider || MODEL_PROVIDER_OPENAI_COMPATIBLE
       const baseURL = body.baseURL?.trim() || ''
       const anthropicWorkspaceID = body.anthropicWorkspaceID?.trim() || ''
@@ -1204,30 +1505,44 @@ export class Resources {
       let objectAttempted = false
       let ownerUID: string | undefined
       let secretUID: string | undefined
+      let cleanupClient: KubeClient | undefined
+      const getCleanupClient = (): KubeClient => {
+        if (!cleanupClient) {
+          const deadline = Date.now() + CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS
+          cleanupClient = this.client(context, createBoundedProbeFetch(baseFetch, {
+            timeoutMs: CREDENTIAL_PROBE_CLEANUP_TIMEOUT_MS,
+            deadline,
+          }))
+        }
+        return cleanupClient
+      }
       const cleanup = async (ref: KubeResourceRef, objectName: string, namespace?: string): Promise<void> => {
         try {
-          const object = await client.get(ref, objectName, { namespace })
+          const cleanupTransport = getCleanupClient()
+          const object = await cleanupTransport.get(ref, objectName, { namespace })
           // An ambiguous POST response can still have committed. Inspect the
           // unique marker and use a UID precondition; never delete a replacement.
           if (object.metadata.labels?.['railgrid.ai/owner'] !== 'agents' || object.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' || object.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_ID] !== probeID || !object.metadata.uid) throw new Error('Probe ownership could not be confirmed')
           const expectedUID = ref === SECRETS ? secretUID : ownerUID
           if (expectedUID && object.metadata.uid !== expectedUID) throw new Error('The test resource was replaced')
           if (ref === SECRETS && !object.metadata.ownerReferences?.some(owner => owner.apiVersion === API_VERSION && owner.kind === 'ModelCredential' && owner.name === name && owner.uid === ownerUID)) throw new Error('The test Secret owner could not be confirmed')
-          await client.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid, resourceVersion: object.metadata.resourceVersion } })
+          await cleanupTransport.delete(ref, objectName, { namespace, preconditions: { uid: object.metadata.uid, resourceVersion: object.metadata.resourceVersion } })
           if (ref === SECRETS) {
             // A successful DELETE can leave an object terminating behind a
             // finalizer. Preserve the owning credential until the key is gone.
-            await client.get(ref, objectName, { namespace })
+            await cleanupTransport.get(ref, objectName, { namespace })
             throw new Error('The test Secret is still terminating')
           }
         } catch (error) { if (!isKubeNotFound(error)) throw error }
       }
+      let result: T
       try {
         objectAttempted = true
         const owner = await client.create(MODELCREDENTIALS, {
           apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, labels, annotations },
           spec: { provider, baseURL, ...(anthropicWorkspaceID ? { anthropicWorkspaceID } : {}), secretRef: { name: secretName }, secretKey: DEFAULT_CREDENTIAL_KEY },
         } as KubeObject)
+        throwIfProbeAborted(signal)
         if (!owner.metadata.uid) throw new Error('The workspace did not confirm the test credential identity.')
         ownerUID = owner.metadata.uid
         secretAttempted = true
@@ -1238,12 +1553,14 @@ export class Resources {
           },
           type: 'Opaque', stringData: { [DEFAULT_CREDENTIAL_KEY]: apiKey },
         } as KubeObject, { namespace: SECRET_NAMESPACE })
+        throwIfProbeAborted(signal)
         secretUID = secret.metadata.uid
         // Creating two objects is not atomic. A delayed Secret write may finish
         // after the controller expires its owner; never call a model on behalf
         // of an expired or replaced candidate. Its owner reference also allows
         // kcp garbage collection if this browser closes before cleanup.
         const active = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        throwIfProbeAborted(signal)
         const created = Date.parse(active.metadata.creationTimestamp || '')
         const requestedExpiry = Date.parse(active.metadata.annotations?.[ANNOTATION_CREDENTIAL_PROBE_EXPIRY] || '')
         const deadline = Math.min(created + CREDENTIAL_PROBE_TTL_MS, Number.isFinite(requestedExpiry) ? requestedExpiry : Infinity)
@@ -1254,7 +1571,9 @@ export class Resources {
         if (!activeSpec || activeSpec.provider !== provider || activeSpec.baseURL !== baseURL || (activeSpec.anthropicWorkspaceID || '') !== anthropicWorkspaceID || activeSpec.secretRef?.name !== secretName || activeSpec.secretKey !== DEFAULT_CREDENTIAL_KEY) {
           throw validationError('This verification candidate changed. Test the connection again.')
         }
-        return await probe(name)
+        throwIfProbeAborted(signal)
+        result = await probe(name)
+        throwIfProbeAborted(signal)
       } finally {
         const leftovers: string[] = []
         if (secretAttempted) {
@@ -1270,15 +1589,17 @@ export class Resources {
           'Temporary verification credentials could not be removed. Automatic cleanup will retry when the workspace is available. If this persists, ask a workspace administrator.',
           `Cleanup could not remove ${leftovers.join(' and ')}.`)
       }
-    })
+      throwIfProbeAborted(signal)
+      return result
+    }, () => this.client(context, setupFetch))
+  }
 
   /**
-   * saveCredential writes the Secret and then the ModelCredential.
-   *
-   * That order on purpose, and the same one createConnection uses: the
-   * reconciler reacts to the object, and an object whose Secret is not there
-   * yet parks in SecretResolved=False until one is. Writing the object first
-   * would flag a credential that is about to be fine.
+   * saveCredential writes a parent reservation before an immutable generated
+   * Secret, then atomically activates the Secret and endpoint together. Each
+   * generated key has a fresh name and an exact owner UID, so concurrent saves
+   * cannot pair one endpoint with another writer's key and a delete racing the
+   * Secret POST still leaves Kubernetes a real owner reference to collect.
    *
    * The API writer permits an omitted model, but the editor verifies a complete
    * candidate using withCredentialProbe before saving the named connection.
@@ -1293,13 +1614,14 @@ export class Resources {
       const name = (body.name ?? '').trim()
       const provider = (body.provider ?? '').trim() || MODEL_PROVIDER_OPENAI_COMPATIBLE
       const harness = isHarnessProvider(provider)
+      const connectionWrite = !harness && body.model === '' && !body.connectionRef
+      const target = connectionWrite ? MODELPROVIDERCONNECTIONS : MODELCREDENTIALS
       const baseURL = (body.baseURL ?? '').trim()
       const apiKey = (body.apiKey ?? '').trim()
       if (!name) throw validationError('name is required')
       // A harness identity has no endpoint: the CRD's own CEL rule asks for a
       // baseURL only from a chat provider, and llm.BuildModel refuses this
       // family outright, so there is nothing for a URL here to mean.
-      if (!harness && !baseURL) throw validationError('baseURL is required')
       // The shape of a harness login is checked before the first request, so a
       // half-pasted auth.json costs nothing and reaches nothing.
       const harnessSecret = harness ? validHarnessSecret(provider, body.harnessSecret) : undefined
@@ -1309,142 +1631,274 @@ export class Resources {
       // pointed somewhere else.
       let existing: (KubeModelCredential & KubeObject) | null = null
       try {
-        existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
+        existing = await client.get<KubeModelCredential & KubeObject>(target, name)
       } catch (error) {
         if (!isKubeNotFound(error)) throw error
       }
-      const secretName = (existing?.spec?.secretRef?.name ?? '').trim() || credentialSecretName(name)
-      const secretKey = (existing?.spec?.secretKey ?? '').trim() || DEFAULT_CREDENTIAL_KEY
-
-      if (harness) {
-        if (harnessSecret) {
-          // Switching credential type must REPLACE, not accumulate: the
-          // reconciler refuses a Secret carrying both oauthToken and apiKey as
-          // two identities in one (llm.ReadHarnessSecret). This used to lean
-          // on server-side apply dropping the key this manager declared last
-          // time, which only holds for keys THIS manager owns — a key written
-          // by an earlier version, another writer or a different manager name
-          // survived the apply, and a credential recreated over such a Secret
-          // was born unusable. A merge patch spells the removal out: the kind
-          // being saved gets its value, every other kind this provider knows
-          // is nulled, and field ownership never enters into it. The Secret
-          // is created on 404 — a fresh credential has none yet.
-          const data: Record<string, string | null> = {}
-          for (const key of harnessSecretKeys(provider)) {
-            data[key] = key === harnessSecret.key ? base64UTF8(harnessSecret.value) : null
-          }
-          try {
-            await client.patch(
-              SECRETS,
-              secretName,
-              { metadata: { labels: { ...OWNER_LABELS } }, type: 'Opaque', data },
-              { namespace: SECRET_NAMESPACE, type: 'merge' },
-            )
-          } catch (error) {
-            if (!isKubeNotFound(error)) throw error
-            await client.create(
-              SECRETS,
-              {
-                apiVersion: 'v1',
-                kind: 'Secret',
-                metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
-                type: 'Opaque',
-                data: { [harnessSecret.key]: base64UTF8(harnessSecret.value) },
-              } as KubeObject,
-              { namespace: SECRET_NAMESPACE },
-            )
-          }
-        } else if (!existing) {
-          throw validationError('a harness identity needs its credential')
-        }
-        // spec.secretKey is deliberately NOT written. For this family the
-        // Secret KEY is the kind declaration, and a spec field naming one of
-        // them would be a second answer to which identity this is — one the
-        // Secret could contradict. No baseURL and no model either: neither
-        // exists for a credential nothing calls.
-        const spec = { provider, secretRef: { name: secretName } }
+      if (body.connectionRef || existing?.spec?.connectionRef) {
+        if (existing && !existing.spec?.connectionRef) throw validationError('A direct connection cannot be replaced by a model reference.')
+        const connectionRef = body.connectionRef || existing!.spec!.connectionRef!
+        if (apiKey || body.harnessSecret) throw validationError('Update the provider connection to replace its key.')
+        const connection = await client.get<KubeModelCredential & KubeObject>(MODELPROVIDERCONNECTIONS, connectionRef)
+        if (connection.spec?.connectionRef || isHarnessProvider(connection.spec?.provider) || !connection.spec?.baseURL) throw validationError('Choose a direct API provider connection.')
+        const model = body.model?.trim()
+        if (!model) throw validationError('Choose a model for this connection.')
+        const metadata = { annotations: { [ANNOTATION_CREDENTIAL_DISPLAY_NAME]: body.displayName?.trim() || model } }
+        const spec = { connectionRef, model }
+        let result: KubeModelCredential & KubeObject
         if (existing) {
-          const patched = await client.patch<KubeModelCredential & KubeObject>(
-            MODELCREDENTIALS, name, { spec }, { type: 'merge' },
-          )
-          return credentialView(patched)
+          const uid = existing.metadata.uid
+          const resourceVersion = existing.metadata.resourceVersion
+          if (!uid || !resourceVersion) throw validationError('The credential identity could not be confirmed. Refresh before saving it.')
+          result = await client.patch<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name, {
+            metadata: { uid, resourceVersion, ...metadata }, spec,
+          }, { type: 'merge' })
+        } else {
+          result = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
+            apiVersion: API_VERSION, kind: 'ModelCredential', metadata: { name, ...metadata }, spec,
+          } as unknown as KubeModelCredential & KubeObject)
         }
-        const created = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
-          apiVersion: API_VERSION,
-          kind: 'ModelCredential',
-          metadata: { name },
-          spec,
-        } as unknown as KubeModelCredential & KubeObject)
-        return credentialView(created)
+        return { ...credentialView(result), provider: connection.spec.provider, baseURL: connection.spec.baseURL, connectionName: credentialView(connection).displayName || connectionRef }
       }
-
-      if (apiKey) {
-        // force: a Secret left behind by an earlier credential of this name
-        // carries field ownership from whoever wrote it, and an un-forced
-        // apply would 409 on the very key being replaced.
-        await client.apply(
-          SECRETS,
-          {
-            apiVersion: 'v1',
-            kind: 'Secret',
-            metadata: { name: secretName, namespace: SECRET_NAMESPACE, labels: { ...OWNER_LABELS } },
-            type: 'Opaque',
-            stringData: { [secretKey]: apiKey },
-          } as KubeObject,
-          { namespace: SECRET_NAMESPACE, force: true },
-        )
-      } else if (!existing) {
-        throw validationError('apiKey is required')
-      }
-
+      if (!harness && !baseURL) throw validationError('baseURL is required')
       const model = body.model === undefined ? undefined : body.model.trim()
-      if (existing) {
-        // A merge patch spells "no default model" as null, which is exactly
-        // what clearing the field means.
-        const spec: Record<string, unknown> = { provider, baseURL, secretRef: { name: secretName }, secretKey }
-        if (model !== undefined) spec.model = model || null
-        if (body.anthropicWorkspaceID !== undefined) spec.anthropicWorkspaceID = body.anthropicWorkspaceID.trim() || null
-        const patched = await client.patch<KubeModelCredential & KubeObject>(
-          MODELCREDENTIALS, name, { spec }, { type: 'merge' },
-        )
-        return credentialView(patched)
+
+      const suppliedSecret = harness ? harnessSecret : apiKey ? { key: (existing?.spec?.secretKey ?? '').trim() || DEFAULT_CREDENTIAL_KEY, value: apiKey } : undefined
+      if (!existing && !suppliedSecret) throw validationError(harness ? 'a harness identity needs its credential' : 'apiKey is required')
+      if (existing && !suppliedSecret && !(existing.spec?.secretRef?.name ?? '').trim()) {
+        throw validationError('The stored credential key could not be confirmed. Retype the key before saving it.')
       }
-      const created = await client.create<KubeModelCredential & KubeObject>(MODELCREDENTIALS, {
-        apiVersion: API_VERSION,
-        kind: 'ModelCredential',
-        metadata: { name },
-        spec: defined({ provider, baseURL, model: model || undefined, anthropicWorkspaceID: body.anthropicWorkspaceID?.trim() || undefined, secretRef: { name: secretName }, secretKey }),
-      } as unknown as KubeModelCredential & KubeObject)
-      return credentialView(created)
+
+      const finalizer = connectionWrite ? CONNECTION_SECRET_PROTECTION : CREDENTIAL_SECRET_PROTECTION
+      const kind = credentialKind(target)
+      const desiredSpec = (secretName?: string): Record<string, unknown> => {
+        const spec: Record<string, unknown> = existing?.spec ? { ...existing.spec } : {}
+        spec.provider = provider
+        if (harness) {
+          // Harness credentials declare identity through the only key present
+          // in Secret.data. Their endpoint/model fields have no meaning.
+          delete spec.baseURL
+          delete spec.model
+          delete spec.anthropicWorkspaceID
+          delete spec.secretKey
+          if (secretName) spec.secretRef = { name: secretName }
+          return spec
+        }
+
+        spec.baseURL = baseURL
+        if (connectionWrite || (model !== undefined && !model)) delete spec.model
+        else if (model !== undefined) spec.model = model
+        if (body.anthropicWorkspaceID !== undefined) {
+          const workspaceID = body.anthropicWorkspaceID.trim()
+          if (workspaceID) spec.anthropicWorkspaceID = workspaceID
+          else delete spec.anthropicWorkspaceID
+        }
+        if (secretName) {
+          spec.secretRef = { name: secretName }
+          spec.secretKey = suppliedSecret?.key ?? (existing?.spec?.secretKey || DEFAULT_CREDENTIAL_KEY)
+        }
+        return spec
+      }
+
+      const metadataAnnotations = (annotations: Record<string, string> | undefined, pendingName: string): Record<string, string> => ({
+        ...(annotations ?? {}),
+        [ANNOTATION_PENDING_KEY_SECRET]: pendingName,
+      })
+      const requireParentIdentity = (object: KubeObject, expectedName: string): string => {
+        if (object.metadata.name !== expectedName || !object.metadata.uid) {
+          throw validationError('The credential identity could not be confirmed. Refresh before saving it.')
+        }
+        return object.metadata.uid
+      }
+      const createGeneratedSecret = async (secretName: string, secretID: string, ownerUID: string): Promise<void> => {
+        if (!suppliedSecret) throw validationError('A new credential key is required.')
+        const secret = await client.create<KubeObject>(SECRETS, {
+          apiVersion: 'v1', kind: 'Secret',
+          metadata: {
+            name: secretName, namespace: SECRET_NAMESPACE,
+            labels: { ...OWNER_LABELS },
+            annotations: { [ANNOTATION_GENERATED_SECRET_ID]: secretID },
+            ownerReferences: [{ apiVersion: API_VERSION, kind, name, uid: ownerUID }],
+          },
+          type: 'Opaque', immutable: true,
+          ...(harness
+            ? { data: { [suppliedSecret.key]: base64UTF8(suppliedSecret.value) } }
+            : { stringData: { [suppliedSecret.key]: suppliedSecret.value } }),
+        } as KubeObject, { namespace: SECRET_NAMESPACE })
+        if (secret.metadata.name !== secretName || !secret.metadata.uid) {
+          throw validationError('The workspace did not confirm the generated key identity.')
+        }
+      }
+      const activateSecret = async (
+        originalSpec: Record<string, unknown>,
+        spec: Record<string, unknown>,
+        parentUID: string,
+        secretName: string,
+        secretID: string,
+      ): Promise<KubeModelCredential & KubeObject> => {
+        const escapedPending = ANNOTATION_PENDING_KEY_SECRET.replaceAll('/', '~1')
+        const escapedGenerated = ANNOTATION_GENERATED_SECRET_ID.replaceAll('/', '~1')
+        const current = await client.get<KubeModelCredential & KubeObject>(target, name)
+        if (current.metadata.uid !== parentUID || current.metadata.deletionTimestamp
+          || current.metadata.annotations?.[ANNOTATION_PENDING_KEY_SECRET] !== secretName
+          || !current.spec || !sameJSONValue(current.spec, originalSpec)
+          || !current.metadata.resourceVersion) {
+          if (current.metadata.uid === parentUID && !current.metadata.deletionTimestamp) {
+            await clearUnusedCredentialReservation(client, target, name, parentUID, secretName)
+          }
+          throw new ResourceError(409, 'Conflict', 'The credential changed while it was being saved. Refresh and try again.')
+        }
+        const operations: Array<Record<string, unknown>> = [
+          { op: 'test', path: '/metadata/uid', value: parentUID },
+          { op: 'test', path: '/metadata/resourceVersion', value: current.metadata.resourceVersion },
+          { op: 'test', path: `/metadata/annotations/${escapedPending}`, value: secretName },
+          { op: 'test', path: '/spec', value: current.spec },
+          { op: 'replace', path: '/spec', value: spec },
+          { op: 'add', path: `/metadata/annotations/${escapedGenerated}`, value: secretID },
+          { op: 'remove', path: `/metadata/annotations/${escapedPending}` },
+        ]
+        const displayName = body.displayName?.trim()
+        if (displayName) operations.push({ op: 'add', path: `/metadata/annotations/${ANNOTATION_CREDENTIAL_DISPLAY_NAME.replaceAll('/', '~1')}`, value: displayName })
+        try {
+          const activated = await client.patch<KubeModelCredential & KubeObject>(target, name, operations, { type: 'json' })
+          if (activated.metadata.uid !== parentUID
+            || activated.spec?.secretRef?.name !== secretName
+            || activated.metadata.annotations?.[ANNOTATION_GENERATED_SECRET_ID] !== secretID
+            || activated.metadata.annotations?.[ANNOTATION_PENDING_KEY_SECRET] !== undefined) {
+            throw validationError('The credential activation could not be confirmed. Refresh before saving again.')
+          }
+          return activated
+        } catch (error) {
+          await clearUnusedCredentialReservation(client, target, name, parentUID, secretName)
+          throw error
+        }
+      }
+
+      if (!suppliedSecret) {
+        const uid = existing?.metadata.uid
+        const resourceVersion = existing?.metadata.resourceVersion
+        if (!existing || !uid || !resourceVersion) throw validationError('The credential identity could not be confirmed. Refresh before saving it.')
+        const storedSecretName = (existing.spec?.secretRef?.name ?? '').trim()
+        if (!storedSecretName) throw validationError('The stored credential key could not be confirmed. Retype the key before saving it.')
+        const specPatch: Record<string, unknown> = harness
+          ? { provider }
+          : { provider, baseURL }
+        if (!harness && !connectionWrite && model !== undefined) specPatch.model = model || null
+        if (!harness && body.anthropicWorkspaceID !== undefined) specPatch.anthropicWorkspaceID = body.anthropicWorkspaceID.trim() || null
+        const annotations = body.displayName?.trim()
+          ? { [ANNOTATION_CREDENTIAL_DISPLAY_NAME]: body.displayName.trim() }
+          : undefined
+        const patched = await client.patch<KubeModelCredential & KubeObject>(target, name, {
+          spec: specPatch,
+          metadata: {
+            uid, resourceVersion,
+            finalizers: [...new Set([...(existing.metadata.finalizers || []), finalizer])],
+            ...(annotations ? { annotations } : {}),
+          },
+        }, { type: 'merge' })
+        return { ...credentialView(patched), ...(connectionWrite ? { isConnection: true } : {}) }
+      }
+
+      const { id: secretID, name: secretName } = newCredentialSecretIdentity()
+      const stagedSpec = desiredSpec(secretName)
+      let parentUID: string
+      let originalSpec: Record<string, unknown>
+      if (existing) {
+        const uid = existing.metadata.uid
+        const resourceVersion = existing.metadata.resourceVersion
+        if (!uid || !resourceVersion) throw validationError('The credential identity could not be confirmed. Refresh before saving it.')
+        originalSpec = existing.spec ? { ...existing.spec } : {}
+        const annotations = metadataAnnotations(existing.metadata.annotations, secretName)
+        const reservation = await client.patch<KubeModelCredential & KubeObject>(target, name, {
+          metadata: {
+            uid, resourceVersion,
+            finalizers: [...new Set([...(existing.metadata.finalizers || []), finalizer])],
+            annotations,
+          },
+        }, { type: 'merge' })
+        if (reservation.metadata.uid !== uid || reservation.metadata.annotations?.[ANNOTATION_PENDING_KEY_SECRET] !== secretName) {
+          throw validationError('The credential key reservation could not be confirmed. Refresh before saving again.')
+        }
+        parentUID = uid
+        const reservedParent = await client.get<KubeModelCredential & KubeObject>(target, name)
+        if (reservedParent.metadata.uid !== uid || reservedParent.metadata.deletionTimestamp
+          || reservedParent.metadata.annotations?.[ANNOTATION_PENDING_KEY_SECRET] !== secretName) {
+          throw new ResourceError(409, 'Conflict', 'The credential changed while it was being saved. Refresh and try again.')
+        }
+        if (!reservedParent.spec || !sameJSONValue(reservedParent.spec, originalSpec)) {
+          await clearUnusedCredentialReservation(client, target, name, uid, secretName)
+          throw new ResourceError(409, 'Conflict', 'The credential changed while it was being saved. Refresh and try again.')
+        }
+        originalSpec = { ...reservedParent.spec }
+      } else {
+        const annotations = metadataAnnotations(undefined, secretName)
+        const displayName = body.displayName?.trim()
+        if (displayName) annotations[ANNOTATION_CREDENTIAL_DISPLAY_NAME] = displayName
+        const created = await client.create<KubeModelCredential & KubeObject>(target, {
+          apiVersion: API_VERSION,
+          kind,
+          metadata: { name, finalizers: [finalizer], annotations },
+          spec: stagedSpec,
+        } as unknown as KubeModelCredential & KubeObject)
+        parentUID = requireParentIdentity(created, name)
+        if (!created.spec) throw validationError('The workspace did not confirm the saved credential configuration.')
+        originalSpec = { ...created.spec }
+      }
+
+      try {
+        await createGeneratedSecret(secretName, secretID, parentUID)
+      } catch (error) {
+        if (existing) await clearUnusedCredentialReservation(client, target, name, parentUID, secretName)
+        throw error
+      }
+      const activated = await activateSecret(originalSpec, stagedSpec, parentUID, secretName, secretID)
+      return { ...credentialView(activated), ...(connectionWrite ? { isConnection: true } : {}) }
     })
 
   /**
-   * deleteCredential removes the object and the Secret it pointed at, in that
-   * order: an orphaned Secret is harmless, an object pointing at a key that is
-   * gone reports itself broken until someone deletes it.
+   * Connection deletion delegates key lifetime to the connection finalizer.
+   * Model deletion delegates Secret cleanup to Kubernetes owner references.
    */
+  deleteProviderConnection = (name: string): Promise<void> =>
+    this.run(async client => {
+      const models = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
+      if (models.some(item => item.spec?.connectionRef === name)) throw validationError('Remove or reassign the models using this provider connection before deleting it.')
+      await client.delete(MODELPROVIDERCONNECTIONS, name)
+    })
+
   deleteCredential = (name: string): Promise<void> =>
     this.run(async (client) => {
-      let secretName = credentialSecretName(name)
-      try {
-        const existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name)
-        secretName = (existing.spec?.secretRef?.name ?? '').trim() || secretName
-      } catch (error) {
-        if (!isKubeNotFound(error)) throw error
+      let existing: KubeModelCredential & KubeObject
+      try { existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name) }
+      catch (error) { if (isKubeNotFound(error)) return; throw error }
+      if (!existing.spec?.connectionRef) {
+        const credentials = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
+        if (credentials.some(item => item.spec?.connectionRef === name)) throw validationError('Remove the models using this provider connection before deleting it.')
+        if (existing.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' && !existing.metadata.finalizers?.includes(CREDENTIAL_SECRET_PROTECTION)) {
+          const uid = existing.metadata.uid
+          const resourceVersion = existing.metadata.resourceVersion
+          if (!uid || !resourceVersion) throw validationError('The credential identity could not be confirmed. Refresh before deleting it.')
+          existing = await client.patch<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name, {
+            metadata: { uid, resourceVersion, finalizers: [...(existing.metadata.finalizers || []), CREDENTIAL_SECRET_PROTECTION] },
+          }, { type: 'merge' })
+          if (existing.metadata.uid !== uid || !existing.metadata.resourceVersion || !existing.metadata.finalizers?.includes(CREDENTIAL_SECRET_PROTECTION)) {
+            throw validationError('Secret cleanup protection could not be confirmed. Refresh before deleting this credential.')
+          }
+        }
       }
-      await client.delete(MODELCREDENTIALS, name)
-      try {
-        await client.delete(SECRETS, secretName, { namespace: SECRET_NAMESPACE })
-      } catch (error) {
-        if (!isKubeNotFound(error)) throw error
-      }
+      // The finalizer preserves shared keys before Kubernetes can garbage-
+      // collect the legacy owner. The browser never reads or deletes Secrets.
+      await client.delete(MODELCREDENTIALS, name, {
+        preconditions: { uid: existing.metadata.uid, resourceVersion: existing.metadata.resourceVersion },
+      })
     })
 }
 
 /** KubeModelCredential is the object as kcp stores it. */
 interface KubeModelCredential {
-  metadata?: { name?: string }
+  metadata?: { name?: string; annotations?: Record<string, string> }
   spec?: {
+    connectionRef?: string
     provider?: string
     baseURL?: string
     anthropicWorkspaceID?: string
@@ -1476,6 +1930,8 @@ function credentialView(object: KubeModelCredential): Credential {
   const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
   return {
     name: object.metadata?.name ?? '',
+    ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
+    ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
     provider: object.spec?.provider ?? '',
     baseURL: object.spec?.baseURL ?? '',
     ...(object.spec?.anthropicWorkspaceID ? { anthropicWorkspaceID: object.spec.anthropicWorkspaceID } : {}),

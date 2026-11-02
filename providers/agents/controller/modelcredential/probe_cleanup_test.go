@@ -166,8 +166,10 @@ func TestMarkedProbeWaitsForPersistedDeadlineAndRestartRecoversIt(t *testing.T) 
 	if probeCalls != 0 {
 		t.Fatalf("temporary credential was readiness-probed %d times", probeCalls)
 	}
-	if _, err := getProbeCredential(t, c); err != nil {
+	if stored, err := getProbeCredential(t, c); err != nil {
 		t.Fatalf("credential deleted before expiry: %v", err)
+	} else if hasCredentialSecretProtectionFinalizer(stored) {
+		t.Fatal("temporary probe entered the persistent credential protection lifecycle")
 	}
 
 	// A fresh reconciler has no in-memory deadline state; it must derive the

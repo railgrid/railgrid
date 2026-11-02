@@ -95,12 +95,12 @@ const codex = computed(() => harnessKey.value === HARNESS_SECRET_KEY_CODEX_AUTH)
 
 // A saved credential can be reused for probes without returning its key.
 const saved = computed(() => Boolean(props.credential))
-const ENTER_CREDENTIAL_NOTICE = 'Enter an endpoint and API key to find models, then test the selected model before connecting.'
-const PICK_MODEL_NOTICE = 'Find models to see what this endpoint serves, or enter a model ID. Test the model before saving.'
+const ENTER_CREDENTIAL_NOTICE = 'Add your API key and select a model to enable testing.'
+const PICK_MODEL_NOTICE = 'Select a model from the catalog or enter a model ID to enable testing.'
 // A model the endpoint lists is not a model it will answer chat on: a picked
 // id used to be exercised for the first time by the first agent run, which is
 // where the provider's "use the responses endpoint instead" 404 turned up.
-const TEST_MODEL_NOTICE = 'Test this model before saving. The endpoint listing a model is not a promise that it answers chat requests.'
+const TEST_MODEL_NOTICE = 'Test this model before saving to confirm it accepts chat requests.'
 const CODEX_JSON_NOTICE = 'This is not a JSON object. Paste the contents of the auth.json file created by codex login.'
 
 const fingerprint = computed(() => JSON.stringify([
@@ -165,6 +165,7 @@ function updateProvider(nextPreset: string): void {
 
 // The notice names the next step without implying discovery is verification.
 const notice = computed(() => {
+  if (!baseURL.value.trim()) return 'Enter an API endpoint, add your API key, and select a model to enable testing.'
   if (!canProbe.value) return ENTER_CREDENTIAL_NOTICE
   if (!model.value.trim()) return PICK_MODEL_NOTICE
   if (!verified.value) return TEST_MODEL_NOTICE

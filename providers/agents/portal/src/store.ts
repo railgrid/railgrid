@@ -19,6 +19,7 @@ export interface Slice<T> {
   data: T
   loading: boolean
   error: string | null
+  errorStatus?: number
   // loaded flips true after the first settled load, including a failure.
   loaded: boolean
   // hasSnapshot flips only after a successful response, including an
@@ -86,6 +87,34 @@ export interface ServerEvent {
 }
 
 const POLL_MS = 30_000
+
+function requestAbortError(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason
+  const error = new Error('The request was aborted.')
+  error.name = 'AbortError'
+  return error
+}
+
+function waitForRequest<T>(request: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return request
+  if (signal.aborted) return Promise.reject(requestAbortError(signal))
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    const onAbort = () => {
+      cleanup()
+      reject(requestAbortError(signal))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    request.then(
+      value => {
+        cleanup()
+        if (signal.aborted) reject(requestAbortError(signal))
+        else resolve(value)
+      },
+      error => { cleanup(); reject(error) },
+    )
+  })
+}
 
 export class AppStore extends EventTarget {
   agents = slice<Agent[]>([])
@@ -178,7 +207,7 @@ export class AppStore extends EventTarget {
   // an edge harness runs as. They are not variants of each other: the API
   // rejects one where the other belongs, so each picker offers only its own.
   chatCredentials(): Credential[] {
-    return this.credentials.data.filter((c) => isChatProvider(c.provider))
+    return this.credentials.data.filter((c) => isChatProvider(c.provider) && !c.isConnection)
   }
   harnessCredentials(): Credential[] {
     return this.credentials.data.filter((c) => isHarnessProvider(c.provider))
@@ -201,6 +230,25 @@ export class AppStore extends EventTarget {
   // (the agent's chat pane) across a route change. takePendingPrompt CONSUMES
   // it, which is what makes auto-send fire exactly once: a re-render, a tab
   // switch back to Chat or a refresh all find nothing left to send.
+
+  private chatSetupDraft: { agent: string; draft: string; session: string } | null = null
+  offerChatSetupDraft(agent: string, draft: string, session: string): void {
+    if (this.retired) return
+    this.chatSetupDraft = { agent, draft, session }
+  }
+  transferChatSetupDraft(next: AppStore): void {
+    if (this.chatSetupDraft) {
+      const saved = this.chatSetupDraft
+      next.offerChatSetupDraft(saved.agent, saved.draft, saved.session)
+      this.chatSetupDraft = null
+    }
+  }
+  takeChatSetupDraft(agent: string): { draft: string; session: string } | undefined {
+    if (!this.chatSetupDraft || this.chatSetupDraft.agent !== agent) return undefined
+    const saved = this.chatSetupDraft
+    this.chatSetupDraft = null
+    return { draft: saved.draft, session: saved.session }
+  }
 
   private pendingPrompt: { agent: string; text: string } | null = null
 
@@ -263,9 +311,10 @@ export class AppStore extends EventTarget {
 
   // load refreshes one slice. Errors land on the slice (never swallowed) and
   // the previous data stays visible so a transient failure doesn't blank the UI.
-  async load(key: SliceKey): Promise<void> {
+  async load(key: SliceKey, options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.retired) return
     if (!this.api.hasWorkspace()) return
+    if (options.signal?.aborted) return
     const s = this[key] as Slice<unknown[]>
     const loadID = ++this.nextLoadID
     const requestGeneration = this.collectionGeneration(key)
@@ -274,8 +323,8 @@ export class AppStore extends EventTarget {
     s.loading = true
     this.changed()
     try {
-      const rows = await LOADERS[key](this.api)
-      if (this.retired) return
+      const rows = await waitForRequest(LOADERS[key](this.api, options.signal), options.signal)
+      if (this.retired || options.signal?.aborted) return
       // A refresh started before a successful create may return a snapshot
       // that cannot contain the newly-created item yet. Only the latest load
       // may replace the slice; when that load predates an adoption, merge the
@@ -284,13 +333,17 @@ export class AppStore extends EventTarget {
       if (this.latestLoadID[key] === loadID) {
         s.data = this.mergeLoadedRows(key, rows, requestGeneration)
         s.error = null
+        delete s.errorStatus
         s.hasSnapshot = true
       }
     } catch (e) {
       if (this.retired) return
       // Preserve the error from the most recent request. An older failed
       // request must not hide a newer successful refresh (or vice versa).
-      if (this.latestLoadID[key] === loadID) s.error = (e as Error).message
+      if (this.latestLoadID[key] === loadID) {
+        s.error = (e as Error).message
+        s.errorStatus = typeof (e as { status?: unknown }).status === 'number' ? (e as { status: number }).status : undefined
+      }
     } finally {
       if (this.retired) return
       this.pendingLoads[key as CreateCollectionKey]?.delete(loadID)
@@ -327,16 +380,51 @@ export class AppStore extends EventTarget {
   }
 
   private mergeLoadedRows(key: SliceKey, rows: unknown[], requestGeneration: number): unknown[] {
+    // An Agent PATCH response is authoritative as soon as it is acknowledged.
+    // A collection read that began before that write can still be the latest
+    // load by ID and return an older generation; keep the newer row until a
+    // read catches up. Preserve its object identity too, since a config queue
+    // may have a newer optimistic edit layered over the acknowledged spec.
+    if (key === 'agents') rows = this.mergeNewerAgentRows(rows)
     if (!isCreateCollectionKey(key)) return rows
     const newer = [...this.adoptedItems[key].entries()].filter(([, adopted]) => adopted.generation > requestGeneration)
     if (!newer.length) return rows
 
     const present = new Set(rows.map((row) => createCollectionItemID(key, row)).filter(Boolean))
-    const merged = [...rows]
+    // A metadata-only rename can acknowledge a new label while an older list
+    // still contains the same resource. Keep that label, retaining the other
+    // freshly loaded model and connection fields.
+    const pendingLabels = key === 'credentials'
+      ? new Map(newer.map(([id, adopted]) => [id, (adopted.item as Credential).displayName]))
+      : null
+    const merged = rows.map(row => {
+      const label = pendingLabels?.get(createCollectionItemID(key, row))
+      return label !== undefined ? { ...(row as Credential), displayName: label } : row
+    })
     for (const [id, adopted] of newer) {
       if (!present.has(id)) merged.push(adopted.item)
     }
     return merged
+  }
+
+  private mergeNewerAgentRows(rows: unknown[]): unknown[] {
+    const currentByName = new Map(this.agents.data.map((agent) => [agent.metadata.name, agent]))
+    return rows.map((row) => {
+      if (!row || typeof row !== 'object') return row
+      const incoming = row as Agent
+      const name = incoming.metadata?.name
+      if (!name) return row
+      const current = currentByName.get(name)
+      if (!current || current.metadata.uid !== incoming.metadata?.uid || !current.metadata.uid) return row
+      const currentGeneration = current.metadata.generation
+      const incomingGeneration = incoming.metadata?.generation
+      if (
+        typeof currentGeneration === 'number' && Number.isFinite(currentGeneration) &&
+        typeof incomingGeneration === 'number' && Number.isFinite(incomingGeneration) &&
+        currentGeneration > incomingGeneration
+      ) return current
+      return row
+    })
   }
 
   private pruneAdoptedItems(key: SliceKey): void {
@@ -417,6 +505,7 @@ export class AppStore extends EventTarget {
   retire(): void {
     if (this.retired) return
     this.retired = true
+    this.chatSetupDraft = null
     this.disconnect()
   }
 
@@ -467,15 +556,16 @@ function isCreateCollectionKey(key: SliceKey): key is CreateCollectionKey {
 
 function createCollectionItemID(key: CreateCollectionKey, item: unknown): string {
   if (key === 'credentials') {
-    const name = (item as Credential | null | undefined)?.name
-    return typeof name === 'string' ? name : ''
+    const credential = item as Credential | null | undefined
+    const name = credential?.name
+    return typeof name === 'string' ? `${credential?.isConnection ? 'connection' : 'model'}:${name}` : ''
   }
   const name = (item as { metadata?: { name?: unknown } } | null | undefined)?.metadata?.name
   return typeof name === 'string' ? name : ''
 }
 
-const LOADERS: Record<SliceKey, (api: ApiClient) => Promise<unknown[]>> = {
-  agents: (a) => a.listAgents(),
+const LOADERS: Record<SliceKey, (api: ApiClient, signal?: AbortSignal) => Promise<unknown[]>> = {
+  agents: (a, signal) => a.listAgents(signal),
   connections: (a) => a.listConnections(),
   toolsets: (a) => a.listToolsets(),
   schedules: (a) => a.listSchedules(),

@@ -125,6 +125,10 @@ func (s *Server) routes() map[string]resourceRoutes {
 		// rather than on some agent that happens to use it. That is what makes
 		// first-run work: a workspace with no agent yet can still save a
 		// credential and ask whether it answers.
+		"modelproviderconnections": {gvr: agentsclient.ModelProviderConnectionGVR, verbs: map[string]verbRoute{
+			"test":     {methods: post, handler: s.testModelCredential},
+			"discover": {methods: post, handler: s.discoverModelCredential, readOnly: true},
+		}},
 		"modelcredentials": {gvr: agentsclient.ModelCredentialGVR, verbs: map[string]verbRoute{
 			"test":     {methods: post, handler: s.testModelCredential},
 			"discover": {methods: post, handler: s.discoverModelCredential, readOnly: true},

@@ -1,5 +1,6 @@
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
+import { AGENT_RECONCILE_TIMEOUT_MS } from '../resources'
 import type { AppStore } from '../store'
 import type { Agent, AgentPatch } from '../types'
 
@@ -95,16 +96,32 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
           continue
         }
         writesSinceReconcile = true
-        const result = await mutate(store, {
+        let ambiguousTimeout = false
+        const saved = await mutate(store, {
           run: () => operation.api.patchAgent(name, operation.patch),
           success: operation.success,
           failure: 'Save failed',
+          onFailure: error => {
+            ambiguousTimeout = isAmbiguousTimeoutError(error)
+          },
           rollback: () => {
             source.spec = cloneSpec(operation.before)
             rebasePending(source, queue)
           },
         })
-        operation.resolve(result !== undefined && !store.isRetired())
+        if (saved && !store.isRetired()) {
+          const current = store.agent(name)
+          if (current) {
+            adoptSavedAgent(current, saved, queue)
+            store.dispatchEvent(new Event('change'))
+          }
+        }
+        operation.resolve(saved !== undefined && !store.isRetired())
+        // A timed-out write may have committed before its response was lost.
+        // Reconcile that ambiguous result before sending a later patch, so its
+        // rollback point and visible base come from the server. A definite
+        // rejection retains the queue's existing consecutive-write behavior.
+        if (ambiguousTimeout) break
       }
 
       if (!writesSinceReconcile || store.isRetired()) break
@@ -112,7 +129,17 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
       // Reconciliation is part of the same critical section as writes. Saves
       // arriving while this read is in flight remain queued behind it.
       const dataBeforeReload = store.agents.data
-      await store.load('agents')
+      const controller = new AbortController()
+      const timeout = setTimeout(() => {
+        const error = new Error('Agent settings refresh timed out. The saved change may still be present; refresh to confirm it.')
+        error.name = 'TimeoutError'
+        controller.abort(error)
+      }, AGENT_RECONCILE_TIMEOUT_MS)
+      try {
+        await store.load('agents', { signal: controller.signal })
+      } finally {
+        clearTimeout(timeout)
+      }
       writesSinceReconcile = false
       if (store.isRetired()) break
 
@@ -147,4 +174,20 @@ function rebasePending(source: Agent, queue: AgentSaveQueue): void {
     pending.before = cloneSpec(source.spec)
     pending.apply(source.spec)
   }
+}
+
+function adoptSavedAgent(source: Agent, saved: Agent, queue: AgentSaveQueue): void {
+  source.metadata = { ...saved.metadata }
+  source.spec = cloneSpec(saved.spec)
+  if (saved.status === undefined) delete source.status
+  else source.status = saved.status
+  rebasePending(source, queue)
+}
+
+function isAmbiguousTimeoutError(error: unknown): boolean {
+  if (error instanceof Error && error.name === 'TimeoutError') return true
+  return !!error && typeof error === 'object' && (
+    (error as { status?: unknown }).status === 504 ||
+    (error as { reason?: unknown }).reason === 'Timeout'
+  )
 }

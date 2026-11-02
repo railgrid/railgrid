@@ -972,7 +972,7 @@ railgrid-provider-agents .agents-assistant-settings__action { padding: 5px 10px;
 
 /* The overlay's thread picker replaces the transcript without remounting it. */
 railgrid-provider-agents .agents-chat-shell--bar .agents-chat-workspace { display: block; }
-railgrid-provider-agents .agents-chat-shell--bar .agents-conversation-column > :not(.agents-composer),
+railgrid-provider-agents .agents-chat-shell--bar .agents-conversation-column > :not(.agents-composer):not(.agents-model-recovery),
 railgrid-provider-agents .agents-chat-shell--bar .agents-artifact-panel { display: none; }
 railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
 railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }
@@ -1110,3 +1110,21 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
   railgrid-provider-agents .agents-connection-primary > .agents-connection-body { grid-column: 2; grid-row: 1; }
   railgrid-provider-agents .agents-connection-primary > .agents-connection-actions { grid-column: 2; grid-row: 2; }
 }
+
+
+/* Route-backed navigation within the Models destination. */
+.agents-models-tabs { margin-bottom: 20px; }
+.agents-models-tab { text-decoration: none; }
+.agents-models-empty { padding: 24px; }
+.agents-models-empty h3 { margin: 0 0 8px; }
+.agents-models-empty p { margin: 0; color: var(--color-text-secondary); }
+
+.agents-model-recovery{flex:none;display:grid;justify-items:start;gap:12px;margin-top:16px;padding:20px;border-top:1px solid var(--color-border-subtle);background:var(--color-surface);color:var(--color-text-primary);}
+.agents-model-recovery h3{margin:0;font-size:14px;font-weight:600;}
+.agents-model-recovery p{margin:0;color:var(--color-text-secondary);font-size:13px;line-height:1.5;}
+.agents-model-recovery select{width:100%;}
+.agents-model-recovery--compact{margin:0;padding:0;min-width:0;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:0;border:0;background:transparent;}
+.agents-model-recovery--compact h3{max-width:100%;font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+
+.agents-model-recovery__review{padding:2px 0;min-height:28px;font-size:12px;line-height:16px;}
+@media(pointer:coarse),(any-pointer:coarse){.agents-model-recovery__review{min-height:44px;}}
