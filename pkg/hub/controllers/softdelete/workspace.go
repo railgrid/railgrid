@@ -34,11 +34,11 @@ import (
 // (tenants.railgrid.ai/deletion-forced) cascades on the first sweep that
 // sees it instead of waiting out the grace window.
 //
-// Performance note: this is intentionally simple — one ListOrgs call
-// plus one ListChildren per Org per tick. With workspacePollInterval
-// of 1 minute and Orgs in the low thousands this is fine. If we ever
-// need to scale further the natural next step is per-Org dynamic
-// informers; deferred.
+// This is the sweep: one ListOrgs call plus one ListChildren and two
+// GETs per Workspace per tick. It only runs for a provisioner that cannot
+// watch Workspaces (WorkspaceWatcher); the Bootstrapper can, and then the
+// branch is driven by workspace_watch.go with no timer but the grace
+// period itself.
 func (r *Reconciler) reconcileAllWorkspaces(ctx context.Context) error {
 	logger := klog.FromContext(ctx).WithName(workspaceControllerName)
 
