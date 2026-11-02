@@ -31,8 +31,9 @@ supplies primary and fallback assignments. The default slot carries pricing or
 capabilities, and the actions slot carries caller-owned mutations.
 
 `ModelConnectionForm` is the canonical shared form for the Name, Connection,
-Credential, and Model controls, discovery, test feedback, and Cancel → test →
-Connect actions. The Agents and App Studio adapters provide state, validation,
+Credential, Model, and Verify connection sections, discovery, and test feedback.
+Verification groups the test action, its request-charge hint, prerequisite help,
+and results inside the form body. The footer contains Cancel and Connect actions. The Agents and App Studio adapters provide state, validation,
 API event handlers, and provider-specific slots, including a `probe-details` disclosure after the test
 summary; Google credential-method and
 service-account JSON controls, plus App Studio recommendations, remain adapter
@@ -130,7 +131,7 @@ link offsets. Agents Models removes
 its former `agents-menu` and `agents-create-page` wrappers so its create route
 matches App Studio's wrapper geometry. The `.k-back-action` arrow is a fixed
 14px by 14px flex-none SVG. Focused forms use the shared wide creation surface,
-with the name followed by Connection, Credential, and Model sections. Use the
+with the name followed by Connection, Credential, Model, and Verify connection sections. Use the
 `.k-model-form-*` recipes for identical section geometry and responsive columns
 across both providers; keep field help inside the form surface. Fields top-align
 their grid contents so adjacent controls stay aligned when only one has help text.
@@ -176,3 +177,49 @@ checks enforce that contract and both page and total budgets.
 
 See [resource creation](../patterns/resource-creation.md) and
 [interaction accessibility](../accessibility/interaction.md).
+
+### Agents provider-first BYOK flow
+
+The Models navigation opens a section titled **Available models**, with its own
+explanation and **Add model** action above the cards. Provider connections uses
+the corresponding section header and **Connect provider** action below the
+sub-navigation. Page navigation and collection actions remain visually distinct.
+
+Agents connects an API provider once, then configures model bindings against it.
+A `ModelProviderConnection` owns the endpoint, workspace selection, and Secret
+reference. Each configured model has its own `ModelCredential` with
+`spec.connectionRef` and `spec.model`. References remain inside the workspace;
+model bindings do not own or copy the shared key. Legacy direct API credentials
+are migrated while preserving model names and existing Secret data. A server
+finalizer retains provider-owned keys while models reference the connection.
+See [connection lifecycle and access](../../agents-model-provider-connections.md).
+
+Add model starts with saved provider connections and a **Connect provider** link
+beneath the selector. That link opens the separate provider setup route; creating
+a new provider is not an option embedded in the saved-connection dropdown.
+
+The Agents create route offers only API provider presets. Harness logins retain
+the separate Add harness identity entry point and their existing form. The
+provider form keeps fixed endpoints under Connection details and displays custom
+URLs and Anthropic workspace settings only when applicable. Standalone Connect
+provider verifies access through discovery and saves the provider connection
+without requiring or adding a model. If discovery cannot verify access, an
+optional verification model can test inference without adding a binding.
+Connection names are optional human labels; resource names are generated.
+Existing model display names are editable independently of the model ID and
+provider connection. Name-only edits use **Save changes**, update only the
+display-name annotation, and do not trigger provider discovery or inference.
+Resource names remain stable so agent and conversation references keep working.
+
+After standalone setup, Provider connected offers **Add model** and **Done**.
+Setup entered from Add model or chat recovery continues directly to Add model
+with the new connection selected, preserving the original return path. The
+acknowledged connection is available immediately; background collection refresh
+must not hold the success state or require key re-entry. Adding a model verifies
+the exact selected model before saving its binding. Editing shared connection
+details uses **Verify & save** to verify every configured binding, or discovery
+alone when none exist. An optional verification model is test-only; saving the
+connection never adds a model binding. Request cost is explained beside the
+final action. The model list groups reusable provider
+connections separately from selectable models, with Add model and Edit
+connection actions. Its mobile action footer stays in normal document flow.

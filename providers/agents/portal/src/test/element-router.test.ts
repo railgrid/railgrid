@@ -544,14 +544,14 @@ describe('context and create-session routing fences', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     expect(location.hash).toBe('#/models')
     await settleVue()
-    buttonWithText(element, 'Connect model').click()
+    buttonWithText(element, 'Add model').click()
     await settleVue()
-    expect(location.hash).toBe('#/create/model')
+    expect(location.hash).toBe('#/create/model/from-connection')
 
     pending.resolve({ metadata: { name: 'stale-agent' }, spec: {} })
     await settleVue(8)
 
-    expect(location.hash).toBe('#/create/model')
+    expect(location.hash).toBe('#/create/model/from-connection')
     expect(element.store).toBe(store)
     expect(store.agents.data).toEqual([])
   })
@@ -629,5 +629,39 @@ describe('context and create-session routing fences', () => {
     expect(location.hash).toBe('#/agents')
     await settleVue()
     expect(text(element)).toContain('Connecting')
+  })
+})
+
+describe('Models sub-tab shell routing', () => {
+  it('restores deep links and follows external browser navigation between sub-tabs', async () => {
+    const element = await mountShell('#/models/provider-connections')
+    expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
+    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+    history.pushState(null, '', '#/models/usage')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await settleVue(6)
+    expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'usage' })
+    expect(element.querySelector('.k-model-usage')).toBeTruthy()
+    expect(element.querySelector('.agents-provider-connection')).toBeNull()
+  })
+
+  it('returns to Provider connections after canceling provider setup', async () => {
+    const element = await mountShell('#/models/provider-connections')
+    buttonWithText(element, 'Connect provider').click()
+    await settleVue(6)
+    expect(location.hash).toBe('#/create/model')
+    buttonWithText(element, 'Cancel').click()
+    await settleVue(6)
+    expect(location.hash).toBe('#/models/provider-connections')
+    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+  })
+
+  it('opens the Workspace assistant sub-tab from the host settings shortcut', async () => {
+    const control = { selectedAgent: null, followContext: true, settingsOpen: true, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
+    const element = await mountShell('#/models', ctx({ agentOverlay: control }))
+    await settleVue(6)
+    expect(location.hash).toBe('#/models/workspace-assistant')
+    expect(element.querySelector('#workspace-assistant-settings')).toBeTruthy()
+    expect(element.querySelector('.k-model-usage')).toBeNull()
   })
 })

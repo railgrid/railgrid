@@ -75,7 +75,41 @@ async function waitForRealFonts(page) {
   })
 }
 
+async function collectAgentsProviderFlow(page, theme, width, scenario) {
+  const consoleErrors = [], pageErrors = []
+  const onConsole = message => { if (message.type() === 'error') consoleErrors.push(message.text()) }
+  page.on('console', onConsole)
+  page.on('pageerror', error => pageErrors.push(error.message))
+  await page.goto(`${origin}${routeQuery('agents', theme)}`, { waitUntil: 'domcontentloaded' })
+  await page.locator('.k-provider-connect').waitFor()
+  await waitForRealFonts(page)
+  if (scenario === 'custom') await page.locator('#model-provider').selectOption('custom')
+  const result = await page.evaluate(() => {
+    const form = document.querySelector('.k-provider-connect')
+    const select = form.querySelector('#model-provider')
+    const next = [...form.querySelectorAll('button')].find(button => button.textContent.trim() === 'Continue')
+    const title = document.querySelector('.k-create-title')
+    const style = getComputedStyle(title)
+    return { options: [...select.options].map(option => option.value), internalName: Boolean(form.querySelector('[name="name"]')), modelInitiallyVisible: Boolean(form.querySelector('#model-id')), continueDisabled: next.disabled, provider: select.value, password: form.querySelector('#model-credential').type, overflow: document.documentElement.scrollWidth > innerWidth, footerPosition: getComputedStyle(form.querySelector('footer')).position, title: { style: { fontFamily: style.fontFamily, fontSize: style.fontSize } } }
+  })
+  const screenshot = `${outputDir}/agents-${theme}-${width}${scenarioSuffix(scenario)}.png`
+  await page.locator('.k-create-page').screenshot({ path: screenshot, animations: 'disabled' })
+  const key = page.locator('#model-credential')
+  await key.fill('fixture-draft-only')
+  await page.locator('#model-provider').selectOption(scenario === 'custom' ? 'openai' : 'custom')
+  const providerChangeClearedCredential = await key.inputValue() === ''
+  await page.locator('#model-provider').selectOption('custom')
+  await page.locator('#model-base-url').fill('https://fixture.invalid/first')
+  await key.fill('fixture-draft-only')
+  await page.locator('#model-base-url').fill('https://fixture.invalid/second')
+  const endpointChangeClearedCredential = await key.inputValue() === ''
+  const calls = await page.evaluate(() => globalThis.__railgridModelFixture.calls)
+  page.off('console', onConsole)
+  return { ...result, providerFlow: true, provider: 'agents', selectedProvider: result.provider, theme, width, scenario, screenshot, consoleErrors, pageErrors, behavior: { providerChangeClearedCredential, endpointChangeClearedCredential, writeCalls: calls.filter(call => !['GET', 'HEAD'].includes(call.method)) } }
+}
+
 async function collect(page, provider, theme, width, scenario) {
+  if (provider === 'agents') return collectAgentsProviderFlow(page, theme, width, scenario)
   const consoleErrors = []
   const pageErrors = []
   const onConsole = message => {
@@ -177,7 +211,7 @@ async function collect(page, provider, theme, width, scenario) {
     const findModels = firstByText('button', 'Find models', form)
     const modelControl = query('#model-id', form)
     const footer = query('.k-create-actions', form)
-    const notices = many('.k-inline-notification, .k-model-form-test-hint, [role="alert"], [role="status"]', form)
+    const notices = many('.k-inline-notification, [role="alert"], [role="status"]', form)
     const fields = many('.k-model-form-field', form).map((node, index) => describe(node, `.k-model-form-field[${index}]`))
     const sections = many('.k-model-form-section', form).map((node, index) => ({
       ...describe(node, `.k-model-form-section[${index}]`),
@@ -245,10 +279,12 @@ async function collect(page, provider, theme, width, scenario) {
         blankNotices: notices.map((node, index) => describe(node, `blank-notice[${index}]`)),
       },
       fields,
-      modelInputs: many('.k-model-form .k-input', form).map(node => describe(node)),
+      modelInputs: many('.k-model-form .k-input', form).filter(node => node.matches('input,select,textarea,#model-id,.k-model-form-endpoint')).map(node => describe(node)),
       sections,
       hints: many('.k-model-form-hint', form).map((node, index) => describe(node, `.k-model-form-hint[${index}]`)),
-      testHint: describe(query('.k-model-form-test-hint', form)),
+      testHint: describe(query('#model-test-help', form)),
+      testAction: describe(firstByText('button', 'Test connection', form)),
+      verificationBeforeActions: Boolean(firstByText('button', 'Test connection', form)?.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING),
       actions: describe(footer),
       actionButtons: many('.k-create-actions button', form).map((node, index) => describe(node, `action[${index}]`)),
       controls,
@@ -308,6 +344,15 @@ async function collect(page, provider, theme, width, scenario) {
 }
 
 function checkContracts(result) {
+  if (result.providerFlow) return [
+    { name: 'API providers are separate from harness logins', passed: result.options.join('|') === 'openai|anthropic|openrouter|custom' },
+    { name: 'provider-first empty draft', passed: !result.internalName && !result.modelInitiallyVisible && result.continueDisabled && result.password === 'password' },
+    { name: 'explicit provider choice', passed: result.selectedProvider === result.scenario },
+    { name: 'no horizontal overflow or sticky field obstruction', passed: !result.overflow && result.footerPosition !== 'sticky' },
+    { name: 'provider and endpoint changes clear typed keys', passed: result.behavior.providerChangeClearedCredential && result.behavior.endpointChangeClearedCredential },
+    { name: 'draft changes do not mutate saved resources', passed: result.behavior.writeCalls.length === 0 },
+    { name: 'no browser errors', passed: !result.consoleErrors.length && !result.pageErrors.length },
+  ]
   const checks = []
   const check = (name, passed, evidence) => checks.push({ name, passed: Boolean(passed), evidence })
   const { width, scenario, landmarks: l } = result
@@ -316,12 +361,12 @@ function checkContracts(result) {
   check('one route heading and shared form', result.structure.pages === 1 && result.structure.headers === 1 && result.structure.titles === 1 && result.structure.forms === 1, result.structure)
   check('fluid wide creation surface', result.page.style.display === 'block' && result.page.style.minWidth === '0px' && result.form.rect.width === result.page.rect.width, { page: result.page.rect, form: result.form.rect })
   check('explicit route typography', result.page.style.fontSize === '14px' && result.page.style.lineHeight === '21px', result.page.style)
-  check('display heading', result.title.style.fontFamily.includes('Archivo Variable') && result.title.style.fontStretch === '125%' && result.title.style.fontSize === '18px', result.title.style)
+  check('display heading', result.title.style.fontFamily.includes('Instrument Sans Variable') && result.title.style.fontStretch === '100%' && result.title.style.fontSize === '18px', result.title.style)
   check('back then heading then form', result.back.rect.bottom <= result.header.rect.y && result.header.rect.bottom <= result.form.rect.y, { back: result.back.rect, header: result.header.rect, form: result.form.rect })
   check('fixed back icon', result.backIcon.rect?.width === 14 && result.backIcon.rect?.height === 14 && result.backIcon.flexShrink === '0', result.backIcon)
   check('route heading focus', result.focus.active?.class?.includes('k-create-title') && result.focus.active.tabIndex === -1 && result.focus.outlineStyle === 'solid' && result.focus.outlineWidth === '2px' && result.focus.outlineOffset === '2px' && result.focus.outlineColor === result.accentColor, result.focus)
   check('named controls with resolvable help', result.accessibility.length > 0 && result.accessibility.every(control => control.labelled && control.missingDescriptions.length === 0), result.accessibility)
-  check('shared section hierarchy', result.structure.sections.join('|') === 'Connection|Credential|Model', result.structure.sections)
+  check('shared section hierarchy', result.structure.sections.join('|') === 'Connection|Credential|Model|Verify connection', result.structure.sections)
   check('provider and endpoint equal control height', provider && endpoint && provider.height === endpoint.height, { provider, endpoint })
   check(width < 640 ? 'connection controls stack on mobile' : 'connection controls top-align on desktop', provider && endpoint && (width < 640 ? endpoint.y > provider.y : endpoint.y === provider.y), { provider, endpoint })
   check('model field sizes', result.modelInputs.length > 0 && result.modelInputs.every(control => control.rect && (width < 640 ? control.rect.height >= 44 : control.rect.height === 40)), result.modelInputs.map(control => ({ id: control.id, height: control.rect?.height })))
@@ -331,8 +376,8 @@ function checkContracts(result) {
   check('empty new draft and explicit provider', l.nameInput.value === '' && l.credentialInput.value === '' && l.modelControl.value === '' && l.providerControl.value === (scenario === 'custom' ? 'custom' : 'openai'), { name: l.nameInput.value, credential: l.credentialInput.value, model: l.modelControl.value, provider: l.providerControl.value })
   check('credential stays a password field', l.credentialInput.type === 'password', l.credentialInput.type)
   check('explicit custom endpoint', scenario === 'custom' ? l.endpointControl.tag === 'input' && l.endpointControl.type === 'url' && l.endpointControl.ariaRequired === 'true' : l.endpointControl.tag === 'div' && l.endpointControl.text === 'https://api.openai.com/v1', l.endpointControl)
-  check('Cancel then test then Connect with verification gate', result.actionButtons.map(button => button.text).join('|') === 'Cancel|Test connection|Connect model' && result.actionButtons[1].disabled && result.actionButtons[2].disabled && l.findModels.disabled, result.actionButtons.map(button => ({ text: button.text, disabled: button.disabled })))
-  if (width < 640) check('coarse pointer action targets', result.back.rect.height >= 44 && result.back.rect.width >= 44 && result.actionButtons.every(button => button.rect.height >= 44), { back: result.back.rect, actions: result.actionButtons.map(button => button.rect) })
+  check('verification precedes final actions with verification gate', result.actionButtons.map(button => button.text).join('|') === 'Cancel|Connect model' && result.testAction.disabled && result.actionButtons[1].disabled && l.findModels.disabled && result.verificationBeforeActions, { test: result.testAction, actions: result.actionButtons })
+  if (width < 640) check('coarse pointer action targets', result.back.rect.height >= 44 && result.back.rect.width >= 44 && [result.testAction, ...result.actionButtons].every(button => button.rect.height >= 44), { back: result.back.rect, actions: result.actionButtons.map(button => button.rect) })
   check('provider change clears typed credential', result.behavior.providerChangeClearedCredential, result.behavior)
   check('endpoint change clears typed credential', result.behavior.endpointChangeClearedCredential, result.behavior)
   check('draft provider changes do not mutate saved resources', result.behavior.writeCalls.length === 0, result.behavior.writeCalls)
@@ -340,6 +385,7 @@ function checkContracts(result) {
 }
 
 function checkSharedGeometry(app, agents) {
+  if (agents.providerFlow) return [{ name: 'shared route title typography across distinct provider flows', passed: app.title.style.fontFamily === agents.title.style.fontFamily && app.title.style.fontSize === agents.title.style.fontSize, evidence: { app: app.title.style, agents: agents.title.style } }]
   // These landmarks precede provider-owned help, extra controls and notices.
   // Later section/footer positions legitimately follow their content height.
   const landmarks = ['back', 'header', 'title', 'description']
