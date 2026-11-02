@@ -203,6 +203,19 @@ type OrgProviderView struct {
 // returned in the response body and never persisted anywhere the portal can
 // re-read casually — callers that lose it re-fetch from the kubeconfig endpoint,
 // which re-mints from the same Secret and therefore yields the same token.
+// OrgProviderEnrollmentStatus is an optional capability hint. It never hides existing registrations.
+type OrgProviderEnrollmentStatus struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+const orgProviderEnrollmentUnavailableReason = "Organization provider enrollment is temporarily unavailable."
+
+type ListOrgProvidersResponse struct {
+	Items      []OrgProviderView            `json:"items"`
+	Enrollment *OrgProviderEnrollmentStatus `json:"enrollment,omitempty"`
+}
+
 type RegisterOrgProviderResponse struct {
 	Provider OrgProviderView `json:"provider"`
 	// Kubeconfig is the workspace-scoped credential, PEM-free YAML.
@@ -272,6 +285,15 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 	return tc, true
 }
 
+// requireOrgProviderAvailability fails closed when the hub has no verified enrollment capability.
+func (h *Handler) requireOrgProviderAvailability(w http.ResponseWriter, r *http.Request) bool {
+	if h.mgr.orgProviderAvailability == nil || h.mgr.orgProviderAvailability(r.Context()) != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", orgProviderEnrollmentUnavailableReason)
+		return false
+	}
+	return true
+}
+
 // registerOrgProvider handles POST /api/orgs/{org}/providers.
 //
 // Creates the provider workspace (and the Org's `providers` parent on first
@@ -281,6 +303,9 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating */)
 	if !ok {
+		return
+	}
+	if !h.requireOrgProviderAvailability(w, r) {
 		return
 	}
 	orgUUID := tc.OrgUUID
@@ -581,7 +606,11 @@ func (h *Handler) listOrgProviders(w http.ResponseWriter, r *http.Request) {
 		items = append(items, h.orgProviderView(orgUUID, ws))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	writeJSON(w, http.StatusOK, ListResponse[OrgProviderView]{Items: items})
+	status := OrgProviderEnrollmentStatus{Available: false, Reason: orgProviderEnrollmentUnavailableReason}
+	if h.mgr.orgProviderAvailability != nil && h.mgr.orgProviderAvailability(r.Context()) == nil {
+		status = OrgProviderEnrollmentStatus{Available: true}
+	}
+	writeJSON(w, http.StatusOK, ListOrgProvidersResponse{Items: items, Enrollment: &status})
 }
 
 // orgProviderView merges the kcp workspace with the catalog registry record, if
@@ -659,6 +688,9 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 	}
 	orgUUID := tc.OrgUUID
 	name := mux.Vars(r)["name"]
+	if !h.requireOrgProviderAvailability(w, r) {
+		return
+	}
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
 		return
@@ -736,6 +768,9 @@ func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Req
 	}
 	orgUUID := tc.OrgUUID
 	name := mux.Vars(r)["name"]
+	if !h.requireOrgProviderAvailability(w, r) {
+		return
+	}
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
 		return

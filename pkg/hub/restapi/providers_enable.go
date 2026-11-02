@@ -139,6 +139,9 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "provider "+providerName+" not found")
 		return
 	}
+	if prov.OrgUUID != "" && !h.requireOrgProviderAvailability(w, r) {
+		return
+	}
 	if prov.APIExportPath == "" || prov.APIExportName == "" {
 		// Built-in providers (kubernetes-edges, server-edges, mcp,
 		// quickstart) don't ship an APIExport — they're always

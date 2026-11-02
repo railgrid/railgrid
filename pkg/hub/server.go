@@ -97,7 +97,17 @@ const (
 	// providers such as app-studio call the aggregate for many users from one
 	// pod address, so this is deliberately looser than token-login.
 	mcpVerifyBurst = 60
+
+	// Keep hosted BYO enrollment disabled until pinned KCP quota accounting is verified.
+	organizationQuotaSelectionSupported = false
 )
+
+func orgProviderEnrollmentAvailability(context.Context) error {
+	if !organizationQuotaSelectionSupported {
+		return errors.New("hosted BYO enrollment is disabled until supported KCP ResourceQuota accounting is verified")
+	}
+	return nil
+}
 
 // Server is the railgrid hub server orchestrator.
 type Server struct {
@@ -981,6 +991,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
 			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
+			apiMgr.WithOrgProviderAvailability(orgProviderEnrollmentAvailability)
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL

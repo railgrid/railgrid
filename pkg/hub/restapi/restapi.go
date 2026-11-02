@@ -213,6 +213,9 @@ type Manager struct {
 	// 501 unless both are set. See org_providers.go.
 	orgProviders  OrgProviderOps
 	providerCreds ProviderCredentialMinter
+	// orgProviderAvailability gates creation of new organization-provider authority.
+	// Nil fails closed; reads and cleanup remain available.
+	orgProviderAvailability func(context.Context) error
 	// hubAccess records the hub capabilities a tenant accepts for a
 	// provider on Enable (optional; nil skips recording). platformDefault
 	// mirrors the gate's --provider-hub-access-platform-default so the
@@ -347,6 +350,12 @@ func (m *Manager) WithHubAccessGrants(store *hubaccess.Store, platformDefault bo
 func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialMinter) *Manager {
 	m.orgProviders = ops
 	m.providerCreds = creds
+	return m
+}
+
+// WithOrgProviderAvailability gates operations that create or issue organization-provider authority.
+func (m *Manager) WithOrgProviderAvailability(check func(context.Context) error) *Manager {
+	m.orgProviderAvailability = check
 	return m
 }
 
