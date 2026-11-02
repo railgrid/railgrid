@@ -495,6 +495,9 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.URL.Path = singleJoiningSlash(target.Path, rest)
 			req.URL.RawPath = "" // let net/url re-encode from Path
 			req.Host = target.Host
+			if substitute {
+				stripDelegatedCallerHeaders(req.Header)
+			}
 			p.setHeaders(req, name, basePath)
 			if substitute {
 				// Same boundary as serveOverEdge: the caller's hub token

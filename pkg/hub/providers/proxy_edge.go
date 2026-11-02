@@ -11,8 +11,10 @@ You may obtain a copy of the License at
 package providers
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -26,10 +28,10 @@ import (
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
-// DelegatedTokenIssuer mints the credential the hub sends to an org-owned
-// provider in place of the caller's own hub bearer: a ServiceAccount token in
-// the caller's tenant workspace, annotated with the human user it stands in
-// for. Implemented by *serviceaccounts.Manager.
+// DelegatedTokenIssuer mints the credential the hub sends to a provider in
+// place of the caller's hub bearer. Platform providers may receive the
+// compatibility ServiceAccount token; org-owned providers receive the
+// opaque, hub-mediated BYO identity.
 type DelegatedTokenIssuer interface {
 	IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user serviceaccounts.Identity, provider serviceaccounts.DelegatedProvider) (string, time.Time, error)
 }
@@ -114,19 +116,17 @@ func splitTenantPath(tenantPath string) (orgUUID, wsUUID string) {
 // installed by whichever member registered it, so the caller's own hub token —
 // good for every workspace and every REST endpoint they can reach — must never
 // cross it. A platform provider under a delegating policy (proxy_delegation.go)
-// gets the same treatment for the same reason in weaker form: it is trusted
-// code, but a bug in it should be able to act in one workspace, not as the
-// user everywhere. What crosses instead is a ServiceAccount token scoped by
-// kcp to the caller's current workspace, carrying the caller's name in
-// annotations for the provider to attribute the call. Every failure here is
-// closed: no identity, no workspace, no issuer, or a mint error all refuse
-// rather than fall back to forwarding the bearer.
+// gets a native ServiceAccount token scoped to the selected workspace. An
+// organization provider gets only the short-lived opaque broker identity. Both
+// paths strip caller cookies, impersonation headers, and Kubernetes WebSocket
+// bearer subprotocols before crossing the provider boundary. Every failure
+// here is closed: no identity, no workspace, no issuer, or a mint error all
+// refuse rather than fall back to forwarding the bearer.
 //
-// The delegated account is minted in the workspace the caller selected
+// A platform delegated account is minted in the workspace the caller selected
 // (X-Railgrid-Workspace, verified against their membership by the resolver). An
-// org-scope selection has nowhere to mint it — org workspaces are sealed
-// (O-10) and the hub's SA proxy path refuses tokens bound there — so it is
-// refused for platform providers exactly as for org-owned ones.
+// org-scope selection has nowhere to mint it — org workspaces are sealed — so
+// it is refused for platform providers exactly as for org-owned ones.
 func (p *ProviderProxy) delegatedAuthorization(w http.ResponseWriter, r *http.Request, prov Provider) (string, bool) {
 	if strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 		// Anonymous probe (health checks). There is no credential to
@@ -236,7 +236,7 @@ func issueDelegatedToken(ctx context.Context, issuer DelegatedTokenIssuer, prov 
 // is the direct path's substitution, for a platform provider the
 // DelegationPolicy selects: the provider reads the bearer itself.
 func setDelegatedAuthorization(h http.Header, token string) {
-	h.Del("Authorization")
+	stripDelegatedCredentialHeaders(h)
 	if token != "" {
 		h.Set("Authorization", "Bearer "+token)
 	}
@@ -248,10 +248,46 @@ func setDelegatedAuthorization(h http.Header, token string) {
 // the edges service proxy presents to the org-owned provider
 // (dataplane.HeaderUpstreamAuthorization), or nothing for an anonymous probe.
 func setDelegatedUpstreamAuthorization(h http.Header, token string) {
-	h.Del("Authorization")
+	stripDelegatedCredentialHeaders(h)
 	h.Del(dataplane.HeaderUpstreamAuthorization)
 	if token != "" {
 		h.Set(dataplane.HeaderUpstreamAuthorization, "Bearer "+token)
+	}
+}
+
+// stripDelegatedCallerHeaders removes caller-controlled identity and credential
+// carriers before trusted tenant headers are injected. Normal application
+// WebSocket subprotocols are retained; Kubernetes bearer subprotocols are not.
+func stripDelegatedCallerHeaders(h http.Header) {
+	stripDelegatedCredentialHeaders(h)
+	for key := range h {
+		lower := strings.ToLower(key)
+		if strings.HasPrefix(lower, "x-railgrid-") || strings.HasPrefix(lower, "x-remote-") {
+			h.Del(key)
+		}
+	}
+}
+
+func stripDelegatedCredentialHeaders(h http.Header) {
+	for key := range h {
+		lower := strings.ToLower(key)
+		if lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" || lower == "cookie2" ||
+			strings.HasPrefix(lower, "impersonate-") || lower == "x-forwarded-access-token" {
+			h.Del(key)
+		}
+	}
+	var protocols []string
+	for _, value := range h.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(value, ",") {
+			protocol = strings.TrimSpace(protocol)
+			if protocol != "" && !strings.HasPrefix(protocol, "base64url.bearer.authorization.k8s.io.") {
+				protocols = append(protocols, protocol)
+			}
+		}
+	}
+	h.Del("Sec-WebSocket-Protocol")
+	if len(protocols) > 0 {
+		h.Set("Sec-WebSocket-Protocol", strings.Join(protocols, ", "))
 	}
 }
 
@@ -349,6 +385,15 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 		http.Error(w, "edge transport unavailable for provider: "+prov.Name, http.StatusServiceUnavailable)
 		return
 	}
+	if isPublicBackendHealthPath(rest) {
+		// Health is a public provider contract. Never exchange an authenticated
+		// caller into a backend credential for a probe, especially when a BYO
+		// provider has not been enabled in that caller's workspace.
+		r = r.Clone(context.WithValue(r.Context(), resolvedCallerKey{}, resolvedCaller{err: errors.New("anonymous caller")}))
+		r.Header = r.Header.Clone()
+		r.Header.Del("Authorization")
+		r.Header.Del(dataplane.HeaderUpstreamAuthorization)
+	}
 
 	delegated, ok := p.delegatedAuthorization(w, r, prov)
 	if !ok {
@@ -370,18 +415,21 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 			req.URL.Path = dst.Path
 			req.URL.RawPath = ""
 			req.Host = dst.Host
+			stripDelegatedCallerHeaders(req.Header)
 			// Identity is injected under the ORG provider's name, not the
 			// edges provider's: the headers describe who is calling the
 			// provider at the far end of the tunnel, and the agent forwards
 			// them untouched (E-6).
 			p.setHeaders(req, prov.Name, basePath)
 			// The caller's hub token stops here. The hop to kcp
-			// authenticates as the hub (hop.transport); what the tenant's
-			// cluster receives, as the upstream Authorization the edges
-			// service proxy presents to the provider, is the delegated
-			// ServiceAccount token — or nothing for an anonymous probe —
-			// never the bearer that arrived.
+			// authenticates as the hub (hop.transport); the organization
+			// backend receives the opaque broker identity as its upstream
+			// Authorization, or nothing for a public health probe. The caller's
+			// hub bearer never reaches the provider.
 			setDelegatedUpstreamAuthorization(req.Header, delegated)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			return orgProviderModifyResponse(resp, r.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "edge upstream error",
@@ -391,5 +439,133 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 	}
 	p.log.V(4).Info("forwarding provider request over edge",
 		"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "path", dst.Path)
-	rp.ServeHTTP(w, r)
+	rp.ServeHTTP(newOrgProviderResponseWriter(w), r)
+}
+
+func isPublicBackendHealthPath(rest string) bool {
+	switch strings.TrimSuffix(rest, "/") {
+	case "/healthz", "/readyz", "/livez":
+		return true
+	default:
+		return false
+	}
+}
+
+// orgProviderModifyResponse removes browser-controlled response state from an
+// organization-owned upstream. A valid 101 handshake keeps only the headers
+// needed to complete an upgrade; ReverseProxy validates the negotiated protocol
+// against the request before handing off the connection.
+func orgProviderModifyResponse(resp *http.Response, requestHeaders http.Header) error {
+	filtered := make(http.Header)
+	CopyOrgProviderResponseHeaders(filtered, resp.Header)
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		requestUpgrade := strings.TrimSpace(requestHeaders.Get("Upgrade"))
+		responseUpgrade := strings.TrimSpace(resp.Header.Get("Upgrade"))
+		if requestUpgrade == "" || !headerHasToken(requestHeaders, "Connection", "upgrade") ||
+			!strings.EqualFold(requestUpgrade, responseUpgrade) || !headerHasToken(resp.Header, "Connection", "upgrade") {
+			return errors.New("invalid organization provider protocol upgrade")
+		}
+		filtered.Set("Connection", "Upgrade")
+		filtered.Set("Upgrade", responseUpgrade)
+		for _, name := range []string{"Sec-WebSocket-Accept", "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions"} {
+			if values := resp.Header.Values(name); len(values) != 0 {
+				filtered[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+			}
+		}
+	}
+	resp.Header = filtered
+	// ReverseProxy otherwise forwards values announced in Trailer after the
+	// final response headers, outside ModifyResponse's filtering point.
+	resp.Trailer = nil
+	return nil
+}
+
+func headerHasToken(header http.Header, name, wanted string) bool {
+	for _, value := range header.Values(name) {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), wanted) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// orgProviderResponseWriter drops informational headers before ReverseProxy
+// writes them. net/http/httputil forwards 1xx responses through httptrace and
+// does not call ModifyResponse for them.
+type orgProviderResponseWriter struct {
+	underlying http.ResponseWriter
+	upstream   http.Header
+	committed  bool
+}
+
+func newOrgProviderResponseWriter(w http.ResponseWriter) *orgProviderResponseWriter {
+	return &orgProviderResponseWriter{underlying: w, upstream: make(http.Header)}
+}
+
+// Header returns a private staging map. ReverseProxy writes announced and late
+// trailers through this map after the final headers have been committed, so
+// they must never alias the browser-facing header map.
+func (w *orgProviderResponseWriter) Header() http.Header { return w.upstream }
+
+func (w *orgProviderResponseWriter) WriteHeader(status int) {
+	if status >= 100 && status < 200 {
+		clear(w.upstream)
+		return
+	}
+	w.commitHeaders()
+	w.underlying.WriteHeader(status)
+}
+
+func (w *orgProviderResponseWriter) commitHeaders() {
+	if w.committed {
+		return
+	}
+	w.committed = true
+	dst := w.underlying.Header()
+	for key, values := range w.upstream {
+		if _, exists := dst[key]; exists {
+			continue // retain headers installed by trusted hub middleware
+		}
+		dst[key] = append([]string(nil), values...)
+	}
+}
+
+func (w *orgProviderResponseWriter) Write(p []byte) (int, error) {
+	w.commitHeaders()
+	return w.underlying.Write(p)
+}
+
+func (w *orgProviderResponseWriter) Flush() {
+	w.commitHeaders()
+	if f, ok := w.underlying.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (w *orgProviderResponseWriter) FlushError() error {
+	w.commitHeaders()
+	if f, ok := w.underlying.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
+	if f, ok := w.underlying.(http.Flusher); ok {
+		f.Flush()
+	}
+	return nil
+}
+
+func (w *orgProviderResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.underlying.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support protocol upgrades")
+	}
+	return h.Hijack()
+}
+
+func (w *orgProviderResponseWriter) Push(target string, opts *http.PushOptions) error {
+	if p, ok := w.underlying.(http.Pusher); ok {
+		return p.Push(target, opts)
+	}
+	return http.ErrNotSupported
 }

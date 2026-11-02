@@ -21,11 +21,12 @@ import (
 	"strings"
 )
 
-// DelegationMode selects which providers receive a delegated ServiceAccount
-// token in place of the caller's own hub bearer on the backend proxy.
+// DelegationMode selects which platform providers receive a delegated
+// ServiceAccount token in place of the caller's own hub bearer on the backend
+// proxy.
 //
 // Org-owned providers are never a question of mode: they always receive the
-// delegated token (see serveOverEdge). The mode decides what a PLATFORM
+// opaque broker identity (see serveOverEdge). The mode decides what a PLATFORM
 // provider — one in root:railgrid:providers, dialled directly by the hub — gets.
 type DelegationMode string
 
@@ -65,12 +66,12 @@ func ParseDelegationMode(s string) (DelegationMode, error) {
 // and, for an edge with spec.sshUserMapping=identity, uses the resulting
 // username as the Linux user to log in as
 // (providers/edges/internal/tunnel/edges_proxy_builder.go fetchSSHCredentials).
-// A delegated token resolves to system:serviceaccount:default:railgrid-du-<hash>,
+// A platform delegated token resolves to system:serviceaccount:default:railgrid-pdu-<hash>,
 // which is not the human's account and is not a login name on any host, so the
 // session would be refused or land on the wrong user. Everything else in edges
 // — the tunnel, the k8s subresource, the Service proxy — works with a
-// delegated token and already receives one on the org-owned provider path
-// (serveOverEdge). Lifting this needs the SSH path to take its identity from
+// delegated token and already receives a provider-scoped credential on the
+// org-owned provider path (serveOverEdge). Lifting this needs the SSH path to take its identity from
 // X-Railgrid-User (which the hub still sends) rather than from the bearer.
 var DefaultDelegationExclude = []string{EdgesProviderName}
 

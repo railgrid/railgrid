@@ -28,6 +28,10 @@ type platformUpstream struct {
 	authorization string
 	user          string
 	tenant        string
+	cookie        string
+	proxyAuth     string
+	impersonate   string
+	protocols     []string
 }
 
 // newPlatformProxy builds a backend proxy in front of one platform provider,
@@ -40,6 +44,10 @@ func newPlatformProxy(t *testing.T, name, wsOfCaller string) (*ProviderProxy, *p
 		rec.authorization = r.Header.Get("Authorization")
 		rec.user = r.Header.Get("X-Railgrid-User")
 		rec.tenant = r.Header.Get("X-Railgrid-Tenant")
+		rec.cookie = r.Header.Get("Cookie")
+		rec.proxyAuth = r.Header.Get("Proxy-Authorization")
+		rec.impersonate = r.Header.Get("Impersonate-User")
+		rec.protocols = r.Header.Values("Sec-WebSocket-Protocol")
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(srv.Close)
@@ -127,6 +135,34 @@ func TestPlatformDelegationSwapsTheBearer(t *testing.T) {
 				t.Errorf("issuer asked for %+v, want (org=%s, ws=%s, user=alice, provider=infrastructure) once", issuer, testOrg, testWS)
 			}
 		})
+	}
+}
+
+func TestPlatformDelegationStripsCredentialCarriersAndKeepsApplicationProtocol(t *testing.T) {
+	proxy, rec := newPlatformProxy(t, "infrastructure", testWS)
+	proxy.SetDelegatedTokenIssuer(&recordingIssuer{})
+	proxy.SetDelegationPolicy(DelegationPolicy{Mode: DelegationPlatform})
+	request := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+callerBearer)
+	request.Header.Set("Cookie", "session=browser-secret")
+	request.Header.Set("Cookie2", "legacy=session")
+	request.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+	request.Header.Set("Impersonate-User", "system:admin")
+	request.Header.Set("Impersonate-Group", "system:masters")
+	request.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io.human-token, app.v1")
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !rec.hit {
+		t.Fatalf("response = %d hit=%v; want 200 and upstream request", response.Code, rec.hit)
+	}
+	if rec.authorization != "Bearer "+delegatedToken {
+		t.Errorf("Authorization = %q, want platform delegated token", rec.authorization)
+	}
+	if rec.cookie != "" || rec.proxyAuth != "" || rec.impersonate != "" {
+		t.Errorf("caller credentials survived: cookie=%q proxyAuth=%q impersonate=%q", rec.cookie, rec.proxyAuth, rec.impersonate)
+	}
+	if len(rec.protocols) != 1 || rec.protocols[0] != "app.v1" {
+		t.Errorf("Sec-WebSocket-Protocol = %v, want only app.v1", rec.protocols)
 	}
 }
 

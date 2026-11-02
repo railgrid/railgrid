@@ -28,9 +28,9 @@ package providers
 // edge tunnel. Two things follow. The hub cannot tell from an anonymous asset
 // GET WHICH org's copy is meant, and the platform edges provider refuses every
 // tunnel request that carries no bearer (providers/edges
-// edges_proxy_builder.go step 1), so the hub has to attach a delegated token
-// exactly as the backend proxy does for /services/providers/{name} — and a
-// delegated token needs a verified (user, org, workspace) to be minted for.
+// edges_proxy_builder.go step 1), so the hub has to attach a provider-scoped
+// credential exactly as the backend proxy does for /services/providers/{name}
+// — and that credential needs a verified (user, org, workspace) to be minted for.
 //
 // The grant closes that gap in two steps:
 //
@@ -42,17 +42,17 @@ package providers
 //     short-lived sealed grant naming that (user, org, workspace, provider).
 //  2. The portal injects <script src="/ui/providers/{name}/main.js?grant=…">.
 //     The UI proxy opens the grant, resolves the ORG's copy of the provider,
-//     mints the delegated token for the tuple the grant names, and forwards
-//     the asset request over the edge hop — the same hop and the same token
-//     swap as serveOverEdge, so the tenant's cluster never sees anything but
-//     a delegated identity.
+//     mints the opaque BYO broker identity for the tuple the grant names, and
+//     forwards the asset request over the edge hop — the same hop and token
+//     substitution as serveOverEdge, so the provider never sees the caller's
+//     hub bearer.
 //
 // The grant is sealed (AES-256-GCM under a subkey HKDF-derived from the hub's
 // cross-replica secret) rather than signed: it rides in a URL that lands in
 // browser history and hub access logs, and the user name inside it is not
 // something those should carry in the clear. Any replica opens what any
 // replica minted. It is bound to one provider and expires in minutes; it is
-// not a credential at the far end — the delegated token is, and that is minted
+// not the credential at the far end — the provider-scoped identity is minted
 // afresh on redemption, never embedded.
 //
 // The bundle is also hashed for Subresource Integrity at grant time, fetched
@@ -296,8 +296,8 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	// Same decision point as the backend proxy and OrgProviderRoute: the far
-	// end receives a delegated token for the tuple the grant names, minted on
-	// the hub's authority, and nothing else.
+	// end receives a provider-scoped credential for the tuple the grant names,
+	// minted on the hub's authority, and nothing else.
 	token, refusal := issueDelegatedToken(r.Context(), p.delegatedIssuer, prov, claims.caller())
 	if refusal != nil {
 		if refusal.err != nil {
@@ -339,11 +339,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			setDelegatedUpstreamAuthorization(req.Header, token)
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			// The URL carries a grant, so a shared cache must never keep this
-			// response: after expiry the cached copy would answer a URL the
-			// hub no longer would.
-			resp.Header.Set("Cache-Control", "private, no-store")
-			return nil
+			return orgProviderModifyResponse(resp, r.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "edge upstream error serving provider UI asset",
@@ -353,7 +349,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 	}
 	p.log.V(4).Info("forwarding provider UI asset over edge",
 		"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "path", dst.Path)
-	rp.ServeHTTP(w, r)
+	rp.ServeHTTP(newOrgProviderResponseWriter(w), r)
 }
 
 // UIGrantHandler serves POST /api/providers/{name}/ui-grant. It is built
@@ -443,8 +439,8 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wsUUID == "" {
-		// The delegated token the asset fetch is made with lives in a team
-		// workspace; an org-scope selection has nowhere to mint it. Say so
+		// The provider-scoped credential the asset fetch is made with is bound
+		// to a team workspace; an org-scope selection has nowhere to mint it. Say so
 		// here rather than at redemption, where the browser only sees a
 		// failed script.
 		http.Error(w, "a workspace selection (X-Railgrid-Workspace) is required to load provider: "+name, http.StatusForbidden)

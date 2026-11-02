@@ -45,7 +45,8 @@ type uiGrantFixture struct {
 	edge    *edgeUpstream
 	edgeURL *url.URL
 	// edgeStatus lets a test make the edge answer something other than 200.
-	edgeStatus int
+	edgeStatus  int
+	edgeHeaders http.Header
 }
 
 func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFixture {
@@ -67,6 +68,9 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		}
 		w.Header().Set("Content-Type", "application/javascript")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
+		for key, values := range f.edgeHeaders {
+			w.Header()[key] = append([]string(nil), values...)
+		}
 		_, _ = w.Write([]byte(orgBundleBody))
 	}))
 	t.Cleanup(srv.Close)
@@ -137,6 +141,12 @@ func (f *uiGrantFixture) fetchBundle(rawURL string) *httptest.ResponseRecorder {
 // pin the grant carried matches those bytes.
 func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	f := newUIGrantFixture(t, testOrg, testWS)
+	f.edgeHeaders = http.Header{
+		"Set-Cookie":              {"provider-session=secret; Path=/"},
+		"Clear-Site-Data":         {"*"},
+		"Content-Security-Policy": {"default-src *"},
+		"X-Frame-Options":         {"ALLOWALL"},
+	}
 
 	w, grant := f.requestGrant(t, "infrastructure")
 	if w.Code != http.StatusOK {
@@ -196,6 +206,17 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	}
 	if cc := got.Header().Get("Cache-Control"); cc != "private, no-store" {
 		t.Errorf("Cache-Control = %q, want private, no-store (the URL carries a grant)", cc)
+	}
+	for _, name := range []string{"Set-Cookie", "Clear-Site-Data", "X-Frame-Options"} {
+		if value := got.Header().Get(name); value != "" {
+			t.Errorf("%s = %q, want stripped", name, value)
+		}
+	}
+	if got := got.Header().Get("Content-Security-Policy"); got != orgProviderContentSecurityPolicy {
+		t.Errorf("Content-Security-Policy = %q, want forced policy", got)
+	}
+	if got := got.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
 	}
 	if !strings.HasPrefix(got.Header().Get("Content-Type"), "application/javascript") {
 		t.Errorf("Content-Type = %q, want the provider's", got.Header().Get("Content-Type"))

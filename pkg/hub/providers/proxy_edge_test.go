@@ -41,13 +41,18 @@ const (
 // edgeUpstream stands in for the platform edges provider and records what the
 // hub asked it to do.
 type edgeUpstream struct {
-	hit           bool
-	path          string
-	user          string
-	tenant        string
-	cluster       string
-	authorization string
-	upstreamAuth  string
+	hit             bool
+	path            string
+	user            string
+	tenant          string
+	cluster         string
+	authorization   string
+	upstreamAuth    string
+	responseHeaders http.Header
+	responseStatus  int
+	responseBody    string
+	responseTrailer http.Header
+	responseHandler http.Handler
 }
 
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
@@ -90,7 +95,24 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		rec.cluster = r.Header.Get("X-Railgrid-Cluster")
 		rec.authorization = r.Header.Get("Authorization")
 		rec.upstreamAuth = r.Header.Get(dataplane.HeaderUpstreamAuthorization)
-		w.WriteHeader(http.StatusOK)
+		if rec.responseHandler != nil {
+			rec.responseHandler.ServeHTTP(w, r)
+			return
+		}
+		for key, values := range rec.responseHeaders {
+			w.Header()[key] = append([]string(nil), values...)
+		}
+		status := rec.responseStatus
+		if status == 0 {
+			status = http.StatusOK
+		}
+		w.WriteHeader(status)
+		if rec.responseBody != "" {
+			_, _ = w.Write([]byte(rec.responseBody))
+		}
+		for key, values := range rec.responseTrailer {
+			w.Header()[key] = append([]string(nil), values...)
+		}
 	}))
 	t.Cleanup(srv.Close)
 	// The recording server stands in for kcp's front door: the hop lands on
@@ -182,6 +204,182 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	}
 }
 
+func TestBackendProxySanitizesOrgProviderResponseHeaders(t *testing.T) {
+	proxy, upstream := newEdgeBackedProxy(t, testOrg)
+	upstream.responseHeaders = http.Header{
+		"Cache-Control":               {"public, max-age=3600"},
+		"Clear-Site-Data":             {"*"},
+		"Content-Security-Policy":     {"default-src *"},
+		"Content-Type":                {"text/html"},
+		"Access-Control-Allow-Origin": {"*"},
+		"Mcp-Session-Id":              {"session-1"},
+		"Set-Cookie":                  {"provider-session=secret; Path=/"},
+		"Trailer":                     {"X-Upstream-Trailer"},
+	}
+	upstream.responseBody = "<html>provider response</html>"
+	upstream.responseTrailer = http.Header{"X-Upstream-Trailer": {"late-secret"}}
+
+	response := serveProxy(proxy, "/services/providers/infrastructure/mcp")
+	if response.Code != http.StatusOK || response.Body.String() != upstream.responseBody {
+		t.Fatalf("response = %d %q", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("Set-Cookie = %q, want stripped", got)
+	}
+	if got := response.Header().Get("Clear-Site-Data"); got != "" {
+		t.Errorf("Clear-Site-Data = %q, want stripped", got)
+	}
+	if got := response.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want stripped", got)
+	}
+	if got := response.Header().Get("Content-Security-Policy"); got != orgProviderContentSecurityPolicy {
+		t.Errorf("Content-Security-Policy = %q, want forced policy", got)
+	}
+	if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options = %q, want nosniff", got)
+	}
+	if got := response.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Errorf("Cache-Control = %q, want private, no-store", got)
+	}
+	if got := response.Header().Get("Content-Type"); got != "text/html" {
+		t.Errorf("Content-Type = %q, want safe content metadata preserved", got)
+	}
+	if got := response.Header().Get("Mcp-Session-Id"); got != "session-1" {
+		t.Errorf("Mcp-Session-Id = %q, want preserved", got)
+	}
+	if got := response.Result().Trailer.Get("X-Upstream-Trailer"); got != "" {
+		t.Errorf("upstream trailer = %q, want stripped", got)
+	}
+}
+
+func TestPlatformProviderResponseHeadersRemainTrusted(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("Content-Security-Policy", "default-src https://platform.example")
+		w.Header().Set("Set-Cookie", "platform-session=ok; Path=/")
+		w.Header().Set("Clear-Site-Data", "cache")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("trusted platform response"))
+	}))
+	t.Cleanup(upstream.Close)
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy, _ := newEdgeBackedProxy(t, testOrg)
+	proxy.reg.Upsert(Provider{Name: "platform-only", BackendURL: target, EndpointsValid: true})
+
+	response := serveProxy(proxy, "/services/providers/platform-only/mcp")
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %q", response.Code, response.Body.String())
+	}
+	for name, want := range map[string]string{
+		"Cache-Control":           "public, max-age=3600",
+		"Content-Security-Policy": "default-src https://platform.example",
+		"Set-Cookie":              "platform-session=ok; Path=/",
+		"Clear-Site-Data":         "cache",
+	} {
+		if got := response.Header().Get(name); got != want {
+			t.Errorf("platform %s = %q, want unchanged %q", name, got, want)
+		}
+	}
+}
+
+type interimResponseRecorder struct {
+	http.ResponseWriter
+	statuses []int
+}
+
+func (w *interimResponseRecorder) WriteHeader(status int) {
+	if status >= 100 && status < 200 {
+		w.statuses = append(w.statuses, status)
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func TestBackendProxyDoesNotForwardOrgProviderInformationalHeaders(t *testing.T) {
+	proxy, upstream := newEdgeBackedProxy(t, testOrg)
+	upstream.responseHandler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Set-Cookie", "early=secret; Path=/")
+		w.Header().Set("Link", "</attacker.js>; rel=preload; as=script")
+		w.WriteHeader(http.StatusEarlyHints)
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("ok"))
+	})
+	underlying := httptest.NewRecorder()
+	underlying.Header().Set("X-Hub-Request-ID", "hub-request")
+	underlying.Header().Set("Content-Security-Policy", "trusted-hub-policy")
+	captured := &interimResponseRecorder{ResponseWriter: underlying}
+	r := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/mcp", nil)
+	r.Header.Set("Authorization", "Bearer "+callerBearer)
+	proxy.ServeHTTP(captured, r)
+	if len(captured.statuses) != 0 {
+		t.Errorf("forwarded informational statuses %v, want none", captured.statuses)
+	}
+	if underlying.Code != http.StatusOK || underlying.Body.String() != "ok" {
+		t.Fatalf("final response = %d %q", underlying.Code, underlying.Body.String())
+	}
+	if got := underlying.Header().Get("Set-Cookie"); got != "" {
+		t.Errorf("Set-Cookie = %q, want stripped", got)
+	}
+	if got := underlying.Header().Get("Link"); got != "" {
+		t.Errorf("Link = %q, want stripped", got)
+	}
+	if got := underlying.Header().Get("X-Hub-Request-ID"); got != "hub-request" {
+		t.Errorf("trusted outer header = %q, want preserved", got)
+	}
+	if got := underlying.Header().Get("Content-Security-Policy"); got != "trusted-hub-policy" {
+		t.Errorf("trusted outer policy = %q, want preserved", got)
+	}
+}
+
+func TestOrgProviderUpgradeKeepsOnlyValidatedHandshakeHeaders(t *testing.T) {
+	upstreamHeaders := make(http.Header)
+	upstreamHeaders.Set("Connection", "Upgrade")
+	upstreamHeaders.Set("Upgrade", "websocket")
+	upstreamHeaders.Set("Sec-WebSocket-Accept", "accept-value")
+	upstreamHeaders.Set("Sec-WebSocket-Protocol", "mcp")
+	upstreamHeaders.Set("Sec-WebSocket-Extensions", "permessage-deflate")
+	upstreamHeaders.Set("Set-Cookie", "provider-session=secret")
+	upstreamHeaders.Set("Clear-Site-Data", "*")
+	upstreamHeaders.Set("Content-Security-Policy", "default-src *")
+	resp := &http.Response{
+		StatusCode: http.StatusSwitchingProtocols,
+		Header:     upstreamHeaders,
+		Trailer:    http.Header{"X-Upstream-Trailer": {"late-secret"}},
+	}
+	request := http.Header{"Connection": {"keep-alive, Upgrade"}, "Upgrade": {"websocket"}}
+	if err := orgProviderModifyResponse(resp, request); err != nil {
+		t.Fatalf("valid upgrade rejected: %v", err)
+	}
+	for name, want := range map[string]string{
+		"Connection":               "Upgrade",
+		"Upgrade":                  "websocket",
+		"Sec-WebSocket-Accept":     "accept-value",
+		"Sec-WebSocket-Protocol":   "mcp",
+		"Sec-WebSocket-Extensions": "permessage-deflate",
+		"Content-Security-Policy":  orgProviderContentSecurityPolicy,
+		"Cache-Control":            "private, no-store",
+		"X-Content-Type-Options":   "nosniff",
+	} {
+		if got := resp.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+	for _, name := range []string{"Set-Cookie", "Clear-Site-Data"} {
+		if got := resp.Header.Get(name); got != "" {
+			t.Errorf("%s = %q, want stripped", name, got)
+		}
+	}
+	if len(resp.Trailer) != 0 {
+		t.Errorf("upstream trailers remain: %v", resp.Trailer)
+	}
+	resp.Header.Set("Upgrade", "other-protocol")
+	if err := orgProviderModifyResponse(resp, request); err == nil {
+		t.Fatal("mismatched upgrade protocol was accepted")
+	}
+}
+
 // E-6: the provider at the far end authorizes the CALLER, so the identity the
 // hub injects has to be the caller's — and injected once, under the org
 // provider's name rather than the edges provider's. The credential, though,
@@ -217,6 +415,47 @@ func TestBackendProxyEdgeRouteCarriesCallerIdentity(t *testing.T) {
 	}
 	if issuer.calls != 1 || issuer.org != testOrg || issuer.ws != testWS || issuer.user != "alice" || issuer.provider != "infrastructure" {
 		t.Errorf("issuer asked for %+v, want (org=%s, ws=%s, user=alice, provider=infrastructure) once", issuer, testOrg, testWS)
+	}
+}
+
+func TestBackendProxyEdgeRouteDropsInboundCredentialsAndRetainsAppSubprotocol(t *testing.T) {
+	proxy, rec := newEdgeBackedProxyWithTenant(t, testOrg, testWS)
+	proxy.SetDelegatedTokenIssuer(&recordingIssuer{})
+	checked := false
+	rec.responseHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		checked = true
+		for _, name := range []string{"Authorization", "Cookie", "Cookie2", "Proxy-Authorization", "Impersonate-User", "X-Remote-User", "X-Railgrid-Action-Proof"} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("provider upstream retained %s=%q", name, got)
+			}
+		}
+		if got := r.Header.Get(dataplane.HeaderUpstreamAuthorization); got != "Bearer "+delegatedToken {
+			t.Errorf("upstream delegated Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-Railgrid-User"); got != "alice" {
+			t.Errorf("trusted X-Railgrid-User = %q, want alice", got)
+		}
+		if got := r.Header.Values("Sec-WebSocket-Protocol"); len(got) != 1 || got[0] != "app.v1" {
+			t.Errorf("Sec-WebSocket-Protocol = %v, want only app.v1", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+callerBearer)
+	request.Header.Set("Cookie", "session=browser-secret")
+	request.Header.Set("Cookie2", "legacy=session")
+	request.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
+	request.Header.Set("Impersonate-User", "system:admin")
+	request.Header.Set("Impersonate-Group", "system:masters")
+	request.Header.Set("X-Railgrid-User", "attacker")
+	request.Header.Set("X-Railgrid-Action-Proof", "forged-action-proof")
+	request.Header.Set("X-Remote-User", "attacker")
+	request.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io.human-token, app.v1")
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || !checked {
+		t.Fatalf("response = %d checked=%v; want 204 and upstream capture", response.Code, checked)
 	}
 }
 
@@ -298,6 +537,25 @@ func TestBackendProxyOrgProviderNeverSeesUserBearer(t *testing.T) {
 		}
 		if issuer.calls != 0 {
 			t.Error("a delegated token was minted for an anonymous request")
+		}
+	})
+
+	t.Run("authenticated health probe never receives a delegated credential", func(t *testing.T) {
+		proxy, rec := newEdgeBackedProxyWithTenant(t, testOrg, testWS)
+		issuer := &recordingIssuer{}
+		proxy.SetDelegatedTokenIssuer(issuer)
+		w := serveProxy(proxy, "/services/providers/infrastructure/healthz")
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want public health response (body %q)", w.Code, w.Body.String())
+		}
+		if !rec.hit || rec.authorization != "" || rec.upstreamAuth != "" {
+			t.Fatalf("authenticated health probe forwarded credential Authorization=%q upstream=%q hit=%v", rec.authorization, rec.upstreamAuth, rec.hit)
+		}
+		if rec.user != "" || rec.tenant != "" || rec.cluster != "" {
+			t.Fatalf("public health probe forwarded caller identity user=%q tenant=%q cluster=%q", rec.user, rec.tenant, rec.cluster)
+		}
+		if issuer.calls != 0 {
+			t.Fatalf("minted %d delegated credentials for public health", issuer.calls)
 		}
 	})
 }
