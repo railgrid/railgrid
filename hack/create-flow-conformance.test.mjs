@@ -101,6 +101,7 @@ test('provider create journeys adopt the shared first-run and guidance vocabular
 test('Vue route-owned create flows use the shared skeleton', async () => {
   const cases = [
     ['MCP', ['portal/src/pages/MCPPage.vue'], false],
+    ['Self-hosted provider', ['portal/src/components/SelfHostWizard.vue'], true],
     ['Code connection', ['providers/code/portal/src/views/ConnectionCreateView.vue'], false],
     ['Code repository', ['providers/code/portal/src/views/RepositoryCreateView.vue'], false],
     ['Edges service', ['providers/edges/portal/src/ServiceCreate.vue'], true],

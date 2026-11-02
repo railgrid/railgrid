@@ -1,31 +1,37 @@
 <script setup lang="ts">
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import AppLayout from '@/components/AppLayout.vue'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import SelfHostInstructions from '@/components/SelfHostInstructions.vue'
+import SelfHostWizard from '@/components/SelfHostWizard.vue'
 import { confirmDialog } from '@/portalkit/confirm'
+import { toast } from '@/portalkit/toast'
 import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { providerBindingAction } from '@/lib/providerBindingAction'
-import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
+import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
 
 const { scopePath } = useScopedNavigation()
+const route = useRoute()
+const router = useRouter()
 
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
 const disableOperations = new Map<string, symbol>()
+const currentTenantScope = computed(() => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`)
 
 // Two views of the same catalog: what you can turn on ("Catalog"), and what you
 // can run yourself ("Self-Hosting"). They are separate tabs rather than one list
 // because the actions differ in kind — enabling binds an API in a workspace,
 // self-hosting hands you a credential and a deployment to run.
 type Tab = 'catalog' | 'self-hosting'
-const tab = ref<Tab>('catalog')
+const tab = computed<Tab>(() => route.query.tab === 'self-hosting' ? 'self-hosting' : 'catalog')
 const tabs: { key: Tab; label: string }[] = [
   { key: 'catalog', label: 'Catalog' },
   { key: 'self-hosting', label: 'Self-Hosting' },
@@ -33,38 +39,275 @@ const tabs: { key: Tab; label: string }[] = [
 
 // The provider whose install details are open, and what the hub returned for it.
 const activeRegistration = ref<OrgProviderRegistration | null>(null)
+const inventoryScope = ref<string | null>(null)
+const inventoryCurrent = computed(() => inventoryScope.value === currentTenantScope.value && orgProviders.loaded)
+const requestedInstallName = computed(() => typeof route.query.install === 'string' ? route.query.install : null)
+const installProvider = computed(() => {
+  const name = requestedInstallName.value
+  if (!name || tab.value !== 'self-hosting' || !inventoryCurrent.value) return null
+  const existing = orgProviders.byName[name]
+  if (existing?.deleting) return null
+  if (!existing && (!providers.loaded || !providers.selfHostable.some(provider => provider.name === name))) return null
+  return {
+    name,
+    displayName: providerDisplayName(existing ?? providers.byName(name) ?? { name }),
+    resume: !!existing,
+    manual: !!existing && route.query.manual === '1',
+  }
+})
+const canManageSelfHostedCredentials = computed(() => tenant.activeOrg?.role === 'admin' || tenant.activeOrg?.catalogEntryCreation === 'members')
 const selfHostBusy = ref<Record<string, boolean>>({})
+const instructionName = ref<string | null>(null)
+const instructionError = ref<string | null>(null)
+const selfHostedHeading = ref<HTMLElement | null>(null)
+type SelfHostRemovalState = 'confirming' | 'requesting' | 'deleting'
+const selfHostRemoval = ref<Record<string, SelfHostRemovalState>>({})
+const migrationConfirming = ref<Record<string, boolean>>({})
+const confirmingRemoval = ref(false)
 const selfHostError = ref<string | null>(null)
+const selfHostNotice = ref<string | null>(null)
 let selfHostRequestGeneration = 0
+const removalPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const removalOperations = new Map<string, symbol>()
+const removalLabels = new Map<string, string>()
+const removalPollProgress = new Map<string, { checks: number; failures: number }>()
+const removalPollInFlight = new Map<string, symbol>()
+let removalInventoryLoad: { scope: string; promise: Promise<boolean> } | null = null
 
-// Which cluster a new self-hosted provider goes into. Keyed "workspace/name"
-// so it survives a reload of the target list by value rather than identity.
-const selectedEdgeKey = ref<string>('')
-const selfHostPending = computed(() => Object.values(selfHostBusy.value).some(Boolean))
-
-const eligibleEdges = computed(() => orgProviders.eligibleInstallTargets)
-
-// Default to the only eligible cluster, or the first one, so the common case
-// (one cluster) needs no interaction. Recomputed rather than watched: the list
-// is small and this keeps the selection valid if a cluster drops out.
-const selectedEdge = computed(() => {
-  const list = eligibleEdges.value
-  if (!list.length) return null
-  return list.find((t) => `${t.workspace}/${t.name}` === selectedEdgeKey.value) ?? list[0]
+watch(canManageSelfHostedCredentials, allowed => {
+  if (!allowed) {
+    selfHostRequestGeneration += 1
+    activeRegistration.value = null
+    instructionName.value = null
+    instructionError.value = null
+  }
 })
 
-function edgeLabel(t: { workspace: string; workspaceDisplayName?: string; name: string }): string {
-  return `${t.name} · ${t.workspaceDisplayName || t.workspace}`
+const canSelfHost = computed(() => orgProviders.installTargetsEligible && orgProviders.eligibleInstallTargets.length > 0)
+
+type ProviderPageQuery = 'tab' | 'install' | 'manage' | 'manual'
+type QueryPatch = Partial<Record<ProviderPageQuery, string | null>>
+
+function patchProviderQuery(patch: QueryPatch, replace = false) {
+  const query = { ...route.query }
+  let changed = false
+  for (const key of ['tab', 'install', 'manage', 'manual'] as const) {
+    if (!(key in patch)) continue
+    const value = patch[key]
+    if (value === null) {
+      if (key in query) {
+        delete query[key]
+        changed = true
+      }
+    } else if (query[key] !== value) {
+      query[key] = value!
+      changed = true
+    }
+  }
+  if (!changed) return
+  const location = { query, hash: route.hash }
+  return replace ? router.replace(location) : router.push(location)
 }
 
-function edgeKey(t: { workspace: string; name: string }): string {
-  return `${t.workspace}/${t.name}`
+function setTab(next: Tab) {
+  if (next === tab.value && !requestedInstallName.value && route.query.manage === undefined) return
+  patchProviderQuery({ tab: next, install: null, manage: null, manual: null })
 }
 
-// canSelfHost is the single gate. A provider cannot be installed into a cluster
-// the hub cannot reach, and the hub refuses such a registration anyway — so the
-// button is disabled rather than left to 409.
-const canSelfHost = computed(() => orgProviders.installTargetsEligible && !!selectedEdge.value)
+function validProviderName(name: string): boolean {
+  return name.length <= 253 && name.split('.').every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label))
+}
+
+// Route state is deliberately limited to the Providers page's query keys.
+// Provider micro-frontends own /providers/:name paths and keep their own routes.
+function normalizeProviderRoute() {
+  const patch: QueryPatch = {}
+  const rawTab = route.query.tab
+  if (rawTab !== undefined && (typeof rawTab !== 'string' || !['catalog', 'self-hosting'].includes(rawTab))) {
+    patch.tab = null
+    patch.install = null
+    patch.manage = null
+    patch.manual = null
+  }
+  const hasInstall = route.query.install !== undefined
+  const hasManage = route.query.manage !== undefined
+  const hasManual = route.query.manual !== undefined
+  if (hasManage) {
+    // `manage` opened the retired full-page workspace/enablement screen. Keep
+    // old links on the Self-Hosting list; never fetch credentials from it.
+    patch.tab = 'self-hosting'
+    patch.manage = null
+    patch.install = null
+    patch.manual = null
+  } else if (inventoryCurrent.value && !orgProviders.supported && tab.value === 'self-hosting') {
+    patch.tab = 'catalog'
+    patch.install = null
+    patch.manage = null
+    patch.manual = null
+  } else if (tab.value !== 'self-hosting') {
+    if (hasInstall) patch.install = null
+    if (hasManual) patch.manual = null
+  } else if (hasInstall) {
+    const rawName = route.query.install
+    const name = typeof rawName === 'string' ? rawName : null
+    if (!name || !validProviderName(name)) {
+      patch.install = null
+      patch.manual = null
+    } else if (inventoryCurrent.value) {
+      const existing = orgProviders.byName[name]
+      if (existing?.deleting) {
+        patch.install = null
+        patch.manual = null
+      } else if (providers.loaded && !existing && !providers.selfHostable.some(provider => provider.name === name)) {
+        patch.install = null
+        patch.manual = null
+      } else if (hasManual && (route.query.manual !== '1' || !existing)) {
+        // A manual marker only records a choice for a provider that already
+        // exists. With a fresh inventory the install route stays open in its
+        // review step; the stale marker must never auto-register on mount.
+        patch.manual = null
+      }
+    }
+  } else if (hasManual) {
+    patch.manual = null
+  }
+  if (hasManual && (!hasInstall || route.query.manual !== '1')) patch.manual = null
+  if (inventoryCurrent.value && !orgProviders.supported && (tab.value === 'self-hosting' || patch.tab === 'self-hosting')) {
+    patch.tab = 'catalog'
+    patch.install = null
+    patch.manage = null
+    patch.manual = null
+  }
+  if (Object.keys(patch).length) patchProviderQuery(patch, true)
+}
+
+watch(
+  () => [route.query.tab, route.query.install, route.query.manage, route.query.manual, inventoryScope.value, orgProviders.loaded, orgProviders.supported, orgProviders.items.map(p => `${p.name}:${p.deleting}`).join('|'), providers.loaded],
+  normalizeProviderRoute,
+  { immediate: true },
+)
+
+function startInstall(p: { name: string }) {
+  if (orgProviders.byName[p.name]?.deleting) return
+  selfHostRequestGeneration += 1
+  activeRegistration.value = null
+  instructionName.value = null
+  instructionError.value = null
+  patchProviderQuery({ tab: 'self-hosting', install: p.name, manage: null, manual: null })
+}
+
+function cancelInstall() {
+  patchProviderQuery({ install: null, manual: null })
+}
+
+function resumeManualInstall() {
+  patchProviderQuery({ manual: '1' }, true)
+}
+
+function clearProviderPageRouteState() {
+  patchProviderQuery({ tab: null, install: null, manage: null, manual: null }, true)
+}
+
+async function loadOrgProviderInventory(reset = false) {
+  const targetScope = currentTenantScope.value
+  if (reset || inventoryScope.value !== targetScope) {
+    inventoryScope.value = null
+    if (reset) orgProviders.resetForOrganization()
+  }
+  await orgProviders.load()
+  if (targetScope === currentTenantScope.value && (orgProviders.loaded || orgProviders.error)) inventoryScope.value = targetScope
+}
+
+async function refreshOrgProviderInventory() {
+  const targetOrgUUID = tenant.orgUUID
+  const targetScope = dialogScope.value
+  await Promise.all([
+    loadOrgProviderInventory(),
+    refreshSelfHostingCatalog(targetOrgUUID, targetScope),
+  ])
+}
+
+// Keep idle health current without polling hidden tabs or the installation wizard.
+let inventoryPollTimer: ReturnType<typeof setTimeout> | null = null
+let inventoryPollGeneration = 0
+let inventoryPollingMounted = false
+function canPollSelfHostingList() {
+  return inventoryPollingMounted && document.visibilityState !== 'hidden' &&
+    tab.value === 'self-hosting' && !requestedInstallName.value && !!tenant.orgUUID
+}
+function stopInventoryPolling() {
+  inventoryPollGeneration += 1
+  if (inventoryPollTimer) clearTimeout(inventoryPollTimer)
+  inventoryPollTimer = null
+}
+function canPollInventory() {
+  return canPollSelfHostingList() && removalOperations.size === 0
+}
+function scheduleInventoryPoll(generation: number) {
+  if (!canPollInventory() || generation !== inventoryPollGeneration) return
+  inventoryPollTimer = setTimeout(async () => {
+    inventoryPollTimer = null
+    if (!canPollInventory() || generation !== inventoryPollGeneration) return
+    try {
+      await loadOrgProviderInventory()
+    } finally {
+      if (generation === inventoryPollGeneration) scheduleInventoryPoll(generation)
+    }
+  }, 15000)
+}
+function restartInventoryPolling(refresh = true) {
+  stopInventoryPolling()
+  if (!canPollSelfHostingList()) {
+    pauseSelfHostRemovalPolling()
+    return
+  }
+  if (removalOperations.size) {
+    resumeSelfHostRemovalPolling()
+    return
+  }
+  const generation = inventoryPollGeneration
+  if (refresh) {
+    void loadOrgProviderInventory().finally(() => scheduleInventoryPoll(generation))
+  } else scheduleInventoryPoll(generation)
+}
+function onInventoryVisibilityChange() {
+  restartInventoryPolling()
+}
+watch(() => `${tab.value}:${requestedInstallName.value ?? ''}:${currentTenantScope.value}`, () => restartInventoryPolling())
+
+async function refreshSelfHostingCatalog(targetOrgUUID: string | null, targetScope: string): Promise<void> {
+  if (!targetOrgUUID || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+  // The org's catalog entry shadows the platform DTO. Once its workspace is
+  // gone, reload the catalog so the platform recipe can become self-hostable.
+  await providers.load(targetOrgUUID)
+  if (tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+}
+
+watch(
+  () => `${route.params.orgID ?? ''}/${route.params.workspaceID ?? ''}`,
+  (scope, previous) => {
+    if (previous !== undefined && scope !== previous) clearProviderPageRouteState()
+  },
+  { flush: 'sync' },
+)
+
+function providerDisplayName(p: { name: string; displayName?: string }) {
+  return (p.displayName !== p.name && p.displayName) || providers.byName(p.name)?.displayName || p.name
+}
+
+async function finishInstall(name: string) {
+  const targetScope = dialogScope.value
+  activeRegistration.value = null
+  instructionName.value = null
+  instructionError.value = null
+  await patchProviderQuery({ tab: 'self-hosting', install: null, manage: null, manual: null }, true)
+  if (dialogScope.value !== targetScope) return
+  selfHostNotice.value = `${providerDisplayName(orgProviders.items.find(provider => provider.name === name) ?? providers.byName(name) ?? { name })} is ready. Workspace access is managed in Catalog.`
+  void loadOrgProviderInventory()
+  void providers.load()
+  await nextTick()
+  if (dialogScope.value === targetScope) selfHostedHeading.value?.focus()
+}
 
 // The hub-owned catalog is authoritative for whether the Edges prerequisite
 // exists and is ready to open. Do not manufacture a provider route when the
@@ -80,7 +323,7 @@ const edgesSelfHostState = computed<EdgesSelfHostState>(() => {
 })
 
 function showEdgesCatalogEntry() {
-  tab.value = 'catalog'
+  setTab('catalog')
   selectedCategory.value = null
   search.value = 'edges'
 }
@@ -93,106 +336,278 @@ function bindingAction(p: ProviderDTO) {
   })
 }
 
-async function selfHost(p: ProviderDTO) {
-  if (!canSelfHost.value) {
-    selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
-    return
+type WorkspaceProviderCopy = 'organization' | 'platform' | 'unknown' | 'not-enabled' | 'not-self-hosted'
+
+function bindingProjectionIsCurrent(): boolean {
+  return tenant.workspaceMode === 'workspace' && !!tenant.orgUUID && !!tenant.workspaceUUID &&
+    providers.bindingsLoadState === 'ready' && !providers.bindingsStale &&
+    providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
+    providers.bindingsRequestOrgUUID === tenant.orgUUID && providers.bindingsRequestWorkspaceUUID === tenant.workspaceUUID
+}
+
+function currentWorkspaceBinding(p: ProviderDTO) {
+  return bindingProjectionIsCurrent() ? providers.bindingsByProvider[p.name] ?? null : null
+}
+
+function workspaceProviderCopy(p: ProviderDTO): WorkspaceProviderCopy {
+  if (!providers.isSelfManaged(p)) return 'not-self-hosted'
+  if (!providers.isEnabled(p.name)) return 'not-enabled'
+  const binding = currentWorkspaceBinding(p)
+  if (!binding) return 'unknown'
+  return binding.selfHosted ? 'organization' : 'platform'
+}
+
+function bindingIdentity(binding: NonNullable<ReturnType<typeof currentWorkspaceBinding>>): string {
+  return `${binding.bindingName}\n${binding.exportPath}\n${binding.selfHosted}`
+}
+
+function canDisableFromThisProjection(p: ProviderDTO): boolean {
+  return providers.isSelfManaged(p) && providers.isEnabled(p.name)
+    ? !!currentWorkspaceBinding(p)
+    : true
+}
+
+function providerStatusLabel(p: ProviderDTO): string {
+  if (!p.ready) {
+    const copy = providers.isSelfManaged(p) ? workspaceProviderCopy(p) : 'not-self-hosted'
+    if (copy === 'platform') return 'Not ready · platform copy'
+    if (copy === 'organization') return 'Not ready · org copy'
+    return 'Not ready'
   }
-  const edge = selectedEdge.value
-  if (!edge) {
-    selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
-    return
+  if (p.serving?.ui?.builtinRoute) return 'Built-in'
+  if (providers.isDisabling(p.name)) return 'Disabling'
+  if (providers.isEnabled(p.name)) {
+    if (!providers.isSelfManaged(p)) return 'Enabled'
+    const copy = workspaceProviderCopy(p)
+    if (copy === 'platform') return 'Enabled · platform copy'
+    if (copy === 'organization') return 'Enabled · org copy'
+    return 'Enabled · copy unknown'
   }
-  if (selfHostBusy.value[p.name]) return
-  const requestGeneration = ++selfHostRequestGeneration
-  const targetScope = dialogScope.value
-  const targetEdgeKey = edgeKey(edge)
-  selfHostError.value = null
-  activeRegistration.value = null
-  selfHostBusy.value = { ...selfHostBusy.value, [p.name]: true }
-  try {
-    // Same name as the platform provider: the chart registers its CatalogEntry
-    // under its own name, and the org's copy shadows the platform one for this
-    // org only.
-    const registration = await orgProviders.register(p.name, p.name, edge)
-    // The registration response belongs to the org and edge captured above.
-    // Ignore it when either changed while the hub was processing the request;
-    // otherwise an old credential/instructions panel can appear in the new
-    // context or after the user chose a different install target.
-    if (
-      requestGeneration === selfHostRequestGeneration &&
-      dialogScope.value === targetScope &&
-      selectedEdge.value && edgeKey(selectedEdge.value) === targetEdgeKey
-    ) {
-      activeRegistration.value = registration
-    }
-  } catch (e) {
-    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
-      selfHostError.value = e instanceof Error ? e.message : String(e)
-    }
-    // The hub is authoritative on eligibility and its answer may have changed
-    // under us (an agent dropping between page load and click). Re-check so the
-    // buttons reflect reality instead of failing the same way again.
-    orgProviders.loadInstallTargets()
-  } finally {
-    selfHostBusy.value = { ...selfHostBusy.value, [p.name]: false }
+  return providers.hasMissingDependencies(p) ? 'Blocked' : 'Available'
+}
+
+function providerStatusClass(p: ProviderDTO): string {
+  if (!p.ready) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (p.serving?.ui?.builtinRoute) return 'border border-border-default bg-surface-overlay text-text-secondary'
+  if (providers.isDisabling(p.name)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (providers.isEnabled(p.name)) {
+    return providers.isSelfManaged(p) && workspaceProviderCopy(p) === 'platform'
+      ? 'border border-warning/30 bg-warning-subtle text-warning'
+      : 'border border-accent/30 bg-accent/10 text-accent'
   }
+  if (providers.hasMissingDependencies(p)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  return 'border border-success/30 bg-success-subtle text-success'
+}
+
+function selfHostedPlatformBinding(p: ProviderDTO): boolean {
+  return providers.isSelfManaged(p) && !!p.shadowsPlatform && workspaceProviderCopy(p) === 'platform'
 }
 
 async function showInstructions(name: string) {
-  if (selfHostBusy.value[name]) return
+  if (!canManageSelfHostedCredentials.value || orgProviders.byName[name]?.deleting || selfHostBusy.value[name] || activeRegistration.value?.provider.name === name) return
   const requestGeneration = ++selfHostRequestGeneration
   const targetScope = dialogScope.value
-  selfHostError.value = null
+  instructionName.value = name
+  instructionError.value = null
   activeRegistration.value = null
   selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
   try {
     const registration = await orgProviders.instructions(name)
-    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+    if (canManageSelfHostedCredentials.value && requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope && instructionName.value === name) {
       activeRegistration.value = registration
     }
   } catch (e) {
-    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
-      selfHostError.value = e instanceof Error ? e.message : String(e)
+    if (canManageSelfHostedCredentials.value && requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope && instructionName.value === name) {
+      instructionError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
-    selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+    if (requestGeneration === selfHostRequestGeneration) selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
   }
 }
 
+function closeInstructions(name: string) {
+  if (instructionName.value !== name) return
+  selfHostRequestGeneration += 1
+  activeRegistration.value = null
+  instructionName.value = null
+  instructionError.value = null
+  selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+}
+
 async function removeSelfHosted(name: string) {
+  if (!canManageSelfHostedCredentials.value || confirmingRemoval.value || selfHostRemoval.value[name] || orgProviders.byName[name]?.deleting) return
   const targetOrgUUID = tenant.orgUUID
   const targetScope = dialogScope.value
-  if (!(await confirmDialog({
-    title: `Remove self-hosted "${name}"?`,
-    message: 'This deletes its workspace and everything in it, including its API. Workspaces that enabled it will stop working until you disable it there.',
-    confirmLabel: 'Remove',
-    danger: true,
-  }))) return
-  // Confirmation is asynchronous. Do not apply a destructive action to a
-  // same-named provider after the user has switched organizations or scope.
-  if (tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
-  const requestGeneration = ++selfHostRequestGeneration
+  const operation = Symbol(name)
+  removalOperations.set(name, operation)
+  removalLabels.set(name, providerDisplayName(orgProviders.items.find(provider => provider.name === name) ?? providers.byName(name) ?? { name }))
+  removalPollProgress.set(name, { checks: 0, failures: 0 })
+  stopInventoryPolling()
+  selfHostRemoval.value = { ...selfHostRemoval.value, [name]: 'confirming' }
   selfHostError.value = null
-  if (activeRegistration.value?.provider.name === name) activeRegistration.value = null
-  selfHostBusy.value = { ...selfHostBusy.value, [name]: true }
   try {
+    confirmingRemoval.value = true
+    let confirmed: boolean
+    try {
+      confirmed = await confirmDialog({
+        title: `Remove self-hosted "${name}"?`,
+        message: 'This deletes the organization’s provider workspace, credential, and API registration. It does not uninstall the Helm release or workloads from your cluster. Workspaces that enabled this provider will stop working until you disable it there.',
+        confirmLabel: 'Remove',
+        danger: true,
+      })
+    } finally {
+      confirmingRemoval.value = false
+    }
+    if (!confirmed) return
+    // Confirmation is asynchronous. Do not apply a destructive action to a
+    // same-named provider after the user has switched organizations or scope,
+    // or after their organization policy no longer allows provider changes.
+    if (!canManageSelfHostedCredentials.value || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+    selfHostRemoval.value = { ...selfHostRemoval.value, [name]: 'requesting' }
+    selfHostNotice.value = null
+    if (instructionName.value === name) closeInstructions(name)
     await orgProviders.remove(name)
-    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope && activeRegistration.value?.provider.name === name) {
-      activeRegistration.value = null
+    if (removalOperations.get(name) !== operation || dialogScope.value !== targetScope) return
+    if (orgProviders.byName[name]) {
+      selfHostRemoval.value = { ...selfHostRemoval.value, [name]: 'deleting' }
+      scheduleSelfHostRemovalPoll(name, operation, targetOrgUUID, targetScope)
+    } else {
+      await finishSelfHostRemoval(name, operation, targetOrgUUID, targetScope)
     }
   } catch (e) {
-    if (requestGeneration === selfHostRequestGeneration && dialogScope.value === targetScope) {
+    if (removalOperations.get(name) === operation && dialogScope.value === targetScope) {
       selfHostError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
-    selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+    if (removalOperations.get(name) === operation && selfHostRemoval.value[name] !== 'deleting') {
+      clearSelfHostRemoval(name, operation)
+    }
+  }
+}
+
+function clearSelfHostRemoval(name: string, operation: symbol): void {
+  if (removalOperations.get(name) !== operation) return
+  const timer = removalPollTimers.get(name)
+  if (timer) clearTimeout(timer)
+  removalPollTimers.delete(name)
+  removalOperations.delete(name)
+  removalLabels.delete(name)
+  removalPollProgress.delete(name)
+  const next = { ...selfHostRemoval.value }
+  delete next[name]
+  selfHostRemoval.value = next
+  if (!removalOperations.size) restartInventoryPolling(false)
+}
+
+async function finishSelfHostRemoval(name: string, operation: symbol, targetOrgUUID: string | null, targetScope: string): Promise<void> {
+  if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+  const label = removalLabels.get(name) ?? providerDisplayName(orgProviders.items.find(provider => provider.name === name) ?? providers.byName(name) ?? { name })
+  clearSelfHostRemoval(name, operation)
+  toast('ok', `${label} was removed from self-hosting.`, { scope: targetScope })
+  await refreshSelfHostingCatalog(targetOrgUUID, targetScope)
+}
+
+const removalPollFastChecks = 5
+const removalPollFastInterval = 2000
+const removalPollSteadyInterval = 15000
+function removalPollDelay(name: string): number {
+  const progress = removalPollProgress.get(name) ?? { checks: 0, failures: 0 }
+  if (progress.failures) return Math.min(removalPollFastInterval * 2 ** progress.failures, removalPollSteadyInterval)
+  return progress.checks < removalPollFastChecks ? removalPollFastInterval : removalPollSteadyInterval
+}
+
+function loadSelfHostRemovalInventory(targetScope: string): Promise<boolean> {
+  if (removalInventoryLoad?.scope === targetScope) return removalInventoryLoad.promise
+  const entry: { scope: string; promise: Promise<boolean> } = {
+    scope: targetScope,
+    promise: Promise.resolve(false),
+  }
+  entry.promise = orgProviders.load()
+    .then(loaded => loaded && !orgProviders.error)
+    .catch(() => false)
+    .finally(() => {
+      if (removalInventoryLoad === entry) removalInventoryLoad = null
+    })
+  removalInventoryLoad = entry
+  return entry.promise
+}
+
+function scheduleSelfHostRemovalPoll(name: string, operation: symbol, targetOrgUUID: string | null, targetScope: string, delay = removalPollDelay(name)): void {
+  if (removalOperations.get(name) !== operation || removalPollTimers.has(name) || removalPollInFlight.has(name) || !canPollSelfHostingList()) return
+  const timer = setTimeout(async () => {
+    removalPollTimers.delete(name)
+    if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope || !canPollSelfHostingList()) return
+    removalPollInFlight.set(name, operation)
+    try {
+      const loaded = await loadSelfHostRemovalInventory(targetScope)
+      if (removalOperations.get(name) !== operation || tenant.orgUUID !== targetOrgUUID || dialogScope.value !== targetScope) return
+      if (loaded && !orgProviders.error && !orgProviders.byName[name]) {
+        await finishSelfHostRemoval(name, operation, targetOrgUUID, targetScope)
+        return
+      }
+      const progress = removalPollProgress.get(name)
+      if (progress) {
+        if (loaded && !orgProviders.error) {
+          progress.checks += 1
+          progress.failures = 0
+        } else {
+          progress.failures += 1
+        }
+      }
+    } finally {
+      if (removalPollInFlight.get(name) === operation) removalPollInFlight.delete(name)
+      const currentOperation = removalOperations.get(name)
+      if (currentOperation === operation && dialogScope.value === targetScope) {
+        scheduleSelfHostRemovalPoll(name, operation, targetOrgUUID, targetScope)
+      } else if (currentOperation && selfHostRemoval.value[name] === 'deleting') {
+        // A resumed operation may have waited behind this stale request. Once
+        // the old request settles, give the current operation its own check.
+        scheduleSelfHostRemovalPoll(name, currentOperation, tenant.orgUUID, dialogScope.value, 0)
+      }
+    }
+  }, delay)
+  removalPollTimers.set(name, timer)
+}
+
+function pauseSelfHostRemovalPolling(): void {
+  for (const timer of removalPollTimers.values()) clearTimeout(timer)
+  removalPollTimers.clear()
+}
+
+function resumeSelfHostRemovalPolling(): void {
+  for (const [name, operation] of removalOperations) {
+    if (selfHostRemoval.value[name] !== 'deleting') continue
+    scheduleSelfHostRemovalPoll(name, operation, tenant.orgUUID, dialogScope.value, 0)
+  }
+}
+
+function stopSelfHostRemovalPolling(): void {
+  for (const timer of removalPollTimers.values()) clearTimeout(timer)
+  removalPollTimers.clear()
+  removalOperations.clear()
+  removalLabels.clear()
+  removalPollProgress.clear()
+  removalPollInFlight.clear()
+  selfHostRemoval.value = {}
+}
+
+function trackDeletingSelfHostedProviders(): void {
+  if (!inventoryCurrent.value) return
+  for (const provider of orgProviders.items) {
+    if (!provider.deleting || removalOperations.has(provider.name)) continue
+    const operation = Symbol(provider.name)
+    removalOperations.set(provider.name, operation)
+    removalLabels.set(provider.name, providerDisplayName(provider))
+    removalPollProgress.set(provider.name, { checks: 0, failures: 0 })
+    stopInventoryPolling()
+    selfHostRemoval.value = { ...selfHostRemoval.value, [provider.name]: 'deleting' }
+    scheduleSelfHostRemovalPoll(provider.name, operation, tenant.orgUUID, dialogScope.value)
   }
 }
 
 // Platform providers offering self-hosting that this org has not taken up yet.
 const availableToSelfHost = computed(() =>
-  providers.selfHostable.filter((p) => !orgProviders.isSelfHosted(p.name)),
+  providers.selfHostable.filter((p) => !inventoryCurrent.value || !orgProviders.isSelfHosted(p.name)),
 )
 
 // A card is a provider plus the resolved category metadata it belongs to.
@@ -303,7 +718,7 @@ function sectionHeaderFor(card: ProviderCard, index: number): { title: string; s
   // Nothing self-managed in view → no headers at all, not a lone one.
   if (!orderedCards.value.some((c) => providers.isSelfManaged(c))) return null
   return own
-    ? { title: 'Self-managed', subtitle: 'Providers your organization registered and runs itself.' }
+    ? { title: 'Self-hosted', subtitle: 'Providers your organization registered and runs itself.' }
     : { title: 'Platform catalog', subtitle: 'Providers operated by railgrid.' }
 }
 
@@ -340,8 +755,11 @@ const {
 // stale cached list defeats the page's purpose. The store guards against
 // concurrent calls so a no-op fast-path is safe.
 onMounted(() => {
+  inventoryPollingMounted = true
+  document.addEventListener('visibilitychange', onInventoryVisibilityChange)
+  restartInventoryPolling(false)
   providers.load()
-  orgProviders.load()
+  void loadOrgProviderInventory(true)
   // Loaded up front rather than when the tab opens: the Self-Host actions must
   // never render enabled and then become disabled a moment later.
   orgProviders.loadInstallTargets()
@@ -352,33 +770,120 @@ watch(dialogScope, () => {
   disableOperations.clear()
   selfHostRequestGeneration += 1
   activeRegistration.value = null
+  instructionName.value = null
+  instructionError.value = null
+  inventoryScope.value = null
+  stopSelfHostRemovalPolling()
+  clearProviderPageRouteState()
   selfHostError.value = null
+  selfHostNotice.value = null
+  void loadOrgProviderInventory(true)
+  void orgProviders.loadInstallTargets()
 })
 
-watch(selectedEdgeKey, () => {
-  // Install instructions are target-specific. Hide an old response as soon
-  // as the target changes and fence any request still in flight.
+// APIBinding deletion is asynchronous. Keep the card current until kcp has
+// removed the binding, including when deletion-blocking conditions change.
+let deletionPollTimer: ReturnType<typeof setTimeout> | null = null
+let deletionPollGeneration = 0
+function hasPendingDeletion() {
+  return Object.values(providers.bindingsByProvider).some(binding => binding.terminating)
+}
+function stopDeletionPolling() {
+  deletionPollGeneration += 1
+  if (deletionPollTimer) clearTimeout(deletionPollTimer)
+  deletionPollTimer = null
+}
+function scheduleDeletionPoll(generation: number) {
+  deletionPollTimer = setTimeout(async () => {
+    deletionPollTimer = null
+    try {
+      await providers.refreshBindings()
+    } catch {
+      // The store exposes refresh errors and retains the last known state.
+    } finally {
+      if (generation === deletionPollGeneration && hasPendingDeletion()) scheduleDeletionPoll(generation)
+    }
+  }, 2500)
+}
+watch(() => `${dialogScope.value}:${hasPendingDeletion()}`, () => {
+  stopDeletionPolling()
+  if (hasPendingDeletion()) scheduleDeletionPoll(deletionPollGeneration)
+}, { immediate: true })
+watch(
+  () => `${inventoryCurrent.value}:${orgProviders.items.filter(p => p.deleting).map(p => p.name).sort().join(',')}`,
+  trackDeletingSelfHostedProviders,
+  { immediate: true },
+)
+onUnmounted(() => {
+  inventoryPollingMounted = false
+  stopInventoryPolling()
+  document.removeEventListener('visibilitychange', onInventoryVisibilityChange)
+  stopDeletionPolling()
+  stopSelfHostRemovalPolling()
+})
+
+watch(tab, () => {
   selfHostRequestGeneration += 1
   activeRegistration.value = null
-  selfHostError.value = null
+  instructionName.value = null
+  instructionError.value = null
 })
 
 async function onDisable(p: ProviderDTO) {
-  if (busy.value[p.name]) return
+  if (busy.value[p.name] || disableOperations.has(p.name)) return
   const operation = Symbol(p.name)
   const scope = dialogScope.value
+  const targetOrgUUID = tenant.orgUUID
+  const targetWorkspaceUUID = tenant.workspaceUUID
+  const targetWorkspaceMode = tenant.workspaceMode
+  const bindingBefore = currentWorkspaceBinding(p)
+  const migrationConfirmRequired = selfHostedPlatformBinding(p)
+  const staleShadowBinding = providers.isSelfManaged(p) && !!p.shadowsPlatform &&
+    providers.isEnabled(p.name) && !bindingBefore
+  const isCurrent = () => disableOperations.get(p.name) === operation &&
+    dialogScope.value === scope && tenant.orgUUID === targetOrgUUID &&
+    tenant.workspaceUUID === targetWorkspaceUUID && tenant.workspaceMode === targetWorkspaceMode
+
+  if (staleShadowBinding) {
+    actionError.value = 'Workspace provider details are not current. Refresh the Catalog before disabling this provider.'
+    return
+  }
   disableOperations.set(p.name, operation)
-  busy.value = { ...busy.value, [p.name]: true }
   actionError.value = null
   try {
+    if (migrationConfirmRequired) {
+      migrationConfirming.value = { ...migrationConfirming.value, [p.name]: true }
+      const confirmed = await confirmDialog({
+        title: `Disable the platform copy of ${providerDisplayName(p)}?`,
+        message: 'This workspace is currently bound to the platform copy. Disabling removes that binding and can delete resources created through the provider. After disabling completes, use Enable on this Catalog entry to bind the workspace to your organization’s copy. Back up any important resources before proceeding.',
+        confirmLabel: 'Disable platform copy',
+        danger: true,
+      })
+      if (!confirmed || !isCurrent()) return
+
+      const currentProvider = providers.byName(p.name)
+      if (!currentProvider || !providers.isSelfManaged(currentProvider) || !currentProvider.shadowsPlatform) return
+      await providers.refreshBindings()
+      if (!isCurrent()) return
+      const bindingAfter = currentWorkspaceBinding(currentProvider)
+      if (!bindingAfter || bindingIdentity(bindingAfter) !== bindingIdentity(bindingBefore!)) {
+        actionError.value = 'This workspace provider binding changed while confirmation was open. Review the current Catalog status before trying again.'
+        return
+      }
+    }
+    if (!isCurrent()) return
+    busy.value = { ...busy.value, [p.name]: true }
     await providers.disable(p)
   } catch (e) {
-    if (disableOperations.get(p.name) === operation && dialogScope.value === scope) {
+    if (isCurrent()) {
       actionError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
     if (disableOperations.get(p.name) === operation) {
       disableOperations.delete(p.name)
+      const confirming = { ...migrationConfirming.value }
+      delete confirming[p.name]
+      migrationConfirming.value = confirming
       const next = { ...busy.value }
       delete next[p.name]
       busy.value = next
@@ -395,14 +900,25 @@ function dependencyNotice(p: ProviderDTO): string {
 
 <template>
   <AppLayout>
-    <div>
+    <SelfHostWizard
+      v-if="installProvider"
+      :key="`${dialogScope}/${installProvider.name}`"
+      :name="installProvider.name"
+      :display-name="providerDisplayName(installProvider)"
+      :resume="installProvider.resume"
+      :manual="installProvider.manual"
+      @cancel="cancelInstall"
+      @manual="resumeManualInstall"
+      @completed="finishInstall"
+    />
+    <div v-else>
       <header class="mb-6">
         <h1 class="text-xl font-semibold text-text-primary flex items-center gap-2">
           <Puzzle class="h-5 w-5 text-accent" :stroke-width="1.75" />
           Providers
         </h1>
         <p class="mt-1 text-sm text-text-muted">
-          Add capabilities to this workspace. Review access, then enable a provider.
+          Enable capabilities in a workspace or run a provider for your organization.
         </p>
       </header>
 
@@ -418,7 +934,7 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
-      <nav v-if="orgProviders.supported" class="k-tabs mb-5" aria-label="Provider sections">
+      <nav v-if="!inventoryCurrent || orgProviders.supported" class="k-tabs mb-5" aria-label="Provider sections">
         <button
           v-for="t in tabs"
           :key="t.key"
@@ -426,11 +942,11 @@ function dependencyNotice(p: ProviderDTO): string {
           class="k-tab"
           :class="{ 'k-tab--active': tab === t.key }"
           :aria-current="tab === t.key ? 'page' : undefined"
-          @click="tab = t.key"
+          @click="setTab(t.key)"
         >
           {{ t.label }}
           <span
-            v-if="t.key === 'self-hosting' && orgProviders.items.length"
+            v-if="t.key === 'self-hosting' && inventoryCurrent && orgProviders.items.length"
             class="k-tab__count"
           >{{ orgProviders.items.length }}</span>
         </button>
@@ -440,7 +956,7 @@ function dependencyNotice(p: ProviderDTO): string {
         Loading providers&hellip;
       </div>
 
-      <div v-else-if="providers.items.length === 0" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-text-muted">
+      <div v-else-if="providers.items.length === 0 && tab !== 'self-hosting'" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-text-muted">
         No providers installed yet.
         <div class="mt-2 text-xs">
           See <code>docs/providers.md</code> and <code>providers/quickstart/</code> for an example.
@@ -449,11 +965,15 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- ===== Self-Hosting tab ===== -->
       <div v-else-if="tab === 'self-hosting'" class="space-y-6">
+        <p v-if="!inventoryCurrent && orgProviders.loading" role="status" class="text-sm text-text-muted">Loading self-hosted providers…</p>
+        <div v-if="inventoryScope === currentTenantScope && orgProviders.error" role="alert" class="text-sm text-danger">
+          Could not load self-hosted providers. Last known results are preserved.
+          <button type="button" class="k-btn k-btn--ghost" :disabled="orgProviders.loading" @click="refreshOrgProviderInventory">Retry</button>
+        </div>
         <p class="text-sm text-text-muted">
           Run a provider inside your own cluster instead of using the platform's copy. railgrid
-          creates a workspace for it in your organization and gives you a credential scoped
-          to that workspace only; you deploy the provider with Helm. Your workspaces then
-          enable your copy exactly like any other provider.
+          prepares an isolated organization workspace and can install the provider through a
+          connected Edge. Your workspaces enable your copy separately, like any other provider.
         </p>
         <p class="-mt-3 text-[11px] text-text-muted">
           The cluster must be connected to railgrid as an edge first. railgrid reaches a
@@ -470,6 +990,7 @@ function dependencyNotice(p: ProviderDTO): string {
           <AlertCircle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
           <span>{{ selfHostError }}</span>
         </div>
+        <p v-if="selfHostNotice" class="text-sm text-success" role="status" aria-live="polite">{{ selfHostNotice }}</p>
 
         <!-- No cluster the hub can reach → say so, and say what to do about it.
              The Self-Host buttons below are disabled off the same condition, so
@@ -516,146 +1037,127 @@ function dependencyNotice(p: ProviderDTO): string {
           </div>
         </div>
 
-        <!-- Which cluster a new provider lands in. Shown only when there is a
-             choice to make: one eligible cluster needs no picker. -->
-        <div
-          v-else-if="eligibleEdges.length > 1"
-          class="flex flex-wrap items-center gap-2 rounded-lg border border-border-subtle bg-surface-raised/60 px-3 py-2"
-        >
-          <label for="self-host-edge" class="text-[11px] font-medium text-text-secondary">
-            Install into
-          </label>
-          <select
-            id="self-host-edge"
-            v-model="selectedEdgeKey"
-            class="k-input w-auto px-2 py-1 text-[11px]"
-            :disabled="selfHostPending"
-          >
-            <option v-for="t in eligibleEdges" :key="`${t.workspace}/${t.name}`" :value="`${t.workspace}/${t.name}`">
-              {{ edgeLabel(t) }}
-            </option>
-          </select>
-        </div>
-        <p
-          v-else-if="selectedEdge"
-          class="text-[11px] text-text-muted"
-        >
-          Installing into <span class="font-medium text-text-secondary">{{ edgeLabel(selectedEdge) }}</span>.
-        </p>
-
-        <!-- Install details for whichever provider the user just acted on. -->
-        <section
-          v-if="activeRegistration"
-          class="rounded-xl border border-accent/30 bg-surface-raised/60 p-5"
-        >
-          <div class="mb-4 flex items-start justify-between gap-3">
-            <div>
-              <h2 class="text-base font-semibold text-text-primary">
-                {{ activeRegistration.provider.upgradeAvailable ? 'Upgrade' : 'Install' }}
-                {{ activeRegistration.provider.name }}
-              </h2>
-              <p class="mt-0.5 text-[11px] text-text-muted">
-                Run these in the cluster where
-                {{ activeRegistration.provider.upgradeAvailable ? `${activeRegistration.provider.name} is running` : `you want ${activeRegistration.provider.name} to run` }}.
-              </p>
-            </div>
-            <button
-              type="button"
-              class="k-btn k-btn--ghost p-1 text-text-muted transition-colors hover:text-accent"
-              title="Close"
-              @click="activeRegistration = null"
-            >
-              <X class="h-4 w-4" :stroke-width="2" />
-            </button>
-          </div>
-          <SelfHostInstructions :registration="activeRegistration" />
-        </section>
-
         <!-- What this org already runs itself. -->
-        <section v-if="orgProviders.items.length">
-          <h2 class="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
-            Running in your cluster
+        <section v-if="inventoryCurrent && orgProviders.items.length">
+          <h2 ref="selfHostedHeading" tabindex="-1" class="mb-2 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+            Self-hosted providers
           </h2>
           <ul class="space-y-2">
             <li
               v-for="p in orgProviders.items"
               :key="p.name"
+              :aria-busy="!!selfHostRemoval[p.name] || p.deleting || undefined"
               class="flex flex-wrap items-center gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4"
             >
               <div class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
                 <Server class="h-4 w-4 text-accent" :stroke-width="1.75" />
               </div>
-              <div class="min-w-0 flex-1">
+              <div class="min-w-0 flex-[1_1_12rem]">
                 <div class="flex flex-wrap items-center gap-2">
                   <h3 class="truncate text-sm font-semibold text-text-primary">
-                    {{ p.displayName || p.name }}
+                    {{ providerDisplayName(p) }}
                   </h3>
                   <span
                     class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
                     :class="
-                      p.registered
+                      p.ready && !p.deleting
                         ? 'border border-success/30 bg-success-subtle text-success'
                         : 'border border-warning/30 bg-warning-subtle text-warning'
                     "
                   >
-                    {{ p.registered ? 'Installed' : 'Awaiting install' }}
+                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}
                   </span>
                   <span
-                    v-if="p.upgradeAvailable"
+                    v-if="p.upgradeAvailable && !p.deleting"
                     class="rounded-sm border border-warning/30 bg-warning-subtle px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider text-warning"
                   >
                     Update available
                   </span>
                 </div>
                 <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">
-                  {{ p.name }}<span v-if="p.version"> · {{ p.version }}</span><span
-                    v-if="p.upgradeAvailable && p.installedVersion && p.availableVersion"
-                  > · {{ p.installedVersion }} &rarr; {{ p.availableVersion }}</span>
+                  {{ p.name }}
+                </p>
+                <p class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-muted">
+                  <span>
+                    Hosting Edge: <strong class="font-medium text-text-secondary">{{ p.hostingEdge?.name || 'Unavailable' }}</strong>
+                    <template v-if="p.hostingEdge"> · Workspace: {{ p.hostingEdge.workspaceDisplayName || p.hostingEdge.workspace }}</template>
+                  </span>
+                  <span>
+                    Version: {{ p.installedVersion || p.version || 'Not reported' }}<span
+                      v-if="p.upgradeAvailable && p.availableVersion"
+                    > · published {{ p.availableVersion }}</span>
+                  </span>
+                  <span>Health: {{ p.deleting ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}</span>
                 </p>
                 <!-- The gap between "workspace exists" and "chart installed" is
                      where a half-finished install sits; say so explicitly. -->
-                <p v-if="!p.registered" class="mt-1 text-[11px] text-text-muted">
-                  The workspace is ready but the provider has not registered itself yet.
-                  Run the install steps, then this flips to Installed.
+                <p v-if="p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting'" class="mt-1 text-[11px] text-text-muted" role="status">
+                  Removing the organization workspace and API registration. The Helm release in your cluster is not removed.
                 </p>
-                <p v-else-if="p.upgradeAvailable" class="mt-1 text-[11px] text-text-muted">
-                  A newer chart is published. Upgrade shows one command that keeps the
-                  Helm values you installed with.
+                <p v-else-if="selfHostRemoval[p.name] === 'confirming'" class="mt-1 text-[11px] text-text-muted" role="status">
+                  Waiting for removal confirmation.
+                </p>
+                <p v-else-if="!p.registered" class="mt-1 text-[11px] text-text-muted">
+                  The workspace is ready but the provider has not registered itself yet.
+                  Continue installation to run the commands and watch for readiness.
+                </p>
+                <p v-else-if="!p.ready" class="mt-1 text-[11px] text-text-muted">
+                  The provider registered, but is not ready. Resume to check its status and installation.
+                </p>
+                <p v-else-if="p.upgradeAvailable && canManageSelfHostedCredentials && !p.deleting" class="mt-1 text-[11px] text-text-muted">
+                  A newer chart is available.
+                </p>
+                <p v-else-if="p.upgradeAvailable && !p.deleting" class="mt-1 text-[11px] text-text-muted">
+                  A newer chart is available.
                 </p>
               </div>
-              <div class="flex items-center gap-2">
-                <!-- Upgrade opens the same instructions panel; the panel leads
-                     with the upgrade command when the hub says one is due. -->
+              <div class="ml-auto flex flex-shrink-0 items-center gap-2">
                 <button
-                  v-if="p.upgradeAvailable"
-                  type="button"
-                  class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
-                  @click="showInstructions(p.name)"
-                >
-                  <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
-                  <ArrowUpCircle v-else class="h-3 w-3" :stroke-width="2" />
-                  Upgrade
-                </button>
-                <button
+                  v-if="!p.ready && !p.deleting"
                   type="button"
                   class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
-                  @click="showInstructions(p.name)"
+                  :disabled="!!selfHostBusy[p.name] || !!selfHostRemoval[p.name]"
+                  @click="startInstall(p)"
                 >
-                  <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
-                  <RefreshCw v-else class="h-3 w-3" :stroke-width="2" />
-                  Install details
+                  <RefreshCw class="h-3 w-3" :stroke-width="2" />
+                  Continue installation
                 </button>
                 <button
+                  v-if="canManageSelfHostedCredentials"
                   type="button"
                   class="k-btn k-btn--danger px-2.5 py-1 text-[11px] disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
+                  :disabled="confirmingRemoval || !!selfHostBusy[p.name] || !!selfHostRemoval[p.name] || !!p.deleting"
                   @click="removeSelfHosted(p.name)"
                 >
-                  <Trash2 class="h-3 w-3" :stroke-width="2" />
-                  Remove
+                  <Loader2 v-if="selfHostRemoval[p.name] || p.deleting" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                  <Trash2 v-else class="h-3 w-3" :stroke-width="2" />
+                  {{ selfHostRemoval[p.name] === 'confirming' ? 'Confirming…' : selfHostRemoval[p.name] || p.deleting ? 'Removing…' : 'Remove' }}
                 </button>
+              </div>
+              <div
+                v-if="instructionName === p.name"
+                :id="`self-hosted-instructions-${p.name}`"
+                class="mt-4 w-full basis-full border-t border-border-subtle pt-4"
+              >
+                <div class="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <h4 class="text-sm font-semibold text-text-primary">
+                      {{ activeRegistration?.provider.name === p.name && activeRegistration.provider.upgradeAvailable ? 'Manual upgrade instructions' : 'Manual commands and credentials' }}
+                    </h4>
+                    <p class="mt-1 text-[11px] text-text-muted">
+                      Run these commands on this provider’s hosting cluster.
+                    </p>
+                  </div>
+                  <button type="button" class="k-btn k-btn--ghost p-1" aria-label="Close installation details" @click="closeInstructions(p.name)">
+                    <X class="h-4 w-4" :stroke-width="2" aria-hidden="true" />
+                  </button>
+                </div>
+                <p v-if="selfHostBusy[p.name]" role="status" class="text-sm text-text-muted">Loading installation details…</p>
+                <div v-else-if="instructionError" class="text-sm text-danger" role="alert">
+                  {{ instructionError }}
+                  <button type="button" class="k-btn k-btn--ghost ml-2" @click="showInstructions(p.name)">Retry</button>
+                </div>
+                <SelfHostInstructions v-else-if="activeRegistration?.provider.name === p.name" :registration="activeRegistration" />
               </div>
             </li>
           </ul>
@@ -671,7 +1173,7 @@ function dependencyNotice(p: ProviderDTO): string {
             class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-sm text-text-muted"
           >
             {{
-              orgProviders.items.length
+              inventoryCurrent && orgProviders.items.length
                 ? 'You are already self-hosting every provider that offers it.'
                 : 'No provider in this catalog publishes a self-hosting recipe yet.'
             }}
@@ -703,7 +1205,7 @@ function dependencyNotice(p: ProviderDTO): string {
                   class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="!!selfHostBusy[p.name] || !canSelfHost"
                   :title="canSelfHost ? undefined : (orgProviders.installTargetsReason ?? 'no connected cluster to install into')"
-                  @click="selfHost(p)"
+                  @click="startInstall(p)"
                 >
                   <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
                   <Server v-else class="h-3 w-3" :stroke-width="2" />
@@ -806,21 +1308,9 @@ function dependencyNotice(p: ProviderDTO): string {
                 <h2 class="truncate text-sm font-semibold text-text-primary">{{ p.displayName }}</h2>
                 <span
                   class="rounded-sm px-1.5 py-px text-[9px] font-semibold uppercase tracking-wider"
-                  :class="
-                    !p.ready
-                      ? 'border border-warning/30 bg-warning-subtle text-warning'
-                      : p.serving?.ui?.builtinRoute
-                        ? 'border border-border-default bg-surface-overlay text-text-secondary'
-                        : providers.isDisabling(p.name)
-                          ? 'border border-warning/30 bg-warning-subtle text-warning'
-                          : providers.isEnabled(p.name)
-                              ? 'border border-accent/30 bg-accent/10 text-accent'
-                              : providers.hasMissingDependencies(p)
-                                ? 'border border-warning/30 bg-warning-subtle text-warning'
-                                : 'border border-success/30 bg-success-subtle text-success'
-                  "
+                  :class="providerStatusClass(p)"
                 >
-                  {{ !p.ready ? 'Not ready' : p.serving?.ui?.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ providerStatusLabel(p) }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -948,12 +1438,12 @@ function dependencyNotice(p: ProviderDTO): string {
               class="rounded-md border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-accent"
               title="Registered and operated by your organization"
             >
-              Self-managed
+              Self-hosted
             </span>
             <span
               v-if="providers.isSelfManaged(p) && p.shadowsPlatform"
               class="rounded-md border border-warning/30 bg-warning-subtle px-1.5 py-0.5 text-warning"
-              title="A platform provider with this name exists; your organization's copy is the one your workspaces reach"
+              title="Your organization’s entry shadows the platform entry, but existing workspace bindings may still use either copy."
             >
               Overrides platform provider
             </span>
@@ -978,7 +1468,7 @@ function dependencyNotice(p: ProviderDTO): string {
                  route; third-party load via /providers/{name} →
                  ProviderFrame. -->
             <router-link
-              v-if="p.serving?.ui && p.ready && (!p.export?.name || providers.isEnabled(p.name))"
+              v-if="p.serving?.ui && p.ready && (!p.export?.name || (providers.isEnabled(p.name) && (!providers.isSelfManaged(p) || workspaceProviderCopy(p) === 'organization')))"
               :to="scopePath(p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >
@@ -1014,12 +1504,13 @@ function dependencyNotice(p: ProviderDTO): string {
                 v-else-if="bindingAction(p) === 'disable'"
                 type="button"
                 class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-text-muted transition-colors hover:border-danger/30 hover:text-danger disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!!busy[p.name]"
+                :disabled="!!busy[p.name] || !!migrationConfirming[p.name] || !canDisableFromThisProjection(p)"
+                :title="canDisableFromThisProjection(p) ? undefined : 'Waiting for current workspace binding details.'"
                 @click="onDisable(p)"
               >
-                <Loader2 v-if="busy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
+                <Loader2 v-if="busy[p.name] || migrationConfirming[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
                 <X v-else class="h-3 w-3" :stroke-width="2" />
-                Disable
+                {{ migrationConfirming[p.name] ? 'Confirming…' : 'Disable' }}
               </button>
             </template>
 

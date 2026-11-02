@@ -16,6 +16,7 @@ const props = defineProps<{ registration: OrgProviderRegistration }>()
 const revealed = ref(false)
 const copied = ref<string | null>(null)
 const copyError = ref<string | null>(null)
+const copyAnnouncement = ref('')
 const valuesDocOpen = ref(false)
 let copyResetTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -23,6 +24,7 @@ function resetTransientState() {
   revealed.value = false
   copied.value = null
   copyError.value = null
+  copyAnnouncement.value = ''
   valuesDocOpen.value = false
   if (copyResetTimer) {
     clearTimeout(copyResetTimer)
@@ -73,6 +75,7 @@ async function copy(key: string, value: string) {
     await navigator.clipboard.writeText(value)
     if (props.registration !== registration) return
     copied.value = key
+    copyAnnouncement.value = key === 'kubeconfig' ? 'Credential copied to clipboard.' : 'Command copied to clipboard.'
     if (copyResetTimer) clearTimeout(copyResetTimer)
     copyResetTimer = setTimeout(() => {
       if (copied.value === key) copied.value = null
@@ -106,6 +109,7 @@ function downloadKubeconfig() {
 
 <template>
   <div class="space-y-4">
+    <span class="sr-only" role="status" aria-live="polite">{{ copyAnnouncement }}</span>
     <p
       v-if="copyError"
       class="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2 text-[11px] text-warning"
@@ -145,7 +149,7 @@ function downloadKubeconfig() {
           @click="copy('upgrade', upgrade.command)"
         >
           <component :is="copied === 'upgrade' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-          Copy
+          {{ copied === 'upgrade' ? 'Copied' : 'Copy' }}
         </button>
       </div>
       <pre
@@ -194,7 +198,7 @@ function downloadKubeconfig() {
             @click="copy('kubeconfig', registration.kubeconfig)"
           >
             <component :is="copied === 'kubeconfig' ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-            Copy
+            {{ copied === 'kubeconfig' ? 'Copied' : 'Copy' }}
           </button>
         </div>
       </div>
@@ -238,7 +242,7 @@ function downloadKubeconfig() {
             @click="copy(step.title, step.command)"
           >
             <component :is="copied === step.title ? Check : Copy" class="h-3 w-3" :stroke-width="2" />
-            Copy
+            {{ copied === step.title ? 'Copied' : 'Copy' }}
           </button>
         </div>
         <pre
