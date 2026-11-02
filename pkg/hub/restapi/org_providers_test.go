@@ -14,13 +14,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
@@ -34,30 +38,57 @@ import (
 // the preflight ran BEFORE anything was created — the property that keeps a
 // refused install from leaving a live credential behind.
 type fakeOrgProviderOps struct {
-	targets []kcp.EdgeInstallTarget
+	targets    []kcp.EdgeInstallTarget
+	targetsErr error
 	// workspaces is what ListOrgProviderWorkspaces returns — the providers the
 	// org already registered.
 	workspaces []kcp.OrgProviderWorkspace
 	// registered records EnsureOrgProviderWorkspace calls.
 	registered []string
+	// deleted records provider workspace teardown calls. The hook lets tests
+	// cancel the inbound request after authorization and observe the context
+	// passed to the bounded teardown operation.
+	deleted           []string
+	deleteHook        func(context.Context)
+	deleteErr         error
+	deleteContextErr  error
+	deleteHasDeadline bool
 	// recordedEdges maps "org/provider" → "workspace/edge" as stamped by
 	// RecordProviderEdgeBinding.
 	recordedEdges map[string]string
+	recordEdgeErr error
 }
 
 // RecordProviderEdgeBinding records what registration stamped, so a test can
 // assert the edge was captured rather than only that registration returned 201.
 func (f *fakeOrgProviderOps) RecordProviderEdgeBinding(_ context.Context, orgUUID, providerName, wsUUID, edgeName string) error {
+	if f.recordEdgeErr != nil {
+		return f.recordEdgeErr
+	}
 	if f.recordedEdges == nil {
 		f.recordedEdges = map[string]string{}
 	}
 	f.recordedEdges[orgUUID+"/"+providerName] = wsUUID + "/" + edgeName
+	for i := range f.workspaces {
+		if f.workspaces[i].Name == providerName {
+			f.workspaces[i].HostingEdgeWorkspace = wsUUID
+			f.workspaces[i].HostingEdgeName = edgeName
+			break
+		}
+	}
 	return nil
 }
 
 func (f *fakeOrgProviderOps) EnsureOrgProviderWorkspace(_ context.Context, _, name string) (string, error) {
 	f.registered = append(f.registered, name)
-	return "cluster-" + name, nil
+	cluster := "cluster-" + name
+	for i := range f.workspaces {
+		if f.workspaces[i].Name == name {
+			return cluster, nil
+		}
+	}
+	f.workspaces = append(f.workspaces, kcp.OrgProviderWorkspace{Name: name, Cluster: cluster, Phase: "Ready"})
+	return cluster, nil
 }
 
 func (f *fakeOrgProviderOps) ListOrgProviderWorkspaces(context.Context, string) ([]kcp.OrgProviderWorkspace, error) {
@@ -77,12 +108,19 @@ func (f *fakeOrgProviderOps) GetOrgProviderWorkspace(_ context.Context, _, name 
 	return nil, nil
 }
 
-func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspace(context.Context, string, string) error {
-	return nil
+func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspace(ctx context.Context, _, name string) error {
+	f.deleted = append(f.deleted, name)
+	_, f.deleteHasDeadline = ctx.Deadline()
+	f.deleteContextErr = ctx.Err()
+	if f.deleteHook != nil {
+		f.deleteHook(ctx)
+	}
+	f.deleteContextErr = ctx.Err()
+	return f.deleteErr
 }
 
 func (f *fakeOrgProviderOps) ListEdgeInstallTargets(context.Context, string) ([]kcp.EdgeInstallTarget, error) {
-	return f.targets, nil
+	return f.targets, f.targetsErr
 }
 
 func (f *fakeOrgProviderOps) GetEdgeInstallTarget(_ context.Context, _, wsUUID, name string) (*kcp.EdgeInstallTarget, error) {
@@ -351,6 +389,166 @@ func TestRegisterOrgProvider_ProceedsWithConnectedEdge(t *testing.T) {
 	if creds.minted != 1 {
 		t.Fatalf("credential mints: got %d, want 1", creds.minted)
 	}
+	var got RegisterOrgProviderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	if got.Provider.HostingEdge == nil || got.Provider.HostingEdge.Name != "prod" || got.Provider.HostingEdge.Workspace != "ws-1" {
+		t.Fatalf("registration provider hostingEdge = %+v, want the recorded prod Edge in ws-1", got.Provider.HostingEdge)
+	}
+}
+
+func TestListOrgProviders_ProjectsRecordedDisconnectedHostingEdge(t *testing.T) {
+	ops, _, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.workspaces[0].HostingEdgeWorkspace = "ws-1"
+	ops.workspaces[0].HostingEdgeName = "prod"
+	ops.targets[0].Connected = false
+	ops.targets[0].Phase = "Disconnected"
+	ops.targets[0].WorkspaceDisplayName = "Production"
+
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got ListResponse[OrgProviderView]
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("provider items = %d, want 1", len(got.Items))
+	}
+	edge := got.Items[0].HostingEdge
+	if edge == nil || edge.Name != "prod" || edge.Workspace != "ws-1" || edge.WorkspaceDisplayName != "Production" {
+		t.Fatalf("hostingEdge = %+v, want the recorded disconnected Edge with its workspace display name", edge)
+	}
+}
+
+func TestListOrgProviders_HidesHostingEdgeOutsideOrgMemberWorkspaces(t *testing.T) {
+	umi := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
+			{OrgUUID: "org-a", WorkspaceUUID: "ws-visible", Role: tenancyv1alpha1.MembershipRoleMember},
+		}},
+	}
+	caller := tcWithOrgRole("alice", "org-a", "ws-visible", tenancyv1alpha1.MembershipRoleAdmin, tenancyv1alpha1.MembershipRoleMember)
+	ops, _, url := newOrgProviderTestServerWithPolicy(t,
+		[]kcp.EdgeInstallTarget{connectedEdge("ws-private", "prod")}, caller, []runtime.Object{umi},
+		tenancyv1alpha1.CatalogEntryCreationMembers, tenancyv1alpha1.MembershipRoleMember)
+	ops.workspaces = []kcp.OrgProviderWorkspace{{
+		Name: "vault", Cluster: "cluster-vault", Phase: "Ready",
+		HostingEdgeWorkspace: "ws-private", HostingEdgeName: "prod",
+	}}
+
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got ListResponse[OrgProviderView]
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].HostingEdge != nil {
+		t.Fatalf("provider projection leaked another workspace's Edge: %+v", got.Items)
+	}
+	encoded, err := json.Marshal(got.Items[0])
+	if err != nil {
+		t.Fatalf("marshal visible provider: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(`"hostingEdge"`)) {
+		t.Fatalf("hidden hosting edge was emitted: %s", encoded)
+	}
+}
+
+func TestListOrgProviders_OmitsStaleRecordedHostingEdge(t *testing.T) {
+	ops, _, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.workspaces[0].HostingEdgeWorkspace = "ws-1"
+	ops.workspaces[0].HostingEdgeName = "deleted-edge"
+
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var got ListResponse[OrgProviderView]
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].HostingEdge != nil {
+		t.Fatalf("stale recorded Edge was presented as available: %+v", got.Items)
+	}
+}
+
+func TestListOrgProviders_HostingEdgeLookupFailureKeepsInventory(t *testing.T) {
+	ops, _, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.workspaces[0].HostingEdgeWorkspace = "ws-1"
+	ops.workspaces[0].HostingEdgeName = "prod"
+	ops.targetsErr = errors.New("Edges provider temporarily unavailable")
+
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200 when optional Edge metadata is unavailable", resp.StatusCode)
+	}
+	var got ListResponse[OrgProviderView]
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Items) != 1 || got.Items[0].HostingEdge != nil {
+		t.Fatalf("provider inventory or fail-closed Edge projection = %+v", got.Items)
+	}
+}
+
+func TestGetOrgProviderKubeconfigIncludesRecordedHostingEdge(t *testing.T) {
+	ops, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.workspaces[0].HostingEdgeWorkspace = "ws-1"
+	ops.workspaces[0].HostingEdgeName = "prod"
+
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers/vault/kubeconfig")
+	if err != nil {
+		t.Fatalf("GET kubeconfig: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got RegisterOrgProviderResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Provider.HostingEdge == nil || got.Provider.HostingEdge.Name != "prod" || got.Provider.HostingEdge.Workspace != "ws-1" {
+		t.Fatalf("kubeconfig provider hostingEdge = %+v, want recorded prod Edge in ws-1", got.Provider.HostingEdge)
+	}
+	if creds.minted != 1 {
+		t.Fatalf("kubeconfig credential mints = %d, want 1", creds.minted)
+	}
+}
+
+func TestRegisterOrgProvider_EdgeBindingConflictIsConflict(t *testing.T) {
+	ops, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.recordEdgeErr = apierrors.NewConflict(schema.GroupResource{Resource: "workspaces"}, "vault", nil)
+
+	resp := postRegister(t, url(), RegisterOrgProviderRequest{
+		Name: "vault",
+		Edge: &EdgeTargetRef{Workspace: "ws-1", Name: "prod"},
+	})
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status: got %d, want 409", resp.StatusCode)
+	}
+	if creds.minted != 0 {
+		t.Fatalf("credential minted after edge binding conflict: %d", creds.minted)
+	}
 }
 
 // Omitting the edge when one IS available is a client mistake (400), not a
@@ -546,6 +744,21 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 			wantUpgrade: true, wantInstalled: "0.5.0", wantAvailable: "0.6.0",
 		},
 		{
+			name: "installed ahead of dev catalog", hasPlatform: true,
+			orgVersion: "v0.2.23", platformVersion: "0.1.0",
+			wantUpgrade: false, wantInstalled: "v0.2.23", wantAvailable: "0.1.0",
+		},
+		{
+			name: "equivalent version prefixes", hasPlatform: true,
+			orgChart: "v0.6.0", platformChart: "0.6.0",
+			wantUpgrade: false, wantInstalled: "v0.6.0", wantAvailable: "0.6.0",
+		},
+		{
+			name: "unorderable development versions", hasPlatform: true,
+			orgVersion: "dev-a", platformVersion: "dev-b",
+			wantUpgrade: false, wantInstalled: "dev-a", wantAvailable: "dev-b",
+		},
+		{
 			name: "up to date", hasPlatform: true,
 			orgChart: "0.6.0", platformChart: "0.6.0",
 			orgVersion: "1.3.0", platformVersion: "1.3.0",
@@ -628,6 +841,49 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 				t.Errorf("availableVersion: got %q, want %q", view.AvailableVersion, tc.wantAvailable)
 			}
 		})
+	}
+}
+
+func TestListOrgProviders_DeletingWorkspaceIsNotReady(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	alice := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
+	}
+	mgr, _, _ := newTestManager(t, org, alice)
+	mgr.WithOrgProviders(&fakeOrgProviderOps{
+		workspaces: []kcp.OrgProviderWorkspace{{Name: "quickstart", Cluster: "provider-cluster", Phase: "Ready", Deleting: true}},
+	}, &fakeCredMinter{})
+	registry := providers.NewRegistry()
+	registry.Upsert(providers.Provider{Name: "quickstart", OrgUUID: "org-a", EndpointsValid: true})
+	mgr.WithProviderRegistry(registry)
+
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+	resp, err := http.Get(srv.URL + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", resp.StatusCode)
+	}
+	var got ListResponse[OrgProviderView]
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("items: got %d, want 1", len(got.Items))
+	}
+	provider := got.Items[0]
+	if !provider.Deleting || !provider.Registered || provider.Ready {
+		t.Fatalf("deleting provider projection = %+v, want deleting and registered but not ready", provider)
+	}
+	if provider.HostingEdge != nil {
+		t.Fatalf("legacy provider without recorded Edge annotations exposed hostingEdge: %+v", provider.HostingEdge)
 	}
 }
 
@@ -739,6 +995,8 @@ func TestRotateOrgProviderCredential_IsAdminOnlyWhateverThePolicy(t *testing.T) 
 // deadline for the rollout.
 func TestRotateOrgProviderCredential_ReturnsAKubeconfigAndTheGraceDeadline(t *testing.T) {
 	ops, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"), "", tenancyv1alpha1.MembershipRoleAdmin)
+	ops.workspaces[0].HostingEdgeWorkspace = "ws-1"
+	ops.workspaces[0].HostingEdgeName = "prod"
 	resp := postRotate(t, url(), "vault")
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
@@ -750,6 +1008,9 @@ func TestRotateOrgProviderCredential_ReturnsAKubeconfigAndTheGraceDeadline(t *te
 	}
 	if got.Provider.Name != "vault" || got.Provider.WorkspacePath != kcppaths.OrgProviderPath("org-a", "vault") {
 		t.Fatalf("provider = %+v, want the org's vault workspace", got.Provider)
+	}
+	if got.Provider.HostingEdge == nil || got.Provider.HostingEdge.Name != "prod" || got.Provider.HostingEdge.Workspace != "ws-1" {
+		t.Fatalf("rotation provider hostingEdge = %+v, want recorded prod Edge in ws-1", got.Provider.HostingEdge)
 	}
 	for _, want := range []string{"apiVersion: v1", "kind: Config", "token: rotated-token-for-vault"} {
 		if !strings.Contains(got.Kubeconfig, want) {
@@ -790,5 +1051,47 @@ func TestRotateOrgProviderCredential_UnknownProviderIs404(t *testing.T) {
 	}
 	if len(creds.rotated) != 0 {
 		t.Fatalf("rotated %v for a provider the org never registered", creds.rotated)
+	}
+}
+
+func TestDeleteOrgProvider_AuthenticatedTeardownSurvivesRequestCancellation(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	alice := &tenancyv1alpha1.User{
+		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
+		Spec:       tenancyv1alpha1.UserSpec{Email: "alice@example.com", RBACIdentity: "railgrid:alice@example.com"},
+	}
+	mgr, wsOps, _ := newTestManager(t, org, alice)
+	if err := wsOps.EnsureOrgMembership(context.Background(), "org-a", "alice", tenancyv1alpha1.MembershipRoleAdmin); err != nil {
+		t.Fatalf("ensuring org admin membership: %v", err)
+	}
+	ops := &fakeOrgProviderOps{}
+	creds := &fakeCredMinter{}
+	mgr.WithOrgProviders(ops, creds)
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	ops.deleteHook = func(context.Context) { cancelRequest() }
+	req := httptest.NewRequest(http.MethodDelete, srv.URL+"/api/orgs/org-a/providers/kuery", nil).WithContext(requestCtx)
+	recorder := httptest.NewRecorder()
+	srv.Config.Handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("DELETE status = %d, want 204: %s", recorder.Code, recorder.Body.String())
+	}
+	if len(ops.deleted) != 1 || ops.deleted[0] != "kuery" {
+		t.Fatalf("deleted workspaces = %v, want [kuery]", ops.deleted)
+	}
+	if !ops.deleteHasDeadline {
+		t.Fatal("teardown context has no deadline")
+	}
+	if ops.deleteContextErr != nil {
+		t.Fatalf("teardown context was canceled with the request: %v", ops.deleteContextErr)
+	}
+	if creds.minted != 0 || len(creds.rotated) != 0 || len(ops.registered) != 0 {
+		t.Fatalf("delete unexpectedly provisioned credentials or workspaces: minted=%d rotated=%v registered=%v", creds.minted, creds.rotated, ops.registered)
 	}
 }

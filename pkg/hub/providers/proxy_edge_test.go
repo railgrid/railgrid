@@ -517,3 +517,21 @@ func TestEdgeRouteUsable(t *testing.T) {
 		})
 	}
 }
+
+func TestEdgeHopReplacesExistingKCPClusterScope(t *testing.T) {
+	for _, base := range []string{"https://kcp.invalid", "https://kcp.invalid/clusters/root", "https://kcp.invalid/prefix/clusters/root"} {
+		target, err := url.Parse(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hop := edgeHop{target: *target, route: EdgeRoute{Cluster: "tenant-cluster", ServiceName: "provider-kuery"}}
+		got := hop.url("/readyz")
+		want := "/clusters/tenant-cluster/apis/edges.railgrid.ai/v1alpha1/services/provider-kuery/proxy/readyz"
+		if strings.Contains(base, "/prefix/") {
+			want = "/prefix" + want
+		}
+		if got.Path != want {
+			t.Fatalf("%s: got %s, want %s", base, got.Path, want)
+		}
+	}
+}

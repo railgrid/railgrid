@@ -412,8 +412,10 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 	default:
 		current, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
 		if current == roleName {
-			crb.SetResourceVersion(existing.GetResourceVersion())
-			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, crb, metav1.UpdateOptions{}); err != nil {
+			// Keep kcp-managed metadata (including replication annotations) when
+			// repairing subjects on an existing binding.
+			existing.Object["subjects"] = crb.Object["subjects"]
+			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, existing, metav1.UpdateOptions{}); err != nil {
 				return fmt.Errorf("updating %s: %w", providerSABindingName, err)
 			}
 			return nil

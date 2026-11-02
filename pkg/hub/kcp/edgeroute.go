@@ -104,6 +104,9 @@ func (b *Bootstrapper) RecordProviderEdgeBinding(ctx context.Context, orgUUID, p
 		if annotations[EdgeRouteWorkspaceAnnotation] == wsUUID && annotations[EdgeRouteEdgeAnnotation] == edgeName {
 			return nil
 		}
+		if annotations[EdgeRouteWorkspaceAnnotation] != "" || annotations[EdgeRouteEdgeAnnotation] != "" {
+			return errors.NewConflict(workspaceGVR.GroupResource(), providerName, fmt.Errorf("provider is already registered on another Edge"))
+		}
 		annotations[EdgeRouteWorkspaceAnnotation] = wsUUID
 		annotations[EdgeRouteEdgeAnnotation] = edgeName
 		ws.SetAnnotations(annotations)

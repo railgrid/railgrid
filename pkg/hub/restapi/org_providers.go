@@ -54,6 +54,7 @@ import (
 	"github.com/gorilla/mux"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/version"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
@@ -61,6 +62,8 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
+
+const orgProviderDeleteRequestTimeout = 60 * time.Second
 
 // OrgProviderOps is the slice of *kcp.Bootstrapper this surface needs to build
 // and tear down an Org's provider workspaces. Separate from WorkspaceOps so
@@ -143,6 +146,15 @@ type EdgeInstallTargetView struct {
 	AgentVersion string `json:"agentVersion,omitempty"`
 }
 
+// HostingEdgeView identifies the Edge that the hub recorded for this
+// self-hosted provider. It is omitted when the caller cannot see that Edge or
+// its workspace, or when the recorded Edge no longer exists.
+type HostingEdgeView struct {
+	Name                 string `json:"name"`
+	Workspace            string `json:"workspace"`
+	WorkspaceDisplayName string `json:"workspaceDisplayName,omitempty"`
+}
+
 // ListEdgeInstallTargetsResponse is the body of
 // GET /api/orgs/{org}/providers/install-targets.
 //
@@ -164,12 +176,19 @@ type ListEdgeInstallTargetsResponse struct {
 // the "registered, not yet connected" state the UI needs to show.
 type OrgProviderView struct {
 	Name string `json:"name"`
+	// HostingEdge is resolved from the hub-owned provider Workspace annotations
+	// and filtered through the caller's visible workspace set.
+	HostingEdge *HostingEdgeView `json:"hostingEdge,omitempty"`
 	// WorkspacePath is where the Org installs its provider chart.
 	WorkspacePath string `json:"workspacePath"`
 	// ClusterName is the logical cluster ID of that workspace.
 	ClusterName string `json:"clusterName,omitempty"`
 	// Phase is the kcp workspace phase (e.g. "Ready").
 	Phase string `json:"phase,omitempty"`
+	// Deleting is true after the provider workspace has begun terminating.
+	// kcp keeps terminating workspaces visible until finalizers finish, so the
+	// portal needs this state to avoid presenting the provider as active.
+	Deleting bool `json:"deleting"`
 	// Registered is true once the provider's chart has run its `init` and
 	// self-registered a CatalogEntry the hub can see. Until then the workspace
 	// exists but the provider is not installable by any Workspace.
@@ -193,7 +212,7 @@ type OrgProviderView struct {
 	InstalledVersion string `json:"installedVersion,omitempty"`
 	AvailableVersion string `json:"availableVersion,omitempty"`
 	// UpgradeAvailable is true when the installed and available versions are
-	// both known and differ. The hub owns the comparison so the portal cannot
+	// valid semantic versions and the available one is newer. The hub owns the comparison so the portal cannot
 	// drift from however "needs an upgrade" is defined later.
 	UpgradeAvailable bool `json:"upgradeAvailable,omitempty"`
 }
@@ -304,7 +323,7 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	workspacePath := kcppaths.OrgProviderPath(orgUUID, name)
-	cluster, err := h.mgr.orgProviders.EnsureOrgProviderWorkspace(r.Context(), orgUUID, name)
+	_, err := h.mgr.orgProviders.EnsureOrgProviderWorkspace(r.Context(), orgUUID, name)
 	if err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating provider workspace: "+err.Error())
 		return
@@ -315,7 +334,20 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	// instead would let the tenant's own chart decide where platform traffic
 	// goes (docs/byo-provider-edge-transport.md E-1).
 	if err := h.mgr.orgProviders.RecordProviderEdgeBinding(r.Context(), orgUUID, name, req.Edge.Workspace, req.Edge.Name); err != nil {
+		if apierrors.IsConflict(err) {
+			writeError(w, err)
+			return
+		}
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "recording provider edge binding: "+err.Error())
+		return
+	}
+	providerWorkspace, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), orgUUID, name)
+	if err != nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "getting provider workspace after recording Edge: "+err.Error())
+		return
+	}
+	if providerWorkspace == nil {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "provider workspace disappeared after recording Edge")
 		return
 	}
 	if err := h.mgr.providerCreds.EnsureProviderSAAtPath(r.Context(), workspacePath); err != nil {
@@ -329,9 +361,7 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, RegisterOrgProviderResponse{
-		Provider: h.orgProviderView(orgUUID, kcp.OrgProviderWorkspace{
-			Name: name, Cluster: cluster, Phase: "Ready",
-		}),
+		Provider:     h.orgProviderViewForCaller(r, tc, orgUUID, *providerWorkspace),
 		Kubeconfig:   string(kubeconfig),
 		Instructions: h.installInstructions(r.Context(), orgUUID, name, sourceProvider(req)),
 	})
@@ -408,7 +438,14 @@ func (h *Handler) visibleEdgeInstallTargets(r *http.Request, tc tenant.TenantCon
 // an error — they simply belong to no workspace yet.
 func (h *Handler) visibleWorkspaceUUIDs(r *http.Request, tc tenant.TenantContext) (map[string]bool, error) {
 	out := map[string]bool{}
-	if tc.Role == tenancyv1alpha1.MembershipRoleAdmin {
+	role := tc.Role
+	if tc.WorkspaceUUID != "" {
+		// Org-provider routes can arrive with the portal's current workspace
+		// header. Use the independently resolved Org role for the Org inventory;
+		// a workspace admin who is only an Org member must not see sibling Edges.
+		role = tc.OrgRole
+	}
+	if role == tenancyv1alpha1.MembershipRoleAdmin {
 		names, err := h.mgr.bootstrapper.ListChildTeamWorkspaces(r.Context(), tc.OrgUUID)
 		if err != nil {
 			return nil, err
@@ -504,7 +541,7 @@ func (h *Handler) requireEdgeInstallTarget(w http.ResponseWriter, r *http.Reques
 	}
 	if target == nil {
 		writeStatus(w, http.StatusConflict, "Conflict",
-			"edge "+ref.Name+" was not found in workspace "+ref.Workspace+" — it may have been removed, or the edges provider is not enabled in that workspace")
+			"the selected Edge was not found or is not accessible; check that its workspace has the Edges provider enabled")
 		return false
 	}
 	if !target.Connected {
@@ -577,8 +614,20 @@ func (h *Handler) listOrgProviders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]OrgProviderView, 0, len(workspaces))
+	var visibleTargets []kcp.EdgeInstallTarget
 	for _, ws := range workspaces {
-		items = append(items, h.orgProviderView(orgUUID, ws))
+		if ws.HostingEdgeName != "" && ws.HostingEdgeWorkspace != "" {
+			visibleTargets, err = h.visibleEdgeInstallTargets(r, tc)
+			if err != nil {
+				// Hosting metadata is optional. Keep provider health/version rows
+				// available while failing closed on edge visibility lookup errors.
+				visibleTargets = nil
+			}
+			break
+		}
+	}
+	for _, ws := range workspaces {
+		items = append(items, h.orgProviderViewWithTargets(orgUUID, ws, visibleTargets))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	writeJSON(w, http.StatusOK, ListResponse[OrgProviderView]{Items: items})
@@ -592,6 +641,7 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 		WorkspacePath: kcppaths.OrgProviderPath(orgUUID, ws.Name),
 		ClusterName:   ws.Cluster,
 		Phase:         ws.Phase,
+		Deleting:      ws.Deleting,
 	}
 	if h.mgr.providers == nil {
 		return view
@@ -608,7 +658,7 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 	view.Description = prov.Description
 	view.Version = prov.Version
 	view.APIExportName = prov.APIExportName
-	view.Ready = prov.Ready()
+	view.Ready = prov.Ready() && !ws.Deleting
 
 	// Upgrade signal: what the Org's copy registered versus what the platform's
 	// copy of the same provider runs now. Get (not GetForOrg) is deliberate —
@@ -641,7 +691,45 @@ func (h *Handler) orgProviderView(orgUUID string, ws kcp.OrgProviderWorkspace) O
 	}
 	view.InstalledVersion = installed
 	view.AvailableVersion = available
-	view.UpgradeAvailable = installed != available
+	installedVersion, installedErr := version.ParseSemantic(installed)
+	availableVersion, availableErr := version.ParseSemantic(available)
+	view.UpgradeAvailable = installedErr == nil && availableErr == nil && availableVersion.GreaterThan(installedVersion)
+	return view
+}
+
+// orgProviderViewForCaller adds the hub-recorded hosting Edge only after the
+// existing visibility helper confirms the caller can see its workspace and
+// resolves that exact Edge. Edge state does not gate the row: disconnected
+// Edges remain useful installation and troubleshooting context.
+func (h *Handler) orgProviderViewForCaller(r *http.Request, tc tenant.TenantContext, orgUUID string, ws kcp.OrgProviderWorkspace) OrgProviderView {
+	if ws.HostingEdgeName == "" || ws.HostingEdgeWorkspace == "" {
+		return h.orgProviderView(orgUUID, ws)
+	}
+	targets, err := h.visibleEdgeInstallTargets(r, tc)
+	if err != nil {
+		// The Edge field is optional; keep the rest of the provider inventory
+		// healthy if the Edge provider or workspace listing is temporarily down.
+		targets = nil
+	}
+	return h.orgProviderViewWithTargets(orgUUID, ws, targets)
+}
+
+func (h *Handler) orgProviderViewWithTargets(orgUUID string, ws kcp.OrgProviderWorkspace, targets []kcp.EdgeInstallTarget) OrgProviderView {
+	view := h.orgProviderView(orgUUID, ws)
+	if ws.HostingEdgeName == "" || ws.HostingEdgeWorkspace == "" {
+		return view
+	}
+	for _, target := range targets {
+		if target.Name != ws.HostingEdgeName || target.Workspace != ws.HostingEdgeWorkspace {
+			continue
+		}
+		view.HostingEdge = &HostingEdgeView{
+			Name:                 target.Name,
+			Workspace:            target.Workspace,
+			WorkspaceDisplayName: target.WorkspaceDisplayName,
+		}
+		break
+	}
 	return view
 }
 
@@ -688,7 +776,7 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	writeJSON(w, http.StatusOK, RegisterOrgProviderResponse{
-		Provider:   h.orgProviderView(orgUUID, *ws),
+		Provider:   h.orgProviderViewForCaller(r, tc, orgUUID, *ws),
 		Kubeconfig: string(kubeconfig),
 		// Re-render the steps alongside the credential: someone re-fetching a
 		// kubeconfig is mid-install, and the commands are useless without it.
@@ -763,7 +851,7 @@ func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Req
 		return
 	}
 	resp := RotateOrgProviderCredentialResponse{
-		Provider:     h.orgProviderView(orgUUID, *ws),
+		Provider:     h.orgProviderViewForCaller(r, tc, orgUUID, *ws),
 		Kubeconfig:   string(rotated.Kubeconfig),
 		RotatedAt:    rotated.RotatedAt.UTC().Format(time.RFC3339),
 		Instructions: h.installInstructions(r.Context(), orgUUID, name, name),
@@ -798,12 +886,14 @@ func (h *Handler) requireOrgAdminMembership(w http.ResponseWriter, r *http.Reque
 
 // deleteOrgProvider handles DELETE /api/orgs/{org}/providers/{name}.
 //
-// Deleting the workspace cascades everything the provider owns: its
-// ServiceAccount and token, its APIExport and schemas, and its CatalogEntry —
-// which is what removes it from the catalog. Workspaces that still hold an
-// APIBinding to the deleted export keep those bindings, which kcp then reports
-// as NotReady; this endpoint does not reach into team workspaces to tidy them,
-// for the same reason Disable is a per-workspace action.
+// The operation removes the provider APIExport and waits for its cached
+// resources to drain before deleting the workspace, so kcp can keep the source
+// API discovery available while the cache finalizer runs. The Workspace
+// cascade then removes the ServiceAccount and token, schemas, and CatalogEntry
+// — which removes it from the catalog. Workspaces that still hold an APIBinding
+// to the deleted export keep those bindings, which kcp then reports as NotReady;
+// this endpoint does not reach into team workspaces to tidy them, for the same
+// reason Disable is a per-workspace action.
 //
 // Idempotent: deleting an unregistered provider is a no-op success.
 func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
@@ -816,7 +906,13 @@ func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("provider name is required"))
 		return
 	}
-	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(r.Context(), tc.OrgUUID, name); err != nil {
+	// Once authorization succeeds, let the bounded teardown finish even if the
+	// browser disconnects or refreshes. Context values remain available for
+	// tracing, while the timeout ensures the request cannot become an orphaned
+	// background operation.
+	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), orgProviderDeleteRequestTimeout)
+	defer cancel()
+	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(deleteCtx, tc.OrgUUID, name); err != nil {
 		if apierrors.IsNotFound(err) {
 			w.WriteHeader(http.StatusNoContent)
 			return

@@ -481,3 +481,36 @@ func TestActiveTokenSecretNameDefaultsToTheOriginal(t *testing.T) {
 		t.Fatalf("ProviderTokenSecretName %q no longer matches the name the token controller populates", ProviderTokenSecretName)
 	}
 }
+
+func TestEnsureProviderRoleBindingPreservesServerMetadata(t *testing.T) {
+	ctx := context.Background()
+	cl := newRBACDynamicFake()
+	p := NewProvisioner(nil, WithWorkspaceClusterAdmin(true))
+	if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+	binding, err := cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.SetAnnotations(map[string]string{"internal.kcp.io/replicate": "true"})
+	binding.SetLabels(map[string]string{"test": "retained"})
+	binding.Object["subjects"] = []any{}
+	if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, binding, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.ensureProviderRoleBinding(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+	binding, err = cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.GetAnnotations()["internal.kcp.io/replicate"] != "true" || binding.GetLabels()["test"] != "retained" {
+		t.Fatal("server metadata was removed")
+	}
+	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
+	if len(subjects) != 1 || subjects[0].(map[string]any)["name"] != ProviderSAName {
+		t.Fatal("provider subject was not repaired")
+	}
+}

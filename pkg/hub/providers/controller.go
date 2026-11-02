@@ -76,6 +76,9 @@ type CatalogReconciler struct {
 	// healthClient performs bounded, same-authority readiness probes for
 	// platform-provider backends. Org-owned backends are never sent here.
 	healthClient httpDoer
+	// Org probes use only the hub-owned Edge route through kcp.
+	edgeHealthClient httpDoer
+	edgeHealthTarget *url.URL
 	// uiClient fetches platform-provider /main.js bundles for the SRI pin the
 	// portal loads them with (see ui_integrity.go). Nil means the default
 	// bounded client. Org-owned UIs are never dialled.
@@ -206,6 +209,17 @@ func SetupCatalogWithManager(mgr mcmanager.Manager, reg *Registry, kcpConfig *re
 	}
 	if kcpConfig != nil {
 		r.prov = NewProvisioner(kcpConfig, opts.Provisioner...)
+		target, err := url.Parse(kcpConfig.Host)
+		if err != nil {
+			return nil, fmt.Errorf("parsing kcp health target: %w", err)
+		}
+		transport, err := rest.TransportFor(kcpConfig)
+		if err != nil {
+			return nil, fmt.Errorf("building kcp health transport: %w", err)
+		}
+		edgeClient := defaultBackendHealthClient()
+		edgeClient.Transport = transport
+		r.edgeHealthTarget, r.edgeHealthClient = target, edgeClient
 	}
 	if err := mcbuilder.ControllerManagedBy(mgr).
 		Named("provider-catalog").
@@ -632,8 +646,16 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 			// is an admitted in-cluster route. Org-owned provider URLs name an
 			// address inside a tenant cluster; direct probing would bypass the
 			// hub-owned edge route and turn tenant input into an SSRF primitive.
-			if orgUUID == "" {
-				prov.BackendHealthRequired = true
+			prov.BackendHealthRequired = true
+			if orgUUID != "" {
+				if !prov.EdgeRoute.Usable() || r.edgeHealthClient == nil || r.edgeHealthTarget == nil {
+					backendHealthErr = fmt.Errorf("edge readiness transport is unavailable")
+				} else {
+					hop := edgeHop{target: *r.edgeHealthTarget, route: *prov.EdgeRoute}
+					backendHealthErr = probeBackendHealth(ctx, r.edgeHealthClient, hop.url(""), backend.HealthPath)
+					prov.BackendHealthy = backendHealthErr == nil
+				}
+			} else {
 				healthClient := r.healthClient
 				if healthClient == nil {
 					healthClient = defaultBackendHealthClient()
