@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -106,13 +107,20 @@ func (s *Server) resolveGatedProfile(w http.ResponseWriter, r *http.Request) (*a
 			dataplane.WriteError(w, dataplane.ErrDenied)
 			return nil, nil, llm.Profile{}, false
 		}
-		writeJSON(w, http.StatusOK, credentialTestResult{
-			OK:    false,
-			Error: "This credential's API key could not be read. Check that Secret " + cred.Spec.SecretRef.Name + " exists in namespace default and holds the key.",
-		})
+		message := credentialProfileRecoveryMessage(cred)
+		writeJSON(w, http.StatusOK, credentialTestResult{OK: false, Error: message})
 		return nil, nil, llm.Profile{}, false
 	}
 	return cred, c, profile, true
+}
+
+// Use the resource the operator can repair, without echoing a raw upstream
+// error (which may contain credential material).
+func credentialProfileRecoveryMessage(cred *agentsv1alpha1.ModelCredential) string {
+	if cred.Spec.ConnectionRef != "" {
+		return fmt.Sprintf("Provider connection %q could not be used. Check that it exists, is not being deleted, and has a usable API key in Provider connections.", cred.Spec.ConnectionRef)
+	}
+	return "This credential's API key could not be read. Check that Secret " + cred.Spec.SecretRef.Name + " exists in namespace default and holds the key."
 }
 
 // credentialTestRequest is the `test` verb's optional body.

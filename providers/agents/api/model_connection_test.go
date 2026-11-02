@@ -393,3 +393,21 @@ func TestSharedProviderUseGateProtectsKeysAndUpdatesTheCorrectResource(t *testin
 		}
 	}
 }
+
+func TestBindingDiscoveryFailureNamesProviderConnection(t *testing.T) {
+	model := &unstructured.Unstructured{Object: map[string]any{"apiVersion": agentsv1alpha1.SchemeGroupVersion.String(), "kind": "ModelCredential", "metadata": map[string]any{"name": "selected"}, "spec": map[string]any{"connectionRef": "missing-account", "model": "test-model"}}}
+	callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser, Objects: []*unstructured.Unstructured{model}, ListKinds: map[schema.GroupVersionResource]string{agentsclient.ModelCredentialGVR: "ModelCredentialList", agentsclient.ModelProviderConnectionGVR: "ModelProviderConnectionList"}, Allow: func(conformance.Attributes) bool { return true }}
+	server := newGatedTestServer(t, callers)
+	w := httptest.NewRecorder()
+	gatedHandler(t, server).ServeHTTP(w, stamped(http.MethodPost, verbBase(conformanceCluster, "modelcredentials", "selected")+"/discover", nil, conformanceUser))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body)
+	}
+	var result credentialTestResult
+	if err := json.NewDecoder(w.Body).Decode(&result); err != nil {
+		t.Fatal(err)
+	}
+	if result.OK || !strings.Contains(result.Error, "missing-account") || strings.Contains(result.Error, "Secret ") {
+		t.Fatalf("misleading binding recovery: %+v", result)
+	}
+}
