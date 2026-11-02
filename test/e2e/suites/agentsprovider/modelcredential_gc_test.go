@@ -19,6 +19,7 @@ package agentsprovider
 import (
 	"encoding/base64"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -50,6 +51,37 @@ const (
 // test asks Kubernetes to delete it.
 func TestDModelCredentialSecretProtectionGarbageCollection(t *testing.T) {
 	requireTenant(t)
+	// Go registers tests in source-file order, not by their TestD prefix.
+	// agents_test.go can therefore disable the provider before this file runs.
+	// Own this fixture's binding rather than depending on the earlier Enable.
+	_, err := tenant(t).Resource(apiBindingGVR).Get(ctxWithTimeout(t, 10*time.Second), providerName, metav1.GetOptions{})
+	if err != nil && !apierrors.IsNotFound(err) {
+		t.Fatalf("read agents fixture binding: %v", err)
+	}
+	if apierrors.IsNotFound(err) {
+		t.Cleanup(func() {
+			code, raw := hubDo(t, http.MethodPost, enablePath(providerName, "disable"), staticToken, orgUUID, workspaceUUID, nil, nil)
+			if code != http.StatusNoContent && code != http.StatusOK {
+				t.Errorf("restore disabled agents fixture: %d: %s", code, truncate(raw))
+				return
+			}
+			waitGone(t, apiBindingGVR, providerName, 90*time.Second)
+		})
+		enableProvider(t, providerName, []map[string]string{
+			{"group": "authorization.k8s.io", "resource": "subjectaccessreviews"},
+			{"group": "", "resource": "secrets"},
+		})
+	}
+	if !waitForCondition(t, 90*time.Second, func() (bool, string) {
+		for _, resource := range []schema.GroupVersionResource{gcModelCredentialGVR, gcModelProviderConnectionGVR} {
+			if _, err := tenant(t).Resource(resource).List(ctxWithTimeout(t, 10*time.Second), metav1.ListOptions{}); err != nil {
+				return false, resource.Resource + ": " + err.Error()
+			}
+		}
+		return true, ""
+	}) {
+		t.Fatal("model credential and provider connection APIs never became servable for GC regression")
+	}
 
 	t.Run("late generated key is collected for a deleted owner", func(t *testing.T) {
 		for _, owner := range []struct {
