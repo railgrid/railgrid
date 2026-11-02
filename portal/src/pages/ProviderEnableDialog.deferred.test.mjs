@@ -111,6 +111,7 @@ const providerStore = {
 }
 const orgProviderStore = {
   supported: false,
+  enrollment: { available: true },
   items: [],
   eligibleInstallTargets: [],
   installTargetsEligible: false,
@@ -144,11 +145,12 @@ export {
   dialogScope,
   onDialogConfirm,
   providerStore,
+  orgProviderStore,
   tenantStore,
   authStore,
   watchCalls,
   toastCalls,
-  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations,'}
+  ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring, orgEnrollmentAvailable,' : 'onDisable, disableOperations,'}
 }
 `
   const { outputText } = ts.transpileModule(harness, {
@@ -174,6 +176,15 @@ const callers = await Promise.all([
   loadCaller('pages/ProvidersPage.vue'),
   loadCaller('components/WelcomeWizard.vue'),
 ])
+
+test('WelcomeWizard exposes the generic enrollment gate only for org-owned provider choices', async () => {
+  const source = await readFile(path.join(portalRoot, 'src/components/WelcomeWizard.vue'), 'utf8')
+  assert.match(source, /void orgProviders\.load\(\)/)
+  assert.match(source, /item\.provider\.scope === 'org' && !orgEnrollmentAvailable/)
+  assert.match(source, /providers\.loading \|\| \(item\.provider\.scope === 'org' && !orgEnrollmentAvailable\)/)
+  assert.match(source, /if \(provider\.scope === 'org' && !orgEnrollmentAvailable\.value\)/)
+  assert.match(source, /dialogProvider\.value\?\.scope === 'org' && !orgEnrollmentAvailable\.value/)
+})
 
 for (const [index, caller] of callers.entries()) {
   const label = index === 0 ? 'ProvidersPage' : 'WelcomeWizard'
@@ -298,6 +309,44 @@ test('WelcomeWizard fails closed until admin access is confirmed, including the 
     assert.equal(caller.dialogProvider.value, provider)
     caller.closeEnableDialog()
   } finally {
+    caller.tenantStore.activeWorkspace = beforeWorkspace
+    caller.tenantStore.activeOrg = beforeOrg
+  }
+})
+
+test('WelcomeWizard gates only org-owned provider Enable on hosted enrollment', async () => {
+  const caller = callers[1]
+  const beforeWorkspace = caller.tenantStore.activeWorkspace
+  const beforeOrg = caller.tenantStore.activeOrg
+  const beforeEnrollment = caller.orgProviderStore.enrollment
+  const beforeEnable = caller.providerStore.enable
+  let enabled = 0
+  try {
+    caller.tenantStore.activeWorkspace = { role: 'admin' }
+    caller.tenantStore.activeOrg = { role: 'member' }
+    caller.orgProviderStore.enrollment = { available: false, reason: 'Hosted enrollment is unavailable.' }
+    caller.providerStore.enable = async () => { enabled++ }
+
+    const orgProvider = { name: 'org-tool', displayName: 'Org Tool', scope: 'org', requires: [] }
+    caller.openEnableDialog(orgProvider)
+    assert.equal(caller.dialogProvider.value, null, 'org-owned Enable remains closed while enrollment is unavailable')
+
+    const platformProvider = { name: 'edges', displayName: 'Edges', scope: 'platform', requires: [] }
+    caller.openEnableDialog(platformProvider)
+    assert.equal(caller.dialogProvider.value, platformProvider, 'platform Enable is independent of BYO enrollment')
+    await caller.onDialogConfirm([])
+    assert.equal(enabled, 1)
+
+    caller.orgProviderStore.enrollment = { available: true }
+    caller.openEnableDialog(orgProvider)
+    assert.equal(caller.dialogProvider.value, orgProvider)
+    caller.orgProviderStore.enrollment = { available: false, reason: 'Hosted enrollment is unavailable.' }
+    await caller.onDialogConfirm([])
+    assert.equal(enabled, 1, 'a status change before confirmation cannot call the org Enable endpoint')
+    assert.equal(caller.dialogProvider.value, null)
+  } finally {
+    caller.orgProviderStore.enrollment = beforeEnrollment
+    caller.providerStore.enable = beforeEnable
     caller.tenantStore.activeWorkspace = beforeWorkspace
     caller.tenantStore.activeOrg = beforeOrg
   }

@@ -101,6 +101,14 @@ export interface EdgeInstallTargets {
   reason?: string
 }
 
+export interface OrgProviderEnrollmentStatus {
+  available: boolean
+  reason?: string
+}
+
+const enrollmentUnavailableReason = 'Organization provider enrollment is temporarily unavailable while a control-plane quota issue is resolved.'
+const enrollmentUnverifiedReason = 'Hosted provider enrollment availability could not be verified by this hub.'
+
 function readTenantSelection(): { orgUUID: string | null } {
   return { orgUUID: useTenantStore().orgUUID }
 }
@@ -113,6 +121,17 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   // True when the hub has org-provider support wired (it returns 501 otherwise),
   // so the UI can hide the whole surface instead of showing a broken tab.
   const supported = ref(true)
+  const enrollmentStatus = ref<OrgProviderEnrollmentStatus | null>(null)
+  const enrollmentOrgUUID = ref<string | null>(null)
+  // Do not carry a previous organization's positive status across a switch,
+  // even in the interval before the next list request starts.
+  const enrollment = computed(() =>
+    enrollmentOrgUUID.value === readTenantSelection().orgUUID ? enrollmentStatus.value : null,
+  )
+  let loadGeneration = 0
+  let pendingLoadURL = ''
+  let targetGeneration = 0
+  let pendingTargetURL = ''
 
   // Where a self-hosted provider could go. Empty until loadInstallTargets runs;
   // eligibility starts false so a page that renders before the check completes
@@ -123,6 +142,25 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   const installTargetsError = ref<string | null>(null)
   const installTargetsLoading = ref(false)
   const installTargetsLoaded = ref(false)
+
+  function clearOrganizationState(): void {
+    loadGeneration++
+    pendingLoadURL = ''
+    items.value = []
+    loading.value = false
+    loaded.value = false
+    error.value = null
+    enrollmentStatus.value = null
+    enrollmentOrgUUID.value = null
+    targetGeneration++
+    pendingTargetURL = ''
+    installTargets.value = []
+    installTargetsEligible.value = false
+    installTargetsReason.value = null
+    installTargetsError.value = null
+    installTargetsLoading.value = false
+    installTargetsLoaded.value = false
+  }
 
   const eligibleInstallTargets = computed(() => installTargets.value.filter((t) => t.eligible))
 
@@ -144,11 +182,22 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
 
   async function load(): Promise<void> {
     const url = orgURL()
-    if (!url || loading.value) return
+    if (!url) {
+      clearOrganizationState()
+      return
+    }
+    if (pendingLoadURL === url) return
+    const generation = ++loadGeneration
+    pendingLoadURL = url
+    items.value = []
+    enrollmentStatus.value = null
+    enrollmentOrgUUID.value = null
+    loaded.value = false
     loading.value = true
     error.value = null
     try {
       const res = await authFetch(url, { tenant: true })
+      if (generation !== loadGeneration || orgURL() !== url) return
       if (res.status === 501) {
         // Hub built without org-provider support. Not an error to surface.
         supported.value = false
@@ -157,14 +206,27 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
         return
       }
       if (!res.ok) throw new Error(`list self-hosted providers: ${res.status}`)
-      const body = (await res.json()) as { items?: OrgProvider[] }
+      const body = (await res.json()) as {
+        items?: OrgProvider[]
+        enrollment?: Partial<OrgProviderEnrollmentStatus>
+      }
+      if (generation !== loadGeneration || orgURL() !== url) return
       supported.value = true
       items.value = body.items ?? []
+      const status = body.enrollment
+      enrollmentStatus.value = status && typeof status.available === 'boolean'
+        ? {
+            available: status.available,
+            ...(status.available ? {} : { reason: status.reason || enrollmentUnavailableReason }),
+          }
+        : { available: false, reason: enrollmentUnverifiedReason }
+      enrollmentOrgUUID.value = readTenantSelection().orgUUID
       loaded.value = true
     } catch (e) {
+      if (generation !== loadGeneration || orgURL() !== url) return
       error.value = e instanceof Error ? e.message : String(e)
     } finally {
-      loading.value = false
+      if (generation === loadGeneration) { loading.value = false; pendingLoadURL = '' }
     }
   }
 
@@ -173,22 +235,34 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
   // button state without becoming a second, drift-prone source of truth.
   async function loadInstallTargets(): Promise<void> {
     const url = orgURL('/install-targets')
-    if (!url || installTargetsLoading.value) return
+    if (!url) {
+      clearOrganizationState()
+      return
+    }
+    if (pendingTargetURL === url) return
+    const generation = ++targetGeneration
+    pendingTargetURL = url
+    installTargets.value = []
+    installTargetsEligible.value = false
+    installTargetsLoaded.value = false
     installTargetsLoading.value = true
     installTargetsError.value = null
     try {
       const res = await authFetch(url, { tenant: true })
+      if (generation !== targetGeneration || orgURL('/install-targets') !== url) return
       if (res.status === 501) {
         supported.value = false
         return
       }
       if (!res.ok) throw new Error(`list install targets: ${res.status}`)
       const body = (await res.json()) as EdgeInstallTargets
+      if (generation !== targetGeneration || orgURL('/install-targets') !== url) return
       installTargets.value = body.items ?? []
       installTargetsEligible.value = !!body.eligible
       installTargetsReason.value = body.reason ?? null
       installTargetsLoaded.value = true
     } catch (e) {
+      if (generation !== targetGeneration || orgURL('/install-targets') !== url) return
       // Keep this failure local to the preflight surface. The caller renders
       // self-hosting as unavailable rather than guessing it is fine, because
       // guessing "fine" produces a 409 on click.
@@ -197,7 +271,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
       installTargetsReason.value = 'could not check for a connected cluster'
       installTargetsLoaded.value = true
     } finally {
-      installTargetsLoading.value = false
+      if (generation === targetGeneration) { installTargetsLoading.value = false; pendingTargetURL = '' }
     }
   }
 
@@ -210,6 +284,9 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     sourceProvider: string | undefined,
     edge: Pick<EdgeInstallTarget, 'workspace' | 'name'>,
   ): Promise<OrgProviderRegistration> {
+    if (enrollment.value?.available !== true) {
+      throw new Error(enrollment.value?.reason || enrollmentUnverifiedReason)
+    }
     const url = orgURL()
     if (!url) throw new Error('select an organization first')
     const res = await authFetch(url, {
@@ -218,16 +295,22 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
-        sourceProvider: sourceProvider ?? name,
+        sourceProvider,
         edge: { workspace: edge.workspace, name: edge.name },
       }),
     })
+    if (orgURL() !== url) {
+      void res.body?.cancel().catch(() => undefined)
+      throw new Error('Organization changed during registration. Reopen provider registration in the active organization.')
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`self-host ${name} failed: ${res.status} ${detail}`)
     }
     const registration = (await res.json()) as OrgProviderRegistration
+    if (orgURL() !== url) throw new Error('Organization changed during registration. Reopen provider registration in the active organization.')
     await load()
+    if (orgURL() !== url) throw new Error('Organization changed during registration. Reopen provider registration in the active organization.')
     return registration
   }
 
@@ -238,11 +321,19 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     const url = orgURL(`/${encodeURIComponent(name)}/kubeconfig`)
     if (!url) throw new Error('select an organization first')
     const res = await authFetch(url, { tenant: true })
+    if (orgURL(`/${encodeURIComponent(name)}/kubeconfig`) !== url) {
+      void res.body?.cancel().catch(() => undefined)
+      throw new Error('Organization changed while loading provider credentials.')
+    }
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
       throw new Error(`fetch install details for ${name} failed: ${res.status} ${detail}`)
     }
-    return (await res.json()) as OrgProviderRegistration
+    const registration = (await res.json()) as OrgProviderRegistration
+    if (orgURL(`/${encodeURIComponent(name)}/kubeconfig`) !== url) {
+      throw new Error('Organization changed while loading provider credentials.')
+    }
+    return registration
   }
 
   async function remove(name: string): Promise<void> {
@@ -253,6 +344,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
       const detail = await res.text().catch(() => '')
       throw new Error(`remove ${name} failed: ${res.status} ${detail}`)
     }
+    if (orgURL(`/${encodeURIComponent(name)}`) !== url) return
     items.value = items.value.filter((p) => p.name !== name)
     await load()
   }
@@ -263,6 +355,7 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     loaded,
     error,
     supported,
+    enrollment,
     byName,
     isSelfHosted,
     load,

@@ -14,20 +14,18 @@ test('provider host consumers honor replace navigation while preserving push by 
   }
 })
 
-test('provider page and dashboard consumers coordinate versioned bootstrap reloads', () => {
-  for (const source of [frame, tile]) {
-    assert.match(source, /loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
-    // Both consumers resolve the bundle (URL + SRI pin; a grant for an
-    // org-owned provider) through the shared resolver as the user, then hand
-    // it to the shared loader — neither builds the script URL itself.
-    assert.match(source, /import \{ resolveProviderBundle \} from '@\/providers\/providerBundle'/)
-    assert.match(source, /await resolveProviderBundle\((?:entry\.value|props\.provider), authFetch\)/)
-    // Plus the refreshIntegrity hook: one pinned retry when a bundle rebuilt
-    // at an unchanged version leaves this page's pin describing bytes the hub
-    // no longer serves.
-    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
-    assert.doesNotMatch(source, /document\.createElement\('script'\)/)
-  }
+test('provider page isolates BYO code; dashboard only loads trusted platform bundles', () => {
+  assert.match(frame, /createProviderSandboxFrame, fetchVerifiedProviderBundle/)
+  assert.match(frame, /entry\.value\.scope === 'org' \|\| !!entry\.value\.ownerOrg/)
+  assert.match(frame, /await resolveProviderBundle\(entry\.value, authFetch\)/)
+  assert.match(frame, /fetchVerifiedProviderBundle\(bundle, name/)
+  assert.match(frame, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
+  assert.doesNotMatch(frame, /document\.createElement\('script'\)/)
+
+  assert.match(tile, /isOrgOwnedProvider\(props\.provider\)[\s\S]*?loadState\.value = 'no-tile'[\s\S]*?return/)
+  assert.match(tile, /await resolveProviderBundle\(props\.provider, authFetch\)/)
+  assert.match(tile, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
+  assert.doesNotMatch(tile, /document\.createElement\('script'\)/)
   assert.match(frame, /invalidateProviderScript\(name, version\)/)
   assert.match(frame, /@click="retryProviderBundle"/)
 })
@@ -44,7 +42,7 @@ test('provider hosts recover a retained wrapper after its lazy chunk is retired'
 
 test('direct-registration provider failures require a page reload', () => {
   assert.match(frame, /if \(!canReloadProviderScriptInDocument\(provider\.name\)\)[\s\S]*window\.location\.reload\(\)/)
-  assert.match(frame, /canRetryProviderBundleInDocument \? 'Retry' : 'Reload page'/)
+  assert.match(frame, /canRetryProviderBundleInDocument \|\| isOrgOwnedProviderEntry \? 'Retry' : 'Reload page'/)
   assert.match(tile, /if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
   assert.match(tile, /canRetryInDocument \? 'Retry' : 'Reload page'/)
 })

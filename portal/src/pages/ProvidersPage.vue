@@ -9,6 +9,7 @@ import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useOrgProvidersStore, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
 import { providerBindingAction } from '@/lib/providerBindingAction'
 import { Puzzle, ExternalLink, AlertCircle, AlertTriangle, ArrowUpCircle, Plus, X, Loader2, Search, Server, Trash2, RefreshCw } from 'lucide-vue-next'
@@ -18,6 +19,14 @@ const { scopePath } = useScopedNavigation()
 const providers = useProvidersStore()
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
+const auth = useAuthStore()
+const canManageProviders = computed(() => tenant.activeOrg?.role === 'admin')
+const enrollmentAvailable = computed(() => orgProviders.enrollment?.available === true)
+const enrollmentMessage = computed(() => orgProviders.enrollment?.reason || (
+  orgProviders.loading && !orgProviders.loaded
+    ? 'Checking hosted provider enrollment availability…'
+    : 'Hosted provider enrollment availability could not be verified by this hub.'
+))
 const disableOperations = new Map<string, symbol>()
 
 // Two views of the same catalog: what you can turn on ("Catalog"), and what you
@@ -64,7 +73,7 @@ function edgeKey(t: { workspace: string; name: string }): string {
 // canSelfHost is the single gate. A provider cannot be installed into a cluster
 // the hub cannot reach, and the hub refuses such a registration anyway — so the
 // button is disabled rather than left to 409.
-const canSelfHost = computed(() => orgProviders.installTargetsEligible && !!selectedEdge.value)
+const canSelfHost = computed(() => canManageProviders.value && enrollmentAvailable.value && orgProviders.installTargetsEligible && !!selectedEdge.value)
 
 // The hub-owned catalog is authoritative for whether the Edges prerequisite
 // exists and is ready to open. Do not manufacture a provider route when the
@@ -95,7 +104,9 @@ function bindingAction(p: ProviderDTO) {
 
 async function selfHost(p: ProviderDTO) {
   if (!canSelfHost.value) {
-    selfHostError.value = orgProviders.installTargetsReason ?? 'no connected cluster to install into'
+    selfHostError.value = enrollmentAvailable.value
+      ? orgProviders.installTargetsReason ?? 'no connected cluster to install into'
+      : enrollmentMessage.value
     return
   }
   const edge = selectedEdge.value
@@ -135,11 +146,17 @@ async function selfHost(p: ProviderDTO) {
     // buttons reflect reality instead of failing the same way again.
     orgProviders.loadInstallTargets()
   } finally {
-    selfHostBusy.value = { ...selfHostBusy.value, [p.name]: false }
+    if (requestGeneration === selfHostRequestGeneration) {
+      selfHostBusy.value = { ...selfHostBusy.value, [p.name]: false }
+    }
   }
 }
 
 async function showInstructions(name: string) {
+  if (!enrollmentAvailable.value) {
+    selfHostError.value = enrollmentMessage.value
+    return
+  }
   if (selfHostBusy.value[name]) return
   const requestGeneration = ++selfHostRequestGeneration
   const targetScope = dialogScope.value
@@ -156,7 +173,9 @@ async function showInstructions(name: string) {
       selfHostError.value = e instanceof Error ? e.message : String(e)
     }
   } finally {
-    selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+    if (requestGeneration === selfHostRequestGeneration) {
+      selfHostBusy.value = { ...selfHostBusy.value, [name]: false }
+    }
   }
 }
 
@@ -324,14 +343,29 @@ const {
   onDialogConfirm,
 } = useProviderEnableFlow({
   scope: () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
-  enable: (p, accept, acceptHubAccess, acceptCompositions) =>
-    providers.enable(p, accept, acceptHubAccess, acceptCompositions),
+  enable: (p, accept, acceptHubAccess, acceptCompositions) => {
+    if (p.scope === 'org' && !enrollmentAvailable.value) return Promise.reject(new Error(enrollmentMessage.value))
+    return providers.enable(p, accept, acceptHubAccess, acceptCompositions)
+  },
   dependencyError: (p) => {
     const missing = providers.missingDependencies(p)
     return missing.length > 0
       ? `${p.displayName} requires ${providers.dependencyLabels(missing).join(', ')} to be enabled first.`
       : null
   },
+})
+
+function requestEnableDialog(p: ProviderDTO) {
+  if (p.scope === 'org' && !enrollmentAvailable.value) return
+  openEnableDialog(p)
+}
+
+watch(enrollmentAvailable, (available) => {
+  if (!available) {
+    if (dialogProvider.value?.scope === 'org') closeEnableDialog()
+    selfHostRequestGeneration += 1
+    selfHostBusy.value = {}
+  }
 })
 
 // Always refetch on mount. The store's initial load happens at app boot
@@ -353,7 +387,22 @@ watch(dialogScope, () => {
   selfHostRequestGeneration += 1
   activeRegistration.value = null
   selfHostError.value = null
+  orgProviders.load()
+  orgProviders.loadInstallTargets()
 })
+
+// Install details contain a long-lived provider credential. A browser session
+// can be replaced without changing the selected organization/workspace, so
+// scope changes alone are not enough to decide who may keep seeing it.
+watch(
+  () => `${auth.user?.userId || auth.user?.email || ''}/${canManageProviders.value}`,
+  () => {
+    selfHostRequestGeneration += 1
+    activeRegistration.value = null
+    selfHostError.value = null
+    selfHostBusy.value = {}
+  },
+)
 
 watch(selectedEdgeKey, () => {
   // Install instructions are target-specific. Hide an old response as soon
@@ -416,6 +465,11 @@ function dependencyNotice(p: ProviderDTO): string {
         <span>{{ actionError }}</span>
       </div>
 
+      <div v-if="orgProviders.supported && !enrollmentAvailable && (tab === 'self-hosting' || orgProviders.items.length > 0)" class="mb-4 rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2.5 text-sm text-warning" role="status" aria-live="polite">
+        <p>{{ enrollmentMessage }} Existing providers remain listed; Disable and Remove stay available.</p>
+        <button v-if="!orgProviders.loading" type="button" class="mt-1 font-medium underline" @click="orgProviders.load">Retry availability check</button>
+      </div>
+
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
       <nav v-if="orgProviders.supported" class="k-tabs mb-5" aria-label="Provider sections">
@@ -440,7 +494,7 @@ function dependencyNotice(p: ProviderDTO): string {
         Loading providers&hellip;
       </div>
 
-      <div v-else-if="providers.items.length === 0" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-text-muted">
+      <div v-else-if="providers.items.length === 0 && tab === 'catalog'" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-text-muted">
         No providers installed yet.
         <div class="mt-2 text-xs">
           See <code>docs/providers.md</code> and <code>providers/quickstart/</code> for an example.
@@ -449,12 +503,19 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- ===== Self-Hosting tab ===== -->
       <div v-else-if="tab === 'self-hosting'" class="space-y-6">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <h2 class="text-base font-semibold text-text-primary">Providers you run</h2>
+          <router-link v-if="canManageProviders && enrollmentAvailable" :to="scopePath('/settings/providers/new')" class="k-btn k-btn--primary">
+            <Plus class="h-4 w-4" :stroke-width="1.75" /> Register your own provider
+          </router-link>
+        </div>
         <p class="text-sm text-text-muted">
-          Run a provider inside your own cluster instead of using the platform's copy. railgrid
+          When hosted enrollment is available, bring a provider you built, or run your own copy of a platform provider. Railgrid
           creates a workspace for it in your organization and gives you a credential scoped
           to that workspace only; you deploy the provider with Helm. Your workspaces then
           enable your copy exactly like any other provider.
         </p>
+        <p v-if="!canManageProviders" class="text-sm text-text-muted">An organization admin can register providers and manage their credentials.</p>
         <p class="-mt-3 text-[11px] text-text-muted">
           The cluster must be connected to railgrid as an edge first. railgrid reaches a
           self-hosted provider over that cluster's outbound tunnel — there is no route
@@ -475,7 +536,7 @@ function dependencyNotice(p: ProviderDTO): string {
              The Self-Host buttons below are disabled off the same condition, so
              this block is the explanation for them, not a separate warning. -->
         <div
-          v-if="orgProviders.installTargetsLoaded && !canSelfHost"
+          v-if="canManageProviders && enrollmentAvailable && orgProviders.installTargetsLoaded && !canSelfHost"
           class="rounded-lg border border-warning/30 bg-warning-subtle px-3 py-2.5 text-sm text-warning flex items-start gap-2"
         >
           <AlertTriangle class="h-4 w-4 flex-shrink-0 mt-0.5" :stroke-width="1.75" />
@@ -623,14 +684,14 @@ function dependencyNotice(p: ProviderDTO): string {
                   Helm values you installed with.
                 </p>
               </div>
-              <div class="flex items-center gap-2">
+              <div v-if="canManageProviders" class="flex items-center gap-2">
                 <!-- Upgrade opens the same instructions panel; the panel leads
                      with the upgrade command when the hub says one is due. -->
                 <button
                   v-if="p.upgradeAvailable"
                   type="button"
                   class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
+                  :disabled="!!selfHostBusy[p.name] || !enrollmentAvailable"
                   @click="showInstructions(p.name)"
                 >
                   <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
@@ -640,7 +701,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 <button
                   type="button"
                   class="k-btn k-btn--ghost px-2.5 py-1 text-[11px] text-text-muted transition-colors hover:text-accent disabled:opacity-60"
-                  :disabled="!!selfHostBusy[p.name]"
+                  :disabled="!!selfHostBusy[p.name] || !enrollmentAvailable"
                   @click="showInstructions(p.name)"
                 >
                   <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
@@ -702,7 +763,7 @@ function dependencyNotice(p: ProviderDTO): string {
                   type="button"
                   class="k-btn k-btn--primary px-2.5 py-1 text-[11px] disabled:cursor-not-allowed disabled:opacity-50"
                   :disabled="!!selfHostBusy[p.name] || !canSelfHost"
-                  :title="canSelfHost ? undefined : (orgProviders.installTargetsReason ?? 'no connected cluster to install into')"
+                  :title="canSelfHost ? undefined : (enrollmentAvailable ? (orgProviders.installTargetsReason ?? 'no connected cluster to install into') : enrollmentMessage)"
                   @click="selfHost(p)"
                 >
                   <Loader2 v-if="selfHostBusy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
@@ -809,7 +870,7 @@ function dependencyNotice(p: ProviderDTO): string {
                   :class="
                     !p.ready
                       ? 'border border-warning/30 bg-warning-subtle text-warning'
-                      : p.serving?.ui?.builtinRoute
+                      : p.scope !== 'org' && p.serving?.ui?.builtinRoute
                         ? 'border border-border-default bg-surface-overlay text-text-secondary'
                         : providers.isDisabling(p.name)
                           ? 'border border-warning/30 bg-warning-subtle text-warning'
@@ -820,7 +881,7 @@ function dependencyNotice(p: ProviderDTO): string {
                                 : 'border border-success/30 bg-success-subtle text-success'
                   "
                 >
-                  {{ !p.ready ? 'Not ready' : p.serving?.ui?.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
+                  {{ !p.ready ? 'Not ready' : p.scope !== 'org' && p.serving?.ui?.builtinRoute ? 'Built-in' : providers.isDisabling(p.name) ? 'Disabling' : providers.isEnabled(p.name) ? 'Enabled' : providers.hasMissingDependencies(p) ? 'Blocked' : 'Available' }}
                 </span>
               </div>
               <p class="mt-0.5 truncate font-mono text-[10px] text-text-muted">{{ p.name }}<span v-if="p.version"> · {{ p.version }}</span></p>
@@ -871,7 +932,8 @@ function dependencyNotice(p: ProviderDTO): string {
             <button
               type="button"
               class="k-btn k-btn--ghost mt-1 px-1.5 py-0.5 text-[10px] text-accent"
-              @click="openEnableDialog(p)"
+              :disabled="p.scope === 'org' && !enrollmentAvailable"
+              @click="requestEnableDialog(p)"
             >
               Review access
             </button>
@@ -904,7 +966,8 @@ function dependencyNotice(p: ProviderDTO): string {
               v-if="providers.claimState(p.name)?.pending?.length || providers.claimState(p.name)?.rejected?.length"
               type="button"
               class="k-btn k-btn--ghost mt-1 px-1.5 py-0.5 text-[10px] text-accent"
-              @click="openEnableDialog(p)"
+              :disabled="p.scope === 'org' && !enrollmentAvailable"
+              @click="requestEnableDialog(p)"
             >
               Review access
             </button>
@@ -925,7 +988,8 @@ function dependencyNotice(p: ProviderDTO): string {
             <button
               type="button"
               class="k-btn k-btn--ghost mt-1 px-1.5 py-0.5 text-[10px] text-accent"
-              @click="openEnableDialog(p)"
+              :disabled="p.scope === 'org' && !enrollmentAvailable"
+              @click="requestEnableDialog(p)"
             >
               Review access
             </button>
@@ -979,7 +1043,7 @@ function dependencyNotice(p: ProviderDTO): string {
                  ProviderFrame. -->
             <router-link
               v-if="p.serving?.ui && p.ready && (!p.export?.name || providers.isEnabled(p.name))"
-              :to="scopePath(p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
+              :to="scopePath(p.scope !== 'org' && p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >
               Open
@@ -1002,9 +1066,9 @@ function dependencyNotice(p: ProviderDTO): string {
                 v-else-if="bindingAction(p) === 'enable'"
                 type="button"
                 class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-success transition-colors hover:border-success/40 hover:bg-success-subtle disabled:cursor-not-allowed disabled:opacity-60"
-                :disabled="!!busy[p.name] || providers.hasMissingDependencies(p)"
-                :title="dependencyNotice(p)"
-                @click="openEnableDialog(p)"
+                :disabled="!!busy[p.name] || providers.hasMissingDependencies(p) || (p.scope === 'org' && !enrollmentAvailable)"
+                :title="p.scope === 'org' && !enrollmentAvailable ? enrollmentMessage : dependencyNotice(p)"
+                @click="requestEnableDialog(p)"
               >
                 <Loader2 v-if="busy[p.name]" class="h-3 w-3 animate-spin" :stroke-width="2" />
                 <Plus v-else class="h-3 w-3" :stroke-width="2" />

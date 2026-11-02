@@ -314,11 +314,12 @@ function downloadKubeconfig() {
       </a>
     </template>
 
-    <p v-else class="text-[11px] text-text-muted">
-      This provider publishes no install recipe. Deploy it yourself using the credential
-      above — it is already scoped to this provider's workspace, so the provider will
-      register itself once it starts.
-    </p>
+    <section v-else class="space-y-3 text-sm text-text-muted">
+      <h3 class="font-semibold text-text-primary">Install your chart</h3>
+      <p>Use your hosting cluster’s kubeconfig to install the chart. Store the downloaded provider credential in the Secret your chart expects, and mount it at <code>RAILGRID_PROVIDER_KUBECONFIG</code>.</p>
+      <p>Your provider must use an SDK with organization bootstrap support. Its init submits the CatalogEntry, generated APIExport and schemas to the hub; the hub installs them and configures the Edge route.</p>
+      <p>Configure the chart’s hub URL and provider name for readiness heartbeats. After installation, check that init completed and the provider is ready, then enable it from the catalog. Keep the downloaded credential private.</p>
+    </section>
   </div>
 </template>
 

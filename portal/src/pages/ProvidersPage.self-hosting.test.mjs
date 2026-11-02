@@ -48,3 +48,32 @@ test('unready Edges returns to a filtered catalog instead of navigating to a dea
   )
   assert.match(source, /@click="showEdgesCatalogEntry"/)
 })
+
+test('one-time credentials are cleared and pending self-host actions fenced on principal or admin-role changes', () => {
+  assert.match(source, /useAuthStore\(\)/)
+  assert.match(source, /auth\.user\?\.userId \|\| auth\.user\?\.email/)
+  assert.match(source, /canManageProviders\.value/)
+  assert.match(source, /activeRegistration\.value = null/)
+  assert.match(source, /selfHostRequestGeneration \+= 1/)
+  assert.match(source, /if \(requestGeneration === selfHostRequestGeneration\) \{\s+selfHostBusy\.value = \{ \.\.\.selfHostBusy\.value, \[p\.name\]: false \}/)
+})
+
+test('hosted enrollment status fails closed without mixing it with Edge eligibility', () => {
+  assert.match(source, /const enrollmentAvailable = computed\(\(\) => orgProviders\.enrollment\?\.available === true\)/)
+  assert.match(source, /canManageProviders\.value && enrollmentAvailable\.value && orgProviders\.installTargetsEligible/)
+  assert.match(source, /v-if="orgProviders\.supported && !enrollmentAvailable && \(tab === 'self-hosting' \|\| orgProviders\.items\.length > 0\)"[^>]*role="status"/)
+  assert.match(source, /Hosted provider enrollment availability could not be verified by this hub\./)
+  assert.match(source, /Existing providers remain listed; Disable and Remove stay available\./)
+  assert.match(source, /if \(p\.scope === 'org' && !enrollmentAvailable\.value\) return/)
+  assert.match(source, /if \(p\.scope === 'org' && !enrollmentAvailable\.value\) return Promise\.reject\(new Error\(enrollmentMessage\.value\)\)/)
+  assert.match(source, /dialogProvider\.value\?\.scope === 'org'/)
+})
+
+test('closed enrollment disables creation, credential refetch, Upgrade and Enable while preserving cleanup', () => {
+  assert.match(source, /<router-link v-if="canManageProviders && enrollmentAvailable"/)
+  assert.match(source, /:disabled="!!selfHostBusy\[p\.name\] \|\| !enrollmentAvailable"/)
+  assert.match(source, /:disabled="!!busy\[p\.name\] \|\| providers\.hasMissingDependencies\(p\) \|\| \(p\.scope === 'org' && !enrollmentAvailable\)"/)
+  assert.match(source, /@click="requestEnableDialog\(p\)"/)
+  assert.match(source, /@click="removeSelfHosted\(p\.name\)"/)
+  assert.match(source, /@click="onDisable\(p\)"/)
+})

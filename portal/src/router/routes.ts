@@ -8,6 +8,8 @@ export const routes = [
   },
   { path: '/', name: 'landing', component: () => import('@/pages/NotFoundPage.vue') },
   { path: ORGANIZATION_ROUTE + '/providers', name: 'org-providers', component: () => import('@/pages/ProvidersPage.vue') },
+  { path: ORGANIZATION_ROUTE + '/settings/providers/new', name: 'org-provider-create', component: () => import('@/pages/ProviderCreatePage.vue') },
+  { path: WORKSPACE_ROUTE + '/settings/providers/new', name: 'provider-create', component: () => import('@/pages/ProviderCreatePage.vue') },
   {
     path: '/login',
     name: 'login',

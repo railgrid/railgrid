@@ -6,6 +6,7 @@ import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { useProviderEnableFlow } from '@/composables/useProviderEnableFlow'
 import ProviderEnableDialog from '@/components/ProviderEnableDialog.vue'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
+import { useOrgProvidersStore } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { categoryIcons, fallbackCategoryIcon } from '@/lib/categoryIcons'
@@ -18,6 +19,7 @@ const { scopePath } = useScopedNavigation()
 const emit = defineEmits<{ dismiss: [] }>()
 const props = defineProps<{ startAtGoal?: boolean }>()
 const providers = useProvidersStore()
+const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
 const auth = useAuthStore()
 const step = ref(0)
@@ -70,6 +72,8 @@ const setupDataCurrent = computed(() =>
 const setupReady = computed(() => setupReadyFor(setupDataCurrent.value, canOpen.value, plan.value, providers.isEnabled))
 
 const memberJourney = computed(() => !isConfirmedAdmin(tenant.activeWorkspace?.role, tenant.activeOrg?.role))
+const orgEnrollmentAvailable = computed(() => orgProviders.enrollment?.available === true)
+const orgEnrollmentMessage = computed(() => orgProviders.enrollment?.reason || 'Hosted provider enrollment availability could not be verified by this hub.')
 const canSkipSetup = computed(() => memberJourney.value && !teamSetup.value && setupReady.value)
 const openLabel = computed(() => target.value?.displayName ? `Open ${target.value.displayName}` : selectedGoal.value.next)
 function goalTitle(option: typeof goals[number]) { return goalTitleForAudience(option.id, teamSetup.value) }
@@ -121,22 +125,29 @@ const {
   onDialogConfirm: confirmEnable,
 } = useProviderEnableFlow({
   scope: () => `${tenant.orgUUID ?? ''}/${tenant.workspaceUUID ?? ''}/${tenant.workspaceMode}`,
-  enable: (provider, accept, acceptHubAccess, acceptCompositions) =>
-    providers.enable(provider, accept, acceptHubAccess, acceptCompositions),
+  enable: (provider, accept, acceptHubAccess, acceptCompositions) => {
+    if (provider.scope === 'org' && !orgEnrollmentAvailable.value) {
+      return Promise.reject(new Error(orgEnrollmentMessage.value))
+    }
+    return providers.enable(provider, accept, acceptHubAccess, acceptCompositions)
+  },
   dependencyError: provider => dependencyNotice(provider) || null,
 })
 function openEnableDialog(provider: ProviderDTO) {
-  if (memberJourney.value) return
+  if (memberJourney.value || (provider.scope === 'org' && !orgEnrollmentAvailable.value)) return
   openAdminEnableDialog(provider)
 }
 function onDialogConfirm(...args: Parameters<typeof confirmEnable>) {
-  if (memberJourney.value) {
+  if (memberJourney.value || (dialogProvider.value?.scope === 'org' && !orgEnrollmentAvailable.value)) {
     closeEnableDialog()
     return
   }
   return confirmEnable(...args)
 }
 watch(memberJourney, isMember => { if (isMember) closeEnableDialog() })
+watch(orgEnrollmentAvailable, available => {
+  if (!available && dialogProvider.value?.scope === 'org') closeEnableDialog()
+})
 
 
 // This is a local presentation preference, never an authorization decision.
@@ -164,7 +175,10 @@ async function focusStep() {
   const main = heading.value?.closest('main')
   if (main) main.scrollTop = 0
 }
-onMounted(focusStep)
+onMounted(() => {
+  void orgProviders.load()
+  void focusStep()
+})
 watch(step, focusStep)
 const finalActionReason = computed(() => {
   if (exploring.value) return ''
@@ -264,13 +278,14 @@ const finalActionReason = computed(() => {
             <p v-if="!item.provider">Not available in this catalog. Ask your administrator to make this Provider available, or choose another goal.</p>
             <template v-else>
               <p>{{ purpose(item.name, item.provider) }}</p>
+              <p v-if="item.provider.scope === 'org' && !orgEnrollmentAvailable" role="status">{{ orgEnrollmentMessage }}</p>
               <p v-if="providers.isEnabled(item.name) && !item.provider.ready" role="status">Enabled, but not yet available</p>
               <p v-if="dependencyNotice(item.provider)" class="text-warning">{{ dependencyNotice(item.provider) }}</p>
               <p v-if="!item.provider.ready && item.provider.readinessMessage">{{ item.provider.readinessMessage }}</p>
             </template>
           </div>
           <span v-if="item.provider && providers.isEnabled(item.name)" role="status" class="onboarding-provider-action inline-flex items-center gap-1.5 text-[13px] text-accent"><Check :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />Enabled</span>
-          <button v-else-if="item.provider?.export?.name && item.provider.export.path" type="button" class="k-btn k-btn--ghost onboarding-provider-action shrink-0 text-accent" :aria-label="`${busy[item.name] ? 'Enabling' : 'Enable provider'}: ${item.provider.displayName || item.name}`" :disabled="!!busy[item.name] || providers.hasMissingDependencies(item.provider) || providers.loading" @click="openEnableDialog(item.provider)">
+          <button v-else-if="item.provider?.export?.name && item.provider.export.path" type="button" class="k-btn k-btn--ghost onboarding-provider-action shrink-0 text-accent" :aria-label="`${busy[item.name] ? 'Enabling' : 'Enable provider'}: ${item.provider.displayName || item.name}`" :disabled="!!busy[item.name] || providers.hasMissingDependencies(item.provider) || providers.loading || (item.provider.scope === 'org' && !orgEnrollmentAvailable)" @click="openEnableDialog(item.provider)">
             <Loader2 v-if="busy[item.name]" :stroke-width="1.75" class="h-4 w-4 animate-spin" aria-hidden="true" /><Plus v-else :stroke-width="1.75" class="h-4 w-4" aria-hidden="true" />{{ busy[item.name] ? 'Enabling…' : 'Enable provider' }}
           </button>
         </li>
