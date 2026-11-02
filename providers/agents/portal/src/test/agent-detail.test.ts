@@ -389,6 +389,8 @@ describe('agent resource detail conformance', () => {
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }) })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout', { displayName: 'Scout' })]
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+    Object.assign(store.credentials, { loaded: true, hasSnapshot: true })
     store.inbox.data = [{
       id: 'approval-1',
       agentName: 'scout',
