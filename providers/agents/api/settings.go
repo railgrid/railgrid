@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -141,54 +142,83 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	}, nil
 }
 
-// deleteCredential removes a ModelCredential and the Secret it pointed at.
-// Best effort on the Secret, and in this order: an orphaned Secret is
-// harmless, an object pointing at a key that is gone is not.
+// deleteCredential removes a ModelCredential. A credential protection
+// finalizer keeps the object present until the provider controller has
+// preserved any Secret it shares with another provider connection or model.
+// The API acts as the caller and deliberately does not read or delete Secrets.
 func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errBadRequest("name is required")
 	}
-	cred, err := c.GetModelCredential(ctx, name)
+	cred, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		// A missing object no longer owns a key. In particular, do not guess the
-		// legacy name and delete a Secret that may be shared or independently
-		// managed. Also avoid a name-only delete: a replacement may have been
-		// created between this read and the attempted deletion.
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	if cred.UID == "" || cred.ResourceVersion == "" {
+		return fmt.Errorf("cannot safely delete ModelCredential %q without UID and resourceVersion", cred.Name)
+	}
 	if cred.Spec.ConnectionRef != "" {
-		// The connection owns the shared Secret. Deleting one model binding must
-		// never read or delete it. UID and resourceVersion preconditions keep a
-		// concurrent replacement from being removed by this request.
-		if cred.UID == "" || cred.ResourceVersion == "" {
-			return fmt.Errorf("deleting ModelCredential binding %q requires UID and resourceVersion", name)
-		}
-		uid, resourceVersion := cred.UID, cred.ResourceVersion
-		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}}
-		if err := c.ModelCredentials().Delete(ctx, name, options); err != nil && !apierrors.IsNotFound(err) {
-			return err
-		}
-		return nil
-	}
-
-	secretName := CredentialSecretName(name)
-	if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
-		secretName = n
-	}
-	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		err := c.ModelCredentials().Delete(ctx, name, modelCredentialDeleteOptions(cred))
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
 		return err
 	}
-	if err := c.DeleteSecret(ctx, llm.SecretNamespace, secretName); err != nil && !apierrors.IsNotFound(err) {
+	models, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
+	if err != nil {
 		return err
 	}
-	return nil
+	for _, model := range models.Items {
+		if model.Spec.ConnectionRef == name {
+			return errBadRequest("remove the models using this connection before deleting it")
+		}
+	}
+	cred, err = ensureModelCredentialSecretProtection(ctx, c, cred)
+	if err != nil {
+		return err
+	}
+	err = c.ModelCredentials().Delete(ctx, name, modelCredentialDeleteOptions(cred))
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func appendMissingFinalizer(finalizers []string, finalizer string) []string {
+	if slices.Contains(finalizers, finalizer) {
+		return finalizers
+	}
+	return append(slices.Clone(finalizers), finalizer)
+}
+
+func ensureModelCredentialSecretProtection(ctx context.Context, c *agentsclient.Client, cred *agentsv1alpha1.ModelCredential) (*agentsv1alpha1.ModelCredential, error) {
+	if slices.Contains(cred.Finalizers, agentsv1alpha1.ModelCredentialSecretProtectionFinalizer) {
+		return cred, nil
+	}
+	if cred.UID == "" || cred.ResourceVersion == "" {
+		return nil, fmt.Errorf("cannot protect ModelCredential %q without UID and resourceVersion", cred.Name)
+	}
+	protected := cred.DeepCopy()
+	protected.Finalizers = appendMissingFinalizer(protected.Finalizers, agentsv1alpha1.ModelCredentialSecretProtectionFinalizer)
+	updated, err := c.UpdateModelCredentialWithPreconditions(ctx, protected)
+	if err != nil {
+		return nil, err
+	}
+	if updated.UID != cred.UID || updated.ResourceVersion == "" {
+		return nil, fmt.Errorf("protecting ModelCredential %q returned unexpected UID or empty resourceVersion", cred.Name)
+	}
+	if !slices.Contains(updated.Finalizers, agentsv1alpha1.ModelCredentialSecretProtectionFinalizer) {
+		return nil, fmt.Errorf("protecting ModelCredential %q returned without the required protection finalizer", cred.Name)
+	}
+	return updated, nil
+}
+
+func modelCredentialDeleteOptions(cred *agentsv1alpha1.ModelCredential) metav1.DeleteOptions {
+	return metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &cred.UID, ResourceVersion: &cred.ResourceVersion}}
 }
 
 // credentialTestResult is the outcome of a live credential health probe.

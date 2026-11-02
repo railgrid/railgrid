@@ -172,6 +172,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 	c := cl.GetClient()
+	reader := cl.GetAPIReader()
+	if reader == nil {
+		reader = c
+	}
 
 	var cred agentsv1alpha1.ModelCredential
 	if err := c.Get(ctx, req.NamespacedName, &cred); err != nil {
@@ -186,6 +190,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 			// probe at its deadline. Once terminating, finish cleanup immediately
 			// from the persisted reservation even if marker fields were edited.
 			return r.finishCredentialProbeCleanup(ctx, c, &cred)
+		}
+		if hasCredentialSecretProtectionFinalizer(&cred) {
+			return r.finalizeCredentialSecretProtection(ctx, c, reader, &cred)
 		}
 		return ctrl.Result{}, nil
 	}
@@ -209,9 +216,18 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, r.releaseCredentialProbeReservation(ctx, c, &cred)
 	}
 	if strings.TrimSpace(cred.Spec.ConnectionRef) != "" {
+		if hasCredentialSecretProtectionFinalizer(&cred) {
+			result, err := r.releaseCredentialSecretProtection(ctx, c, reader, &cred)
+			if err != nil || result.RequeueAfter > 0 {
+				return result, err
+			}
+		}
 		return r.reconcileModelBinding(ctx, c, &cred)
 	}
 
+	if err := protectCredentialSecretOwnership(ctx, c, &cred); err != nil {
+		return ctrl.Result{}, err
+	}
 	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)
 	if err != nil {
 		// A read we could not complete says nothing about the Secret. Leave

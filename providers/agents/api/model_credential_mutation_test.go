@@ -394,3 +394,41 @@ func sameUnstructuredJSON(a, b *unstructured.Unstructured) bool {
 	}
 	return bytes.Equal(left, right)
 }
+
+func TestLegacyDeletePersistsProtectionBeforeRetry(t *testing.T) {
+	object := modelProviderConnectionObject("legacy", CredentialSecretName("legacy"))
+	object.SetKind("ModelCredential")
+	ws, c, requests := modelCredentialWorkspace(t, object)
+	original := ws.Intercept
+	attempts := 0
+	ws.Intercept = func(req tenanttest.Request) *metav1.Status {
+		original(req)
+		if req.GVR == agentsclient.ModelCredentialGVR && req.Verb == "delete" {
+			attempts++
+			current := ws.Get(agentsclient.ModelCredentialGVR, "", "legacy")
+			protected := false
+			for _, f := range current.GetFinalizers() {
+				if f == agentsv1alpha1.ModelCredentialSecretProtectionFinalizer {
+					protected = true
+				}
+			}
+			if !protected {
+				t.Fatal("DELETE before Secret cleanup protection persisted")
+			}
+			if attempts == 1 {
+				return &metav1.Status{Status: "Failure", Reason: metav1.StatusReasonInternalError, Code: 500, Message: "transient delete failure"}
+			}
+		}
+		return nil
+	}
+	if err := deleteCredential(t.Context(), c, "legacy"); err == nil {
+		t.Fatal("expected first DELETE failure")
+	}
+	if err := deleteCredential(t.Context(), c, "legacy"); err != nil {
+		t.Fatalf("retry failed: %v", err)
+	}
+	assertNoCredentialSecretRequests(t, *requests)
+	if attempts != 2 {
+		t.Fatalf("delete attempts=%d", attempts)
+	}
+}
