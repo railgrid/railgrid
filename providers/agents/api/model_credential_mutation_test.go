@@ -432,3 +432,20 @@ func TestLegacyDeletePersistsProtectionBeforeRetry(t *testing.T) {
 		t.Fatalf("delete attempts=%d", attempts)
 	}
 }
+
+func TestLegacyDeleteIgnoresAnUnrelatedSameNameConnection(t *testing.T) {
+	direct := modelProviderConnectionObject("shared", "legacy-key")
+	direct.SetKind("ModelCredential")
+	connection := modelProviderConnectionObject("shared", "connection-key")
+	binding := modelCredentialBindingObject("bound-model", "shared", "test-model")
+	ws, c, requests := modelCredentialWorkspace(t, direct, connection, binding)
+	beforeConnection := ws.Get(agentsclient.ModelProviderConnectionGVR, "", "shared")
+	beforeBinding := ws.Get(agentsclient.ModelCredentialGVR, "", "bound-model")
+	if err := deleteCredential(t.Context(), c, "shared"); err != nil {
+		t.Fatalf("unrelated connection blocked legacy deletion: %v", err)
+	}
+	if !sameUnstructuredJSON(beforeConnection, ws.Get(agentsclient.ModelProviderConnectionGVR, "", "shared")) || !sameUnstructuredJSON(beforeBinding, ws.Get(agentsclient.ModelCredentialGVR, "", "bound-model")) {
+		t.Fatal("legacy delete changed the independent connection or its model")
+	}
+	assertNoCredentialSecretRequests(t, *requests)
+}

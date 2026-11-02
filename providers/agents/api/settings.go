@@ -168,15 +168,6 @@ func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) 
 		}
 		return err
 	}
-	models, err := c.ModelCredentials().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	for _, model := range models.Items {
-		if model.Spec.ConnectionRef == name {
-			return errBadRequest("remove the models using this connection before deleting it")
-		}
-	}
 	cred, err = ensureModelCredentialSecretProtection(ctx, c, cred)
 	if err != nil {
 		return err
