@@ -386,6 +386,26 @@ Running` with readiness `200`; the Factory provider remained stopped with its
 init container reporting `503 organization provider lifecycle unavailable`.
 That is a live-control failure, not evidence that the Factory boundary passed.
 
+### Self-hosted platform-provider probes
+
+The live self-hosted platform-provider path was exercised separately from
+arbitrary BYO registration. The organization-owned Planner, Databricks and
+Factory copies resolved as `scope: org` with bindings marked
+`selfHosted: true` and organization export paths. A second organization's
+catalog request for the owning organization returned `403`, and direct KCP
+reads of the owning organization and provider workspaces were denied. The
+self-hosted Planner credential could not read the platform Planner workspace,
+the platform Planner credential could not read the self-hosted workspace, and
+a server-side dry-run write from the platform identity into the self-hosted
+workspace was denied.
+
+A valid Planner UI grant loaded the self-hosted `main.js`, while replaying the
+same grant against the Databricks asset path returned `401`. No cross-tenant
+break was obtained on this path. The same-name organization copy intentionally
+shadows the platform copy inside that organization; platform copies remain
+visible to organizations without their own copy. The platform-heartbeat
+`warn` weakness described below remains separate and unresolved.
+
 ## Adversarial findings: local E2E compromises
 
 The items below are known weaknesses of this branch or of the local Tilt
