@@ -346,6 +346,10 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		if getErr != nil {
 			return getErr
 		}
+		cred, getErr = llm.ResolveModelCredentialForRuntime(ctx, c, cred)
+		if getErr != nil {
+			return getErr
+		}
 		selector := llm.HarnessSelector(cred.Spec.Provider)
 		if selector == "" {
 			return nil
@@ -482,6 +486,10 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	cred, err := run.Creds.GetModelCredential(ctx, credName)
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("reading the harness credential %q: %w", credName, err)
+	}
+	cred, err = llm.ResolveModelCredentialForRuntime(ctx, run.Creds, cred)
+	if err != nil {
+		return harnessTurn{}, fmt.Errorf("resolving the harness credential %q: %w", credName, err)
 	}
 	selector := llm.HarnessSelector(cred.Spec.Provider)
 	advertised := llm.HarnessAdvertisedName(cred.Spec.Provider)

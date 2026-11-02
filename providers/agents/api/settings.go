@@ -10,6 +10,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -58,29 +59,44 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	if req.Name == "" {
 		return nil, errBadRequest("name is required")
 	}
+	if req.Model == "" {
+		return nil, errBadRequest("model is required")
+	}
+
+	// Bindings inherit their endpoint and key from a ModelProviderConnection.
+	// They may change only their model; reject attempts to edit connection-owned
+	// fields before any Secret reads or writes.
+	existing, err := c.GetModelCredential(ctx, req.Name)
+	switch {
+	case err == nil && existing.Spec.ConnectionRef != "":
+		if req.Provider != "" || req.BaseURL != "" || req.APIKey != "" || req.AnthropicWorkspaceID != "" {
+			return nil, errBadRequest("a model connection binding can only change its model; edit the referenced provider connection to change its provider, base URL, key, or workspace ID")
+		}
+		updated, err := c.UpdateModelBinding(ctx, existing, req.Model)
+		if err != nil {
+			return nil, err
+		}
+		return &modelCredential{Name: updated.Name, Model: updated.Spec.Model}, nil
+	case err != nil && !apierrors.IsNotFound(err):
+		return nil, err
+	}
+
 	if req.Provider == "" {
 		req.Provider = llm.ProviderOpenAICompatible
 	}
 	if req.BaseURL == "" {
 		req.BaseURL = llm.DefaultBaseURL
 	}
-	if req.Model == "" {
-		return nil, errBadRequest("model is required")
-	}
 
 	// The existing object decides which Secret to write into: an edit must not
 	// silently move a credential onto this provider's default name when it was
 	// pointed somewhere else.
 	secretName, secretKey := CredentialSecretName(req.Name), agentsv1alpha1.DefaultModelSecretKey
-	existing, err := c.GetModelCredential(ctx, req.Name)
-	switch {
-	case err == nil:
+	if existing != nil {
 		if n := strings.TrimSpace(existing.Spec.SecretRef.Name); n != "" {
 			secretName = n
 		}
 		secretKey = llm.SecretKey(existing.Spec)
-	case !apierrors.IsNotFound(err):
-		return nil, err
 	}
 
 	// Preserve an existing key when updating without a new one.
@@ -133,15 +149,40 @@ func deleteCredential(ctx context.Context, c *agentsclient.Client, name string) 
 	if name == "" {
 		return errBadRequest("name is required")
 	}
-	secretName := CredentialSecretName(name)
-	if cred, err := c.GetModelCredential(ctx, name); err == nil {
-		if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
-			secretName = n
-		}
-	} else if !apierrors.IsNotFound(err) {
+	cred, err := c.GetModelCredential(ctx, name)
+	if apierrors.IsNotFound(err) {
+		// A missing object no longer owns a key. In particular, do not guess the
+		// legacy name and delete a Secret that may be shared or independently
+		// managed. Also avoid a name-only delete: a replacement may have been
+		// created between this read and the attempted deletion.
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+	if cred.Spec.ConnectionRef != "" {
+		// The connection owns the shared Secret. Deleting one model binding must
+		// never read or delete it. UID and resourceVersion preconditions keep a
+		// concurrent replacement from being removed by this request.
+		if cred.UID == "" || cred.ResourceVersion == "" {
+			return fmt.Errorf("deleting ModelCredential binding %q requires UID and resourceVersion", name)
+		}
+		uid, resourceVersion := cred.UID, cred.ResourceVersion
+		options := metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &resourceVersion}}
+		if err := c.ModelCredentials().Delete(ctx, name, options); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		return nil
+	}
+
+	secretName := CredentialSecretName(name)
+	if n := strings.TrimSpace(cred.Spec.SecretRef.Name); n != "" {
+		secretName = n
+	}
+	if err := c.ModelCredentials().Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
 	if err := c.DeleteSecret(ctx, llm.SecretNamespace, secretName); err != nil && !apierrors.IsNotFound(err) {
