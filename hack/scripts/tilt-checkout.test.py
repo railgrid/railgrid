@@ -20,6 +20,18 @@ spec.loader.exec_module(m)
 
 
 class CheckoutTest(unittest.TestCase):
+    def test_public_hub_url_from_dotenv_survives_checkout_defaults(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / '.env').write_text('RAILGRID_HUB_EXTERNAL_URL=https://console.dev.example.com # public endpoint\n')
+            config = {'root': tmp, 'key': 'first', 'ports': m.PORTS}
+            first = m.environment(config)
+            self.assertEqual(first['RAILGRID_HUB_EXTERNAL_URL'], 'https://console.dev.example.com')
+            with patch.dict(os.environ, first):
+                self.assertEqual(m.environment(config)['RAILGRID_HUB_EXTERNAL_URL'], first['RAILGRID_HUB_EXTERNAL_URL'])
+            (root / '.env').unlink()
+            self.assertEqual(m.environment(config)['RAILGRID_HUB_EXTERNAL_URL'], first['DEV_HUB_URL'])
+
     def capture_make_tilt(self, root, env_contents, make_values=None, inherited=None):
         """Capture the environment of `make tilt` without running the launcher."""
         root = Path(root)

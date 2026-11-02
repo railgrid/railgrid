@@ -219,7 +219,7 @@ local_resource(
 make certs && \
 make build-hub
 ''',
-    serve_cmd=('''./bin/railgrid-hub \
+    serve_cmd=('''exec ./bin/railgrid-hub \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
   --hub-external-url=%s \

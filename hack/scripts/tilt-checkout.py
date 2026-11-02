@@ -125,10 +125,10 @@ def settings(root=ROOT):
 
 
 def root_env_overrides(root):
-    """Read the preview settings from the root Makefile-style .env file.
+    """Read the public hub and preview settings from the root Makefile-style .env file.
 
     `make tilt` imports .env itself. A direct `tilt up` does not, so the
-    checkout launcher reads these two settings for the shared prepare-env
+    checkout launcher reads these settings for the shared prepare-env
     path. Keep this deliberately narrow: the Makefile remains the loader for
     the rest of the development environment.
     """
@@ -136,7 +136,7 @@ def root_env_overrides(root):
     if not path.is_file():
         return {}
     overrides = {}
-    pattern = re.compile(r'^\s*(?:export\s+)?(RAILGRID_APP_BASE_DOMAIN|RAILGRID_APP_PUBLIC_PORT)\s*[:?+]?=(.*)$')
+    pattern = re.compile(r'^\s*(?:export\s+)?(RAILGRID_APP_BASE_DOMAIN|RAILGRID_APP_PUBLIC_PORT|RAILGRID_HUB_EXTERNAL_URL)\s*[:?+]?=(.*)$')
     for line in path.read_text().splitlines():
         match = pattern.match(line)
         if not match:
@@ -233,7 +233,7 @@ def environment(config):
         flags = os.environ.get('GOFLAGS', '')
         env['GOFLAGS'] = flags if '-buildvcs=false' in flags.split() else (flags + ' -buildvcs=false').strip()
     hub = f"https://console-{key}.127.0.0.1.sslip.io:{p['HUB_PORT']}"
-    env.update(DEV_HUB_URL=hub, RAILGRID_HUB_EXTERNAL_URL=hub,
+    env.update(DEV_HUB_URL=hub, RAILGRID_HUB_EXTERNAL_URL=root_env.get('RAILGRID_HUB_EXTERNAL_URL') or hub,
                RAILGRID_ACCESS_HUB_PUBLIC_URL=hub,
                HUB_INTERNAL_URL=f"https://host.docker.internal:{p['HUB_PORT']}",
                HUB_DATA_DIR=str(root / '.kcp/hub-data'),
