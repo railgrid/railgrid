@@ -10,6 +10,7 @@ package api
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -163,5 +164,68 @@ func TestRetryFirstCredentialWriteAfterCrashBeforeSecretCreation(t *testing.T) {
 	key := getSecretFromTracker(t, d, current.Spec.SecretRef.Name)
 	if key == nil || string(key.Data[agentsv1alpha1.DefaultModelSecretKey]) != "retry-key" {
 		t.Fatal("retry did not activate the supplied key")
+	}
+}
+
+func TestFirstCredentialWriteAcknowledgesControllerActivation(t *testing.T) {
+	for _, scenario := range []string{"before-writer-read", "between-read-and-patch", "lost-patch-response"} {
+		t.Run(scenario, func(t *testing.T) {
+			c, d := newCredentialDeleteClient(t)
+			var parent *unstructured.Unstructured
+			d.PrependReactor("create", "modelcredentials", func(a ktesting.Action) (bool, runtime.Object, error) {
+				parent = a.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				parent.SetUID("owner-uid")
+				parent.SetResourceVersion("1")
+				return true, parent.DeepCopy(), d.Tracker().Create(agentsclient.ModelCredentialGVR, parent.DeepCopy(), "")
+			})
+			activate := func() {
+				t.Helper()
+				active := parent.DeepCopy()
+				annotations := active.GetAnnotations()
+				pending := annotations[agentsv1alpha1.PendingKeySecretAnnotation]
+				delete(annotations, agentsv1alpha1.PendingKeySecretAnnotation)
+				annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] = strings.TrimPrefix(pending, "railgrid-agents-model-")
+				active.SetAnnotations(annotations)
+				active.SetResourceVersion("2")
+				if err := d.Tracker().Update(agentsclient.ModelCredentialGVR, active, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d.PrependReactor("create", "secrets", func(a ktesting.Action) (bool, runtime.Object, error) {
+				key := a.(ktesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				key.SetUID("key-uid")
+				key.SetResourceVersion("1")
+				if err := d.Tracker().Create(agentsclient.SecretGVR, key.DeepCopy(), "default"); err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "before-writer-read" {
+					activate()
+				}
+				return true, key, nil
+			})
+			d.PrependReactor("patch", "modelcredentials", func(ktesting.Action) (bool, runtime.Object, error) {
+				activate()
+				if scenario == "lost-patch-response" {
+					return true, nil, errors.New("response lost after committed activation")
+				}
+				return true, nil, apierrors.NewConflict(agentsv1alpha1.Resource("modelcredentials"), parent.GetName(), errors.New("controller activated first"))
+			})
+			result, err := applyCredentialUpsert(t.Context(), c, &modelCredential{Name: "new-model", Model: "first-model", APIKey: "test-key"})
+			if err != nil || result == nil || !result.HasAPIKey {
+				t.Fatalf("successful activation reported as failure: result=%+v err=%v", result, err)
+			}
+			if len(modelCredentialDeleteActions(d)) != 0 {
+				t.Fatal("acknowledged activation was rolled back")
+			}
+			creates := 0
+			for _, a := range d.Actions() {
+				if a.GetResource() == agentsclient.SecretGVR && a.GetVerb() == "create" {
+					creates++
+				}
+			}
+			if creates != 1 {
+				t.Fatalf("created %d keys, want exactly one", creates)
+			}
+		})
 	}
 }
