@@ -157,7 +157,9 @@ describe('typed chat progress projection', () => {
     })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
-    store.agents.loaded = true
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
     await settleVue(8, 1)
@@ -173,7 +175,9 @@ describe('AgentChat loading and draft behavior', () => {
     const api = stubApi({ chatStream, listRuns: () => Promise.resolve({ items: [] }), ...overrides })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
-    store.agents.loaded = true
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
     return { api, store, view }

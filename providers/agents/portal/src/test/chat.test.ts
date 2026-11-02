@@ -82,6 +82,8 @@ async function mountConversationRail(): Promise<MountedVue> {
 async function mountChat(chatStream: unknown, extra: Record<string, unknown> = {}) {
   const api = stubApi({ chatStream, listRuns: () => Promise.resolve({ items: [] }), ...extra })
   const store = makeStore(api)
+  store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  store.credentials.loaded = store.credentials.hasSnapshot = true
   store.agents.data = [agentFixture('scout')]
   store.agents.loaded = true
   const view = await mountVue(AgentChat, { store, api, name: 'scout' })
@@ -527,7 +529,7 @@ describe('chat streaming', () => {
     expect(textarea.getAttribute('aria-describedby')).toBe('agents-composer-help')
     expect(textarea.placeholder).toBe('Message scout…')
     expect(text(el.querySelector('#agents-composer-help'))).toContain('Enter to send')
-    expect(el.querySelector('.k-ai-composer__help')).not.toBeNull()
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
     expect(textarea.title).toContain('Enter to send')
     expect(submit.classList.contains('agents-composer-primary')).toBe(true)
     expect(submit.getAttribute('aria-label')).toBe('Send')
@@ -1494,6 +1496,8 @@ describe('chat read ownership', () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 'remembered-session')
     const api = stubApi({ listSessions: () => sessions.promise, chatStream })
     const store = makeStore(api)
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'test-model' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
@@ -1604,6 +1608,8 @@ describe('chat read ownership', () => {
       chatStream,
     })
     const store = makeStore(api)
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'test-model' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     store.agents.data = [agentFixture('scout')]
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
@@ -2258,6 +2264,11 @@ describe('conversation model picker', () => {
     await settle()
   }
 
+  function expectSingleModelError(message = 'Chat model could not be saved') {
+    const alerts = [...document.querySelectorAll('[role="alert"]')].filter(alert => text(alert).includes(message))
+    expect(alerts).toHaveLength(1)
+  }
+
   const picker = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('.k-ai-model-reasoning-picker__trigger')!
   async function chooseModel(el: HTMLElement, name: string) {
     picker(el).click()
@@ -2268,6 +2279,15 @@ describe('conversation model picker', () => {
     option.click()
     await settle()
   }
+
+  it('keeps the conversation model picker compact as the pane widens', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    await configureModels(store)
+
+    const modelPicker = el.querySelector('.k-ai-model-reasoning-picker')
+    expect(modelPicker).not.toBeNull()
+    expect(modelPicker?.classList.contains('k-ai-model-reasoning-picker--compact')).toBe(true)
+  })
 
   it('saves only the current chat, blocks sending until saved, and keeps the draft', async () => {
     const pending = deferred<any>()
@@ -2376,8 +2396,8 @@ describe('conversation model picker', () => {
     await settle(8)
 
     expect(listSessions).toHaveBeenCalledTimes(2)
-    expect(text(el)).toContain('Chat limit reached. Delete an unused chat, then retry.')
-    expect(text(el)).not.toContain('private backend detail')
+    expectSingleModelError('Chat limit reached. Delete an unused chat, then retry.')
+    expect(text(document.body)).not.toContain('private backend detail')
     const emptyChat = el.querySelector(`[data-thread-id="${savedSession.id}"]`)
     expect(emptyChat).not.toBeNull()
 
@@ -2396,7 +2416,7 @@ describe('conversation model picker', () => {
     await configureModels(store)
     await chooseModel(el, 'sol')
     await settle(8)
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
     expect(picker(el).getAttribute('aria-label')).toBe('Model: openai')
   })
 
@@ -2417,7 +2437,7 @@ describe('conversation model picker', () => {
     await configureModels(store)
     await chooseModel(el, 'sol')
     await settle(8)
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
     expect(getSessionModel).toHaveBeenCalledTimes(1)
 
     store.agents.data[0].spec.backend = modelBackend('sol')
@@ -2427,7 +2447,7 @@ describe('conversation model picker', () => {
     expect(getSessionModel).toHaveBeenCalledTimes(2)
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
     expect(picker(el).getAttribute('aria-label')).not.toContain('could not be loaded')
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
   })
 
   it('refreshes inherited metadata after a pending explicit save fails and preserves its retry', async () => {
@@ -2483,7 +2503,7 @@ describe('conversation model picker', () => {
 
     explicitSave.reject(new Error('save failed'))
     await settle(6)
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
     expect(getSessionModel).toHaveBeenCalledTimes(1)
 
     pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: {} })
@@ -2494,7 +2514,7 @@ describe('conversation model picker', () => {
     picker(el).click()
     await settle()
     expect(document.querySelector('[data-testid="reasoning-effort-slider"]')).toBeNull()
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
 
     store.agents.data[0].spec.backend = modelBackend('gemini')
     store.dispatchEvent(new Event('change'))
@@ -2507,7 +2527,7 @@ describe('conversation model picker', () => {
     await settle(10)
     expect(getSessionModel.mock.calls.filter(([, id]) => id === 'old')).toHaveLength(4)
     expect(picker(el).getAttribute('aria-label')).toContain('deepseek')
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
     expect(patchAgent).toHaveBeenCalledTimes(1)
 
     picker(el).click()
@@ -2521,7 +2541,7 @@ describe('conversation model picker', () => {
       selectedCredential: 'sol', modelCredential: 'sol',
     }))
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
-    expect(text(el)).not.toContain('Chat model could not be saved')
+    expect(text(document.body)).not.toContain('Chat model could not be saved')
 
     await chooseSession(el, 'New chat')
     await settle(8)
@@ -2559,7 +2579,7 @@ describe('conversation model picker', () => {
     expect(picker(el).getAttribute('aria-label')).toContain('claude')
     pendingSave.reject(new Error('old chat save failed'))
     await settle(8)
-    expect(text(el)).not.toContain('Chat model could not be saved')
+    expect(text(document.body)).not.toContain('Chat model could not be saved')
     expect(picker(el).getAttribute('aria-label')).toContain('claude')
     expect(saveSessionModel).toHaveBeenCalledTimes(1)
 
@@ -2601,18 +2621,19 @@ describe('conversation model picker', () => {
 
     expect(getSessionModel).toHaveBeenCalledTimes(2)
     expect(picker(el).getAttribute('aria-label')).toContain('claude')
-    expect(text(el)).toContain('Chat model could not be saved')
-    const retry = [...el.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => text(button).includes('Chat model could not be saved'))
-    expect(retry).toBeDefined()
-    retry!.click()
+    expectSingleModelError()
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
+    const retries = [...document.querySelectorAll<HTMLButtonElement>('button')]
+      .filter(button => text(button) === 'Retry')
+    expect(retries).toHaveLength(1)
+    retries[0].click()
     await settle(8)
 
     expect(saveSessionModel).toHaveBeenNthCalledWith(2, 'scout', 'old', expect.objectContaining({
       selectedCredential: 'sol', modelCredential: 'sol',
     }))
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
-    expect(text(el)).not.toContain('Chat model could not be saved')
+    expect(text(document.body)).not.toContain('Chat model could not be saved')
   })
 
   it('lets the user reselect the displayed default after saved-model access is denied', async () => {
@@ -2663,7 +2684,8 @@ describe('conversation model picker', () => {
     pending.reject(new Error('save failed'))
     await settle(8)
     expect(picker(el).getAttribute('aria-label')).toContain('Model default')
-    expect(text(el)).toContain('Chat model could not be saved')
+    expectSingleModelError()
+    expect(el.querySelector('.k-ai-composer__help')).toBeNull()
   })
 
   it('shows all Haiku effort levels from the backend and saves an explicit choice for this chat', async () => {
@@ -2745,6 +2767,81 @@ describe('conversation model picker', () => {
     expect(document.querySelector<HTMLInputElement>('[data-testid="reasoning-effort-slider"]')?.max).toBe('2')
     expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading'))).toBe('Model default')
     expect(text(document.querySelector('.k-ai-model-reasoning-picker__effort-heading')?.nextElementSibling)).toContain('Using High as the model default')
+  })
+
+  it('recovers an inherited conversation after a saved default replaces its deleted model', async () => {
+    const sessionID = 'same-conversation'
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', sessionID)
+    const pendingAgentSave = deferred<unknown>()
+    const refreshedPreferences = deferred<any>()
+    const newDefault = 'claude-haiku-5-5'
+    const history = [{ id: 'existing-answer', role: 'assistant' as const, content: 'Earlier answer', createdAt: '' }]
+    const getSessionModel = vi.fn()
+      .mockResolvedValueOnce({
+        selectedCredential: 'openai', modelCredential: '', effortOptions: ['low'], defaultEffort: 'low',
+        reasoningEffortByModel: { openai: 'low' },
+      })
+      .mockReturnValueOnce(refreshedPreferences.promise)
+    const patchAgent = vi.fn(() => pendingAgentSave.promise)
+    const listAgents = vi.fn(async () => [agentFixture('scout', { backend: modelBackend(newDefault) })])
+    const chatStream = vi.fn(scripted([]))
+    const { el, api, store } = await mountChat(chatStream, {
+      listSessions: async () => [session(sessionID, 'Existing conversation')],
+      listMessagePage: async () => ({ items: history }),
+      getSessionModel,
+      patchAgent,
+      listAgents,
+    })
+    await configureModels(store)
+    const composer = el.querySelector<HTMLTextAreaElement>('textarea')!
+    composer.value = 'Keep this unsent draft'
+    composer.dispatchEvent(new Event('input'))
+    await settle()
+    expect(text(el)).toContain('Earlier answer')
+
+    // The old configured credential disappears before the replacement Agent
+    // default has finished saving. Chat must retain the same conversation and
+    // wait for that save before reading the inherited preference again.
+    store.credentials.data = [{ name: newDefault, provider: 'anthropic', model: 'claude-haiku-5-5' }]
+    store.dispatchEvent(new Event('change'))
+    await settle(8)
+    expect(text(el)).toContain('Choose a model to continue')
+    store.setPendingPrompt('scout', 'Do not send this queued prompt')
+
+    const save = queueAgentConfigSave({
+      store,
+      api,
+      name: 'scout',
+      patch: { modelCredential: newDefault },
+      apply: spec => { spec.backend = modelBackend(newDefault) },
+      success: 'Saved model settings',
+    })
+    await settle(4)
+    expect(patchAgent).toHaveBeenCalledOnce()
+    expect(getSessionModel).toHaveBeenCalledTimes(1)
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+
+    pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: { backend: modelBackend(newDefault) } })
+    await save
+    await settle(8)
+    expect(listAgents).toHaveBeenCalledOnce()
+    expect(getSessionModel).toHaveBeenCalledTimes(2)
+    expect(getSessionModel).toHaveBeenNthCalledWith(2, 'scout', sessionID)
+    // While the fresh capability read is still outstanding, the effective
+    // choice follows the saved Agent default instead of the deleted name.
+    expect(picker(el).getAttribute('aria-label')).toContain(newDefault)
+    expect(text(el)).not.toContain('Choose a model to continue')
+
+    refreshedPreferences.resolve({
+      selectedCredential: newDefault, modelCredential: '', effortOptions: ['low', 'medium'], defaultEffort: 'medium',
+      reasoningEffortByModel: {},
+    })
+    await settle(10)
+    expect(text(el)).toContain('Earlier answer')
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).toBe(sessionID)
+    expect(store.takePendingPrompt('scout')).toBe('Do not send this queued prompt')
+    expect(chatStream).not.toHaveBeenCalled()
   })
 
   it('refreshes the rolled-back inherited model after an Agent default save fails', async () => {
@@ -3197,5 +3294,67 @@ describe('conversation history navigation', () => {
     expect(composer.value).toContain('which tools can you use')
     expect(document.activeElement).toBe(composer)
     expect(stream).not.toHaveBeenCalled()
+  })
+})
+
+describe('dedicated chat model recovery', () => {
+  it('replaces a missing selection with recovery and preserves an unsent draft', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
+    input.value = 'Keep this conversation draft'; input.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    expect(text(el)).toContain('Connect a model to continue')
+    expect(el.querySelector('textarea')).toBeNull()
+    expect(el.querySelector('.k-ai-model-reasoning-picker')).toBeNull()
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this conversation draft')
+  })
+  it('keeps a draft for setup navigation without assigning a replacement', async () => {
+    const { el, store, view } = await mountChat(scripted([]))
+    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
+    input.value = 'Retain through setup'; input.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    const connect = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Connect model')!
+    connect.click(); await settle()
+    expect(view.navigations.at(-1)).toEqual({ kind: 'create', resource: 'model', type: 'from-connection' })
+    expect(store.takeChatSetupDraft('scout')?.draft).toBe('Retain through setup')
+  })
+})
+
+describe('authoritative recovery state', () => {
+  it('keeps unknown credentials in loading and a failed first read in recovery', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.credentials.hasSnapshot = false; store.credentials.loaded = false; store.credentials.loading = true
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(text(el)).toContain('Loading models…')
+    expect(el.querySelector('textarea')).toBeNull()
+    store.credentials.loading = false; store.credentials.error = 'offline'; store.credentials.loaded = true
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(text(el)).toContain('Models could not be loaded')
+    expect(el.querySelector('textarea')).toBeNull()
+  })
+  it('blocks a known missing key without blocking discovery-only failures', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'manual-model', ready: false, secretResolved: true }]
+    store.dispatchEvent(new Event('change')); await settle()
+    expect(el.querySelector('textarea')).not.toBeNull()
+    store.credentials.data[0].secretResolved = false
+    store.dispatchEvent(new Event('change')); await settle(12)
+    expect(el.querySelector('textarea')).toBeNull()
+    expect(text(el)).toContain('Connect a model to continue')
+  })
+  it('does not replace the thread or send a queued assisted prompt after recovery', async () => {
+    const stream = vi.fn(scripted([]))
+    const { el, store } = await mountChat(stream)
+    el.querySelector<HTMLTextAreaElement>('textarea')!.value = 'Retain my draft'
+    el.querySelector('textarea')!.dispatchEvent(new Event('input'))
+    store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
+    store.setPendingPrompt('scout', 'Queued assisted setup')
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
+    store.dispatchEvent(new Event('change')); await settle(12)
+    expect(stream).not.toHaveBeenCalled()
+    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Retain my draft')
+    expect(store.takePendingPrompt('scout')).toBe('Queued assisted setup')
   })
 })
