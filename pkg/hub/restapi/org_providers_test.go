@@ -40,6 +40,7 @@ type fakeOrgProviderOps struct {
 	workspaces []kcp.OrgProviderWorkspace
 	// registered records EnsureOrgProviderWorkspace calls.
 	registered []string
+	deleted    []string
 	// recordedEdges maps "org/provider" → "workspace/edge" as stamped by
 	// RecordProviderEdgeBinding.
 	recordedEdges map[string]string
@@ -77,7 +78,8 @@ func (f *fakeOrgProviderOps) GetOrgProviderWorkspace(_ context.Context, _, name 
 	return nil, nil
 }
 
-func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspace(context.Context, string, string) error {
+func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspace(_ context.Context, _, name string) error {
+	f.deleted = append(f.deleted, name)
 	return nil
 }
 
@@ -97,11 +99,15 @@ func (f *fakeOrgProviderOps) GetEdgeInstallTarget(_ context.Context, _, wsUUID, 
 // fakeCredMinter is the credential half of the org-provider wiring. It records
 // whether it was ever asked for a credential.
 type fakeCredMinter struct {
+	ensured int
 	minted  int
 	rotated []string
 }
 
-func (f *fakeCredMinter) EnsureProviderSAAtPath(context.Context, string) error { return nil }
+func (f *fakeCredMinter) EnsureProviderSAAtPath(context.Context, string) error {
+	f.ensured++
+	return nil
+}
 
 func (f *fakeCredMinter) MintProviderKubeconfigAtPath(context.Context, string, string) ([]byte, error) {
 	f.minted++
@@ -155,9 +161,8 @@ func newOrgProviderTestServer(t *testing.T, targets []kcp.EdgeInstallTarget) (*f
 // newOrgProviderTestServerAs is the same with an explicit caller and an
 // explicit set of team workspaces to create, for the membership-boundary tests.
 //
-// The Org is created with catalogEntryCreation=members so these tests
-// exercise the edge preflight and membership boundary, not the registration
-// policy; TestRegisterOrgProvider_DefaultsToAdminOnly covers the policy.
+// The Org retains the legacy catalogEntryCreation=members value to prove it
+// cannot widen access. Provider mutations still require Org admin.
 func newOrgProviderTestServerAs(
 	t *testing.T,
 	targets []kcp.EdgeInstallTarget,
@@ -205,6 +210,9 @@ func newOrgProviderTestServerWithPolicy(
 	ops := &fakeOrgProviderOps{targets: targets}
 	creds := &fakeCredMinter{}
 	mgr.WithOrgProviders(ops, creds)
+	mgr.WithOrgProviderAvailability(func(context.Context) error { return nil })
+	mgr.WithOrgProviderConsumerPolicy(func(context.Context, string, string, providers.Provider) error { return nil })
+	withTestOrgProviderLifecycle(t, mgr)
 	srv := newTestServer(t, mgr, tc)
 	t.Cleanup(srv.Close)
 	return ops, creds, func() string { return srv.URL }
@@ -610,7 +618,7 @@ func TestListOrgProviders_ReportsUpgradeAvailable(t *testing.T) {
 			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("status: got %d, want 200", resp.StatusCode)
 			}
-			var got ListResponse[OrgProviderView]
+			var got ListOrgProvidersResponse
 			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -687,10 +695,94 @@ func registeredOrgProvider(t *testing.T, tc tenant.TenantContext, policy, orgRol
 	return ops, creds, url
 }
 
+func TestExistingOrgProviderManagementRequiresOrgAdmin(t *testing.T) {
+	for _, caller := range []struct {
+		name string
+		tc   tenant.TenantContext
+	}{
+		{"member", memberTC("alice", "org-a", "ws-1")},
+		{"workspace admin", adminTC("alice", "org-a", "ws-1")},
+	} {
+		for _, operation := range []string{"register again", "fetch kubeconfig", "delete"} {
+			t.Run(caller.name+"/"+operation, func(t *testing.T) {
+				ops, creds, url := registeredOrgProvider(t, caller.tc,
+					tenancyv1alpha1.CatalogEntryCreationMembers, tenancyv1alpha1.MembershipRoleMember)
+				ops.recordedEdges = map[string]string{"org-a/vault": "original-workspace/original-edge"}
+				var resp *http.Response
+				switch operation {
+				case "register again":
+					resp = postRegister(t, url(), RegisterOrgProviderRequest{
+						Name: "vault", Edge: &EdgeTargetRef{Workspace: "ws-1", Name: "prod"},
+					})
+				case "fetch kubeconfig":
+					var err error
+					resp, err = http.Get(url() + "/api/orgs/org-a/providers/vault/kubeconfig")
+					if err != nil {
+						t.Fatal(err)
+					}
+				default:
+					req, err := http.NewRequest(http.MethodDelete, url()+"/api/orgs/org-a/providers/vault", nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					resp, err = http.DefaultClient.Do(req)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				defer func() { _ = resp.Body.Close() }()
+				if resp.StatusCode != http.StatusForbidden {
+					t.Errorf("status = %d, want 403", resp.StatusCode)
+				}
+				if creds.minted != 0 {
+					t.Errorf("minted %d credentials for an org member", creds.minted)
+				}
+				if len(ops.deleted) != 0 {
+					t.Errorf("deleted providers %v for an org member", ops.deleted)
+				}
+				if got := ops.recordedEdges["org-a/vault"]; got != "original-workspace/original-edge" {
+					t.Errorf("existing edge binding changed to %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestOrgAdminCanManageExistingProviderWithLegacyMembersPolicy(t *testing.T) {
+	ops, creds, url := registeredOrgProvider(t, adminTC("alice", "org-a", "ws-1"),
+		tenancyv1alpha1.CatalogEntryCreationMembers, tenancyv1alpha1.MembershipRoleAdmin)
+	resp := postRegister(t, url(), RegisterOrgProviderRequest{
+		Name: "vault", Edge: &EdgeTargetRef{Workspace: "ws-1", Name: "prod"},
+	})
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || creds.minted != 1 || ops.recordedEdges["org-a/vault"] != "ws-1/prod" {
+		t.Fatalf("registration status=%d minted=%d edges=%v", resp.StatusCode, creds.minted, ops.recordedEdges)
+	}
+	resp, err := http.Get(url() + "/api/orgs/org-a/providers/vault/kubeconfig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || creds.minted != 2 {
+		t.Fatalf("kubeconfig status=%d minted=%d", resp.StatusCode, creds.minted)
+	}
+	req, err := http.NewRequest(http.MethodDelete, url()+"/api/orgs/org-a/providers/vault", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent || len(ops.deleted) != 1 || ops.deleted[0] != "vault" {
+		t.Fatalf("delete status=%d deleted=%v", resp.StatusCode, ops.deleted)
+	}
+}
+
 // Rotation hands out a live cluster credential and puts the running one on a
-// deletion clock, so it is admin-only in EVERY Org — including one that opened
-// registration to members. A member registering a provider they will run is a
-// different act from re-issuing the credential of a provider someone else runs.
+// deletion clock, so it is admin-only in EVERY Org, including legacy settings
+// that previously opened registration to members.
 func TestRotateOrgProviderCredential_IsAdminOnlyWhateverThePolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -702,7 +794,7 @@ func TestRotateOrgProviderCredential_IsAdminOnlyWhateverThePolicy(t *testing.T) 
 		{"org admin may rotate", "", adminTC("alice", "org-a", "ws-1"), tenancyv1alpha1.MembershipRoleAdmin, http.StatusOK},
 		{"member may not, on the default policy", "", memberTC("alice", "org-a", "ws-1"), tenancyv1alpha1.MembershipRoleMember, http.StatusForbidden},
 		{
-			"member may not, even where members may register",
+			"member may not, even with legacy members policy",
 			tenancyv1alpha1.CatalogEntryCreationMembers,
 			memberTC("alice", "org-a", "ws-1"),
 			tenancyv1alpha1.MembershipRoleMember,

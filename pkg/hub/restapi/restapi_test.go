@@ -536,7 +536,6 @@ func newTestManager(t *testing.T, objects ...runtime.Object) (*Manager, *fakeOps
 	}
 	ops := newFakeOps()
 	mgr := NewManager(client, ops)
-	mgr.WithOrgProviderAvailability(func(context.Context) error { return nil })
 	return mgr, ops, dyn
 }
 

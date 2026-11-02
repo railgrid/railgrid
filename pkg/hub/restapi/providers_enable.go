@@ -38,6 +38,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -46,6 +47,9 @@ import (
 // kcp as state=Rejected, which prevents the binding from going Bound
 // and surfaces the mismatch to the user.
 type EnableProviderRequest struct {
+	// ConsentDigest is the catalog snapshot the caller reviewed. Required for
+	// organization providers so declaration changes cannot widen a decision.
+	ConsentDigest  string          `json:"consentDigest,omitempty"`
 	AcceptedClaims []AcceptedClaim `json:"acceptedClaims"`
 	// AcceptedHubAccess lists the hub capabilities (CatalogEntry.spec.hub.access)
 	// the user accepted. Each must be declared by the provider. Accepting an
@@ -64,9 +68,9 @@ type EnableProviderRequest struct {
 }
 
 // AcceptedComposition identifies one accepted composition by the dependency
-// it hangs off and the kind it composes. Verbs are never sent: they come from
-// the provider's declaration, read fresh every time the policy mints, so a
-// caller cannot widen one by asking.
+// it hangs off and the kind it composes. Verbs come from the declaration
+// selected by this Enable request; organization providers require its reviewed
+// consent digest. No composition identity is minted.
 type AcceptedComposition struct {
 	// Provider is the DEPENDENCY whose kind is composed (the owner of Group),
 	// not the provider being enabled.
@@ -139,9 +143,6 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "provider "+providerName+" not found")
 		return
 	}
-	if prov.OrgUUID != "" && !h.requireOrgProviderAvailability(w, r) {
-		return
-	}
 	if prov.APIExportPath == "" || prov.APIExportName == "" {
 		// Built-in providers (kubernetes-edges, server-edges, mcp,
 		// quickstart) don't ship an APIExport — they're always
@@ -162,6 +163,10 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 
 	var req EnableProviderRequest
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if prov.OrgUUID != "" && (req.ConsentDigest == "" || req.ConsentDigest != providers.ConsentDigest(prov)) {
+		writeStatus(w, http.StatusPreconditionFailed, "PreconditionFailed", "provider permissions changed or were not reviewed; refresh the catalog and review permissions again")
 		return
 	}
 
@@ -192,6 +197,56 @@ func (h *Handler) enableProvider(w http.ResponseWriter, r *http.Request) {
 	if status != 0 {
 		writeStatus(w, status, http.StatusText(status), msg)
 		return
+	}
+
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, tc.OrgUUID, prov.OrgUUID != "")
+	if !ok {
+		return
+	}
+	defer unlock()
+	// A bootstrap or registration may have changed this name while the request
+	// waited for the org lock. Never grant from the pre-lock catalog snapshot.
+	current, found := h.mgr.providers.GetForOrg(tc.OrgUUID, providerName)
+	if !found || providers.ConsentDigest(current) != providers.ConsentDigest(prov) {
+		writeStatus(w, http.StatusPreconditionFailed, "PreconditionFailed", "provider changed while waiting; refresh the catalog and review permissions again")
+		return
+	}
+	prov = current
+	missing, err = h.missingProviderDependencies(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providersv1alpha1.Dependencies(prov.Requires))
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "provider dependencies could not be rechecked")
+		return
+	}
+	if len(missing) > 0 {
+		writeStatus(w, http.StatusConflict, "Conflict", "provider "+providerName+" requires provider(s) to be enabled first: "+strings.Join(missing, ", "))
+		return
+	}
+	needsPreparation := prov.OrgUUID != ""
+	if h.mgr.orgProviderNeedsPreparation != nil {
+		var err error
+		needsPreparation, err = h.mgr.orgProviderNeedsPreparation(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, prov)
+		if err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "consumer allocation could not be verified")
+			return
+		}
+		needsPreparation = needsPreparation || prov.OrgUUID != ""
+	}
+	if needsPreparation {
+		if !h.requireOrgProviderAvailability(w, r) {
+			return
+		}
+		if h.mgr.orgProviderLifecycleLock == nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider lifecycle containment is not configured")
+			return
+		}
+		if h.mgr.orgProviderConsumerPolicy == nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider consumer containment is not configured")
+			return
+		}
+		if err := h.mgr.orgProviderConsumerPolicy(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, prov); err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider consumer containment could not be prepared")
+			return
+		}
 	}
 
 	// Record the hub-access decisions this caller is entitled to make: each
@@ -453,6 +508,11 @@ func (h *Handler) disableProvider(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("provider name is required"))
 		return
 	}
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, tc.OrgUUID, false)
+	if !ok {
+		return
+	}
+	defer unlock()
 
 	if err := h.mgr.bootstrapper.DeleteProviderAPIBinding(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, providerName); err != nil {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", "delete APIBinding: "+err.Error())
@@ -530,6 +590,11 @@ type EnabledProviderDetail struct {
 
 // ClaimState is one provider binding's permission-claim standing.
 type ClaimState struct {
+	// Accepted carry effective verbs and selectors from accepted and applied
+	// binding claims; catalog changes cannot widen this snapshot.
+	// This list is the portal's fail-closed source for delegated provider UI
+	// dependencies; a missing claim is never inferred to be accepted.
+	Accepted []kcp.AcceptedClaimScope `json:"accepted,omitempty"`
 	// Pending are claims the export declares that the binding does not list.
 	// Transient for a provider's own requirements (the reconciler accepts them
 	// moments after the export changes); lasting for a composition nobody has
@@ -555,10 +620,11 @@ type ClaimRef struct {
 // claimStateOf projects the bootstrapper's view of a binding's claims onto the
 // DTO, or nil when there is nothing to report.
 func claimStateOf(state kcp.BindingClaimState) *ClaimState {
-	if len(state.Pending) == 0 && len(state.Rejected) == 0 && state.Mismatch == "" {
+	if len(state.Accepted) == 0 && len(state.Pending) == 0 && len(state.Rejected) == 0 && state.Mismatch == "" {
 		return nil
 	}
 	out := &ClaimState{Mismatch: state.Mismatch}
+	out.Accepted = append(out.Accepted, state.Accepted...)
 	for _, c := range state.Pending {
 		out.Pending = append(out.Pending, ClaimRef{Group: c.Group, Resource: c.Resource})
 	}

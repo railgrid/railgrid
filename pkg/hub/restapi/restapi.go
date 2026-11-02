@@ -60,6 +60,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/server/proxy"
 )
 
@@ -211,11 +212,13 @@ type Manager struct {
 	// orgProviders / providerCreds back the org-owned ("bring your own")
 	// provider surface. Both optional and wired together — the endpoints return
 	// 501 unless both are set. See org_providers.go.
-	orgProviders  OrgProviderOps
-	providerCreds ProviderCredentialMinter
-	// orgProviderAvailability gates creation of new organization-provider authority.
-	// Nil fails closed; reads and cleanup remain available.
-	orgProviderAvailability func(context.Context) error
+	orgProviders                OrgProviderOps
+	providerCreds               ProviderCredentialMinter
+	orgProviderAvailability     func(context.Context) error
+	orgProviderConsumerPolicy   func(context.Context, string, string, providers.Provider) error
+	orgProviderNeedsPreparation func(context.Context, string, string, providers.Provider) (bool, error)
+	orgProviderLifecycleLock    func(context.Context, string) (func(), error)
+	orgProviderCheckDelete      func(context.Context, string, string, string) error
 	// hubAccess records the hub capabilities a tenant accepts for a
 	// provider on Enable (optional; nil skips recording). platformDefault
 	// mirrors the gate's --provider-hub-access-platform-default so the
@@ -353,9 +356,35 @@ func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialM
 	return m
 }
 
-// WithOrgProviderAvailability gates operations that create or issue organization-provider authority.
+// WithOrgProviderAvailability gates new organization-provider authority on
+// verified resource containment. Without a check, registration, credential
+// issuance and organization-provider Enable fail closed; reads and cleanup work.
 func (m *Manager) WithOrgProviderAvailability(check func(context.Context) error) *Manager {
 	m.orgProviderAvailability = check
+	return m
+}
+
+// WithOrgProviderConsumerPolicy prepares verified consumer-workspace storage
+// containment before an organization provider receives grants or a binding.
+// An absent policy refuses organization-provider Enable.
+func (m *Manager) WithOrgProviderConsumerPolicy(prepare func(context.Context, string, string, providers.Provider) error) *Manager {
+	m.orgProviderConsumerPolicy = prepare
+	return m
+}
+
+// WithOrgProviderConsumerPreparationCheck detects existing protected allocations
+// so later platform-provider bindings cannot evade their resource-family budget.
+func (m *Manager) WithOrgProviderConsumerPreparationCheck(needs func(context.Context, string, string, providers.Provider) (bool, error)) *Manager {
+	m.orgProviderNeedsPreparation = needs
+	return m
+}
+
+// WithOrgProviderLifecycle serializes complete lifecycle mutations and verifies
+// exporter references before deletion or fresh registration. Disabled BYO may
+// omit the lock, but cleanup still requires an authoritative reference audit.
+func (m *Manager) WithOrgProviderLifecycle(lock func(context.Context, string) (func(), error), checkDelete func(context.Context, string, string, string) error) *Manager {
+	m.orgProviderLifecycleLock = lock
+	m.orgProviderCheckDelete = checkDelete
 	return m
 }
 
@@ -461,8 +490,8 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/undelete", h.undeleteOrg).Methods(http.MethodPost)
 
 	// Org-owned ("bring your own") providers: the Org registers a provider it
-	// runs itself and gets back a workspace-scoped install credential. Gated on
-	// Organization.spec.catalogEntryCreation (O-7). See org_providers.go.
+	// runs itself and gets back a workspace-scoped install credential. Mutations
+	// and credential retrieval require Org admin (O-7). See org_providers.go.
 	//
 	// Registered before /{org}/memberships etc. is irrelevant to matching (the
 	// paths are distinct), but note these are org-scoped, NOT workspace-scoped:
@@ -579,7 +608,15 @@ func (h *Handler) requireTenantContext(w http.ResponseWriter, r *http.Request, r
 		writeStatus(w, http.StatusUnauthorized, "Unauthorized", "tenant context missing — middleware not wired?")
 		return tenant.TenantContext{}, false
 	}
+	if tc.WorkspaceUUID != "" && !kcppaths.IsTeamWorkspaceName(tc.WorkspaceUUID) {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "workspace must identify a team workspace")
+		return tenant.TenantContext{}, false
+	}
 	vars := mux.Vars(r)
+	if pathWS := vars["ws"]; pathWS != "" && !kcppaths.IsTeamWorkspaceName(pathWS) {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "workspace path must identify a team workspace")
+		return tenant.TenantContext{}, false
+	}
 	if pathOrg := vars["org"]; pathOrg != "" && pathOrg != tc.OrgUUID {
 		writeStatus(w, http.StatusBadRequest, "BadRequest",
 			fmt.Sprintf("path org %s must match header X-Railgrid-Org %s", pathOrg, tc.OrgUUID))

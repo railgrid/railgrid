@@ -589,6 +589,7 @@ type devCatalogHub struct {
 }
 
 type devCatalogProvider struct {
+	ConsentDigest    string                  `json:"consentDigest,omitempty"`
 	Name             string                  `json:"name"`
 	Ready            bool                    `json:"ready"`
 	ReadinessMessage string                  `json:"readinessMessage,omitempty"`
@@ -645,6 +646,9 @@ func (c *devHubAPI) enableProvider(ctx context.Context, orgUUID, wsUUID string, 
 		"acceptedClaims":       claims,
 		"acceptedCompositions": compositions,
 		"acceptedHubAccess":    hubAccess,
+	}
+	if prov.ConsentDigest != "" {
+		body["consentDigest"] = prov.ConsentDigest
 	}
 	path := fmt.Sprintf("/api/orgs/%s/workspaces/%s/providers/%s/enable", orgUUID, wsUUID, name)
 	return c.do(ctx, http.MethodPost, path, tenantHeaders(orgUUID, wsUUID), body, nil)

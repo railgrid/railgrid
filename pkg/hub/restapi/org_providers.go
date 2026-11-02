@@ -12,35 +12,21 @@ package restapi
 
 // Org-owned ("bring your own") provider registration.
 //
-// An Org registers a provider it runs itself — typically in its own Kubernetes
-// cluster, reached over an edge — and the hub gives back a kubeconfig scoped to
-// a fresh provider workspace at root:railgrid:tenants:{org}:providers:{name}. The
-// Org then installs the provider's chart against that kubeconfig; the provider's
-// own `init` creates its APIExport, schemas, endpoint slice, and CatalogEntry,
-// exactly as a platform provider does. From there the entry flows into the
-// catalog registry through the existing CatalogEntry watch, scoped to the Org,
-// and its Workspaces can Enable it like any other provider.
+// The hub creates a provider workspace and scoped credential; the provider's
+// init submits its CatalogEntry, APIExport, and schemas to the authenticated
+// hub bootstrap endpoint. The hub validates and applies that declaration,
+// publishes the Edge route, and registers the provider for its owning Org.
+// Tenant administrators enable it through the hub REST API, which records the
+// APIBinding in their own workspace and requires explicit consent for the
+// provider's declared requirements. No provider credential or manual bind
+// grant is used to create that binding.
 //
-// This lives server-side for the reason every Org-workspace operation does
-// (decision O-10, and P-2 in docs/provider-scoping.md): tenants hold no
-// credential that reaches an Org workspace, so the tree under it can only be
-// built with the hub's kcp-admin client.
-//
-// What the Org gets is deliberately narrow. The minted ServiceAccount is
-// cluster-admin in its own provider workspace and nowhere else. It cannot read
-// the Org workspace above it or any team workspace beside it. The provider
-// reaches tenant data only through its APIExport's permission claims, which
-// each consuming Workspace accepts individually at Enable time — the same
-// consent gate platform providers pass through.
-//
-// Known gap: this endpoint scopes DISCOVERY (the catalog lists an Org's
-// providers only to that Org) and the hub-mediated Enable path, but it does not
-// yet scope the kcp `bind` verb. provider-sdk/install's ApplyBindGrant grants
-// bind on the APIExport to system:authenticated, so a user who learns another
-// Org's UUID could hand-craft an APIBinding in their own workspace against that
-// Org's export. Closing it needs the per-Org bind ClusterRole from
-// docs/provider-scoping.md P-3, which is unimplemented for platform providers
-// too. See docs/byo-providers.md §Known gaps.
+// This lives server-side because tenants hold no credential that reaches an
+// Org workspace; the hub's kcp-admin client owns provider workspace and
+// declaration writes. The runtime ServiceAccount is restricted to its own
+// provider workspace and hub-mediated bootstrap. It cannot read the Org
+// workspace above it or any team workspace beside it. Provider requirements
+// become available only through claims accepted by each consuming workspace.
 
 import (
 	"context"
@@ -203,19 +189,6 @@ type OrgProviderView struct {
 // returned in the response body and never persisted anywhere the portal can
 // re-read casually — callers that lose it re-fetch from the kubeconfig endpoint,
 // which re-mints from the same Secret and therefore yields the same token.
-// OrgProviderEnrollmentStatus is an optional capability hint. It never hides existing registrations.
-type OrgProviderEnrollmentStatus struct {
-	Available bool   `json:"available"`
-	Reason    string `json:"reason,omitempty"`
-}
-
-const orgProviderEnrollmentUnavailableReason = "Organization provider enrollment is temporarily unavailable."
-
-type ListOrgProvidersResponse struct {
-	Items      []OrgProviderView            `json:"items"`
-	Enrollment *OrgProviderEnrollmentStatus `json:"enrollment,omitempty"`
-}
-
 type RegisterOrgProviderResponse struct {
 	Provider OrgProviderView `json:"provider"`
 	// Kubeconfig is the workspace-scoped credential, PEM-free YAML.
@@ -226,9 +199,32 @@ type RegisterOrgProviderResponse struct {
 	Instructions *providers.InstallInstructions `json:"instructions,omitempty"`
 }
 
+// OrgProviderEnrollmentStatus reports whether the hub's current authority and
+// quota gates allow new organization-provider registration and Enable actions.
+// A failed or unconfigured gate is represented as unavailable without hiding
+// the organization's existing providers from the read-only list response.
+type OrgProviderEnrollmentStatus struct {
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// ListOrgProvidersResponse carries existing providers and the current hosted
+// enrollment gate in one read so the console can fail closed before exposing
+// credential-issuing controls.
+type ListOrgProvidersResponse struct {
+	Items      []OrgProviderView           `json:"items"`
+	Enrollment OrgProviderEnrollmentStatus `json:"enrollment"`
+}
+
+const orgProviderEnrollmentUnavailableReason = "Organization provider enrollment is temporarily unavailable while a control-plane quota issue is resolved."
+
 // requireOrgProviderAccess resolves the caller's tenant context and requires an
 // Org admin for provider mutations and credential retrieval (decision O-7).
-// Legacy catalogEntryCreation values do not widen access.
+//
+// Registration is not a catalog edit: it mints a
+// long-lived restricted provider credential for a workspace the hub then routes
+// every org user's provider traffic to, under a name that may shadow a
+// platform provider. Legacy catalogEntryCreation values do not widen access.
 //
 // It also fails closed when the org-provider dependencies were not wired, so a
 // hub built without them returns a clean 501 rather than a nil-pointer panic.
@@ -250,17 +246,21 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 	// pair the headers name, and both scopes spell admin the same way — so a
 	// member who is admin of their own team workspace would otherwise pass this
 	// gate just by sending X-Railgrid-Workspace, which the portal attaches to every
-	// request by default. That would hand an org member a provider kubeconfig.
+	// request by default. That would hand an org member a provider
+	// kubeconfig the Org explicitly restricted to admins.
 	if !h.requireOrgAdminMembership(w, r, tc, "managing organization providers and credentials requires organization admin") {
 		return tenant.TenantContext{}, false
 	}
 	return tc, true
 }
 
-// requireOrgProviderAvailability fails closed when the hub has no verified enrollment capability.
 func (h *Handler) requireOrgProviderAvailability(w http.ResponseWriter, r *http.Request) bool {
-	if h.mgr.orgProviderAvailability == nil || h.mgr.orgProviderAvailability(r.Context()) != nil {
-		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", orgProviderEnrollmentUnavailableReason)
+	if h.mgr.orgProviderAvailability == nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider resource containment is not configured")
+		return false
+	}
+	if err := h.mgr.orgProviderAvailability(r.Context()); err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "organization provider resource containment unavailable: "+err.Error())
 		return false
 	}
 	return true
@@ -292,11 +292,27 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preflight BEFORE anything is created. Registration mints a long-lived
-	// cluster-admin credential and builds a workspace tree; doing that for an
+	// provider credential and builds a workspace tree; doing that for an
 	// install that cannot work leaves the Org holding a live token and a
 	// half-built tree to clean up by hand. See docs/byo-provider-edge-transport.md
 	// E-2 — a failed precondition here is a clean no-op the client can retry.
 	if !h.requireEdgeInstallTarget(w, r, tc, req.Edge) {
+		return
+	}
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, orgUUID, true)
+	if !ok {
+		return
+	}
+	defer unlock()
+	if !h.requireOrgProviderAvailability(w, r) {
+		return
+	}
+	existing, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), orgUUID, name)
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "checking existing provider workspace failed")
+		return
+	}
+	if existing == nil && !h.requireOrgProviderUnbound(w, r, orgUUID, name) {
 		return
 	}
 
@@ -578,11 +594,17 @@ func (h *Handler) listOrgProviders(w http.ResponseWriter, r *http.Request) {
 		items = append(items, h.orgProviderView(orgUUID, ws))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	status := OrgProviderEnrollmentStatus{Available: false, Reason: orgProviderEnrollmentUnavailableReason}
-	if h.mgr.orgProviderAvailability != nil && h.mgr.orgProviderAvailability(r.Context()) == nil {
-		status = OrgProviderEnrollmentStatus{Available: true}
+	writeJSON(w, http.StatusOK, ListOrgProvidersResponse{
+		Items:      items,
+		Enrollment: h.orgProviderEnrollmentStatus(r.Context()),
+	})
+}
+
+func (h *Handler) orgProviderEnrollmentStatus(ctx context.Context) OrgProviderEnrollmentStatus {
+	if h.mgr.orgProviderAvailability == nil || h.mgr.orgProviderAvailability(ctx) != nil {
+		return OrgProviderEnrollmentStatus{Available: false, Reason: orgProviderEnrollmentUnavailableReason}
 	}
-	writeJSON(w, http.StatusOK, ListOrgProvidersResponse{Items: items, Enrollment: &status})
+	return OrgProviderEnrollmentStatus{Available: true}
 }
 
 // orgProviderView merges the kcp workspace with the catalog registry record, if
@@ -658,13 +680,21 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	orgUUID := tc.OrgUUID
-	name := mux.Vars(r)["name"]
 	if !h.requireOrgProviderAvailability(w, r) {
 		return
 	}
+	orgUUID := tc.OrgUUID
+	name := mux.Vars(r)["name"]
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
+		return
+	}
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, orgUUID, true)
+	if !ok {
+		return
+	}
+	defer unlock()
+	if !h.requireOrgProviderAvailability(w, r) {
 		return
 	}
 	ws, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), orgUUID, name)
@@ -724,27 +754,29 @@ type RotateOrgProviderCredentialResponse struct {
 // rotateOrgProviderCredential handles
 // POST /api/orgs/{org}/providers/{name}/credentials/rotate.
 //
-// Admin-only, unconditionally: unlike registration this is not gated on
-// spec.catalogEntryCreation. An Org that lets members register providers is
-// saying members may create NEW credentials for workspaces they made; it is not
-// saying a member may re-issue the credential for a provider someone else
-// registered and put the running one on a deletion clock. That is an admin's
-// call in every Org.
+// Admin-only, like registration and credential retrieval: it changes the
+// credential for the running provider and puts the previous one on a deletion
+// clock.
 func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Request) {
 	tc, ok := h.requireOrgProviderAccess(w, r, true /* mutating: hands out a credential */)
 	if !ok {
 		return
 	}
-	if !h.requireOrgAdminMembership(w, r, tc, "rotating a provider credential requires organization admin") {
+	if !h.requireOrgProviderAvailability(w, r) {
 		return
 	}
 	orgUUID := tc.OrgUUID
 	name := mux.Vars(r)["name"]
-	if !h.requireOrgProviderAvailability(w, r) {
-		return
-	}
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
+		return
+	}
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, orgUUID, true)
+	if !ok {
+		return
+	}
+	defer unlock()
+	if !h.requireOrgProviderAvailability(w, r) {
 		return
 	}
 	ws, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), orgUUID, name)
@@ -821,6 +853,14 @@ func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	if name == "" {
 		writeError(w, newValidationError("provider name is required"))
+		return
+	}
+	r, unlock, ok := h.lockOrgProviderLifecycle(w, r, tc.OrgUUID, false)
+	if !ok {
+		return
+	}
+	defer unlock()
+	if !h.requireOrgProviderUnbound(w, r, tc.OrgUUID, name) {
 		return
 	}
 	if err := h.mgr.orgProviders.DeleteOrgProviderWorkspace(r.Context(), tc.OrgUUID, name); err != nil {
