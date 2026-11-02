@@ -1,11 +1,17 @@
 <script setup lang="ts">
-// Per-meter limits and usage for the Metering section's tables. One row per
-// meter: its name, the enforcement mode as a muted enum badge, the usage
-// against the max in tabular numerals and, when both are numbers, a progress
-// bar whose tone is the state: accent under the limit, warning near a limit or
-// over a soft one, danger over a hard one. Plans pass limits without usage and
-// get the max alone; accounts pass usage without limits and get the values
-// alone, so the three tables read the same way.
+// Per-meter limits and usage. One row per meter: its name, the enforcement
+// mode, the usage against the max in tabular numerals and, when both are
+// numbers, a progress bar whose tone is the state: accent under the limit,
+// warning near a limit or over a soft one, danger over a hard one. Plans pass
+// limits without usage and get the max alone; accounts pass usage without
+// limits and get the values alone, so the three tables read the same way.
+//
+// Two layouts share the rows. The default is a compact list for a table cell
+// (the admin Metering section): it keeps a floor width, because an auto-layout
+// table sizes the column from the cell's intrinsic width and would otherwise
+// collapse it to the header. `interactive` is the organization billing card's
+// expandable list with search and filters; only that one is a size container,
+// so its container queries never reach into a table.
 import { computed, ref } from 'vue'
 import { ChevronRight } from 'lucide-vue-next'
 
@@ -242,13 +248,19 @@ function barLabel(row: Row): string {
 </template>
 
 <style scoped>
-.metering-list { min-width: 0; container-type: inline-size; }
+/* The table layout needs an intrinsic width: without one, inline-size
+ * containment or anywhere-wrapping lets an auto-layout table shrink the column
+ * to its heading and break every word. The floor sits under the columns' caps
+ * (24rem and 28rem in the admin tables). */
+.metering-list { min-width: 22rem; }
+.metering-list--interactive { min-width: 0; container-type: inline-size; }
 .metering-rows { list-style: none; margin: 0; padding: 0; white-space: normal; }
 .metering-item { min-width: 0; }
 .metering-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); align-items: center; gap: 16px; padding: 7px 0; }
 .metering-label, .metering-measure { min-width: 0; overflow-wrap: anywhere; }
 .metering-description { display: block; font-size: 12px; color: var(--color-text-secondary); margin-top: 4px; }
 .metering-numbers { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 7px; }
+.metering-numbers:last-child { margin-bottom: 0; }
 .metering-quantity { white-space: normal; overflow-wrap: anywhere; }
 .metering-state { font-family: var(--font-mono); font-size: 11px; }
 .metering-controls { display: flex; flex-direction: column; gap: 12px; padding: 16px 0 8px; }
@@ -275,6 +287,6 @@ function barLabel(row: Row): string {
   .metering-chevron { grid-column: 2; grid-row: 1 / span 2; }
 }
 @container (max-width: 280px) {
-  .metering-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .metering-list--interactive .metering-row { grid-template-columns: minmax(0, 1fr); gap: 8px; }
 }
 </style>
