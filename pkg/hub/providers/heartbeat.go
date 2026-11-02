@@ -229,10 +229,11 @@ func (r *Registry) heartbeatProvider(req *http.Request, name string) (Provider, 
 			return cloneProvider(*p), true
 		}
 	}
-	// Provisioning can seed a platform record before the catalog watch has
-	// observed its workspace. Preserve the retryable 503 from TokenReview in
-	// that case, including for real JWTs with an issuing-workspace claim.
-	if p, ok := r.byKey[providerKey{Name: name}]; ok && p.CatalogEntryCluster == "" {
+	// Preserve the platform fallback for legacy hub-token overrides whose
+	// JWT belongs to another workspace. Warn mode still accepts those beats;
+	// enforce mode verifies the issuing cluster against this platform record.
+	// A seeded record with no catalog cluster retains its retryable 503.
+	if p, ok := r.byKey[providerKey{Name: name}]; ok {
 		return cloneProvider(*p), true
 	}
 	return Provider{}, false

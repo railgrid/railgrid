@@ -31,8 +31,8 @@ package kcp
 // under it reuse the SAME restricted `provider` WorkspaceType
 // (config/kcp/workspacetype-provider.yaml), whose limitAllowedParents requires
 // a universal parent. The payoff is that the provider install path — the SA
-// mint, provider-sdk/install's APIExport + endpoint slice, and CatalogEntry
-// self-registration — runs completely unchanged against an org-owned provider.
+// mint and provider-sdk/install — recognizes the organization scope and asks
+// the hub to validate and apply the APIExport, schemas and routing endpoints.
 //
 // Everything here uses the hub's kcp-admin credentials. Per decision O-10 the
 // Org workspace is hub-mediated only: tenants hold no credential that reaches
@@ -50,8 +50,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -121,15 +123,24 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		return "", fmt.Errorf("creating org providers workspace client: %w", err)
 	}
 
+	if err := providers.EnsureOrgProviderRegistrationQuota(ctx, parent); err != nil {
+		return "", fmt.Errorf("enforcing organization provider capacity: %w", err)
+	}
+
 	ws := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "tenancy.kcp.io/v1alpha1",
 		"kind":       "Workspace",
-		"metadata":   map[string]any{"name": name},
+		"metadata": map[string]any{
+			"name": name,
+			"annotations": map[string]any{
+				providers.OrgProviderBootstrapPolicyAnnotation: providers.OrgProviderBootstrapPolicy,
+			},
+		},
 		"spec": map[string]any{
 			// The same restricted type platform providers use: no `universal`
-			// extension (so the provider cannot spawn workspaces even though it
-			// holds cluster-admin over its own), and a defaultAPIBinding to
-			// providers.railgrid.ai so it can self-register its CatalogEntry.
+			// extension (so the provider cannot spawn workspaces), and a
+			// defaultAPIBinding to providers.railgrid.ai for its hub-managed
+			// CatalogEntry. The provider identity has restricted runtime RBAC.
 			"type": map[string]any{"name": "provider", "path": kcppaths.Root},
 		},
 	}}
@@ -148,9 +159,19 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		}
 	}
 
-	if _, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+	if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		_, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{})
+		return err
+	}); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return "", fmt.Errorf("creating org provider workspace %s in org %s: %w", name, orgUUID, err)
+		}
+		existing, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return "", fmt.Errorf("reading existing organization provider workspace: %w", err)
+		}
+		if existing.GetAnnotations()[providers.OrgProviderBootstrapPolicyAnnotation] != providers.OrgProviderBootstrapPolicy {
+			return "", fmt.Errorf("organization provider %q uses a legacy unrestricted workspace; delete and register it again", name)
 		}
 		logger.V(4).Info("Org provider workspace already exists")
 	} else {
@@ -177,9 +198,11 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 // that gap is exactly the "registered but not yet connected" state the org
 // admin UI needs to show.
 type OrgProviderWorkspace struct {
-	Name    string
-	Cluster string
-	Phase   string
+	Name            string
+	Cluster         string
+	Phase           string
+	BootstrapPolicy string `json:"-"`
+	Terminating     bool   `json:"-"`
 }
 
 // ListOrgProviderWorkspaces returns the provider sub-workspaces under
@@ -206,7 +229,11 @@ func (b *Bootstrapper) ListOrgProviderWorkspaces(ctx context.Context, orgUUID st
 		w := &list.Items[i]
 		cluster, _, _ := unstructured.NestedString(w.Object, "spec", "cluster")
 		phase, _, _ := unstructured.NestedString(w.Object, "status", "phase")
-		out = append(out, OrgProviderWorkspace{Name: w.GetName(), Cluster: cluster, Phase: phase})
+		out = append(out, OrgProviderWorkspace{
+			Name: w.GetName(), Cluster: cluster, Phase: phase,
+			BootstrapPolicy: w.GetAnnotations()[providers.OrgProviderBootstrapPolicyAnnotation],
+			Terminating:     w.GetDeletionTimestamp() != nil,
+		})
 	}
 	return out, nil
 }
@@ -230,7 +257,11 @@ func (b *Bootstrapper) GetOrgProviderWorkspace(ctx context.Context, orgUUID, nam
 	}
 	cluster, _, _ := unstructured.NestedString(got.Object, "spec", "cluster")
 	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-	return &OrgProviderWorkspace{Name: got.GetName(), Cluster: cluster, Phase: phase}, nil
+	return &OrgProviderWorkspace{
+		Name: got.GetName(), Cluster: cluster, Phase: phase,
+		BootstrapPolicy: got.GetAnnotations()[providers.OrgProviderBootstrapPolicyAnnotation],
+		Terminating:     got.GetDeletionTimestamp() != nil,
+	}, nil
 }
 
 // DeleteOrgProviderWorkspace deletes one org-owned provider workspace. kcp

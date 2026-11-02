@@ -181,6 +181,7 @@ func TestOrgHeartbeatWarnModeStillRequiresAuthentication(t *testing.T) {
 		{Authenticated: true, User: authnv1.UserInfo{Username: "system:serviceaccount:default:other"}},
 	} {
 		reg := NewRegistry()
+		reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
 		reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
 		now := time.Now()
 		f := &tokenReviewFake{status: status}
@@ -196,6 +197,60 @@ func TestOrgHeartbeatWarnModeStillRequiresAuthentication(t *testing.T) {
 		if persisted || p.HeartbeatRequired {
 			t.Fatal("unverified org heartbeat changed state in warn mode")
 		}
+		platform, _ := reg.Get("planner")
+		if platform.HeartbeatRequired {
+			t.Fatal("rejected org heartbeat fell back to the platform provider")
+		}
+	}
+}
+
+func TestHeartbeatUnmatchedWorkspaceHintPreservesPlatformAuthPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		mode   HeartbeatAuthMode
+		status int
+	}{
+		{HeartbeatAuthWarn, http.StatusOK},
+		{HeartbeatAuthEnforce, http.StatusForbidden},
+	} {
+		t.Run(string(tc.mode), func(t *testing.T) {
+			reg := NewRegistry()
+			reg.Upsert(Provider{Name: "planner", CatalogEntryCluster: "platform-cluster"})
+			reg.Upsert(Provider{Name: "planner", OrgUUID: "org-a", CatalogEntryCluster: "org-a-cluster"})
+			now := time.Now()
+			f := &tokenReviewFake{omitClusterExtra: true, status: authnv1.TokenReviewStatus{
+				Authenticated: true,
+				User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{
+					"authentication.kcp.io/cluster-name": {"operator-cluster"},
+				}},
+			}}
+			a := newTestTokenReviewAuthenticator(reg, f, &now)
+			persisted := false
+			h := NewHeartbeatHandler(reg, func(ctx context.Context, name, _ string, _ time.Time) error {
+				cluster, ok := heartbeatCatalogCluster(ctx, reg, name)
+				if !ok || cluster != "platform-cluster" {
+					t.Errorf("record cluster = %q, %t", cluster, ok)
+				}
+				persisted = true
+				return nil
+			}, a.Authenticate, tc.mode, logr.Discard())
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, heartbeatRequestWithBearer("planner", orgHeartbeatToken("operator-cluster")))
+			if w.Code != tc.status {
+				t.Fatalf("status = %d, want %d: %s", w.Code, tc.status, w.Body.String())
+			}
+			if f.reviews != 1 || f.clusters[0] != "platform-cluster" {
+				t.Fatalf("reviews=%d clusters=%v", f.reviews, f.clusters)
+			}
+			platform, _ := reg.Get("planner")
+			accepted := tc.mode == HeartbeatAuthWarn
+			if persisted != accepted || platform.HeartbeatRequired != accepted {
+				t.Fatalf("persisted=%t heartbeatRequired=%t, want %t", persisted, platform.HeartbeatRequired, accepted)
+			}
+			org, _ := reg.GetForOrg("org-a", "planner")
+			if org.HeartbeatRequired {
+				t.Fatal("unmatched workspace hint changed org heartbeat")
+			}
+		})
 	}
 }
 

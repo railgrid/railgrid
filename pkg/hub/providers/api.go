@@ -47,7 +47,8 @@ const (
 )
 
 type providerDTO struct {
-	Name string `json:"name"`
+	ConsentDigest string `json:"consentDigest"`
+	Name          string `json:"name"`
 	// Scope is "global" or "org" — see ScopeGlobal / ScopeOrg. The portal
 	// surfaces org-scoped providers separately, above the platform catalog, so
 	// users can tell what their own organization operates from what railgrid does.
@@ -377,6 +378,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 			}
 			ready, readinessReason, readinessMessage := p.Readiness()
 			items = append(items, providerDTO{
+				ConsentDigest:    ConsentDigest(p),
 				Name:             p.Name,
 				Scope:            scope,
 				OwnerOrg:         p.OrgUUID,
