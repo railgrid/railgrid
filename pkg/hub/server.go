@@ -33,6 +33,7 @@ import (
 	oidc "github.com/coreos/go-oidc"
 	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/apiexportprovider"
+	"github.com/railgrid/provider-sdk/providerrelay"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -97,17 +98,7 @@ const (
 	// providers such as app-studio call the aggregate for many users from one
 	// pod address, so this is deliberately looser than token-login.
 	mcpVerifyBurst = 60
-
-	// Keep hosted BYO enrollment disabled until pinned KCP quota accounting is verified.
-	organizationQuotaSelectionSupported = false
 )
-
-func orgProviderEnrollmentAvailability(context.Context) error {
-	if !organizationQuotaSelectionSupported {
-		return errors.New("hosted BYO enrollment is disabled until supported KCP ResourceQuota accounting is verified")
-	}
-	return nil
-}
 
 // Server is the railgrid hub server orchestrator.
 type Server struct {
@@ -118,6 +109,19 @@ type Server struct {
 func NewServer(opts *Options) (*Server, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("options must not be nil")
+	}
+	if err := opts.OrganizationLimits.Validate(); err != nil {
+		return nil, fmt.Errorf("organization limits: %w", err)
+	}
+	if opts.OrganizationLimits.Enabled() && (!opts.EmbeddedKCP || opts.ExternalKCPKubeconfig != "") {
+		return nil, fmt.Errorf("organization limits require a single embedded kcp shard; external shard enforcement is not supported")
+	}
+	if opts.OrganizationLimits.Enabled() {
+		if err := organizationConsumerPolicyConfig(opts).Validate(opts.OrganizationLimits.MaxObjectBytes); err != nil {
+			return nil, fmt.Errorf("organization consumer policy: %w", err)
+		}
+	} else if opts.OrganizationConsumerPolicy != (providers.OrgConsumerPolicyConfig{}) {
+		return nil, fmt.Errorf("organization consumer policy requires a complete native organization limit policy")
 	}
 	return &Server{opts: opts}, nil
 }
@@ -156,6 +160,11 @@ func (s *Server) Run(ctx context.Context) error {
 	var kcpConfig *rest.Config
 	var bootstrapper *kcp.Bootstrapper
 	var embeddedKCP *kcp.EmbeddedKCP
+	providerRelayDelegate := &delegatingHandler{}
+	providerRelayDelegate.set(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "provider relay initializing", http.StatusServiceUnavailable)
+	}))
+	var providerRelayErrCh <-chan error
 	// meteringDiscovery is set once kcp is up and --metering-workspace is
 	// configured; the admin proxy and the organization reconciler share it.
 	var meteringDiscovery *metering.Discovery
@@ -192,6 +201,10 @@ func (s *Server) Run(ctx context.Context) error {
 		// controllers on a kcp-direct URL, which this field cannot express.
 		// See docs/byo-providers.md.
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
+			BYOLimits: s.opts.OrganizationLimits,
+			ProviderRelayTransport: func(next http.RoundTripper) http.RoundTripper {
+				return providers.EmbeddedRelayTransport(next, providerRelayDelegate)
+			},
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
 			EtcdClientPort:           s.opts.KCPEtcdClientPort,
@@ -487,6 +500,26 @@ func (s *Server) Run(ctx context.Context) error {
 	// (wired below alongside other multicluster controllers) keeps in sync
 	// with ProviderCatalogEntry resources.
 	providerRegistry := providers.NewRegistry()
+	var orgConsumerPolicy *providers.OrgConsumerPolicy
+	if s.opts.OrganizationLimits.Enabled() {
+		var err error
+		orgConsumerPolicy, err = providers.NewOrgConsumerPolicy(kcpConfig, providerRegistry, organizationConsumerPolicyConfig(s.opts), s.opts.OrganizationLimits.MaxObjectBytes)
+		if err != nil {
+			return fmt.Errorf("creating organization consumer policy: %w", err)
+		}
+		orgConsumerPolicy.SetConsumerMarkerReadiness(func(ctx context.Context, clusterID string) error {
+			if embeddedKCP == nil {
+				return fmt.Errorf("embedded kcp consumer containment is unavailable")
+			}
+			return embeddedKCP.WaitForBYOConsumerQuotaMarker(ctx, clusterID)
+		})
+	}
+	orgProviderAvailability := s.orgProviderAvailability(func() error {
+		if embeddedKCP == nil {
+			return fmt.Errorf("embedded kcp containment is unavailable")
+		}
+		return embeddedKCP.BYOLimitsReady()
+	})
 	// Provider data-plane verbs and actions are kcp custom subresources on
 	// each provider's APIExport, reached through the kcp front door
 	// (/clusters/{id}/apis/...) and authorized by kcp RBAC; the backend proxy
@@ -519,6 +552,18 @@ func (s *Server) Run(ctx context.Context) error {
 	// /api/providers/. Configured with the auth stack further down.
 	providerUIGrantHandler := providers.NewUIGrantHandler(providerRegistry, uiProxy, logger)
 	router.Handle(providers.PathProviderUIGrant, providerUIGrantHandler).Methods("POST")
+	if kcpConfig != nil {
+		orgBootstrap, err := providers.NewOrgProviderBootstrapHandler(kcpConfig, providerRegistry, s.ProviderRelayBaseURL())
+		if err != nil {
+			return fmt.Errorf("creating org provider bootstrap: %w", err)
+		}
+		orgBootstrap.SetAvailabilityCheck(orgProviderAvailability)
+		if orgConsumerPolicy != nil {
+			orgBootstrap.SetConsumerPreparation(orgConsumerPolicy.PrepareBootstrap)
+			orgBootstrap.SetLifecycleLock(orgConsumerPolicy.Lock)
+		}
+		router.Handle("/api/providers/{name}/bootstrap", orgBootstrap).Methods("POST")
+	}
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
 	// A heartbeat lands on exactly one replica but every replica routes provider
@@ -882,15 +927,21 @@ func (s *Server) Run(ctx context.Context) error {
 			// See pkg/hub/provider_tenant_resolver.go for the concrete
 			// resolver (lives here to avoid a providers→proxy→kcp→providers
 			// import cycle).
-			// The delegated-identity proof key. Both ends of delegation need
-			// it: the issuer signs the tuple onto the minted ServiceAccount,
-			// the resolver refuses any delegated account that cannot present
-			// the same MAC. It lives beside the hub's other cross-replica
+			// The delegated-identity proof key signs and verifies platform
+			// delegated ServiceAccounts and opaque organization-provider
+			// broker tokens. It lives beside the hub's other cross-replica
 			// state in root:railgrid:system:controllers, so every replica
 			// verifies what any replica minted.
 			delegatedProofKeys, err := serviceaccounts.NewKCPProofKeySource(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
 			if err != nil {
 				return fmt.Errorf("creating delegated-identity proof key source: %w", err)
+			}
+			providerRelay := &providers.ProviderRelay{Registry: providerRegistry, Proxy: backendProxy, Keys: delegatedProofKeys, Authorize: providerRelayAuthorization(kcpConfig), Discovery: providerRelayDiscovery(kcpConfig)}
+			providerRelayDelegate.set(providerRelay)
+			router.HandleFunc(providerrelay.PublicKeyPath, providerRelay.PublicKey).Methods("GET")
+			providerRelayErrCh, err = s.startProviderRelay(ctx, providerRelay)
+			if err != nil {
+				return fmt.Errorf("starting provider relay: %w", err)
 			}
 			catalogWorkloads := &kcpTenantResolver{workloadConfig: bootstrapper, proofKeys: delegatedProofKeys}
 			catalogOwners, err := identity.NewDynamicOwnerProbe(kcpConfig)
@@ -922,11 +973,31 @@ func (s *Server) Run(ctx context.Context) error {
 			// such a call and marks it; the tenant middleware then resolves it
 			// to the person the token stands for, whose own role still applies.
 			hubAccessGrants := hubaccess.NewStore(userClient)
+			var apiMgr *restapi.Manager
 			hubAccessGate := &hubaccess.Gate{
 				ActionProof:     actionProofVerifier,
 				ActionProofUses: actionProofUses,
 				Human:           userResolver,
-				Verify:          catalogWorkloads.verifyHubAccessCaller,
+				Verify: func(r *http.Request) (hubaccess.Caller, error) {
+					authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+					if len(authorization) > len("Bearer ") && strings.EqualFold(authorization[:len("Bearer ")], "Bearer ") {
+						token := strings.TrimSpace(authorization[len("Bearer "):])
+						if serviceaccounts.IsOrgBackendToken(token) {
+							if apiMgr == nil {
+								return hubaccess.Caller{}, fmt.Errorf("organization provider identity verifier is unavailable")
+							}
+							claims, err := apiMgr.VerifyOrgBackendCaller(r)
+							if err != nil {
+								return hubaccess.Caller{}, err
+							}
+							return hubaccess.Caller{
+								User: claims.User, OrgUUID: claims.OrgUUID, WorkspaceUUID: claims.WorkspaceUUID,
+								Delegated: true, Provider: claims.Provider, ProviderOrgUUID: claims.OrgUUID,
+							}, nil
+						}
+					}
+					return catalogWorkloads.verifyHubAccessCaller(r)
+				},
 				Providers:       providerRegistry,
 				Grants:          hubAccessGrants,
 				PlatformDefault: s.opts.ProviderHubAccessPlatformDefault,
@@ -941,7 +1012,6 @@ func (s *Server) Run(ctx context.Context) error {
 			// for an asset fetch as for an API call.
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
-			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
@@ -961,11 +1031,10 @@ func (s *Server) Run(ctx context.Context) error {
 				// hop (pkg/hub/providers/ui_grant.go).
 				uiProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
 			}
-			// Org-owned providers never see the caller's hub bearer: the
-			// proxy swaps it for a short-lived ServiceAccount token minted in
-			// the caller's workspace (pkg/hub/serviceaccounts
-			// delegated_user_token.go). Without this the org path refuses.
-			backendProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
+			// Org-owned providers never see the caller's hub bearer or a
+			// native KCP ServiceAccount token. The wrapper above issues the
+			// short-lived, mediated broker identity for BYO providers and keeps
+			// the existing ServiceAccount delegation for platform providers.
 			// Platform providers follow --provider-delegated-tokens: off keeps
 			// forwarding the caller's bearer, platform/all swap it for the
 			// same delegated token (pkg/hub/providers/proxy_delegation.go).
@@ -979,19 +1048,43 @@ func (s *Server) Run(ctx context.Context) error {
 			// O-5: the organization caps. The free-organizations cap is
 			// switched on below, once metering discovery exists to say whether
 			// a deployment is there.
-			apiMgr := restapi.NewManager(userClient, bootstrapper).
+			apiMgr = restapi.NewManager(userClient, bootstrapper).
 				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
 				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser})
+			apiMgr.WithOrgBackendDelegation(delegatedProofKeys, orgBackendKCPDispatcher(kcpConfig, userClient))
+			kcpProxy.SetOrgBackendHandler(apiMgr.OrgBackendHandler())
+			legacyTokenIssuer := serviceaccounts.NewManager(bootstrapper, delegatedProofKeys)
+			delegatedIssuer := orgAwareDelegatedTokenIssuer(legacyTokenIssuer, apiMgr)
+			backendProxy.SetDelegatedTokenIssuer(delegatedIssuer)
+			uiProxy.SetDelegatedTokenIssuer(delegatedIssuer)
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
-			apiMgr.WithHubAccessGrants(hubAccessGrants, s.opts.ProviderHubAccessPlatformDefault)
+			apiMgr.WithHubAccessGrants(hubAccessGrants, s.opts.ProviderHubAccessPlatformDefault).
+				WithProviderSandboxDispatcher(kcpAPIHandler).
+				WithProviderSandboxClusterAuthorizer(kcpProxy.AuthorizeCluster)
 			// Org-owned ("bring your own") providers: the Bootstrapper builds
 			// the Org's provider workspaces, the Provisioner mints the
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
-			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
-			apiMgr.WithOrgProviderAvailability(orgProviderEnrollmentAvailability)
+			orgProvisionerOptions := append(s.providerProvisionerOptions(), providers.WithOrgProviderAvailability(orgProviderAvailability))
+			if orgConsumerPolicy != nil {
+				orgProvisionerOptions = append(orgProvisionerOptions, providers.WithOrgProviderStorageValidation(orgConsumerPolicy.ValidateProviderStorage))
+			}
+			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, orgProvisionerOptions...)).
+				WithOrgProviderAvailability(orgProviderAvailability)
+			if orgConsumerPolicy != nil {
+				apiMgr.WithOrgProviderConsumerPolicy(orgConsumerPolicy.PrepareEnable).
+					WithOrgProviderConsumerPreparationCheck(orgConsumerPolicy.NeedsPreparation).
+					WithOrgProviderLifecycle(orgConsumerPolicy.Lock, orgConsumerPolicy.CheckDelete)
+			} else {
+				apiMgr.WithOrgProviderLifecycle(nil, func(ctx context.Context, org, name, _ string) error {
+					return providers.CheckOrgProviderUnbound(ctx, kcpConfig, org, name)
+				})
+				apiMgr.WithOrgProviderConsumerPreparationCheck(func(ctx context.Context, org, workspace string, prov providers.Provider) (bool, error) {
+					return providers.OrgConsumerNeedsPreparation(ctx, kcpConfig, org, workspace, prov)
+				})
+			}
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL
@@ -1499,7 +1592,7 @@ func (s *Server) Run(ctx context.Context) error {
 				// base=/ui/ so it already expects /ui/*.
 			},
 		}
-		portalSPA = WithPortalSecurityHeaders(devProxy, s.opts.PortalFrameSources...)
+		portalSPA = WithPortalSecurityHeadersForHub(devProxy, s.opts.HubExternalURL, s.opts.PortalFrameSources...)
 		portalAvailable = true
 		logger.Info("Portal dev proxy enabled", "target", s.opts.PortalDevURL)
 	} else if h, portalErr := registerPortalRoutes(router, s.opts.HubExternalURL, s.opts.PortalFrameSources...); portalErr != nil {
@@ -1571,12 +1664,54 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	case err := <-kcpErrCh:
 		return fmt.Errorf("embedded kcp server failed: %w", err)
+	case err := <-providerRelayErrCh:
+		if err != nil {
+			return fmt.Errorf("provider relay failed: %w", err)
+		}
 	case <-ctx.Done():
 		// Wait for HTTP server to finish shutting down.
 		<-httpErrCh
 	}
 
 	return nil
+}
+
+// orgProviderAvailability requires an explicit policy, installed native
+// enforcement, and a supported KCP quota implementation before an organization
+// provider receives new authority. Keep the quota gate source-controlled: it
+// must not be operator-overridable while the pinned dependency is known-bad.
+// Flip this only after the explicit quota diagnostic passes against an
+// unmodified supported dependency.
+const organizationQuotaSelectionSupported = false
+
+func (s *Server) orgProviderAvailability(ready func() error) func(context.Context) error {
+	return func(context.Context) error {
+		if !organizationQuotaSelectionSupported {
+			return fmt.Errorf("hosted BYO enrollment is disabled until supported KCP ResourceQuota accounting is verified")
+		}
+		if !s.opts.OrganizationLimits.Enabled() {
+			return fmt.Errorf("a complete organization resource-containment policy is required")
+		}
+		if err := s.opts.OrganizationLimits.Validate(); err != nil {
+			return err
+		}
+		if err := organizationConsumerPolicyConfig(s.opts).Validate(s.opts.OrganizationLimits.MaxObjectBytes); err != nil {
+			return fmt.Errorf("organization consumer policy: %w", err)
+		}
+		if !s.opts.EmbeddedKCP || s.opts.ExternalKCPKubeconfig != "" {
+			return fmt.Errorf("organization resource containment requires the single embedded shard; external kcp is unsupported")
+		}
+		if ready == nil {
+			return fmt.Errorf("native organization resource containment is unavailable")
+		}
+		return ready()
+	}
+}
+
+func organizationConsumerPolicyConfig(opts *Options) providers.OrgConsumerPolicyConfig {
+	config := opts.OrganizationConsumerPolicy
+	config.MaxOrganizations = opts.OrganizationLimits.MaxOrganizations
+	return config
 }
 
 // providerProvisionerOptions is the one place the hub's provider-credential
