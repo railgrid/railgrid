@@ -40,7 +40,7 @@ const PortalPathPrefix = "/ui"
 // on the provided router; the SPA catch-all is returned as a separate handler
 // so the caller can invoke it only for paths under the portal prefix (after
 // other API fallbacks have been checked).
-func registerPortalRoutes(router *mux.Router, frameSources ...string) (http.Handler, error) {
+func registerPortalRoutes(router *mux.Router, hubURL string, frameSources ...string) (http.Handler, error) {
 	distFS, err := fs.Sub(portalFS, "portal/dist")
 	if err != nil {
 		return nil, err
@@ -85,5 +85,5 @@ func registerPortalRoutes(router *mux.Router, frameSources ...string) (http.Hand
 		fileServer.ServeHTTP(w, r)
 	})
 
-	return WithPortalSecurityHeaders(spaHandler, frameSources...), nil
+	return WithPortalSecurityHeadersForHub(spaHandler, hubURL, frameSources...), nil
 }

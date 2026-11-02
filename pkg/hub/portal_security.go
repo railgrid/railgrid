@@ -18,22 +18,19 @@ package hub
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 // WithPortalSecurityHeaders wraps a portal handler to set the portal's
 // Content-Security-Policy and related headers.
 //
-// Provider micro-frontends are not iframes. The portal loads each provider's
-// /ui/providers/{name}/main.js (hub-proxied, so same-origin) as a classic
-// script and mounts the custom element it registers directly in the portal
-// document. A provider bundle therefore executes as fully trusted code in the
-// host document; `script-src 'self'` admits it because it is same-origin, and
-// the portal pins it with the Subresource Integrity hash the hub computed at
-// registration (CatalogEntry status.ui.mainJSIntegrity). There is no
-// 'unsafe-inline' for scripts: the portal ships no inline script (the theme
-// pre-paint bootstrap is a static file), so an injected inline handler or
-// <script> is refused by the browser.
+// Platform provider micro-frontends load as classic scripts into the portal
+// document and remain trusted same-origin code, pinned with registration SRI.
+// Org-owned BYO bundles run in a separate opaque-origin iframe whose shell has
+// a stricter policy; only the trusted bootstrap uses the configured hub origin
+// as a script source. There is no 'unsafe-inline' for portal scripts: the
+// portal ships no inline script (the theme pre-paint bootstrap is static).
 //
 // frame-src still lists 'self' plus optional platform-owned sources (App
 // Studio preview hosts): those are the portal's own iframes, not provider
@@ -42,13 +39,86 @@ import (
 // Applied to both the embedded portal SPA and the --portal-dev-url proxy so
 // the dev experience matches production.
 func WithPortalSecurityHeaders(next http.Handler, frameSources ...string) http.Handler {
+	return WithPortalSecurityHeadersForHub(next, "", frameSources...)
+}
+
+// WithPortalSecurityHeadersForHub takes the externally configured hub URL so
+// the opaque-origin sandbox can load its one trusted bootstrap asset. In an
+// opaque-origin frame, CSP 'self' does not match the hub origin that serves
+// that asset; the exact configured origin must be listed explicitly.
+func WithPortalSecurityHeadersForHub(next http.Handler, hubURL string, frameSources ...string) http.Handler {
 	csp := portalContentSecurityPolicy(frameSources)
+	sandboxOrigin := sandboxBootstrapOrigin(hubURL)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", csp)
+		if r.URL.Path == "/ui/provider-sandbox.html" {
+			origin := sandboxOrigin
+			if origin == "'self'" {
+				origin = requestOrigin(r)
+			}
+			w.Header().Set("Content-Security-Policy", providerSandboxContentSecurityPolicy(origin))
+		} else {
+			w.Header().Set("Content-Security-Policy", csp)
+		}
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// providerSandboxContentSecurityPolicy applies only to the opaque-origin
+// document that executes a host-verified provider bundle. Since the document's
+// origin is opaque, 'self' does not match the hub that serves the bootstrap;
+// bootstrapOrigin is therefore the exact configured external hub origin.
+// Invalid or absent configuration falls back to the validated request
+// authority, which supports local relative origins without adding a wildcard
+// or broad scheme source.
+func sandboxBootstrapOrigin(hubURL string) string {
+	parsed, err := url.Parse(hubURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "'self'"
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+func requestOrigin(r *http.Request) string {
+	host := r.Host
+	parsedHost, err := url.Parse("http://" + host)
+	if err != nil || parsedHost.Host != host || parsedHost.Hostname() == "" || parsedHost.User != nil || parsedHost.Path != "" || parsedHost.RawQuery != "" || parsedHost.Fragment != "" {
+		return "'self'"
+	}
+	for _, char := range host {
+		validHostCharacter := (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || strings.ContainsRune(".:[]-", char)
+		if !validHostCharacter {
+			return "'self'"
+		}
+	}
+	scheme := "http"
+	if r.TLS != nil {
+		scheme = "https"
+	} else if forwardedProto := strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")); forwardedProto == "http" || forwardedProto == "https" {
+		scheme = forwardedProto
+	}
+	return scheme + "://" + host
+}
+
+func providerSandboxContentSecurityPolicy(bootstrapOrigin string) string {
+	hubSource := ""
+	if bootstrapOrigin != "'self'" {
+		hubSource = " " + bootstrapOrigin
+	}
+	return "default-src 'none'; " +
+		"script-src 'self'" + hubSource + " blob:; " +
+		"style-src 'self'" + hubSource + " 'unsafe-inline'; " +
+		"img-src 'self'" + hubSource + " data: blob:; " +
+		"font-src 'self'" + hubSource + " data:; " +
+		"connect-src 'none'; " +
+		"frame-src 'none'; " +
+		"worker-src 'none'; " +
+		"object-src 'none'; " +
+		"base-uri 'none'; " +
+		"form-action 'none'; " +
+		"frame-ancestors 'self'"
 }
 
 // portalContentSecurityPolicy renders the portal CSP. Keep the directive list

@@ -59,6 +59,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 	"github.com/railgrid/railgrid/pkg/server/proxy"
@@ -219,12 +220,22 @@ type Manager struct {
 	orgProviderNeedsPreparation func(context.Context, string, string, providers.Provider) (bool, error)
 	orgProviderLifecycleLock    func(context.Context, string) (func(), error)
 	orgProviderCheckDelete      func(context.Context, string, string, string) error
+	// orgBackendKeys signs opaque org-provider request identities. The token
+	// carries no KCP credential; every mediated request is rechecked against
+	// current tenant, provider, binding, and consent state.
+	orgBackendKeys       serviceaccounts.ProofKeySource
+	orgBackendDispatcher func(http.ResponseWriter, *http.Request, serviceaccounts.OrgBackendClaims)
 	// hubAccess records the hub capabilities a tenant accepts for a
 	// provider on Enable (optional; nil skips recording). platformDefault
 	// mirrors the gate's --provider-hub-access-platform-default so the
 	// enabled listing reports what the gate will actually allow.
 	hubAccess                *hubaccess.Store
 	hubAccessPlatformDefault bool
+	// sandboxDispatcher is the ordinary, user-authenticated KCP proxy. Sandbox
+	// requests are authorized against live provider consent before this handler
+	// is invoked; the user's bearer and KCP RBAC remain authoritative.
+	sandboxDispatcher       http.Handler
+	sandboxAuthorizeCluster func(context.Context, string, string) bool
 	// softDeleteGracePeriod mirrors the hub's --soft-delete-grace-period:
 	// how long after DELETE an undelete is still accepted. Zero means
 	// softdelete.DefaultGracePeriod. It must agree with the reconciler's
@@ -342,6 +353,33 @@ func (m *Manager) WithProviderRegistry(p ProviderLookup) *Manager {
 func (m *Manager) WithHubAccessGrants(store *hubaccess.Store, platformDefault bool) *Manager {
 	m.hubAccess = store
 	m.hubAccessPlatformDefault = platformDefault
+	return m
+}
+
+// WithProviderSandboxDispatcher installs the ordinary KCP API handler used
+// after the live provider-sandbox authorization gate.
+func (m *Manager) WithProviderSandboxDispatcher(dispatcher http.Handler) *Manager {
+	m.sandboxDispatcher = dispatcher
+	return m
+}
+
+// WithProviderSandboxClusterAuthorizer installs the KCP proxy's existing
+// membership decision so long-lived sandbox responses stop after membership
+// revocation as well as after provider-consent revocation.
+func (m *Manager) WithProviderSandboxClusterAuthorizer(authorize func(context.Context, string, string) bool) *Manager {
+	m.sandboxAuthorizeCluster = authorize
+	return m
+}
+
+// WithOrgBackendDelegation installs the key source for opaque provider
+// identities and the hub-owned dispatcher that runs an admitted request as
+// the signed human identity. The dispatcher receives the verified claims so
+// it can recheck the live user UID and exact selected cluster immediately
+// before impersonation; request headers are untrusted and are scrubbed by
+// OrgBackendHandler.
+func (m *Manager) WithOrgBackendDelegation(keys serviceaccounts.ProofKeySource, dispatcher func(http.ResponseWriter, *http.Request, serviceaccounts.OrgBackendClaims)) *Manager {
+	m.orgBackendKeys = keys
+	m.orgBackendDispatcher = dispatcher
 	return m
 }
 
@@ -483,6 +521,9 @@ func (h *Handler) RegisterUserOnly(r *mux.Router) {
 //
 //	GET    /api/orgs/{org}/workspaces/{ws}/kubeconfig                       download a workspace-scoped kubeconfig
 func (h *Handler) RegisterTenantScoped(r *mux.Router) {
+	r.Handle("/{org}/workspaces/{ws}/providers/{name}/sandbox/{rest:.*}", newProviderSandboxHandler(h.mgr)).Methods(
+		http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete,
+	)
 	// Org-scoped (no /workspaces in path)
 	r.HandleFunc("/{org}", h.getOrg).Methods(http.MethodGet)
 	r.HandleFunc("/{org}", h.patchOrg).Methods(http.MethodPatch)
