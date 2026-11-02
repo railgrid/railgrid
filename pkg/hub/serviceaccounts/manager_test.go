@@ -133,8 +133,8 @@ func TestCreate_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get CRB: %v", err)
 	}
-	if crb.RoleRef.Name != "cluster-admin" {
-		t.Errorf("CRB roleRef: got %q, want cluster-admin", crb.RoleRef.Name)
+	if crb.RoleRef.Name != WorkspaceMemberClusterRole || crb.RoleRef.Name == "cluster-admin" {
+		t.Errorf("CRB roleRef: got %q, want bounded workspace data role", crb.RoleRef.Name)
 	}
 }
 

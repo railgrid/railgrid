@@ -19,10 +19,8 @@ package serviceaccounts
 // The keyed proof that makes a delegated user identity unforgeable.
 //
 // A delegated ServiceAccount lives in namespace "default" of the caller's own
-// team workspace, and the bootstrap binds every workspace member — not just
-// admins — to cluster-admin there (pkg/hub/kcp/bootstrap.go
-// ensureWorkspaceAdmin, reached for every member via
-// EnsureChildWorkspaceAdmin). A member can therefore create a ServiceAccount,
+// team workspace, where the tenant data role permits ServiceAccount management.
+// A member can therefore create a ServiceAccount,
 // label it delegated, annotate it with any username they like, and mint a
 // token for it with TokenRequest. Every consistency check the hub can make
 // over that object compares inputs the same attacker wrote, so none of them
@@ -51,6 +49,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -65,7 +64,7 @@ const (
 	// delegated identity tuple. It is the ONLY field on a delegated
 	// ServiceAccount that a tenant member cannot write for themselves; every
 	// other label, annotation, and even the object name is derived from public
-	// inputs inside a workspace where members hold cluster-admin.
+	// inputs inside a workspace where members can manage ServiceAccounts.
 	AnnotationDelegatedProof = "railgrid.ai/delegated-user-proof"
 
 	// delegatedProofDomain versions and domain-separates the MAC input, so a
@@ -80,6 +79,9 @@ const (
 	AnnotationDelegatedProofVersion = "railgrid.ai/delegated-user-proof-version"
 	delegatedProofVersionCurrent    = "2"
 	delegatedProofDomainV2          = "railgrid.ai/delegated-user-proof/v2"
+	delegatedTokenAudienceDomainV2  = "railgrid.ai/platform-delegation-token/v2"
+	delegatedTokenAudienceBucket    = time.Minute
+	delegatedTokenAudienceGrace     = 10
 
 	// delegatedProofKeySecretName is the Secret holding the HMAC key, in the
 	// hub-internal workspace/namespace the hub already uses for its
@@ -317,4 +319,45 @@ func verifyDelegatedProof(key []byte, sa *corev1.ServiceAccount) error {
 		return fmt.Errorf("delegated ServiceAccount carries no valid hub proof")
 	}
 	return nil
+}
+
+// DelegatedTokenAudience is a secret, domain-separated audience for a signed
+// platform delegation. An account's public metadata proof does not authorize
+// tokens that workspace members mint themselves with TokenRequest. Never store
+// this audience in tenant-readable metadata.
+func DelegatedTokenAudience(ctx context.Context, keys ProofKeySource, sa *corev1.ServiceAccount) (string, error) {
+	return delegatedTokenAudienceAt(ctx, keys, sa, time.Now())
+}
+
+// delegatedTokenAudienceAt binds a token audience to a one-minute issuance
+// bucket. TokenReview accepts the current bucket and the ten preceding buckets
+// to cover the ten-minute token lifetime. A copied audience cannot authorize
+// delegation beyond that window (at most eleven minutes from the bucket start).
+func delegatedTokenAudienceAt(ctx context.Context, keys ProofKeySource, sa *corev1.ServiceAccount, now time.Time) (string, error) {
+	key, err := delegatedProofKey(ctx, keys)
+	if err != nil {
+		return "", err
+	}
+	if err := verifyDelegatedProof(key, sa); err != nil {
+		return "", err
+	}
+	mac := hmac.New(sha256.New, key)
+	bucket := now.UTC().Truncate(delegatedTokenAudienceBucket).Unix() / int64(delegatedTokenAudienceBucket/time.Second)
+	_, _ = mac.Write([]byte(delegatedTokenAudienceDomainV2 + "\x00" + fmt.Sprintf("%d", bucket) + "\x00" + computeDelegatedProof(key, delegatedProofVersionCurrent,
+		sa.Annotations[AnnotationWorkloadIdentityTenantPath], Identity{User: sa.Annotations[AnnotationDelegatedUser]},
+		DelegatedProvider{Name: sa.Annotations[AnnotationDelegatedProvider], OrgUUID: sa.Annotations[AnnotationDelegatedProviderOrg]}, sa.Name, sa.UID)))
+	return "railgrid-pdu:" + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func delegatedTokenAudienceCandidates(ctx context.Context, keys ProofKeySource, sa *corev1.ServiceAccount, now time.Time) ([]string, error) {
+	currentBucket := now.UTC().Truncate(delegatedTokenAudienceBucket)
+	audiences := make([]string, 0, delegatedTokenAudienceGrace+1)
+	for age := 0; age <= delegatedTokenAudienceGrace; age++ {
+		audience, err := delegatedTokenAudienceAt(ctx, keys, sa, currentBucket.Add(-time.Duration(age)*delegatedTokenAudienceBucket))
+		if err != nil {
+			return nil, err
+		}
+		audiences = append(audiences, audience)
+	}
+	return audiences, nil
 }

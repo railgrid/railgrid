@@ -26,6 +26,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 const (
@@ -195,6 +196,9 @@ func optionalOrgContext(r *http.Request, userResolver UserResolver, lookup Membe
 		return tc, true
 	}
 	workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
+	if workspaceUUID != "" && !kcppaths.IsTeamWorkspaceName(workspaceUUID) {
+		return tc, true
+	}
 	role, ok := matchEntryOrOrgAdmin(index, orgUUID, workspaceUUID)
 	if !ok {
 		return tc, true
@@ -258,6 +262,10 @@ func Middleware(userResolver UserResolver, lookup MembershipLookup) func(next ht
 			}
 			// Step 3: read X-Railgrid-Workspace (optional).
 			workspaceUUID := r.Header.Get(HeaderRailgridWorkspace)
+			if workspaceUUID != "" && !kcppaths.IsTeamWorkspaceName(workspaceUUID) {
+				writeStatus(w, http.StatusBadRequest, "BadRequest", "workspace must identify a team workspace")
+				return
+			}
 
 			// Step 4: fetch UserMembershipIndex.
 			index, err := lookup.GetUserMembershipIndex(r.Context(), user)
@@ -345,6 +353,9 @@ func matchEntry(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUU
 // workspace, and a soft-deleted workspace row is irrelevant once the caller
 // is a current Org admin.
 func matchEntryOrOrgAdmin(index *tenancyv1alpha1.UserMembershipIndex, orgUUID, workspaceUUID string) (string, bool) {
+	if workspaceUUID != "" && !kcppaths.IsTeamWorkspaceName(workspaceUUID) {
+		return "", false
+	}
 	if role, ok := matchEntry(index, orgUUID, workspaceUUID); ok {
 		return role, true
 	}

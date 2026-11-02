@@ -46,7 +46,7 @@ func VerifyProviderActionServiceAccount(ctx context.Context, cfg *rest.Config, t
 		return "", fmt.Errorf("tenant action ServiceAccount identity changed")
 	}
 	// Managed identities must pass their existing scoped/proof verification.
-	if IsDelegatedUserServiceAccount(sa) || strings.HasPrefix(sa.Name, "railgrid-du-") || strings.HasPrefix(sa.Name, workloadIdentityNamePrefix) || sa.Labels[LabelWorkloadIdentity] != "" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != "" {
+	if IsDelegatedUserServiceAccount(sa) || strings.HasPrefix(sa.Name, delegatedUserNamePrefix) || strings.HasPrefix(sa.Name, platformDelegatedUserNamePrefix) || strings.HasPrefix(sa.Name, workloadIdentityNamePrefix) || sa.Labels[LabelWorkloadIdentity] != "" || sa.Annotations[AnnotationWorkloadIdentityTenantPath] != "" {
 		return "", fmt.Errorf("managed workload requires scoped identity verification")
 	}
 	return review.Status.User.Username, nil

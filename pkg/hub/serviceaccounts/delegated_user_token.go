@@ -26,11 +26,10 @@ package serviceaccounts
 // every user in the org who touches it, and that token reaches every
 // workspace and every REST endpoint the user can.
 //
-// A delegated user token replaces the bearer on that path. It is a
-// ServiceAccount token minted in the caller's tenant workspace, scoped by kcp
-// to that one workspace (the hub's kcp proxy pins SA tokens to the cluster
-// claim they carry), audience-bound, ten minutes long, and annotated with the
-// human user it stands in for so the far end still knows who is calling.
+// Platform-provider delegation still uses a short-lived ServiceAccount token
+// in the caller's tenant workspace. Organization-owned providers use the
+// opaque hub-signed credential in org_backend_token.go instead: their runtime
+// must not receive a native KCP bearer or role binding.
 //
 // The account is deterministic per (tenant, user, provider), so repeated
 // requests reuse one ServiceAccount rather than accumulating. Nothing deletes
@@ -50,17 +49,21 @@ import (
 	"golang.org/x/sync/singleflight"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	corev1typed "k8s.io/client-go/kubernetes/typed/core/v1"
+	rbacv1typed "k8s.io/client-go/kubernetes/typed/rbac/v1"
 
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 const (
-	// LabelDelegatedUser marks a ServiceAccount minted to stand in for a human
-	// user at an org-owned provider. Such accounts also carry
+	// LabelDelegatedUser marks a legacy or platform ServiceAccount minted to
+	// stand in for a human user at a provider. Organization-owned providers now
+	// use OrgBackendClaims instead. Such accounts also carry
 	// LabelWorkloadIdentity, so the online verifier treats them as hub-managed
 	// and the user-facing ServiceAccount CRUD surface (LabelRailgridSA) never
 	// lists or rotates them.
@@ -76,7 +79,7 @@ const (
 	// an operator reading the object sees the tuple without parsing a path.
 	AnnotationDelegatedOrg       = "railgrid.ai/delegated-org"
 	AnnotationDelegatedWorkspace = "railgrid.ai/delegated-workspace"
-	// AnnotationDelegatedProvider names the org-owned provider the token was
+	// AnnotationDelegatedProvider names the platform provider the token was
 	// issued for. It participates in the account name, so a token minted for
 	// one provider is a different identity from one minted for another.
 	AnnotationDelegatedProvider = "railgrid.ai/delegated-provider"
@@ -87,14 +90,9 @@ const (
 	// owner does, and it is covered by the proof.
 	AnnotationDelegatedProviderOrg = "railgrid.ai/delegated-provider-org"
 
-	// DelegatedUserClusterRole is what the delegated account is bound to. It is
-	// the role every workspace member holds today: the bootstrap grants members
-	// and admins alike cluster-admin in their team workspace
-	// (pkg/hub/kcp/bootstrap.go ensureWorkspaceAdmin), so binding anything
-	// narrower here would make the delegated call weaker than the user's own
-	// kubectl. Narrowing is the workspace RBAC's job; when members get a
-	// bounded ClusterRole this constant follows it.
-	DelegatedUserClusterRole = "cluster-admin"
+	// DelegatedUserClusterRole mirrors workspace data administration for platform
+	// provider compatibility. BYO providers do not receive this native role.
+	DelegatedUserClusterRole = WorkspaceMemberClusterRole
 
 	// DelegatedUserTokenCacheTTL bounds how long an issued token is reused
 	// before a fresh one is minted, independently of the token's own expiry.
@@ -106,8 +104,9 @@ const (
 	// a provider moments before it expires mid-request.
 	delegatedUserTokenExpirySlack = time.Minute
 
-	delegatedUserNamePrefix   = "railgrid-du-"
-	delegatedUserBindingInfix = "-"
+	delegatedUserNamePrefix         = "railgrid-du-" // retired organization-provider delegation
+	platformDelegatedUserNamePrefix = "railgrid-pdu-"
+	delegatedUserBindingInfix       = "-"
 )
 
 // Identity is the caller a delegated token stands in for.
@@ -147,6 +146,14 @@ func DelegatedUserServiceAccountName(tenantPath string, user Identity, providerN
 	return delegatedServiceAccountName(tenantPath, user, PlatformProvider(providerName))
 }
 
+// IsRetiredDelegationUsername reports whether an authenticated KCP identity is
+// in the old native delegated-user namespace. The prefix is globally retired:
+// old organization-provider credentials had workspace-admin authority, and
+// old platform credentials must be reminted under the new platform prefix.
+func IsRetiredDelegationUsername(username string) bool {
+	return strings.HasPrefix(username, "system:serviceaccount:"+Namespace+":"+delegatedUserNamePrefix)
+}
+
 // delegatedServiceAccountName returns the stable, DNS-safe ServiceAccount
 // name for one (tenant, user, provider) tuple. Hash-only for the same reason
 // WorkloadServiceAccountName is: user names are email-shaped and provider
@@ -156,17 +163,22 @@ func DelegatedUserServiceAccountName(tenantPath string, user Identity, providerN
 // is upgraded in place.
 func delegatedServiceAccountName(tenantPath string, user Identity, provider DelegatedProvider) string {
 	parts := []string{tenantPath, user.User, provider.Name}
+	prefix := delegatedUserNamePrefix
 	if provider.OrgUUID != "" {
 		parts = append(parts, "org="+provider.OrgUUID)
+	} else {
+		prefix = platformDelegatedUserNamePrefix
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return delegatedUserNamePrefix + hex.EncodeToString(sum[:20])
+	return prefix + hex.EncodeToString(sum[:20])
 }
 
 // DelegatedUserBindingName returns the ClusterRoleBinding name paired with a
 // delegated ServiceAccount.
 func DelegatedUserBindingName(serviceAccountName string) string {
-	return serviceAccountName + delegatedUserBindingInfix + DelegatedUserClusterRole
+	// Keep the historical object name so reconciliation replaces its immutable
+	// RoleRef instead of leaving an older, broader binding alongside the new one.
+	return serviceAccountName + delegatedUserBindingInfix + "cluster-admin"
 }
 
 type delegatedTokenKey struct {
@@ -188,8 +200,8 @@ type delegatedTokenEntry struct {
 }
 
 // IssueDelegatedUserToken returns a short-lived ServiceAccount token that
-// represents user in the tenant workspace (orgUUID, wsUUID) towards the
-// org-owned provider providerName. The account is created on first use, bound
+// represents user in the tenant workspace (orgUUID, wsUUID) towards a platform
+// provider. The account is created on first use, bound
 // to DelegatedUserClusterRole, and reused thereafter; tokens are cached in
 // memory per (tenant, user, provider) for DelegatedUserTokenCacheTTL and
 // re-minted before they expire.
@@ -198,6 +210,9 @@ type delegatedTokenEntry struct {
 // membership in the workspace: this method mints on the hub's own authority
 // and does not re-check either.
 func (m *Manager) IssueDelegatedUserToken(ctx context.Context, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) (string, time.Time, error) {
+	if provider.OrgUUID != "" {
+		return "", time.Time{}, fmt.Errorf("native delegated ServiceAccount tokens are disabled for organization-owned providers")
+	}
 	if err := validateDelegatedInputs(orgUUID, wsUUID, user, provider); err != nil {
 		return "", time.Time{}, err
 	}
@@ -247,6 +262,146 @@ func (m *Manager) cachedDelegatedToken(key delegatedTokenKey) (string, time.Time
 	return "", time.Time{}, false
 }
 
+// RevokeLegacyOrgDelegations removes every ServiceAccount in the retired
+// native delegation namespace from one team workspace, along with its paired
+// broad binding. Platform delegations now use a separate prefix. Workspace
+// enumeration is intentionally left to explicit operator tooling; startup
+// does not scan tenant-controlled inventories.
+func RevokeLegacyOrgDelegations(ctx context.Context, client kubernetes.Interface) error {
+	if client == nil {
+		return fmt.Errorf("legacy organization delegation cleanup requires a Kubernetes client")
+	}
+	const pageSize int64 = 100
+	continueToken := ""
+	for {
+		page, err := client.CoreV1().ServiceAccounts(Namespace).List(ctx, metav1.ListOptions{Limit: pageSize, Continue: continueToken})
+		if err != nil {
+			return fmt.Errorf("listing ServiceAccounts for legacy organization delegation cleanup: %w", err)
+		}
+		for i := range page.Items {
+			sa := &page.Items[i]
+			if !strings.HasPrefix(sa.Name, delegatedUserNamePrefix) {
+				continue
+			}
+			if err := deleteLegacyDelegation(ctx, client, sa); err != nil {
+				return fmt.Errorf("revoking reserved delegated ServiceAccount %q: %w", sa.Name, err)
+			}
+		}
+		continueToken = page.GetContinue()
+		if continueToken == "" {
+			return nil
+		}
+	}
+}
+
+func deleteLegacyDelegation(ctx context.Context, client kubernetes.Interface, sa *corev1.ServiceAccount) error {
+	if sa.UID == "" {
+		return fmt.Errorf("reserved ServiceAccount has no UID; refusing an unguarded delete")
+	}
+	// Remove the paired binding first. Otherwise a tenant could recreate the
+	// deterministic SA name while a finalizer keeps this name-based subject
+	// bound to the old broad role.
+	bindingName := DelegatedUserBindingName(sa.Name)
+	bindings := client.RbacV1().ClusterRoleBindings()
+	binding, err := bindings.Get(ctx, bindingName, metav1.GetOptions{})
+	if err == nil && bindingHasDelegatedSubject(binding, sa.Name) {
+		if binding.UID == "" {
+			return fmt.Errorf("paired ClusterRoleBinding has no UID; refusing an unguarded delete")
+		}
+		if err := bindings.Delete(ctx, bindingName, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &binding.UID}}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			return fmt.Errorf("deleting paired ClusterRoleBinding: %w", err)
+		}
+		if err := confirmBindingDeleted(ctx, bindings, bindingName, binding.UID); err != nil {
+			return err
+		}
+	} else if err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("getting paired ClusterRoleBinding: %w", err)
+	}
+
+	sas := client.CoreV1().ServiceAccounts(Namespace)
+	if err := sas.Delete(ctx, sa.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &sa.UID}}); err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+		return fmt.Errorf("deleting ServiceAccount: %w", err)
+	}
+	return confirmServiceAccountDeleted(ctx, sas, sa.Name, sa.UID)
+}
+
+func bindingHasDelegatedSubject(binding *rbacv1.ClusterRoleBinding, name string) bool {
+	if binding == nil {
+		return false
+	}
+	for _, subject := range binding.Subjects {
+		if subject.Kind == rbacv1.ServiceAccountKind && subject.Namespace == Namespace && subject.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+const legacyDeleteConfirmAttempts = 5
+
+func confirmServiceAccountDeleted(ctx context.Context, sas corev1typed.ServiceAccountInterface, name string, uid types.UID) error {
+	for attempt := 0; attempt < legacyDeleteConfirmAttempts; attempt++ {
+		current, err := sas.Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("confirming ServiceAccount deletion: %w", err)
+		}
+		if current.UID != uid {
+			return fmt.Errorf("reserved ServiceAccount %q was recreated during deletion", name)
+		}
+		if current.DeletionTimestamp != nil && len(current.Finalizers) > 0 {
+			current = current.DeepCopy()
+			current.Finalizers = nil
+			if _, updateErr := sas.Update(ctx, current, metav1.UpdateOptions{}); updateErr != nil && !apierrors.IsConflict(updateErr) && !apierrors.IsNotFound(updateErr) {
+				return fmt.Errorf("clearing finalizers from reserved ServiceAccount: %w", updateErr)
+			}
+		}
+		if err := waitLegacyDelete(ctx); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("ServiceAccount %q remained after bounded deletion confirmation", name)
+}
+
+func confirmBindingDeleted(ctx context.Context, bindings rbacv1typed.ClusterRoleBindingInterface, name string, uid types.UID) error {
+	for attempt := 0; attempt < legacyDeleteConfirmAttempts; attempt++ {
+		current, err := bindings.Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("confirming ClusterRoleBinding deletion: %w", err)
+		}
+		if current.UID != uid {
+			return fmt.Errorf("paired ClusterRoleBinding %q was recreated during deletion", name)
+		}
+		if current.DeletionTimestamp != nil && len(current.Finalizers) > 0 {
+			current = current.DeepCopy()
+			current.Finalizers = nil
+			if _, updateErr := bindings.Update(ctx, current, metav1.UpdateOptions{}); updateErr != nil && !apierrors.IsConflict(updateErr) && !apierrors.IsNotFound(updateErr) {
+				return fmt.Errorf("clearing finalizers from paired ClusterRoleBinding: %w", updateErr)
+			}
+		}
+		if err := waitLegacyDelete(ctx); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("ClusterRoleBinding %q remained after bounded deletion confirmation", name)
+}
+
+func waitLegacyDelete(ctx context.Context) error {
+	timer := time.NewTimer(10 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // mintDelegatedUserToken does the work IssueDelegatedUserToken deduplicates:
 // reconcile the account and its binding, then issue and cache a token.
 func (m *Manager) mintDelegatedUserToken(ctx context.Context, key delegatedTokenKey, orgUUID, wsUUID string, user Identity, provider DelegatedProvider) (string, time.Time, error) {
@@ -268,9 +423,17 @@ func (m *Manager) mintDelegatedUserToken(ctx context.Context, key delegatedToken
 		return "", time.Time{}, err
 	}
 
+	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("getting delegated account for token audience: %w", err)
+	}
+	audience, err := delegatedTokenAudienceAt(ctx, m.proofKeys, sa, now)
+	if err != nil {
+		return "", time.Time{}, err
+	}
 	expirationSeconds := int64(WorkloadIdentityTokenTTL / time.Second)
 	issued, err := cs.CoreV1().ServiceAccounts(Namespace).CreateToken(ctx, name, &authnv1.TokenRequest{Spec: authnv1.TokenRequestSpec{
-		Audiences:         []string{WorkloadIdentityTokenAudience},
+		Audiences:         []string{WorkloadIdentityTokenAudience, audience},
 		ExpirationSeconds: &expirationSeconds,
 	}}, metav1.CreateOptions{})
 	if err != nil {
@@ -310,8 +473,7 @@ func IsDelegatedUserServiceAccount(sa *corev1.ServiceAccount) bool {
 //
 // SECURITY: everything on this object is tenant-writable except the proof.
 // The account lives in namespace "default" of the tenant's own team
-// workspace, where the bootstrap binds every member — not only admins — to
-// cluster-admin (pkg/hub/kcp/bootstrap.go ensureWorkspaceAdmin). An ordinary
+// workspace, where the tenant data role allows ServiceAccount management. An ordinary
 // member can create a ServiceAccount there, apply LabelDelegatedUser, fill in
 // all four identity annotations naming anyone they like, give it the name the
 // hub would have derived (the name is a hash of public inputs), and mint a

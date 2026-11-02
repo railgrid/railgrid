@@ -131,15 +131,27 @@ func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 		if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
 			return response(http.StatusBadRequest, map[string]string{"error": err.Error()})
 		}
-		if review.Spec.Token != rt.token || len(review.Spec.Audiences) != 1 || review.Spec.Audiences[0] != serviceaccounts.WorkloadIdentityTokenAudience {
+		validAudience := len(review.Spec.Audiences) == 1 && review.Spec.Audiences[0] == serviceaccounts.WorkloadIdentityTokenAudience
+		if !validAudience && rt.delegatedUser != "" && !rt.forged {
+			audience, err := serviceaccounts.DelegatedTokenAudience(context.Background(), resolverProofKeys, rt.serviceAccountObject())
+			if err == nil {
+				for _, requested := range review.Spec.Audiences {
+					if requested == audience {
+						validAudience = true
+						break
+					}
+				}
+			}
+		}
+		if review.Spec.Token != rt.token || !validAudience {
 			return response(http.StatusForbidden, map[string]string{"error": "unexpected TokenReview"})
 		}
 		return response(http.StatusOK, &authnv1.TokenReview{
 			TypeMeta: metav1.TypeMeta{APIVersion: "authentication.k8s.io/v1", Kind: "TokenReview"},
 			Status: authnv1.TokenReviewStatus{
 				Authenticated: true,
-				User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + rt.serviceAccount},
-				Audiences:     []string{serviceaccounts.WorkloadIdentityTokenAudience},
+				User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + rt.serviceAccount, UID: "uid-" + rt.serviceAccount},
+				Audiences:     review.Spec.Audiences,
 			},
 		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/namespaces/default/serviceaccounts/"+rt.serviceAccount:
@@ -199,8 +211,9 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 // token is held to.
 func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T) {
 	const token = "delegated-token"
-	const serviceAccount = "railgrid-du-test"
 	const tenantPath = "root:railgrid:tenants:org:workspace"
+	serviceAccount := serviceaccounts.DelegatedUserServiceAccountName(tenantPath,
+		serviceaccounts.Identity{User: "alice"}, "infrastructure")
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host: "https://workload.test",
 		Transport: workloadResolverRoundTripper{
@@ -238,6 +251,43 @@ func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T)
 	other.Header.Set(headerRailgridWorkspace, "other-workspace")
 	if _, _, err := r.resolve(other); err == nil {
 		t.Fatal("delegated token accepted for a workspace it was not minted in")
+	}
+}
+
+func TestKCPTenantResolverRejectsRetiredDelegationsOnProviderAndHubRESTRoutes(t *testing.T) {
+	const token = "retired-delegated-token"
+	const tenantPath = "root:railgrid:tenants:org:workspace"
+	for _, test := range []struct {
+		name           string
+		serviceAccount string
+		provider       string
+		providerOrg    string
+	}{
+		{name: "old platform native delegation", serviceAccount: "railgrid-du-old-platform", provider: "infrastructure"},
+		{name: "old organization native delegation", serviceAccount: "railgrid-du-old-org", provider: "planner", providerOrg: "org"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := &kcpTenantResolver{
+				workloadConfig: &resolverConfigBuilder{cfg: &rest.Config{
+					Host: "https://workload.test",
+					Transport: workloadResolverRoundTripper{
+						token: token, serviceAccount: test.serviceAccount, tenantPath: tenantPath,
+						delegatedUser: "alice", provider: test.provider, providerOrg: test.providerOrg,
+					},
+				}},
+				proofKeys: resolverProofKeys,
+			}
+			req := httptest.NewRequest(http.MethodGet, "/services/providers/"+test.provider+"/x", nil)
+			req.Header.Set("Authorization", "Bearer "+token)
+			req.Header.Set(headerRailgridOrg, "org")
+			req.Header.Set(headerRailgridWorkspace, "workspace")
+			if _, err := r.verifyWorkloadCaller(req); err == nil {
+				t.Fatal("retired identity was accepted by provider tenant resolution")
+			}
+			if _, err := r.verifyHubAccessCaller(req); err == nil {
+				t.Fatal("retired identity was accepted by hub REST caller verification")
+			}
+		})
 	}
 }
 
@@ -347,6 +397,22 @@ func TestKCPTenantResolverMapsOnlyMissingAuthorizationToAnonymous(t *testing.T) 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	if _, _, err := r.resolve(req); !errors.Is(err, ErrAnonymousProviderCaller) {
 		t.Fatalf("resolve error = %v, want anonymous caller", err)
+	}
+}
+
+func TestKCPTenantResolverRejectsOpaqueOrgBackendIdentityWithoutExchange(t *testing.T) {
+	identifyCalls := 0
+	r := &kcpTenantResolver{identifyUser: func(*http.Request) (string, error) {
+		identifyCalls++
+		return "alice", nil
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/services/providers/other/mcp", nil)
+	req.Header.Set("Authorization", "Bearer rgbyo1.signed")
+	if _, _, err := r.resolve(req); err == nil || errors.Is(err, ErrAnonymousProviderCaller) {
+		t.Fatalf("resolve error = %v, want terminal opaque-identity rejection", err)
+	}
+	if identifyCalls != 0 {
+		t.Fatalf("opaque identity was offered to human/workload resolution %d times", identifyCalls)
 	}
 }
 

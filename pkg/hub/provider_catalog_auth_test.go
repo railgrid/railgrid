@@ -22,6 +22,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
@@ -141,6 +142,10 @@ func (f fakeGrantReader) Get(_ context.Context, key hubaccess.GrantKey) (*tenanc
 	return f[key.Name()], nil
 }
 
+func (f fakeGrantReader) GetUncached(ctx context.Context, key hubaccess.GrantKey) (*tenancyv1alpha1.Grant, error) {
+	return f.Get(ctx, key)
+}
+
 // fakeServiceAccountJWT is shaped like a bound ServiceAccount token, which is
 // all the gate looks at before verifying it online.
 func fakeServiceAccountJWT() string {
@@ -216,27 +221,39 @@ func TestHubAccessGateEndToEnd(t *testing.T) {
 				return map[string]*tenancyv1alpha1.Grant{n: g}
 			}(), wantUser: "alice", wantCapability: "memberships.read"},
 		{name: "undeclared capability", path: "/api/orgs/org/memberships", provider: "quiet", delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
-		{name: "org-owned needs a grant even with the default", path: "/api/orgs/org/memberships", provider: "byo", providerOrg: org, delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
+		{name: "org-owned native delegation is retired", path: "/api/orgs/org/memberships", provider: "byo", providerOrg: org, delegated: true, platformDefault: true, wantStatus: http.StatusUnauthorized},
 		{name: "org-owned with grant", path: "/api/orgs/org/memberships", provider: "byo", providerOrg: org, delegated: true,
 			grants: func() map[string]*tenancyv1alpha1.Grant {
 				n, g := grantFor("byo", org, readOnly)
 				return map[string]*tenancyv1alpha1.Grant{n: g}
-			}(), wantUser: "alice", wantCapability: "memberships.read"},
+			}(), wantStatus: http.StatusUnauthorized},
 		{name: "a platform grant never covers the org copy", path: "/api/orgs/org/memberships", provider: "byo", providerOrg: org, delegated: true,
 			grants: func() map[string]*tenancyv1alpha1.Grant {
 				n, g := grantFor("byo", "", readOnly)
 				return map[string]*tenancyv1alpha1.Grant{n: g}
-			}(), wantStatus: http.StatusForbidden},
+			}(), wantStatus: http.StatusUnauthorized},
 		{name: "workspace membership writes are outside the contract", method: http.MethodPost, path: "/api/orgs/org/workspaces/workspace/memberships", delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
 		{name: "role changes are outside the contract", method: http.MethodPatch, path: "/api/orgs/org/memberships/alice", delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
 		{name: "removals are outside the contract", method: http.MethodDelete, path: "/api/orgs/org/memberships/alice", delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
 		{name: "other routes are outside the contract", path: "/api/orgs/org/workspaces", delegated: true, platformDefault: true, wantStatus: http.StatusForbidden},
 		{name: "human credential wins", path: "/api/orgs/org/memberships", delegated: true, human: true, wantUser: "human"},
-		{name: "workload account is not a person", path: "/api/orgs/org/memberships", platformDefault: true},
+		{name: "workload account is not a person", path: "/api/orgs/org/memberships", platformDefault: true, wantStatus: http.StatusUnauthorized},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			token := fakeServiceAccountJWT()
-			transport := workloadResolverRoundTripper{token: token, serviceAccount: "railgrid-du-test", tenantPath: "root:railgrid:tenants:org:workspace", provider: tc.provider, providerOrg: tc.providerOrg}
+			serviceAccount := "railgrid-wi-test"
+			providerName := tc.provider
+			if providerName == "" {
+				providerName = "infrastructure"
+			}
+			if tc.delegated {
+				if tc.providerOrg != "" {
+					serviceAccount = "railgrid-du-org-owned"
+				} else {
+					serviceAccount = serviceaccounts.DelegatedUserServiceAccountName("root:railgrid:tenants:org:workspace", serviceaccounts.Identity{User: "alice"}, providerName)
+				}
+			}
+			transport := workloadResolverRoundTripper{token: token, serviceAccount: serviceAccount, tenantPath: "root:railgrid:tenants:org:workspace", provider: providerName, providerOrg: tc.providerOrg}
 			if tc.delegated {
 				transport.delegatedUser = "alice"
 			}
@@ -255,6 +272,9 @@ func TestHubAccessGateEndToEnd(t *testing.T) {
 				reached = true
 				gotUser, gotErr = hubaccess.DelegatedUserResolver(human).ResolveUser(r)
 				gotCall, _ = tenant.DelegatedCallFrom(r.Context())
+				if gotErr != nil {
+					http.Error(w, gotErr.Error(), http.StatusUnauthorized)
+				}
 			}))
 			method := tc.method
 			if method == "" {
@@ -268,7 +288,8 @@ func TestHubAccessGateEndToEnd(t *testing.T) {
 			handler.ServeHTTP(rec, r)
 
 			if tc.wantStatus != 0 {
-				if reached || rec.Code != tc.wantStatus {
+				wantReached := tc.wantStatus == http.StatusUnauthorized
+				if reached != wantReached || rec.Code != tc.wantStatus {
 					t.Fatalf("status %d (reached=%v), want %d; body %s", rec.Code, reached, tc.wantStatus, rec.Body.String())
 				}
 				return

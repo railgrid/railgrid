@@ -35,6 +35,7 @@ import (
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/actionproof"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
@@ -69,6 +70,12 @@ type ProviderLookup interface {
 // GrantReader reads recorded grants.
 type GrantReader interface {
 	Get(ctx context.Context, key GrantKey) (*tenancyv1alpha1.Grant, error)
+}
+
+// UncachedGrantReader is required for organization-owned provider credentials:
+// a revoked BYO permission must stop authorizing at the next request boundary.
+type UncachedGrantReader interface {
+	GetUncached(ctx context.Context, key GrantKey) (*tenancyv1alpha1.Grant, error)
 }
 
 // DefaultInvitesPerHour bounds memberships.invite calls per provider per
@@ -185,6 +192,28 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 			call.AppAccessSourceMethod = claims.Method
 			call.AppAccessInviteUser = claims.InviteUser
 			logger.V(2).Info("Action-proof hub access", "capability", call.Capability, "scope", call.Scope)
+			next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
+			return
+		}
+		if serviceaccounts.IsOrgBackendToken(requestBearer(r)) {
+			if g.Verify == nil {
+				writeStatus(w, http.StatusUnauthorized, "invalid organization provider identity")
+				return
+			}
+			caller, err := g.Verify(r)
+			if err != nil || !caller.Delegated || caller.ProviderOrgUUID == "" || caller.ProviderOrgUUID != caller.OrgUUID {
+				klog.FromContext(r.Context()).V(2).Info("Organization provider identity refused", "error", err, "method", r.Method, "path", r.URL.Path)
+				writeStatus(w, http.StatusUnauthorized, "invalid organization provider identity")
+				return
+			}
+			call, status, reason := g.admit(r, caller)
+			if status != 0 {
+				klog.FromContext(r.Context()).WithValues("provider", caller.Provider, "user", caller.User,
+					"org", caller.OrgUUID, "workspace", caller.WorkspaceUUID, "method", r.Method, "path", r.URL.Path).
+					Info("Organization provider hub access refused", "status", status, "reason", reason)
+				writeStatus(w, status, reason)
+				return
+			}
 			next.ServeHTTP(w, r.WithContext(tenant.WithDelegatedCall(r.Context(), call)))
 			return
 		}
@@ -467,7 +496,20 @@ func (g *Gate) admit(r *http.Request, caller Caller) (tenant.DelegatedCall, int,
 	}
 
 	key := GrantKey{OrgUUID: caller.OrgUUID, WorkspaceUUID: caller.WorkspaceUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID}
-	grant, err := g.Grants.Get(r.Context(), key)
+	if g.Grants == nil {
+		return tenant.DelegatedCall{}, http.StatusServiceUnavailable, "cannot read provider hub-access grants; retry"
+	}
+	var grant *tenancyv1alpha1.Grant
+	var err error
+	if prov.OrgUUID != "" {
+		uncached, ok := g.Grants.(UncachedGrantReader)
+		if !ok {
+			return tenant.DelegatedCall{}, http.StatusServiceUnavailable, "cannot read current provider hub-access grants; retry"
+		}
+		grant, err = uncached.GetUncached(r.Context(), key)
+	} else {
+		grant, err = g.Grants.Get(r.Context(), key)
+	}
 	if err != nil {
 		return tenant.DelegatedCall{}, http.StatusServiceUnavailable, "cannot read provider hub-access grants; retry"
 	}
@@ -500,6 +542,17 @@ func (g *Gate) admit(r *http.Request, caller Caller) (tenant.DelegatedCall, int,
 		MaxRole:         limits.MaxRole,
 		AllowInvite:     limits.AllowInvite,
 	}, 0, ""
+}
+
+func requestBearer(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	value := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(value) <= len("Bearer ") || !strings.EqualFold(value[:len("Bearer ")], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(value[len("Bearer "):])
 }
 
 // resolveProvider finds the registry entry the token was issued for. A

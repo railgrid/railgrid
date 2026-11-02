@@ -623,6 +623,29 @@ func TestMiddleware_OrgAdminImplicitWorkspaceAdmin(t *testing.T) {
 	}
 }
 
+func TestMiddlewareOrgAdminCannotAddressProviderInfrastructure(t *testing.T) {
+	index := fakeIndex("alice", tenancyv1alpha1.MembershipIndexEntry{OrgUUID: "org-uuid", Role: tenancyv1alpha1.MembershipRoleAdmin})
+	resolver := UserResolverFunc(func(_ *http.Request) (string, error) { return "alice", nil })
+	lookup := MembershipLookupFunc(func(context.Context, string) (*tenancyv1alpha1.UserMembershipIndex, error) { return index, nil })
+	for _, name := range []string{"providers", "providers:planner", "ws:child", "providers%3Aplanner", "../providers", "ws/../../providers"} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			handler := Middleware(resolver, lookup)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
+			request := httptest.NewRequest(http.MethodPost, "/api/orgs/org-uuid/workspaces/target/serviceaccounts", nil)
+			request.Header.Set(HeaderRailgridOrg, "org-uuid")
+			request.Header.Set(HeaderRailgridWorkspace, name)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if called || response.Code != http.StatusBadRequest {
+				t.Fatalf("infrastructure identifier reached privileged handler: called=%v status=%d", called, response.Code)
+			}
+			if role, allowed := matchEntryOrOrgAdmin(index, "org-uuid", name); allowed {
+				t.Fatalf("infrastructure inherited org role %q", role)
+			}
+		})
+	}
+}
+
 // An explicit workspace row still wins over the org-admin fallback: an org
 // admin holding a member row in a workspace is a member there.
 func TestMiddleware_OrgAdminExplicitWorkspaceRowWins(t *testing.T) {

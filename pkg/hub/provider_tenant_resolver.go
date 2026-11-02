@@ -150,6 +150,15 @@ func (r *kcpTenantResolver) resolve(req *http.Request) (string, string, error) {
 	if r == nil || req == nil {
 		return "", "", errors.New("tenant resolver unavailable")
 	}
+	authorization := strings.TrimSpace(req.Header.Get("Authorization"))
+	if len(authorization) > len("Bearer ") && strings.EqualFold(authorization[:len("Bearer ")], "Bearer ") &&
+		serviceaccounts.IsOrgBackendToken(strings.TrimSpace(authorization[len("Bearer "):])) {
+		// The opaque BYO identity is accepted only by the mediated KCP broker
+		// and its closed HubAccess gate. Do not resolve it as a human or exchange
+		// it for another provider's delegated credential through /services or a
+		// UI-grant front door.
+		return "", "", errors.New("organization provider identity cannot be exchanged for another provider credential")
+	}
 	identifyUser := r.identifyUser
 	if identifyUser == nil && r.kcpProxy != nil {
 		identifyUser = r.kcpProxy.IdentifyUser
@@ -307,19 +316,22 @@ func (r *kcpTenantResolver) verifyWorkloadCaller(req *http.Request) (workloadCal
 	if err != nil {
 		return workloadCaller{}, err
 	}
+	if serviceaccounts.IsRetiredDelegationUsername(username) {
+		return workloadCaller{}, errors.New("retired delegated identity is not accepted by provider or hub REST routes")
+	}
 	caller := workloadCaller{User: username, TenantPath: tenantPath, OrgUUID: orgUUID, WSUUID: wsUUID}
-	// A delegated user token (the credential the backend proxy hands a
-	// provider in place of the caller's bearer) stands in for a person.
-	// Surface the person, so a provider calling back into the hub with it
-	// attributes the work to the user, not to the railgrid-du-* account — and
-	// the provider it was issued to, so hub access can be authorized per
-	// provider. The tenant binding was verified above, and so was the hub's
-	// keyed proof — without it this account is just an object any workspace
-	// member could have written, naming anyone they chose.
+	// A platform delegated user token stands in for a person. Surface that
+	// person and provider so hub access can be authorized per provider. The
+	// tenant binding and keyed proof were verified above; only current proof-v2
+	// platform delegation is accepted here. Organization-owned providers use
+	// the separate opaque broker identity.
 	if serviceaccounts.IsDelegatedUserServiceAccount(sa) {
 		identity, err := serviceaccounts.DelegatedIdentityFromServiceAccount(req.Context(), r.proofKeys, sa)
 		if err != nil {
 			return workloadCaller{}, err
+		}
+		if identity.Legacy || identity.Provider.OrgUUID != "" {
+			return workloadCaller{}, errors.New("legacy or organization-owned native delegation is not accepted")
 		}
 		caller.User = identity.User
 		caller.Delegated = true

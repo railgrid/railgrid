@@ -43,7 +43,11 @@ limitations under the License.
 // unchanged against an org-owned provider.
 package kcppaths
 
-import "strings"
+import (
+	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation"
+)
 
 const (
 	// Root is the railgrid root workspace.
@@ -91,6 +95,12 @@ func OrgPath(orgUUID string) string { return TenantsParent + ":" + orgUUID }
 // WorkspacePath returns the team workspace path within a tenant org:
 // root:railgrid:tenants:<uuid>:<ws>.
 func WorkspacePath(orgUUID, wsUUID string) string { return OrgPath(orgUUID) + ":" + wsUUID }
+
+// IsTeamWorkspaceName rejects infrastructure and nested workspace addresses
+// before a tenant-controlled identifier reaches a privileged path builder.
+func IsTeamWorkspaceName(name string) bool {
+	return name != OrgProvidersWorkspaceName && len(validation.IsDNS1123Label(name)) == 0
+}
 
 // OrgProvidersParent returns the well-known parent of an Org's own provider
 // sub-workspaces: root:railgrid:tenants:<uuid>:providers.

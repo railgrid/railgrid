@@ -232,7 +232,42 @@ func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, 
 	if err := verifyWorkloadServiceAccountAnnotations(ctx, sa, expectedTenantPath, proofKeys); err != nil {
 		return "", nil, err
 	}
+	if IsDelegatedUserServiceAccount(sa) {
+		if review.Status.User.UID != string(sa.UID) {
+			return "", nil, fmt.Errorf("delegated token was not issued for the reviewed account UID")
+		}
+		if err := verifyDelegatedTokenAudience(ctx, client, token, sa, proofKeys, review.Status.User.Username, time.Now()); err != nil {
+			return "", nil, err
+		}
+	}
 	return review.Status.User.Username, sa, nil
+}
+
+func verifyDelegatedTokenAudience(ctx context.Context, client kubernetes.Interface, token string, sa *corev1.ServiceAccount, proofKeys ProofKeySource, reviewedUsername string, now time.Time) error {
+	audiences, err := delegatedTokenAudienceCandidates(ctx, proofKeys, sa, now)
+	if err != nil {
+		return err
+	}
+	delegatedReview, err := client.AuthenticationV1().TokenReviews().Create(ctx, &authnv1.TokenReview{Spec: authnv1.TokenReviewSpec{
+		Token: token, Audiences: audiences,
+	}}, metav1.CreateOptions{})
+	if err != nil {
+		return fmt.Errorf("reviewing hub-issued delegation: %w", err)
+	}
+	if !delegatedReview.Status.Authenticated || !intersectsStrings(delegatedReview.Status.Audiences, audiences) ||
+		delegatedReview.Status.User.Username != reviewedUsername || delegatedReview.Status.User.UID != string(sa.UID) {
+		return fmt.Errorf("delegated token was not issued for the hub's current audience window and account UID")
+	}
+	return nil
+}
+
+func intersectsStrings(left, right []string) bool {
+	for _, candidate := range left {
+		if containsString(right, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateWorkloadScope rejects a scope whose tuple is incomplete or whose

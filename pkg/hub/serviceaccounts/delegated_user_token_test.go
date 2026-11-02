@@ -25,9 +25,12 @@ import (
 
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/kubernetes/fake"
 	clienttesting "k8s.io/client-go/testing"
 )
 
@@ -38,6 +41,113 @@ const (
 )
 
 var delegatedTestUser = Identity{User: "alice"}
+
+func TestIsRetiredDelegationUsernameMatchesOnlyOldDefaultNamespaceClass(t *testing.T) {
+	for _, test := range []struct {
+		username string
+		want     bool
+	}{
+		{username: "system:serviceaccount:default:railgrid-du-old", want: true},
+		{username: "system:serviceaccount:default:railgrid-pdu-current", want: false},
+		{username: "system:serviceaccount:other:railgrid-du-old", want: false},
+		{username: "system:user:railgrid-du-old", want: false},
+		{username: "system:serviceaccount:default:railgrid-du", want: false},
+	} {
+		if got := IsRetiredDelegationUsername(test.username); got != test.want {
+			t.Errorf("IsRetiredDelegationUsername(%q) = %v, want %v", test.username, got, test.want)
+		}
+	}
+}
+
+func TestDelegatedTokenIssuanceReplacesLegacyBroadBinding(t *testing.T) {
+	m, cs := managerFor(t)
+	defer resetTestClientset()
+	_, reactor := delegatedTokenReactor(m, WorkloadIdentityTokenTTL)
+	cs.PrependReactor("create", "serviceaccounts/token", reactor)
+	name := DelegatedUserServiceAccountName(tenantPathFor(delegatedTestOrg, delegatedTestWS), delegatedTestUser, delegatedTestProvider)
+	legacy := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: name + "-cluster-admin", Labels: map[string]string{LabelWorkloadIdentity: "true"}},
+		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: name, Namespace: Namespace}},
+		RoleRef:    rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-admin"},
+	}
+	ctx := context.Background()
+	if _, err := cs.RbacV1().ClusterRoleBindings().Create(ctx, legacy, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := cs.RbacV1().ClusterRoleBindings().List(ctx, metav1.ListOptions{})
+	if err != nil || len(bindings.Items) != 1 {
+		t.Fatalf("legacy binding was left alongside replacement: %v, %v", bindings, err)
+	}
+	if bindings.Items[0].RoleRef.Name != WorkspaceMemberClusterRole || WorkspaceMemberClusterRole == "cluster-admin" {
+		t.Fatalf("delegation retained infrastructure authority: %v", bindings.Items[0].RoleRef)
+	}
+}
+
+func TestIssueDelegatedUserTokenRefusesOrganizationOwnedProvider(t *testing.T) {
+	m, cs := managerFor(t)
+	defer resetTestClientset()
+	_, _, err := m.IssueDelegatedUserToken(context.Background(), delegatedTestOrg, delegatedTestWS, delegatedTestUser,
+		DelegatedProvider{Name: delegatedTestProvider, OrgUUID: delegatedTestOrg})
+	if err == nil {
+		t.Fatal("issued a native KCP ServiceAccount token for an organization-owned provider")
+	}
+	if len(cs.Actions()) != 0 {
+		t.Fatalf("refused BYO issuance after making Kubernetes calls: %v", cs.Actions())
+	}
+}
+
+func TestRevokeLegacyOrgDelegationsDeletesRetiredPrefixAndPreservesNewPlatformPrefix(t *testing.T) {
+	ctx := context.Background()
+	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)
+	platform := hubMintedDelegatedServiceAccount(t, tenantPath, delegatedTestUser, "platform-uid")
+	orgProvider := DelegatedProvider{Name: "planner", OrgUUID: delegatedTestOrg}
+	orgSA := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: delegatedServiceAccountName(tenantPath, delegatedTestUser, orgProvider), Namespace: Namespace, UID: "byo-uid",
+		Labels:      map[string]string{LabelWorkloadIdentity: "true", LabelDelegatedUser: "true"},
+		Annotations: delegatedUserAnnotations(tenantPath, delegatedTestOrg, delegatedTestWS, delegatedTestUser, orgProvider),
+	}}
+	key, err := testProofKeySource.DelegatedProofKey(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := SignDelegatedUserServiceAccount(key, orgSA, tenantPath, delegatedTestUser, orgProvider.Name); err != nil {
+		t.Fatal(err)
+	}
+	legacyProvider := PlatformProvider("legacy-platform")
+	legacy := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{
+		Name: delegatedUserNamePrefix + "legacy-platform", Namespace: Namespace, UID: "legacy-uid",
+		Labels:      map[string]string{LabelWorkloadIdentity: "true", LabelDelegatedUser: "true"},
+		Annotations: delegatedUserAnnotations(tenantPath, delegatedTestOrg, delegatedTestWS, delegatedTestUser, legacyProvider),
+	}}
+	legacy.Annotations[AnnotationDelegatedProofVersion] = ""
+	legacy.Annotations[AnnotationDelegatedProof] = computeDelegatedProof(key, "", tenantPath, delegatedTestUser, legacyProvider, legacy.Name, legacy.UID)
+	forged := &corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: delegatedUserNamePrefix + "forged", Namespace: Namespace, UID: "forged-uid"}}
+	byoBinding := &rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: DelegatedUserBindingName(orgSA.Name), UID: "binding-uid"},
+		Subjects: []rbacv1.Subject{{Kind: rbacv1.ServiceAccountKind, Name: orgSA.Name, Namespace: Namespace}},
+		RoleRef:  rbacv1.RoleRef{APIGroup: rbacv1.GroupName, Kind: "ClusterRole", Name: "cluster-admin"}}
+	cs := fake.NewSimpleClientset(platform, orgSA, legacy, forged, byoBinding)
+	assignServiceAccountUIDs(cs)
+	testClientset = func() (kubernetes.Interface, bool) { return cs, true }
+	defer resetTestClientset()
+
+	if err := RevokeLegacyOrgDelegations(ctx, cs); err != nil {
+		t.Fatalf("RevokeLegacyOrgDelegations: %v", err)
+	}
+	if _, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, platform.Name, metav1.GetOptions{}); err != nil {
+		t.Fatalf("new platform delegated ServiceAccount was removed: %v", err)
+	}
+	for _, name := range []string{orgSA.Name, legacy.Name, forged.Name} {
+		if _, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{}); err == nil {
+			t.Errorf("reserved legacy/untrusted ServiceAccount %q remains", name)
+		}
+	}
+	if _, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, byoBinding.Name, metav1.GetOptions{}); err == nil {
+		t.Fatal("paired broad ClusterRoleBinding remains after legacy identity revocation")
+	}
+}
 
 // delegatedTokenReactor answers TokenRequests with a token that names the
 // mint count, so a test can tell a cached token from a fresh one, and returns
@@ -76,8 +186,8 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	if token != "delegated-token" || expiry.IsZero() {
 		t.Fatalf("token/expiry = %q/%v", token, expiry)
 	}
-	if len(gotAudience) != 1 || gotAudience[0] != WorkloadIdentityTokenAudience {
-		t.Errorf("TokenRequest audiences = %v, want [%q]", gotAudience, WorkloadIdentityTokenAudience)
+	if len(gotAudience) != 2 || gotAudience[0] != WorkloadIdentityTokenAudience || !strings.HasPrefix(gotAudience[1], "railgrid-pdu:") {
+		t.Errorf("TokenRequest audiences = %v, want native audience %q and hub-only delegation audience", gotAudience, WorkloadIdentityTokenAudience)
 	}
 	if gotTTL != int64(WorkloadIdentityTokenTTL/time.Second) {
 		t.Errorf("TokenRequest TTL = %d, want %d", gotTTL, int64(WorkloadIdentityTokenTTL/time.Second))
@@ -85,8 +195,8 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 
 	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)
 	name := DelegatedUserServiceAccountName(tenantPath, delegatedTestUser, delegatedTestProvider)
-	if !strings.HasPrefix(name, delegatedUserNamePrefix) || len(name) > 63 {
-		t.Fatalf("service account name %q is not a short railgrid-du-* label", name)
+	if !strings.HasPrefix(name, platformDelegatedUserNamePrefix) || len(name) > 63 {
+		t.Fatalf("service account name %q is not a short railgrid-pdu-* label", name)
 	}
 	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {

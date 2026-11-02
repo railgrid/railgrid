@@ -26,10 +26,10 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
-// TestDelegatedIdentityCarriesProviderOwner: an org-owned provider's account
-// records its owner org, under the proof, and gets a different account from
-// the platform provider of the same name.
-func TestDelegatedIdentityCarriesProviderOwner(t *testing.T) {
+// TestNativeDelegationRefusesOrganizationProviders: native KCP bearer tokens
+// remain available to platform providers, while BYO callers must use the
+// opaque hub-signed credential instead.
+func TestNativeDelegationRefusesOrganizationProviders(t *testing.T) {
 	m, cs := managerFor(t)
 	defer resetTestClientset()
 	_, reactor := delegatedTokenReactor(m, WorkloadIdentityTokenTTL)
@@ -37,8 +37,8 @@ func TestDelegatedIdentityCarriesProviderOwner(t *testing.T) {
 	ctx := context.Background()
 
 	orgOwned := DelegatedProvider{Name: delegatedTestProvider, OrgUUID: "owner-org"}
-	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, orgOwned); err != nil {
-		t.Fatalf("issue org-owned: %v", err)
+	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, orgOwned); err == nil {
+		t.Fatal("issued a native delegated token for an organization-owned provider")
 	}
 	if _, _, err := m.IssueDelegatedUserToken(ctx, delegatedTestOrg, delegatedTestWS, delegatedTestUser, PlatformProvider(delegatedTestProvider)); err != nil {
 		t.Fatalf("issue platform: %v", err)
@@ -50,33 +50,21 @@ func TestDelegatedIdentityCarriesProviderOwner(t *testing.T) {
 		t.Fatal("org-owned and platform provider of the same name share one delegated account")
 	}
 
-	for name, want := range map[string]DelegatedProvider{orgName: orgOwned, platformName: PlatformProvider(delegatedTestProvider)} {
-		sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			t.Fatalf("get %s: %v", name, err)
-		}
-		id, err := DelegatedIdentityFromServiceAccount(ctx, testProofKeySource, sa)
-		if err != nil {
-			t.Fatalf("verify %s: %v", name, err)
-		}
-		if id.Provider != want || id.Legacy || id.User != delegatedTestUser.User {
-			t.Fatalf("identity of %s = %+v, want provider %+v, not legacy", name, id, want)
-		}
+	if _, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, orgName, metav1.GetOptions{}); err == nil {
+		t.Fatal("organization-owned provider received a native delegated ServiceAccount")
 	}
-
-	// Editing the owner annotation — to claim to be the platform provider, or
-	// another org's — breaks the proof.
-	sa, _ := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, orgName, metav1.GetOptions{})
-	for _, forged := range []string{"", "other-org"} {
-		tampered := sa.DeepCopy()
-		if forged == "" {
-			delete(tampered.Annotations, AnnotationDelegatedProviderOrg)
-		} else {
-			tampered.Annotations[AnnotationDelegatedProviderOrg] = forged
-		}
-		if _, err := DelegatedIdentityFromServiceAccount(ctx, testProofKeySource, tampered); err == nil {
-			t.Errorf("owner annotation %q was accepted after tampering", forged)
-		}
+	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, platformName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("get platform account: %v", err)
+	}
+	id, err := DelegatedIdentityFromServiceAccount(ctx, testProofKeySource, sa)
+	if err != nil || id.Provider != PlatformProvider(delegatedTestProvider) || id.Legacy || id.User != delegatedTestUser.User {
+		t.Fatalf("platform identity = %+v, %v", id, err)
+	}
+	tampered := sa.DeepCopy()
+	tampered.Annotations[AnnotationDelegatedProviderOrg] = "other-org"
+	if _, err := DelegatedIdentityFromServiceAccount(ctx, testProofKeySource, tampered); err == nil {
+		t.Fatal("forged provider owner annotation was accepted")
 	}
 }
 

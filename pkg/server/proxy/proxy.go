@@ -49,6 +49,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -79,6 +80,10 @@ type KCPProxy struct {
 	// once SetTrustedProxies has been called with that proxy's address range.
 	staticTokenRateLimiter *rateLimiter
 	browserSessions        *browsersession.Store
+	// orgBackendHandler is the only path that accepts the opaque, hub-minted
+	// BYO provider identity. It is deliberately separate from native KCP SA
+	// forwarding: the token has no KCP audience and each request is mediated.
+	orgBackendHandler http.Handler
 }
 
 // SetTrustedProxies tells the token-login rate limiter which connection peers
@@ -97,6 +102,16 @@ func (p *KCPProxy) SetTrustedProxies(prefixes []netip.Prefix) {
 func (p *KCPProxy) SetBrowserSessionStore(store *browsersession.Store) {
 	if p != nil {
 		p.browserSessions = store
+	}
+}
+
+// SetOrgBackendHandler installs the mediated handler for signed BYO backend
+// identities. Tokens outside the reserved opaque class retain the existing
+// KCP/OIDC paths; a token in that class never falls through if this handler is
+// unavailable or rejects it.
+func (p *KCPProxy) SetOrgBackendHandler(handler http.Handler) {
+	if p != nil {
+		p.orgBackendHandler = handler
 	}
 }
 
@@ -201,6 +216,26 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
+	// BYO backend tokens are opaque to KCP. Intercept the reserved class before
+	// every general identity path, including static tokens, APIExport virtual
+	// workspaces, native ServiceAccounts, and OIDC. Invalid or unconfigured
+	// broker tokens must never be retried as another credential type.
+	if serviceaccounts.IsOrgBackendToken(token) {
+		if p.orgBackendHandler == nil {
+			writeUnauthorized(w)
+			return
+		}
+		brokerRequest := r.Clone(r.Context())
+		brokerRequest.Header = r.Header.Clone()
+		brokerRequest.Header.Set("Authorization", "Bearer "+token)
+		// The broker handler supports ordinary HTTP methods only. Do not let
+		// the opaque credential survive in a WebSocket subprotocol header even
+		// on a request that it will reject as an unsupported upgrade.
+		brokerRequest.Header.Del("Sec-WebSocket-Protocol")
+		p.orgBackendHandler.ServeHTTP(w, brokerRequest)
+		return
+	}
+
 	// Static token: create user/workspace if needed and proxy to user's workspace.
 	// Use constant-time comparison to prevent timing side-channel attacks.
 	for _, staticToken := range p.staticAuthTokens {
@@ -222,6 +257,10 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeForbidden(w, vwRequiresProviderIdentityBody)
 			return
 		}
+		if serviceaccounts.IsRetiredDelegationUsername(saClaims.Subject) {
+			writeForbidden(w, legacyDelegationForbiddenBody)
+			return
+		}
 		p.serveVirtualWorkspace(w, r, token, saClaims.ClusterName(), vw)
 		return
 	}
@@ -231,6 +270,11 @@ func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// correctly reject them, but running the check first saves a JWKS fetch and
 	// makes the auth branch unambiguous in logs.
 	if saClaims, ok := parseServiceAccountToken(token); ok {
+		if serviceaccounts.IsRetiredDelegationUsername(saClaims.Subject) {
+			p.logger.Info("proxy auth: retired delegated SA rejected", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
+			writeForbidden(w, legacyDelegationForbiddenBody)
+			return
+		}
 		p.logger.Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
 		p.serveServiceAccount(w, r, token, saClaims.ClusterName())
 		return
@@ -709,6 +753,7 @@ func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, t
 // WithInClusterServiceAccountRequestRewrite (pkg/server/filters/serviceaccounts.go).
 type saTokenClaims struct {
 	Issuer            string `json:"iss"`
+	Subject           string `json:"sub"`
 	ClusterNameLegacy string `json:"kubernetes.io/serviceaccount/clusterName"`
 	Kubernetes        struct {
 		ClusterName string `json:"clusterName"`
@@ -799,6 +844,8 @@ const orgWorkspacePathPrefix = "root:railgrid:tenants:"
 // nicely while also carrying a railgrid-specific reason + a pointer at the
 // hub REST surface so CLI tooling can suggest the right endpoint.
 const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenants.railgrid.ai"}}`
+
+const legacyDelegationForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"retired delegated credentials are no longer accepted; refresh the provider session","reason":"RetiredProviderCredential","code":403}`
 
 // isOrgWorkspacePath reports whether clusterPath addresses a kcp
 // Organization workspace (path root:railgrid:orgs:{single-segment}). Child
