@@ -744,7 +744,7 @@ describe('model credentials', () => {
     const creds = await resources.listCredentials()
     expect(creds).toEqual([
       {
-        name: 'broken', isConnection: true, provider: 'openai-compatible', baseURL: 'https://x.example/v1', model: '',
+        name: 'broken', provider: 'openai-compatible', baseURL: 'https://x.example/v1', model: '',
         secretRef: 's', secretKey: '', ready: false, secretResolved: false,
         statusMessage: 'secret "s" is not readable', discovered: [],
       },
@@ -784,6 +784,19 @@ describe('model credentials', () => {
     expect(listed.filter(item => item.name === 'independent')).toHaveLength(2)
     expect(listed.some(item => item.name === 'harness' && item.provider === 'codex')).toBe(true)
     expect(listed.some(item => item.name === 'harness' && item.provider === 'openai-compatible')).toBe(true)
+  })
+
+  it('keeps an unmigrated model-less legacy credential on model resource paths', async () => {
+    const legacy = { metadata: { name: 'legacy', uid: 'legacy-uid', resourceVersion: '1' }, spec: { provider: 'openai-compatible', baseURL: 'https://legacy.example/v1', secretRef: { name: 'legacy-key' } } }
+    kcp.reply('GET /modelcredentials/legacy', legacy)
+    kcp.reply('GET /modelcredentials', { items: [legacy] })
+    kcp.reply('GET /modelproviderconnections', { items: [] })
+    const [credential] = await resources.listCredentials()
+    expect(credential.isConnection).toBeFalsy()
+    await resources.renameCredential(credential, 'Legacy account')
+    await resources.saveCredential({ name: 'legacy', provider: credential.provider, baseURL: credential.baseURL, model: 'first-model' })
+    expect(kcp.calls.filter(call => call.method === 'POST' || call.method === 'PATCH').every(call => call.url.includes('/modelcredentials'))).toBe(true)
+    expect(kcp.calls.some(call => call.method === 'POST' && call.url.includes('/modelproviderconnections'))).toBe(false)
   })
 
   it('creates the owner before its immutable Secret and activates the matching key', async () => {

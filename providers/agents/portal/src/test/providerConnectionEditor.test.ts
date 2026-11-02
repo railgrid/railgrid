@@ -37,6 +37,19 @@ describe('provider-first BYOK flow', () => {
     expect(button(view.element, 'Verify & connect').disabled).toBe(true)
   })
 
+  it('edits a model-less legacy credential without creating a separate provider connection', async () => {
+    const legacy = { name: 'legacy', provider: 'openai', baseURL: 'https://api.openai.com/v1', discovered: ['first-model'] }
+    const save = vi.fn()
+    const view = await mountEditor({ testCredential: successfulConnectionTest() }, { credentials: [legacy], credential: legacy, onSave: save })
+    expect(view.element.textContent).toContain('Shown in model lists.')
+    expect(view.element.textContent).not.toContain('model lists and chat pickers')
+    await choose(view.element, 'first-model')
+    button(view.element, 'Verify & connect').click(); await settleVue(12)
+    expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ name: 'legacy', model: 'first-model' }), expect.objectContaining({ ok: true }))
+    expect(save.mock.calls[0][0]).not.toHaveProperty('newConnection')
+    expect(save.mock.calls[0][0]).not.toHaveProperty('connectionRef')
+  })
+
   it('saves a provider connection after discovery without selecting or adding a model', async () => {
     const save = vi.fn()
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => Promise.resolve(discover ? { ok: true, latencyMS: 1, models: ['first-model'] } : { ok: true, latencyMS: 2 }))
