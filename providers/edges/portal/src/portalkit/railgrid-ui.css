@@ -2533,6 +2533,16 @@ railgrid-resource-table-filter { display: contents; }
   outline: 2px solid var(--color-accent, #8b6bff);
   outline-offset: -2px;
 }
+/* A row's detail, rendered by the table's after-row slot, is a full-width row
+ * beneath it on a quiet surface that wraps normally. The rule between the row
+ * and its detail goes, so the pair reads as one. */
+.k-table__row:has(+ .k-table__detail-row) { border-bottom-color: transparent; }
+.k-table__detail-row { background: color-mix(in srgb, var(--color-accent, #8b6bff) 3%, transparent); }
+.k-table .k-table__detail-cell {
+  padding: 2px 20px 16px;
+  white-space: normal;
+  color: var(--color-text-secondary, #8a8ca6);
+}
 .k-table__empty-cell { padding: 36px 20px; text-align: center; color: var(--k-table-readable-muted, var(--color-text-secondary, #8a8ca6)); }
 .k-table .k-table__empty-cell { white-space: normal; overflow-wrap: anywhere; }
 .k-table__empty-icon { width: 24px; height: 24px; margin: 0 auto 8px; opacity: 0.7; }
@@ -2653,10 +2663,23 @@ railgrid-resource-table-filter { display: contents; }
 .k-table-action--busy.k-table-action--danger { color: var(--color-danger, #ff5d5d); }
 .k-table-action__icon { width: 14px; height: 14px; }
 .k-table-action__icon--spinning { animation: k-table-action-spin 0.8s linear infinite; }
+/* The expand toggle is the one row action visible at rest: a collapsed row
+ * gives no other hint that a detail row exists. Its chevron turns to point at
+ * the open detail. Centred on the line with a negative block margin, it keeps
+ * a row at its usual height while retaining its 28px target. */
+.k-table-action--expand { opacity: 1; margin-block: -4px; vertical-align: middle; }
+.k-table-action--expand:hover,
+.k-table-action--expand:focus-visible {
+  background: var(--color-surface-overlay, #171927);
+  color: var(--color-text-primary, #e9e9f2);
+}
+.k-table-action__icon--expand { transition: transform 0.15s ease; }
+.k-table-action--expand[aria-expanded="true"] .k-table-action__icon--expand { transform: rotate(90deg); }
 @keyframes k-table-action-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-reduced-motion: reduce) {
   .k-delayed-loading { transition-duration: 1ms; }
+  .k-table-action__icon--expand { transition-duration: 1ms; }
   .k-loading-reveal { animation-duration: 1ms; }
 }
 
