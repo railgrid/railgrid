@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -37,17 +38,24 @@ import (
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
 
+	"github.com/railgrid/railgrid/pkg/hub/kcp/byolimits"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
 type EmbeddedKCPOptions struct {
-	RootDir          string
-	EtcdClientPort   int // Zero preserves the embedded etcd default.
-	EtcdPeerPort     int // Zero preserves the embedded etcd default.
-	SecurePort       int
-	BindAddress      string
-	BatteriesInclude []string
+	// BYOLimits is supported only by one embedded shard/process. All-zero
+	// leaves organization-provider enrollment without an enforcement capability.
+	BYOLimits byolimits.Config
+	// ProviderRelayTransport wraps only the shard's virtual-resource transport.
+	// The hub uses it for in-process org-provider relay without a public ingress.
+	ProviderRelayTransport func(http.RoundTripper) http.RoundTripper
+	RootDir                string
+	EtcdClientPort         int // Zero preserves the embedded etcd default.
+	EtcdPeerPort           int // Zero preserves the embedded etcd default.
+	SecurePort             int
+	BindAddress            string
+	BatteriesInclude       []string
 
 	// TLS certificate/key files for the KCP API server.
 	// When set, KCP uses these instead of auto-generating self-signed certs.
@@ -121,6 +129,20 @@ type EmbeddedKCP struct {
 	readyCh chan struct{}
 	// adminConfig is the rest.Config for the kcp admin user.
 	adminConfig *rest.Config
+	byoGuard    *byolimits.Guard
+}
+
+// BYOLimitsReady reports the installed native enforcement capability, including
+// synchronized ownership data. It is not a persistent storage-capacity check.
+func (e *EmbeddedKCP) BYOLimitsReady() error { return e.byoGuard.Ready() }
+
+// WaitForBYOConsumerQuotaMarker waits until the native guard observes the
+// protected marker on the requested logical cluster.
+func (e *EmbeddedKCP) WaitForBYOConsumerQuotaMarker(ctx context.Context, clusterID string) error {
+	if e == nil || e.byoGuard == nil {
+		return fmt.Errorf("BYO limits are disabled")
+	}
+	return e.byoGuard.WaitConsumerQuotaMarker(ctx, clusterID)
 }
 
 // NewEmbeddedKCP creates a new embedded kcp instance.
@@ -166,6 +188,20 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	// Create kcp server options.
 	kcpOpts := serveroptions.NewOptions(e.opts.RootDir)
+	if err := e.opts.BYOLimits.Validate(); err != nil {
+		return err
+	}
+	if e.opts.BYOLimits.Enabled() {
+		var err error
+		e.byoGuard, err = byolimits.New(e.opts.BYOLimits)
+		if err != nil {
+			return err
+		}
+		admissionOptions := kcpOpts.GenericControlPlane.Admission.GenericAdmission
+		e.byoGuard.Register(admissionOptions.Plugins)
+		admissionOptions.RecommendedPluginOrder = append(append([]string(nil), admissionOptions.RecommendedPluginOrder...), byolimits.PluginName)
+		admissionOptions.EnablePlugins = append(admissionOptions.EnablePlugins, byolimits.PluginName)
+	}
 	if err := configureEmbeddedEtcd(kcpOpts, e.opts.EtcdClientPort, e.opts.EtcdPeerPort); err != nil {
 		return err
 	}
@@ -314,6 +350,38 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	serverConfig, err := server.NewConfig(ctx, *completedOpts)
 	if err != nil {
 		return fmt.Errorf("creating kcp server config: %w", err)
+	}
+	if e.opts.ProviderRelayTransport != nil && serverConfig.VirtualResources != nil {
+		serverConfig.VirtualResources.Extra.VWClientConfig.Wrap(e.opts.ProviderRelayTransport)
+	}
+	// Retire the old native tenant-delegation identities on every embedded
+	// shard, independent of the optional organization request limits guard.
+	retirementGuard := retiredDelegationGuard{}
+	if err := retirementGuard.installAuthenticator(&serverConfig.MiniAggregator.GenericConfig); err != nil {
+		return err
+	}
+	if err := retirementGuard.installMain(&serverConfig.MiniAggregator.GenericConfig); err != nil {
+		return err
+	}
+	if e.byoGuard != nil {
+		if err := e.byoGuard.InstallMain(&serverConfig.MiniAggregator.GenericConfig); err != nil {
+			return err
+		}
+		if serverConfig.OptionalVirtual == nil {
+			return fmt.Errorf("BYO limits require embedded virtual workspaces")
+		}
+		if err := e.byoGuard.InstallVirtual(serverConfig.OptionalVirtual.Extra.VirtualWorkspaces); err != nil {
+			return err
+		}
+	}
+	// Wrap the final virtual target after the optional limits guard so retired
+	// native identities are rejected before any tenant inventory-dependent
+	// limits work can run. A disabled virtual-workspace server has no request
+	// surface to guard.
+	if serverConfig.OptionalVirtual != nil && len(serverConfig.OptionalVirtual.Extra.VirtualWorkspaces) > 0 {
+		if err := retirementGuard.installVirtual(serverConfig.OptionalVirtual.Extra.VirtualWorkspaces); err != nil {
+			return err
+		}
 	}
 
 	// Complete the config.
