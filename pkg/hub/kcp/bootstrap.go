@@ -863,10 +863,6 @@ func (b *Bootstrapper) ListChildTeamWorkspaces(ctx context.Context, orgUUID stri
 	return out, nil
 }
 
-// ListOrgWorkspaces returns the names (UUIDs) of every Organization
-// workspace at root:railgrid:tenants. Used by the soft-delete reconciler's
-// Workspace branch to fan out across Orgs at resync time without
-// standing up per-Org dynamic informers.
 // WatchChildWorkspaces opens a watch on the child Workspaces of one
 // organization, for the soft-delete Workspace branch (it implements
 // softdelete.WorkspaceWatcher). The watch replays existing Workspaces as
@@ -882,6 +878,10 @@ func (b *Bootstrapper) WatchChildWorkspaces(ctx context.Context, orgUUID string)
 	return orgClient.Resource(workspaceGVR).Watch(ctx, metav1.ListOptions{AllowWatchBookmarks: true})
 }
 
+// ListOrgWorkspaces returns the names (UUIDs) of every Organization
+// workspace at root:railgrid:tenants. Used by the soft-delete reconciler's
+// Workspace branch to fan out across Orgs at resync time without
+// standing up per-Org dynamic informers.
 func (b *Bootstrapper) ListOrgWorkspaces(ctx context.Context) ([]string, error) {
 	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
 	if err != nil {
