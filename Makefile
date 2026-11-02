@@ -507,7 +507,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents artifacts connections modelcredentials schedules triggers webhooks toolsets runs; do \
+	@for r in agents artifacts connections modelcredentials modelproviderconnections schedules triggers webhooks toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
@@ -3248,3 +3248,13 @@ lint-ui-e2e-report: $(GOLANGCI_LINT)
 	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) run ./backend/github ./controller/repository
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run . ./install ./operator
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./workspace
+
+.PHONY: test-agents-provider-connections fix-lint-agents-provider-connections lint-agents-provider-connections
+test-agents-provider-connections: ## Verify reusable model-provider connections, migration, and authorization
+	cd providers/agents && go test -count=1 ./apis/v1alpha1 ./client ./llm ./controller/modelcredential ./api
+
+fix-lint-agents-provider-connections: $(GOLANGCI_LINT) ## Format the Agents provider connection API and runtime
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt ./apis/v1alpha1 ./client ./llm ./controller/modelcredential ./api controller_manager.go
+
+lint-agents-provider-connections: $(GOLANGCI_LINT) ## Lint the Agents provider connection API and runtime
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./apis/v1alpha1/... ./client/... ./llm/... ./controller/modelcredential/... ./api/... .

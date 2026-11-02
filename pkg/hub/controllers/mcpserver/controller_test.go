@@ -703,3 +703,33 @@ func TestBuildRules_EdgeHostsAreReadOnly(t *testing.T) {
 		t.Fatalf("an unrelated bound resource lost its writes: %+v", writable)
 	}
 }
+
+func TestBuildRules_ConnectionUseOnlyForWritableFirstPartyBinding(t *testing.T) {
+	for _, mode := range []string{"writable", "read-only", "foreign-export", "foreign-name", "unbound"} {
+		t.Run(mode, func(t *testing.T) {
+			b := bound("agents.railgrid.ai", "modelproviderconnections")
+			b.APIExportName = "agents.railgrid.ai"
+			if mode == "foreign-name" {
+				b.APIExportName = "other"
+			}
+			if mode == "foreign-export" {
+				b.APIExportPath = "root:other"
+			}
+			resources := []BoundResource{b, bound("agents.railgrid.ai", "modelcredentials")}
+			if mode == "unbound" {
+				resources = resources[1:]
+			}
+			rules := buildTestRules(resources, nil, mode == "read-only")
+			allowed := false
+			for _, rule := range rules {
+				if slices.Contains(rule.APIGroups, "agents.railgrid.ai") && slices.Contains(rule.Resources, "modelproviderconnections") && slices.Contains(rule.Verbs, "use") {
+					allowed = true
+				}
+			}
+			if allowed != (mode == "writable") {
+				t.Fatalf("use allowed=%v for %s", allowed, mode)
+			}
+			assertNoWildcards(t, rules)
+		})
+	}
+}

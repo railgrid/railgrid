@@ -69,6 +69,15 @@ spec:
       # than on some agent that happens to use it. That is what makes first-run
       # work: a workspace with no agent yet can still save a credential and ask
       # whether it answers.
+      - name: modelproviderconnections
+        apiVersion: agents.railgrid.ai/v1alpha1
+        kind: ModelProviderConnection
+        verbs:
+          - name: test
+            description: "Verify a candidate model using this provider connection. Requires use permission."
+          - name: discover
+            description: "Discover models available to this provider connection. Requires use permission."
+            readOnly: true
       - name: modelcredentials
         apiVersion: agents.railgrid.ai/v1alpha1
         kind: ModelCredential

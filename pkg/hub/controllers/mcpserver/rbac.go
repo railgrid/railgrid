@@ -302,6 +302,18 @@ func buildRules(bound []BoundResource, grants []SubresourceGrant, readOnly bool)
 		}
 	}
 
+	// Writable MCP clients retain credential discovery after ModelCredentials
+	// migrate to connection references. Read-only clients may list metadata but
+	// must not use the provider account. Pin this grant to the first-party export.
+	if !readOnly {
+		for _, b := range bound {
+			if b.Group == "agents.railgrid.ai" && b.Resource == "modelproviderconnections" && b.APIExportPath == "root:railgrid:providers:agents" && b.APIExportName == "agents.railgrid.ai" {
+				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{b.Group}, Resources: []string{b.Resource}, Verbs: []string{"use"}})
+				break
+			}
+		}
+	}
+
 	// Path lookup: tools resolve the workspace path from the LogicalCluster.
 	rules = append(rules, rbacv1.PolicyRule{
 		APIGroups: []string{"core.kcp.io"}, Resources: []string{"logicalclusters"}, Verbs: readVerbs,

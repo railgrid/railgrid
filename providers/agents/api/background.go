@@ -461,7 +461,15 @@ func (v vwSecrets) GetModelCredential(ctx context.Context, name string) (*agents
 	if err != nil {
 		return nil, err
 	}
-	return fromU[agentsv1alpha1.ModelCredential](u)
+	credential, err := fromU[agentsv1alpha1.ModelCredential](u)
+	if err != nil || credential.Spec.ConnectionRef == "" {
+		return credential, err
+	}
+	connection, err := v.GetModelProviderConnection(ctx, credential.Spec.ConnectionRef)
+	if err != nil {
+		return nil, err
+	}
+	return agentsv1alpha1.ResolveModelConnection(credential, connection)
 }
 
 func fromU[T any](u *unstructured.Unstructured) (*T, error) {
@@ -1167,3 +1175,14 @@ func (b *background) replyToChannelTarget(ctx context.Context, dyn dynamic.Inter
 
 // The inbound webhook, its routing to triggers and the delivery sink it
 // writes live in webhook_deliveries.go.
+
+func (v vwSecrets) GetModelProviderConnection(ctx context.Context, name string) (*agentsv1alpha1.ModelProviderConnection, error) {
+	if err := agentsclient.AuthorizeModelProviderConnectionUse(ctx, v.dyn, name, false); err != nil {
+		return nil, err
+	}
+	object, err := v.dyn.Resource(agentsclient.ModelProviderConnectionGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromU[agentsv1alpha1.ModelProviderConnection](object)
+}
