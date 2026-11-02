@@ -16,7 +16,7 @@ function usageFixture(props) {
     integerFormat: new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }),
     computed: (calculate) => ({ get value() { return calculate() } }),
   }
-  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText']) {
+  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText', 'label', 'headlineRank', 'pickHeadline', 'summarize']) {
     const declaration = parsed.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
     assert.ok(declaration, `${name} exists in the production component`)
     const code = ts.transpileModule(declaration.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
@@ -33,6 +33,8 @@ function usageFixture(props) {
 }
 
 const limit = (max = '10', enforce = 'Hard') => ({ meter: 'workspaces', shape: 'Level', max, enforce })
+// Objects built inside the sandbox have the sandbox's prototypes; compare them by value.
+const plain = (value) => JSON.parse(JSON.stringify(value))
 
 test('missing, null and empty measurements remain unavailable while zero is measured', () => {
   for (const usage of [{}, { workspaces: null }, { workspaces: '' }]) {
@@ -78,4 +80,43 @@ test('an unlimited meter and a usage-only meter have no utilization percentage',
   assert.equal(unlimited.rows[0].ratio, null)
   assert.equal(unlimited.rows[0].max, '')
   assert.equal(fixture.rows.find((row) => row.meter === 'extra').ratio, null)
+})
+
+// The collapsed table row shows one line: the count and the meter that
+// matters most. Over a limit outranks at it, which outranks merely close.
+test('the summary leads with the meter closest to its limit, over before at', () => {
+  const limits = [
+    { meter: 'agents', shape: 'Level', max: '10', enforce: 'Hard' },
+    { meter: 'edges', shape: 'Level', max: '4', enforce: 'Hard' },
+    { meter: 'services', shape: 'Level', max: '4', enforce: 'Soft' },
+  ]
+  const near = usageFixture({ limits, usage: { agents: 5, edges: 4, services: 1 } })
+  assert.equal(near.pickHeadline(near.rows).meter, 'edges', 'at the limit outranks halfway')
+  const over = usageFixture({ limits, usage: { agents: 5, edges: 4, services: 6 } })
+  assert.equal(over.pickHeadline(over.rows).meter, 'services', 'over a limit outranks at one')
+  const summary = over.summarize(over.rows, true, true)
+  assert.equal(summary.count, '3 limits')
+  assert.equal(summary.headline.meter, 'services')
+  assert.equal(summary.detail, '')
+})
+
+test('a plan summary counts enforcement modes and an account summary names its first meters', () => {
+  const plan = usageFixture({ limits: [
+    { meter: 'agents', max: '5', enforce: 'Hard' },
+    { meter: 'edges', max: '5', enforce: 'Hard' },
+    { meter: 'services', max: '', enforce: 'Meter' },
+  ], usage: null })
+  assert.deepEqual(plain(plan.summarize(plan.rows, false, true)), { count: '3 limits', headline: null, detail: '2 hard, 1 metered' })
+
+  const account = usageFixture({ limits: [], usage: { services: 3, agents: 1, edges: 2 } })
+  assert.deepEqual(plain(account.summarize(account.rows, true, false)), { count: '3 meters', headline: null, detail: 'agents 1, edges 2, +1 more' })
+  const one = usageFixture({ limits: [], usage: { workspaces: 2 } })
+  assert.deepEqual(plain(one.summarize(one.rows, true, false)), { count: '1 meter', headline: null, detail: 'Workspaces 2' })
+})
+
+test('an entitlement without a measurement says so instead of inventing a headline', () => {
+  const fixture = usageFixture({ limits: [limit('10'), { meter: 'agents', max: '5', enforce: 'Hard' }], usage: {} })
+  assert.deepEqual(plain(fixture.summarize(fixture.rows, true, true)), { count: '2 limits', headline: null, detail: 'usage unavailable' })
+  const empty = usageFixture({ limits: [], usage: {} })
+  assert.deepEqual(plain(empty.summarize(empty.rows, true, false)), { count: '0 meters', headline: null, detail: '' })
 })
