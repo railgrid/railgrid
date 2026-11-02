@@ -84,6 +84,10 @@ var (
 
 // Options bundles everything a provider's init needs.
 type Options struct {
+	// PrivateCRDs declares provider-owned storage that is not exported to tenants.
+	// For organization providers the hub validates and installs these CRDs;
+	// the runtime credential cannot install CRDs or change routing itself.
+	PrivateCRDs []*unstructured.Unstructured
 	// Config is the workspace-admin rest.Config (its Host already targets the
 	// provider workspace cluster, e.g. .../clusters/root:railgrid:providers:code).
 	Config *rest.Config
@@ -186,6 +190,18 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	// exist, which kcp reports as a bind-permission error.
 	if name := export.GetName(); name != opts.ExportName {
 		return fmt.Errorf("install: %s declares APIExport %q but init was configured for %q; re-run codegen", filepath.Join(opts.KCPDir, APIExportFileName), name, opts.ExportName)
+	}
+	workspacePath, err := workspacePathOf(ctx, cl)
+	if err != nil {
+		return fmt.Errorf("install: resolving bootstrap scope: %w", err)
+	}
+	if strings.HasPrefix(workspacePath, "root:railgrid:tenants:") {
+		return bootstrapOrganization(ctx, opts, export, workspacePath)
+	}
+	for _, crd := range opts.PrivateCRDs {
+		if err := applyUnstructured(ctx, cl, schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}, crd); err != nil {
+			return fmt.Errorf("install: apply private CRD: %w", err)
+		}
 	}
 	if err := ApplySchemasFromDir(ctx, cl, opts.KCPDir); err != nil {
 		return fmt.Errorf("install: apply schemas: %w", err)
