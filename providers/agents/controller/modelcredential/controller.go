@@ -164,7 +164,7 @@ func credentialsForSecret(clusterName multicluster.ClusterName, cl cluster.Clust
 		for i := range list.Items {
 			credential := &list.Items[i]
 			cleanupSecret := strings.TrimSpace(credential.Annotations[credentialProbeCleanupSecretAnnotation])
-			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() || (credential.Spec.ConnectionRef != "" && connections[credential.Spec.ConnectionRef] == obj.GetName()) {
+			if strings.TrimSpace(credential.Spec.SecretRef.Name) == obj.GetName() || cleanupSecret == obj.GetName() || credential.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] == obj.GetName() || secretEventOwnsCredential(obj, credential) || (credential.Spec.ConnectionRef != "" && connections[credential.Spec.ConnectionRef] == obj.GetName()) {
 				reqs = append(reqs, reconcile.Request{NamespacedName: types.NamespacedName{Name: list.Items[i].Name}})
 			}
 		}
@@ -246,18 +246,17 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if err := protectCredentialSecretOwnership(ctx, c, &cred); err != nil {
 		return ctrl.Result{}, err
 	}
+	if err := recoverInitialCredentialKey(ctx, c, reader, &cred); err != nil {
+		return ctrl.Result{}, err
+	}
 	cleanupPending := false
 	if keepName := strings.TrimSpace(cred.Spec.SecretRef.Name); keepName != "" && cred.UID != "" {
-		cleanupPending, err = reconcileCredentialSecretOwnership(ctx, c, reader, &cred, keepName)
+		cleanupPending, err = reconcileActiveCredentialSecrets(ctx, c, reader, &cred, keepName)
 		if err != nil {
 			return ctrl.Result{}, err
 		}
 	}
-	originalSpec := cred.Spec
-	var apiKey, secretReason, secretMessage string
-	if secretReason == "" {
-		apiKey, secretReason, secretMessage, err = r.resolveSecret(ctx, c, &cred)
-	}
+	apiKey, secretReason, secretMessage, err := r.resolveSecret(ctx, c, &cred)
 	if err != nil {
 		// A read we could not complete says nothing about the Secret. Leave
 		// the conditions as they stand and let the retry settle it.
@@ -330,7 +329,6 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	if equalStatus(&cred.Status, status) {
 		return result, nil
 	}
-	cred.Spec = originalSpec
 	cred.Status = *status
 	if err := c.Status().Update(ctx, &cred); err != nil {
 		if apierrors.IsConflict(err) {

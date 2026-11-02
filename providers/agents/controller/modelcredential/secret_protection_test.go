@@ -22,6 +22,7 @@ import (
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/llm"
+	"github.com/railgrid/provider-sdk/claimscope"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -449,5 +450,140 @@ func TestCredentialCleanupMatchesOwnerUIDExactly(t *testing.T) {
 	}
 	if len(stored.OwnerReferences) != 2 || stored.OwnerReferences[0].UID != "old-uid" || stored.OwnerReferences[1].UID != "other-uid" {
 		t.Fatalf("cleanup changed references for a different credential UID: %+v", stored.OwnerReferences)
+	}
+}
+
+func TestInitialCredentialActivationRecoversFromPersistedSecret(t *testing.T) {
+	for _, scenario := range []string{"ready", "missing", "mutable", "wrong-owner", "wrong-id", "empty-key", "unlabelled", "concurrent-edit", "update-conflict"} {
+		t.Run(scenario, func(t *testing.T) {
+			owner := protectedLegacyCredential()
+			id := "0123456789abcdef0123456789abcdef"
+			owner.Spec.SecretRef.Name = agentsv1alpha1.GeneratedModelCredentialSecretName(id)
+			owner.Annotations = map[string]string{agentsv1alpha1.PendingKeySecretAnnotation: owner.Spec.SecretRef.Name}
+			key := legacyOwnedSecret(owner)
+			immutable := true
+			key.Immutable = &immutable
+			key.Annotations = map[string]string{agentsv1alpha1.GeneratedKeySecretIDAnnotation: id}
+			key.Labels = map[string]string{claimscope.OwnerLabel: "agents"}
+			switch scenario {
+			case "unlabelled":
+				key.Labels = nil
+			case "mutable":
+				key.Immutable = nil
+			case "wrong-owner":
+				key.OwnerReferences[0].UID = "someone-else"
+			case "wrong-id":
+				key.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] = "different"
+			case "empty-key":
+				key.Data = nil
+			}
+			objects := []client.Object{owner}
+			if scenario != "missing" {
+				objects = append(objects, key)
+			}
+			c := protectionClient(t, objects...)
+			if scenario == "update-conflict" {
+				c = interceptor.NewClient(c, interceptor.Funcs{Update: func(ctx context.Context, base client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					var changed agentsv1alpha1.ModelCredential
+					if err := base.Get(ctx, client.ObjectKeyFromObject(owner), &changed); err != nil {
+						return err
+					}
+					changed.Spec.Model = "concurrent-model"
+					if err := base.Update(ctx, &changed); err != nil {
+						return err
+					}
+					return base.Update(ctx, obj, opts...)
+				}})
+			}
+			if scenario == "concurrent-edit" {
+				changed := owner.DeepCopy()
+				changed.Spec.Model = "concurrent-model"
+				if err := c.Update(t.Context(), changed); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var err error
+			if scenario == "ready" {
+				r := &Reconciler{Manager: fakeManager{c: c}, Now: func() time.Time { return now }, Probe: func(context.Context, llm.Profile) ([]string, time.Duration, error) { return []string{"one"}, 0, nil }}
+				_, err = r.Reconcile(t.Context(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(owner)}, ClusterName: testCluster})
+			} else {
+				err = recoverInitialCredentialKey(t.Context(), c, c, owner)
+			}
+			if scenario == "concurrent-edit" || scenario == "update-conflict" {
+				if !apierrors.IsConflict(err) {
+					t.Fatalf("error=%v, want conflict", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			var current agentsv1alpha1.ModelCredential
+			if err := c.Get(t.Context(), client.ObjectKeyFromObject(owner), &current); err != nil {
+				t.Fatal(err)
+			}
+			recovered := current.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] == "" && current.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] == id
+			if recovered != (scenario == "ready") {
+				t.Fatalf("recovered=%v for %s", recovered, scenario)
+			}
+			if scenario == "ready" {
+				if err := recoverInitialCredentialKey(t.Context(), c, c, &current); err != nil {
+					t.Fatalf("idempotent recovery: %v", err)
+				}
+				// Migration no longer remains blocked by the initial reservation.
+				migrationClient := migrationClient(&current, key)
+				if err := migrateCredential(t.Context(), migrationClient, &current); err != nil {
+					t.Fatalf("migration after recovery: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestActiveCredentialCleanupUsesCacheUntilOwnedStaleKeyExists(t *testing.T) {
+	owner := protectedLegacyCredential()
+	active := legacyOwnedSecret(owner)
+	cached := protectionClient(t, owner, active)
+	liveLists := 0
+	live := interceptor.NewClient(cached, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		liveLists++
+		return c.List(ctx, list, opts...)
+	}})
+	r := &Reconciler{Manager: fakeManager{c: cached, reader: live}, Now: func() time.Time { return now }, Probe: func(context.Context, llm.Profile) ([]string, time.Duration, error) { return []string{"one"}, 0, nil }}
+	if _, err := r.Reconcile(t.Context(), mcreconcile.Request{Request: reconcile.Request{NamespacedName: client.ObjectKeyFromObject(owner)}, ClusterName: testCluster}); err != nil {
+		t.Fatal(err)
+	}
+	if liveLists != 0 {
+		t.Fatalf("stable credential performed %d live LISTs", liveLists)
+	}
+	stale := active.DeepCopy()
+	stale.Name = "old-key"
+	stale.UID = "old-key-uid"
+	stale.ResourceVersion = ""
+	if err := cached.Create(t.Context(), stale); err != nil {
+		t.Fatal(err)
+	}
+	consumer := &agentsv1alpha1.ModelProviderConnection{ObjectMeta: metav1.ObjectMeta{Name: "another-account"}, Spec: agentsv1alpha1.ModelProviderConnectionSpec{SecretRef: agentsv1alpha1.ModelCredentialSecretRef{Name: stale.Name}}}
+	// This consumer is deliberately absent from the cache used to detect work.
+	authoritative := protectionClient(t, owner.DeepCopy(), active.DeepCopy(), stale.DeepCopy(), consumer)
+	live = interceptor.NewClient(authoritative, interceptor.Funcs{List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+		liveLists++
+		return c.List(ctx, list, opts...)
+	}})
+	if !secretEventOwnsCredential(stale, owner) {
+		t.Fatal("rotated-away key would not wake its owner")
+	}
+	if _, err := reconcileActiveCredentialSecrets(t.Context(), cached, live, owner, active.Name); err != nil {
+		t.Fatal(err)
+	}
+	if liveLists != 3 {
+		t.Fatalf("cleanup performed %d live LISTs, want authoritative Secret/connection/model reads", liveLists)
+	}
+	var preserved corev1.Secret
+	if err := cached.Get(t.Context(), client.ObjectKeyFromObject(stale), &preserved); err != nil {
+		t.Fatalf("live-only consumer key was deleted: %v", err)
+	}
+	if hasLegacyCredentialOwner(&preserved, owner) {
+		t.Fatal("shared old key retains owner after cleanup")
 	}
 }
