@@ -406,6 +406,14 @@ shadows the platform copy inside that organization; platform copies remain
 visible to organizations without their own copy. The platform-heartbeat
 `warn` weakness described below remains separate and unresolved.
 
+The aggregate MCP endpoint was also probed. The owning organization user
+completed `initialize` against the self-hosted workspace; a user from a second
+organization and the same user using a substituted cluster ID both received
+`403`. A cross-organization `/api/providers` request carrying the owning
+organization header returned only global entries, not the organization's
+self-hosted provider records. These are positive isolation checks, not a
+general proof that every MCP tool or provider route is safe.
+
 ## Adversarial findings: local E2E compromises
 
 The items below are known weaknesses of this branch or of the local Tilt
