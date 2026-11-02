@@ -34,8 +34,8 @@ const (
 	// WorkspaceCreationAdmin restricts child Workspace creation to Org admins.
 	WorkspaceCreationAdmin = "admin"
 
-	// CatalogEntryCreationMembers lets any Org member publish Org-Private
-	// CatalogEntries.
+	// CatalogEntryCreationMembers is retained for reading legacy Organizations.
+	// Deprecated: provider management always requires organization admin.
 	CatalogEntryCreationMembers = "members"
 	// CatalogEntryCreationAdmin restricts Org-Private CatalogEntry publication
 	// to Org admins.
@@ -168,19 +168,11 @@ type OrganizationSpec struct {
 	// +kubebuilder:validation:Enum=members;admin
 	WorkspaceCreation string `json:"workspaceCreation,omitempty"`
 
-	// CatalogEntryCreation controls who can register an org-owned provider
-	// (POST /api/orgs/{org}/providers, see docs/byo-providers.md):
-	//   admin   — only Org admins may register (default).
-	//   members — any Org Membership may register.
-	//
-	// The default is stricter than WorkspaceCreation's because registration
-	// mints a long-lived cluster-admin credential for the provider workspace
-	// and routes every org user's traffic for that provider name — possibly
-	// shadowing a platform provider — into whichever cluster the registrant
-	// chose. Unset is treated as admin by the hub. Organizations that predate
-	// the admin default carry an explicit "members", written once by the
-	// organization controller and recorded in the
-	// tenants.railgrid.ai/catalog-entry-creation-migrated annotation.
+	// CatalogEntryCreation is deprecated and retained for stored-object
+	// compatibility. Provider registration, mutations, and credential retrieval
+	// always require organization admin, including on legacy Organizations with
+	// this field set to members. The hub API reports the effective value admin
+	// and rejects attempts to configure members.
 	//
 	// +optional
 	// +kubebuilder:default=admin

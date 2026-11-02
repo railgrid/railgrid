@@ -52,7 +52,7 @@ Don't re-litigate; the doc body assumes these.
 | O-5 | **One metering account per organization; how many free organizations one user may hold is a hub cap.** Every Organization gets its own metering Account, an Entitlement whose plan follows `Organization.spec.plan` (the default, free plan while that is empty; admin-only, `PUT /api/admin/organizations/{uuid}/plan`; overrides preserved) and a MembershipReport. Creating an organization is gated by two per-user caps, both hub flags a platform admin can override per user in `User.spec.quota`: `--default-orgs-per-user` (default 10) on the non-personal organizations the user has created, and `--free-orgs-per-user` (default 1) on the non-personal organizations on the free plan the user administers today, counted from their membership index rather than the created-by label, so handing an organization over frees the slot and an admin who was invited is charged for it. Personal organizations count against neither; organizations inside their soft-delete window count against both, because their account and allowances exist until the cascade. An organization's plan for the free cap is what its Entitlement says when metering can answer (a plan set there directly, or by a subscription, never reaches `spec.plan`), else `spec.plan`; an organization the user just created counts until its `IndexSynced` condition is true, since its admin membership is indexed asynchronously. `createOrg` answers 409 `QuotaExceeded` with "N of M" before writing. The free cap applies only while a metering deployment is discovered: without one there are no allowances to multiply, so a hub whose metering workspace is configured but empty caps nothing; until discovery has a definite answer (first poll, or kcp unreachable) the cap applies, and a transient poll failure keeps the last answer. `PUT …/plan` with an empty plan also resets the Entitlement to the default plan, whoever put it on its current one. The hub is the only gate; the caps are soft, serialized per user on one replica, and the metering webhook has no rule for Organizations. | The organization is the tenancy boundary everywhere else in the hub, so it is the billing unit too, and no comparable platform bills a team's usage to the person who created it. What the free tier has to prevent is one person holding many free organizations, and a cap on free organizations says exactly that (Supabase counts free projects across the organizations a user administers; Render allows five Hobby workspaces per user; GitLab caps new Free accounts at three top-level groups). |
 | O-5a | **Upgrade note for O-5.** The pooled layout one hub build wrote on 31 October 2026 (an Account `user-<name>` per User, organizations reporting into it, the `organizations` cap on the user's Entitlement) is not migrated by code. The organization reconciler creates the missing per-organization Account and Entitlement and rewrites every MembershipReport onto the organization's own account on its first pass; the orphaned `user-*` Accounts and Entitlements are removed by hand (`kubectl delete accounts,entitlements -l railgrid.ai/user` in the metering workspace), and an operator who applied the `organizations` MeteringConfig (`ObjectLabel` on the created-by label) removes it, since the accounts it resolves to no longer exist. No deployment ran that layout outside development. `User.spec.orgQuota`, removed earlier the same day without migration, comes back as `User.spec.quota.organizations` (with `freeOrganizations` beside it); `Organization.spec.workspaceQuota` does not, because workspaces are the `workspaces` meter. | Two of the three objects are reconciled anyway; stating the one manual step beats a sweep that would live forever for a layout nothing runs. |
 | O-6 | **Retired.** Workspace counts are the `workspaces` meter on the owning metering account (see [limits-and-quotas](roadmap/limits-and-quotas.md)). | One enforcement path for object counts. |
-| O-7 | **CatalogEntry creation gating = configurable per Org**, `Organization.spec.catalogEntryCreation: members\|admin`, default `admin` (stricter than `workspaceCreation`; it was `members` until the September 2026 security review, and Organizations from before then were backfilled with an explicit `members`). Enforced at the **hub REST endpoint** (`POST /api/orgs/{uuid}/providers`), not via kcp RBAC — see O-10. | Registering a provider mints a cluster-admin credential and can shadow a platform provider for the whole Org; that is an admin decision. Orgs that trust members opt in. |
+| O-7 | **Organization provider management requires Org admin.** Registration, edge rebind, credential retrieval/rotation, and deletion are enforced at the hub REST endpoints using the caller's Org-scope membership, never a workspace-admin role — see O-10. `Organization.spec.catalogEntryCreation` is deprecated: stored `members` values grant no access, API responses report `admin`, and create/update requests reject `members`. | Registering a provider mints a restricted workspace credential, can shadow a platform provider for the whole Org, and declares claims accepted in bound workspaces. These operations require the Org-wide authority of an administrator. |
 | O-10 | **Org workspaces are hub-mediated only.** Tenants never receive a kubeconfig that targets `root:railgrid:orgs:{uuid}` directly. All Org-workspace operations (CatalogEntry CRUD, Membership CRUD, child Workspace create) flow through hub REST endpoints. The railgrid kcp proxy ([pkg/server/proxy/proxy.go](../pkg/server/proxy/proxy.go)) refuses to issue exec-credentials for paths that resolve to a workspace of type `organization`. Child Workspaces (`root:railgrid:orgs:{org-uuid}:{ws-uuid}`) are user-facing as today. The companion `DefaultCluster` access gate this same proxy enforces — which today funnels user-token traffic to a single workspace and 403s the rest — is revisited in [hub-proxy-workspace-access.md](./hub-proxy-workspace-access.md). | Network-level enforcement of \"no APIBindings in Org workspace\" (see [provider-scoping.md](./provider-scoping.md) P-2). Removes the need for any kcp admission webhook or MaximalPermissionPolicy scoping. |
 | O-8 | **User delete = soft-delete with 30-day grace.** `User.status.deletionRequestedAt`; controller cascades personal Org + Memberships after the grace expires. Recoverable inside the window. | Protects against accidental delete; defers the "sole admin elsewhere" question until cascade time. |
 | O-9 | **Membership removal = block Org removal if user has child Workspace Memberships.** Admin must revoke (or transfer) each Workspace Membership first. UI offers a "remove from all" shortcut that does it as one call. | Explicit; avoids the "why does Bob still see acme/data?" surprise. |
@@ -260,10 +260,9 @@ type OrganizationSpec struct {
     // +kubebuilder:validation:Enum=members;admin
     WorkspaceCreation string `json:"workspaceCreation,omitempty"`
 
-    // CatalogEntryCreation controls who can register an org-owned
-    // provider (see byo-providers.md). Same enum as WorkspaceCreation,
-    // but defaults to admin: registration mints a cluster-admin
-    // credential and can shadow a platform provider for the Org.
+    // CatalogEntryCreation is deprecated and retained for stored-object
+    // compatibility. Provider management always requires Org admin,
+    // including when legacy objects retain the value members.
     // +kubebuilder:default=admin
     // +kubebuilder:validation:Enum=members;admin
     CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
@@ -707,9 +706,24 @@ through ClusterRoles in the workspace).
 | Scope + Role | Hub-API capabilities (Org workspace, via REST) | Direct-kcp capabilities (child Workspace) |
 |---|---|---|
 | Org admin | create/delete child Workspaces, manage Org Memberships, manage Workspace Memberships in any child, publish Org-Private CatalogEntries, edit Organization.spec | implicit admin in all child Workspaces (see UX item 10) |
-| Org member | list child Workspaces visible to them, see catalog, create child Workspaces if `workspaceCreation=members`, register org-owned providers only if the Org opted in with `catalogEntryCreation=members` (default `admin`) | nothing — must be added to each Workspace explicitly |
-| Workspace admin | (none specific to Org workspace beyond what they have as Org member, if any) | full access, manage Workspace Memberships |
+| Org member | list child Workspaces visible to them, see catalog, create child Workspaces if `workspaceCreation=members`; cannot register or manage organization providers or retrieve their credentials | nothing — must be added to each Workspace explicitly |
+| Workspace admin | (none specific to Org workspace beyond what they have as Org member, if any) | manage bound provider data and Workspace Memberships |
 | Workspace member | (none specific) | edit objects in the Workspace |
+
+Direct workspace access uses `railgrid:tenant-admin`, not Kubernetes
+`cluster-admin`. It permits ordinary data operations in currently bound provider
+API groups, common core data, and RBAC delegation subject to Kubernetes
+escalation checks. Publishing CRDs, APIExports, schemas, admission webhooks,
+server endpoints, or quota policy and impersonating identities remain platform
+operations. Custom APIs must use the organization provider bootstrap flow.
+Binding changes refresh the permitted data groups.
+
+Before rolling this policy into an existing installation, operators must audit
+user-created RBAC grants, ServiceAccounts, APIExports, CRDs and admission or
+endpoint configuration. The hub migrates only its recognized managed bindings;
+it does not delete unknown historical grants or objects. A formerly unrestricted
+administrator may have delegated authority elsewhere, so migration of managed
+bindings alone does not establish containment for an existing workspace.
 
 **Propagation mechanisms** (two of them, one per column):
 

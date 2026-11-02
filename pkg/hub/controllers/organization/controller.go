@@ -142,11 +142,6 @@ func SetupWithManager(mgr manager.Manager, provisioner WorkspaceProvisioner) err
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &tenancyv1alpha1.Organization{}, organizationCreatorIndex, organizationCreator); err != nil {
 		return fmt.Errorf("indexing initial workspace creators: %w", err)
 	}
-	// One-time backfill for the catalogEntryCreation default flip; see
-	// catalog_entry_creation_migration.go.
-	if err := mgr.Add(catalogEntryCreationBackfill(mgr)); err != nil {
-		return fmt.Errorf("registering catalogEntryCreation backfill: %w", err)
-	}
 	if err := builder.ControllerManagedBy(mgr).
 		Named(controllerName).
 		For(&tenancyv1alpha1.User{}).

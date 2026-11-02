@@ -210,11 +210,9 @@ func newOrgProviderTestServerWithPolicy(
 	return ops, creds, func() string { return srv.URL }
 }
 
-// An Organization that never set catalogEntryCreation is admin-only: a member
-// cannot register a provider, which mints a cluster-admin credential and can
-// shadow a platform provider for the whole Org; an admin can. Only an explicit
-// "members" opens it, and an unrecognized value stays closed.
-func TestRegisterOrgProvider_DefaultsToAdminOnly(t *testing.T) {
+// Registration requires Org admin even when stored policy values predate that
+// boundary. A workspace-admin role must not stand in for Org admin.
+func TestRegisterOrgProvider_RequiresOrgAdminWhateverTheLegacyPolicy(t *testing.T) {
 	edges := []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")}
 	body := RegisterOrgProviderRequest{Name: "vault", Edge: &EdgeTargetRef{Workspace: "ws-1", Name: "prod"}}
 	umi := &tenancyv1alpha1.UserMembershipIndex{
@@ -234,7 +232,9 @@ func TestRegisterOrgProvider_DefaultsToAdminOnly(t *testing.T) {
 	}{
 		{"unset refuses a member", "", memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
 		{"unset admits an org admin", "", adminTC("alice", "org-a", "ws-1"), http.StatusCreated},
-		{"explicit members admits a member", tenancyv1alpha1.CatalogEntryCreationMembers, memberTC("alice", "org-a", "ws-1"), http.StatusCreated},
+		{"legacy members refuses a member", tenancyv1alpha1.CatalogEntryCreationMembers, memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
+		{"legacy members admits an org admin", tenancyv1alpha1.CatalogEntryCreationMembers, adminTC("alice", "org-a", "ws-1"), http.StatusCreated},
+		{"explicit admin admits an org admin", tenancyv1alpha1.CatalogEntryCreationAdmin, adminTC("alice", "org-a", "ws-1"), http.StatusCreated},
 		{"explicit admin refuses a member", tenancyv1alpha1.CatalogEntryCreationAdmin, memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
 		{"unrecognized value refuses a member", "everyone", memberTC("alice", "org-a", "ws-1"), http.StatusForbidden},
 	} {
@@ -405,8 +405,8 @@ func TestOrgProviderInstallTargets_RespectsWorkspaceMembership(t *testing.T) {
 		Edge: &EdgeTargetRef{Workspace: "ws-2", Name: "prod"},
 	})
 	defer func() { _ = reg.Body.Close() }()
-	if reg.StatusCode != http.StatusConflict {
-		t.Fatalf("status: got %d, want 409", reg.StatusCode)
+	if reg.StatusCode != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403", reg.StatusCode)
 	}
 	if len(ops.registered) != 0 || creds.minted != 0 {
 		t.Fatalf("registered %v / minted %d despite refusal", ops.registered, creds.minted)

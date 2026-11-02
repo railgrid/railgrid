@@ -38,7 +38,7 @@ import (
 type CreateOrgRequest struct {
 	DisplayName          string `json:"displayName"`
 	WorkspaceCreation    string `json:"workspaceCreation,omitempty"`    // "members" | "admin"; default "members"
-	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // "members" | "admin"; default "admin"
+	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // Deprecated; only "admin" is accepted.
 }
 
 // PatchOrgRequest is the PATCH /api/orgs/{org} body. Empty fields
@@ -46,7 +46,7 @@ type CreateOrgRequest struct {
 type PatchOrgRequest struct {
 	DisplayName          string `json:"displayName,omitempty"`
 	WorkspaceCreation    string `json:"workspaceCreation,omitempty"`
-	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"`
+	CatalogEntryCreation string `json:"catalogEntryCreation,omitempty"` // Deprecated; only "admin" is accepted.
 }
 
 // listOrgs returns the orgs the caller is a member of, taken from
@@ -87,7 +87,7 @@ func (h *Handler) listOrgs(w http.ResponseWriter, r *http.Request) {
 		// can gate admin-only controls.
 		org, err := h.mgr.client.Organizations().Get(r.Context(), e.OrgUUID, metav1.GetOptions{})
 		if err != nil {
-			out = append(out, OrgView{UUID: e.OrgUUID, DisplayName: e.OrgDisplayName, Personal: e.Personal, Role: e.Role})
+			out = append(out, OrgView{UUID: e.OrgUUID, DisplayName: e.OrgDisplayName, Personal: e.Personal, Role: e.Role, CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationAdmin})
 			continue
 		}
 		view := projectOrg(org)
@@ -121,6 +121,10 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 		writeError(w, newValidationError("displayName is required"))
 		return
 	}
+	if req.CatalogEntryCreation != "" && req.CatalogEntryCreation != tenancyv1alpha1.CatalogEntryCreationAdmin {
+		writeError(w, newValidationError("catalogEntryCreation is deprecated; provider management requires organization admin"))
+		return
+	}
 	// Hold the user's create lock from the quota check through the Create,
 	// so two requests at cap-1 do not both pass. The wait for the controller
 	// below runs unlocked.
@@ -139,14 +143,6 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	if wc == "" {
 		wc = tenancyv1alpha1.WorkspaceCreationMembers
 	}
-	// Provider registration mints a cluster-admin credential and can shadow a
-	// platform provider for the whole Org, so the default keeps it with
-	// admins; an Org opts members in explicitly.
-	cec := req.CatalogEntryCreation
-	if cec == "" {
-		cec = tenancyv1alpha1.CatalogEntryCreationAdmin
-	}
-
 	orgUUID := uuid.NewString()
 	org := &tenancyv1alpha1.Organization{
 		ObjectMeta: metav1.ObjectMeta{
@@ -158,7 +154,7 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 			DisplayName:          req.DisplayName,
 			Personal:             false,
 			WorkspaceCreation:    wc,
-			CatalogEntryCreation: cec,
+			CatalogEntryCreation: tenancyv1alpha1.CatalogEntryCreationAdmin,
 		},
 	}
 	created, err := h.mgr.client.Organizations().Create(r.Context(), org, metav1.CreateOptions{})
@@ -219,6 +215,10 @@ func (h *Handler) patchOrg(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.DisplayName == "" && req.WorkspaceCreation == "" && req.CatalogEntryCreation == "" {
 		writeError(w, newValidationError("PATCH body must set at least one editable field"))
+		return
+	}
+	if req.CatalogEntryCreation != "" && req.CatalogEntryCreation != tenancyv1alpha1.CatalogEntryCreationAdmin {
+		writeError(w, newValidationError("catalogEntryCreation is deprecated; provider management requires organization admin"))
 		return
 	}
 	orgUUID := mux.Vars(r)["org"]

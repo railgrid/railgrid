@@ -934,7 +934,7 @@ func projectOrg(o *tenancyv1alpha1.Organization) OrgView {
 		DisplayName:             o.Spec.DisplayName,
 		Personal:                o.Spec.Personal,
 		WorkspaceCreation:       o.Spec.WorkspaceCreation,
-		CatalogEntryCreation:    o.Spec.CatalogEntryCreation,
+		CatalogEntryCreation:    tenancyv1alpha1.CatalogEntryCreationAdmin,
 		CreatedAt:               o.CreationTimestamp.Time,
 	}
 	if o.Status.DeletionRequestedAt != nil {

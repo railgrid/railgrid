@@ -226,16 +226,9 @@ type RegisterOrgProviderResponse struct {
 	Instructions *providers.InstallInstructions `json:"instructions,omitempty"`
 }
 
-// requireOrgProviderAccess resolves the caller's tenant context and enforces the
-// Org's catalogEntryCreation policy (decision O-7): "admin" (the default)
-// restricts registration to Org admins, "members" opens it to any Org member.
-//
-// The default is admin because registration is not a catalog edit: it mints a
-// long-lived cluster-admin credential for a workspace the hub then routes
-// every org user's provider traffic to, under a name that may shadow a
-// platform provider. That is an admin decision. Organizations created before
-// the default flipped were stamped with an explicit "members" by the
-// organization controller's backfill, so nothing they relied on changed.
+// requireOrgProviderAccess resolves the caller's tenant context and requires an
+// Org admin for provider mutations and credential retrieval (decision O-7).
+// Legacy catalogEntryCreation values do not widen access.
 //
 // It also fails closed when the org-provider dependencies were not wired, so a
 // hub built without them returns a clean 501 rather than a nil-pointer panic.
@@ -252,34 +245,13 @@ func (h *Handler) requireOrgProviderAccess(w http.ResponseWriter, r *http.Reques
 		return tc, true
 	}
 
-	org, err := h.mgr.client.Organizations().Get(r.Context(), tc.OrgUUID, metav1.GetOptions{})
-	if err != nil {
-		writeError(w, err)
-		return tenant.TenantContext{}, false
-	}
-	// Only an explicit "members" opens registration. Unset means the default,
-	// "admin", and anything unrecognized is likewise treated as the
-	// restrictive setting rather than silently allowing: a policy value the
-	// hub does not understand must not widen access.
-	if org.Spec.CatalogEntryCreation == tenancyv1alpha1.CatalogEntryCreationMembers {
-		return tc, true
-	}
-
 	// Read the ORG-scope role from the Membership rather than trusting tc.Role.
 	// The tenant middleware resolves tc.Role against whichever (org, workspace)
 	// pair the headers name, and both scopes spell admin the same way — so a
 	// member who is admin of their own team workspace would otherwise pass this
 	// gate just by sending X-Railgrid-Workspace, which the portal attaches to every
-	// request by default. That would hand an org member a kcp cluster-admin
-	// kubeconfig the Org explicitly restricted to admins.
-	role, err := h.mgr.bootstrapper.GetOrgMembershipRole(r.Context(), tc.OrgUUID, tc.User)
-	if err != nil && !apierrors.IsNotFound(err) {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "resolving org membership: "+err.Error())
-		return tenant.TenantContext{}, false
-	}
-	if role != tenancyv1alpha1.MembershipRoleAdmin {
-		writeStatus(w, http.StatusForbidden, "Forbidden",
-			"this organization restricts provider registration to admins")
+	// request by default. That would hand an org member a provider kubeconfig.
+	if !h.requireOrgAdminMembership(w, r, tc, "managing organization providers and credentials requires organization admin") {
 		return tenant.TenantContext{}, false
 	}
 	return tc, true

@@ -142,7 +142,7 @@ func newOrgCreateCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&workspaceCreation, "workspace-creation", "", "Who may create workspaces: members (default) or admin")
-	cmd.Flags().StringVar(&catalogEntryCreation, "catalog-entry-creation", "", "Who may publish catalog entries: members or admin (default)")
+	cmd.Flags().StringVar(&catalogEntryCreation, "catalog-entry-creation", "", "Deprecated: provider management requires organization admin; only admin is accepted")
 	return cmd
 }
 
