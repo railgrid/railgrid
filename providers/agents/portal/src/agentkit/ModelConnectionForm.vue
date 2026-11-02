@@ -108,7 +108,7 @@ function isLocked(): boolean {
       </label>
 
       <section class="k-model-form-section" aria-labelledby="model-provider-heading">
-        <h5 id="model-provider-heading" class="k-model-form-heading">Connection</h5>
+        <h3 id="model-provider-heading" class="k-model-form-heading">Connection</h3>
         <div class="k-model-form-columns">
           <label class="k-model-form-field">
             <span :id="providerLabelId">Provider</span>
@@ -126,8 +126,6 @@ function isLocked(): boolean {
             </select>
             <span :id="`${providerLabelId}-hint`" class="k-model-form-hint">{{ providerGuidance }}</span>
           </label>
-
-          <slot name="connection-extra" :disabled="isLocked()" />
 
           <label v-if="providerPreset !== 'google'" class="k-model-form-field">
             {{ providerPreset === 'custom' ? 'Base URL' : 'API endpoint' }}
@@ -166,10 +164,11 @@ function isLocked(): boolean {
             >{{ baseURLError || 'Adds /chat/completions and queries /models.' }}</span>
           </label>
         </div>
+        <slot name="connection-extra" :disabled="isLocked()" />
       </section>
 
       <section class="k-model-form-section" aria-labelledby="model-credential-heading">
-        <h5 id="model-credential-heading" class="k-model-form-heading">Credential</h5>
+        <h3 id="model-credential-heading" class="k-model-form-heading">Credential</h3>
         <label for="model-credential" class="sr-only">{{ credentialLabel }}</label>
         <slot
           name="credential-control"
@@ -204,7 +203,7 @@ function isLocked(): boolean {
 
       <section class="k-model-form-section" aria-labelledby="model-selection-heading">
         <div class="k-model-form-row">
-          <h5 id="model-selection-heading" class="k-model-form-heading">Model</h5>
+          <h3 id="model-selection-heading" class="k-model-form-heading">Model</h3>
           <span class="inline-flex" :title="discoverDisabled ? discoverDisabledReason || undefined : undefined">
             <button
               type="button"
@@ -237,24 +236,33 @@ function isLocked(): boolean {
         <p v-else-if="discoveryStatus" class="k-model-form-hint" role="status" aria-live="polite">{{ discoveryStatus }}</p>
       </section>
 
+      <section class="k-model-form-section" aria-labelledby="model-test-heading">
+        <div class="k-model-form-row k-model-form-test">
+          <div class="k-model-form-test__heading">
+            <h3 id="model-test-heading" class="k-model-form-heading">Verify connection</h3>
+            <p id="model-test-help" class="k-model-form-hint">Sends a small model request. Provider charges may apply.</p>
+          </div>
+          <button type="button" class="k-btn k-btn--ghost" aria-describedby="model-test-help model-test-status" :disabled="isLocked() || testDisabled" @click="emit('test')">
+            <Loader2 v-if="testing" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
+            <Check v-else-if="connectionTested" :size="14" class="text-success" :stroke-width="2" />
+            <RefreshCw v-else :size="14" :stroke-width="1.75" />
+            {{ testing ? 'Testing…' : connectionTested ? 'Connection verified' : 'Test connection' }}
+          </button>
+        </div>
+        <div v-show="testError || connectionTested || testNotice" id="model-test-status" aria-live="polite" aria-atomic="true">
+          <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
+          <p v-else-if="connectionTested" class="k-inline-notification k-inline-notification--success" role="status">
+            <Check :size="14" :stroke-width="2" />Connection verified. The model responded successfully.
+          </p>
+          <p v-else-if="testNotice" class="k-model-form-hint" role="status">{{ testNotice }}</p>
+        </div>
+        <slot name="probe-details" />
+      </section>
       <p v-if="formError" class="k-inline-notification k-inline-notification--error" role="alert">{{ formError }}</p>
-      <p v-if="testError" class="k-inline-notification k-inline-notification--error" role="alert">{{ testError }}</p>
-      <p v-else-if="connectionTested" class="k-inline-notification k-inline-notification--success" role="status" aria-live="polite">
-        <Check :size="14" :stroke-width="2" />Connection verified. The model responded successfully.
-      </p>
-      <p v-else-if="testNotice" class="k-inline-notification k-inline-notification--info" role="status" aria-live="polite">{{ testNotice }}</p>
-      <slot name="probe-details" />
     </div>
 
-    <p class="k-model-form-test-hint">Testing sends a small model request and may incur a charge.</p>
     <footer class="k-create-actions">
       <button type="button" class="k-btn k-btn--ghost" :disabled="isLocked()" @click="emit('cancel')">Cancel</button>
-      <button type="button" class="k-btn k-btn--ghost" :disabled="isLocked() || testDisabled" @click="emit('test')">
-        <Loader2 v-if="testing" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
-        <Check v-else-if="connectionTested" :size="14" class="text-success" :stroke-width="2" />
-        <RefreshCw v-else :size="14" :stroke-width="1.75" />
-        {{ testing ? 'Testing…' : connectionTested ? 'Connection verified' : 'Test connection' }}
-      </button>
       <button type="submit" class="k-btn k-btn--primary" :disabled="isLocked() || saveDisabled">
         <Loader2 v-if="busy" :size="14" class="animate-spin motion-reduce:animate-none" :stroke-width="1.75" />
         <Check v-else :size="14" :stroke-width="1.75" />

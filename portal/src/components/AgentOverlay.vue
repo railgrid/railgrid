@@ -48,6 +48,7 @@ const error = ref('')
 const loading = ref(false)
 const retry = ref(0)
 const expanded = ref(false)
+const recoveryPending = ref(false)
 const closing = ref(false)
 let closingAnimation: Animation | null = null
 function cancelClosingAnimation(): void {
@@ -193,9 +194,11 @@ async function mountAgent(): Promise<void> {
     candidate.addEventListener('railgrid-overlay-expand', () => { if (current()) openDedicated() })
     candidate.addEventListener('railgrid-overlay-navigate', event => {
       if (!current()) return
-      const path = (event as CustomEvent<{ path?: string }>).detail?.path
+      const detail = (event as CustomEvent<{ path?: string; recovery?: boolean }>).detail
+      const path = detail?.path
       if (!path?.startsWith('#/')) return
-      element?.dispatchEvent(new Event('railgrid-chat-handoff'))
+      if (!detail?.recovery) element?.dispatchEvent(new Event('railgrid-chat-handoff'))
+      recoveryPending.value = detail?.recovery === true
       overlay.closeForNavigation()
       void router.push(scopePath('/providers/agents') + path)
     })
@@ -214,7 +217,7 @@ watch([visible, authorityKey, () => overlay.selectedAgent, mount, retry], () => 
 // or reset its API/store watchers while a conversation is streaming.
 watch([expanded, () => overlay.followContext, pageContext], pushOverlayState, { flush: 'sync' })
 watch([visible, () => overlay.open], ([show, open]) => { overlay.setDockVisible(show && open) }, { immediate: true })
-watch([authorityKey, () => overlay.selectedAgent], () => { expanded.value = false })
+watch([authorityKey, () => overlay.selectedAgent], () => { expanded.value = false; recoveryPending.value = false })
 watch([() => auth.token, () => theme.resolved], pushContext, { flush: 'sync' })
 
 watch(() => overlay.open, async open => {
@@ -224,6 +227,15 @@ watch(() => overlay.open, async open => {
     panel.value?.focus()
   }
 })
+function returnToAssistant(): void {
+  if (recoveryPending.value) {
+    recoveryPending.value = false
+    expanded.value = true
+    element?.dispatchEvent(new Event('railgrid-overlay-resume'))
+  }
+  overlay.setMinimized(false)
+}
+
 function minimize(): void {
   overlay.setMinimized(true)
   void nextTick(() => launcher.value?.focus())
@@ -368,9 +380,9 @@ onBeforeUnmount(() => {
       </div>
     </section>
     </Transition>
-    <button :class="{ 'agent-overlay__launcher--hidden': overlay.open }" :aria-hidden="overlay.open" :tabindex="overlay.open ? -1 : 0" ref="launcher" type="button" class="k-btn k-btn--primary agent-overlay__launcher"
-      :aria-label="`${overlay.open ? 'Minimize' : 'Open'} ${overlay.selectedAgent} chat`" :aria-expanded="overlay.open" aria-controls="railgrid-agent-overlay"
-      @click="overlay.setMinimized(false)"><Hexagon :size="22" :stroke-width="2" aria-hidden="true" /></button>
+    <button :class="{ 'agent-overlay__launcher--hidden': overlay.open, 'agent-overlay__launcher--return': recoveryPending }" :aria-hidden="overlay.open" :tabindex="overlay.open ? -1 : 0" ref="launcher" type="button" class="k-btn k-btn--primary agent-overlay__launcher"
+      :aria-label="recoveryPending ? 'Return to assistant' : `${overlay.open ? 'Minimize' : 'Open'} ${overlay.selectedAgent} chat`" :aria-expanded="overlay.open" aria-controls="railgrid-agent-overlay"
+      @click="returnToAssistant"><Hexagon :size="22" :stroke-width="2" aria-hidden="true" /><span v-if="recoveryPending">Return to assistant</span></button>
   </div>
 </template>
 
@@ -422,4 +434,8 @@ onBeforeUnmount(() => {
 .agent-overlay--resizing .agent-overlay__panel { transition: none; user-select: none; }
 @media (prefers-reduced-motion: reduce) { .agent-overlay--expanded .agent-overlay__panel, .agent-overlay__panel, .agent-overlay__launcher { transition: none; animation: none; } }
 @media (max-width: 640px) { .agent-overlay__launcher { right: 8px; } .agent-overlay--ready .agent-overlay__panel { gap: 4px; padding: 6px; } .agent-overlay__brand { width: 16px; } }
+</style>
+
+<style scoped>
+.agent-overlay__launcher--return{width:auto;height:auto;min-height:44px;padding:10px 16px;border-radius:var(--radius-md,8px);gap:8px;}
 </style>

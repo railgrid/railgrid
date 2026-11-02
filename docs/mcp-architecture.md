@@ -468,6 +468,17 @@ Two consequences:
   delegation requires separate explicit authorization and guaranteed narrowing;
   it is not inferred from a provider declaration or a writable MCPServer.
 
+  Writable MCPServers also receive `use` on **all** first-party Agents
+  `ModelProviderConnection` resources in their workspace. This permits model
+  requests against every connected provider account; it does not expose the
+  underlying Secret. The grant has no `resourceNames` restriction, including
+  for connections added later. Kubernetes RBAC is additive, so a separate
+  per-connection Role cannot narrow this writable MCPServer grant. Creating a
+  writable MCPServer therefore delegates workspace-wide provider-account use.
+  Read-only MCPServers receive no such `use` grant. Keep restricted provider
+  accounts in a separate workspace rather than relying on a per-name Role to
+  constrain a writable MCPServer.
+
   The role also includes read-only `core.kcp.io/logicalclusters` and permission
   to create `selfsubjectaccessreviews`, which providers use to check the token's
   own access. It does not grant Secrets, ServiceAccounts, RBAC, or APIBinding

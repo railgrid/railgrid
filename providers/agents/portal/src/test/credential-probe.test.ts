@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../api'
 import type { RailgridContext } from '../types'
 
@@ -156,5 +156,90 @@ describe('exact-candidate model probes', () => {
     expect(calls.some(call => call.method === 'DELETE')).toBe(false)
     // No false client-side cleanup guarantee: server lifecycle cleanup is required.
     expect(persisted.size).toBe(2)
+  })
+
+  it('stops setup after cancellation even when the host fetch ignores AbortSignal', async () => {
+    const controller = new AbortController()
+    let secretRequestStarted!: () => void
+    const secretStarted = new Promise<void>(resolve => { secretRequestStarted = resolve })
+    const { api, calls, persisted } = fixture(call => {
+      if (call.method === 'POST' && call.url.endsWith('/secrets')) {
+        secretRequestStarted()
+        return new Promise<Response>(() => {})
+      }
+      return undefined
+    })
+    const pending = api.probeCredentialDraft(candidate, false, controller.signal)
+
+    await secretStarted
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
+
+    expect(calls.some(call => call.url.endsWith('/test'))).toBe(false)
+    expect(calls.filter(call => call.method === 'POST' && (call.url.endsWith('/modelcredentials') || call.url.endsWith('/secrets')))).toHaveLength(2)
+    expect(persisted.size).toBe(0)
+  })
+
+  it('stops setup when the response body never settles after fetch returns', async () => {
+    const controller = new AbortController()
+    let bodyReadStarted!: () => void
+    const bodyStarted = new Promise<void>(resolve => { bodyReadStarted = resolve })
+    const { api, calls, persisted } = fixture(call => {
+      if (call.method !== 'POST' || !call.url.endsWith('/modelcredentials')) return undefined
+      const response = new Response('{}')
+      response.text = () => {
+        bodyReadStarted()
+        return new Promise<string>(() => {})
+      }
+      return response
+    })
+    const pending = api.probeCredentialDraft(candidate, false, controller.signal)
+
+    await bodyStarted
+    controller.abort()
+    await expect(pending).rejects.toMatchObject({ reason: 'ContextChanged' })
+
+    expect(calls.some(call => call.method === 'POST' && call.url.endsWith('/secrets'))).toBe(false)
+    expect(calls.some(call => call.url.endsWith('/test'))).toBe(false)
+    expect(persisted.size).toBe(0)
+  })
+
+  it('bounds cleanup independently after cancellation when cleanup fetch never settles', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = new AbortController()
+      let testStarted!: () => void
+      let cleanupStarted!: () => void
+      const testRequestStarted = new Promise<void>(resolve => { testStarted = resolve })
+      const cleanupRequestStarted = new Promise<void>(resolve => { cleanupStarted = resolve })
+      const { api, calls, persisted } = fixture(call => {
+        if (call.url.endsWith('/test')) {
+          testStarted()
+          return new Promise<Response>(() => {})
+        }
+        if (call.method === 'GET' && call.url.includes('/secrets/')) {
+          cleanupStarted()
+          return new Promise<Response>(() => {})
+        }
+        return undefined
+      })
+      const pending = api.probeCredentialDraft(candidate, false, controller.signal)
+      const rejected = expect(pending).rejects.toMatchObject({ reason: 'ProbeCleanupFailed' })
+
+      await testRequestStarted
+      controller.abort()
+      await cleanupRequestStarted
+      await vi.advanceTimersByTimeAsync(10_001)
+      await rejected
+
+      expect(calls.filter(call => call.url.endsWith('/test'))).toHaveLength(1)
+      expect(calls.some(call => call.url.endsWith('/live-model'))).toBe(false)
+      // Failed browser cleanup leaves the owner for the existing controller
+      // TTL cleanup path; it never proceeds to delete the owner unsafely.
+      expect(calls.some(call => call.method === 'DELETE')).toBe(false)
+      expect(persisted.size).toBe(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

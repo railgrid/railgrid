@@ -51,6 +51,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&WebhookList{},
 		&Toolset{},
 		&ToolsetList{},
+		&ModelProviderConnection{},
+		&ModelProviderConnectionList{},
 		&ModelCredential{},
 		&ModelCredentialList{},
 		&Run{},

@@ -41,7 +41,9 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
     { id: 'tool-row', role: 'tool', content: '{}', runID: 'run-1', createdAt: '2026-10-22T12:00:00Z', metadata: { tool: 'compile', toolCallID: 'call-1', sources: [source], hasMcpApp: true } },
     { id: 'answer-row', role: 'assistant', content: 'Compiled successfully [[tool:call-1]]', runID: 'run-1', createdAt: '2026-10-22T12:00:01Z', metadata: { turnPhase: 'final', turnStatus: 'completed' } },
   ] : [] }), listRuns: async () => ({ items: [] }), chatStream, captureAgentArtifact, getAgentArtifact }) as ApiClient
-  const store = makeStore(api); const agent = agentFixture('scout'); agent.metadata.uid = 'agent-uid'; store.agents.data = [agent]; store.agents.loaded = true
+  const store = makeStore(api); const agent = agentFixture('scout'); agent.metadata.uid = 'agent-uid'; store.agents.data = [agent]; store.agents.loaded = store.agents.hasSnapshot = true
+  store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  store.credentials.loaded = store.credentials.hasSnapshot = true
   const view = await mountVue(AgentChat, { store, api, name: 'scout', compact: true }); await settleVue(10)
   if (options.history) { await settleVue(8, 10); return { view, getAgentArtifact, captureAgentArtifact, chatStream } }
   const input = view.element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!; input.value = 'Compile sales'; input.dispatchEvent(new Event('input')); await settleVue()
@@ -193,10 +195,11 @@ describe('inline provider app journey', () => {
     expect(view.element.querySelector('.agents-inline-app')).toBeNull(); expect(captureAgentArtifact).not.toHaveBeenCalled()
     const citation = view.element.querySelector<HTMLButtonElement>('.agents-body [data-agent-tool-citation]')!
     expect(citation.textContent).toContain('Source')
-    citation.click(); await settleVue(15, 10)
+    citation.click()
     expect(captureAgentArtifact).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(view.element.querySelector('.agents-artifact-panel')).not.toBeNull())
     const panel = view.element.querySelector('.agents-artifact-panel')!
-    expect(panel).not.toBeNull()
+    await vi.waitFor(() => expect(panel.hasAttribute('aria-busy')).toBe(false))
     expect(panel.querySelector('.agents-artifact-panel__app')).toBeNull()
     expect(panel.querySelector('.agents-artifact-panel__data summary')?.textContent).toContain('View captured data')
   })

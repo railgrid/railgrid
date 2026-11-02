@@ -324,7 +324,7 @@ func TestDataPlaneVerbsMatchManifest(t *testing.T) {
 // to rather than taken on trust.
 func TestExportResourcesBindEveryVerbToItsKind(t *testing.T) {
 	wantKind := map[string]string{
-		"agents": "Agent", "connections": "Connection", "modelcredentials": "ModelCredential",
+		"agents": "Agent", "connections": "Connection", "modelcredentials": "ModelCredential", "modelproviderconnections": "ModelProviderConnection",
 		"runs": "Run", "schedules": "Schedule", "triggers": "Trigger", "webhooks": "Webhook",
 	}
 	declared := parseExportResources(readSpecBlock(t, "../manifest.yaml", "export"))

@@ -43,6 +43,7 @@ const store = shallowRef(markRaw(new AppStore(api.value)))
 const route = ref<Route>(props.overlay ? { kind: 'agent', name: props.overlay.agent, tab: 'chat' } : parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
+const continueAddModelAfterProviderConnect = ref(false)
 const storeRevision = ref(0)
 const agentCreateDraft = shallowRef<AgentCreateDraft | null>(null)
 const agentCredentialSetup = shallowRef<{
@@ -94,7 +95,7 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
     activity: store.value.pendingInbox().length,
     connections: store.value.connections.data.length + store.value.toolsets.data.length,
     webhooks: store.value.webhooks.data.length,
-    models: store.value.credentials.data.length,
+    models: store.value.credentials.data.filter(item => !item.isConnection).length,
   }
 })
 const live = computed(() => { storeRevision.value; return store.value.live })
@@ -156,14 +157,24 @@ function prepareAgentCreateRouteChange(previous: Route, next: Route): void {
   if (isAgentCreateRoute(next)) clearAgentCreateSetup()
 }
 
+let modelCreateOwner: Route = { kind: 'menu', menu: 'models' }
+
 function go(next: Route, mode?: 'push' | 'replace'): void {
   if (props.overlay) {
     if (next.kind !== 'agent' || next.name !== props.overlay.agent || next.tab !== 'chat') {
-      props.host.dispatchEvent(new CustomEvent('railgrid-overlay-navigate', { detail: { path: hashFor(next) } }))
+      props.host.dispatchEvent(new CustomEvent('railgrid-overlay-navigate', { detail: { path: hashFor(next), recovery: next.kind === 'create' && next.resource === 'model' && next.type === 'from-connection' } }))
     }
     return
   }
   const previous = route.value
+  if (continueAddModelAfterProviderConnect.value && !(isModelCreateRoute(previous) && isModelCreateRoute(next))) {
+    continueAddModelAfterProviderConnect.value = false
+  }
+  if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
+    modelCreateOwner = previous.kind === 'agent' || (previous.kind === 'menu' && previous.menu === 'models')
+      ? previous : { kind: 'menu', menu: 'models' }
+    if (previous.kind === 'agent') props.host.dispatchEvent(new Event('railgrid-chat-setup'))
+  }
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   prepareAgentCreateRouteChange(previous, next)
   advanceCreateSession(route.value, next)
@@ -188,6 +199,7 @@ function restoreRoute(): void {
 function restoreRouteFromHash(normalize: boolean): void {
   const previous = route.value
   const next = parseHash()
+  if (!isModelCreateRoute(next)) continueAddModelAfterProviderConnect.value = false
   prepareAgentCreateRouteChange(previous, next)
   if (route.value.kind === 'edit' && next.kind === 'menu' && next.menu === 'connections') {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
@@ -262,7 +274,8 @@ function shouldResetRoute(previous: ContextAuthority | null, next: ContextAuthor
 function rotateContext(context: RailgridContext | null, resetRoute: boolean): void {
   boundStore?.removeEventListener('change', onStoreChange)
   boundStore = null
-  store.value.retire()
+  const previousStore = store.value
+  const previousAuthority = authority
   authorityEpoch.value += 1
   createSession.value += 1
   resolveConfirm(false)
@@ -272,13 +285,24 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   nextApi.setContext(context)
   api.value = nextApi
   const nextStore = markRaw(new AppStore(nextApi))
+  const nextAuthority = nextApi.contextAuthority()
+  if (previousAuthority?.usable && nextAuthority.usable && previousAuthority.userKey && nextAuthority.userKey && previousAuthority.userKey === nextAuthority.userKey && previousAuthority.tenantKey === nextAuthority.tenantKey) previousStore.transferChatSetupDraft(nextStore)
+  previousStore.retire()
   store.value = nextStore
   bindStore(nextStore)
   loadedTenant = null
   authority = nextApi.contextAuthority()
+  if (resetRoute) {
+    modelCreateOwner = { kind: 'menu', menu: 'models' }
+    continueAddModelAfterProviderConnect.value = false
+  }
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
-  maybeLoad()
+  if (authority.usable) {
+    loadedTenant = authority.tenantKey
+    nextStore.loadAll()
+    nextStore.connect()
+  }
 }
 
 function applyContext(context: RailgridContext | null): void {
@@ -319,7 +343,18 @@ watch(() => props.ctx, () => {
   if (contextUsable.value && !props.overlay) restoreRouteFromHash(false)
 })
 
+// The host assistant settings shortcut still enters the Models destination.
+watch([() => props.ctx?.agentOverlay?.settingsOpen, () => hashFor(route.value)], ([open]) => {
+  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && route.value.modelsTab !== 'workspace-assistant') {
+    go({ kind: 'menu', menu: 'models', modelsTab: 'workspace-assistant' }, 'replace')
+  }
+}, { immediate: true })
+
 type SourceDetail = Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>
+
+function rememberProviderConnectionOrigin(continueToModel: boolean): void {
+  continueAddModelAfterProviderConnect.value = continueToModel
+}
 
 function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): boolean {
   if (detail.store !== store.value) return false
@@ -331,7 +366,7 @@ function sourceIsCurrent(detail: SourceDetail, needsCreateSession = false): bool
 function createSuccessRoute(detail: CreateSuccessDetail): Route {
   switch (detail.resource) {
     case 'agent': return { kind: 'agent', name: detail.name || '', tab: 'chat' }
-    case 'model': return { kind: 'menu', menu: 'models' }
+    case 'model': return modelCreateOwner
     // A webhook owns its URL and its delivery log: land on it, so the URL the
     // sender needs is the first thing the person sees.
     case 'webhook': return { kind: 'edit', resource: 'webhook', name: detail.name || '' }
@@ -341,7 +376,7 @@ function createSuccessRoute(detail: CreateSuccessDetail): Route {
 }
 
 function createOwnerRoute(current: Extract<Route, { kind: 'create' }>): Route {
-  if (current.resource === 'model') return { kind: 'menu', menu: 'models' }
+  if (current.resource === 'model') return modelCreateOwner
   if (current.resource === 'agent') return { kind: 'menu', menu: 'agents' }
   if (current.resource === 'webhook') return { kind: 'menu', menu: 'webhooks' }
   return { kind: 'menu', menu: 'connections' }
@@ -396,6 +431,7 @@ function credentialMatchesFamily(credential: Credential | undefined, family: Age
 
 function onCreateSuccess(detail: CreateSuccessDetail): void {
   if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create' || detail.resource !== route.value.resource) return
+  if (detail.resource === 'model') continueAddModelAfterProviderConnect.value = false
   adoptCreateResult(detail)
   if (detail.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
     agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
@@ -408,12 +444,14 @@ function onCreateSuccess(detail: CreateSuccessDetail): void {
     agentCredentialSetup.value = null
     return
   }
+  if (detail.resource === 'model' && modelCreateOwner.kind === 'agent') { go(modelCreateOwner, 'replace'); return }
   if (detail.resource === 'agent') clearAgentCreateSetup()
   go(detail.destination || createSuccessRoute(detail), 'replace')
 }
 
 function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>): void {
   if (!sourceIsCurrent(detail, true) || route.value.kind !== 'create') return
+  if (route.value.resource === 'model') continueAddModelAfterProviderConnect.value = false
   if (route.value.resource === 'model' && agentCredentialSetup.value && authority?.usable &&
     agentCredentialSetup.value.tenantKey === authority.tenantKey && agentCredentialSetup.value.userKey === authority.userKey) {
     const returnRoute = agentCredentialSetup.value.returnRoute
@@ -555,6 +593,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
         :overlay-control="ctx.agentOverlay"
+        :models-tab="route.modelsTab"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
@@ -562,6 +601,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
+        @connect-provider="rememberProviderConnectionOrigin"
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />
@@ -645,15 +685,19 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'create' && route.resource === 'model'"
+        :return-label="modelCreateOwner.kind === 'agent' ? 'Conversation' : 'Models'"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
         :route-owned="true"
         :create-route="true"
         :initial-family="route.type === 'harness' ? 'harness' : 'chat'"
+        :select-connection="route.type === 'from-connection'"
+        :continue-add-model-after-provider-connect="continueAddModelAfterProviderConnect"
         :authority-epoch="authorityEpoch"
         :create-session="createSession"
         @navigate="go"
+        @connect-provider="rememberProviderConnectionOrigin"
         @create-success="onCreateSuccess"
         @create-cancel="onCreateCancel"
       />

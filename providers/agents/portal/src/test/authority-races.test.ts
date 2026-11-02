@@ -99,6 +99,8 @@ describe('public shell authority rotation', () => {
     }) as ApiClient['chatStream']
     oldStore.agents.data = [{ metadata: { name: 'scout' }, spec: { backend: { type: 'model', model: { credentials: { chat: 'main' } } } } }]
     oldStore.agents.loaded = oldStore.agents.hasSnapshot = true
+    oldStore.credentials.data = [{ name: 'main', provider: 'openai', model: 'gpt-test' }]
+    oldStore.credentials.loaded = oldStore.credentials.hasSnapshot = true
     oldStore.dispatchEvent(new Event('change'))
     await settleVue(6)
 

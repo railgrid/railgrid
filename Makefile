@@ -507,7 +507,7 @@ codegen-agents-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the 
 		$(CURDIR)/$(CONTROLLER_GEN) crd paths="./apis/..." \
 			output:crd:artifacts:config=$(CURDIR)/providers/agents/config/crds
 	./hack/apigen.sh --input-dir providers/agents/config/crds --output-dir providers/agents/config/kcp
-	@for r in agents artifacts connections modelcredentials schedules triggers webhooks toolsets runs; do \
+	@for r in agents artifacts connections modelcredentials modelproviderconnections schedules triggers webhooks toolsets runs; do \
 		cp providers/agents/config/kcp/apiresourceschema-$$r.agents.railgrid.ai.yaml \
 		   providers/agents/deploy/chart/files/schemas/$$r.agents.railgrid.ai.yaml; \
 	done
@@ -1414,15 +1414,17 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 ## triggers with per-route outcomes and a recorded Run, the delivery sink
 ## (webhooks/deliveries), the evaluate and replay verbs, Validated conditions,
 ## retention, deletion and Disable. Runs are recorded, not executed (no model
-## credential). Shares the embedded-kcp etcd port 2380 with the other subprocess
-## suites — do not run them concurrently.
+## credential). Etcd defaults to 2379/2380. For a local run beside Tilt, set
+## E2E_AGENTS_ETCD_CLIENT_PORT and E2E_AGENTS_ETCD_PEER_PORT to free ports.
 E2E_AGENTS_PROVIDER_TIMEOUT ?= 15m
+E2E_AGENTS_ETCD_CLIENT_PORT ?= 2379
+E2E_AGENTS_ETCD_PEER_PORT ?= 2380
 e2e-agents-provider: build-hub build-agents-provider ## Run agents provider (webhook/trigger routing) e2e suite
-	@test -z "$$(lsof -ti :19513 :16513 :18138 :2380 2>/dev/null)" || { \
-		echo "ports 19513/16513/18138/2380 are in use; stop any running railgrid-hub/agents-provider first"; \
+	@test -z "$$(lsof -ti :19513 :16513 :18138 :$(E2E_AGENTS_ETCD_CLIENT_PORT) :$(E2E_AGENTS_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "one of the selected Agents E2E ports is in use; choose free E2E_AGENTS_ETCD_CLIENT_PORT/E2E_AGENTS_ETCD_PEER_PORT values or stop only the conflicting test process"; \
 		exit 1; \
 	}
-	go test -count=1 ./test/e2e/suites/agentsprovider/... -v -timeout $(E2E_AGENTS_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	RAILGRID_E2E_ETCD_CLIENT_PORT=$(E2E_AGENTS_ETCD_CLIENT_PORT) RAILGRID_E2E_ETCD_PEER_PORT=$(E2E_AGENTS_ETCD_PEER_PORT) go test -count=1 ./test/e2e/suites/agentsprovider/... -v -timeout $(E2E_AGENTS_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:
@@ -3248,3 +3250,13 @@ lint-ui-e2e-report: $(GOLANGCI_LINT)
 	cd providers/code && $(CURDIR)/$(GOLANGCI_LINT) run ./backend/github ./controller/repository
 	cd providers/infrastructure && $(CURDIR)/$(GOLANGCI_LINT) run . ./install ./operator
 	cd providers/app-studio && $(CURDIR)/$(GOLANGCI_LINT) run ./api ./workspace
+
+.PHONY: test-agents-provider-connections fix-lint-agents-provider-connections lint-agents-provider-connections
+test-agents-provider-connections: ## Verify reusable model-provider connections, migration, and authorization
+	cd providers/agents && go test -count=1 ./apis/v1alpha1 ./client ./llm ./controller/modelcredential ./api
+
+fix-lint-agents-provider-connections: $(GOLANGCI_LINT) ## Format the Agents provider connection API and runtime
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt ./apis/v1alpha1 ./client ./llm ./controller/modelcredential ./api controller_manager.go
+
+lint-agents-provider-connections: $(GOLANGCI_LINT) ## Lint the Agents provider connection API and runtime
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./apis/v1alpha1/... ./client/... ./llm/... ./controller/modelcredential/... ./api/... .
