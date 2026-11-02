@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -866,6 +867,21 @@ func (b *Bootstrapper) ListChildTeamWorkspaces(ctx context.Context, orgUUID stri
 // workspace at root:railgrid:tenants. Used by the soft-delete reconciler's
 // Workspace branch to fan out across Orgs at resync time without
 // standing up per-Org dynamic informers.
+// WatchChildWorkspaces opens a watch on the child Workspaces of one
+// organization, for the soft-delete Workspace branch (it implements
+// softdelete.WorkspaceWatcher). The watch replays existing Workspaces as
+// ADDED when it opens.
+func (b *Bootstrapper) WatchChildWorkspaces(ctx context.Context, orgUUID string) (watch.Interface, error) {
+	if orgUUID == "" {
+		return nil, fmt.Errorf("WatchChildWorkspaces: orgUUID is required")
+	}
+	orgClient, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.OrgPath(orgUUID)))
+	if err != nil {
+		return nil, fmt.Errorf("creating org workspace client: %w", err)
+	}
+	return orgClient.Resource(workspaceGVR).Watch(ctx, metav1.ListOptions{AllowWatchBookmarks: true})
+}
+
 func (b *Bootstrapper) ListOrgWorkspaces(ctx context.Context) ([]string, error) {
 	orgsClient, err := dynamic.NewForConfig(b.OrgsConfig())
 	if err != nil {
