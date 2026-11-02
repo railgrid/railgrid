@@ -199,7 +199,7 @@ function customizePrompt(): void {
 }
 const credentialOptions = computed(() => chatCredentials.value.map(item => ({
   value: item.name,
-  label: `${item.name}${item.model ? ` (${item.model})` : ''}`,
+  label: item.connectionRef ? `${item.connectionName || item.connectionRef} · ${item.displayName || item.model}` : `${item.name}${item.model ? ` (${item.model})` : ''}`,
 })))
 const channelOptions = computed(() => [
   { value: '', label: '— none —' },

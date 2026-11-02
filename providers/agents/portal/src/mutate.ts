@@ -21,6 +21,9 @@ export interface MutateOptions<T> {
   // pure-local (they never call the API).
   optimistic?: () => void
   rollback?: () => void
+  // onFailure exposes the request failure when a caller needs to distinguish
+  // an ambiguous transport timeout from a definite server rejection.
+  onFailure?: (error: unknown) => void
   // reload names the store slices to refresh once the write lands, so the
   // authoritative server state replaces the optimistic guess.
   reload?: SliceKey[]
@@ -47,6 +50,7 @@ export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promis
     return res
   } catch (e) {
     if (store.isRetired()) return undefined
+    opts.onFailure?.(e)
     opts.rollback?.()
     if (opts.rollback) store.dispatchEvent(new Event('change'))
     toast('error', `${opts.failure}: ${(e as Error).message}`)

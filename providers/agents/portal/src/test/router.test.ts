@@ -21,6 +21,7 @@ describe('create routes', () => {
     ['#/create/toolset', { kind: 'create', resource: 'toolset' }],
     ['#/create/webhook', { kind: 'create', resource: 'webhook' }],
     ['#/create/model', { kind: 'create', resource: 'model' }],
+    ['#/create/model/from-connection', { kind: 'create', resource: 'model', type: 'from-connection' }],
     ['#/create/model/harness', { kind: 'create', resource: 'model', type: 'harness' }],
   ])('parses and formats %s', (hash, route) => {
     expect(parseHash(hash)).toEqual(route)
@@ -174,5 +175,20 @@ describe('hash history writes', () => {
 
   it('does not throw on malformed externally supplied encoded segments', () => {
     expect(parseHash('#/agents/%E0%A4%A')).toEqual({ kind: 'agent', name: '%E0%A4%A', tab: 'chat' })
+  })
+})
+
+
+describe('model management sub-routes', () => {
+  it.each(['provider-connections', 'workspace-assistant', 'usage'] as const)('round trips %s and keeps Models selected', modelsTab => {
+    const route: Route = { kind: 'menu', menu: 'models', modelsTab }
+    expect(parseHash(`#/models/${modelsTab}`)).toEqual(route)
+    expect(hashFor(route)).toBe(`#/models/${modelsTab}`)
+    expect(activeMenu(route)).toBe('models')
+  })
+  it('retains the default Models URL and safely normalizes unknown sub-tabs', () => {
+    expect(parseHash('#/models')).toEqual({ kind: 'menu', menu: 'models' })
+    expect(hashFor(parseHash('#/models/models'))).toBe('#/models')
+    expect(hashFor(parseHash('#/models/unknown'))).toBe('#/models')
   })
 })

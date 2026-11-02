@@ -162,6 +162,7 @@ export interface AgentBackend {
 
 /** KubeCondition is one metav1.Condition as kcp serves it. */
 export interface KubeCondition {
+  observedGeneration?: number
   type: string
   status: string
   reason?: string
@@ -352,6 +353,10 @@ export function isJSONObject(text: string): boolean {
  * `discovered` is what that endpoint actually served.
  */
 export interface Credential {
+  connectionRef?: string
+  connectionName?: string
+  displayName?: string
+  isConnection?: boolean
   /** Sent only to api.anthropic.com. */
   anthropicWorkspaceID?: string
   name: string
@@ -366,10 +371,17 @@ export interface Credential {
   ready?: boolean
   /** SecretResolved condition on its own, so the UI can say which half failed. */
   secretResolved?: boolean
+  /** Referenced provider connection is missing, invalid, or deleting. */
+  connectionUnavailable?: boolean
   /** The first unmet condition's message — what to fix. */
   statusMessage?: string
   /** status.models: the ids the endpoint served on the last successful probe. */
   discovered?: string[]
+}
+
+/** Discovery failure alone does not prove a model cannot answer inference. */
+export function credentialUnavailable(credential: Credential | undefined): boolean {
+  return !credential || credential.secretResolved === false || credential.connectionUnavailable === true
 }
 
 export interface Schedule {
@@ -1145,6 +1157,10 @@ export interface ConnectionWrite {
 }
 
 export interface CredentialWrite {
+  connectionRef?: string
+  displayName?: string
+  /** A new provider connection to persist before its first model binding. */
+  newConnection?: CredentialWrite
   /** Empty clears the saved Anthropic workspace selection. */
   anthropicWorkspaceID?: string
   name: string
