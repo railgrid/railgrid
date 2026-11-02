@@ -250,6 +250,13 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 	Dial(context.Context) (net.Conn, error)
 }, rest string) {
 	logger := klog.FromContext(ctx)
+	var relayErr error
+	ctx, relayErr = p.verifyProviderRelay(ctx, r, cluster, svc.Name, rest)
+	if relayErr != nil {
+		http.Error(w, "invalid provider relay", http.StatusForbidden)
+		return
+	}
+	r = r.WithContext(ctx)
 
 	mode := svc.authMode()
 	var token string
@@ -317,6 +324,9 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 // spelled there itself.
 func stampCallerForUpstream(h http.Header, ctx context.Context, cluster string) {
 	stripCallerHeaders(h)
+	if stampProviderRelay(h, ctx) {
+		return
+	}
 	h.Del(dataplane.HeaderUser)
 	if identity, ok := dataplane.ProxiedIdentityFrom(ctx); ok && identity.User != "" {
 		h.Set(dataplane.HeaderUser, identity.User)
@@ -403,10 +413,14 @@ func decodeServiceView(name string, obj *unstructured.Unstructured) (*serviceVie
 	if obj == nil {
 		return nil, fmt.Errorf("service %s: no object", name)
 	}
-	view := &serviceView{Name: name}
+	view := &serviceView{}
 	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, view); err != nil {
 		return nil, fmt.Errorf("decoding service %s: %w", name, err)
 	}
+	// The converter clears fields absent from the JSON object, including this
+	// non-serialized routing coordinate. Restore the gate's resource name only
+	// after conversion; relay proofs bind to that name, never provider input.
+	view.Name = name
 	if view.Spec.EdgeRef.Name == "" {
 		return nil, fmt.Errorf("service %s has no spec.edgeRef.name", name)
 	}

@@ -76,6 +76,7 @@ type TenantConfigGetter func(ctx context.Context, cluster string) (*rest.Config,
 // The handler methods (buildEdgeAgentProxyHandler, buildEdgesProxyHandler, and
 // their helpers) hang off this struct with receiver name p.
 type Server struct {
+	providerRelayVerifier ProviderRelayVerifier
 	// kinds maps the URL resource segment (e.g. "kubernetesclusters") to its
 	// GVR + Kind. group/version are shared across all kinds (validated in New).
 	kinds   map[string]KindConfig

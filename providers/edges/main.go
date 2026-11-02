@@ -63,6 +63,7 @@ import (
 	"github.com/railgrid/provider-sdk/dataplane"
 	"github.com/railgrid/provider-sdk/hubclient"
 	"github.com/railgrid/provider-sdk/identityclient"
+	"github.com/railgrid/provider-sdk/providerrelay"
 	"github.com/railgrid/provider-sdk/serve"
 	"github.com/railgrid/provider-sdk/vwhealth"
 )
@@ -251,6 +252,24 @@ func runServe(opts serveOptions) error {
 		return fmt.Errorf("build tunnel server: %w", err)
 	}
 	tsrv.SetIdentityClient(identities)
+	// Relay verification uses only the configured hub origin. Its public key
+	// grants no authority; only the hub holds the domain-separated signing key.
+	if relayHub := os.Getenv("RAILGRID_HUB_URL"); relayHub != "" {
+		keyConfig := &rest.Config{Host: relayHub, TLSClientConfig: rest.TLSClientConfig{CAData: hubCA}}
+		if os.Getenv("RAILGRID_HUB_INSECURE") == "true" {
+			keyConfig.CAData = nil
+			keyConfig.Insecure = true
+		}
+		keyHTTP, err := rest.HTTPClientFor(keyConfig)
+		if err != nil {
+			return fmt.Errorf("provider relay key transport: %w", err)
+		}
+		verifier, err := providerrelay.NewRemoteVerifier(relayHub, keyHTTP)
+		if err != nil {
+			return err
+		}
+		tsrv.SetProviderRelayVerifier(verifier)
+	}
 
 	// Tunnel Lease registry + multi-replica routing. The registry is always on
 	// when a kcp credential exists: the replica terminating a tunnel claims it

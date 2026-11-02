@@ -317,7 +317,7 @@ func deleteOrgProvider(t *testing.T, orgUUID, name string) {
 // hubJSON issues one authenticated REST call against the hub and returns the
 // status and body. orgUUID, when set, supplies the tenant-scope header the
 // middleware requires.
-func hubJSON(t *testing.T, method, path, orgUUID string, body []byte) (int, []byte) {
+func hubJSON(t *testing.T, method, path, orgUUID string, body []byte, workspaceUUID ...string) (int, []byte) {
 	t.Helper()
 	var rdr *bytes.Reader
 	if body == nil {
@@ -333,6 +333,9 @@ func hubJSON(t *testing.T, method, path, orgUUID string, body []byte) (int, []by
 	req.Header.Set("Content-Type", "application/json")
 	if orgUUID != "" {
 		req.Header.Set("X-Railgrid-Org", orgUUID)
+	}
+	if len(workspaceUUID) > 0 {
+		req.Header.Set("X-Railgrid-Workspace", workspaceUUID[0])
 	}
 	resp, err := insecureClient(120 * time.Second).Do(req)
 	if err != nil {
