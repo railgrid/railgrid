@@ -57,6 +57,7 @@ func main() {
 
 	cmd.Flags().StringVar(&opts.DataDir, "data-dir", opts.DataDir, "Data directory for state")
 	cmd.Flags().StringVar(&opts.ListenAddr, "listen-addr", opts.ListenAddr, "Address to listen on")
+	cmd.Flags().StringVar(&opts.MetricsListenAddr, "metrics-listen-addr", opts.MetricsListenAddr, "Address of the plain-HTTP Prometheus /metrics listener (controller-runtime reconcile and client metrics, Go runtime); empty disables it")
 	cmd.Flags().StringVar(&opts.Kubeconfig, "kubeconfig", "", "Kubeconfig for hub cluster")
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
 	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")

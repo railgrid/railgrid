@@ -24,9 +24,15 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- $metricsAnnotations := include "edges.metricsAnnotations" (dict "Values" .Values "portName" "metrics" "port" .Values.metrics.port) }}
+      {{- if or $metricsAnnotations .Values.podAnnotations }}
       annotations:
+        {{- with $metricsAnnotations }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "edges.serviceAccountName" . }}
@@ -67,6 +73,11 @@ spec:
             - name: http
               containerPort: {{ .Values.service.port }}
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
             # Replica-to-replica tunnel relay + forwarded pickups. Reached by
             # pod IP from peer replicas; deliberately NOT on the Service.
             - name: internal
@@ -80,6 +91,8 @@ spec:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
           env:
+            - name: RAILGRID_METRICS_LISTEN
+              value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}""{{ end }}
             - name: PORT
               value: {{ .Values.service.port | quote }}
             # Replica identity + relay address for multi-replica tunnel

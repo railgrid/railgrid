@@ -68,6 +68,8 @@ helm upgrade --install edges oci://ghcr.io/railgrid/charts/railgrid-edges-provid
 | `resources.requests.memory` | `64Mi` |  |
 | `podLabels` | `{}` |  |
 | `podAnnotations` | `{}` |  |
+| `metrics.enabled` | `true` | Serve Prometheus `/metrics` (controller-runtime reconcile, workqueue and client metrics, Go runtime) on a separate plain-HTTP listener and annotate the pod for scraping (`prometheus.io/*`, `k8s.grafana.com/*`). |
+| `metrics.port` | `9090` | Port of the metrics listener (`RAILGRID_METRICS_LISTEN`). |
 | `nodeSelector` | `{}` |  |
 | `tolerations` | `[]` |  |
 | `affinity` | `{}` |  |

@@ -17,9 +17,15 @@ spec:
         {{- with .Values.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.podAnnotations }}
+      {{- $metricsAnnotations := include "agents.metricsAnnotations" (dict "Values" .Values "portName" "metrics" "port" .Values.metrics.port) }}
+      {{- if or $metricsAnnotations .Values.podAnnotations }}
       annotations:
+        {{- with $metricsAnnotations }}
+        {{- . | nindent 8 }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "agents.serviceAccountName" . }}
@@ -62,6 +68,11 @@ spec:
             - name: http
               containerPort: 8087
               protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             initialDelaySeconds: 5
@@ -78,6 +89,8 @@ spec:
                 name: {{ .Values.envFromSecret }}
           {{- end }}
           env:
+            - name: RAILGRID_METRICS_LISTEN
+              value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}""{{ end }}
             - name: PORT
               value: "8087"
             - name: RAILGRID_HUB_URL
