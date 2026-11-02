@@ -64,6 +64,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/mcpaggregate"
 	"github.com/railgrid/railgrid/pkg/hub/metering"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
+	"github.com/railgrid/railgrid/pkg/hub/providerinstall"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/restapi"
@@ -1004,6 +1005,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
 			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
+			apiMgr.WithProviderInstaller(providerinstall.New(kcpConfig, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode))
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
 			// credential plugin entry (railgrid get-token), static-token mode
 			// embeds the caller's bearer token. Either way the cluster URL

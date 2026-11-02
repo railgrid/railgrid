@@ -57,6 +57,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/controllers/softdelete"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/hub/providerinstall"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/quota"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
@@ -211,8 +212,9 @@ type Manager struct {
 	// orgProviders / providerCreds back the org-owned ("bring your own")
 	// provider surface. Both optional and wired together — the endpoints return
 	// 501 unless both are set. See org_providers.go.
-	orgProviders  OrgProviderOps
-	providerCreds ProviderCredentialMinter
+	orgProviders      OrgProviderOps
+	providerCreds     ProviderCredentialMinter
+	providerInstaller OrgProviderInstaller
 	// hubAccess records the hub capabilities a tenant accepts for a
 	// provider on Enable (optional; nil skips recording). platformDefault
 	// mirrors the gate's --provider-hub-access-platform-default so the
@@ -369,6 +371,19 @@ func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialM
 	return m
 }
 
+type OrgProviderInstaller interface {
+	Authorize(context.Context, string, string, string, string) error
+	Target(context.Context, string, string) (*kcp.EdgeRoute, error)
+	Start(context.Context, string, string, *providerinstall.Plan, []byte, bool) (*providerinstall.Status, error)
+	Status(context.Context, string, string, bool) (*providerinstall.Status, error)
+	Cleanup(context.Context, string, string, string)
+}
+
+func (m *Manager) WithProviderInstaller(installer OrgProviderInstaller) *Manager {
+	m.providerInstaller = installer
+	return m
+}
+
 // Handler is the HTTP surface. One handler instance registers all
 // /api/* endpoints across the two middlewares.
 type Handler struct {
@@ -489,6 +504,8 @@ func (h *Handler) RegisterTenantScoped(r *mux.Router) {
 	r.HandleFunc("/{org}/providers", h.registerOrgProvider).Methods(http.MethodPost)
 	r.HandleFunc("/{org}/providers/{name}", h.deleteOrgProvider).Methods(http.MethodDelete)
 	r.HandleFunc("/{org}/providers/{name}/kubeconfig", h.getOrgProviderKubeconfig).Methods(http.MethodGet)
+	r.HandleFunc("/{org}/providers/{name}/installation", h.startOrgProviderInstallation).Methods(http.MethodPost)
+	r.HandleFunc("/{org}/providers/{name}/installation", h.getOrgProviderInstallation).Methods(http.MethodGet)
 	// Rotation is its own POST rather than a variant of the kubeconfig GET:
 	// that endpoint deliberately returns the same credential every time, so
 	// asking for a different one has to be explicit. Org admin only.
