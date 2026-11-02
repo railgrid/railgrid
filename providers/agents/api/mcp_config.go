@@ -798,7 +798,7 @@ func (s *Server) registerConfigMCPTools(srv *mcp.Server, r *http.Request) {
 		Name:  "save_model_credential",
 		Title: "Create or update a model credential",
 		Description: "Create or update a named model credential agents can be assigned. The apiKey is write-only — omit it when updating to keep the stored key. " +
-			"Assign the result to an agent with update_agent's modelCredential.",
+			"Assign the result to an agent with update_agent's modelCredential. For a model using a saved provider connection, pass name and model only; edit the provider connection to change its endpoint or key.",
 		Annotations: mutating,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in saveCredentialInput) (*mcp.CallToolResult, credentialSummary, error) {
 		c, err := s.mcpClient(r)

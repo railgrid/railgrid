@@ -208,10 +208,11 @@ func TestReconcileModelBindingReadiness(t *testing.T) {
 func TestModelBindingEventMappings(t *testing.T) {
 	connection := readyConnection("shared-openai", 3)
 	connection.UID = types.UID("connection-uid")
+	connection.Finalizers = []string{agentsv1alpha1.ModelProviderConnectionFinalizer}
 	matchingBinding := modelBinding("matching", connection.Name, "gpt-5")
 	otherBinding := modelBinding("other", "another-connection", "gpt-5")
 	sec := secret(true, map[string][]byte{"apiKey": []byte("first-key")})
-	sec.Name = agentsv1alpha1.ModelCredentialSecretName(connection.Name)
+	sec.Name = "tenant-managed-shared-key"
 	connection.Spec.SecretRef.Name = sec.Name
 	r, c := newBindingReadinessReconciler(t, connection, matchingBinding, otherBinding, sec)
 	cl := fakeCluster{c: c}
