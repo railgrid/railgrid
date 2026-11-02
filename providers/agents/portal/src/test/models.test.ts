@@ -756,6 +756,46 @@ describe('provider connection table', () => {
   })
 })
 
+describe('same-name model and provider operation state', () => {
+  it('keeps a model probe active while its same-name provider connection is deleting', async () => {
+    const probe = deferred<{ok:boolean;latencyMS:number}>()
+    const deletion = deferred<void>()
+    const api = stubApi({ catalog: async () => [], testCredential: () => probe.promise, deleteProviderConnection: () => deletion.promise })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name:'shared',displayName:'Production',isConnection:true,provider:'openai',baseURL:'https://api.openai.com/v1' },
+      { name:'shared',displayName:'Fast model',connectionRef:'shared',model:'first-model' },
+    ]
+    store.credentials.loaded=store.credentials.hasSnapshot=true
+    const view=await mountVue(Models,{store,api})
+    const test = view.element.querySelector<HTMLButtonElement>('[aria-label="Test connection for Fast model"]') || [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent?.trim()==='Test connection')!
+    test.click();await settleVue()
+    await view.setProps({modelsTab:'provider-connections'})
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Delete provider connection Production"]')!.click()
+    resolveConfirm(true);await settleVue()
+    expect(view.element.querySelector('[aria-label="Deleting provider connection Production…"]')).toBeTruthy()
+    await view.setProps({modelsTab:'models'})
+    expect(view.element.querySelector<HTMLButtonElement>('[aria-label="Delete Fast model"]')!.disabled).toBe(false)
+    expect(view.element.textContent).toContain('Testing…')
+    probe.resolve({ok:true,latencyMS:7});await settleVue(8)
+    expect(view.element.textContent).toContain('Test passed · 7 ms')
+    deletion.resolve();await settleVue(8)
+  })
+
+  it('keeps an unmigrated model-less credential editable in Models', async () => {
+    const api=stubApi({catalog:async()=>[]})
+    const store=makeStore(api)
+    store.credentials.data=[{name:'legacy',displayName:'Legacy account',provider:'openai',baseURL:'https://api.openai.com/v1'}]
+    store.credentials.loaded=store.credentials.hasSnapshot=true
+    const view=await mountVue(Models,{store,api})
+    expect(view.element.textContent).toContain('Legacy account')
+    const edit=view.element.querySelector<HTMLButtonElement>('[aria-label="Edit Legacy account"]') || [...view.element.querySelectorAll<HTMLButtonElement>('button')].find(b=>b.textContent?.trim()==='Edit')!
+    edit.click();await settleVue()
+    expect(view.element.textContent).toContain('Edit model')
+    expect(view.element.querySelector('#model-display-name')).toBeTruthy()
+  })
+})
+
 describe('credential display-name edits', () => {
   const connection = { name: 'account', displayName: 'Production', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1', discovered: ['first-model'] }
   const binding = { name: 'stable-binding-id', displayName: 'Fast model', connectionRef: 'account', connectionName: 'Production', model: 'first-model' }

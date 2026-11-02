@@ -1710,7 +1710,7 @@ export class Resources {
         }
         return object.metadata.uid
       }
-      const createGeneratedSecret = async (secretName: string, secretID: string, ownerUID: string): Promise<string> => {
+      const createGeneratedSecret = async (secretName: string, secretID: string, ownerUID: string): Promise<void> => {
         if (!suppliedSecret) throw validationError('A new credential key is required.')
         const secret = await client.create<KubeObject>(SECRETS, {
           apiVersion: 'v1', kind: 'Secret',
@@ -1728,7 +1728,6 @@ export class Resources {
         if (secret.metadata.name !== secretName || !secret.metadata.uid) {
           throw validationError('The workspace did not confirm the generated key identity.')
         }
-        return secret.metadata.uid
       }
       const activateSecret = async (
         originalSpec: Record<string, unknown>,
@@ -1736,7 +1735,6 @@ export class Resources {
         parentUID: string,
         secretName: string,
         secretID: string,
-        _secretUID: string,
       ): Promise<KubeModelCredential & KubeObject> => {
         const escapedPending = ANNOTATION_PENDING_KEY_SECRET.replaceAll('/', '~1')
         const escapedGenerated = ANNOTATION_GENERATED_SECRET_ID.replaceAll('/', '~1')
@@ -1847,14 +1845,13 @@ export class Resources {
         originalSpec = { ...created.spec }
       }
 
-      let secretUID: string
       try {
-        secretUID = await createGeneratedSecret(secretName, secretID, parentUID)
+        await createGeneratedSecret(secretName, secretID, parentUID)
       } catch (error) {
         if (existing) await clearUnusedCredentialReservation(client, target, name, parentUID, secretName)
         throw error
       }
-      const activated = await activateSecret(originalSpec, stagedSpec, parentUID, secretName, secretID, secretUID)
+      const activated = await activateSecret(originalSpec, stagedSpec, parentUID, secretName, secretID)
       return { ...credentialView(activated), ...(connectionWrite ? { isConnection: true } : {}) }
     })
 
@@ -1935,7 +1932,6 @@ function credentialView(object: KubeModelCredential): Credential {
     name: object.metadata?.name ?? '',
     ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
     ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
-    ...(!object.spec?.model && !object.spec?.connectionRef && !isHarnessProvider(object.spec?.provider) ? { isConnection: true } : {}),
     provider: object.spec?.provider ?? '',
     baseURL: object.spec?.baseURL ?? '',
     ...(object.spec?.anthropicWorkspaceID ? { anthropicWorkspaceID: object.spec.anthropicWorkspaceID } : {}),
