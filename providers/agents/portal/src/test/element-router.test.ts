@@ -61,6 +61,39 @@ function populateToolsets(element: AgentsElement, toolsets: Toolset[]): void {
   store.dispatchEvent(new Event('change'))
 }
 
+function configureChatApi(api: ApiClient, sessions: unknown[]): void {
+  api.listSessions = vi.fn().mockResolvedValue(sessions) as ApiClient['listSessions']
+  api.getSessionModel = vi.fn().mockResolvedValue({ selectedCredential: 'openai', effortOptions: [], defaultEffort: '' }) as ApiClient['getSessionModel']
+  api.saveSessionModel = vi.fn().mockImplementation(async (_agent, _session, preferences) => preferences) as ApiClient['saveSessionModel']
+  api.listMessagePage = vi.fn().mockResolvedValue({ items: [] }) as ApiClient['listMessagePage']
+  api.listRuns = vi.fn().mockResolvedValue({ items: [] }) as ApiClient['listRuns']
+  api.canConfigureChatModel = vi.fn().mockResolvedValue(true) as ApiClient['canConfigureChatModel']
+  api.catalog = vi.fn().mockResolvedValue([]) as ApiClient['catalog']
+  api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 }) as ApiClient['testProviderConnection']
+}
+
+function seedChatStore(store: AppStore, credentials: Credential[]): void {
+  store.agents.data = [agentFixture('scout')]
+  store.agents.loaded = store.agents.hasSnapshot = true
+  store.credentials.data = credentials
+  store.credentials.loaded = store.credentials.hasSnapshot = true
+  store.dispatchEvent(new Event('change'))
+}
+
+async function chooseModel(root: ParentNode, model: string): Promise<void> {
+  root.querySelector<HTMLButtonElement>('#model-id')!.click()
+  await settleVue()
+  const search = document.querySelector<HTMLInputElement>('[aria-label="Search model IDs"]')!
+  search.value = model
+  search.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  await settleVue()
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')]
+    .find(candidate => text(candidate).includes(model))
+  expect(option).toBeTruthy()
+  option!.click()
+  await settleVue()
+}
+
 describe('public Agents shell routing', () => {
   it('focuses the shared Agents page title after menu navigation', async () => {
     const element = await mountShell('#/models')
@@ -442,6 +475,302 @@ describe('public Agents shell routing', () => {
   })
 })
 
+describe('dedicated chat model recovery routing', () => {
+  it('keeps a queued assisted prompt in the composer after setup remount and model selection', async () => {
+    const element = await mountShell('#/agents')
+    const store = element.store!
+    const api = element.api!
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: [],
+    }
+    const addedModel: Credential = {
+      name: 'openai-gpt-4-1-mini', provider: 'openai', connectionRef: connection.name, model: 'gpt-4.1-mini',
+    }
+    const originalSession = {
+      id: 'thread-assisted', title: 'Assisted setup conversation', preview: 'Continue setup here',
+      messageCount: 1, createdAt: '2026-10-01T10:00:00Z', lastActivity: '2026-10-01T10:00:00Z',
+    }
+    const chatStream = vi.fn()
+
+    configureChatApi(api, [originalSession])
+    api.probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['gpt-4.1-mini'] }) as ApiClient['probeCredentialDraft']
+    api.saveCredential = vi.fn().mockResolvedValueOnce(connection).mockResolvedValueOnce(addedModel) as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockResolvedValueOnce([connection]).mockResolvedValueOnce([connection, addedModel]) as ApiClient['listCredentials']
+    api.chatStream = chatStream as unknown as ApiClient['chatStream']
+
+    // The agent still names a model, but no provider connection or model is
+    // available, so dedicated chat must enter setup recovery.
+    seedChatStore(store, [])
+    history.replaceState(null, '', '#/agents/scout/chat')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue(10, 20)
+
+    expect(api.listMessagePage).toHaveBeenCalledWith('scout', originalSession.id)
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-model-recovery'))).toContain('Connect a model to continue'))
+
+    const queuedPrompt = 'Set up search and tell me when it is ready.'
+    store.setPendingPrompt('scout', queuedPrompt)
+    const connectModelButton = await vi.waitFor(() => {
+      const button = element.querySelector<HTMLButtonElement>('.agents-model-recovery button')
+      expect(text(button)).toBe('Connect model')
+      return button
+    })
+    connectModelButton!.click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model/from-connection'))
+
+    const connectProvider = element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!
+    connectProvider.click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model'))
+    const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    apiKey.value = 'workspace-test-key'
+    apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('h1'))).toBe('Add model'))
+    expect(location.hash).toBe('#/create/model')
+    expect(element.querySelector('#model-credential')).toBeNull()
+    expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
+
+    const savedConnection = element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
+    savedConnection.value = connection.name
+    savedConnection.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue(5)
+    await chooseModel(element, 'gpt-4.1-mini')
+    buttonWithText(element, 'Verify & connect').click()
+
+    await vi.waitFor(() => expect(location.hash).toBe('#/agents/scout/chat'))
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-model-recovery'))).toContain('Choose a model to continue'))
+    const replacement = element.querySelector<HTMLSelectElement>('.agents-model-recovery select')!
+    replacement.value = addedModel.name
+    replacement.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Use model').click()
+
+    await vi.waitFor(() => expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe(queuedPrompt))
+    expect(api.saveSessionModel).toHaveBeenCalledWith('scout', originalSession.id, expect.objectContaining({
+      selectedCredential: addedModel.name,
+      modelCredential: addedModel.name,
+    }))
+    expect(api.saveCredential).toHaveBeenNthCalledWith(1, expect.objectContaining({ model: '', apiKey: 'workspace-test-key' }))
+    expect(api.saveCredential).toHaveBeenNthCalledWith(2, expect.objectContaining({ connectionRef: connection.name, model: 'gpt-4.1-mini' }))
+    expect(api.probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'workspace-test-key' }), true, expect.any(AbortSignal))
+    expect(chatStream).not.toHaveBeenCalled()
+    expect(api.listMessagePage).toHaveBeenLastCalledWith('scout', originalSession.id)
+    element.remove()
+  })
+
+  it('returns model setup to the original conversation with its thread and unsent draft intact', async () => {
+    const element = await mountShell('#/agents')
+    const store = element.store!
+    const api = element.api!
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['gpt-4o-mini', 'gpt-4.1-mini'],
+    }
+    const configuredModel: Credential = {
+      name: 'openai', provider: 'openai', connectionRef: connection.name, model: 'gpt-4o-mini',
+    }
+    const addedModel: Credential = {
+      name: 'openai-gpt-4-1-mini', provider: 'openai', connectionRef: connection.name, model: 'gpt-4.1-mini',
+    }
+    const originalSession = {
+      id: 'thread-original', title: 'Original conversation', preview: 'Carry the current task forward',
+      messageCount: 1, createdAt: '2026-10-01T10:00:00Z', lastActivity: '2026-10-01T10:00:00Z',
+    }
+
+    configureChatApi(api, [originalSession])
+    api.saveCredential = vi.fn().mockResolvedValue(addedModel) as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockResolvedValue([connection, addedModel]) as ApiClient['listCredentials']
+
+    seedChatStore(store, [connection, configuredModel])
+    history.replaceState(null, '', '#/agents/scout/chat')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue(10, 20)
+
+    expect(api.listMessagePage).toHaveBeenCalledWith('scout', originalSession.id)
+    expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
+    const composer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    composer.value = 'Keep this draft with the original conversation.'
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+
+    // The configured model disappears completely. Recovery must remove the
+    // composer while keeping its draft for the setup route.
+    store.credentials.data = []
+    store.dispatchEvent(new Event('change'))
+    await settleVue(12)
+    expect(text(element.querySelector('.agents-model-recovery'))).toContain('Connect a model to continue')
+    expect(element.querySelector('.agents-composer textarea')).toBeNull()
+
+    // Keep a saved provider connection available, but no chat model, so the
+    // recovery action leads to the normal Add model form.
+    store.credentials.data = [connection]
+    store.dispatchEvent(new Event('change'))
+    await settleVue(12)
+
+    const openAddModel = async () => {
+      buttonWithText(element, 'Connect model').click()
+      await settleVue(8)
+      expect(location.hash).toBe('#/create/model/from-connection')
+      expect(text(element.querySelector('h1'))).toBe('Add model')
+      const savedConnection = element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
+      savedConnection.value = connection.name
+      savedConnection.dispatchEvent(new Event('change', { bubbles: true }))
+      await settleVue(5)
+    }
+
+    await openAddModel()
+    buttonWithText(element.querySelector('.agents-model-create')!, 'Cancel').click()
+    await settleVue(10, 20)
+    expect(location.hash).toBe('#/agents/scout/chat')
+    expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
+    expect(api.listMessagePage).toHaveBeenLastCalledWith('scout', originalSession.id)
+
+    // Repeat setup and save a model. The shell returns to the same Agent route;
+    // it does not rewrite the Agent's configured model as a side effect.
+    await openAddModel()
+    await chooseModel(element, 'gpt-4.1-mini')
+
+    buttonWithText(element, 'Verify & connect').click()
+    await settleVue(12, 20)
+    expect(api.testProviderConnection).toHaveBeenCalledWith(connection.name, 'gpt-4.1-mini', expect.any(AbortSignal))
+
+    expect(api.saveCredential).toHaveBeenCalledWith(expect.objectContaining({
+      connectionRef: connection.name,
+      model: 'gpt-4.1-mini',
+    }))
+    expect(location.hash).toBe('#/agents/scout/chat')
+    expect(store.agent('scout')?.spec.backend?.model?.credentials?.chat).toBe('openai')
+    expect(api.listMessagePage).toHaveBeenLastCalledWith('scout', originalSession.id)
+    expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
+
+    // A newly added model is offered for this conversation, but the saved
+    // draft remains available after the person chooses it explicitly.
+    expect(text(element.querySelector('.agents-model-recovery'))).toContain('Choose a model to continue')
+    const replacement = element.querySelector<HTMLSelectElement>('.agents-model-recovery select')!
+    replacement.value = addedModel.name
+    replacement.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Use model').click()
+    await settleVue(12, 20)
+
+    expect(api.saveSessionModel).toHaveBeenCalledWith('scout', originalSession.id, expect.objectContaining({
+      selectedCredential: addedModel.name,
+      modelCredential: addedModel.name,
+    }))
+    expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe('Keep this draft with the original conversation.')
+    expect(store.agent('scout')?.spec.backend?.model?.credentials?.chat).toBe('openai')
+    element.remove()
+  })
+
+  it('transfers setup draft only across a same-user token refresh', async () => {
+    const element = await mountShell('#/agents')
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['gpt-4o-mini'],
+    }
+    const configuredModel: Credential = {
+      name: 'openai', provider: 'openai', connectionRef: connection.name, model: 'gpt-4o-mini',
+    }
+    const originalSession = {
+      id: 'thread-refresh', title: 'Refresh-safe conversation', preview: 'Keep this thread',
+      messageCount: 1, createdAt: '2026-10-01T10:00:00Z', lastActivity: '2026-10-01T10:00:00Z',
+    }
+    let api = element.api!
+    let store = element.store!
+    configureChatApi(api, [originalSession])
+    seedChatStore(store, [connection, configuredModel])
+    history.replaceState(null, '', '#/agents/scout/chat')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue(10, 20)
+
+    const draftText = 'Keep the original thread and draft through refresh.'
+    const composer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    composer.value = draftText
+    composer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    store.credentials.data = [connection]
+    store.dispatchEvent(new Event('change'))
+    await settleVue(12)
+    buttonWithText(element, 'Connect model').click()
+    await settleVue(8)
+    expect(location.hash).toBe('#/create/model/from-connection')
+
+    // A token refresh rotates both the API and store, so install the connected
+    // chat fixture on the new authority before returning from setup.
+    const retiredStore = store
+    element.railgridContext = ctx({ token: 'token-b' })
+    expect(element.store).not.toBe(retiredStore)
+    api = element.api!
+    store = element.store!
+    configureChatApi(api, [originalSession])
+    seedChatStore(store, [connection, configuredModel])
+    localStorage.removeItem('railgrid:agents:session:org:workspace:scout')
+    await settleVue(8)
+    expect(location.hash).toBe('#/create/model/from-connection')
+    buttonWithText(element.querySelector('.agents-model-create')!, 'Cancel').click()
+    await settleVue(12, 20)
+
+    expect(location.hash).toBe('#/agents/scout/chat')
+    expect(api.listMessagePage).toHaveBeenCalledWith('scout', originalSession.id)
+    expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
+    expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe(draftText)
+
+    // Open setup again, then change workspace. A different tenant must not
+    // inherit the old thread or its unsent prompt.
+    store.credentials.data = [connection]
+    store.dispatchEvent(new Event('change'))
+    await settleVue(12)
+    buttonWithText(element, 'Connect model').click()
+    await settleVue(8)
+    expect(location.hash).toBe('#/create/model/from-connection')
+
+    element.railgridContext = ctx({ token: 'token-c', workspaceUUID: 'other-workspace' })
+    expect(location.hash).toBe('#/agents')
+    api = element.api!
+    store = element.store!
+    configureChatApi(api, [])
+    seedChatStore(store, [configuredModel])
+    localStorage.removeItem('railgrid:agents:session:org:other-workspace:scout')
+    history.replaceState(null, '', '#/agents/scout/chat')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue(12, 20)
+
+    const otherWorkspaceComposer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    expect(otherWorkspaceComposer?.value).toBe('')
+    expect(api.listMessagePage).not.toHaveBeenCalledWith('scout', originalSession.id)
+
+    // An unknown caller is not a matching owner either, even in the same
+    // workspace. The setup draft must be discarded when identity disappears.
+    otherWorkspaceComposer.value = 'Do not transfer this anonymous-session draft.'
+    otherWorkspaceComposer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    store.credentials.data = [connection]
+    store.dispatchEvent(new Event('change'))
+    await settleVue(12)
+    buttonWithText(element, 'Connect model').click()
+    await settleVue(8)
+    expect(location.hash).toBe('#/create/model/from-connection')
+
+    element.railgridContext = ctx({ token: 'token-d', workspaceUUID: 'other-workspace', user: null })
+    expect(location.hash).toBe('#/agents')
+    api = element.api!
+    store = element.store!
+    configureChatApi(api, [])
+    seedChatStore(store, [configuredModel])
+    localStorage.removeItem('railgrid:agents:session:org:other-workspace:scout')
+    history.replaceState(null, '', '#/agents/scout/chat')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue(12, 20)
+
+    const anonymousComposer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    expect(anonymousComposer?.value).toBe('')
+    expect(api.listMessagePage).not.toHaveBeenCalledWith('scout', originalSession.id)
+    element.remove()
+  })
+})
+
 describe('context and create-session routing fences', () => {
   it('keeps a harness agent draft through identity setup and discards it on explicit cancel', async () => {
     const element = await mountShell('#/create/agent/harness')
@@ -654,6 +983,90 @@ describe('Models sub-tab shell routing', () => {
     await settleVue(6)
     expect(location.hash).toBe('#/models/provider-connections')
     expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+  })
+
+  it('saves a provider without a model, then offers Add model and Done', async () => {
+    const element = await mountShell('#/models/provider-connections')
+    const store = element.store!
+    const api = element.api!
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: [],
+    }
+    const secondConnection: Credential = {
+      name: 'openai-staging', provider: 'openai', displayName: 'OpenAI staging',
+      baseURL: 'https://api.openai.com/v1', isConnection: true, discovered: ['gpt-4.1-mini'],
+    }
+    const addedModel: Credential = {
+      name: 'openai-gpt-4-1-mini', provider: 'openai', connectionRef: connection.name, model: 'gpt-4.1-mini',
+    }
+    const saved: Credential[] = []
+    const stalledCredentialList = deferred<Credential[]>()
+    let stallNextCredentialList = false
+    let connectionWrites = 0
+    api.catalog = vi.fn().mockResolvedValue([]) as ApiClient['catalog']
+    api.probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: ['gpt-4.1-mini'] }) as ApiClient['probeCredentialDraft']
+    api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 }) as ApiClient['testProviderConnection']
+    const saveCredential = vi.fn().mockImplementation(async (body: { model?: string }) => {
+      if (body.model) { saved.push(addedModel); return addedModel }
+      const result = connectionWrites++ === 0 ? connection : secondConnection
+      saved.push(result)
+      return result
+    })
+    api.saveCredential = saveCredential as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockImplementation(async () => {
+      if (stallNextCredentialList) {
+        stallNextCredentialList = false
+        return stalledCredentialList.promise
+      }
+      return [...saved]
+    }) as ApiClient['listCredentials']
+    store.credentials.data = []
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+
+    buttonWithText(element, 'Connect provider').click()
+    await settleVue(6)
+    const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    apiKey.value = 'first-key'
+    apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
+    expect(api.probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'first-key', model: '' }), true, expect.any(AbortSignal))
+    expect(saveCredential).toHaveBeenCalledOnce()
+    expect(saveCredential.mock.calls[0][0]).toMatchObject({ apiKey: 'first-key', model: '' })
+    expect(api.testProviderConnection).not.toHaveBeenCalled()
+
+    // The provider connection save already completed; a slow credentials
+    // refresh must not hold the subsequent model binding or route handoff.
+    stallNextCredentialList = true
+    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Add model').click()
+    await settleVue(6)
+    expect(text(element.querySelector('h1'))).toBe('Add model')
+    expect(element.querySelector<HTMLInputElement>('#model-credential')).toBeNull()
+    expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
+    await chooseModel(element, 'gpt-4.1-mini')
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    expect(saveCredential).toHaveBeenCalledTimes(2)
+    expect(saveCredential.mock.calls[1][0]).toMatchObject({ connectionRef: connection.name, model: 'gpt-4.1-mini' })
+    expect(saveCredential.mock.calls[1][0]).not.toHaveProperty('apiKey')
+    expect(store.credentials.data).toContainEqual(addedModel)
+    stalledCredentialList.resolve([...saved])
+
+    buttonWithText(element, 'Connect provider').click()
+    await settleVue(6)
+    const stagingKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    stagingKey.value = 'second-key'
+    stagingKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
+    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Done').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    expect(store.credentials.data.map(item => item.name)).toEqual(expect.arrayContaining([connection.name, secondConnection.name, addedModel.name]))
+    element.remove()
   })
 
   it('opens the Workspace assistant sub-tab from the host settings shortcut', async () => {

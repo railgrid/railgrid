@@ -566,7 +566,9 @@ describe('auto-send on arrival', () => {
     const api = stubApi({ chatStream })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
-    store.agents.loaded = true
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
     if (prompt) store.setPendingPrompt('scout', prompt)
     const el = await mount<AgentChat>('agents-agent-chat', { store, api, name: 'scout' })
     await settle(el, 6)
