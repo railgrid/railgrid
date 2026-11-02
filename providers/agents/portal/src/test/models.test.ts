@@ -580,6 +580,24 @@ describe('event-stream liveness', () => {
 describe('model collection layouts', () => {
   beforeEach(() => localStorage.removeItem('railgrid:agents:models:layout'))
 
+  it.each(['grid', 'list'])('offers Edit instead of a doomed probe for a model-less legacy row (%s)', async layout => {
+    localStorage.setItem('railgrid:agents:models:layout', layout)
+    const testCredential = vi.fn()
+    const api = stubApi({ catalog: async () => [], testCredential })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'legacy', displayName: 'Legacy account', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: '' }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api })
+    await settleVue(4, 150)
+    const buttons = [...view.element.querySelectorAll<HTMLButtonElement>('button')]
+    expect(buttons.some(button => button.textContent?.trim() === 'Test connection' || button.getAttribute('aria-label') === 'Test connection for Legacy account')).toBe(false)
+    const edit = buttons.find(button => button.textContent?.trim() === 'Edit' || button.getAttribute('aria-label') === 'Edit Legacy account')!
+    expect(edit.disabled).toBe(false)
+    edit.click(); await settleVue()
+    expect(view.element.querySelector('#model-id')).toBeTruthy()
+    expect(testCredential).not.toHaveBeenCalled()
+  })
+
   it('uses friendly action tooltips while sending the stable resource ID', async () => {
     localStorage.setItem('railgrid:agents:models:layout', 'list')
     const testCredential = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
