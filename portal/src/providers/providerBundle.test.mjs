@@ -93,10 +93,18 @@ test('a grant response that is not a same-origin path is refused', async () => {
   }
 })
 
-test('an unpinned grant loads the bundle without an integrity attribute', async () => {
-  const { fetchImpl } = fakeFetch(() =>
-    jsonResponse(200, { url: '/ui/providers/infrastructure/main.js?grant=fpui_sealed' }),
-  )
-  const bundle = await resolveProviderBundle({ name: 'infrastructure', scope: 'org' }, fetchImpl)
-  assert.deepEqual(bundle, { src: '/ui/providers/infrastructure/main.js?grant=fpui_sealed', integrity: undefined })
+test('an unpinned grant is refused rather than executing org JavaScript unpinned', async () => {
+  for (const integrity of [undefined, '', 'md5-nope']) {
+    const { fetchImpl } = fakeFetch(() =>
+      jsonResponse(200, { url: '/ui/providers/infrastructure/main.js?grant=fpui_sealed', integrity }),
+    )
+    await assert.rejects(
+      resolveProviderBundle({ name: 'infrastructure', scope: 'org' }, fetchImpl),
+      (err) => {
+        assert.ok(err instanceof ProviderBundleGrantError)
+        assert.match(err.message, /no integrity pin/)
+        return true
+      },
+    )
+  }
 })

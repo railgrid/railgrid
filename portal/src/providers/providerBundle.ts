@@ -28,7 +28,9 @@ export type GrantFetch = (
 export interface ProviderBundle {
   // Explicit bundle URL, or undefined for the loader's default.
   src?: string
-  // SRI pin, or undefined to load unpinned (the loader logs a warning).
+  // SRI pin. A platform bundle may omit it when the hub has none (the loader
+  // then loads unpinned and logs a warning). An org-owned bundle always has
+  // one: the hub refuses the grant rather than issue an unpinned URL.
   integrity?: string
 }
 
@@ -85,5 +87,11 @@ export async function resolveProviderBundle(
   if (!src.startsWith('/') || src.startsWith('//')) {
     throw new ProviderBundleGrantError(entry.name, res.status, 'grant response carried no same-origin bundle URL')
   }
-  return { src, integrity: body.integrity || undefined }
+  // The hub never issues an org grant without a pin. Treat an old or
+  // misbehaving hub's unpinned answer as a failure here instead of executing
+  // the organization's JavaScript unpinned.
+  if (typeof body.integrity !== 'string' || !body.integrity.startsWith('sha384-')) {
+    throw new ProviderBundleGrantError(entry.name, res.status, 'grant response carried no integrity pin')
+  }
+  return { src, integrity: body.integrity }
 }
