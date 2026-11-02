@@ -51,6 +51,8 @@ type fakeOrgProviderOps struct {
 	deleted           []string
 	deleteHook        func(context.Context)
 	deleteErr         error
+	deleteUID         string
+	deleteIfUIDHook   func(string) error
 	deleteContextErr  error
 	deleteHasDeadline bool
 	// recordedEdges maps "org/provider" → "workspace/edge" as stamped by
@@ -117,6 +119,16 @@ func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspace(ctx context.Context, _, 
 	}
 	f.deleteContextErr = ctx.Err()
 	return f.deleteErr
+}
+
+func (f *fakeOrgProviderOps) DeleteOrgProviderWorkspaceIfUID(ctx context.Context, org, name, uid string) error {
+	f.deleteUID = uid
+	if f.deleteIfUIDHook != nil {
+		if err := f.deleteIfUIDHook(uid); err != nil {
+			return err
+		}
+	}
+	return f.DeleteOrgProviderWorkspace(ctx, org, name)
 }
 
 func (f *fakeOrgProviderOps) ListEdgeInstallTargets(context.Context, string) ([]kcp.EdgeInstallTarget, error) {
