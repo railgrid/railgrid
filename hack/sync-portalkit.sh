@@ -31,7 +31,7 @@ VUE_PORTALS=(
   "providers/infrastructure/portal"
   "providers/kuery/portal"
 )
-VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionTooltip.vue ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue ResourceTimestamp.vue timestamp.ts timestampClock.ts StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
+VUE_FILES=(ActionMenu.vue confirm.ts ConditionsPanel.vue ConfirmDialog.vue CreateGuidance.vue FirstRunGuide.vue FormSelect.vue LayoutSelector.vue layoutPreference.ts ResourceBackLink.vue ResourceBoard.vue ResourcePage.vue ResourceSectionCard.vue ResourceStatCards.vue ResourceTable.vue ResourceTableFilter.vue table.ts ResourceTableActionTooltip.vue ResourceTableActionButton.vue ResourceTableDeleteButton.vue ResourceTableEditButton.vue ResourceTableExpandButton.vue ResourceTimestamp.vue timestamp.ts timestampClock.ts StatusBadge.vue Tabs.vue useAnchoredPopover.ts useDelayedLoading.ts)
 VUE_TOAST_FILES=(InlineNotification.vue ToastHost.vue toast.ts)
 VUE_TOAST_PORTALS=(
   "portal"

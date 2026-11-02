@@ -6,12 +6,15 @@
 // limits without usage and get the max alone; accounts pass usage without
 // limits and get the values alone, so the three tables read the same way.
 //
-// Two layouts share the rows. The default is a compact list for a table cell
-// (the admin Metering section): it keeps a floor width, because an auto-layout
-// table sizes the column from the cell's intrinsic width and would otherwise
-// collapse it to the header. `interactive` is the organization billing card's
-// expandable list with search and filters; only that one is a size container,
-// so its container queries never reach into a table.
+// Four presentations share the rows. `list` (the default) is a compact list
+// for a table cell: it keeps a floor width, because an auto-layout table sizes
+// the column from the cell's intrinsic width and would otherwise collapse it
+// to the header. `summary` is the one line a collapsed table row shows: the
+// meter count and the meter closest to its limit. `grid` lays the compact rows
+// out in columns for a table's full-width detail row. `interactive` is the
+// organization billing card's expandable list with search and filters; only
+// that one is a size container, so its container queries never reach into a
+// table.
 import { computed, ref } from 'vue'
 import { ChevronRight } from 'lucide-vue-next'
 
@@ -24,8 +27,9 @@ const props = withDefaults(
     usage?: Record<string, unknown> | null
     window?: UsageWindow | null
     interactive?: boolean
+    variant?: 'list' | 'grid' | 'summary'
   }>(),
-  { limits: null, usage: null, window: null, interactive: false },
+  { limits: null, usage: null, window: null, interactive: false, variant: 'list' },
 )
 
 type State = 'ok' | 'near' | 'at' | 'over' | 'none'
@@ -107,6 +111,45 @@ const rows = computed<Row[]>(() => {
   }
   return out
 })
+
+// headlineRank orders meters for the summary: anything over its limit first,
+// then by how close the rest are. A meter without a ratio (no usage, or no
+// max) never leads.
+function headlineRank(row: Row): number {
+  if (row.ratio === null) return -1
+  return row.state === 'over' ? 2 : row.ratio
+}
+
+function pickHeadline(rows: Row[]): Row | null {
+  return rows.reduce<Row | null>((best, row) => headlineRank(row) > (best ? headlineRank(best) : -1) ? row : best, null)
+}
+
+type Summary = { count: string; headline: Row | null; detail: string }
+
+// summarize is the collapsed row's one line: how many meters there are and
+// what matters most about them. With usage that is the headline meter; a plan
+// (limits only) counts its enforcement modes; an account (usage only) names
+// its first meters.
+function summarize(rows: Row[], hasUsage: boolean, hasLimits: boolean): Summary {
+  const n = rows.length
+  const count = hasLimits ? `${n} limit${n === 1 ? '' : 's'}` : `${n} meter${n === 1 ? '' : 's'}`
+  const headline = hasUsage ? pickHeadline(rows) : null
+  if (headline) return { count, headline, detail: '' }
+  if (!hasUsage) {
+    const modes = (['Hard', 'Soft', 'Meter'] as const)
+      .map((mode) => [mode, rows.filter((row) => row.enforce === mode).length] as const)
+      .filter(([, total]) => total > 0)
+      .map(([mode, total]) => `${total} ${mode === 'Meter' ? 'metered' : mode.toLowerCase()}`)
+    return { count, headline: null, detail: modes.join(', ') }
+  }
+  const measured = rows.filter((row) => row.used !== null)
+  if (measured.length === 0) return { count, headline: null, detail: n ? 'usage unavailable' : '' }
+  const lead = measured.slice(0, 2).map((row) => `${label(row.meter)} ${row.used}`)
+  const more = measured.length - lead.length
+  return { count, headline: null, detail: more > 0 ? `${lead.join(', ')}, +${more} more` : lead.join(', ') }
+}
+
+const summary = computed(() => summarize(rows.value, props.usage !== null, (props.limits ?? []).length > 0))
 
 const query = ref('')
 const attentionOnly = ref(false)
@@ -194,8 +237,39 @@ function barLabel(row: Row): string {
 </script>
 
 <template>
-  <div class="metering-list" :class="{ 'metering-list--interactive': interactive }">
-    <div v-if="interactive && rows.length" class="metering-controls">
+  <div
+    class="metering-list"
+    :class="{ 'metering-list--interactive': interactive, 'metering-list--grid': variant === 'grid', 'metering-list--summary': variant === 'summary' }"
+  >
+    <template v-if="variant === 'summary'">
+      <div v-if="rows.length" class="metering-summary">
+        <span class="text-text-primary">{{ summary.count }}</span>
+        <template v-if="summary.headline">
+          <span class="metering-summary__sep" aria-hidden="true">·</span>
+          <span>{{ label(summary.headline.meter) }}</span>
+          <span class="k-cell-mono metering-summary__quantity tabular-nums" :title="usageTitle(summary.headline)">
+            <span :class="usedClass(summary.headline)">{{ summary.headline.used }}</span><span class="text-text-muted"> / {{ summary.headline.max }}</span>
+          </span>
+          <div
+            class="k-progress metering-summary__bar"
+            role="progressbar"
+            :aria-label="barLabel(summary.headline)"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-valuenow="barPercent(summary.headline)"
+            :aria-valuetext="barText(summary.headline)"
+          >
+            <div class="k-progress__bar" :class="barClass(summary.headline)" :style="{ '--k-progress-value': summary.headline.ratio ?? 0 }" />
+          </div>
+        </template>
+        <template v-else-if="summary.detail">
+          <span class="metering-summary__sep" aria-hidden="true">·</span>
+          <span>{{ summary.detail }}</span>
+        </template>
+      </div>
+      <span v-else class="text-text-muted">No limits or usage reported.</span>
+    </template>
+    <div v-if="variant !== 'summary' && interactive && rows.length" class="metering-controls">
       <label v-if="rows.length > 5" class="metering-search">
         <span class="sr-only">Search usage metrics</span>
         <input v-model="query" type="search" class="k-input metering-search-input" placeholder="Search metrics" />
@@ -205,7 +279,7 @@ function barLabel(row: Row): string {
         <button type="button" class="k-btn k-btn--ghost" :aria-pressed="attentionOnly" @click="attentionOnly = true">Needs attention <span>{{ attentionCount }}</span></button>
       </div>
     </div>
-    <ul v-if="filteredRows.length" class="metering-rows">
+    <ul v-if="variant !== 'summary' && filteredRows.length" class="metering-rows">
       <li v-for="r in filteredRows" :key="r.meter" class="metering-item">
         <component :is="interactive ? 'details' : 'div'" class="metering-detail">
           <component :is="interactive ? 'summary' : 'div'" class="metering-row">
@@ -242,8 +316,8 @@ function barLabel(row: Row): string {
         <div v-if="$slots['row-footer']" class="metering-footer"><slot name="row-footer" :meter="r.meter" :state="r.state" :used="r.used" :max="r.max" :enforce="r.enforce" /></div>
       </li>
     </ul>
-    <p v-else-if="rows.length" class="py-6 text-sm text-text-muted" role="status">No metrics match this filter. <button type="button" class="k-dashboard-action" @click="query = ''; attentionOnly = false">Show all metrics</button></p>
-    <span v-else class="text-text-muted">No limits or usage reported.</span>
+    <p v-else-if="variant !== 'summary' && rows.length" class="py-6 text-sm text-text-muted" role="status">No metrics match this filter. <button type="button" class="k-dashboard-action" @click="query = ''; attentionOnly = false">Show all metrics</button></p>
+    <span v-else-if="variant !== 'summary'" class="text-text-muted">No limits or usage reported.</span>
   </div>
 </template>
 
@@ -254,6 +328,16 @@ function barLabel(row: Row): string {
  * (24rem and 28rem in the admin tables). */
 .metering-list { min-width: 22rem; }
 .metering-list--interactive { min-width: 0; container-type: inline-size; }
+/* The summary is one inline run, so the table cell's own ellipsis truncates
+ * it and discloses the full text on hover; the grid has the whole detail row. */
+.metering-list--summary,
+.metering-list--grid { min-width: 0; }
+.metering-list--summary,
+.metering-summary { display: inline; white-space: nowrap; }
+.metering-summary__sep { margin: 0 6px; color: var(--color-text-muted); }
+.metering-summary__quantity { margin-inline-start: 6px; }
+.metering-summary__bar { display: inline-block; width: 4rem; margin-inline-start: 8px; vertical-align: middle; }
+.metering-list--grid .metering-rows { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr)); column-gap: 40px; }
 .metering-rows { list-style: none; margin: 0; padding: 0; white-space: normal; }
 .metering-item { min-width: 0; }
 .metering-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, .8fr); align-items: center; gap: 16px; padding: 7px 0; }

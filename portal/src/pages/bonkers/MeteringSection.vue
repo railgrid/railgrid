@@ -12,6 +12,7 @@ import { Plus, RefreshCw } from 'lucide-vue-next'
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from '@/portalkit/ResourceTableEditButton.vue'
+import ResourceTableExpandButton from '@/portalkit/ResourceTableExpandButton.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import { confirmDialog } from '@/portalkit/confirm'
 import { authFetch } from '@/auth/session'
@@ -43,44 +44,77 @@ const actionError = ref<string | null>(null)
 const writable = computed(() => !!status.value?.writable)
 const planNames = computed(() => (items.value.plans ?? []).map((p) => p.metadata.name))
 
-// Limits and usage render structured (MeteringUsageList) rather than as the
-// flattened text of cell(); the columns' fullValue is that text, for the
-// table's truncation disclosure, and their maxWidth fits one list row.
-const collections = [
-  { key: 'plans', label: 'Plans', columns: [
-    { key: 'name', label: 'Name', primary: true },
-    { key: 'displayName', label: 'Display name' },
-    { key: 'limits', label: 'Limits', maxWidth: '24rem', fullValue: (row: Record<string, unknown>) => limitsText(limitsOf(row), null) },
-    { key: 'actions', label: '', ariaLabel: 'Actions' },
-  ] },
-  { key: 'entitlements', label: 'Entitlements', columns: [
-    { key: 'name', label: 'Name', primary: true },
-    { key: 'account', label: 'Account' },
-    { key: 'plan', label: 'Plan' },
-    { key: 'state', label: 'State', fullValue: (row: Record<string, unknown>) => stateOf(row).status },
-    { key: 'limits', label: 'Limits and usage', maxWidth: '28rem', fullValue: (row: Record<string, unknown>) => limitsText(limitsOf(row), usageOf(row)) },
-    { key: 'actions', label: '', ariaLabel: 'Actions' },
-  ] },
-  { key: 'accounts', label: 'Accounts', columns: [
-    { key: 'name', label: 'Name', primary: true },
-    { key: 'displayName', label: 'Display name' },
-    { key: 'memberCount', label: 'Workspaces' },
-    { key: 'usage', label: 'Usage', maxWidth: '24rem', fullValue: (row: Record<string, unknown>) => limitsText([], usageOf(row)) },
-    { key: 'customerRef', label: 'Customer' },
-  ] },
-  { key: 'membershipreports', label: 'Membership reports', columns: [
-    { key: 'name', label: 'Name', primary: true },
-    { key: 'account', label: 'Account' },
-    { key: 'reporter', label: 'Reporter' },
-    { key: 'members', label: 'Workspaces' },
-  ] },
-  { key: 'meteringconfigs', label: 'Metering configs', columns: [
-    { key: 'name', label: 'Name', primary: true },
-    { key: 'target', label: 'Target' },
-    { key: 'meters', label: 'Meters' },
-    { key: 'account', label: 'Account resolution' },
-  ] },
-] as const
+// Every table is queryable (search and ten rows a page). Plans, entitlements
+// and accounts carry a per-meter list that would make each row a column of
+// text, so their row shows the one-line summary of MeteringUsageList and the
+// full list opens in a detail row under it, laid out in columns across the
+// table's width. The summary column's fullValue is the list as text, for the
+// table's truncation disclosure, and the same text is what search matches.
+type Row = Record<string, unknown>
+type Column = {
+  key: string
+  label: string
+  primary?: boolean
+  ariaLabel?: string
+  maxWidth?: string
+  fullValue?: (row: Row) => string
+}
+type Collection = {
+  key: string
+  label: string
+  /** Singular noun for a row's accessible name, e.g. "Plan free". */
+  noun: string
+  searchPlaceholder: string
+  searchKeys: string[]
+  /** What the detail row shows, for the toggle's accessible name. */
+  detail?: string
+  columns: Column[]
+}
+const expandColumn: Column = { key: 'expand', label: '', ariaLabel: 'Details' }
+const summaryText = (row: Row) => String(row.summaryText ?? '')
+const collections: Collection[] = [
+  { key: 'plans', label: 'Plans', noun: 'Plan', searchPlaceholder: 'Search plans…', detail: 'limits',
+    searchKeys: ['name', 'displayName', 'summaryText'], columns: [
+      expandColumn,
+      { key: 'name', label: 'Name', primary: true },
+      { key: 'displayName', label: 'Display name' },
+      { key: 'limits', label: 'Limits', maxWidth: '28rem', fullValue: summaryText },
+      { key: 'actions', label: '', ariaLabel: 'Actions' },
+    ] },
+  { key: 'entitlements', label: 'Entitlements', noun: 'Entitlement', searchPlaceholder: 'Search entitlements…', detail: 'limits and usage',
+    searchKeys: ['name', 'account', 'plan', 'stateText', 'summaryText'], columns: [
+      expandColumn,
+      { key: 'name', label: 'Name', primary: true },
+      { key: 'account', label: 'Account' },
+      { key: 'plan', label: 'Plan' },
+      { key: 'state', label: 'State', fullValue: (row) => stateOf(row).status },
+      { key: 'limits', label: 'Limits and usage', maxWidth: '28rem', fullValue: summaryText },
+      { key: 'actions', label: '', ariaLabel: 'Actions' },
+    ] },
+  { key: 'accounts', label: 'Accounts', noun: 'Account', searchPlaceholder: 'Search accounts…', detail: 'usage',
+    searchKeys: ['name', 'displayName', 'customerRef', 'summaryText'], columns: [
+      expandColumn,
+      { key: 'name', label: 'Name', primary: true },
+      { key: 'displayName', label: 'Display name' },
+      { key: 'memberCount', label: 'Workspaces' },
+      { key: 'usage', label: 'Usage', maxWidth: '28rem', fullValue: summaryText },
+      { key: 'customerRef', label: 'Customer' },
+    ] },
+  { key: 'membershipreports', label: 'Membership reports', noun: 'Membership report', searchPlaceholder: 'Search membership reports…',
+    searchKeys: ['name', 'account', 'reporter'], columns: [
+      { key: 'name', label: 'Name', primary: true },
+      { key: 'account', label: 'Account' },
+      { key: 'reporter', label: 'Reporter' },
+      { key: 'members', label: 'Workspaces' },
+    ] },
+  { key: 'meteringconfigs', label: 'Metering configs', noun: 'Metering config', searchPlaceholder: 'Search metering configs…',
+    searchKeys: ['name', 'target', 'meters', 'account'], columns: [
+      { key: 'name', label: 'Name', primary: true },
+      { key: 'target', label: 'Target' },
+      { key: 'meters', label: 'Meters' },
+      { key: 'account', label: 'Account resolution' },
+    ] },
+]
 
 function cell(value: unknown): string {
   if (value === undefined || value === null) return ''
@@ -151,9 +185,9 @@ function limitsText(limits: LimitRow[], usage: Record<string, unknown> | null): 
   return parts.join('; ')
 }
 
-function rowsFor(collection: string): Array<Record<string, unknown>> {
+function rowsFor(collection: string): Row[] {
   return (items.value[collection] ?? []).map((item) => {
-    const row: Record<string, unknown> = { name: item.metadata.name }
+    const row: Row = { name: item.metadata.name }
     for (const [k, v] of Object.entries(item.spec ?? {})) row[k] = cell(v)
     for (const [k, v] of Object.entries(item.status ?? {})) row[k] = cell(v)
     if (collection === 'membershipreports') row.members = cell((item.spec?.members as unknown[] | undefined)?.length ?? 0)
@@ -163,13 +197,53 @@ function rowsFor(collection: string): Array<Record<string, unknown>> {
       row.usage = item.status?.usage ?? null
       row.window = item.status?.window ?? null
       row.state = entitlementState(item.status)
+      row.stateText = (row.state as EntitlementState).status
     }
     if (collection === 'accounts') {
       row.usage = item.status?.usage ?? null
       row.window = item.status?.window ?? null
     }
+    row.summaryText = limitsText(limitsOf(row), usageOf(row))
     return row
   })
+}
+
+// One row array per collection, rebuilt only when the items change: the table
+// keeps its page and query across renders.
+const tableRows = computed<Record<string, Row[]>>(() =>
+  Object.fromEntries(collections.map((c) => [c.key, rowsFor(c.key)])))
+
+// Expanded detail rows, per collection, by row name: the state follows the
+// resource, so it survives a search, a page change and a refresh.
+const expanded = ref<Record<string, Set<string>>>({})
+
+function isExpanded(collection: string, name: unknown): boolean {
+  return expanded.value[collection]?.has(String(name)) ?? false
+}
+
+function toggleExpanded(collection: string, name: unknown): void {
+  const set = expanded.value[collection] ?? (expanded.value[collection] = new Set())
+  const key = String(name)
+  if (set.has(key)) set.delete(key)
+  else set.add(key)
+}
+
+function allExpanded(collection: string): boolean {
+  const names = (items.value[collection] ?? []).map((item) => item.metadata.name)
+  const set = expanded.value[collection]
+  return names.length > 0 && !!set && names.every((name) => set.has(name))
+}
+
+function setAllExpanded(collection: string, open: boolean): void {
+  expanded.value[collection] = new Set(open ? (items.value[collection] ?? []).map((item) => item.metadata.name) : [])
+}
+
+function detailId(collection: string, name: unknown): string {
+  return `metering-${collection}-${String(name).replace(/[^A-Za-z0-9_.-]+/g, '-')}-detail`
+}
+
+function rowLabel(c: Collection, row: Row): string {
+  return `${c.noun} ${String(row.name)}`
 }
 
 const readyTone = computed(() => (status.value?.ready ? 'success' : 'danger'))
@@ -347,16 +421,27 @@ onMounted(() => void refresh())
       <div v-for="c in collections" :key="c.key" class="mb-6">
         <div class="mb-2 flex items-center gap-2">
           <h3 class="text-sm font-semibold text-text-primary">{{ c.label }}</h3>
-          <button
-            v-if="c.key === 'plans' && writable"
-            type="button"
-            class="k-btn ml-auto px-2 py-1 text-xs disabled:opacity-50"
-            :disabled="!!planDraft || !!busy"
-            @click="editPlan('')"
-          >
-            <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
-            New plan
-          </button>
+          <div class="ml-auto flex items-center gap-2">
+            <button
+              v-if="c.detail && tableRows[c.key]?.length"
+              type="button"
+              class="k-btn px-2 py-1 text-xs"
+              :aria-label="`${allExpanded(c.key) ? 'Collapse' : 'Expand'} ${c.detail} for all ${c.label.toLowerCase()}`"
+              @click="setAllExpanded(c.key, !allExpanded(c.key))"
+            >
+              {{ allExpanded(c.key) ? 'Collapse all' : 'Expand all' }}
+            </button>
+            <button
+              v-if="c.key === 'plans' && writable"
+              type="button"
+              class="k-btn px-2 py-1 text-xs disabled:opacity-50"
+              :disabled="!!planDraft || !!busy"
+              @click="editPlan('')"
+            >
+              <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
+              New plan
+            </button>
+          </div>
         </div>
 
         <form
@@ -426,11 +511,17 @@ onMounted(() => void refresh())
         </form>
 
         <ResourceTable
-          :columns="[...c.columns]"
-          :rows="rowsFor(c.key)"
+          :columns="c.columns"
+          :rows="tableRows[c.key] ?? []"
           :aria-label="c.label"
           row-key="name"
-          :interactive="false"
+          :interactive="!!c.detail"
+          :row-aria-label="c.detail ? (row: Row) => rowLabel(c, row) : undefined"
+          searchable
+          :search-placeholder="c.searchPlaceholder"
+          :search-keys="c.searchKeys"
+          paginated
+          :page-size="10"
           :loaded="loaded"
           :loading="loading"
           :error="error"
@@ -438,22 +529,35 @@ onMounted(() => void refresh())
           retryable
           :empty-text="`No ${c.label.toLowerCase()}.`"
           @retry="refresh()"
+          @row-click="(row: Row) => c.detail && toggleExpanded(c.key, row.name)"
         >
-          <template v-if="c.key === 'plans'" #plan="{ value }">
+          <template v-if="c.detail" #expand="{ row }">
+            <ResourceTableExpandButton
+              :expanded="isExpanded(c.key, row.name)"
+              :label="`Show ${c.detail} for ${row.name}`"
+              :expanded-label="`Hide ${c.detail} for ${row.name}`"
+              :controls="detailId(c.key, row.name)"
+              @click="toggleExpanded(c.key, row.name)"
+            />
+          </template>
+          <template v-if="c.key === 'entitlements'" #plan="{ value }">
             <span class="k-badge k-badge--muted">{{ value }}</span>
           </template>
           <template v-if="c.key === 'plans' || c.key === 'entitlements'" #limits="{ row }">
-            <MeteringUsageList
-              :limits="limitsOf(row)"
-              :usage="c.key === 'entitlements' ? usageOf(row) : null"
-              :window="windowOf(row)"
-            />
+            <MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" />
           </template>
           <template v-if="c.key === 'entitlements'" #state="{ row }">
             <StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" :title="stateOf(row).title" />
           </template>
           <template v-if="c.key === 'accounts'" #usage="{ row }">
-            <MeteringUsageList :usage="usageOf(row)" :window="windowOf(row)" />
+            <MeteringUsageList variant="summary" :usage="usageOf(row)" :window="windowOf(row)" />
+          </template>
+          <template v-if="c.detail" #after-row="{ row, columnCount }">
+            <tr v-if="isExpanded(c.key, row.name)" :id="detailId(c.key, row.name)" class="k-table__detail-row">
+              <td :colspan="columnCount" class="k-table__detail-cell">
+                <MeteringUsageList variant="grid" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" />
+              </td>
+            </tr>
           </template>
           <template v-if="c.key === 'plans' && writable" #actions="{ row }">
             <div class="flex items-center justify-end gap-1">
