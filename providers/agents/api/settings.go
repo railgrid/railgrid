@@ -12,8 +12,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -107,10 +109,10 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 			return nil, fmt.Errorf("creating ModelCredential %q returned no UID; refusing to write an unowned key", req.Name)
 		}
 		if _, err := createModelKeySecret(ctx, c, created, id, secretName, created.Spec.SecretKey, req.APIKey); err != nil {
-			return nil, fmt.Errorf("creating key Secret for ModelCredential %q: %w", req.Name, err)
+			return nil, errors.Join(fmt.Errorf("creating key Secret for ModelCredential %q: %w", req.Name, err), abandonNewModelCredential(ctx, c, created))
 		}
 		if _, err := c.ActivateModelCredentialKey(ctx, created, created.Spec, created.Spec, secretName, id); err != nil {
-			return nil, fmt.Errorf("activating key Secret for ModelCredential %q: %w", req.Name, err)
+			return nil, errors.Join(fmt.Errorf("activating key Secret for ModelCredential %q: %w", req.Name, err), abandonNewModelCredential(ctx, c, created))
 		}
 		return &modelCredential{
 			Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model,
@@ -188,6 +190,40 @@ func applyCredentialUpsert(ctx context.Context, c *agentsclient.Client, req *mod
 	return &modelCredential{
 		Name: req.Name, Provider: req.Provider, BaseURL: req.BaseURL, Model: req.Model, AnthropicWorkspaceID: req.AnthropicWorkspaceID, HasAPIKey: true,
 	}, nil
+}
+
+// abandonNewModelCredential rolls back only an unchanged, unactivated first
+// write. A timeout may hide a committed activation, and another request may
+// already have repaired the object, so UID alone is not a sufficient guard.
+func abandonNewModelCredential(ctx context.Context, c *agentsclient.Client, created *agentsv1alpha1.ModelCredential) error {
+	if created == nil || created.UID == "" {
+		return fmt.Errorf("cannot roll back a new ModelCredential without its UID")
+	}
+	// Cancellation of the save must not also cancel its bounded cleanup.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	current, err := c.ModelCredentials().Get(cleanupCtx, created.Name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	pending := created.Annotations[agentsv1alpha1.PendingKeySecretAnnotation]
+	if pending == "" || current.UID != created.UID || !current.DeletionTimestamp.IsZero() ||
+		current.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] != pending ||
+		current.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] != "" ||
+		!reflect.DeepEqual(current.Spec, created.Spec) {
+		return nil
+	}
+	if current.ResourceVersion == "" {
+		return fmt.Errorf("cannot roll back ModelCredential %q without its resourceVersion", current.Name)
+	}
+	err = c.ModelCredentials().Delete(cleanupCtx, current.Name, modelCredentialDeleteOptions(current))
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func reserveModelCredentialKey(ctx context.Context, c *agentsclient.Client, credential *agentsv1alpha1.ModelCredential, pendingName string) (*agentsv1alpha1.ModelCredential, error) {
