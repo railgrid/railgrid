@@ -308,7 +308,10 @@ func (p *ProviderProxy) resolveEdgeHop(prov Provider) (edgeHop, error) {
 // backend root) through the tunnel. The query is left to the caller.
 func (h edgeHop) url(rest string) *url.URL {
 	u := h.target
-	u.Path = singleJoiningSlash(h.target.Path, h.route.EdgeProxyPath(rest))
+	// Admin configs can already address /clusters/root. Replace that scope
+	// rather than nesting the tenant cluster below it.
+	basePath, _, _ := strings.Cut(h.target.Path, "/clusters/")
+	u.Path = singleJoiningSlash(basePath, h.route.EdgeProxyPath(rest))
 	u.RawPath = ""
 	u.RawQuery = ""
 	u.Fragment = ""

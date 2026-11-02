@@ -12,6 +12,7 @@ package kcp
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -27,6 +28,8 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
+
+var errProviderAlreadyRegisteredOnAnotherEdge = stderrors.New("provider is already registered on another Edge")
 
 // Edge routing for org-owned providers.
 //
@@ -92,7 +95,7 @@ func (b *Bootstrapper) RecordProviderEdgeBinding(ctx context.Context, orgUUID, p
 	// The workspace is usually seconds old here and its own controllers are
 	// still writing to it, so a read-modify-write races them. Re-read inside
 	// the retry: a stale object would only lose the race again.
-	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		ws, err := parent.Resource(workspaceGVR).Get(ctx, providerName, metav1.GetOptions{})
 		if err != nil {
 			return err
@@ -104,12 +107,19 @@ func (b *Bootstrapper) RecordProviderEdgeBinding(ctx context.Context, orgUUID, p
 		if annotations[EdgeRouteWorkspaceAnnotation] == wsUUID && annotations[EdgeRouteEdgeAnnotation] == edgeName {
 			return nil
 		}
+		if annotations[EdgeRouteWorkspaceAnnotation] != "" || annotations[EdgeRouteEdgeAnnotation] != "" {
+			return errProviderAlreadyRegisteredOnAnotherEdge
+		}
 		annotations[EdgeRouteWorkspaceAnnotation] = wsUUID
 		annotations[EdgeRouteEdgeAnnotation] = edgeName
 		ws.SetAnnotations(annotations)
 		_, err = parent.Resource(workspaceGVR).Update(ctx, ws, metav1.UpdateOptions{})
 		return err
-	}); err != nil {
+	})
+	if err != nil {
+		if err == errProviderAlreadyRegisteredOnAnotherEdge {
+			return errors.NewConflict(workspaceGVR.GroupResource(), providerName, err)
+		}
 		return fmt.Errorf("recording edge binding on org provider workspace %s: %w", providerName, err)
 	}
 	klog.FromContext(ctx).Info("Recorded provider edge binding",

@@ -48,11 +48,28 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/kcppaths"
+)
+
+var (
+	orgProviderAPIExportGVR = schema.GroupVersionResource{
+		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
+	}
+	orgProviderClusterCachedResourceGVR = schema.GroupVersionResource{
+		Group: "cache.kcp.io", Version: "v1alpha1", Resource: "clustercachedresources",
+	}
+)
+
+const (
+	orgProviderExportCleanupTimeout = 45 * time.Second
+	orgProviderExportCleanupPoll    = 250 * time.Millisecond
 )
 
 // EnsureOrgProvidersWorkspace materializes the well-known `providers` child of
@@ -177,9 +194,12 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 // that gap is exactly the "registered but not yet connected" state the org
 // admin UI needs to show.
 type OrgProviderWorkspace struct {
-	Name    string
-	Cluster string
-	Phase   string
+	Name                 string
+	Cluster              string
+	Phase                string
+	Deleting             bool
+	HostingEdgeWorkspace string
+	HostingEdgeName      string
 }
 
 // ListOrgProviderWorkspaces returns the provider sub-workspaces under
@@ -203,10 +223,7 @@ func (b *Bootstrapper) ListOrgProviderWorkspaces(ctx context.Context, orgUUID st
 	}
 	out := make([]OrgProviderWorkspace, 0, len(list.Items))
 	for i := range list.Items {
-		w := &list.Items[i]
-		cluster, _, _ := unstructured.NestedString(w.Object, "spec", "cluster")
-		phase, _, _ := unstructured.NestedString(w.Object, "status", "phase")
-		out = append(out, OrgProviderWorkspace{Name: w.GetName(), Cluster: cluster, Phase: phase})
+		out = append(out, orgProviderWorkspace(&list.Items[i]))
 	}
 	return out, nil
 }
@@ -228,16 +245,37 @@ func (b *Bootstrapper) GetOrgProviderWorkspace(ctx context.Context, orgUUID, nam
 		}
 		return nil, fmt.Errorf("getting org provider workspace %s in org %s: %w", name, orgUUID, err)
 	}
-	cluster, _, _ := unstructured.NestedString(got.Object, "spec", "cluster")
-	phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-	return &OrgProviderWorkspace{Name: got.GetName(), Cluster: cluster, Phase: phase}, nil
+	workspace := orgProviderWorkspace(got)
+	return &workspace, nil
 }
 
-// DeleteOrgProviderWorkspace deletes one org-owned provider workspace. kcp
-// cascades everything inside it: the ServiceAccount and its token, the
-// APIExport, the APIResourceSchemas, and the CatalogEntry — which is what
-// removes the provider from the catalog registry. Idempotent (NotFound is a
-// no-op).
+func orgProviderWorkspace(workspace *unstructured.Unstructured) OrgProviderWorkspace {
+	cluster, _, _ := unstructured.NestedString(workspace.Object, "spec", "cluster")
+	phase, _, _ := unstructured.NestedString(workspace.Object, "status", "phase")
+	annotations := workspace.GetAnnotations()
+	edgeWorkspace := annotations[EdgeRouteWorkspaceAnnotation]
+	edgeName := annotations[EdgeRouteEdgeAnnotation]
+	if edgeWorkspace == "" || edgeName == "" {
+		// Only expose a complete binding. A partial annotation should not create
+		// a guessed or misleading hosting location in the portal.
+		edgeWorkspace, edgeName = "", ""
+	}
+	return OrgProviderWorkspace{
+		Name:                 workspace.GetName(),
+		Cluster:              cluster,
+		Phase:                phase,
+		Deleting:             workspace.GetDeletionTimestamp() != nil,
+		HostingEdgeWorkspace: edgeWorkspace,
+		HostingEdgeName:      edgeName,
+	}
+}
+
+// DeleteOrgProviderWorkspace deletes one org-owned provider workspace. It first
+// removes the workspace's APIExports and waits for their owned cached-resource
+// entries to drain while the provider workspace and its API discovery are
+// still available. The Workspace cascade then removes the ServiceAccount and
+// token, APIResourceSchemas, and CatalogEntry — which removes the provider
+// from the catalog registry. Idempotent (NotFound is a no-op).
 //
 // APIBindings that tenant workspaces already hold against the deleted export
 // are NOT removed here; per kcp's semantics they go NotReady. Callers that want
@@ -246,14 +284,158 @@ func (b *Bootstrapper) DeleteOrgProviderWorkspace(ctx context.Context, orgUUID, 
 	if orgUUID == "" || name == "" {
 		return fmt.Errorf("DeleteOrgProviderWorkspace: orgUUID and name are required")
 	}
+	operationCtx, cancel := context.WithTimeout(ctx, orgProviderExportCleanupTimeout)
+	defer cancel()
 	parent, err := dynamic.NewForConfig(configForPath(b.config, kcppaths.OrgProvidersParent(orgUUID)))
 	if err != nil {
 		return fmt.Errorf("creating org providers workspace client: %w", err)
 	}
-	if err := parent.Resource(workspaceGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
+	workspace, err := parent.Resource(workspaceGVR).Get(operationCtx, name, metav1.GetOptions{})
+	if errors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("getting org provider workspace %s in org %s before deletion: %w", name, orgUUID, err)
+	}
+	workspaceUID := workspace.GetUID()
+	if workspaceUID == "" {
+		return fmt.Errorf("org provider workspace %s in org %s has no UID; refusing an unfenced delete", name, orgUUID)
+	}
+	clusterID, _, _ := unstructured.NestedString(workspace.Object, "spec", "cluster")
+	if clusterID != "" {
+		// Use the logical cluster ID captured from the Workspace. A mutable path
+		// such as `...:providers:<name>` could resolve to a replacement workspace
+		// if the original is deleted and recreated during this bounded cleanup.
+		provider, err := dynamic.NewForConfig(configForPath(b.config, clusterID))
+		if err != nil {
+			return fmt.Errorf("creating org provider logical-cluster client: %w", err)
+		}
+		if err := deleteAndWaitForOrgProviderAPIExports(operationCtx, provider); err != nil {
+			return fmt.Errorf("cleaning APIExports in org provider workspace %s/%s before deletion: %w", orgUUID, name, err)
+		}
+	}
+
+	// A retry after an interrupted request may find that the Workspace delete
+	// has already been accepted. The export cleanup above is still safe and can
+	// unblock kcp's existing cascade, but do not issue another delete request.
+	if workspace.GetDeletionTimestamp() != nil {
+		return nil
+	}
+	if err := parent.Resource(workspaceGVR).Delete(operationCtx, name, uidDeleteOptions(workspaceUID)); err != nil && !errors.IsNotFound(err) {
 		return fmt.Errorf("deleting org provider workspace %s in org %s: %w", name, orgUUID, err)
 	}
 	return nil
+}
+
+// deleteAndWaitForOrgProviderAPIExports tears down every APIExport in this
+// dedicated provider workspace, then waits for the cache controller to remove
+// the ClusterCachedResources owned by those exports. It never deletes cached
+// resources or their finalizers directly: their controller must purge them
+// while the source API discovery remains available.
+func deleteAndWaitForOrgProviderAPIExports(ctx context.Context, provider dynamic.Interface) error {
+	exports := provider.Resource(orgProviderAPIExportGVR)
+	initial, err := exports.List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// A concurrent cleanup may already have removed the provider logical
+			// cluster. It cannot contain APIExports or cached resources anymore.
+			return nil
+		}
+		return fmt.Errorf("listing APIExports: %w", err)
+	}
+
+	for i := range initial.Items {
+		export := &initial.Items[i]
+		if export.GetDeletionTimestamp() != nil {
+			// A previous cleanup may already have started foreground deletion.
+			// Leave it alone and let the bounded wait below observe its removal.
+			continue
+		}
+		uid := export.GetUID()
+		if uid == "" {
+			return fmt.Errorf("APIExport %s has no UID; refusing an unfenced delete", export.GetName())
+		}
+		if err := exports.Delete(ctx, export.GetName(), foregroundDeleteOptions(uid)); err != nil && !errors.IsNotFound(err) {
+			return fmt.Errorf("deleting APIExport %s: %w", export.GetName(), err)
+		}
+	}
+
+	if err := wait.PollUntilContextTimeout(ctx, orgProviderExportCleanupPoll, orgProviderExportCleanupTimeout, true, func(ctx context.Context) (bool, error) {
+		remaining, err := exports.List(ctx, metav1.ListOptions{})
+		if err != nil {
+			if errors.IsNotFound(err) {
+				// The original logical cluster disappeared while teardown was
+				// waiting. Its resources are already gone; the parent DELETE below
+				// remains fenced to the original Workspace UID.
+				return true, nil
+			}
+			return false, fmt.Errorf("listing APIExports during teardown: %w", err)
+		}
+		remainingExports := remaining.Items
+		// An exporter could have raced the initial list. Remove any APIExports
+		// that appeared during teardown, fencing each delete to the UID observed.
+		for i := range remainingExports {
+			export := &remainingExports[i]
+			if export.GetDeletionTimestamp() != nil {
+				// Repeated DELETEs do not help an export already waiting on its
+				// foreground dependents. It still counts as remaining below.
+				continue
+			}
+			uid := export.GetUID()
+			if uid == "" {
+				return false, fmt.Errorf("APIExport %s has no UID during teardown; refusing an unfenced delete", export.GetName())
+			}
+			if err := exports.Delete(ctx, export.GetName(), foregroundDeleteOptions(uid)); err != nil && !errors.IsNotFound(err) {
+				return false, fmt.Errorf("deleting APIExport %s during teardown: %w", export.GetName(), err)
+			}
+		}
+
+		cachedResourcesGone, err := orgProviderCachedResourcesGone(ctx, provider)
+		if err != nil {
+			return false, err
+		}
+		// Foreground APIExport deletion waits for owned objects, so inspect the
+		// cache while the export is terminating. Only proceed to Workspace
+		// deletion after both the source exports and their cache entries are gone.
+		return len(remainingExports) == 0 && cachedResourcesGone, nil
+	}); err != nil {
+		return fmt.Errorf("waiting for APIExports and their cached resources to disappear: %w", err)
+	}
+	return nil
+}
+
+func foregroundDeleteOptions(uid types.UID) metav1.DeleteOptions {
+	propagation := metav1.DeletePropagationForeground
+	return metav1.DeleteOptions{
+		PropagationPolicy: &propagation,
+		Preconditions:     &metav1.Preconditions{UID: &uid},
+	}
+}
+
+func uidDeleteOptions(uid types.UID) metav1.DeleteOptions {
+	return metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}
+}
+
+func orgProviderCachedResourcesGone(ctx context.Context, provider dynamic.Interface) (bool, error) {
+	list, err := provider.Resource(orgProviderClusterCachedResourceGVR).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		if errors.IsNotFound(err) {
+			// Older KCP versions without this resource cannot contain cached-resource
+			// objects to drain. A missing logical cluster is likewise already empty.
+			return true, nil
+		}
+		return false, fmt.Errorf("listing ClusterCachedResources: %w", err)
+	}
+	for i := range list.Items {
+		resource := &list.Items[i]
+		for _, owner := range resource.GetOwnerReferences() {
+			if got := schema.FromAPIVersionAndKind(owner.APIVersion, owner.Kind).GroupKind(); got != (schema.GroupKind{Group: "apis.kcp.io", Kind: "APIExport"}) {
+				continue
+			}
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // OrgProviderConfig returns a rest.Config targeting one org-owned provider
