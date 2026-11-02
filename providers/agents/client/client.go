@@ -24,12 +24,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	k8stypes "k8s.io/apimachinery/pkg/types"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/tenant"
@@ -56,8 +58,9 @@ var (
 	// key stays in the Secret spec.secretRef names; this object is what the
 	// portal lists, what a reconciler validates, and what the probe verbs are
 	// addressed at.
-	ModelCredentialGVR = agentsGVR("modelcredentials")
-	SecretGVR          = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
+	ModelCredentialGVR         = agentsGVR("modelcredentials")
+	ModelProviderConnectionGVR = agentsGVR("modelproviderconnections")
+	SecretGVR                  = schema.GroupVersionResource{Group: "", Version: "v1", Resource: "secrets"}
 )
 
 func agentsGVR(resource string) schema.GroupVersionResource {
@@ -65,14 +68,15 @@ func agentsGVR(resource string) schema.GroupVersionResource {
 }
 
 var (
-	agentResource    = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
-	connectionRes    = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
-	scheduleResource = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
-	triggerResource  = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
-	webhookResource  = tenant.Resource{GVR: WebhookGVR, Kind: "Webhook", Plural: "Webhooks", Namespaced: false}
-	toolsetResource  = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
-	modelCredRes     = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
-	secretResource   = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
+	agentResource              = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
+	connectionRes              = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
+	scheduleResource           = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
+	triggerResource            = tenant.Resource{GVR: TriggerGVR, Kind: "Trigger", Plural: "Triggers", Namespaced: false}
+	webhookResource            = tenant.Resource{GVR: WebhookGVR, Kind: "Webhook", Plural: "Webhooks", Namespaced: false}
+	toolsetResource            = tenant.Resource{GVR: ToolsetGVR, Kind: "Toolset", Plural: "Toolsets", Namespaced: false}
+	modelCredRes               = tenant.Resource{GVR: ModelCredentialGVR, Kind: "ModelCredential", Plural: "ModelCredentials", Namespaced: false}
+	modelProviderConnectionRes = tenant.Resource{GVR: ModelProviderConnectionGVR, Kind: "ModelProviderConnection", Plural: "ModelProviderConnections", Namespaced: false}
+	secretResource             = tenant.Resource{GVR: SecretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
 )
 
 // Client provides typed access to the agents provider's tenant-workspace
@@ -142,11 +146,150 @@ func (c *Client) ModelCredentials() *TypedResource[agentsv1alpha1.ModelCredentia
 	}
 }
 
+// ModelProviderConnections returns reusable provider accounts in this workspace.
+func (c *Client) ModelProviderConnections() *TypedResource[agentsv1alpha1.ModelProviderConnection, agentsv1alpha1.ModelProviderConnectionList] {
+	return &TypedResource[agentsv1alpha1.ModelProviderConnection, agentsv1alpha1.ModelProviderConnectionList]{scope: c.scope, res: modelProviderConnectionRes, gvk: ModelProviderConnectionGVR.GroupVersion().WithKind("ModelProviderConnection")}
+}
+
+// GetModelProviderConnection requires use permission before exposing credentials
+// to the runtime. A read of the public configuration alone grants no key use.
+func (c *Client) GetModelProviderConnection(ctx context.Context, name string) (*agentsv1alpha1.ModelProviderConnection, error) {
+	if err := AuthorizeModelProviderConnectionUse(ctx, c.scope.Dynamic(), name, true); err != nil {
+		return nil, err
+	}
+	return c.ModelProviderConnections().Get(ctx, name, metav1.GetOptions{})
+}
+
 // GetModelCredential reads one ModelCredential by name, which is what
 // llm.CredentialResolver needs. It is spelled out rather than left to the
 // caller so the whole provider resolves a credential name the same way.
 func (c *Client) GetModelCredential(ctx context.Context, name string) (*agentsv1alpha1.ModelCredential, error) {
-	return c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	credential, err := c.ModelCredentials().Get(ctx, name, metav1.GetOptions{})
+	if err != nil || credential.Spec.ConnectionRef == "" {
+		return credential, err
+	}
+	connection, err := c.GetModelProviderConnection(ctx, credential.Spec.ConnectionRef)
+	if err != nil {
+		return nil, err
+	}
+	return agentsv1alpha1.ResolveModelConnection(credential, connection)
+}
+
+// UpdateModelBinding changes only the selected model, retaining the source
+// resourceVersion so a concurrent rebind or migration is never overwritten.
+func (c *Client) UpdateModelBinding(ctx context.Context, binding *agentsv1alpha1.ModelCredential, model string) (*agentsv1alpha1.ModelCredential, error) {
+	if binding.Spec.ConnectionRef == "" {
+		return nil, fmt.Errorf("model credential is not a connection binding")
+	}
+	desired := binding.DeepCopy()
+	desired.Spec.Model = model
+	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(desired)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := c.scope.Dynamic().Resource(ModelCredentialGVR).Update(ctx, &unstructured.Unstructured{Object: object}, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return fromUnstructured[agentsv1alpha1.ModelCredential](updated)
+}
+
+// UpdateModelCredentialWithPreconditions sends a full update for a previously
+// read ModelCredential. Unlike TypedResource.Update, this does not re-read and
+// replace the resourceVersion: the UID and resourceVersion on credential are
+// sent as-is so Kubernetes rejects a stale object instead of overwriting a
+// concurrent edit.
+func (c *Client) UpdateModelCredentialWithPreconditions(ctx context.Context, credential *agentsv1alpha1.ModelCredential) (*agentsv1alpha1.ModelCredential, error) {
+	if credential == nil || credential.Name == "" || credential.UID == "" || credential.ResourceVersion == "" {
+		return nil, fmt.Errorf("ModelCredential update requires name, UID, and resourceVersion")
+	}
+	object, err := runtime.DefaultUnstructuredConverter.ToUnstructured(credential)
+	if err != nil {
+		return nil, err
+	}
+	updated, err := c.scope.Dynamic().Resource(ModelCredentialGVR).Update(ctx, &unstructured.Unstructured{Object: object}, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, err
+	}
+	result, err := fromUnstructured[agentsv1alpha1.ModelCredential](updated)
+	if err != nil {
+		return nil, err
+	}
+	if result.Name != credential.Name || result.UID != credential.UID || result.ResourceVersion == "" {
+		return nil, fmt.Errorf("updating ModelCredential %q returned unexpected name, UID, or empty resourceVersion", credential.Name)
+	}
+	return result, nil
+}
+
+// ActivateModelCredentialKey switches a model credential to a staged key
+// Secret only if the parent still has the same UID, fresh resourceVersion,
+// reservation, and spec that the caller observed before staging. The fresh
+// resourceVersion test prevents activation after a concurrent raw DELETE has
+// begun; controller status updates between the GET and patch cause a safe
+// retry instead of activating against an uncertain owner state.
+func (c *Client) ActivateModelCredentialKey(
+	ctx context.Context,
+	credential *agentsv1alpha1.ModelCredential,
+	originalSpec agentsv1alpha1.ModelCredentialSpec,
+	newSpec agentsv1alpha1.ModelCredentialSpec,
+	pendingName string,
+	secretID string,
+) (*agentsv1alpha1.ModelCredential, error) {
+	if credential == nil || credential.Name == "" || credential.UID == "" || pendingName == "" || secretID == "" {
+		return nil, fmt.Errorf("ModelCredential key activation requires name, UID, pending Secret name, and generated Secret ID")
+	}
+	current, err := c.ModelCredentials().Get(ctx, credential.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	if current.UID != credential.UID || current.DeletionTimestamp != nil && !current.DeletionTimestamp.IsZero() {
+		return nil, fmt.Errorf("ModelCredential %q changed identity or began deletion before key activation", credential.Name)
+	}
+	if current.ResourceVersion == "" {
+		return nil, fmt.Errorf("ModelCredential %q has no resourceVersion before key activation", credential.Name)
+	}
+	originalJSON, err := json.Marshal(originalSpec)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling original ModelCredential spec: %w", err)
+	}
+	newJSON, err := json.Marshal(newSpec)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling activated ModelCredential spec: %w", err)
+	}
+	var originalValue, newValue any
+	if err := json.Unmarshal(originalJSON, &originalValue); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(newJSON, &newValue); err != nil {
+		return nil, err
+	}
+	patch, err := json.Marshal([]map[string]any{
+		{"op": "test", "path": "/metadata/uid", "value": string(credential.UID)},
+		{"op": "test", "path": "/metadata/resourceVersion", "value": current.ResourceVersion},
+		{"op": "test", "path": "/metadata/annotations/" + strings.ReplaceAll(agentsv1alpha1.PendingKeySecretAnnotation, "/", "~1"), "value": pendingName},
+		{"op": "test", "path": "/spec", "value": originalValue},
+		{"op": "replace", "path": "/spec", "value": newValue},
+		{"op": "add", "path": "/metadata/annotations/" + strings.ReplaceAll(agentsv1alpha1.GeneratedKeySecretIDAnnotation, "/", "~1"), "value": secretID},
+		{"op": "remove", "path": "/metadata/annotations/" + strings.ReplaceAll(agentsv1alpha1.PendingKeySecretAnnotation, "/", "~1")},
+	})
+	if err != nil {
+		return nil, err
+	}
+	updated, err := c.scope.Dynamic().Resource(ModelCredentialGVR).Patch(ctx, credential.Name, k8stypes.JSONPatchType, patch, metav1.PatchOptions{})
+	if err != nil {
+		return nil, err
+	}
+	result, err := fromUnstructured[agentsv1alpha1.ModelCredential](updated)
+	if err != nil {
+		return nil, err
+	}
+	if result.Name != credential.Name || result.UID != credential.UID ||
+		result.Spec.SecretRef.Name != newSpec.SecretRef.Name ||
+		result.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation] != secretID ||
+		result.Annotations[agentsv1alpha1.PendingKeySecretAnnotation] != "" {
+		return nil, fmt.Errorf("activating ModelCredential %q key returned unexpected identity or Secret reference (name=%q uid=%q secretRef=%q generatedID=%q pending=%q)", credential.Name, result.Name, result.UID, result.Spec.SecretRef.Name, result.Annotations[agentsv1alpha1.GeneratedKeySecretIDAnnotation], result.Annotations[agentsv1alpha1.PendingKeySecretAnnotation])
+	}
+	return result, nil
 }
 
 // GetSecret fetches a Secret from the tenant workspace namespace.
@@ -161,6 +304,12 @@ func (c *Client) GetSecret(ctx context.Context, namespace, name string) (*corev1
 // DeleteSecret removes a Secret from the tenant workspace namespace.
 func (c *Client) DeleteSecret(ctx context.Context, namespace, name string) error {
 	return c.scope.Delete(ctx, secretResource, namespace, name)
+}
+
+// DeleteSecretWithOptions preserves UID/resourceVersion preconditions for
+// ownership-sensitive cleanup. Concurrent key replacement must not be deleted.
+func (c *Client) DeleteSecretWithOptions(ctx context.Context, namespace, name string, options metav1.DeleteOptions) error {
+	return c.scope.Dynamic().Resource(SecretGVR).Namespace(namespace).Delete(ctx, name, options)
 }
 
 // ListSecrets lists Secrets in the tenant workspace namespace.
@@ -205,6 +354,29 @@ func (c *Client) ApplySecret(ctx context.Context, s *corev1.Secret) (*corev1.Sec
 		return nil, err
 	}
 	out, err := c.scope.Apply(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	return fromUnstructured[corev1.Secret](out)
+}
+
+// CreateSecret creates a provider-generated Secret only when its random name
+// is unused. Unlike ApplySecret, it never updates an existing Secret, so a
+// name collision cannot replace tenant data or inherit another object's
+// ownership.
+func (c *Client) CreateSecret(ctx context.Context, s *corev1.Secret) (*corev1.Secret, error) {
+	if s.APIVersion == "" {
+		s.APIVersion = "v1"
+	}
+	if s.Kind == "" {
+		s.Kind = "Secret"
+	}
+	s.Labels = claimscope.WithOwner(s.Labels, ProviderName)
+	u, err := toUnstructured(s)
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.scope.Create(ctx, u, metav1.CreateOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -308,8 +480,8 @@ func (r *TypedResource[T, L]) ClearStatusFields(ctx context.Context, name string
 	return r.scope.ApplyStatus(ctx, u)
 }
 
-func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, _ metav1.DeleteOptions) error {
-	return r.scope.Delete(ctx, r.res, "", name)
+func (r *TypedResource[T, L]) Delete(ctx context.Context, name string, options metav1.DeleteOptions) error {
+	return r.scope.Dynamic().Resource(r.res.GVR).Delete(ctx, name, options)
 }
 
 func (r *TypedResource[T, L]) toUnstructured(obj *T) (*unstructured.Unstructured, error) {
