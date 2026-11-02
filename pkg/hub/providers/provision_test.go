@@ -18,11 +18,13 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -41,6 +43,7 @@ func newRBACDynamicFake() dynamic.Interface {
 		runtime.NewScheme(),
 		map[schema.GroupVersionResource]string{
 			clusterRoleGVR:        "ClusterRoleList",
+			orgQuotaGVR:           "ResourceQuotaList",
 			clusterRoleBindingGVR: "ClusterRoleBindingList",
 		},
 	)
@@ -275,6 +278,144 @@ func TestEnsureProviderRoleBindingReplacesAnExistingClusterAdminBinding(t *testi
 	}
 	if got, _, _ := unstructured.NestedString(crb.Object, "roleRef", "name"); got != "cluster-admin" {
 		t.Fatalf("roleRef after rollback = %q, want cluster-admin", got)
+	}
+}
+
+func TestEnsureProviderRoleBindingPreservesKCPMetadataAndConvergesSubjects(t *testing.T) {
+	ctx := context.Background()
+	cl := newRBACDynamicFake().(*dynamicfake.FakeDynamicClient)
+	const replicateAnnotation = "internal.kcp.io/replicate"
+	initial := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRoleBinding",
+		"metadata": map[string]any{
+			"name": providerSABindingName,
+			"annotations": map[string]any{
+				replicateAnnotation: "replicateclusterrolebinding",
+				"example.com/keep":  "preserve",
+			},
+			"labels": map[string]any{"example.com/keep": "preserve"},
+		},
+		"roleRef": map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io",
+			"kind":     "ClusterRole",
+			"name":     "cluster-admin",
+		},
+		"subjects": []any{map[string]any{
+			"kind": "ServiceAccount", "name": "stale", "namespace": "old",
+		}},
+	}}
+	if _, err := cl.Resource(clusterRoleBindingGVR).Create(ctx, initial, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cl.PrependReactor("update", "clusterrolebindings", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updated := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		stored, err := cl.Tracker().Get(clusterRoleBindingGVR, "", providerSABindingName)
+		if err != nil {
+			return true, nil, err
+		}
+		oldAnnotations := stored.(*unstructured.Unstructured).GetAnnotations()
+		if got := updated.GetAnnotations()[replicateAnnotation]; got != oldAnnotations[replicateAnnotation] {
+			return true, nil, apierrors.NewForbidden(clusterRoleBindingGVR.GroupResource(), providerSABindingName, fmt.Errorf("system-reserved annotation %q changed", replicateAnnotation))
+		}
+		return false, nil, nil
+	})
+
+	if err := ensureProviderRoleBindingTo(ctx, cl, "cluster-admin"); err != nil {
+		t.Fatalf("ensureProviderRoleBindingTo: %v", err)
+	}
+	got, err := cl.Resource(clusterRoleBindingGVR).Get(ctx, providerSABindingName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetAnnotations()[replicateAnnotation] != "replicateclusterrolebinding" || got.GetAnnotations()["example.com/keep"] != "preserve" {
+		t.Fatalf("annotations were not preserved: %#v", got.GetAnnotations())
+	}
+	if got.GetLabels()["example.com/keep"] != "preserve" {
+		t.Fatalf("labels were not preserved: %#v", got.GetLabels())
+	}
+	subjects, found, err := unstructured.NestedSlice(got.Object, "subjects")
+	if err != nil || !found || len(subjects) != 1 {
+		t.Fatalf("subjects=%#v found=%t err=%v", subjects, found, err)
+	}
+	subject, ok := subjects[0].(map[string]any)
+	if !ok || subject["kind"] != "ServiceAccount" || subject["name"] != ProviderSAName || subject["namespace"] != ProviderSANamespace {
+		t.Fatalf("subjects did not converge to the provider identity: %#v", subjects)
+	}
+}
+
+func TestApplyUnstructuredPreservesServerMetadataButReplacesRBACSpec(t *testing.T) {
+	ctx := context.Background()
+	cl := newRBACDynamicFake().(*dynamicfake.FakeDynamicClient)
+	const replicateAnnotation = "internal.kcp.io/replicate"
+	initial := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata": map[string]any{
+			"name": "railgrid:provider",
+			"annotations": map[string]any{
+				replicateAnnotation: "replicateclusterrole",
+				"example.com/keep":  "preserve",
+			},
+			"labels": map[string]any{"example.com/keep": "preserve"},
+		},
+		"aggregationRule": map[string]any{"clusterRoleSelectors": []any{}},
+		"rules":           []any{map[string]any{"verbs": []any{"*"}}},
+	}}
+	if _, err := cl.Resource(clusterRoleGVR).Create(ctx, initial, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	cl.PrependReactor("update", "clusterroles", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updated := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		stored, err := cl.Tracker().Get(clusterRoleGVR, "", "railgrid:provider")
+		if err != nil {
+			return true, nil, err
+		}
+		oldAnnotations := stored.(*unstructured.Unstructured).GetAnnotations()
+		if got := updated.GetAnnotations()[replicateAnnotation]; got != oldAnnotations[replicateAnnotation] {
+			return true, nil, apierrors.NewForbidden(clusterRoleGVR.GroupResource(), "railgrid:provider", fmt.Errorf("system-reserved annotation %q changed", replicateAnnotation))
+		}
+		return false, nil, nil
+	})
+	desired := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata": map[string]any{
+			"name":        "railgrid:provider",
+			"annotations": map[string]any{"example.com/managed": "true"},
+			"labels":      map[string]any{"example.com/managed": "true"},
+		},
+		"rules": []any{map[string]any{"verbs": []any{"get"}}},
+	}}
+	if err := applyUnstructured(ctx, cl, clusterRoleGVR, desired); err != nil {
+		t.Fatalf("applyUnstructured: %v", err)
+	}
+	got, err := cl.Resource(clusterRoleGVR).Get(ctx, "railgrid:provider", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	annotations := got.GetAnnotations()
+	if annotations[replicateAnnotation] != "replicateclusterrole" || annotations["example.com/keep"] != "preserve" || annotations["example.com/managed"] != "true" {
+		t.Fatalf("annotations did not preserve native metadata and merge desired values: %#v", annotations)
+	}
+	labels := got.GetLabels()
+	if labels["example.com/keep"] != "preserve" || labels["example.com/managed"] != "true" {
+		t.Fatalf("labels did not preserve existing and desired values: %#v", labels)
+	}
+	rules, found, err := unstructured.NestedSlice(got.Object, "rules")
+	if err != nil || !found || len(rules) != 1 {
+		t.Fatalf("rules=%#v found=%t err=%v", rules, found, err)
+	}
+	rule, ok := rules[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected rule type: %T", rules[0])
+	}
+	verbs, _, _ := unstructured.NestedStringSlice(rule, "verbs")
+	if len(verbs) != 1 || verbs[0] != "get" {
+		t.Fatalf("stale RBAC rules survived desired replacement: %#v", rules)
+	}
+	if _, found, err := unstructured.NestedFieldNoCopy(got.Object, "aggregationRule"); err != nil || found {
+		t.Fatalf("stale aggregationRule survived desired replacement, found=%t err=%v", found, err)
 	}
 }
 

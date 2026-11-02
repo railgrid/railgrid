@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"reflect"
 	"sort"
 	"time"
 
@@ -46,7 +47,9 @@ import (
 // (provider_controller.go); the provider's own APIExport/schemas come from its
 // `init`.
 type Provisioner struct {
-	kcpConfig *rest.Config
+	kcpConfig                    *rest.Config
+	orgProviderAvailability      func(context.Context) error
+	orgProviderStorageValidation func(context.Context, string) error
 
 	// workspaceClusterAdmin binds the provider ServiceAccount to cluster-admin
 	// in its own workspace instead of the generated railgrid:provider role. See
@@ -79,6 +82,46 @@ func (p *Provisioner) gracePeriod() time.Duration {
 
 // ProvisionerOption configures a Provisioner.
 type ProvisionerOption func(*Provisioner)
+
+// WithOrgProviderAvailability requires verified resource containment before
+// provisioning or issuing an organization provider credential. Nil denies those
+// operations; platform providers and cleanup are unaffected.
+func WithOrgProviderAvailability(check func(context.Context) error) ProvisionerOption {
+	return func(p *Provisioner) { p.orgProviderAvailability = check }
+}
+
+func (p *Provisioner) requireOrgProviderAvailability(ctx context.Context, workspacePath string) error {
+	if _, _, ok := kcppaths.SplitOrgProviderPath(workspacePath); !ok {
+		return nil
+	}
+	if p.orgProviderAvailability == nil {
+		return fmt.Errorf("organization provider resource containment is not configured")
+	}
+	if err := p.orgProviderAvailability(ctx); err != nil {
+		return fmt.Errorf("organization provider resource containment unavailable: %w", err)
+	}
+	return nil
+}
+
+// WithOrgProviderStorageValidation requires the registered organization
+// provider workspace to pass the provider-storage audit before a credential
+// can be minted or rotated. Nil denies organization-provider credentials.
+func WithOrgProviderStorageValidation(check func(context.Context, string) error) ProvisionerOption {
+	return func(p *Provisioner) { p.orgProviderStorageValidation = check }
+}
+
+func (p *Provisioner) requireOrgProviderStorageValidation(ctx context.Context, workspacePath string) error {
+	if _, _, ok := kcppaths.SplitOrgProviderPath(workspacePath); !ok {
+		return nil
+	}
+	if p.orgProviderStorageValidation == nil {
+		return fmt.Errorf("organization provider storage validation is not configured")
+	}
+	if err := p.orgProviderStorageValidation(ctx, workspacePath); err != nil {
+		return fmt.Errorf("organization provider storage validation failed: %w", err)
+	}
+	return nil
+}
 
 // WithWorkspaceClusterAdmin selects the role the provider's ServiceAccount is
 // bound to inside its own provider workspace: true keeps the historical
@@ -328,13 +371,20 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 // EnsureProviderSAAtPath is EnsureProviderSA against an arbitrary provider
 // workspace path. Org-owned providers live at
 // root:railgrid:tenants/{org}/providers/{name} rather than under the platform
-// parent, but are otherwise identical — same `provider` WorkspaceType, so the
-// same missing `default` namespace and the same workspace-scoped cluster-admin
-// grant apply.
+// parent. Org-owned identities always use the restricted bootstrap role,
+// independently of the platform-provider cluster-admin compatibility flag.
 func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath string) error {
+	if err := p.requireOrgProviderAvailability(ctx, workspacePath); err != nil {
+		return err
+	}
 	cl, err := p.clientFor(workspacePath)
 	if err != nil {
 		return err
+	}
+	if orgUUID, name, ok := kcppaths.SplitOrgProviderPath(workspacePath); ok {
+		if _, err := p.orgProviderWorkspace(ctx, orgUUID, name); err != nil {
+			return err
+		}
 	}
 	// The `provider` WorkspaceType does NOT extend universal, so the `default`
 	// namespace is not auto-created. Ensure it before placing the SA there.
@@ -345,6 +395,9 @@ func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath 
 	}}
 	if _, err := cl.Resource(namespaceGVR).Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("ensuring namespace %s in provider workspace: %w", ProviderSANamespace, err)
+	}
+	if _, name, ok := kcppaths.SplitOrgProviderPath(workspacePath); ok {
+		return ensureOrgProviderSA(ctx, cl, name)
 	}
 	sa := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -385,7 +438,10 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 			return fmt.Errorf("applying ClusterRole %s: %w", ProviderClusterRoleName, err)
 		}
 	}
+	return ensureProviderRoleBindingTo(ctx, cl, roleName)
+}
 
+func ensureProviderRoleBindingTo(ctx context.Context, cl dynamic.Interface, roleName string) error {
 	crb := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRoleBinding",
@@ -410,16 +466,33 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 	case err != nil:
 		return fmt.Errorf("getting %s: %w", providerSABindingName, err)
 	default:
-		current, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
-		if current == roleName {
-			crb.SetResourceVersion(existing.GetResourceVersion())
-			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, crb, metav1.UpdateOptions{}); err != nil {
+		currentAPIGroup, _, _ := unstructured.NestedString(existing.Object, "roleRef", "apiGroup")
+		currentKind, _, _ := unstructured.NestedString(existing.Object, "roleRef", "kind")
+		currentName, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
+		if currentAPIGroup == "rbac.authorization.k8s.io" && currentKind == "ClusterRole" && currentName == roleName {
+			currentSubjects, _, currentSubjectsErr := unstructured.NestedSlice(existing.Object, "subjects")
+			desiredSubjects, _, desiredSubjectsErr := unstructured.NestedSlice(crb.Object, "subjects")
+			if desiredSubjectsErr != nil {
+				return fmt.Errorf("reading desired subjects for %s: %w", providerSABindingName, desiredSubjectsErr)
+			}
+			if currentSubjectsErr == nil && reflect.DeepEqual(currentSubjects, desiredSubjects) {
+				return nil
+			}
+
+			// Mutate the fetched object so KCP-owned annotations and all other
+			// server metadata survive the update. Subjects remain authoritative:
+			// stale subjects must not retain this binding's permissions.
+			updated := existing.DeepCopy()
+			if err := unstructured.SetNestedSlice(updated.Object, desiredSubjects, "subjects"); err != nil {
+				return fmt.Errorf("setting subjects for %s: %w", providerSABindingName, err)
+			}
+			if _, err := cl.Resource(clusterRoleBindingGVR).Update(ctx, updated, metav1.UpdateOptions{}); err != nil {
 				return fmt.Errorf("updating %s: %w", providerSABindingName, err)
 			}
 			return nil
 		}
 		if err := cl.Resource(clusterRoleBindingGVR).Delete(ctx, providerSABindingName, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-			return fmt.Errorf("deleting %s to move it from %s to %s: %w", providerSABindingName, current, roleName, err)
+			return fmt.Errorf("deleting %s to move it from %s to %s: %w", providerSABindingName, currentName, roleName, err)
 		}
 	}
 	if _, err := cl.Resource(clusterRoleBindingGVR).Create(ctx, crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -445,13 +518,23 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 // root:railgrid:tenants/{org}/providers/{name}.
 //
 // The resulting kubeconfig is what an Org admin installs their provider's Helm
-// chart with. It is scoped to that one workspace: the SA is cluster-admin
-// there and nowhere else, so it can create the provider's APIExport, schemas,
-// endpoint slice, and CatalogEntry, but cannot read the Org workspace above it
-// or any team workspace beside it. Cross-workspace reach only ever comes from
-// the APIExport's permission claims, which each consuming workspace accepts
-// individually at Enable time.
+// chart with. Org-owned SAs have restricted runtime permissions in that
+// workspace and submit declarations to the authenticated hub bootstrap endpoint;
+// they cannot write APIExports, CRDs, routing endpoints, or RBAC directly.
+// Platform-provider permissions retain the operator-selected compatibility
+// policy. Cross-workspace reach comes from accepted export permission claims.
 func (p *Provisioner) MintProviderKubeconfigAtPath(ctx context.Context, workspacePath, hubExternalURL string) ([]byte, error) {
+	if err := p.requireOrgProviderAvailability(ctx, workspacePath); err != nil {
+		return nil, err
+	}
+	if orgUUID, name, ok := kcppaths.SplitOrgProviderPath(workspacePath); ok {
+		if _, err := p.orgProviderWorkspace(ctx, orgUUID, name); err != nil {
+			return nil, err
+		}
+		if err := p.requireOrgProviderStorageValidation(ctx, workspacePath); err != nil {
+			return nil, err
+		}
+	}
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, workspacePath)
 	typed, err := kubernetes.NewForConfig(cfg)
@@ -637,6 +720,17 @@ func (p *Provisioner) RotateProviderCredential(ctx context.Context, providerName
 // providerName is only used to record status.credentialsRotatedAt on the
 // provider's CatalogEntry; pass "" to skip that.
 func (p *Provisioner) RotateProviderCredentialAtPath(ctx context.Context, workspacePath, providerName, hubExternalURL string) (*RotatedCredential, error) {
+	if err := p.requireOrgProviderAvailability(ctx, workspacePath); err != nil {
+		return nil, err
+	}
+	if orgUUID, name, ok := kcppaths.SplitOrgProviderPath(workspacePath); ok {
+		if _, err := p.orgProviderWorkspace(ctx, orgUUID, name); err != nil {
+			return nil, err
+		}
+		if err := p.requireOrgProviderStorageValidation(ctx, workspacePath); err != nil {
+			return nil, err
+		}
+	}
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, workspacePath)
 	typed, err := kubernetes.NewForConfig(cfg)
@@ -1109,8 +1203,9 @@ func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) 
 	return nil
 }
 
-// applyUnstructured is a create-or-update helper for cluster-scoped resources.
-// Preserves resourceVersion on update.
+// applyUnstructured is a create-or-update helper for hub-owned cluster-scoped
+// RBAC resources. Updates replace desired RBAC fields while retaining the
+// existing server-managed metadata.
 func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, desired *unstructured.Unstructured) error {
 	existing, err := cl.Resource(gvr).Get(ctx, desired.GetName(), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -1120,8 +1215,35 @@ func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.Gro
 	if err != nil {
 		return err
 	}
-	desired.SetResourceVersion(existing.GetResourceVersion())
-	_, err = cl.Resource(gvr).Update(ctx, desired, metav1.UpdateOptions{})
+	// Start with the desired object, but retain fetched metadata (including
+	// KCP-reserved annotations, UID, resourceVersion, managed fields and
+	// finalizers). Desired RBAC fields replace their old values; rules, roleRefs
+	// and subjects must not be merged with stale grants.
+	updated := desired.DeepCopy()
+	updated.Object["metadata"] = existing.DeepCopy().Object["metadata"]
+	updated.SetName(desired.GetName())
+	updated.SetNamespace(desired.GetNamespace())
+	annotations := updated.GetAnnotations()
+	for key, value := range desired.GetAnnotations() {
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[key] = value
+	}
+	if annotations != nil {
+		updated.SetAnnotations(annotations)
+	}
+	labels := updated.GetLabels()
+	for key, value := range desired.GetLabels() {
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[key] = value
+	}
+	if labels != nil {
+		updated.SetLabels(labels)
+	}
+	_, err = cl.Resource(gvr).Update(ctx, updated, metav1.UpdateOptions{})
 	return err
 }
 
