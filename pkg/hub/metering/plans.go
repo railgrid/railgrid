@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 )
 
@@ -48,6 +49,47 @@ func EntitlementPlan(discovery Installed, store dynamic.Interface, logger klog.L
 		}
 		plan, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
 		return plan, true, nil
+	}
+}
+
+// AssignPlan updates an existing organization's entitlement as part of the
+// admin assignment request. The Organization remains the source of truth;
+// the reconciler repairs interruptions and creates missing entitlements.
+// Overrides and unrelated labels are preserved, including on conflict retries.
+func AssignPlan(discovery Installed, store dynamic.Interface, logger klog.Logger) func(ctx context.Context, org, plan string) error {
+	return func(ctx context.Context, org, plan string) error {
+		if _, installed := discovery.Current(); !installed {
+			return fmt.Errorf("metering is not installed; plans cannot be assigned")
+		}
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			res := store.Resource(gvrEntitlements)
+			ent, err := res.Get(ctx, org, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			labels := ent.GetLabels()
+			current, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+			if current == plan && labels[LabelPlanFromSpec] == "true" && labels[PlanSourceLabel] == PlanSourceOperator {
+				return nil
+			}
+			if err := unstructured.SetNestedField(ent.Object, plan, "spec", "plan"); err != nil {
+				return err
+			}
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[LabelPlanFromSpec] = "true"
+			labels[PlanSourceLabel] = PlanSourceOperator
+			ent.SetLabels(labels)
+			if _, err := res.Update(ctx, ent, metav1.UpdateOptions{FieldManager: FieldManager}); err != nil {
+				return err
+			}
+			logger.Info("organization entitlement assigned", "organization", org, "from", current, "plan", plan)
+			return nil
+		})
 	}
 }
 

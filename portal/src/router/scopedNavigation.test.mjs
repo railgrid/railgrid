@@ -26,6 +26,7 @@ const { readLandingScope, readOrganizationWorkspace, rememberLandingScope } = aw
 const { useTenantStore } = await vite.ssrLoadModule('/src/stores/tenant.ts')
 const { useRouteContextStore } = await vite.ssrLoadModule('/src/stores/routeContext.ts')
 const { useAuthStore } = await vite.ssrLoadModule('/src/stores/auth.ts')
+const { useAdminStore } = await vite.ssrLoadModule('/src/stores/admin.ts')
 const { useProvidersStore } = await vite.ssrLoadModule('/src/stores/providers.ts')
 const { default: RouteContextState } = await vite.ssrLoadModule('/src/components/RouteContextState.vue')
 const { scopedPath, parsePortalScope, portalHref, portalRoutePath } = await vite.ssrLoadModule('/src/portalkit/navigation.ts')
@@ -816,4 +817,23 @@ test('last workspace is remembered per organization and account, including visit
   assert.equal(readOrganizationWorkspace(auth.user, O), W)
   assert.equal(readOrganizationWorkspace(auth.user, B), B)
   assert.equal(readOrganizationWorkspace({ userId: 'someone-else' }, O), null)
+})
+
+test('same-page admin query navigation preserves the view gate while retaining auth and admin checks', async () => {
+  const { router, context, auth } = setup()
+  const admin = useAdminStore()
+  admin.isAdmin = true
+  let authChecks = 0
+  auth.detectAuthMode = async () => { authChecks++ }
+  await router.push('/bonkers/metering')
+  const states = []
+  const stop = watch(() => context.state, state => states.push(state), { flush: 'sync' })
+  await router.push({ path: '/bonkers/metering', query: { organization: O } })
+  assert.equal(router.currentRoute.value.query.organization, O)
+  assert.equal(states.includes('loading'), false, 'query navigation must not unmount the resource table')
+  assert.equal(authChecks, 2, 'authentication is still checked for both navigations')
+  stop()
+  admin.isAdmin = false
+  await router.push({ path: '/bonkers/metering', query: { organization: B } })
+  assert.notEqual(router.currentRoute.value.name, 'bonkers-metering', 'admin denial still redirects out of the protected view')
 })

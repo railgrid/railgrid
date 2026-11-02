@@ -50,6 +50,9 @@ type Handler struct {
 	// Organization.spec.plan. Nil means plan assignment is unavailable
 	// (metering not configured) and the route answers 503.
 	planExists func(ctx context.Context, name string) (bool, error)
+	// assignPlan updates the Entitlement immediately after recording spec.plan.
+	// The reconciler remains the repair path, not a prerequisite for the write.
+	assignPlan func(ctx context.Context, org, plan string) error
 	// resetPlan puts an organization's metering Entitlement back on the
 	// default plan when the plan route is handed an empty plan. Clearing
 	// Organization.spec.plan alone cannot do that for an Entitlement an
@@ -75,6 +78,13 @@ func (h *Handler) WithSoftDeleteGracePeriod(d time.Duration) *Handler {
 // existence check (metering.PlanExists in production).
 func (h *Handler) WithPlanLookup(exists func(ctx context.Context, name string) (bool, error)) *Handler {
 	h.planExists = exists
+	return h
+}
+
+// WithPlanAssignment makes a nonempty organization assignment also update its
+// Entitlement immediately. Retrying the same assignment retries this write.
+func (h *Handler) WithPlanAssignment(assign func(ctx context.Context, org, plan string) error) *Handler {
+	h.assignPlan = assign
 	return h
 }
 
@@ -115,9 +125,9 @@ func (h *Handler) Register(r *mux.Router) {
 	r.HandleFunc("/organizations/{name}/workspaces/{ws}/undelete", h.undeleteOrgWorkspace).Methods(http.MethodPost)
 	// Plan assignment puts an organization's metering Entitlement on the
 	// named plan (empty returns it to the default plan), which also decides
-	// whether it counts against its admins' free-organizations cap. The hub's
-	// metering reconciler moves the Entitlement; this route only records
-	// intent on Organization.spec.plan, after checking the plan exists.
+	// whether it counts against its admins' free-organizations cap. Record
+	// intent on Organization.spec.plan and update the entitlement immediately;
+	// the reconciler repairs interrupted writes and maintains that intent.
 	r.HandleFunc("/organizations/{name}/plan", h.setOrganizationPlan).Methods(http.MethodPut)
 	r.HandleFunc("/providers", h.listProviders).Methods(http.MethodGet)
 	// Provisioning is declarative: creating a Provider object in
@@ -197,12 +207,14 @@ type orgDTO struct {
 }
 
 type workspaceDTO struct {
-	UUID                string   `json:"uuid"`
-	DisplayName         string   `json:"displayName"`
-	ClusterName         string   `json:"clusterName"`
-	Providers           []string `json:"providers"`
-	DeletionRequestedAt *string  `json:"deletionRequestedAt,omitempty"`
-	PurgeAt             *string  `json:"purgeAt,omitempty"`
+	UUID                 string                       `json:"uuid"`
+	DisplayName          string                       `json:"displayName"`
+	ClusterName          string                       `json:"clusterName"`
+	Providers            []string                     `json:"providers"`
+	ProviderReferences   []WorkspaceProviderReference `json:"providerReferences"`
+	ProvidersUnavailable bool                         `json:"providersUnavailable,omitempty"`
+	DeletionRequestedAt  *string                      `json:"deletionRequestedAt,omitempty"`
+	PurgeAt              *string                      `json:"purgeAt,omitempty"`
 	// DeletionForced is set when the deletion skips the recovery window:
 	// the cascade runs on the reconciler's next sweep, so there is no
 	// PurgeAt deadline and an undelete is refused.
@@ -243,10 +255,12 @@ func (h *Handler) listOrganizations(w http.ResponseWriter, r *http.Request) {
 		if wss, err := h.svc.ListOrgWorkspaces(r.Context(), o.Name); err == nil {
 			for _, ws := range wss {
 				wd := workspaceDTO{
-					UUID:        ws.UUID,
-					DisplayName: ws.DisplayName,
-					ClusterName: ws.ClusterName,
-					Providers:   ws.Providers,
+					UUID:                 ws.UUID,
+					DisplayName:          ws.DisplayName,
+					ClusterName:          ws.ClusterName,
+					Providers:            ws.Providers,
+					ProviderReferences:   ws.ProviderReferences,
+					ProvidersUnavailable: ws.ProvidersUnavailable,
 				}
 				if wd.Providers == nil {
 					wd.Providers = []string{}
@@ -322,7 +336,7 @@ type planRequest struct {
 
 // setOrganizationPlan records Organization.spec.plan. 200 with {name, plan},
 // 400 for an unknown plan, 404 for an unknown organization, 503 when
-// metering is not configured.
+// metering is unavailable or the entitlement write needs retrying.
 func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
 	if name == "" {
@@ -369,6 +383,12 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+		}
+		if req.Plan != "" && h.assignPlan != nil {
+			if err := h.assignPlan(r.Context(), org.Name, req.Plan); err != nil {
+				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("organization %q is assigned to plan %q but its entitlement could not be updated; retry this assignment: %v", name, req.Plan, err))
 				return
 			}
 		}

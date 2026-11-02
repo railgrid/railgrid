@@ -56,6 +56,11 @@ func planRouter(t *testing.T, lookup func(context.Context, string) (bool, error)
 
 func planRouterWithReset(t *testing.T, lookup func(context.Context, string) (bool, error), reset func(context.Context, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
 	t.Helper()
+	return planRouterWithWriters(t, lookup, reset, nil, orgs...)
+}
+
+func planRouterWithWriters(t *testing.T, lookup func(context.Context, string) (bool, error), reset func(context.Context, string) error, assign func(context.Context, string, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -77,6 +82,9 @@ func planRouterWithReset(t *testing.T, lookup func(context.Context, string) (boo
 	}
 	if reset != nil {
 		h.WithPlanReset(reset)
+	}
+	if assign != nil {
+		h.WithPlanAssignment(assign)
 	}
 	h.Register(sub)
 	return r, client
@@ -190,5 +198,38 @@ func TestSetOrganizationPlanWithoutMetering(t *testing.T) {
 	rec, _ := putPlan(h, "org-a", `{"plan":"team"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestSetOrganizationPlanWritesEntitlementAndRetriesPartialFailure(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{DisplayName: "A"},
+	}
+	calls := 0
+	var assignErr = errors.New("store unavailable")
+	var client *railgridclient.Client
+	assign := func(ctx context.Context, name, plan string) error {
+		saved, err := client.Organizations().Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
+		}
+		if saved.Spec.Plan != plan {
+			t.Fatalf("entitlement write ran before organization assignment: %q", saved.Spec.Plan)
+		}
+		calls++
+		return assignErr
+	}
+	var h http.Handler
+	h, client = planRouterWithWriters(t, func(context.Context, string) (bool, error) { return true, nil }, nil, assign, org)
+	rec, _ := putPlan(h, "org-a", `{"plan":"team"}`)
+	if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "retry this assignment") {
+		t.Fatalf("partial failure: %d %s", rec.Code, rec.Body.String())
+	}
+	assignErr = nil
+	rec, _ = putPlan(h, "org-a", `{"plan":"team"}`)
+	if rec.Code != http.StatusOK || calls != 2 {
+		t.Fatalf("same-plan retry: status %d, calls %d", rec.Code, calls)
 	}
 }

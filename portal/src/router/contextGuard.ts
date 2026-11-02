@@ -77,8 +77,13 @@ export function installContextGuard(router: Router): void {
     const context = useRouteContextStore()
     context.destination = to.fullPath
     const scope = parsePortalScope(to.path)
-    if (to.meta.public || !scope || context.state !== 'ready' ||
-      scope.orgUUID !== context.target?.orgUUID || scope.workspaceUUID !== context.target?.workspaceUUID) {
+    // Admin detail/query navigation has no tenant scope to resolve. Raising
+    // the loading gate here unmounts the current page and loses its list state.
+    // Keep that view mounted; authentication and admin checks still run below.
+    const retainAdminView = to.meta.admin && router.currentRoute.value.meta.admin
+      && to.path === router.currentRoute.value.path && context.state !== 'loading'
+    if (!retainAdminView && (to.meta.public || !scope || context.state !== 'ready' ||
+      scope.orgUUID !== context.target?.orgUUID || scope.workspaceUUID !== context.target?.workspaceUUID)) {
       context.invalidate()
       if (!to.meta.public) context.state = 'loading'
     }

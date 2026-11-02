@@ -1184,6 +1184,7 @@ func (s *Server) Run(ctx context.Context) error {
 					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
 				if meteringStore != nil {
 					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore)).
+						WithPlanAssignment(metering.AssignPlan(meteringDiscovery, meteringStore, logger.WithName("metering-admin"))).
 						WithPlanReset(metering.ResetPlan(meteringDiscovery, meteringStore, s.opts.MeteringDefaultPlan, logger.WithName("metering-admin")))
 				}
 				adminHandler.Register(adminSub)

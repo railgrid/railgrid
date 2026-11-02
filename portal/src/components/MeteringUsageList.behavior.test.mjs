@@ -10,13 +10,18 @@ const source = fs.readFileSync(new URL('./MeteringUsageList.vue', import.meta.ur
 const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const parsed = ts.createSourceFile('MeteringUsageList.ts', script, ts.ScriptTarget.Latest, true)
 
+const meterSource = fs.readFileSync(new URL('./metering-meters.ts', import.meta.url), 'utf8')
+const meterCode = ts.transpileModule(meterSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+const { meterLabel } = await import('data:text/javascript;base64,' + Buffer.from(meterCode).toString('base64'))
+
 function usageFixture(props) {
   const context = {
     props: { limits: [], usage: null, window: null, ...props },
+    label: meterLabel,
     integerFormat: new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }),
     computed: (calculate) => ({ get value() { return calculate() } }),
   }
-  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText', 'label', 'headlineRank', 'pickHeadline', 'summarize']) {
+  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText', 'headlineRank', 'pickHeadline', 'summarize']) {
     const declaration = parsed.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
     assert.ok(declaration, `${name} exists in the production component`)
     const code = ts.transpileModule(declaration.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText

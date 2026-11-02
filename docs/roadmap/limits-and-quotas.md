@@ -714,7 +714,7 @@ the flows, the ownership rule and the per-environment setup.
   `OrgBillingCard.vue`.
 - **Who owns the plan.** `Organization.spec.plan` (admin-only) still wins:
   the hub's reconciler writes it to the Entitlement with
-  `metering.contrib.kcp.io/plan-source=operator`, which the billing
+  `metering.railgrid.ai/plan-source=operator`, which the billing
   reconciler respects, and clears the label with the assignment. Otherwise
   the subscription owns the plan. The free-organizations cap (O-5) reads the
   Entitlement's plan when metering is installed, so a paid organization is
