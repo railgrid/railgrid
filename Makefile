@@ -1414,15 +1414,17 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 ## triggers with per-route outcomes and a recorded Run, the delivery sink
 ## (webhooks/deliveries), the evaluate and replay verbs, Validated conditions,
 ## retention, deletion and Disable. Runs are recorded, not executed (no model
-## credential). Shares the embedded-kcp etcd port 2380 with the other subprocess
-## suites — do not run them concurrently.
+## credential). Etcd defaults to 2379/2380. For a local run beside Tilt, set
+## E2E_AGENTS_ETCD_CLIENT_PORT and E2E_AGENTS_ETCD_PEER_PORT to free ports.
 E2E_AGENTS_PROVIDER_TIMEOUT ?= 15m
+E2E_AGENTS_ETCD_CLIENT_PORT ?= 2379
+E2E_AGENTS_ETCD_PEER_PORT ?= 2380
 e2e-agents-provider: build-hub build-agents-provider ## Run agents provider (webhook/trigger routing) e2e suite
-	@test -z "$$(lsof -ti :19513 :16513 :18138 :2380 2>/dev/null)" || { \
-		echo "ports 19513/16513/18138/2380 are in use; stop any running railgrid-hub/agents-provider first"; \
+	@test -z "$$(lsof -ti :19513 :16513 :18138 :$(E2E_AGENTS_ETCD_CLIENT_PORT) :$(E2E_AGENTS_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "one of the selected Agents E2E ports is in use; choose free E2E_AGENTS_ETCD_CLIENT_PORT/E2E_AGENTS_ETCD_PEER_PORT values or stop only the conflicting test process"; \
 		exit 1; \
 	}
-	go test -count=1 ./test/e2e/suites/agentsprovider/... -v -timeout $(E2E_AGENTS_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
+	RAILGRID_E2E_ETCD_CLIENT_PORT=$(E2E_AGENTS_ETCD_CLIENT_PORT) RAILGRID_E2E_ETCD_PEER_PORT=$(E2E_AGENTS_ETCD_PEER_PORT) go test -count=1 ./test/e2e/suites/agentsprovider/... -v -timeout $(E2E_AGENTS_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
 
 ## Edges provider e2e (embedded kcp + edges-provider init/serve subprocesses).
 ## Covers the control-plane + auth surface of the decoupled edges provider:

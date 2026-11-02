@@ -112,9 +112,9 @@ var (
 
 // Ports continue the +10 series the other subprocess suites use (provider
 // 19443, infraprovider 19453, edges 19463, edgesconn 19473, cli 19483, kuery
-// 19493, identity 19503). Like them, this suite shares the embedded-kcp etcd
-// port 2380 and must not run concurrently with the others. The Makefile
-// pre-checks all four with lsof.
+// 19493, identity 19503). Etcd defaults to 2379/2380; local runs may override
+// both with RAILGRID_E2E_ETCD_{CLIENT,PEER}_PORT to coexist with Tilt.
+// The Makefile and TestMain check every selected listener before startup.
 const (
 	hubPort      = "19513"
 	kcpPort      = "16513"
@@ -169,8 +169,16 @@ func TestMain(m *testing.M) {
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
 
+	etcdClientPort := os.Getenv("RAILGRID_E2E_ETCD_CLIENT_PORT")
+	if etcdClientPort == "" {
+		etcdClientPort = "2379"
+	}
+	etcdPeerPort := os.Getenv("RAILGRID_E2E_ETCD_PEER_PORT")
+	if etcdPeerPort == "" {
+		etcdPeerPort = "2380"
+	}
 	// Fail fast if a previous run left ports bound.
-	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
+	for _, p := range []string{hubPort, kcpPort, providerPort, etcdClientPort, etcdPeerPort} {
 		if portInUse(p) {
 			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill railgrid-hub; pkill agents-provider` and retry\n", p)
 			os.Exit(2)
@@ -195,6 +203,8 @@ func TestMain(m *testing.M) {
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-secure-port", kcpPort,
+		"--kcp-etcd-client-port", etcdClientPort,
+		"--kcp-etcd-peer-port", etcdPeerPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
 		"--static-auth-token", staticToken,
