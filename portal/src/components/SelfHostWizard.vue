@@ -6,8 +6,8 @@ import SelfHostInstructions from './SelfHostInstructions.vue'
 import { useOrgProvidersStore, type ProviderInstallation, type OrgProviderRegistration } from '@/stores/orgProviders'
 import { useTenantStore } from '@/stores/tenant'
 
-const props = defineProps<{ name: string; displayName: string; resume?: boolean; manual?: boolean }>()
-const emit = defineEmits<{ cancel: []; completed: [name: string]; manual: [] }>()
+const props = defineProps<{ name: string; displayName: string; resume?: boolean; manual?: boolean; requiredValues?: { name: string; description?: string }[] }>()
+const emit = defineEmits<{ cancel: []; completed: [name: string]; manual: []; console: [] }>()
 const orgProviders = useOrgProvidersStore()
 const tenant = useTenantStore()
 const id = useId()
@@ -18,6 +18,9 @@ const installation = ref<ProviderInstallation | null>(null)
 const refreshError = ref(false)
 const selectedTarget = ref('')
 const saving = ref(false)
+const inputValues = ref<Record<string, string>>({})
+const requiredInputs = computed(() => props.requiredValues ?? [])
+const inputsComplete = computed(() => requiredInputs.value.every(input => !!inputValues.value[input.name]?.trim()))
 const error = ref<string | null>(null)
 const retryManual = ref(false)
 const checking = ref(false)
@@ -32,6 +35,12 @@ watch(() => targets.value.map(t => `${t.workspace}/${t.name}`).join('\n'), () =>
 })
 const canManage = computed(() => tenant.activeOrg?.role === 'admin' || tenant.activeOrg?.catalogEntryCreation === 'members')
 const current = computed(() => orgProviders.byName[props.name] ?? registration.value?.provider)
+const planPinned = computed(() => !!installation.value && installation.value.phase !== 'NotStarted')
+const needsInputs = computed(() => !planPinned.value && requiredInputs.value.length > 0)
+const reviewTarget = computed(() => current.value?.hostingEdge ?? target.value)
+const canChooseConsole = computed(() => canManage.value && !!current.value?.hostingEdge &&
+  !current.value.registered && !current.value.ready && !planPinned.value)
+const newTargetMissing = computed(() => !current.value && (!orgProviders.installTargetsEligible || !target.value || (targets.value.length > 1 && !selectedTarget.value)))
 const progressDescription = computed(() => {
   if (registration.value) return 'Run these commands in your cluster. Readiness updates automatically.'
   if (manualMode.value) {
@@ -44,6 +53,7 @@ const progressDescription = computed(() => {
 const installationHeadline = computed(() => {
   if (!installation.value) return 'Checking installation status'
   switch (installation.value?.phase) {
+    case 'AwaitingConfiguration': return 'Add your configuration'
     case 'Preparing': return 'Getting things ready'
     case 'Queued': return 'Installation queued'
     case 'Installing': return `Installing ${props.displayName}`
@@ -53,7 +63,7 @@ const installationHeadline = computed(() => {
     default: return 'Installation not started'
   }
 })
-const showInstallationDiagnostics = computed(() => installation.value?.phase === 'Failed'
+const showInstallationDiagnostics = computed(() => installation.value?.phase === 'NotStarted' || installation.value?.phase === 'Failed' || installation.value?.phase === 'AwaitingConfiguration'
   || !!error.value || refreshError.value || !!orgProviders.error)
 const installationProgressMessage = computed(() => {
   if (installation.value?.phase === 'Checking') return `Making sure ${props.displayName} is ready.`
@@ -75,6 +85,7 @@ const announcement = computed(() => {
   if (!manualMode.value) {
     if (!installation.value) return `Checking installation status for ${props.displayName}.`
     switch (installation.value?.phase) {
+      case 'AwaitingConfiguration': return `Configuration is needed for ${props.displayName}.`
       case 'Preparing': return `Preparing installation of ${props.displayName}.`
       case 'Queued': return `Installation of ${props.displayName} is queued.`
       case 'Installing': return `Installing ${props.displayName}.`
@@ -215,6 +226,7 @@ async function install(retry = false, manual = manualMode.value) {
     return
   }
   const needsTarget = step.value === 1 && !existing
+  if (!manual && !existing && needsInputs.value && !inputsComplete.value) return
   if (saving.value || !canManage.value || (needsTarget && (!target.value || !orgProviders.installTargetsEligible || (targets.value.length > 1 && !selectedTarget.value)))) return
   saving.value = true
   error.value = null
@@ -233,7 +245,37 @@ async function install(retry = false, manual = manualMode.value) {
       manualMode.value = true
       emit('manual')
     } else {
-      const result = await orgProviders.startInstallation(props.name, existing ? undefined : target.value ?? undefined, retry)
+      // Refresh after failed/lost responses too: the server may have saved a
+      // registration or plan that the browser has not observed yet.
+      const refreshed = await orgProviders.load()
+      if (!active) return
+      if (!refreshed || orgProviders.error) throw new Error('Could not refresh installation status. Try again.')
+      const managedExisting = orgProviders.byName[props.name]
+      if (existing && !managedExisting) {
+        returnToReview()
+        return
+      }
+      if (managedExisting) {
+        installation.value = await orgProviders.getInstallation(props.name)
+        if (!active) return
+      } else installation.value = null
+      if (!planPinned.value && (managedExisting?.registered || managedExisting?.ready)) {
+        manualMode.value = true
+        registration.value = null
+        step.value = managedExisting.ready ? 3 : 2
+        error.value = managedExisting.ready ? null : 'This provider has already registered. Continue with its existing installation.'
+        retryManual.value = true
+        scheduleNextCheck()
+        return
+      }
+      if (needsInputs.value && !inputsComplete.value) {
+        error.value = 'Complete the required configuration before installing.'
+        return
+      }
+      const values = needsInputs.value
+        ? Object.fromEntries(requiredInputs.value.map(input => [input.name, inputValues.value[input.name]?.trim() ?? '']))
+        : undefined
+      const result = await orgProviders.startInstallation(props.name, managedExisting ? undefined : target.value ?? undefined, retry, values)
       if (!active) return
       if (step.value === 2 && !orgProviders.byName[props.name]) {
         returnToReview()
@@ -241,6 +283,7 @@ async function install(retry = false, manual = manualMode.value) {
       }
       installation.value = result
       manualMode.value = false
+      emit('console')
     }
     step.value = 2
     await checkReadiness()
@@ -248,11 +291,51 @@ async function install(retry = false, manual = manualMode.value) {
     if (active) {
       error.value = e instanceof Error ? e.message : String(e)
       retryManual.value = manual
+      if (!manual) {
+        // An unsuccessful response may still have created the registration or
+        // saved its plan. Recover that non-secret state before the next retry.
+        try {
+          await orgProviders.load()
+          if (!active) return
+          if (orgProviders.byName[props.name]) {
+            installation.value = await orgProviders.getInstallation(props.name)
+            if (!active) return
+            if (planPinned.value) {
+              step.value = 2
+              emit('console')
+              scheduleNextCheck()
+            }
+          }
+        } catch { /* the original failure remains visible; retry checks again */ }
+      }
       if (manual && step.value === 1) {
         manualMode.value = false
         registration.value = null
       }
     }
+  } finally {
+    if (active) saving.value = false
+  }
+}
+async function chooseConsoleInstallation() {
+  if (!canChooseConsole.value || saving.value || checking.value) return
+  saving.value = true
+  error.value = null
+  try {
+    const status = await orgProviders.getInstallation(props.name)
+    if (!active) return
+    emit('console')
+    if (status.phase === 'NotStarted') {
+      returnToReview()
+      installation.value = status
+    } else {
+      installation.value = status
+      manualMode.value = false
+      step.value = 2
+      await checkReadiness()
+    }
+  } catch (reason) {
+    if (active) error.value = reason instanceof Error ? reason.message : String(reason)
   } finally {
     if (active) saving.value = false
   }
@@ -293,26 +376,35 @@ onMounted(async () => {
       <p class="k-create-description">Install for your organization, then enable in a workspace.</p>
     </header>
     <ol class="k-wizard-steps" aria-label="Provider installation progress">
-      <li v-for="(label, i) in [targets.length > 1 ? 'Choose cluster' : 'Review', 'Install provider', 'Ready']" :key="label" :aria-current="step === i + 1 ? 'step' : undefined">{{ label }}</li>
+      <li v-for="(label, i) in [!current && targets.length > 1 ? 'Choose cluster' : 'Review', 'Install provider', 'Ready']" :key="label" :aria-current="step === i + 1 ? 'step' : undefined">{{ label }}</li>
     </ol>
     <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ announcement }}</span>
 
     <form v-if="step === 1" class="k-create-surface k-create-surface--guided" :aria-busy="saving" @submit.prevent="canManage && install()">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
-          <h2 ref="heading" tabindex="-1" class="k-create-title">{{ targets.length > 1 ? 'Choose a cluster' : 'Review installation' }}</h2>
-          <template v-if="targets.length > 1">
+          <h2 ref="heading" tabindex="-1" class="k-create-title">{{ !current && targets.length > 1 ? 'Choose a cluster' : 'Review installation' }}</h2>
+          <template v-if="!current && targets.length > 1">
             <label :for="`${id}-target`" class="text-sm font-medium text-text-secondary">Cluster</label>
             <select :id="`${id}-target`" v-model="selectedTarget" class="k-input" :disabled="saving">
               <option disabled value="">Choose a connected cluster</option>
               <option v-for="t in targets" :key="`${t.workspace}/${t.name}`" :value="`${t.workspace}/${t.name}`">{{ t.name }} · {{ t.workspaceDisplayName || t.workspace }}</option>
             </select>
           </template>
-          <p v-else-if="target" class="text-sm text-text-secondary">Cluster: <strong>{{ target.name }}</strong> · {{ target.workspaceDisplayName || target.workspace }}</p>
+          <p v-else-if="reviewTarget" class="text-sm text-text-secondary">Cluster: <strong>{{ reviewTarget.name }}</strong> · {{ reviewTarget.workspaceDisplayName || reviewTarget.workspace }}</p>
           <p class="text-sm text-text-secondary">{{ manualMode ? 'Next, you’ll run installation commands on this cluster.' : 'Railgrid will install the provider through this cluster’s connected Edge.' }}</p>
           <p v-if="!canManage" role="status" class="text-sm text-warning">Your organization requires an organization admin to install providers.</p>
           <p v-if="!orgProviders.installTargetsLoaded" role="status" class="text-sm text-text-muted">Checking connected clusters…</p>
           <p v-else-if="!orgProviders.installTargetsEligible" role="status" class="text-sm text-warning">{{ orgProviders.installTargetsReason || 'No connected Kubernetes cluster is available.' }}</p>
+          <section v-if="needsInputs" class="space-y-3" aria-label="Required configuration">
+            <h3 class="text-sm font-medium text-text-primary">Required configuration</h3>
+            <p class="text-sm text-text-secondary">Supply these chart settings. Enter Secret names and references, never credentials. Railgrid creates its installation namespace first and pauses if a referenced Secret is missing; create the Secret in that namespace, then continue.</p>
+            <div v-for="(input, index) in requiredInputs" :key="input.name" class="space-y-1">
+              <label :for="`${id}-value-${index}`" class="text-sm font-medium text-text-secondary">{{ input.name }}</label>
+              <input :id="`${id}-value-${index}`" v-model="inputValues[input.name]" class="k-input" type="text" required :maxlength="4096" :disabled="saving" :aria-describedby="input.description ? `${id}-value-help-${index}` : undefined" autocomplete="off" spellcheck="false" />
+              <p v-if="input.description" :id="`${id}-value-help-${index}`" class="text-sm text-text-muted">{{ input.description }}</p>
+            </div>
+          </section>
         </div>
         <CreateGuidance
           title="Before you continue"
@@ -324,15 +416,15 @@ onMounted(async () => {
       <div class="k-create-actions">
         <p v-if="error" role="alert" class="text-sm text-danger">{{ error }}</p>
         <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="leave()">Cancel</button>
-        <button type="button" class="k-btn k-btn--ghost" :disabled="saving || !canManage || !orgProviders.installTargetsEligible || !target || (targets.length > 1 && !selectedTarget)" @click="useManualCommands">Install manually</button>
-        <button type="submit" class="k-btn k-btn--primary" :disabled="saving || !canManage || !orgProviders.installTargetsEligible || !target || (targets.length > 1 && !selectedTarget)">
+        <button type="button" class="k-btn k-btn--ghost" :disabled="saving || !canManage || newTargetMissing" @click="useManualCommands">Install manually</button>
+        <button type="submit" class="k-btn k-btn--primary" :disabled="saving || !canManage || newTargetMissing || (!!current && !current.hostingEdge) || (needsInputs && !inputsComplete)">
           <Loader2 v-if="saving" :size="14" class="k-spin" aria-hidden="true" />
-          {{ saving ? 'Preparing…' : target ? `Install on ${target.name}` : 'Install provider' }} <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
+          {{ saving ? 'Preparing…' : reviewTarget ? `Install on ${reviewTarget.name}` : 'Install provider' }} <ArrowRight v-if="!saving" :size="14" aria-hidden="true" />
         </button>
       </div>
     </form>
 
-    <div v-else class="k-create-surface" :class="step === 2 && manualMode ? 'k-create-surface--wide' : ''">
+    <div v-else class="k-create-surface k-create-surface--wide">
       <div v-if="step === 2" class="k-create-body">
         <template v-if="!manualMode">
           <div class="k-create-fields" :aria-busy="checking">
@@ -343,13 +435,22 @@ onMounted(async () => {
             </div>
             <p v-if="!showInstallationDiagnostics" class="text-sm text-text-secondary">Installation continues if you leave this page. Return here to check its progress.</p>
             <p v-if="showInstallationDiagnostics && installation?.message" class="text-sm text-text-secondary">{{ installation.message }}</p>
-            <p v-if="!canManage && (installation?.phase === 'NotStarted' || (installation?.phase === 'Failed' && installation.canRetry))" role="status" class="text-sm text-warning">Only an organization admin can start or retry this installation.</p>
+            <p v-if="!canManage && (installation?.phase === 'NotStarted' || installation?.canRetry)" role="status" class="text-sm text-warning">Only an organization admin can start or retry this installation.</p>
             <div v-if="error" role="alert" class="text-sm text-danger">
               {{ error }} <button type="button" class="k-btn k-btn--ghost" :disabled="saving" @click="retry">{{ retryManual ? 'Retry manual instructions' : 'Retry' }}</button>
             </div>
+            <section v-if="installation?.phase === 'NotStarted' && needsInputs" class="space-y-3" aria-label="Required configuration">
+              <h3 class="text-sm font-medium text-text-primary">Required configuration</h3>
+              <p class="text-sm text-text-secondary">Supply these chart settings. Enter Secret names and references, never credentials. Railgrid creates its installation namespace first and pauses if a referenced Secret is missing; create the Secret in that namespace, then continue.</p>
+              <div v-for="(input, index) in requiredInputs" :key="input.name" class="space-y-1">
+                <label :for="`${id}-value-${index}`" class="text-sm font-medium text-text-secondary">{{ input.name }}</label>
+                <input :id="`${id}-value-${index}`" v-model="inputValues[input.name]" class="k-input" type="text" required :maxlength="4096" :disabled="saving" :aria-describedby="input.description ? `${id}-value-help-${index}` : undefined" autocomplete="off" spellcheck="false" />
+                <p v-if="input.description" :id="`${id}-value-help-${index}`" class="text-sm text-text-muted">{{ input.description }}</p>
+              </div>
+            </section>
             <section v-if="installation" aria-label="Installation status" :aria-busy="checking" class="space-y-4">
-              <button v-if="installation.phase === 'NotStarted' || installation.canRetry" type="button" class="k-btn k-btn--primary" :disabled="saving || !canManage" @click="install(true)">{{ installation.phase === 'NotStarted' ? 'Install provider' : 'Retry installation' }}</button>
-              <button v-if="canManage && (installation.phase === 'NotStarted' || installation.phase === 'Failed')" type="button" class="k-btn k-btn--text text-sm text-text-muted underline underline-offset-2 hover:text-accent" :disabled="saving || checking" @click="useManualCommands">Install manually</button>
+              <button v-if="installation.phase === 'NotStarted' || installation.canRetry" type="button" class="k-btn k-btn--primary" :disabled="saving || !canManage || (needsInputs && !inputsComplete)" @click="install(true)">{{ installation.phase === 'NotStarted' ? 'Install provider' : installation.phase === 'AwaitingConfiguration' ? 'Continue installation' : 'Retry installation' }}</button>
+              <button v-if="canManage && (installation.phase === 'NotStarted' || installation.phase === 'Failed' || installation.phase === 'AwaitingConfiguration')" type="button" class="k-btn k-btn--text text-sm text-text-muted underline underline-offset-2 hover:text-accent" :disabled="saving || checking" @click="useManualCommands">Install manually</button>
             </section>
             <div v-if="orgProviders.error || refreshError" class="flex flex-wrap items-center gap-2 text-sm text-warning" role="status" aria-live="polite">
               <span>Could not refresh status. The last reported status is still shown.</span>
@@ -391,6 +492,7 @@ onMounted(async () => {
           </div>
           <div v-if="orgProviders.error || refreshError" class="text-sm text-warning" role="status" aria-live="polite">Could not refresh status. The last reported status is still shown. We’ll retry automatically.</div>
           <button v-if="!registration && canManage && !error" type="button" class="k-btn k-btn--ghost self-start" :disabled="saving || checking" @click="useManualCommands">Show manual commands</button>
+          <button v-if="canChooseConsole" type="button" class="k-btn k-btn--ghost self-start" :disabled="saving || checking" @click="chooseConsoleInstallation">Install through Console</button>
           <SelfHostInstructions v-if="registration" :registration="registration" />
           <details v-if="showInstallationDiagnostics" class="text-sm text-text-secondary">
             <summary>Readiness details and troubleshooting</summary>

@@ -55,7 +55,7 @@ import (
 )
 
 const planAnnotation = "providers.railgrid.ai/installation"
-const deletingAnnotation = "providers.railgrid.ai/registration-deleting"
+const deletingAnnotation = kcp.ProviderRegistrationDeletingAnnotation
 const ownerLabel = "railgrid.ai/provider-installation"
 const attemptLabel = "providers.railgrid.ai/installation-attempt"
 const attemptIDAnnotation = "providers.railgrid.ai/installation-attempt-id"
@@ -111,6 +111,8 @@ func New(admin *rest.Config, workspaces WorkspaceAccess, hubURL string, insecure
 
 type Plan struct {
 	Namespace               string         `json:"namespace"`
+	RequiredSecrets         []string       `json:"requiredSecrets,omitempty"`
+	AwaitingConfiguration   bool           `json:"awaitingConfiguration,omitempty"`
 	Release                 string         `json:"release"`
 	Chart                   string         `json:"chart"`
 	Version                 string         `json:"version"`
@@ -134,7 +136,12 @@ type Plan struct {
 	JobResult               string         `json:"jobResult,omitempty"`
 	FinishedAt              time.Time      `json:"finishedAt,omitzero"`
 	CleanedUp               bool           `json:"cleanedUp,omitempty"`
+	// RequiredSecretKeys records explicitly declared sibling SecretRef.key values.
+	// Missing entries preserve RequiredSecrets' legacy name-only checks without
+	// guessing defaults from a provider name or an uninspected chart.
+	RequiredSecretKeys map[string][]string `json:"requiredSecretKeys,omitempty"`
 }
+
 type Status struct {
 	Phase     string `json:"phase"`
 	Message   string `json:"message"`
@@ -343,6 +350,7 @@ func (i *Installer) Start(ctx context.Context, org, name string, proposed *Plan,
 	plan.JobUID = ""
 	plan.FinishedAt = time.Time{}
 	plan.CleanedUp = false
+	plan.AwaitingConfiguration = false
 	if err := stampRegistrationRollout(&plan, owner); err != nil {
 		return nil, err
 	}
@@ -453,6 +461,9 @@ func (i *Installer) Status(ctx context.Context, org, name string, ready bool) (*
 }
 func (i *Installer) status(ctx context.Context, edge kubernetes.Interface, plan *Plan, ready bool) (*Status, error) {
 	out := &Status{Phase: "Queued", Message: "Waiting for the installer to start.", Namespace: plan.Namespace, Job: plan.Job, Version: plan.Version, Attempt: plan.Attempt}
+	if plan.AwaitingConfiguration {
+		return configurationStatus(ctx, edge, plan)
+	}
 	if plan.JobResult != "" && !plan.FinishedAt.IsZero() {
 		if !plan.CleanedUp {
 			active, err := attemptStillActive(ctx, edge, plan)
@@ -543,6 +554,20 @@ func (i *Installer) prepare(ctx context.Context, org, name string, edge, local k
 	p.NamespaceAdmitted = true
 	p.NamespaceUID = namespaceUID
 	if err := putProviderKubeconfig(ctx, edge, p.Namespace, p.Owner, previousOwners, credential); err != nil {
+		return err
+	}
+	missing, err := missingConfigurationSecrets(ctx, edge, p)
+	if err != nil {
+		return err
+	}
+	if len(missing) > 0 {
+		_, err := i.mutatePlan(ctx, org, name, p.Owner, p.Job, p.AttemptID, func(current *Plan) error {
+			current.AwaitingConfiguration = true
+			return nil
+		})
+		if err == nil {
+			p.AwaitingConfiguration = true
+		}
 		return err
 	}
 	// The runner has no local Kubernetes role or automounted token. Its only

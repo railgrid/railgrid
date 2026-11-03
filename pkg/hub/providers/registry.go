@@ -226,7 +226,11 @@ type SelfHosting struct {
 	RequiredValues []SelfHostingValue
 }
 
-// SelfHostingValue is one Helm value the installer must set.
+// SelfHostingValue is one Helm value the installer must set. A value whose Name
+// ends in SecretRef.name declares a Secret prerequisite in the installation
+// namespace. Declare the sibling SecretRef.key too when the chart consumes a
+// particular data key; the installer checks that key without reading credentials
+// into the recipe or assuming undeclared chart defaults.
 type SelfHostingValue struct {
 	Name        string
 	Description string

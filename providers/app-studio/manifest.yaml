@@ -430,9 +430,13 @@ spec:
       namespace: "railgrid-provider-app-studio"
       releaseName: "app-studio"
       docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
-      # No requiredValues: app-studio pins no APIExport identity hashes — its
-      # required claims are identity-agnostic and resolve per workspace to
-      # whichever infrastructure/code copy that workspace bound.
+      requiredValues:
+        - name: store.databaseURLSecretRef.key
+          value: database-url
+          description: Data key containing the Postgres connection URL in the referenced Secret.
+        - name: store.databaseURLSecretRef.name
+          description: >-
+            Secret holding the Postgres connection URL for persistent chat messages (key database-url). In Console, create it after the installation namespace is prepared, then continue. For manual installation, create it before Helm.
 
   # What App Studio asks of the hub itself, as opposed to of kcp.
   hub:

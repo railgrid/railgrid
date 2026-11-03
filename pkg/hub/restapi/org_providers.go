@@ -185,9 +185,8 @@ type OrgProviderView struct {
 	ClusterName string `json:"clusterName,omitempty"`
 	// Phase is the kcp workspace phase (e.g. "Ready").
 	Phase string `json:"phase,omitempty"`
-	// Deleting is true after the provider workspace has begun terminating.
-	// kcp keeps terminating workspaces visible until finalizers finish, so the
-	// portal needs this state to avoid presenting the provider as active.
+	// Deleting is true once removal is accepted, including cleanup before the
+	// workspace DELETE. The portal must not present this provider as active.
 	Deleting bool `json:"deleting"`
 	// Registered is true once the provider's chart has run its `init` and
 	// self-registered a CatalogEntry the hub can see. Until then the workspace
@@ -325,7 +324,7 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	workspacePath := kcppaths.OrgProviderPath(orgUUID, name)
 	_, err := h.mgr.orgProviders.EnsureOrgProviderWorkspace(r.Context(), orgUUID, name)
 	if err != nil {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "creating provider workspace: "+err.Error())
+		writeOrgProviderProvisionError(w, err)
 		return
 	}
 	// Record the edge the caller chose, on the provider Workspace — an object
@@ -562,7 +561,7 @@ func (h *Handler) requireEdgeInstallTarget(w http.ResponseWriter, r *http.Reques
 // It resolves against the PLATFORM registry deliberately: the recipe belongs to
 // the provider the Org is copying, and the Org's own (just-created, still empty)
 // entry has none.
-func (h *Handler) installInstructions(ctx context.Context, orgUUID, name, source string) *providers.InstallInstructions {
+func (h *Handler) installInstructions(ctx context.Context, orgUUID, name, source string, inputs ...map[string]string) *providers.InstallInstructions {
 	if h.mgr.providers == nil || source == "" {
 		return nil
 	}
@@ -570,7 +569,13 @@ func (h *Handler) installInstructions(ctx context.Context, orgUUID, name, source
 	if !found || !platform.SelfHosting.Installable() {
 		return nil
 	}
+	var values map[string]string
+	if len(inputs) > 0 {
+		values = inputs[0]
+	}
 	rendered := providers.RenderInstallInstructions(platform.SelfHosting, providers.InstallOptions{
+		Values:        values,
+		Insecure:      h.mgr.kubeconfig.DevMode,
 		ProviderName:  name,
 		WorkspacePath: kcppaths.OrgProviderPath(orgUUID, name),
 		HubURL:        h.mgr.kubeconfig.HubExternalURL,

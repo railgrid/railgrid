@@ -336,6 +336,9 @@ spec:
       releaseName: "agents"
       docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/agents/deploy/chart/README.md"
       requiredValues:
+        - name: store.databaseURLSecretRef.key
+          value: database-url
+          description: Data key containing the Postgres connection URL in the referenced Secret.
         - name: store.databaseURLSecretRef.name
           description: >-
-            Secret holding the Postgres connection URL. Postgres is this provider's only hard dependency beyond the hub — create the Secret before installing.
+            Secret holding the Postgres connection URL under key database-url. In Console, wait for the installation namespace to be prepared, create this Secret there, then continue. For manual installation, create it before Helm.

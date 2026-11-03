@@ -90,8 +90,8 @@ test('disabling an org-shadowed platform binding requires explicit confirmation 
   assert.match(disable, /const migrationConfirmRequired = selfHostedPlatformBinding\(p\)/)
   assert.match(disable, /const confirmed = await confirmDialog\(/)
   assert.match(disable, /title: `Disable the platform copy of \$\{providerDisplayName\(p\)\}\?`/)
-  assert.match(disable, /Disabling removes that binding and can delete resources/)
-  assert.match(disable, /use Enable on this Catalog entry to bind the workspace to your organization’s copy/)
+  assert.match(disable, /This deletes this workspace’s provider resources\. Export them first\./)
+  assert.match(disable, /Then enable your self-hosted copy and recreate the resources\. Nothing is migrated automatically\./)
   assert.match(disable, /if \(!confirmed \|\| !isCurrent\(\)\) return/)
   assert.match(disable, /await providers\.refreshBindings\(\)/)
   assert.match(disable, /bindingIdentity\(bindingAfter\) !== bindingIdentity\(bindingBefore!\)/)
@@ -113,7 +113,7 @@ test('ready provider rows identify the recorded hosting edge, workspace, version
   assert.match(source, /Hosting Edge: <strong[^>]*>\{\{ p\.hostingEdge\?\.name \|\| 'Unavailable' \}\}<\/strong>/)
   assert.match(source, /Workspace: \{\{ p\.hostingEdge\.workspaceDisplayName \|\| p\.hostingEdge\.workspace \}\}/)
   assert.match(source, /Version: \{\{ p\.installedVersion \|\| p\.version \|\| 'Not reported' \}\}/)
-  assert.match(source, /Health: \{\{ p\.deleting \? 'Removing' : p\.ready \? 'Ready' : p\.registered \? 'Not ready' : 'Awaiting install' \}\}/)
+  assert.match(source, /Health: \{\{ p\.deleting \? 'Removing' : p\.ready \? 'Ready' : p\.registered \? 'Not ready' : 'Awaiting registration' \}\}/)
   assert.match(source, /A newer chart is available\./)
   assert.match(source, /Manual upgrade instructions/)
 })
@@ -169,4 +169,13 @@ test('confirmed self-host removal reloads the scoped catalog so the platform rec
   assert.deepEqual(availableFrom([orgShadow]), [])
   registrations.delete('kuery')
   assert.deepEqual(availableFrom([platformProvider]), [platformProvider])
+})
+
+test('explicit Console choice clears only the manual resume route marker', () => {
+ const body=source.match(/function resumeConsoleInstall\(\) \{([\s\S]*?)\n\}/)?.[1]
+ assert.ok(body)
+ const calls=[]
+ new Function('patchProviderQuery',body)((...args)=>calls.push(args))
+ assert.deepEqual(calls,[[{manual:null},true]])
+ assert.match(source,/@console="resumeConsoleInstall"/)
 })
