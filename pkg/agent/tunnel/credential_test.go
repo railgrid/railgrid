@@ -24,6 +24,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -301,5 +302,183 @@ func TestCredentialClientDoesNotMutateTheSharedTLSConfig(t *testing.T) {
 	transport.TLSClientConfig.NextProtos = append(transport.TLSClientConfig.NextProtos, "h2")
 	if len(shared.NextProtos) != 0 {
 		t.Fatalf("shared config gained NextProtos %v", shared.NextProtos)
+	}
+}
+
+func TestCredentialRefreshFailureBacksOffAndRetries(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	store := &CredentialStore{}
+	if err := store.Adopt(Credential{Token: "issued", HubURL: server.URL, RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		if err := store.EnsureFresh(context.Background()); err == nil {
+			t.Fatal("refresh failure swallowed")
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", calls.Load())
+	}
+	store.mu.Lock()
+	store.retryAfter = time.Now().Add(-time.Second)
+	store.mu.Unlock()
+	if err := store.EnsureFresh(context.Background()); err == nil {
+		t.Fatal("retry failure swallowed")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("refresh calls after backoff = %d, want 2", calls.Load())
+	}
+}
+
+func TestCredentialRefreshCoalescesAndWaiterCanCancel(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_ = json.NewEncoder(w).Encode(Credential{Token: "fresh", ExpiresAt: time.Now().Add(time.Hour)})
+	}))
+	defer server.Close()
+	defer close(release)
+	store := &CredentialStore{}
+	if err := store.Adopt(Credential{Token: "issued", HubURL: server.URL, RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	first := make(chan error, 1)
+	go func() { first <- store.EnsureFresh(context.Background()) }()
+	<-started
+	// Reads must stay available while network refresh is blocked.
+	if credential, _ := store.Current(); credential.Token != "issued" {
+		t.Fatal("lost current credential")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	waiter := make(chan error, 1)
+	go func() { waiter <- store.EnsureFresh(ctx) }()
+	cancel()
+	select {
+	case err := <-waiter:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("waiter: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancelled waiter blocked behind refresh")
+	}
+	// A second uncancelled caller must share the operation.
+	second := make(chan error, 1)
+	go func() { second <- store.EnsureFresh(context.Background()) }()
+	release <- struct{}{}
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if credential, _ := store.Current(); credential.Token != "fresh" {
+		t.Fatal("refresh not adopted")
+	}
+}
+
+func TestCredentialRefreshCannotReplaceConcurrentEnrollment(t *testing.T) {
+	started, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(started)
+		<-release
+		_ = json.NewEncoder(w).Encode(Credential{Token: "stale-refresh", ExpiresAt: time.Now().Add(time.Hour)})
+	}))
+	defer server.Close()
+	defer close(release)
+	var persisted string
+	store := &CredentialStore{Persist: func(c Credential) error { persisted = c.Token; return nil }}
+	if err := store.Adopt(Credential{Token: "issued", HubURL: server.URL, RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- store.EnsureFresh(context.Background()) }()
+	<-started
+	if err := store.Adopt(Credential{Token: "new-enrollment", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	release <- struct{}{}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if credential, _ := store.Current(); credential.Token != "new-enrollment" || persisted != credential.Token {
+		t.Fatal("old refresh replaced the newer enrollment")
+	}
+}
+
+func TestCredentialAdoptionPersistsInPublicationOrder(t *testing.T) {
+	started, release, secondStarted := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	persisted := make(chan string, 2)
+	store := &CredentialStore{Persist: func(c Credential) error {
+		if c.Token == "first" {
+			close(started)
+			<-release
+		} else {
+			close(secondStarted)
+		}
+		persisted <- c.Token
+		return nil
+	}}
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() { first <- store.Adopt(Credential{Token: "first"}) }()
+	<-started
+	go func() { second <- store.Adopt(Credential{Token: "second"}) }()
+	// A second persistence must not pass the blocked first persistence.
+	select {
+	case <-secondStarted:
+		close(release)
+		t.Fatal("concurrent adoption persisted out of order")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-second; err != nil {
+		t.Fatal(err)
+	}
+	if a, b := <-persisted, <-persisted; a != "first" || b != "second" {
+		t.Fatalf("persisted %q, %q", a, b)
+	}
+	if credential, _ := store.Current(); credential.Token != "second" {
+		t.Fatal("memory and persisted credential differ")
+	}
+}
+
+func TestCanceledRefreshDoesNotBackOffHealthyCaller(t *testing.T) {
+	started := make(chan struct{})
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-r.Context().Done()
+			return
+		}
+		_ = json.NewEncoder(w).Encode(Credential{Token: "fresh", ExpiresAt: time.Now().Add(time.Hour)})
+	}))
+	defer server.Close()
+	store := &CredentialStore{}
+	if err := store.Adopt(Credential{Token: "issued", HubURL: server.URL, RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- store.EnsureFresh(ctx) }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("refresh: %v", err)
+	}
+	if err := store.EnsureFresh(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 {
+		t.Fatal("caller cancellation imposed refresh backoff")
 	}
 }

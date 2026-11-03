@@ -112,10 +112,8 @@ func (c Credential) refreshDue() time.Time {
 // connect delivers a bundle, Adopt records it, and from then on the join token
 // is neither needed nor valid.
 //
-// Refresh happens on the reconnect path rather than from a timer, for the same
-// reason provider-sdk's TokenSource refreshes lazily: an agent that has
-// stopped reconnecting has stopped needing a credential, and its identity
-// should be allowed to lapse and be collected.
+// Refresh happens lazily on tunnel reconnects and native hub requests. Both
+// paths share one refresh and failure backoff; an idle agent needs no timer.
 type CredentialStore struct {
 	// Fallback is the bootstrap join token, used until a credential arrives.
 	Fallback func() string
@@ -128,8 +126,13 @@ type CredentialStore struct {
 	HTTPClient *http.Client
 
 	mu         sync.Mutex
+	adoptMu    sync.Mutex // orders publication and persistence without blocking Current
 	credential Credential
 	refreshAt  time.Time
+	retryAfter time.Time
+	refreshErr error
+	refreshing *credentialRefresh
+	generation uint64
 	haveIt     bool
 	// useFallback is set by Rejected: the provider refused the credential in
 	// hand, so the next attempt presents the join token instead. Adopt clears
@@ -137,10 +140,30 @@ type CredentialStore struct {
 	useFallback bool
 }
 
+type credentialRefresh struct {
+	done chan struct{}
+	err  error
+}
+
+const credentialRefreshBackoff = 30 * time.Second
+
 // Adopt records a credential the provider just issued.
 func (s *CredentialStore) Adopt(credential Credential) error {
+	return s.adopt(credential, nil)
+}
+
+func (s *CredentialStore) adopt(credential Credential, generation *uint64) error {
+	s.adoptMu.Lock()
+	defer s.adoptMu.Unlock()
 	s.mu.Lock()
+	// An enrollment that completed during an old refresh takes precedence.
+	if generation != nil && s.generation != *generation {
+		s.mu.Unlock()
+		return nil
+	}
 	s.credential, s.refreshAt, s.haveIt = credential, credential.refreshDue(), true
+	s.generation++
+	s.retryAfter, s.refreshErr = time.Time{}, nil
 	s.useFallback = false
 	persist := s.Persist
 	s.mu.Unlock()
@@ -196,8 +219,8 @@ func (s *CredentialStore) Rejected() bool {
 }
 
 // EnsureFresh re-mints when the credential is past 80% of its life. It is
-// called before every connect attempt, so a reconnect loop keeps the
-// credential alive on its own.
+// called by tunnel and native clients. Concurrent callers share the attempt
+// and may cancel their wait independently. Failures back off across both paths.
 //
 // A failed refresh is not fatal while the current token is still valid: the
 // next attempt tries again, and there is a fifth of the TTL of room. Once the
@@ -206,20 +229,55 @@ func (s *CredentialStore) Rejected() bool {
 // the honest consequence of a credential that expires, and is stated in
 // docs/edges-agent-credentials.md.
 func (s *CredentialStore) EnsureFresh(ctx context.Context) error {
-	s.mu.Lock()
-	credential, haveIt, refreshAt := s.credential, s.haveIt, s.refreshAt
-	s.mu.Unlock()
-	if !haveIt || refreshAt.IsZero() || time.Now().Before(refreshAt) {
-		return nil
-	}
-	if credential.RefreshPath == "" {
-		return errors.New("the credential carries no refresh route")
-	}
-	refreshed, err := s.refresh(ctx, credential)
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return s.Adopt(refreshed)
+	s.mu.Lock()
+	credential, haveIt, refreshAt := s.credential, s.haveIt, s.refreshAt
+	if !haveIt || refreshAt.IsZero() || time.Now().Before(refreshAt) {
+		s.mu.Unlock()
+		return nil
+	}
+	if pending := s.refreshing; pending != nil {
+		s.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-pending.done:
+			return pending.err
+		}
+	}
+	if time.Now().Before(s.retryAfter) {
+		err := s.refreshErr
+		s.mu.Unlock()
+		return err
+	}
+	pending := &credentialRefresh{done: make(chan struct{})}
+	s.refreshing = pending
+	generation := s.generation
+	s.mu.Unlock()
+
+	var err error
+	if credential.RefreshPath == "" {
+		err = errors.New("the credential carries no refresh route")
+	} else {
+		var refreshed Credential
+		refreshed, err = s.refresh(ctx, credential)
+		if err == nil {
+			err = s.adopt(refreshed, &generation)
+		}
+	}
+	s.mu.Lock()
+	// Caller cancellation must not postpone another caller's refresh, and an
+	// old attempt must not impose backoff on a newly enrolled credential.
+	if err != nil && ctx.Err() == nil && s.generation == generation {
+		s.retryAfter, s.refreshErr = time.Now().Add(credentialRefreshBackoff), err
+	}
+	pending.err = err
+	s.refreshing = nil
+	close(pending.done)
+	s.mu.Unlock()
+	return err
 }
 
 // refresh POSTs to the provider's agent-token verb with the credential in

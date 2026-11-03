@@ -130,12 +130,9 @@ func sendTunnelState(c chan bool, v bool) {
 func startTunneler(ctx context.Context, hubURL string, credentials *CredentialStore, edgeName string, resourceType string, downstream *rest.Config, tlsConfig *tls.Config, stateChannel chan bool, sshPort int, svc SvcProxyOptions, cluster string, onEnrolled func(Credential), extraHeaders http.Header) error {
 	logger := klog.FromContext(ctx)
 
-	// Refresh before dialling, not from a timer: the reconnect path is the
-	// only place the agent is guaranteed to be doing something, and a
-	// credential it has stopped using is one its identity should be allowed to
-	// lapse with. A refresh failure is logged and the connect proceeds with
-	// the token in hand — it is still valid for the remaining 20% of its TTL,
-	// and the next attempt tries again.
+	// Refresh before dialling. Native hub clients use this same store, so
+	// refreshes and failure backoff are shared with active reporters. A failed
+	// refresh still lets the tunnel try the credential in hand.
 	if credentials != nil {
 		if err := credentials.EnsureFresh(ctx); err != nil {
 			logger.Error(err, "could not refresh the agent credential; continuing with the one in hand")
