@@ -126,6 +126,22 @@ func TestEntitlementPlanPrefersTheEntitlement(t *testing.T) {
 	}
 }
 
+func TestArchivedPlanIsUnavailableButExistingEntitlementStillResolves(t *testing.T) {
+	archived := plan("legacy")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	store := planStore(plan("free"), archived, entitlement("org-1", "legacy"))
+	lookup := PlanExists(installed(true), store)
+	if ok, err := lookup(context.Background(), "free"); err != nil || !ok {
+		t.Fatalf("active plan lookup: %v %v", ok, err)
+	}
+	if ok, err := lookup(context.Background(), "legacy"); err != nil || ok {
+		t.Fatalf("archived plan lookup: %v %v, want unavailable", ok, err)
+	}
+	if planName, ok, err := EntitlementPlan(installed(true), store, klog.Background())(context.Background(), "org-1"); planName != "legacy" || !ok || err != nil {
+		t.Fatalf("existing archived entitlement lookup: %q %v %v", planName, ok, err)
+	}
+}
+
 func TestAssignPlanPreservesOverridesAndReconciliationOwnership(t *testing.T) {
 	ent := labelledEntitlement("org-a", "free", map[string]string{LabelOrganization: "org-a", PlanSourceLabel: "billing", "unrelated": "kept"})
 	overrides := []any{map[string]any{"meter": "workspaces", "shape": "Level", "enforce": "Hard", "max": "3"}}

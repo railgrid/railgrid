@@ -230,6 +230,25 @@ test('the current comparison column uses effective allowances and candidates ret
   assert.equal(catalog.limits[0].max, '1')
 })
 
+test('an archived current plan remains readable but is not offered as a plan change', () => {
+  const currentPlan = { name: 'legacy', displayName: 'Legacy', current: true, sellable: false, limits: [planLimit('10')] }
+  const availablePlan = { name: 'team', displayName: 'Team', current: false, sellable: true, limits: [planLimit('100')] }
+  const billing = { value: { plans: [currentPlan, availablePlan] } }
+  const suggested = { value: null }
+  const evaluate = name => {
+    const declaration = parsed.statements.flatMap(node => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+      .find(node => node.name.getText(parsed) === name)
+    assert.ok(declaration?.initializer, `${name} computed exists`)
+    const code = ts.transpileModule(`const result = ${declaration.initializer.getText(parsed)}`, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText
+    return runInNewContext(`${code}\nresult`, { computed: fn => ({ get value() { return fn() } }), billing, suggested })
+  }
+
+  assert.equal(evaluate('current').value.name, 'legacy', 'the existing current plan remains in the billing view')
+  assert.deepEqual(evaluate('offers').value.map(plan => plan.name), ['team'], 'only noncurrent plans are eligible choices')
+})
+
 test('admin request drafts distinguish empty, populated, and unknown overrides', () => {
   for (const overrides of [[], [planLimit('1')], undefined]) {
     const context = {

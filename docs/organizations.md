@@ -892,10 +892,25 @@ upgrading the hub alone does not establish this contract. Verify that a
 subscription update leaves an admin-assigned plan unchanged and that a
 billing-owned plan reports its ownership before enabling checkout.
 
-Plan deletion reads organization assignments from the tenancy workspace as well
-as entitlement references from the metering workspace. If either read is
-unavailable, deletion is refused. Assignments awaiting entitlement creation or
-reconciliation therefore still prevent deletion. These are snapshot checks, not
-a distributed transaction with concurrent assignments. The pre-existing race
-between plan assignment and deletion across hub replicas remains; operators
-should serialize those operations until shared coordination is implemented.
+## Plan archival
+
+The platform admin's **Archive plan** action retires a plan without deleting its
+resource or limits. The existing `DELETE /api/admin/metering/plans/{name}` route
+now archives the Plan by setting the annotation
+`metering.railgrid.ai/archived: "true"`; repeating the action is safe. The
+platform default plan cannot be archived. Archived plans cannot be edited or
+selected for new assignments through the hub, and are removed from subscription
+offers except when displaying an organization's current plan.
+
+Existing organization assignments and entitlements keep referencing the retained
+Plan. Their limits, overrides, usage, and reconciliation continue to work, and
+admins can move them onto an active plan. Requests already in flight when a plan
+is archived may finish; their references remain valid because the resource
+still exists. This removes the assignment-versus-deletion race without a
+cross-workspace lock. There is no physical purge action or restore action in
+the platform admin UI.
+
+A separately deployed subscription integration must also exclude archived plans
+from new subscriptions while continuing to service existing assignments. The
+inspected contrib-metering version above does not supply that integration;
+archival is hub-owned metadata and does not require changing its Plan schema.

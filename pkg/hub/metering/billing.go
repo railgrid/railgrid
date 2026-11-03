@@ -54,10 +54,21 @@ const (
 	PlanSourceLabel = "metering.railgrid.ai/plan-source"
 	// PlanSourceOperator is the PlanSourceLabel value for a plan set by hand.
 	PlanSourceOperator = "operator"
+	// PlanArchivedAnnotation marks a Plan as retained for existing assignments
+	// but unavailable for edits or new assignments. It lives in metadata so the
+	// metering Plan schema does not need to change.
+	PlanArchivedAnnotation = "metering.railgrid.ai/archived"
 
 	// maxWebhookBody bounds a relayed provider delivery.
 	maxWebhookBody = 1 << 20
 )
+
+// IsPlanArchived reports whether plan is retained for existing assignments
+// only. The marker is an annotation rather than a Plan spec field so no
+// external metering schema change is needed.
+func IsPlanArchived(plan *unstructured.Unstructured) bool {
+	return plan != nil && plan.GetAnnotations()[PlanArchivedAnnotation] == "true"
+}
 
 // Billing holds what the seam needs: discovery for the deployment's URL and
 // token, and the kcp-admin client into the metering workspace for reads.
@@ -172,13 +183,16 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		return out, fmt.Errorf("listing plans: %w", err)
 	}
 	display := map[string]string{}
+	archived := map[string]bool{}
 	for i := range plans.Items {
 		p := &plans.Items[i]
+		isArchived := IsPlanArchived(p)
 		offer := PlanOffer{Name: p.GetName(), Limits: limitsOf(p.Object, "spec", "limits")}
 		offer.DisplayName, _, _ = unstructured.NestedString(p.Object, "spec", "displayName")
 		price, _, _ := unstructured.NestedString(p.Object, "spec", "subscription", "priceID")
-		offer.Sellable = price != ""
+		offer.Sellable = price != "" && !isArchived
 		display[offer.Name] = offer.DisplayName
+		archived[offer.Name] = isArchived
 		out.Plans = append(out.Plans, offer)
 	}
 	sort.Slice(out.Plans, func(i, j int) bool { return out.Plans[i].Name < out.Plans[j].Name })
@@ -225,9 +239,15 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		}
 	}
 	out.PlanDisplayName = display[out.Plan]
+	filteredOffers := out.Plans[:0]
 	for i := range out.Plans {
 		out.Plans[i].Current = out.Plans[i].Name == out.Plan
+		if archived[out.Plans[i].Name] && !out.Plans[i].Current {
+			continue
+		}
+		filteredOffers = append(filteredOffers, out.Plans[i])
 	}
+	out.Plans = filteredOffers
 	return out, nil
 }
 
@@ -253,6 +273,13 @@ func limitsOf(obj map[string]any, fields ...string) []Limit {
 // subscription integration must preserve that plan until the administrator
 // releases it.
 func (b *Billing) Checkout(ctx context.Context, org, plan, successURL, cancelURL string) (string, error) {
+	planObject, planErr := b.store.Resource(gvrPlans).Get(ctx, plan, metav1.GetOptions{})
+	if planErr == nil && IsPlanArchived(planObject) {
+		return "", &BillingError{Status: http.StatusConflict, Message: fmt.Sprintf("plan %q is archived and unavailable for checkout", plan)}
+	}
+	if planErr != nil && !apierrors.IsNotFound(planErr) {
+		return "", fmt.Errorf("reading checkout plan %q: %w", plan, planErr)
+	}
 	ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
 	switch {
 	case err == nil && ent.GetLabels()[PlanSourceLabel] == PlanSourceOperator:

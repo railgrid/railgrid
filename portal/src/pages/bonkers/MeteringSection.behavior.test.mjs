@@ -177,39 +177,60 @@ test('prototype-named organizations can start, retry, and stop independent assig
   assert.equal(context.pending.value.size, 0)
 })
 
-test('plan deletion fails closed until organization references are authoritative', () => {
-  const context = { organizationsLoading: { value: false }, organizationsLoaded: { value: false }, organizationError: { value: null },
-    planReferenceCount: () => 0, orgs: { value: [] }, pendingAssignments: { value: [] } }
-  const blocked = productionFunction('planHasReferences', context)
-  assert.equal(blocked('team'), true, 'initial pending organization read')
-  context.organizationsLoaded.value = true
-  assert.equal(blocked('team'), false, 'authoritative empty snapshot')
-  context.organizationError.value = 'unavailable'
-  assert.equal(blocked('team'), true, 'failed refresh of an empty snapshot')
-  context.organizationError.value = null
-  context.organizationsLoading.value = true
-  assert.equal(blocked('team'), true, 'retry cannot reuse an empty stale snapshot')
-  context.organizationsLoading.value = false
-  context.orgs.value = [{ plan: 'team' }]
-  assert.equal(blocked('team'), true, 'intent without an entitlement')
-  context.orgs.value = []
-  context.pendingAssignments.value = [{ target: 'team' }]
-  assert.equal(blocked('team'), true, 'assignment in flight')
+test('archive action preserves referenced plans and communicates retained limits and in-flight work', async () => {
+  const plans = [
+    { metadata: { name: 'free' }, spec: { displayName: 'Free' } },
+    { metadata: { name: 'team' }, spec: { displayName: 'Team' } },
+  ]
+  const confirmations = []
+  const writes = []
+  let refreshes = 0
+  let closed = 0
+  const context = {
+    planFor: name => plans.find(plan => plan.metadata.name === name),
+    isPlanArchived: plan => plan?.metadata.annotations?.['metering.railgrid.ai/archived'] === 'true',
+    status: { value: { defaultPlan: 'free' } }, writable: { value: true }, busy: { value: null },
+    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' },
+    planLabel: name => plans.find(plan => plan.metadata.name === name)?.spec?.displayName ?? name,
+    confirmDialog: async options => { confirmations.push(options); return true },
+    write: async (...args) => writes.push(args), refresh: async () => { refreshes++ },
+    selectedCollectionKey: { value: 'plans' }, selectedResourceId: { value: 'team' }, closeResource: () => { closed++ },
+  }
+  const archive = productionFunction('archivePlan', context)
+
+  await archive('free')
+  assert.equal(confirmations.length, 0, 'the platform default remains protected')
+
+  // Existing references no longer block archiving.
+  context.planReferenceCount = () => 4
+  context.planHasReferences = () => true
+  await archive('team')
+
+  assert.equal(confirmations.length, 1)
+  assert.equal(confirmations[0].title, 'Archive plan “Team”?')
+  assert.match(confirmations[0].message, /Existing organization assignments and limits will stay in effect/)
+  assert.match(confirmations[0].message, /New assignments will be blocked/)
+  assert.match(confirmations[0].message, /Requests already in flight may finish/)
+  assert.equal(confirmations[0].confirmLabel, 'Archive plan')
+  assert.equal(confirmations[0].danger, undefined, 'archiving does not use destructive delete styling')
+  assert.deepEqual(writes, [['DELETE', 'plans/team']])
+  assert.match(context.notice.value, /archived.*Existing assignments and limits remain in effect/)
+  assert.equal(refreshes, 1)
+  assert.equal(closed, 0, 'the archived plan remains open for inspection')
 })
 
-test('delete action cannot bypass unknown references or a failure during confirmation', async () => {
-  let blocked = true
-  let confirmations = 0
+test('archive action refuses a plan that became archived while confirmation was open', async () => {
+  const plan = { metadata: { name: 'team' } }
   let writes = 0
-  const context = { planReferenceCount: () => 0, planHasReferences: () => blocked,
-    status: { value: { defaultPlan: 'free' } }, planLabel: name => name,
-    confirmDialog: async () => { confirmations++; blocked = true; return true },
-    busy: { value: null }, actionError: { value: null }, write: async () => { writes++ } }
-  const remove = productionFunction('deletePlan', context)
-  await remove('team')
-  assert.equal(confirmations, 0)
-  blocked = false
-  await remove('team')
-  assert.equal(confirmations, 1)
+  const context = {
+    planFor: () => plan,
+    isPlanArchived: item => item?.metadata.annotations?.['metering.railgrid.ai/archived'] === 'true',
+    status: { value: { defaultPlan: 'free' } }, writable: { value: true }, busy: { value: null },
+    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' },
+    planLabel: name => name,
+    confirmDialog: async () => { plan.metadata.annotations = { 'metering.railgrid.ai/archived': 'true' }; return true },
+    write: async () => { writes++ }, refresh: async () => {},
+  }
+  await productionFunction('archivePlan', context)('team')
   assert.equal(writes, 0)
 })

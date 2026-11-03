@@ -9,7 +9,7 @@
 // endpoint, so the reconciler preserves them. Overrides are edited separately.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute, useRouter } from 'vue-router'
-import { Plus, RefreshCw } from 'lucide-vue-next'
+import { Archive, Plus, RefreshCw } from 'lucide-vue-next'
 
 import ResourceTable from '@/portalkit/ResourceTable.vue'
 import ResourcePage from '@/portalkit/ResourcePage.vue'
@@ -17,8 +17,8 @@ import ResourceBackLink from '@/portalkit/ResourceBackLink.vue'
 import ResourceSectionCard from '@/portalkit/ResourceSectionCard.vue'
 import type { ResourceRefreshMode } from '@/portalkit/page-state'
 import ResourceTableEditButton from '@/portalkit/ResourceTableEditButton.vue'
+import ResourceTableActionButton from '@/portalkit/ResourceTableActionButton.vue'
 import type { TableFilterDefinition } from '@/portalkit/table'
-import ResourceTableDeleteButton from '@/portalkit/ResourceTableDeleteButton.vue'
 import ConditionsPanel, { type ConditionInfo } from '@/portalkit/ConditionsPanel.vue'
 import StatusBadge from '@/portalkit/StatusBadge.vue'
 import { organizationReturn } from './admin-relations'
@@ -28,7 +28,7 @@ import { authFetch } from '@/auth/session'
 import MeteringDialog from './MeteringDialog.vue'
 import { planApplication, usageFreshness } from './metering-diagnostics'
 import { meterDefinition, meterLabel } from '@/components/metering-meters'
-import { assignmentApplied, assignmentNeedsWrite, assignmentSelection, assignmentSource, effectiveLimits, indexEntitlements, limitsError, meteringDisplayNames, toLimits, type MeteringItem } from './metering-model'
+import { assignmentApplied, assignmentNeedsWrite, assignmentSelection, assignmentSource, effectiveLimits, indexEntitlements, isPlanArchived, limitsError, meteringDisplayNames, planSelectionOptions, toLimits, type MeteringItem } from './metering-model'
 import type { AdminOrg } from '@/stores/admin'
 import MeteringLimitsEditor, { type Limit } from './MeteringLimitsEditor.vue'
 import MeteringUsageList, { type LimitRow, type UsageWindow } from '@/components/MeteringUsageList.vue'
@@ -90,7 +90,7 @@ type Collection = {
 const summaryText = (row: Row) => String(row.summaryText ?? '')
 const collections: Collection[] = [
   { key: 'plans', label: 'Plans', noun: 'Plan', searchPlaceholder: 'Search plans…',
-    searchKeys: ['name', 'displayName', 'summaryText'], columns: [
+    searchKeys: ['name', 'displayName', 'summaryText', 'lifecycleText'], columns: [
       { key: 'displayName', label: 'Plan', primary: true, sortable: true },
       { key: 'name', label: 'Plan ID' },
       { key: 'organizationCount', label: 'Organizations', sortable: true },
@@ -212,6 +212,8 @@ function rowsFor(collection: string): Row[] {
     if (collection === 'plans') {
       row.limits = item.spec?.limits ?? []
       row.organizationCount = organizationsLoaded.value && !organizationError.value ? planCount(item.metadata.name) : 'Unavailable'
+      row.lifecycle = isPlanArchived(item) ? 'archived' : 'available'
+      row.lifecycleText = isPlanArchived(item) ? 'Archived' : 'Available'
     }
     if (collection === 'entitlements') {
       row.limits = item.status?.effectiveLimits ?? []
@@ -317,6 +319,8 @@ let organizationTrigger: HTMLElement | null = null
 const planItems = computed(() => items.value.plans ?? [])
 function planFor(name: string): Item | undefined { return planItems.value.find(p => p.metadata.name === name) }
 function planLabel(name: string): string { return String(planFor(name)?.spec?.displayName || name || 'Awaiting assignment') }
+const assignmentPlanItems = computed(() => planSelectionOptions(planItems.value, assignment.value?.plan ?? ''))
+const entitlementPlanItems = computed(() => planSelectionOptions(planItems.value, entitlementDraft.value?.plan ?? ''))
 const entitlementsByOrg = computed(() => indexEntitlements(items.value.entitlements ?? []))
 const displayNames = computed(() => meteringDisplayNames(orgs.value, items.value.accounts ?? []))
 function entitlementFor(name: string): Item | undefined { return entitlementsByOrg.value.get(name) }
@@ -324,7 +328,6 @@ function orgLabel(name: string): string { return orgs.value.find(o => o.name ===
 function sourceFor(org: AdminOrg | undefined): string { return org ? assignmentSource(org.plan, entitlementFor(org.name), status.value?.defaultPlan) : 'Organization unavailable' }
 function planReferenceCount(name: string): number { return (items.value.entitlements ?? []).filter(e => e.spec?.plan === name).length }
 function planCount(name: string): number { return orgs.value.filter(org => org.plan === name || entitlementFor(org.name)?.spec?.plan === name).length }
-function planHasReferences(name: string): boolean { return organizationsLoading.value || !organizationsLoaded.value || !!organizationError.value || planReferenceCount(name) > 0 || orgs.value.some(org => org.plan === name) || pendingAssignments.value.some(p => p.target === name) }
 const organizationColumns: Column[] = [
   { key: 'displayName', label: 'Organization', primary: true, sortable: true },
   { key: 'planName', label: 'Plan', sortable: true },
@@ -335,6 +338,15 @@ const organizationFilters: TableFilterDefinition[] = [
   { key: 'planName', label: 'Plan', allLabel: 'All plans' },
   { key: 'stateText', label: 'State', allLabel: 'All states' },
 ]
+const planFilters: TableFilterDefinition[] = [{
+  key: 'lifecycle',
+  label: 'Lifecycle',
+  allLabel: 'All plans',
+  options: [
+    { value: 'available', label: 'Available' },
+    { value: 'archived', label: 'Archived' },
+  ],
+}]
 const organizationRows = computed<Row[]>(() => orgs.value.map(org => {
   const entitlement = entitlementFor(org.name)
   const limits = toLimits(entitlement?.status?.effectiveLimits)
@@ -528,7 +540,7 @@ function orgState(org: AdminOrg): EntitlementState {
 }
 const overTarget = computed(() => previewLimits.value.filter(l => l.enforce === 'Hard' && l.max !== '' && Number(selectedEntitlement.value?.status?.usage && (selectedEntitlement.value.status.usage as Record<string, unknown>)[l.meter]) > Number(l.max)))
 const assignmentDirty = computed(() => !!assignment.value && assignment.value.plan !== assignment.value.initial)
-const assignmentWritable = computed(() => !!assignment.value && assignmentNeedsWrite(orgs.value.find(o => o.name === assignment.value!.name)?.plan, selectedEntitlement.value, status.value?.defaultPlan, assignment.value.plan))
+const assignmentWritable = computed(() => !!assignment.value && !isPlanArchived(selectedTarget.value) && assignmentNeedsWrite(orgs.value.find(o => o.name === assignment.value!.name)?.plan, selectedEntitlement.value, status.value?.defaultPlan, assignment.value.plan))
 const planDirty = computed(() => !!planDraft.value && JSON.stringify(planDraft.value) !== initialPlan.value)
 const overridesDirty = computed(() => !!entitlementDraft.value && (entitlementDraft.value.advanced ? JSON.stringify({ plan: entitlementDraft.value.plan, overrides: entitlementDraft.value.overrides }) !== initialEntitlement.value : JSON.stringify(entitlementDraft.value.overrides) !== initialOverrides.value))
 const planValidation = computed(() => planDraft.value ? limitsError(planDraft.value.limits) : null)
@@ -546,6 +558,7 @@ async function read<T>(path: string, init?: RequestInit): Promise<T> {
 
 function editPlan(name: string): void {
   const plan = planFor(name)
+  if (plan && isPlanArchived(plan)) return
   actionError.value = null
   planDraft.value = { name, isNew: !plan, displayName: String(plan?.spec?.displayName ?? ''), limits: toLimits(plan?.spec?.limits) }
   initialPlan.value = JSON.stringify(planDraft.value)
@@ -594,7 +607,7 @@ function stopWatching(name: string): void {
 
 async function saveAssignment(): Promise<void> {
   const draft = assignment.value
-  if (!draft || !assignmentWritable.value || !selectedTarget.value) return
+  if (!draft || !assignmentWritable.value || !selectedTarget.value || isPlanArchived(selectedTarget.value)) return
   const target = selectedTarget.value.metadata.name
   busy.value = draft.name
   actionError.value = null
@@ -618,6 +631,10 @@ async function write(method: 'PUT' | 'DELETE', path: string, body?: unknown): Pr
 async function savePlan(): Promise<void> {
   const draft = planDraft.value
   if (!draft || planValidation.value) return
+  if (!draft.isNew && isPlanArchived(planFor(draft.name))) {
+    actionError.value = 'Archived plans cannot be edited.'
+    return
+  }
   busy.value = draft.name || 'new-plan'
   actionError.value = null
   try {
@@ -628,17 +645,21 @@ async function savePlan(): Promise<void> {
   } catch (err) { actionError.value = (err as Error).message }
   finally { busy.value = null }
 }
-async function deletePlan(name: string): Promise<void> {
-  const using = planReferenceCount(name)
-  if (using || planHasReferences(name) || name === status.value?.defaultPlan) return
-  if (!await confirmDialog({ title: `Delete plan “${planLabel(name)}”?`, message: 'Organizations can no longer be placed on it. Existing usage data is kept.', danger: true, confirmLabel: 'Delete plan' })) return
-  if (planHasReferences(name)) return
+async function archivePlan(name: string): Promise<void> {
+  const plan = planFor(name)
+  if (!plan || isPlanArchived(plan) || name === status.value?.defaultPlan || !writable.value || busy.value || error.value || foregroundLoading.value) return
+  if (!await confirmDialog({
+    title: `Archive plan “${planLabel(name)}”?`,
+    message: 'Existing organization assignments and limits will stay in effect. New assignments will be blocked. Requests already in flight may finish.',
+    confirmLabel: 'Archive plan',
+  })) return
+  const latestPlan = planFor(name)
+  if (!latestPlan || isPlanArchived(latestPlan) || name === status.value?.defaultPlan || !writable.value || busy.value || error.value || foregroundLoading.value) return
   busy.value = name
   actionError.value = null
   try {
     await write('DELETE', `plans/${encodeURIComponent(name)}`)
-    notice.value = `Plan ${name} deleted.`
-    if (selectedCollectionKey.value === 'plans' && selectedResourceId.value === name) closeResource()
+    notice.value = `Plan ${planLabel(name)} archived. Existing assignments and limits remain in effect; new assignments are blocked.`
     await refresh()
   }
   catch (err) { actionError.value = (err as Error).message }
@@ -657,6 +678,7 @@ async function saveEntitlement(): Promise<void> {
     if (JSON.stringify(toLimits(ent.spec?.overrides)) !== initialOverrides.value) throw new Error('Organization overrides changed while editing. Close the editor and refresh before trying again.')
     if (draft.advanced && JSON.stringify({ plan: String(ent.spec?.plan ?? ''), overrides: toLimits(ent.spec?.overrides) }) !== initialEntitlement.value) throw new Error('This entitlement changed while editing. Close and reopen it before saving.')
     if (draft.advanced && isCanonicalEntitlement(ent)) throw new Error('This is now an organization entitlement. Use organization plan assignment to change its plan.')
+    if (draft.advanced && draft.plan !== String(ent.spec?.plan ?? '') && isPlanArchived(planFor(draft.plan))) throw new Error('Archived plans cannot receive new assignments. Choose an available plan.')
     await write('PUT', `entitlements/${encodeURIComponent(draft.name)}`, { plan: draft.advanced ? draft.plan : String(ent.spec?.plan ?? ''), overrides: draft.overrides })
     notice.value = draft.advanced ? `Entitlement ${draft.name} saved. Metering will update effective limits.` : 'Organization overrides saved. Metering will update effective limits.'
     entitlementDraft.value = null
@@ -739,13 +761,13 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
           <p class="text-sm text-text-secondary">Shared limits applied to organizations on each plan.</p>
           <button v-if="writable" type="button" class="k-btn k-btn--primary" :disabled="!!busy || foregroundLoading || !!error" @click="editPlan('')"><Plus class="h-4 w-4" />New plan</button>
         </div>
-        <ResourceTable :columns="collections[0]!.columns" :rows="tableRows.plans ?? []" aria-label="Plans" row-key="name" searchable search-placeholder="Search plans…" :search-keys="collections[0]!.searchKeys" paginated :loaded="loaded" :loading="loading" :refresh-mode="refreshMode" empty-text="No plans yet. Create a plan to assign organization limits." :interactive="true" :row-aria-label="(row: Row) => `View Plan ${row.displayName}`" :default-sort="{ key: 'displayName', direction: 'asc' }" @row-click="(row: Row) => openResource('plans', row)">
-          <template #displayName="{ row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open plan ${row.displayName}`" @click.stop="openResource('plans', row)" @keydown.space.prevent.stop="openResource('plans', row)">{{ row.displayName }}</button><span v-if="row.name === status.defaultPlan" class="ml-2 text-xs text-text-muted">default</span></template>
+        <ResourceTable :columns="collections[0]!.columns" :rows="tableRows.plans ?? []" aria-label="Plans" row-key="name" searchable search-placeholder="Search plans…" :search-keys="collections[0]!.searchKeys" :filters="planFilters" paginated :loaded="loaded" :loading="loading" :refresh-mode="refreshMode" empty-text="No plans yet. Create a plan to assign organization limits." :interactive="true" :row-aria-label="(row: Row) => `View Plan ${row.displayName}`" :default-sort="{ key: 'displayName', direction: 'asc' }" @row-click="(row: Row) => openResource('plans', row)">
+          <template #displayName="{ row }"><button type="button" class="k-btn k-btn--ghost k-table-resource-link" :aria-label="`Open plan ${row.displayName}`" @click.stop="openResource('plans', row)" @keydown.space.prevent.stop="openResource('plans', row)">{{ row.displayName }}</button><span v-if="row.name === status.defaultPlan" class="ml-2 text-xs text-text-muted">default</span><StatusBadge v-if="row.lifecycle === 'archived'" class="ml-2" status="Archived" tone="muted" /></template>
           <template #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" /></template>
           <template #actions="{ row }">
             <div v-if="writable" class="flex items-center justify-end gap-2">
-              <ResourceTableEditButton :label="`Edit plan ${row.name}`" :disabled="!!busy || foregroundLoading || !!error" @click="editPlan(String(row.name))" />
-              <ResourceTableDeleteButton :label="`Delete plan ${row.name}`" :busy-label="`Deleting plan ${row.name}…`" :busy="busy === row.name" :disabled="!!busy || !!error || foregroundLoading || row.name === status.defaultPlan || planHasReferences(String(row.name))" @click="deletePlan(String(row.name))" />
+              <ResourceTableEditButton v-if="!isPlanArchived(planFor(String(row.name)))" :label="`Edit plan ${row.name}`" :disabled="!!busy || foregroundLoading || !!error" @click="editPlan(String(row.name))" />
+              <ResourceTableActionButton v-if="!isPlanArchived(planFor(String(row.name))) && row.name !== status.defaultPlan" :icon="Archive" :label="`Archive plan ${row.name}`" :busy-label="`Archiving plan ${row.name}…`" :busy="busy === row.name" :disabled="!!busy || !!error || foregroundLoading" @click="archivePlan(String(row.name))" />
             </div>
           </template>
         </ResourceTable>
@@ -862,13 +884,16 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
         :loaded="!!selectedResource" :loading="loading" :refresh-mode="refreshMode" :error="resourceReadError"
         :stale="!!selectedResource && !!resourceReadError" retryable @retry="refresh(true)">
         <template #meta><span>Metering</span><template v-if="selectedCollectionKey === 'plans' && selectedResource"><span aria-hidden="true">·</span><span>{{ organizationsLoaded && !organizationError ? `${planCount(selectedResourceId)} ${planCount(selectedResourceId) === 1 ? 'organization' : 'organizations'}` : 'Organization count unavailable' }} · {{ planReferenceCount(selectedResourceId) }} {{ planReferenceCount(selectedResourceId) === 1 ? 'entitlement' : 'entitlements' }}</span><span v-if="selectedResourceId === status?.defaultPlan" class="k-badge k-badge--muted">Platform default</span></template></template>
-        <template v-if="selectedCollectionKey === 'entitlements' && selectedResourceRow" #status><StatusBadge :status="stateOf(selectedResourceRow).status" :tone="stateOf(selectedResourceRow).tone" :title="stateOf(selectedResourceRow).title" /></template>
+        <template v-if="(selectedCollectionKey === 'plans' && isPlanArchived(selectedResource)) || (selectedCollectionKey === 'entitlements' && selectedResourceRow)" #status>
+          <StatusBadge v-if="selectedCollectionKey === 'plans' && isPlanArchived(selectedResource)" status="Archived" tone="muted" />
+          <StatusBadge v-else-if="selectedCollectionKey === 'entitlements' && selectedResourceRow" :status="stateOf(selectedResourceRow).status" :tone="stateOf(selectedResourceRow).tone" :title="stateOf(selectedResourceRow).title" />
+        </template>
         <template #actions>
           <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Metering resource actions">
             <button v-if="selectedCollectionKey === 'entitlements' && selectedResource && writable" type="button" class="k-btn k-btn--primary" :disabled="!!busy || foregroundLoading || !!resourceReadError || assignmentPending(selectedResourceId)" @click="editEntitlement(selectedResourceId, true)">{{ selectedEntitlementCanonical ? 'Edit overrides' : 'Edit entitlement' }}</button>
             <template v-if="selectedCollectionKey === 'plans' && writable">
-              <button type="button" class="k-btn k-btn--primary" :disabled="!selectedResource || !!busy || foregroundLoading || !!resourceReadError" @click="editPlan(selectedResourceId)">Edit plan</button>
-              <button type="button" class="k-btn k-btn--ghost" :disabled="!selectedResource || !!busy || foregroundLoading || !!resourceReadError || selectedResourceId === status?.defaultPlan || planHasReferences(selectedResourceId)" @click="deletePlan(selectedResourceId)">Delete plan</button>
+              <button v-if="selectedResource && !isPlanArchived(selectedResource)" type="button" class="k-btn k-btn--primary" :disabled="!!busy || foregroundLoading || !!resourceReadError" @click="editPlan(selectedResourceId)">Edit plan</button>
+              <button v-if="selectedResource && !isPlanArchived(selectedResource) && selectedResourceId !== status?.defaultPlan" type="button" class="k-btn k-btn--ghost" :disabled="!!busy || foregroundLoading || !!resourceReadError" @click="archivePlan(selectedResourceId)">Archive plan</button>
             </template>
             <button type="button" class="k-btn k-btn--ghost" :disabled="foregroundLoading || !!busy" :aria-busy="foregroundLoading || undefined" @click="refresh(true)"><RefreshCw class="h-4 w-4" :class="{ 'animate-spin': foregroundLoading }" aria-hidden="true" />{{ foregroundLoading ? 'Refreshing…' : 'Refresh' }}</button>
           </div>
@@ -886,9 +911,10 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
               <template #stateText="{ row }"><StatusBadge :status="stateOf(row).status" :tone="stateOf(row).tone" /></template>
               <template #limits="{ row }"><MeteringUsageList variant="summary" :limits="limitsOf(row)" :usage="usageOf(row)" :window="windowOf(row)" /></template>
             </ResourceTable>
-            <p v-if="selectedResourceId === status?.defaultPlan || planHasReferences(selectedResourceId)" class="mt-3 text-sm text-text-muted">{{ selectedResourceId === status?.defaultPlan ? 'The platform default plan cannot be deleted.' : 'Reassign all organization assignments and entitlement references before deleting this plan.' }}</p>
+            <p v-if="isPlanArchived(selectedResource)" class="mt-3 text-sm text-text-muted">This plan is archived. Existing organization assignments and limits remain in effect. New assignments are blocked, and the plan cannot be edited.</p>
+            <p v-else-if="selectedResourceId === status?.defaultPlan" class="mt-3 text-sm text-text-muted">The platform default plan cannot be archived.</p>
           </ResourceSectionCard>
-          <ResourceSectionCard v-if="selectedCollectionKey === 'plans' && otherPlanEntitlementRows.length" id="metering-plan-other-entitlements" title="Other entitlement references" description="Inspect and reassign these exact resources before deleting this plan.">
+          <ResourceSectionCard v-if="selectedCollectionKey === 'plans' && otherPlanEntitlementRows.length" id="metering-plan-other-entitlements" title="Other entitlement references" description="Other entitlements using this plan, including assignments not tied to an organization.">
             <ResourceTable :columns="entitlementReferenceColumns" :rows="otherPlanEntitlementRows" aria-label="Other plan entitlements" row-key="name" searchable :search-keys="['name', 'account', 'plan']" paginated :page-size="10"><template #name="{ row, value }"><RouterLink :to="entitlementLocation(row)" class="k-btn k-btn--ghost k-table-resource-link">{{ value }}</RouterLink></template></ResourceTable>
           </ResourceSectionCard>
           <ResourceSectionCard v-if="selectedCollectionKey === 'meteringconfigs'" id="metering-config-meters" title="Meter definitions" description="Meters recorded for each matching target resource.">
@@ -924,7 +950,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
         <label for="metering-assignment-plan" class="mb-2 block text-xs font-medium">New plan</label>
         <select id="metering-assignment-plan" v-model="assignment.plan" data-initial-focus class="k-input w-full p-2.5 text-base sm:text-sm" :disabled="!!busy">
           <option value="" :disabled="!status?.defaultPlan">Use platform default ({{ planLabel(status?.defaultPlan || '') }})</option>
-          <option v-for="p in planItems" :key="p.metadata.name" :value="p.metadata.name">{{ planLabel(p.metadata.name) }}</option>
+          <option v-for="p in assignmentPlanItems" :key="p.metadata.name" :value="p.metadata.name" :disabled="isPlanArchived(p)">{{ planLabel(p.metadata.name) }}{{ isPlanArchived(p) ? ' (archived)' : '' }}</option>
         </select>
         <p v-if="!selectedTarget" class="mt-2 text-sm text-danger" role="alert">The selected plan is unavailable. Choose another plan or close and refresh.</p>
         <h3 class="mb-3 mt-6 text-sm font-semibold">Effective limits after change</h3>
@@ -960,7 +986,7 @@ onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); dis
         <div v-if="entitlementDraft.advanced" class="mb-5">
           <p class="metering-message mb-4">Advanced recovery edits apply only to this entitlement. Organization plan assignments use the organization view.</p>
           <label for="metering-recovery-plan" class="mb-2 block text-sm font-medium">Plan</label>
-          <select id="metering-recovery-plan" v-model="entitlementDraft.plan" data-initial-focus class="k-input w-full p-2.5 text-base sm:text-sm" :disabled="!!busy"><option v-if="!planFor(entitlementDraft.plan)" :value="entitlementDraft.plan" disabled>Unavailable: {{ entitlementDraft.plan || 'No plan' }}</option><option v-for="plan in planItems" :key="plan.metadata.name" :value="plan.metadata.name">{{ planLabel(plan.metadata.name) }}</option></select>
+          <select id="metering-recovery-plan" v-model="entitlementDraft.plan" data-initial-focus class="k-input w-full p-2.5 text-base sm:text-sm" :disabled="!!busy"><option v-if="!planFor(entitlementDraft.plan)" :value="entitlementDraft.plan" disabled>Unavailable: {{ entitlementDraft.plan || 'No plan' }}</option><option v-for="plan in entitlementPlanItems" :key="plan.metadata.name" :value="plan.metadata.name" :disabled="isPlanArchived(plan)">{{ planLabel(plan.metadata.name) }}{{ isPlanArchived(plan) ? ' (archived)' : '' }}</option></select>
         </div>
         <p class="mb-5 text-sm text-text-secondary">{{ entitlementDraft.advanced ? "An override replaces the plan limit for the same meter on this entitlement only. Removing it restores the plan limit." : "An override replaces the plan limit for the same meter on this organization only. Removing it restores that meter's plan limit." }}</p>
         <MeteringLimitsEditor v-model="entitlementDraft.overrides" row-label="Override" id-prefix="metering-overrides" :disabled="!!busy" />

@@ -61,6 +61,11 @@ func planRouterWithReset(t *testing.T, lookup func(context.Context, string) (boo
 
 func planRouterWithWriters(t *testing.T, lookup func(context.Context, string) (bool, error), reset func(context.Context, string) error, assign func(context.Context, string, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
 	t.Helper()
+	return planRouterWithArchiveLookup(t, lookup, nil, reset, assign, orgs...)
+}
+
+func planRouterWithArchiveLookup(t *testing.T, lookup func(context.Context, string) (bool, error), archived func(context.Context, string) (bool, error), reset func(context.Context, string) error, assign func(context.Context, string, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
+	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
 		t.Fatal(err)
@@ -79,6 +84,9 @@ func planRouterWithWriters(t *testing.T, lookup func(context.Context, string) (b
 	h := NewHandler(nil, client, nil)
 	if lookup != nil {
 		h.WithPlanLookup(lookup)
+	}
+	if archived != nil {
+		h.WithArchivedPlanLookup(archived)
 	}
 	if reset != nil {
 		h.WithPlanReset(reset)
@@ -198,6 +206,83 @@ func TestSetOrganizationPlanWithoutMetering(t *testing.T) {
 	rec, _ := putPlan(h, "org-a", `{"plan":"team"}`)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+func TestArchivedOrganizationPlanRetryIsIdempotentButMissingPlanIsRejected(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{Plan: "team"},
+	}
+	newOrg := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-b"},
+	}
+	lookup := func(_ context.Context, name string) (bool, error) { return name != "team" && name != "missing", nil }
+	archived := func(_ context.Context, name string) (bool, error) { return name == "team", nil }
+	assignments := 0
+	assign := func(context.Context, string, string) error { assignments++; return nil }
+	h, client := planRouterWithArchiveLookup(t, lookup, archived, nil, assign, org, newOrg)
+
+	// A previously recorded organization assignment can finish after archival.
+	if rec, _ := putPlan(h, "org-a", `{"plan":"team"}`); rec.Code != http.StatusOK || assignments != 1 {
+		t.Fatalf("archived-plan retry: status %d, assignments %d, body %s", rec.Code, assignments, rec.Body.String())
+	}
+	if rec, _ := putPlan(h, "org-b", `{"plan":"team"}`); rec.Code != http.StatusBadRequest || assignments != 1 {
+		t.Fatalf("new archived-plan assignment: status %d, assignments %d, body %s", rec.Code, assignments, rec.Body.String())
+	}
+
+	// A dangling reference is not enough to make a missing plan assignable.
+	if rec, _ := putPlan(h, "org-a", `{"plan":"missing"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing plan: status %d, body %s", rec.Code, rec.Body.String())
+	}
+	got, err := client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Plan != "team" {
+		t.Fatalf("spec.plan changed after missing-plan rejection: %q", got.Spec.Plan)
+	}
+}
+
+func TestAcceptedPlanAssignmentFinishesAfterPlanArchive(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+	}
+	archived := false
+	lookup := func(_ context.Context, name string) (bool, error) {
+		if name != "team" {
+			return false, nil
+		}
+		active := !archived
+		// Model archival immediately after the active-plan validation read.
+		archived = true
+		return active, nil
+	}
+	assignments := 0
+	assign := func(_ context.Context, _, plan string) error {
+		if !archived {
+			t.Fatal("assignment ran before the plan was archived")
+		}
+		if plan != "team" {
+			t.Fatalf("assignment plan = %q", plan)
+		}
+		assignments++
+		return nil
+	}
+	h, client := planRouterWithWriters(t, lookup, nil, assign, org)
+	rec, _ := putPlan(h, "org-a", `{"plan":"team"}`)
+	if rec.Code != http.StatusOK || assignments != 1 {
+		t.Fatalf("in-flight assignment: status %d, assignments %d, body %s", rec.Code, assignments, rec.Body.String())
+	}
+	got, err := client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Plan != "team" {
+		t.Fatalf("organization assignment was not recorded: %q", got.Spec.Plan)
 	}
 }
 

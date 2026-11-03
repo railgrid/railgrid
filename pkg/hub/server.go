@@ -1184,6 +1184,7 @@ func (s *Server) Run(ctx context.Context) error {
 					WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod)
 				if meteringStore != nil {
 					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore)).
+						WithArchivedPlanLookup(metering.PlanIsArchived(meteringStore)).
 						WithPlanAssignment(metering.AssignPlan(meteringDiscovery, meteringStore, logger.WithName("metering-admin"))).
 						WithPlanReset(metering.ResetPlan(meteringDiscovery, meteringStore, s.opts.MeteringDefaultPlan, logger.WithName("metering-admin")))
 				}
@@ -1196,9 +1197,7 @@ func (s *Server) Run(ctx context.Context) error {
 					if c, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
 						logger.Error(err, "Metering admin writes disabled")
 					} else {
-						h.WithWriter(metering.NewWriter(c, s.opts.MeteringDefaultPlan, admin.UserFromContext, logger.WithName("metering-admin")).WithOrganizations(func(ctx context.Context) (*tenancyv1alpha1.OrganizationList, error) {
-							return userClient.Organizations().List(ctx, metav1.ListOptions{})
-						}))
+						h.WithWriter(metering.NewWriter(c, s.opts.MeteringDefaultPlan, admin.UserFromContext, logger.WithName("metering-admin")))
 					}
 					h.Register(adminSub)
 				}

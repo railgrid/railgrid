@@ -50,6 +50,10 @@ type Handler struct {
 	// Organization.spec.plan. Nil means plan assignment is unavailable
 	// (metering not configured) and the route answers 503.
 	planExists func(ctx context.Context, name string) (bool, error)
+	// planArchived distinguishes an archived retained plan from a missing
+	// name, so retries of an already-recorded assignment can finish without
+	// making a dangling organization plan valid.
+	planArchived func(ctx context.Context, name string) (bool, error)
 	// assignPlan updates the Entitlement immediately after recording spec.plan.
 	// The reconciler remains the repair path, not a prerequisite for the write.
 	assignPlan func(ctx context.Context, org, plan string) error
@@ -75,9 +79,16 @@ func (h *Handler) WithSoftDeleteGracePeriod(d time.Duration) *Handler {
 }
 
 // WithPlanLookup enables PUT /organizations/{name}/plan with the given
-// existence check (metering.PlanExists in production).
+// assignable-plan check (metering.PlanExists in production).
 func (h *Handler) WithPlanLookup(exists func(ctx context.Context, name string) (bool, error)) *Handler {
 	h.planExists = exists
+	return h
+}
+
+// WithArchivedPlanLookup enables idempotent retries for assignments already
+// recorded on an organization when their plan was archived in the meantime.
+func (h *Handler) WithArchivedPlanLookup(archived func(ctx context.Context, name string) (bool, error)) *Handler {
+	h.planArchived = archived
 	return h
 }
 
@@ -335,7 +346,7 @@ type planRequest struct {
 }
 
 // setOrganizationPlan records Organization.spec.plan. 200 with {name, plan},
-// 400 for an unknown plan, 404 for an unknown organization, 503 when
+// 400 for an unavailable plan, 404 for an unknown organization, 503 when
 // metering is unavailable or the entitlement write needs retrying.
 func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]
@@ -352,14 +363,24 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
+	planAvailable := true
+	planArchived := false
 	if req.Plan != "" {
 		ok, err := h.planExists(r.Context(), req.Plan)
 		if err != nil {
 			writeError(w, http.StatusServiceUnavailable, err.Error())
 			return
 		}
-		if !ok {
-			writeError(w, http.StatusBadRequest, fmt.Sprintf("plan %q does not exist", req.Plan))
+		planAvailable = ok
+		if !ok && h.planArchived != nil {
+			planArchived, err = h.planArchived(r.Context(), req.Plan)
+			if err != nil {
+				writeError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
+		}
+		if !planAvailable && !planArchived {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("plan %q does not exist or is archived", req.Plan))
 			return
 		}
 	}
@@ -373,6 +394,13 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// An already recorded assignment may be retried after its plan was
+		// archived. Keep that request idempotent so the entitlement write can
+		// finish; a different or unknown plan is never newly assigned.
+		if !planAvailable && (!planArchived || org.Spec.Plan != req.Plan) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("plan %q does not exist or is archived", req.Plan))
 			return
 		}
 		if org.Spec.Plan != req.Plan {

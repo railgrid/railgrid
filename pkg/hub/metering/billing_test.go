@@ -223,6 +223,25 @@ func TestSummaryWithoutBillingOrMetering(t *testing.T) {
 	}
 }
 
+func TestSummaryRetainsOnlyCurrentArchivedPlanAsUnavailable(t *testing.T) {
+	current := planObj("legacy-current", "Legacy current", "price_legacy")
+	current.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	old := planObj("legacy-old", "Legacy old", "price_old")
+	old.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	b, _ := newBillingFixture(t, true, planObj("free", "Free", ""), current, old, entitlement("org-1", "legacy-current"))
+
+	got, err := b.Summary(context.Background(), "org-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Plan != "legacy-current" || got.PlanDisplayName != "Legacy current" {
+		t.Fatalf("archived current assignment was lost: %+v", got)
+	}
+	if len(got.Plans) != 2 || got.Plans[0].Name != "free" || got.Plans[1].Name != "legacy-current" || !got.Plans[1].Current || got.Plans[1].Sellable {
+		t.Fatalf("billing offers = %+v; want active free and current archived non-sellable plan", got.Plans)
+	}
+}
+
 func TestSummaryPreservesDeclaredOverridesEvenWhenEqualToPlan(t *testing.T) {
 	limit := map[string]any{"meter": "workspaces", "shape": "Level", "enforce": "Hard", "max": "1"}
 	ent := &unstructured.Unstructured{}
@@ -306,6 +325,20 @@ func TestCheckoutForwardsAndMapsErrors(t *testing.T) {
 	_, err = b.Checkout(context.Background(), "org-1", "team", "https://hub/ok", "https://hub/cancel")
 	if !errors.As(err, &be) || be.Status != http.StatusServiceUnavailable {
 		t.Fatalf("not installed: %v", err)
+	}
+}
+
+func TestCheckoutRejectsArchivedPlanBeforeRelay(t *testing.T) {
+	archived := planObj("legacy", "Legacy", "price_legacy")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	b, dep := newBillingFixture(t, true, archived)
+	_, err := b.Checkout(context.Background(), "org-1", "legacy", "https://hub/ok", "https://hub/cancel")
+	var be *BillingError
+	if !errors.As(err, &be) || be.Status != http.StatusConflict || !strings.Contains(be.Message, "archived") {
+		t.Fatalf("archived checkout: %v", err)
+	}
+	if len(dep.requests) != 0 {
+		t.Fatalf("archived checkout reached the billing deployment: %v", dep.requests)
 	}
 }
 

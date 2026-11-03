@@ -87,6 +87,7 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 
 	listKinds := map[schema.GroupVersionResource]string{
 		gvrWorkspaces:        "WorkspaceList",
+		gvrPlans:             "PlanList",
 		gvrAccounts:          "AccountList",
 		gvrEntitlements:      "EntitlementList",
 		gvrMembershipReports: "MembershipReportList",
@@ -310,6 +311,40 @@ func TestAdminSetPlanIsKeptUntilSpecPlanSpeaks(t *testing.T) {
 	if got := planOf(t, ws, "org-1"); got != "enterprise" {
 		t.Fatalf("plan = %q, want enterprise from spec.plan", got)
 	}
+}
+
+func TestReconcileKeepsAnExistingArchivedPlanAssignment(t *testing.T) {
+	o := org("org-1")
+	o.Spec.Plan = "legacy"
+	r, ws := newFixture(t, o)
+	archivedPlan := plan("legacy")
+	archivedPlan.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	if _, err := ws.Resource(gvrPlans).Create(context.Background(), archivedPlan, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	prior := entitlement("org-1", "free")
+	prior.SetLabels(map[string]string{LabelOrganization: "org-1", LabelPlanFromSpec: "true", PlanSourceLabel: PlanSourceOperator})
+	if _, err := ws.Resource(gvrEntitlements).Create(context.Background(), prior, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	reconcile(t, r, "org-1")
+	got := entitlementOf(t, ws, "org-1")
+	if assigned, _, _ := unstructured.NestedString(got.Object, "spec", "plan"); assigned != "legacy" {
+		t.Fatalf("reconciler did not honor the existing archived assignment: %q", assigned)
+	}
+	if !IsPlanArchived(mustGetPlan(t, ws, "legacy")) {
+		t.Fatal("reconcile changed the plan's archived state")
+	}
+}
+
+func mustGetPlan(t *testing.T, ws dynamic.Interface, name string) *unstructured.Unstructured {
+	t.Helper()
+	got, err := ws.Resource(gvrPlans).Get(context.Background(), name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
 }
 
 // A report that names another account (the layout one hub release pooled

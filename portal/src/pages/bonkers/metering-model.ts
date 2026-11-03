@@ -1,9 +1,22 @@
 import type { Limit } from './MeteringLimitsEditor.vue'
 
 export type MeteringItem = {
-  metadata: { name: string; generation?: number; labels?: Record<string, string> }
+  metadata: { name: string; generation?: number; labels?: Record<string, string>; annotations?: Record<string, string> }
   spec?: Record<string, unknown>
   status?: Record<string, unknown>
+}
+
+const archivedPlanAnnotation = 'metering.railgrid.ai/archived'
+
+export function isPlanArchived(plan: MeteringItem | undefined | null): boolean {
+  return plan?.metadata.annotations?.[archivedPlanAnnotation] === 'true'
+}
+
+// Archived plans stay visible when they are already selected so an operator
+// can understand the current assignment and move away from it. Every archived
+// alternative is excluded from new assignments and entitlement edits.
+export function planSelectionOptions(plans: readonly MeteringItem[], currentPlan = ''): MeteringItem[] {
+  return plans.filter(plan => !isPlanArchived(plan) || plan.metadata.name === currentPlan)
 }
 
 // Metering records reference accounts by ID. Prefer the organization's current

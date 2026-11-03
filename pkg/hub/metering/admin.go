@@ -35,8 +35,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
-
-	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"k8s.io/client-go/util/retry"
 )
 
 // The admin area's writes. Reads go through the metering API (proxy in
@@ -48,7 +47,7 @@ import (
 //
 //	PUT    /api/admin/metering/entitlements/{name}   {plan, overrides[]}
 //	PUT    /api/admin/metering/plans/{name}          {displayName, limits[]}
-//	DELETE /api/admin/metering/plans/{name}
+//	DELETE /api/admin/metering/plans/{name}          (archive)
 //
 // A plan is a quota template; an entitlement is one organization's
 // subscription to it plus negotiated overrides. The hub only ever creates an
@@ -79,28 +78,20 @@ type PlanUpdate struct {
 
 // Writer performs the admin writes against the metering workspace.
 type Writer struct {
-	organizations func(context.Context) (*tenancyv1alpha1.OrganizationList, error)
-	client        dynamic.Interface
-	defaultPlan   string
-	caller        func(context.Context) string
-	logger        logr.Logger
+	client      dynamic.Interface
+	defaultPlan string
+	caller      func(context.Context) string
+	logger      logr.Logger
 }
 
 // NewWriter builds a Writer. caller returns the admin identity of a request
 // for the audit line; defaultPlan is the plan the hub puts new organizations
-// on, which therefore cannot be deleted.
+// on, which therefore cannot be archived.
 func NewWriter(client dynamic.Interface, defaultPlan string, caller func(context.Context) string, logger logr.Logger) *Writer {
 	if caller == nil {
 		caller = func(context.Context) string { return "" }
 	}
 	return &Writer{client: client, defaultPlan: defaultPlan, caller: caller, logger: logger}
-}
-
-// WithOrganizations supplies an authoritative read from the tenancy workspace.
-// Deletion fails closed unless this read succeeds, even if no entitlement exists.
-func (wr *Writer) WithOrganizations(list func(context.Context) (*tenancyv1alpha1.OrganizationList, error)) *Writer {
-	wr.organizations = list
-	return wr
 }
 
 // WithWriter enables the write routes on h.
@@ -112,7 +103,7 @@ func (h *Handler) WithWriter(w *Writer) *Handler {
 func (h *Handler) registerWrites(r *mux.Router) {
 	r.HandleFunc("/metering/entitlements/{name}", h.requireInstalled(h.writer.updateEntitlement)).Methods(http.MethodPut)
 	r.HandleFunc("/metering/plans/{name}", h.requireInstalled(h.writer.putPlan)).Methods(http.MethodPut)
-	r.HandleFunc("/metering/plans/{name}", h.requireInstalled(h.writer.deletePlan)).Methods(http.MethodDelete)
+	r.HandleFunc("/metering/plans/{name}", h.requireInstalled(h.writer.archivePlan)).Methods(http.MethodDelete)
 }
 
 // requireInstalled refuses a write while metering is not discovered: the
@@ -195,13 +186,17 @@ func (wr *Writer) UpdateEntitlement(ctx context.Context, name string, body Entit
 	if err != nil {
 		return nil, err
 	}
-	if _, err := wr.client.Resource(gvrPlans).Get(ctx, body.Plan, metav1.GetOptions{}); err != nil {
+	previous, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	plan, err := wr.client.Resource(gvrPlans).Get(ctx, body.Plan, metav1.GetOptions{})
+	if err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, fail(http.StatusBadRequest, "plan %q does not exist", body.Plan)
 		}
 		return nil, err
 	}
-	previous, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+	if IsPlanArchived(plan) && previous != body.Plan {
+		return nil, fail(http.StatusConflict, "plan %q is archived and cannot be assigned", body.Plan)
+	}
 	if err := unstructured.SetNestedField(ent.Object, body.Plan, "spec", "plan"); err != nil {
 		return nil, err
 	}
@@ -251,6 +246,9 @@ func (wr *Writer) PutPlan(ctx context.Context, name string, body PlanUpdate) (*u
 	case err != nil:
 		return nil, false, err
 	}
+	if !created && IsPlanArchived(plan) {
+		return nil, false, fail(http.StatusConflict, "plan %q is archived and cannot be edited", name)
+	}
 	if body.DisplayName != "" {
 		if err := unstructured.SetNestedField(plan.Object, body.DisplayName, "spec", "displayName"); err != nil {
 			return nil, false, err
@@ -272,45 +270,38 @@ func (wr *Writer) PutPlan(ctx context.Context, name string, body PlanUpdate) (*u
 	return out, created, nil
 }
 
-func (wr *Writer) deletePlan(w http.ResponseWriter, r *http.Request) {
-	respond(w, nil, wr.DeletePlan(r.Context(), mux.Vars(r)["name"]))
+func (wr *Writer) archivePlan(w http.ResponseWriter, r *http.Request) {
+	respond(w, nil, wr.ArchivePlan(r.Context(), mux.Vars(r)["name"]))
 }
 
-// DeletePlan removes plan name unless it is the default plan, an organization
-// has assigned it, or an entitlement still subscribes to it.
-func (wr *Writer) DeletePlan(ctx context.Context, name string) error {
+// ArchivePlan retains plan name and its limits for existing entitlements while
+// preventing new assignments. Repeating the operation is a no-op. The default
+// plan cannot be archived because new organizations depend on it.
+func (wr *Writer) ArchivePlan(ctx context.Context, name string) error {
 	if name == wr.defaultPlan {
-		return fail(http.StatusConflict, "%q is the default plan new organizations are placed on (--metering-default-plan); it cannot be deleted", name)
+		return fail(http.StatusConflict, "%q is the default plan new organizations are placed on (--metering-default-plan); it cannot be archived", name)
 	}
-	if wr.organizations == nil {
-		return fail(http.StatusServiceUnavailable, "cannot verify organization plan references; retry later")
-	}
-	orgs, err := wr.organizations(ctx)
-	if err != nil || orgs == nil {
-		return fail(http.StatusServiceUnavailable, "cannot verify organization plan references; retry later")
-	}
-	for _, org := range orgs.Items {
-		if org.Spec.Plan == name {
-			return fail(http.StatusConflict, "plan %q is assigned to organization %q", name, org.Name)
+	res := wr.client.Resource(gvrPlans)
+	if err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		plan, err := res.Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return err
 		}
-	}
-	ents, err := wr.client.Resource(gvrEntitlements).List(ctx, metav1.ListOptions{})
-	if err != nil {
+		if IsPlanArchived(plan) {
+			return nil
+		}
+		annotations := plan.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[PlanArchivedAnnotation] = "true"
+		plan.SetAnnotations(annotations)
+		_, err = res.Update(ctx, plan, metav1.UpdateOptions{FieldManager: FieldManager})
+		return err
+	}); err != nil {
 		return err
 	}
-	var using []string
-	for _, e := range ents.Items {
-		if p, _, _ := unstructured.NestedString(e.Object, "spec", "plan"); p == name {
-			using = append(using, e.GetName())
-		}
-	}
-	if len(using) > 0 {
-		return fail(http.StatusConflict, "plan %q is in use by %d entitlement(s): %s", name, len(using), strings.Join(using, ", "))
-	}
-	if err := wr.client.Resource(gvrPlans).Delete(ctx, name, metav1.DeleteOptions{}); err != nil {
-		return err
-	}
-	wr.logger.Info("metering plan deleted", "by", wr.caller(ctx), "plan", name)
+	wr.logger.Info("metering plan archived", "by", wr.caller(ctx), "plan", name)
 	return nil
 }
 

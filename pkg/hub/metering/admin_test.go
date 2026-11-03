@@ -19,22 +19,22 @@ package metering
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
+	ktesting "k8s.io/client-go/testing"
 	"k8s.io/klog/v2"
-
-	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 func plan(name string, limits ...map[string]any) *unstructured.Unstructured {
@@ -80,9 +80,7 @@ func newAdminFixture(t *testing.T, installedNow bool, objs ...runtime.Object) ad
 	if installedNow {
 		d.set(&Endpoints{PortalURL: "http://metering"})
 	}
-	writer := NewWriter(ws, "free", func(context.Context) string { return "admin@example.org" }, klog.Background()).WithOrganizations(func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
-		return &tenancyv1alpha1.OrganizationList{}, nil
-	})
+	writer := NewWriter(ws, "free", func(context.Context) string { return "admin@example.org" }, klog.Background())
 	h := NewHandler(d).WithWriter(writer)
 	r := mux.NewRouter()
 	h.Register(r)
@@ -136,14 +134,47 @@ func TestEntitlementPlanChange(t *testing.T) {
 	}
 }
 
+func TestArchivedEntitlementCanKeepPlanWhileEditingOverrides(t *testing.T) {
+	archived := plan("legacy")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	f := newAdminFixture(t, true, plan("free"), archived, entitlement("org-1", "legacy"))
+
+	code, out := f.do(t, http.MethodPut, "/metering/entitlements/org-1", `{"plan":"legacy","overrides":[{"meter":"agents","enforce":"Hard","max":"12"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("same archived plan with override edit: %d %v", code, out)
+	}
+	ent, err := f.ws.Resource(gvrEntitlements).Get(context.Background(), "org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planName, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); planName != "legacy" {
+		t.Fatalf("plan changed to %q", planName)
+	}
+	if limits, _, _ := unstructured.NestedSlice(ent.Object, "spec", "overrides"); len(limits) != 1 || limits[0].(map[string]any)["max"] != "12" {
+		t.Fatalf("override edit was not saved: %v", limits)
+	}
+
+	code, out = f.do(t, http.MethodPut, "/metering/entitlements/org-1", `{"plan":"free","overrides":[]}`)
+	if code != http.StatusOK {
+		t.Fatalf("move away from archived plan: %d %v", code, out)
+	}
+	code, out = f.do(t, http.MethodPut, "/metering/entitlements/org-1", `{"plan":"legacy","overrides":[]}`)
+	if code != http.StatusConflict || !strings.Contains(out["error"].(string), "archived") {
+		t.Fatalf("new assignment to archived plan: %d %v", code, out)
+	}
+}
+
 func TestEntitlementRejections(t *testing.T) {
-	f := newAdminFixture(t, true, plan("free"), entitlement("org-1", "free"))
+	archived := plan("archived")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	f := newAdminFixture(t, true, plan("free"), archived, entitlement("org-1", "free"))
 	tests := []struct {
 		name, path, body string
 		want             int
 		msg              string
 	}{
 		{"unknown plan", "/metering/entitlements/org-1", `{"plan":"gold","overrides":[]}`, http.StatusBadRequest, `plan "gold" does not exist`},
+		{"archived plan", "/metering/entitlements/org-1", `{"plan":"archived","overrides":[]}`, http.StatusConflict, `plan "archived" is archived`},
 		{"missing plan", "/metering/entitlements/org-1", `{"overrides":[]}`, http.StatusBadRequest, "plan is required"},
 		{"unknown entitlement", "/metering/entitlements/nope", `{"plan":"free"}`, http.StatusNotFound, "not found"},
 		{"hard limit without max", "/metering/entitlements/org-1", `{"plan":"free","overrides":[{"meter":"agents","enforce":"Hard"}]}`, http.StatusBadRequest, "needs a max"},
@@ -169,7 +200,7 @@ func TestEntitlementRejections(t *testing.T) {
 	}
 }
 
-func TestPlanCreateUpdateDelete(t *testing.T) {
+func TestPlanCreateUpdateArchive(t *testing.T) {
 	f := newAdminFixture(t, true, plan("free", map[string]any{"meter": "workspaces", "shape": "Level", "enforce": "Hard", "max": "1"}), entitlement("org-1", "free"))
 
 	code, out := f.do(t, http.MethodPut, "/metering/plans/team", `{"displayName":"Team","limits":[{"meter":"workspaces","shape":"Level","enforce":"Hard","max":"25"},{"meter":"cpu_hours","enforce":"Meter"}]}`)
@@ -195,20 +226,30 @@ func TestPlanCreateUpdateDelete(t *testing.T) {
 		t.Fatalf("bad name: %d %v", code, out)
 	}
 
-	// The default plan and a plan in use stay.
+	// The default plan is protected, while a referenced plan can be archived.
 	if code, out = f.do(t, http.MethodDelete, "/metering/plans/free", ""); code != http.StatusConflict || !strings.Contains(out["error"].(string), "default plan") {
-		t.Fatalf("delete default: %d %v", code, out)
+		t.Fatalf("archive default: %d %v", code, out)
 	}
 	f.do(t, http.MethodPut, "/metering/entitlements/org-1", `{"plan":"team"}`)
-	if code, out = f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusConflict || !strings.Contains(out["error"].(string), "org-1") {
-		t.Fatalf("delete in-use: %d %v", code, out)
+	if code, out = f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusNoContent {
+		t.Fatalf("archive in-use plan: %d %v", code, out)
 	}
-	f.do(t, http.MethodPut, "/metering/entitlements/org-1", `{"plan":"free"}`)
+	archived, err := f.ws.Resource(gvrPlans).Get(context.Background(), "team", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("archived plan was deleted: %v", err)
+	}
+	if !IsPlanArchived(archived) {
+		t.Fatalf("plan annotations = %v, want archived marker", archived.GetAnnotations())
+	}
+	limits, _, _ = unstructured.NestedSlice(archived.Object, "spec", "limits")
+	if len(limits) != 2 || limits[0].(map[string]any)["max"] != "25" {
+		t.Fatalf("archiving changed the plan limits: %v", limits)
+	}
 	if code, _ = f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusNoContent {
-		t.Fatalf("delete: %d", code)
+		t.Fatalf("repeat archive: %d", code)
 	}
-	if code, _ = f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusNotFound {
-		t.Fatalf("delete again: %d", code)
+	if code, out = f.do(t, http.MethodPut, "/metering/plans/team", `{"displayName":"Changed","limits":[]}`); code != http.StatusConflict || !strings.Contains(out["error"].(string), "archived") {
+		t.Fatalf("update archived plan: %d %v", code, out)
 	}
 }
 
@@ -224,40 +265,68 @@ func TestWritesRefusedUntilInstalled(t *testing.T) {
 	}
 }
 
-// An organization assignment is durable intent before its entitlement exists
-// or switches plan. A missing/failed tenancy read must never permit deletion.
-func TestPlanDeleteOrganizationReferences(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		list   func(context.Context) (*tenancyv1alpha1.OrganizationList, error)
-		status int
-	}{
-		{name: "not configured", status: http.StatusServiceUnavailable},
-		{name: "unavailable", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
-			return nil, errors.New("tenancy unavailable")
-		}, status: http.StatusServiceUnavailable},
-		{name: "nil snapshot", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) { return nil, nil }, status: http.StatusServiceUnavailable},
-		{name: "organization only", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
-			return &tenancyv1alpha1.OrganizationList{Items: []tenancyv1alpha1.Organization{{ObjectMeta: metav1.ObjectMeta{Name: "org-pending"}, Spec: tenancyv1alpha1.OrganizationSpec{Plan: "team"}}}}, nil
-		}, status: http.StatusConflict},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newAdminFixture(t, true, plan("team"), entitlement("org-pending", "free"))
-			f.writer.WithOrganizations(tc.list)
-			code, out := f.do(t, http.MethodDelete, "/metering/plans/team", "")
-			if code != tc.status {
-				t.Fatalf("delete status %d: %v", code, out)
-			}
-			if _, err := f.ws.Resource(gvrPlans).Get(context.Background(), "team", metav1.GetOptions{}); err != nil {
-				t.Fatalf("plan must remain: %v", err)
-			}
-			// Retrying after the authoritative snapshot no longer has references succeeds.
-			f.writer.WithOrganizations(func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
-				return &tenancyv1alpha1.OrganizationList{}, nil
-			})
-			if code, out := f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusNoContent {
-				t.Fatalf("retry status %d: %v", code, out)
-			}
-		})
+func TestArchivePlanRetriesConflictAndIsIdempotent(t *testing.T) {
+	store := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvrPlans: "PlanList"}, plan("team"))
+	client := store
+	updates := 0
+	client.PrependReactor("update", "plans", func(action ktesting.Action) (bool, runtime.Object, error) {
+		updates++
+		if updates == 1 {
+			return true, nil, apierrors.NewConflict(gvrPlans.GroupResource(), "team", fmt.Errorf("concurrent edit"))
+		}
+		return false, nil, nil
+	})
+	writer := NewWriter(store, "free", nil, klog.Background())
+	if err := writer.ArchivePlan(context.Background(), "team"); err != nil {
+		t.Fatalf("archive after conflict: %v", err)
+	}
+	if updates != 2 {
+		t.Fatalf("archive updates = %d, want one conflict retry", updates)
+	}
+	if err := writer.ArchivePlan(context.Background(), "team"); err != nil {
+		t.Fatalf("repeat archive: %v", err)
+	}
+	if updates != 2 {
+		t.Fatalf("idempotent archive performed another write: %d updates", updates)
+	}
+	if _, err := store.Resource(gvrPlans).Get(context.Background(), "team", metav1.GetOptions{}); err != nil {
+		t.Fatalf("archived plan was removed: %v", err)
+	}
+}
+
+func TestInFlightPlanAssignmentFinishesAfterArchive(t *testing.T) {
+	limits := []map[string]any{{"meter": "workspaces", "shape": "Level", "enforce": "Hard", "max": "20"}}
+	store := planStore(plan("team", limits...), entitlement("org-1", "free"))
+
+	// The org request validated the active plan before archive was requested.
+	if ok, err := PlanExists(installed(true), store)(context.Background(), "team"); err != nil || !ok {
+		t.Fatalf("plan validation before archive: %v %v", ok, err)
+	}
+	writer := NewWriter(store, "free", nil, klog.Background())
+	if err := writer.ArchivePlan(context.Background(), "team"); err != nil {
+		t.Fatal(err)
+	}
+	// The already-accepted request now writes its entitlement. Archival keeps
+	// the referenced plan and its limits intact for reconciliation.
+	if err := AssignPlan(installed(true), store, klog.Background())(context.Background(), "org-1", "team"); err != nil {
+		t.Fatalf("finish in-flight assignment: %v", err)
+	}
+	archived, err := store.Resource(gvrPlans).Get(context.Background(), "team", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("plan was removed during archive: %v", err)
+	}
+	if !IsPlanArchived(archived) {
+		t.Fatalf("plan annotations = %v", archived.GetAnnotations())
+	}
+	gotLimits, _, _ := unstructured.NestedSlice(archived.Object, "spec", "limits")
+	if len(gotLimits) != 1 || gotLimits[0].(map[string]any)["max"] != "20" {
+		t.Fatalf("plan limits changed during archive: %v", gotLimits)
+	}
+	ent, err := store.Resource(gvrEntitlements).Get(context.Background(), "org-1", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if assigned, _, _ := unstructured.NestedString(ent.Object, "spec", "plan"); assigned != "team" {
+		t.Fatalf("entitlement plan = %q, want retained team plan", assigned)
 	}
 }

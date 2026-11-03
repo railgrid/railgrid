@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('./metering-model.ts', import.meta.url), 
 const code = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText
 const context = { exports: {}, Map, Set }
 runInNewContext(code, context)
-const { effectiveLimits, assignmentApplied, assignmentNeedsWrite, assignmentSelection, assignmentSource, limitsError, meteringDisplayNames, indexEntitlements } = context.exports
+const { effectiveLimits, assignmentApplied, assignmentNeedsWrite, assignmentSelection, assignmentSource, limitsError, meteringDisplayNames, indexEntitlements, isPlanArchived, planSelectionOptions } = context.exports
 const limit = (meter, max) => ({ meter, max, shape: 'Level', enforce: 'Hard' })
 const plan = { metadata: { name: 'small' }, spec: { limits: [limit('workspaces', '10'), limit('request_cost_rpm', '6000')] } }
 function entitlement() {
@@ -21,6 +21,17 @@ test('preview retains overrides and includes meters defined only by an override'
   assert.equal(merged.find(l => l.meter === 'request_cost_rpm').max, '6000')
   assert.equal(merged.find(l => l.meter === 'agents').max, '3')
   assert.equal(plan.spec.limits[0].max, '10', 'preview must not mutate the plan')
+})
+
+test('archived plans remain identifiable but are not offered for a new assignment', () => {
+  const archived = { metadata: { name: 'legacy', annotations: { 'metering.railgrid.ai/archived': 'true' } }, spec: { limits: [limit('workspaces', '10')] } }
+  const almostArchived = { metadata: { name: 'not-archived', annotations: { 'metering.railgrid.ai/archived': 'True' } } }
+  const active = { metadata: { name: 'team' } }
+
+  assert.equal(isPlanArchived(archived), true)
+  assert.equal(isPlanArchived(almostArchived), false, 'the lifecycle marker is an exact string contract')
+  assert.deepEqual(planSelectionOptions([active, archived]).map(item => item.metadata.name), ['team'])
+  assert.deepEqual(planSelectionOptions([active, archived], 'legacy').map(item => item.metadata.name), ['team', 'legacy'], 'the current archived selection remains readable so it can be changed')
 })
 
 test('assignment success requires matching org assignment, entitlement generation and effective limits', () => {

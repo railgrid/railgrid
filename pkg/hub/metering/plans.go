@@ -135,22 +135,39 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 	}
 }
 
-// PlanExists returns a lookup that answers whether a metering Plan exists,
-// for callers that record a plan name on a hub object (Organization.spec.plan)
-// and must not accept a typo. It errors while metering is not installed:
-// without the store there is nothing to validate against, and an Organization
-// cannot be detached onto a plan nobody serves.
+// PlanExists returns a lookup that answers whether a metering Plan exists and
+// remains assignable, for callers that record a plan name on a hub object
+// (Organization.spec.plan) and must not accept a typo or an archived plan. It
+// errors while metering is not installed: without the store there is nothing
+// to validate against, and an Organization cannot be detached onto a plan
+// nobody serves.
 func PlanExists(discovery Installed, store dynamic.Interface) func(ctx context.Context, name string) (bool, error) {
 	return func(ctx context.Context, name string) (bool, error) {
 		if _, ok := discovery.Current(); !ok {
 			return false, fmt.Errorf("metering is not installed; plans cannot be assigned")
 		}
-		if _, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{}); err != nil {
+		plan, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return false, nil
 			}
 			return false, err
 		}
-		return true, nil
+		return !IsPlanArchived(plan), nil
+	}
+}
+
+// PlanIsArchived returns a secondary lookup for callers that need to tell an
+// archived retained plan from a missing plan after PlanExists returned false.
+func PlanIsArchived(store dynamic.Interface) func(ctx context.Context, name string) (bool, error) {
+	return func(ctx context.Context, name string) (bool, error) {
+		plan, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return IsPlanArchived(plan), nil
 	}
 }
