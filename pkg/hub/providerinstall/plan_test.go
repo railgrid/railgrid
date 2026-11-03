@@ -236,3 +236,33 @@ func TestRequiredSecretReferencesAreValidatedAndRecorded(t *testing.T) {
 		}
 	}
 }
+
+func TestSecretReferenceKeyComesOnlyFromDeclaredSibling(t *testing.T) {
+	for _, key := range []string{"custom-key", "invalid/key", ""} {
+		t.Run(key, func(t *testing.T) {
+			sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{
+				{Name: "settings.anySecretRef.name"}, {Name: "settings.anySecretRef.key", Value: key},
+			}}
+			in := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"settings.anySecretRef.name": "configuration"}})
+			plan, err := ResolvePlan(context.Background(), in)
+			if key != "custom-key" {
+				if err == nil {
+					t.Fatal("invalid or unresolved declared key accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := plan.RequiredSecretKeys["configuration"]; len(got) != 1 || got[0] != key {
+				t.Fatalf("declared key not recorded: %#v", plan.RequiredSecretKeys)
+			}
+		})
+	}
+	sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{{Name: "settings.anySecretRef.name"}}}
+	in := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"settings.anySecretRef.name": "configuration"}})
+	plan, err := ResolvePlan(context.Background(), in)
+	if err != nil || len(plan.RequiredSecretKeys) != 0 {
+		t.Fatalf("undeclared key inferred: %#v, %v", plan, err)
+	}
+}

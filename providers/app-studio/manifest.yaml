@@ -431,6 +431,9 @@ spec:
       releaseName: "app-studio"
       docsURL: "https://github.com/railgrid/railgrid/blob/main/providers/app-studio/deploy/chart/README.md"
       requiredValues:
+        - name: store.databaseURLSecretRef.key
+          value: database-url
+          description: Data key containing the Postgres connection URL in the referenced Secret.
         - name: store.databaseURLSecretRef.name
           description: >-
             Secret holding the Postgres connection URL for persistent chat messages (key database-url). In Console, create it after the installation namespace is prepared, then continue. For manual installation, create it before Helm.

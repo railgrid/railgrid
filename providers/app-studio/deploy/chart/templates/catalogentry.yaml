@@ -406,6 +406,9 @@ spec:
       # offline and for the version actually installed.
       valuesDoc: |{{ .Files.Get "README.md" | nindent 8 }}
       requiredValues:
+        - name: store.databaseURLSecretRef.key
+          value: database-url
+          description: Data key containing the Postgres connection URL in the referenced Secret.
         - name: store.databaseURLSecretRef.name
           description: >-
             Secret holding the Postgres connection URL for persistent chat messages (key database-url). In Console, create it after the installation namespace is prepared, then continue. For manual installation, create it before Helm.

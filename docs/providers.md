@@ -1271,6 +1271,17 @@ cluster — never kcp directly**: everything inside the provider's kcp workspace
 is applied by the provider's own `init`, which the chart runs as an init
 container.
 
+For Console self-hosting prerequisites, declare Helm values under
+`spec.serving.selfHosting.requiredValues`. A path ending in `SecretRef.name`
+means a Secret in the installation namespace. Declare its sibling
+`SecretRef.key` with the chart's expected data key, including a literal `value`
+when the key is fixed. Console asks for the Secret name, prepares its owned
+namespace, and pauses before Helm until the Secret and declared nonempty key
+exist. Credentials stay in the hosting cluster's Secret. No undeclared chart
+key default is inferred; older recipes and persisted plans retain name-only
+checks. See [the recipe contract](byo-providers.md#self-hosting-a-platform-provider)
+for an example and manual installation ordering.
+
 A provider author writes exactly **two declarative objects**, and `init` applies
 both verbatim:
 

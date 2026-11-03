@@ -136,7 +136,12 @@ type Plan struct {
 	JobResult               string         `json:"jobResult,omitempty"`
 	FinishedAt              time.Time      `json:"finishedAt,omitzero"`
 	CleanedUp               bool           `json:"cleanedUp,omitempty"`
+	// RequiredSecretKeys records explicitly declared sibling SecretRef.key values.
+	// Missing entries preserve RequiredSecrets' legacy name-only checks without
+	// guessing defaults from a provider name or an uninspected chart.
+	RequiredSecretKeys map[string][]string `json:"requiredSecretKeys,omitempty"`
 }
+
 type Status struct {
 	Phase     string `json:"phase"`
 	Message   string `json:"message"`

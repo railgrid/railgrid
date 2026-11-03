@@ -29,13 +29,18 @@ import (
 func missingConfigurationSecrets(ctx context.Context, edge kubernetes.Interface, p *Plan) ([]string, error) {
 	var missing []string
 	for _, name := range p.RequiredSecrets {
-		_, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, name, metav1.GetOptions{})
+		secret, err := edge.CoreV1().Secrets(p.Namespace).Get(ctx, name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			missing = append(missing, name)
 			continue
 		}
 		if err != nil {
 			return nil, fmt.Errorf("checking configuration Secret %s: %w", name, err)
+		}
+		for _, key := range p.RequiredSecretKeys[name] {
+			if len(secret.Data[key]) == 0 {
+				missing = append(missing, fmt.Sprintf("%s (missing or empty key %s)", name, key))
+			}
 		}
 	}
 	return missing, nil
@@ -56,7 +61,7 @@ func configurationStatus(ctx context.Context, edge kubernetes.Interface, p *Plan
 	if err != nil {
 		return nil, err
 	}
-	message := fmt.Sprintf("Namespace %s is ready. Create the referenced Secrets there, then continue installation. Helm has not started. Missing Secrets: %s.", p.Namespace, strings.Join(missing, ", "))
+	message := fmt.Sprintf("Namespace %s is ready. Create the referenced Secrets there, then continue installation. Helm has not started. Missing configuration: %s.", p.Namespace, strings.Join(missing, ", "))
 	if len(missing) == 0 {
 		message = "The referenced Secrets are available. Continue installation to start Helm."
 	}

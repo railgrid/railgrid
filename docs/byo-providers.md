@@ -275,6 +275,27 @@ selfHosting:
       description: Address agents reach kcp through.
 ```
 
+Required values ending in `SecretRef.name` declare Kubernetes Secret names,
+never connection strings or credentials. Console prepares the installation's
+owned namespace, then pauses before Helm until those Secrets exist there. A
+sibling `SecretRef.key` declares the nonempty data key the chart will consume;
+include it explicitly in the recipe even when the chart has the same default:
+
+```yaml
+requiredValues:
+  - name: store.databaseURLSecretRef.name
+    description: Name of the Secret containing your Postgres connection URL.
+  - name: store.databaseURLSecretRef.key
+    value: database-url
+    description: Data key containing the Postgres connection URL.
+```
+
+The installer checks the declared key before continuing, without returning
+Secret contents to Console. It does not infer a key from the provider name or
+fetch chart defaults. Older recipes and saved plans without a sibling key keep
+their name-only existence check. For manual installation, create the Secret
+with the declared key in the chart's namespace before running Helm.
+
 A `requiredValue` with no `value` is one the installer must type. Prefer a
 placeholder wherever the hub already knows the answer — every value a person has
 to look up and paste is a chance to get it wrong.
@@ -378,8 +399,8 @@ All nine, each embedding its own chart values reference:
 | `code` | none |
 | `databricks` | none |
 | `kuery` | none — its edges claim is identity-agnostic and resolves to whichever edges copy each workspace bound |
-| `app-studio` | none — its infrastructure and code claims are identity-agnostic and resolve per workspace |
-| `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency, and the hub cannot invent your database |
+| `app-studio` | `store.databaseURLSecretRef.name` — Postgres stores persistent chat messages; the recipe declares data key `database-url` |
+| `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency; the recipe declares data key `database-url` |
 
 A recipe value is a literal or a `{{placeholder}}` the hub substitutes; there
 is nothing per-organization for the hub to resolve beyond those.

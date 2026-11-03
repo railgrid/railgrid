@@ -1383,3 +1383,66 @@ func TestConfigurationPauseRepreparesMissingNamespace(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigurationPauseRequiresDeclaredSecretKeyBeforeHelm(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, plan := fixture(t)
+	plan.RequiredSecrets = []string{"database"}
+	plan.RequiredSecretKeys = map[string][]string{"database": {"connection-url"}}
+	status, err := i.Start(ctx, "org", "kuery", plan, []byte("provider-credential"), false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("initial pause: %#v %v", status, err)
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "database"}, Data: map[string][]byte{"wrong-key": []byte("private-database-credential")}}
+	secret, err = edge.CoreV1().Secrets(plan.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, correct := range []bool{false, true} {
+		if correct {
+			secret.Data["connection-url"] = []byte("private-database-credential")
+			if _, err := edge.CoreV1().Secrets(plan.Namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		status, err = i.Start(ctx, "org", "kuery", nil, []byte("provider-credential"), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (status.Phase == "AwaitingConfiguration") == correct {
+			t.Fatalf("configuration readiness incorrect: correct=%t status=%#v", correct, status)
+		}
+		if strings.Contains(status.Message, "private-database-credential") {
+			t.Fatal("Secret value leaked in status")
+		}
+		jobs, err := edge.BatchV1().Jobs(plan.Namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if correct {
+			want = 1
+		}
+		if len(jobs.Items) != want {
+			t.Fatalf("jobs = %d, want %d", len(jobs.Items), want)
+		}
+	}
+}
+
+func TestConfigurationSecretEmptyKeyIsNotReady(t *testing.T) {
+	edge := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "database", Namespace: "owned"}, Data: map[string][]byte{"connection-url": {}}})
+	plan := &Plan{Namespace: "owned", RequiredSecrets: []string{"database"}, RequiredSecretKeys: map[string][]string{"database": {"connection-url"}}}
+	missing, err := missingConfigurationSecrets(context.Background(), edge, plan)
+	if err != nil || len(missing) != 1 || !strings.Contains(missing[0], "connection-url") {
+		t.Fatalf("empty key accepted: %v %v", missing, err)
+	}
+	// Persisted plans without the new optional map retain their name-only contract.
+	plan = new(Plan)
+	if err := json.Unmarshal([]byte(`{"namespace":"owned","requiredSecrets":["database"]}`), plan); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = missingConfigurationSecrets(context.Background(), edge, plan)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("legacy plan changed behavior: %v %v", missing, err)
+	}
+}

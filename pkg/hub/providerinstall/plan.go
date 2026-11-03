@@ -68,6 +68,10 @@ func resolvePlan(ctx context.Context, in providers.InstallInstructions, resolver
 		return nil, fmt.Errorf("this provider needs manual installation: %s", strings.Join(in.Warnings, " "))
 	}
 	p := &Plan{Namespace: in.Namespace, Release: in.ReleaseName, Chart: in.ChartRef, Version: in.ChartVersion, Values: map[string]any{}}
+	declared := make(map[string]string, len(in.Values))
+	for _, v := range in.Values {
+		declared[v.Name] = v.Value
+	}
 	for _, v := range in.Values {
 		if v.Unresolved {
 			return nil, fmt.Errorf("set %s using manual installation", v.Name)
@@ -79,6 +83,16 @@ func resolvePlan(ctx context.Context, in providers.InstallInstructions, resolver
 				return nil, fmt.Errorf("%s must be a valid Secret name", v.Name)
 			}
 			p.RequiredSecrets = append(p.RequiredSecrets, v.Value)
+			keyPath := strings.TrimSuffix(v.Name, ".name") + ".key"
+			if key, present := declared[keyPath]; present {
+				if key == "" || len(validation.IsConfigMapKey(key)) > 0 {
+					return nil, fmt.Errorf("%s must be a valid Secret data key", keyPath)
+				}
+				if p.RequiredSecretKeys == nil {
+					p.RequiredSecretKeys = make(map[string][]string)
+				}
+				p.RequiredSecretKeys[v.Value] = append(p.RequiredSecretKeys[v.Value], key)
+			}
 		}
 		var err error
 		if v.LiteralString {
