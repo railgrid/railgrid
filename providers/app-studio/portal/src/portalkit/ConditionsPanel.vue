@@ -12,6 +12,11 @@ export interface ConditionInfo {
   lastTransitionTime?: string
 }
 
+export type ConditionSemantics = {
+  polarity: 'positive' | 'negative'
+  severity?: 'warning' | 'danger'
+}
+
 const props = defineProps<{
   conditions: ConditionInfo[]
   generation?: number
@@ -19,6 +24,8 @@ const props = defineProps<{
   emptyText?: string
   /** Hide the heading when a named parent section already supplies it. */
   showTitle?: boolean
+  /** Declare fault conditions explicitly; existing positive conditions retain their behavior. */
+  semantics?: Record<string, ConditionSemantics>
 }>()
 
 const reconciled = computed(() =>
@@ -36,10 +43,11 @@ const rows = computed<Array<Record<string, unknown>>>(() =>
   })),
 )
 
-function conditionTone(status: string): 'success' | 'warning' | 'muted' {
-  if (status === 'True') return 'success'
-  if (status === 'False') return 'warning'
-  return 'muted'
+function conditionTone(condition: Pick<ConditionInfo, 'type' | 'status'>): 'success' | 'warning' | 'danger' | 'muted' {
+  if (condition.status !== 'True' && condition.status !== 'False') return 'muted'
+  const semantics = props.semantics?.[condition.type]
+  const healthy = semantics?.polarity === 'negative' ? condition.status === 'False' : condition.status === 'True'
+  return healthy ? 'success' : semantics?.severity || 'warning'
 }
 </script>
 
@@ -63,7 +71,7 @@ function conditionTone(status: string): 'success' | 'warning' | 'muted' {
       :empty-text="emptyText || 'No conditions yet. The controller has not reconciled this resource.'"
     >
       <template #type="{ value }"><span class="k-conditions__type">{{ value }}</span></template>
-      <template #status="{ value }"><StatusBadge :status="String(value)" :tone="conditionTone(String(value))" /></template>
+      <template #status="{ value, row }"><StatusBadge :status="String(value)" :tone="conditionTone({ type: String(row.type), status: String(value) })" /></template>
       <template #messageLabel="{ value }"><span class="k-conditions__message">{{ value }}</span></template>
       <template #sinceLabel="{ value }"><span class="k-conditions__muted k-cell-mono">{{ value }}</span></template>
     </ResourceTable>

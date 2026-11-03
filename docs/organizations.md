@@ -862,3 +862,65 @@ design:
 - The railgrid kcp proxy can selectively gate by workspace type (refusing
   exec-credentials for `organization`-typed workspaces) — load-bearing
   for O-10. Spike before PR #5.
+
+
+## Metering deployment compatibility
+
+Plan ownership uses `metering.railgrid.ai/plan-source`: `operator` means an
+administrator controls the entitlement plan; a subscription integration must
+leave that plan unchanged. Such an integration writes `billing` when it owns
+the plan. kcp reserves `*.kcp.io` metadata, so the former
+`metering.contrib.kcp.io/plan-source` key is rejected by admission and is not a
+supported ownership marker.
+
+The Tilt checkout of `railgrid/contrib-metering` inspected for this change is
+`b673443a0601f0016f8eb5eac2988676d249c749`. It contains no subscription-plan
+reconciler, `/billing/*` server routes, or plan-source label reader/writer.
+Its entitlement reconciler reads `spec.plan` and updates usage/limits in status;
+it does not choose a subscription plan. There is consequently no verified
+contrib-metering release that reads the new ownership label. The inspected
+version supports the admin plan/usage flow without a billing-label rollout.
+The hub treats an absent `/billing/status` endpoint as subscription billing
+disabled. This does not verify custom or separately deployed billing extensions.
+
+For an installation with an external subscription reconciler, pause its plan
+writes first. Deploy and verify an integration that both preserves
+`spec.plan` when the new label is `operator` and writes `billing` using the
+new key. Then roll out the hub and resume subscription processing. Keep
+subscription processing paused if that compatibility cannot be demonstrated;
+upgrading the hub alone does not establish this contract. Verify that a
+subscription update leaves an admin-assigned plan unchanged and that a
+billing-owned plan reports its ownership before enabling checkout.
+
+## Plan archival
+
+The platform admin's **Archive plan** action retires a plan without deleting its
+resource or limits. The existing `DELETE /api/admin/metering/plans/{name}` route
+now archives the Plan by setting the annotation
+`metering.railgrid.ai/archived: "true"`; repeating the action is safe. The
+archive endpoint protects the serving hub's configured default plan. Every new
+implicit default assignment also verifies that the configured Plan exists and
+is active, including organization reconciliation and explicit resets. A reset
+checks this before clearing the organization's recorded plan intent. If replicas
+differ during a default-plan rollout and an old replica archives the new
+default, new default assignments fail rather than silently using that archived
+Plan; configure an active default to resume them. Existing archived assignments
+continue to resolve. Archived plans cannot be edited or
+selected for new assignments through the hub, and are removed from subscription
+offers except when displaying an organization's current plan.
+
+Existing organization assignments and entitlements keep referencing the retained
+Plan. Their limits, overrides, usage, and reconciliation continue to work, and
+admins can move them onto an active plan. Requests already in flight when a plan
+is archived may finish; their references remain valid because the resource
+still exists. This removes the assignment-versus-deletion race without a
+cross-workspace lock. There is no physical purge action or restore action in
+the platform admin UI. After a plan write, metering queues a foreground read
+behind any pending background poll and waits for it. A successful follow-up
+replaces the pre-write snapshot; a failed follow-up retains cached data with
+an error and Retry.
+
+A separately deployed subscription integration must also exclude archived plans
+from new subscriptions while continuing to service existing assignments. The
+inspected contrib-metering version above does not supply that integration;
+archival is hub-owned metadata and does not require changing its Plan schema.

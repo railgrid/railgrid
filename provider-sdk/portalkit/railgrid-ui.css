@@ -3099,6 +3099,11 @@ railgrid-resource-table-filter { display: contents; }
 .k-resource-page__skeleton--short { width: 22%; }
 .k-resource-page__skeleton--wide { width: 76%; }
 .k-resource-page__skeleton--medium { width: 54%; }
+.k-resource-page__title:focus {
+  outline: 2px solid var(--color-accent, #8b6bff);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
 .k-resource-page__body { min-width: 0; }
 
 @media (pointer: coarse), (any-pointer: coarse) {
@@ -3263,6 +3268,20 @@ railgrid-resource-table-filter { display: contents; }
   }
 }
 
+/* A bounded action menu stays at the header's trailing edge. Heading metadata
+ * can wrap independently without moving the menu onto its own toolbar row. */
+.k-resource-page__header.k-resource-page__header--compact-actions { flex-direction: row; }
+.k-resource-page__header--compact-actions > .k-resource-page__header-side {
+  width: auto;
+  flex: none;
+  justify-content: flex-end;
+}
+.k-resource-page__header--compact-actions .k-resource-page__actions {
+  width: auto;
+  justify-content: flex-end;
+}
+
+
 @media (prefers-reduced-motion: reduce) {
   .live-dot { animation: none; }
   .k-progress__bar { transition: none; }
@@ -3348,6 +3367,7 @@ railgrid-resource-table-filter { display: contents; }
   .k-tabs { gap: 2px; padding-bottom: 8px; }
   .k-tab { padding-right: 10px; padding-left: 10px; }
 }
+
 
 /* Ordered, non-interactive wizard progress; flow state stays caller-owned. */
 .k-wizard-steps {

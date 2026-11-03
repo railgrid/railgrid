@@ -24,6 +24,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 )
 
@@ -51,6 +52,47 @@ func EntitlementPlan(discovery Installed, store dynamic.Interface, logger klog.L
 	}
 }
 
+// AssignPlan updates an existing organization's entitlement as part of the
+// admin assignment request. The Organization remains the source of truth;
+// the reconciler repairs interruptions and creates missing entitlements.
+// Overrides and unrelated labels are preserved, including on conflict retries.
+func AssignPlan(discovery Installed, store dynamic.Interface, logger klog.Logger) func(ctx context.Context, org, plan string) error {
+	return func(ctx context.Context, org, plan string) error {
+		if _, installed := discovery.Current(); !installed {
+			return fmt.Errorf("metering is not installed; plans cannot be assigned")
+		}
+		return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			res := store.Resource(gvrEntitlements)
+			ent, err := res.Get(ctx, org, metav1.GetOptions{})
+			if apierrors.IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			labels := ent.GetLabels()
+			current, _, _ := unstructured.NestedString(ent.Object, "spec", "plan")
+			if current == plan && labels[LabelPlanFromSpec] == "true" && labels[PlanSourceLabel] == PlanSourceOperator {
+				return nil
+			}
+			if err := unstructured.SetNestedField(ent.Object, plan, "spec", "plan"); err != nil {
+				return err
+			}
+			if labels == nil {
+				labels = map[string]string{}
+			}
+			labels[LabelPlanFromSpec] = "true"
+			labels[PlanSourceLabel] = PlanSourceOperator
+			ent.SetLabels(labels)
+			if _, err := res.Update(ctx, ent, metav1.UpdateOptions{FieldManager: FieldManager}); err != nil {
+				return err
+			}
+			logger.Info("organization entitlement assigned", "organization", org, "from", current, "plan", plan)
+			return nil
+		})
+	}
+}
+
 // ResetPlan returns the action behind an explicit "back to the default plan"
 // on the admin plan route. Clearing Organization.spec.plan alone only moves
 // an Entitlement whose plan the hub wrote (LabelPlanFromSpec): one an admin
@@ -68,6 +110,9 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 		ent, err := res.Get(ctx, org, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				if err := requireAssignableDefaultPlan(ctx, store, defaultPlan); err != nil {
+					return err
+				}
 				return nil
 			}
 			return err
@@ -78,6 +123,11 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 		_, sourced := labels[PlanSourceLabel]
 		if current == defaultPlan && !fromSpec && !sourced {
 			return nil
+		}
+		if current != defaultPlan {
+			if err := requireAssignableDefaultPlan(ctx, store, defaultPlan); err != nil {
+				return err
+			}
 		}
 		if err := unstructured.SetNestedField(ent.Object, defaultPlan, "spec", "plan"); err != nil {
 			return err
@@ -93,22 +143,67 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 	}
 }
 
-// PlanExists returns a lookup that answers whether a metering Plan exists,
-// for callers that record a plan name on a hub object (Organization.spec.plan)
-// and must not accept a typo. It errors while metering is not installed:
-// without the store there is nothing to validate against, and an Organization
-// cannot be detached onto a plan nobody serves.
+// requireAssignableDefaultPlan checks the configured default against the
+// metering workspace before a caller makes a new assignment to it. This is a
+// live object check rather than replica-local configuration protection: during
+// a rolling configuration change, an older hub may have archived the plan
+// that a newer hub is configured to use.
+func requireAssignableDefaultPlan(ctx context.Context, store dynamic.Interface, defaultPlan string) error {
+	plan, err := store.Resource(gvrPlans).Get(ctx, defaultPlan, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("configured default plan %q does not exist", defaultPlan)
+	}
+	if err != nil {
+		return err
+	}
+	if IsPlanArchived(plan) {
+		return fmt.Errorf("configured default plan %q is archived", defaultPlan)
+	}
+	return nil
+}
+
+// ValidateDefaultPlan returns a live check for the default plan configured on
+// this hub. Admin plan-reset routes use it before clearing Organization intent;
+// ResetPlan repeats the check before writing the Entitlement.
+func ValidateDefaultPlan(store dynamic.Interface, defaultPlan string) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		return requireAssignableDefaultPlan(ctx, store, defaultPlan)
+	}
+}
+
+// PlanExists returns a lookup that answers whether a metering Plan exists and
+// remains assignable, for callers that record a plan name on a hub object
+// (Organization.spec.plan) and must not accept a typo or an archived plan. It
+// errors while metering is not installed: without the store there is nothing
+// to validate against, and an Organization cannot be detached onto a plan
+// nobody serves.
 func PlanExists(discovery Installed, store dynamic.Interface) func(ctx context.Context, name string) (bool, error) {
 	return func(ctx context.Context, name string) (bool, error) {
 		if _, ok := discovery.Current(); !ok {
 			return false, fmt.Errorf("metering is not installed; plans cannot be assigned")
 		}
-		if _, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{}); err != nil {
+		plan, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
 			if apierrors.IsNotFound(err) {
 				return false, nil
 			}
 			return false, err
 		}
-		return true, nil
+		return !IsPlanArchived(plan), nil
+	}
+}
+
+// PlanIsArchived returns a secondary lookup for callers that need to tell an
+// archived retained plan from a missing plan after PlanExists returned false.
+func PlanIsArchived(store dynamic.Interface) func(ctx context.Context, name string) (bool, error) {
+	return func(ctx context.Context, name string) (bool, error) {
+		plan, err := store.Resource(gvrPlans).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return IsPlanArchived(plan), nil
 	}
 }

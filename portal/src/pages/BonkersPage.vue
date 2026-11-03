@@ -127,7 +127,9 @@ function handleLogout() {
             <ShieldAlert class="h-5 w-5 text-accent" :stroke-width="1.75" />
             Platform admin
           </h1>
+          <!-- Metering owns its read lifecycle and provides the current view's refresh. -->
           <button
+            v-if="$route.name !== 'bonkers-metering'"
             type="button"
             class="k-btn k-btn--ghost inline-flex items-center gap-1.5 px-3 py-1.5 text-[12px]"
             :disabled="admin.loading"
@@ -149,25 +151,6 @@ function handleLogout() {
         </div>
 
         <template v-else>
-          <!-- Flat admin lists surface retry/stale state inside ResourceTable.
-               Organizations remain grouped cards, so their read error stays at shell level. -->
-          <div
-            v-if="admin.error && $route.name === 'bonkers-organizations'"
-            class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[13px] text-danger"
-            role="alert"
-            aria-live="assertive"
-          >
-            <span>{{ admin.loaded ? 'Could not refresh organizations. Showing the last loaded results.' : 'Could not load organizations.' }}</span>
-            <span class="text-[11px] text-danger">{{ admin.error }}</span>
-            <button
-              type="button"
-              class="k-btn k-btn--ghost px-2 py-0.5 text-[11px] text-danger"
-              :disabled="admin.loading"
-              @click="admin.refresh()"
-            >
-              Retry
-            </button>
-          </div>
           <router-view />
         </template>
       </div>

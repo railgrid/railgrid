@@ -691,14 +691,21 @@ test('keeps platform-admin flat lists and navigation on shared host patterns', (
     const source = fs.readFileSync(new URL(file, root), 'utf8')
     assert.match(source, /import ResourceTable from '@\/portalkit\/ResourceTable\.vue'/)
     assert.match(source, /<ResourceTable/)
-    assert.match(source, /:interactive="false"/)
+    assert.match(source, file === 'UsersSection.vue' ? /:interactive="false"/ : /:interactive="true"/)
+    if (file !== 'UsersSection.vue') {
+      assert.match(source, /import ResourcePage from '@\/portalkit\/ResourcePage\.vue'/)
+      assert.match(source, /import ResourceBackLink from '@\/portalkit\/ResourceBackLink\.vue'/)
+    }
     assert.match(source, /:loaded="admin\.loaded"/)
     assert.doesNotMatch(source, /<table\b/)
   }
 
   const providers = fs.readFileSync(new URL('ProvidersSection.vue', root), 'utf8')
   assert.match(providers, /provider\.registered \? \(provider\.ready \? 'ready' : 'not ready'\) : ''/)
-  assert.match(providers, /:status="providerFlag\(row, 'ready'\) \? 'ready' : 'not ready'"/)
+  assert.match(providers, /<StatusBadge :status="providerStatus\(row\).label" :tone="providerStatus\(row\).tone"/)
+  assert.match(providers, /if \(providerFlag\(row, 'registered'\)\) return providerFlag\(row, 'ready'\)/)
+  assert.match(providers, /label: 'Ready', tone: 'success'/)
+  assert.match(providers, /label: 'Not ready', tone: 'danger'/)
 
   const store = fs.readFileSync(new URL('../portal/src/stores/admin.ts', import.meta.url), 'utf8')
   const shell = fs.readFileSync(new URL('../portal/src/pages/BonkersPage.vue', import.meta.url), 'utf8')
