@@ -7,6 +7,7 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -19,8 +20,10 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	apiserverserviceaccount "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -334,5 +337,40 @@ func TestBindAppAccessTargetAllowsOnlySafeMissingRuntimeProofs(t *testing.T) {
 	claims.Method = http.MethodPost
 	if err := bindAppAccessTarget(context.Background(), malformedAPIClient, makeRoute("publishing"), &claims); err == nil {
 		t.Fatal("resource-level not found was treated as an absent runtime")
+	}
+}
+
+func TestActionProofProviderAuthenticationRequiresNativeIssuer(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		issuers  []string
+		accepted bool
+	}{
+		{"provider workspace", []string{"providercluster"}, true},
+		{"foreign workspace", []string{"foreigncluster"}, false},
+		{"missing issuer", nil, false},
+		{"ambiguous issuer", []string{"providercluster", "foreigncluster"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/clusters/providercluster/apis/authentication.k8s.io/v1/tokenreviews" {
+					t.Errorf("unexpected review path %s", r.URL.Path)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(&authnv1.TokenReview{Status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: providers.ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: tc.issuers}}}}); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			registry := providers.NewRegistry()
+			registry.Upsert(providers.Provider{Name: "app-studio", WorkspaceCluster: "providercluster"})
+			bridge := newProviderActionProofBridge(&rest.Config{Host: server.URL}, nil, registry, nil, nil)
+			request := httptest.NewRequest(http.MethodPost, "/", nil)
+			request.Header.Set("Authorization", "Bearer provider-token")
+			err := bridge.authenticate(context.Background(), request, actionproof.Claims{Provider: "app-studio"})
+			if (err == nil) != tc.accepted {
+				t.Fatalf("authentication error = %v, accepted = %t", err, tc.accepted)
+			}
+		})
 	}
 }

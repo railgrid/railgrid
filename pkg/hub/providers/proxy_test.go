@@ -112,12 +112,8 @@ func TestBackendProxyNoSPAFallback(t *testing.T) {
 	}
 }
 
-// TestBackendProxyHubOnlyReservations pins the split between the public
-// data plane and hub-only endpoints. Provider action routes are ordinary
-// data-plane verbs — they MUST ride the backend proxy (authorization is the
-// provider's caller-scoped SSAR gates, not a hub router). The attestation
-// endpoint is hub→provider internal and must never be reachable with a
-// caller bearer through /services/providers/{name}.
+// TestBackendProxyHubOnlyReservations keeps public backend routes separate from
+// hub-only attestation and shard-authenticated native verb routes.
 func TestBackendProxyHubOnlyReservations(t *testing.T) {
 	reg := NewRegistry()
 	upstreamCalled := false
@@ -138,6 +134,10 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 		"/services/providers/infrastructure/workload-identities/review",
 		"/services/providers/infrastructure/other/../workload-identities/review",
 		"/services/providers/infrastructure/Workload-Identities/review",
+		"/services/providers/infrastructure/clusters",
+		"/services/providers/infrastructure/clusters/victim/apis/example.io/v1/objects/item/read",
+		"/services/providers/infrastructure/other/../clusters/victim/apis/example.io/v1/objects/item/read",
+		"/services/providers/infrastructure/Clusters/victim/apis/example.io/v1/objects/item/read",
 	} {
 		t.Run(requestPath, func(t *testing.T) {
 			upstreamCalled = false
@@ -156,6 +156,9 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 	for _, requestPath := range []string{
 		"/services/providers/databricks/healthz",
 		"/services/providers/databricks/mcp",
+		"/services/providers/databricks/oauth/callback",
+		"/services/providers/databricks/agent/connect",
+		"/services/providers/databricks/webhooks/event",
 	} {
 		t.Run(requestPath, func(t *testing.T) {
 			upstreamCalled = false

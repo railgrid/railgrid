@@ -3273,3 +3273,7 @@ fix-lint-agents-provider-connections: $(GOLANGCI_LINT) ## Format the Agents prov
 
 lint-agents-provider-connections: $(GOLANGCI_LINT) ## Lint the Agents provider connection API and runtime
 	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./apis/v1alpha1/... ./client/... ./llm/... ./controller/modelcredential/... ./api/... .
+
+.PHONY: test-provider-issuer-boundary
+test-provider-issuer-boundary: ## Verify native SA issuers cannot cross provider or tenant authority
+	go test -count=1 ./pkg/hub/providers ./pkg/hub/serviceaccounts ./pkg/hub/mcpaggregate ./pkg/hub/identity ./pkg/hub/restapi ./pkg/hub
