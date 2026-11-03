@@ -76,10 +76,10 @@ test('Ready returns to the Self-Hosting list and legacy manage links normalize w
 
 test('the org-shadow card reports the actual current workspace binding copy', () => {
   assert.match(source, /function bindingProjectionIsCurrent\(\): boolean \{[\s\S]*bindingsLoadState === 'ready' && !providers\.bindingsStale[\s\S]*bindingsOrgUUID === tenant\.orgUUID\s*&&\s*providers\.bindingsWorkspace === tenant\.workspaceUUID[\s\S]*bindingsRequestOrgUUID === tenant\.orgUUID\s*&&\s*providers\.bindingsRequestWorkspaceUUID === tenant\.workspaceUUID/)
-  assert.match(source, /const binding = currentWorkspaceBinding\(p\)[\s\S]*return binding\.selfHosted \? 'organization' : 'platform'/)
+  assert.match(source, /const binding = displayedWorkspaceBinding\(p\)[\s\S]*return binding\.selfHosted \? 'organization' : 'platform'/)
   assert.match(source, /copy === 'platform'\) return 'Enabled · platform copy'/)
   assert.match(source, /copy === 'organization'\) return 'Enabled · org copy'/)
-  assert.match(source, /currentWorkspaceBinding\(p\) \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
+  assert.match(source, /binding \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
   assert.match(source, /Your organization’s entry shadows the platform entry, but existing workspace bindings may still use either copy\./)
   assert.match(source, /v-if="canOpenProvider\(p\)"/, 'Open uses the actual bound copy, including retained platform bindings')
 })
