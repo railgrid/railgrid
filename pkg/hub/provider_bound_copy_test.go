@@ -7,7 +7,11 @@ package hub
 
 import (
 	"context"
+	"errors"
+
 	"testing"
+
+	ktesting "k8s.io/client-go/testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -23,6 +27,7 @@ func TestProviderBoundCopy(t *testing.T) {
 	org := providers.Provider{Name: "edges", OrgUUID: "test-org", APIExportPath: "root:railgrid:tenants:test-org:providers:edges", APIExportName: "edges.example", WorkspaceCluster: "org-cluster"}
 	for _, tc := range []struct {
 		name          string
+		condition     string
 		entry         providers.Provider
 		mutate        func(*unstructured.Unstructured)
 		remove        bool
@@ -38,6 +43,13 @@ func TestProviderBoundCopy(t *testing.T) {
 			_ = unstructured.SetNestedField(b.Object, "old-cluster", "status", "apiExportClusterName")
 		}},
 		{name: "org copy", entry: org, want: true},
+		{name: "unready Ready", entry: org, condition: "Ready"},
+		{name: "unready APIExportValid", entry: org, condition: "APIExportValid"},
+		{name: "unready BindingUpToDate", entry: org, condition: "BindingUpToDate"},
+		{name: "unready InitialBindingCompleted", entry: org, condition: "InitialBindingCompleted"},
+		{name: "unready PermissionClaimsValid", entry: org, condition: "PermissionClaimsValid"},
+		{name: "unready PermissionClaimsApplied", entry: org, condition: "PermissionClaimsApplied"},
+
 		{name: "removed registration", entry: org, remove: true},
 		{name: "stale export cluster", entry: org, mutate: func(b *unstructured.Unstructured) {
 			_ = unstructured.SetNestedField(b.Object, "old-cluster", "status", "apiExportClusterName")
@@ -71,6 +83,9 @@ func TestProviderBoundCopy(t *testing.T) {
 			}
 			logical := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "core.kcp.io/v1alpha1", "kind": "LogicalCluster", "metadata": map[string]any{"name": "cluster", "annotations": map[string]any{"kcp.io/path": path}}}}
 			binding := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "arbitrary-binding-name"}, "spec": map[string]any{"reference": map[string]any{"export": map[string]any{"path": tc.entry.APIExportPath, "name": tc.entry.APIExportName}}}, "status": map[string]any{"phase": "Bound", "apiExportClusterName": tc.entry.WorkspaceCluster}}}
+			if tc.condition != "" {
+				_ = unstructured.SetNestedSlice(binding.Object, []any{map[string]any{"type": tc.condition, "status": "False"}}, "status", "conditions")
+			}
 			if tc.mutate != nil {
 				tc.mutate(binding)
 			}
@@ -83,8 +98,26 @@ func TestProviderBoundCopy(t *testing.T) {
 			if (err == nil) != tc.want {
 				t.Fatalf("got provider %s/%s err=%v, want allowed=%v", got.OrgUUID, got.Name, err, tc.want)
 			}
+			if !tc.want && !errors.Is(err, providers.ErrBoundCopyUnavailable) {
+				t.Fatalf("refusal lost its classification: %v", err)
+			}
 			if tc.want && got.WorkspaceCluster != tc.entry.WorkspaceCluster {
 				t.Fatalf("selected wrong copy: %#v", got)
+			}
+		})
+	}
+}
+
+func TestProviderBoundCopyPreservesLookupFailures(t *testing.T) {
+	for _, resource := range []string{"logicalclusters", "apibindings"} {
+		t.Run(resource, func(t *testing.T) {
+			logical := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "core.kcp.io/v1alpha1", "kind": "LogicalCluster", "metadata": map[string]any{"name": "cluster", "annotations": map[string]any{"kcp.io/path": "root:railgrid:tenants:org:ws"}}}}
+			client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}: "APIBindingList"}, logical)
+			failure := errors.New("upstream connection failed")
+			client.PrependReactor("*", resource, func(ktesting.Action) (bool, runtime.Object, error) { return true, nil, failure })
+			_, err := resolveProviderBoundCopy(context.Background(), client, providers.NewRegistry(), "root:railgrid:tenants:org:ws", "cluster", "edges")
+			if !errors.Is(err, failure) || errors.Is(err, providers.ErrBoundCopyUnavailable) {
+				t.Fatalf("lookup failure misclassified: %v", err)
 			}
 		})
 	}

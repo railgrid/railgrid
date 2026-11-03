@@ -11,7 +11,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 func TestBackendBoundCopyRouting(t *testing.T) {
@@ -43,7 +46,7 @@ func TestBackendBoundCopyRouting(t *testing.T) {
 					t.Errorf("resolver received unverified addressing: %q %q %q", path, cluster, name)
 				}
 				if tc.reject {
-					return Provider{}, errors.New("binding does not match a current registration")
+					return Provider{}, ErrBoundCopyUnavailable
 				}
 				if tc.org {
 					p, _ := proxy.reg.GetForOrg(testOrg, name)
@@ -117,5 +120,40 @@ func TestBackendBoundCopyPreservesExternalWebhookAuthentication(t *testing.T) {
 	proxy.ServeHTTP(rec, req)
 	if rec.Code != 200 || !hit {
 		t.Fatalf("external webhook routing changed: %d", rec.Code)
+	}
+}
+
+func TestBackendBoundCopyLookupFailuresAreRetryable(t *testing.T) {
+	for _, stage := range []string{"cluster", "binding", "missing cluster resolver"} {
+		t.Run(stage, func(t *testing.T) {
+			proxy, upstream := newEdgeBackedProxy(t, testOrg)
+			failure := errors.New("sensitive upstream endpoint and tenant details")
+			if stage == "cluster" {
+				proxy.SetClusterResolver(func(context.Context, string) (string, error) { return "", failure })
+			}
+			if stage == "missing cluster resolver" {
+				proxy.SetClusterResolver(nil)
+			}
+			proxy.SetBoundCopyResolver(func(context.Context, string, string, string) (Provider, error) { return Provider{}, failure })
+			req := httptest.NewRequest("GET", "/services/providers/infrastructure/mcp", nil)
+			req.Header.Set("Authorization", "Bearer "+callerBearer)
+			rec := httptest.NewRecorder()
+			proxy.ServeHTTP(rec, req)
+			if rec.Code != http.StatusServiceUnavailable || upstream.hit || strings.Contains(rec.Body.String(), "sensitive") {
+				t.Fatalf("lookup failure response: %d %q, forwarded=%v", rec.Code, rec.Body.String(), upstream.hit)
+			}
+		})
+	}
+}
+
+func TestBindingReadinessConditions(t *testing.T) {
+	for _, condition := range []string{"Ready", "APIExportValid", "BindingUpToDate", "InitialBindingCompleted", "PermissionClaimsValid", "PermissionClaimsApplied"} {
+		t.Run(condition, func(t *testing.T) {
+			binding := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"phase": "Bound", "conditions": []any{map[string]any{"type": condition, "status": "False", "reason": "Rejected"}}}}}
+			ready, message := BindingReadiness(binding)
+			if ready || message != "Rejected" {
+				t.Fatalf("condition ignored: ready=%v message=%q", ready, message)
+			}
+		})
 	}
 }

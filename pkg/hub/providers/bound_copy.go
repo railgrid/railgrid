@@ -7,8 +7,16 @@ package providers
 
 import (
 	"context"
+	"errors"
+
 	"strings"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+// ErrBoundCopyUnavailable means the workspace has no usable registered copy.
+// It deliberately carries no tenant, registration, or upstream error details.
+var ErrBoundCopyUnavailable = errors.New("provider copy is not available in the selected workspace")
 
 // BoundCopyResolver selects a backend using the authenticated caller's verified
 // workspace and its live APIBinding. It must never select from request headers
@@ -40,9 +48,35 @@ func (r *Registry) BoundCopy(org, name, path, export, cluster string) (Provider,
 	return selected, matched
 }
 
-// Webhook bearers belong to the external sender, not the hub tenant. Agent
-// ingress has its own credential resolver. Only tenant backend classes use
-// this workspace binding lookup.
+// BindingReadiness is shared by routing and the enabled-provider projection.
+// A Bound phase alone does not establish that the export and claims are usable.
+func BindingReadiness(item *unstructured.Unstructured) (bool, string) {
+	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
+	for _, raw := range conditions {
+		c, ok := raw.(map[string]any)
+		if !ok || c["status"] != "False" {
+			continue
+		}
+		switch c["type"] {
+		case "Ready", "APIExportValid", "BindingUpToDate", "InitialBindingCompleted", "PermissionClaimsValid", "PermissionClaimsApplied":
+			message, _ := c["message"].(string)
+			if message == "" {
+				message, _ = c["reason"].(string)
+			}
+			if message == "" {
+				message = "The provider binding is not ready."
+			}
+			return false, message
+		}
+	}
+	phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
+	return phase == "Bound", ""
+}
+
+// Only authenticated, workspace-scoped MCP, OAuth and health requests use the
+// native binding lookup. No-bearer probes and callers without a resolved workspace
+// retain catalog resolution. Webhook credentials belong to the external sender;
+// agent ingress has its own credential resolver. Neither uses this tenant path.
 func usesBoundBackendCopy(path, prefix, name string) bool {
 	rest := strings.TrimPrefix(path, prefix+"/"+name)
 	return rest == "/mcp" || strings.HasPrefix(rest, "/mcp/") || rest == "/oauth" || strings.HasPrefix(rest, "/oauth/") || rest == "/healthz" || rest == "/readyz"

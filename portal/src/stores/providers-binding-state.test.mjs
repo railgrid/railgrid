@@ -393,3 +393,39 @@ test('enabled dependencies and onboarding follow the actual copy while org offer
   setSelection('org-b', 'workspace-b')
   assert.equal(store.hasMissingDependencies({ requires: [{ provider: 'edges' }] }), true, 'old workspace bindings cannot satisfy a new scope')
 })
+
+
+test('enable reads bindings exactly once after catalog success or failure', async () => {
+  for (const catalogFails of [false, true]) {
+    setSelection('org-a', 'workspace-a')
+    const store = storeModule.useProvidersStore()
+    let reads = 0
+    globalThis.__providerAuthFetch = (url, init) => {
+      if (init?.method === 'POST') return Promise.resolve(response(null))
+      if (url === '/api/providers') return catalogFails
+        ? Promise.reject(new Error('catalog unavailable'))
+        : Promise.resolve(response({ items: [] }))
+      reads += 1
+      return Promise.resolve(response({ bindingNamesByProvider: { edges: 'edges' } }))
+    }
+    await store.enable({ name: 'edges', displayName: 'Edges', export: { name: 'edges.export', path: 'root:railgrid:providers:edges' } }, [])
+    assert.equal(reads, 1)
+    assert.equal(store.bindingsLoadState, 'ready')
+    assert.deepEqual(store.bindingNamesByProvider, { edges: 'edges' })
+  }
+})
+
+test('enable surfaces its single authoritative binding read failure', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  let reads = 0
+  globalThis.__providerAuthFetch = (url, init) => {
+    if (init?.method === 'POST') return Promise.resolve(response(null))
+    if (url === '/api/providers') return Promise.resolve(response({ items: [] }))
+    reads += 1
+    return Promise.reject(new Error('binding unavailable'))
+  }
+  await assert.rejects(store.enable({ name: 'edges', displayName: 'Edges', export: { name: 'edges.export', path: 'root:railgrid:providers:edges' } }, []), /binding unavailable/)
+  assert.equal(reads, 1)
+  assert.equal(store.bindingsLoadState, 'error')
+})

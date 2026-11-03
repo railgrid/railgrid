@@ -432,7 +432,11 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		r = p.withResolvedCaller(r)
 	}
-	prov, found := p.resolveProvider(r, name)
+	prov, found, resolveErr := p.resolveProvider(r, name)
+	if resolveErr != nil {
+		http.Error(w, "provider resolution temporarily unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if !found {
 		http.Error(w, "provider not found: "+name, http.StatusNotFound)
 		return

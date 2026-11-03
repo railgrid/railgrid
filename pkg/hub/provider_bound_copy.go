@@ -7,7 +7,6 @@ package hub
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,10 +20,16 @@ import (
 )
 
 func newProviderBoundCopyResolver(config *rest.Config, registry *providers.Registry) providers.BoundCopyResolver {
+	// Reuse the transport without caching security-sensitive binding decisions.
+	// Registration removal and binding retargeting must take effect on the next call.
+	httpClient, transportErr := rest.HTTPClientFor(config)
 	return func(ctx context.Context, tenantPath, cluster, name string) (providers.Provider, error) {
+		if transportErr != nil {
+			return providers.Provider{}, transportErr
+		}
 		cfg := rest.CopyConfig(config)
 		cfg.Host = apiurl.KCPClusterURL(cfg.Host, cluster)
-		client, err := dynamic.NewForConfig(cfg)
+		client, err := dynamic.NewForConfigAndClient(cfg, httpClient)
 		if err != nil {
 			return providers.Provider{}, err
 		}
@@ -33,7 +38,7 @@ func newProviderBoundCopyResolver(config *rest.Config, registry *providers.Regis
 }
 
 func resolveProviderBoundCopy(ctx context.Context, client dynamic.Interface, registry *providers.Registry, tenantPath, cluster, name string) (providers.Provider, error) {
-	refused := fmt.Errorf("provider copy is not available in the selected workspace")
+	refused := providers.ErrBoundCopyUnavailable
 	const tenantPrefix = "root:railgrid:tenants:"
 	suffix := strings.TrimPrefix(tenantPath, tenantPrefix)
 	org, workspace, ok := strings.Cut(suffix, ":")
@@ -60,18 +65,8 @@ func resolveProviderBoundCopy(ctx context.Context, client dynamic.Interface, reg
 		if binding.GetName() == name || path == "root:railgrid:providers:"+name || path == "root:railgrid:tenants:"+org+":providers:"+name {
 			boundAPI = true
 		}
-		phase, _, _ := unstructured.NestedString(binding.Object, "status", "phase")
-		if phase != "Bound" || binding.GetDeletionTimestamp() != nil {
-			continue
-		}
-		invalid := false
-		conditions, _, _ := unstructured.NestedSlice(binding.Object, "status", "conditions")
-		for _, condition := range conditions {
-			if c, ok := condition.(map[string]any); ok && c["type"] == "APIExportValid" && c["status"] == "False" {
-				invalid = true
-			}
-		}
-		if invalid {
+		ready, _ := providers.BindingReadiness(&binding)
+		if !ready || binding.GetDeletionTimestamp() != nil {
 			continue
 		}
 		export, _, _ := unstructured.NestedString(binding.Object, "spec", "reference", "export", "name")

@@ -2235,26 +2235,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 // providerBindingReadiness checks conditions as well as phase: kcp can leave
 // phase Bound and Ready=True after the referenced export has disappeared.
 func providerBindingReadiness(item *unstructured.Unstructured) (bool, string) {
-	conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
-	for _, raw := range conditions {
-		c, ok := raw.(map[string]any)
-		if !ok || c["status"] != "False" {
-			continue
-		}
-		switch c["type"] {
-		case "Ready", "APIExportValid", "BindingUpToDate", "InitialBindingCompleted", "PermissionClaimsValid", "PermissionClaimsApplied":
-			message, _ := c["message"].(string)
-			if message == "" {
-				message, _ = c["reason"].(string)
-			}
-			if message == "" {
-				message = "The provider binding is not ready."
-			}
-			return false, message
-		}
-	}
-	phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
-	return phase == "Bound", ""
+	return providers.BindingReadiness(item)
 }
 
 // deletionBlockedMessage returns kcp's explanation of why a terminating

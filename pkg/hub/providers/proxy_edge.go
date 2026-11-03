@@ -63,33 +63,42 @@ func (p *ProviderProxy) SetDelegatedTokenIssuer(i DelegatedTokenIssuer) {
 // assets embedded in the hub or fetched from a platform URL, and an org's
 // bundle is not something the hub hosts, so org-scoping there would only
 // produce 404s where the platform asset used to work.
-func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider, bool) {
+func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider, bool, error) {
 	if p.fallbackForSPA || p.tenantResolver == nil {
-		return p.reg.Get(name)
+		provider, found := p.reg.Get(name)
+		return provider, found, nil
 	}
 	if p.boundCopy != nil && usesBoundBackendCopy(r.URL.Path, p.pathPrefix, name) && strings.TrimSpace(r.Header.Get("Authorization")) != "" {
 		user, tenantPath, err := p.resolveCaller(r)
 		if err != nil || user == "" {
-			return Provider{}, false
+			return Provider{}, false, nil
 		}
 		_, workspace := splitTenantPath(tenantPath)
 		if workspace != "" {
 			if p.clusterResolver == nil {
-				return Provider{}, false
+				return Provider{}, false, errors.New("workspace resolver unavailable")
 			}
 			cluster, err := p.clusterResolver(r.Context(), tenantPath)
-			if err != nil || cluster == "" {
-				return Provider{}, false
+			if err != nil {
+				return Provider{}, false, err
+			}
+			if cluster == "" {
+				return Provider{}, false, errors.New("workspace cluster unavailable")
 			}
 			provider, err := p.boundCopy(r.Context(), tenantPath, cluster, name)
-			return provider, err == nil
+			if errors.Is(err, ErrBoundCopyUnavailable) {
+				return Provider{}, false, nil
+			}
+			return provider, err == nil, err
 		}
 	}
 	orgUUID := p.callerOrgUUID(r)
 	if orgUUID == "" {
-		return p.reg.Get(name)
+		provider, found := p.reg.Get(name)
+		return provider, found, nil
 	}
-	return p.reg.GetForOrg(orgUUID, name)
+	provider, found := p.reg.GetForOrg(orgUUID, name)
+	return provider, found, nil
 }
 
 // callerOrgUUID derives the caller's Org from the tenant workspace path the

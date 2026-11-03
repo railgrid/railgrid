@@ -713,7 +713,7 @@ export const useProvidersStore = defineStore('providers', () => {
     clearBindings()
   }
 
-  async function load(requestedOrgUUID?: string | null, force = false) {
+  async function load(requestedOrgUUID?: string | null, force = false, refreshWorkspaceBindings = true) {
     // App.vue passes the reactive tenant selection when an org switch is
     // already in flight. Reading the tab-local store keeps other callers
     // (including the initial auth bootstrap) compatible while ensuring a
@@ -754,7 +754,7 @@ export const useProvidersStore = defineStore('providers', () => {
       // scope; the auth-cluster watcher will refresh once the new workspace
       // selection is resolved.
       const currentSelection = readTenantSelection()
-      if (currentSelection.orgUUID === targetOrgUUID && currentSelection.workspaceMode !== 'organization') {
+      if (refreshWorkspaceBindings && currentSelection.orgUUID === targetOrgUUID && currentSelection.workspaceMode !== 'organization') {
         await refreshBindings().catch(() => {
           /* surfaced via Disable button being unavailable */
         })
@@ -932,7 +932,9 @@ export const useProvidersStore = defineStore('providers', () => {
       // workspace or expose A's binding under B.
       bindingsStale.value = true
       bindingsLoadState.value = 'loading'
-      await load(t.orgUUID, true)
+      // Enable owns the authoritative post-write read, including catalog failures
+      // and organization-only mode; suppress load's best-effort duplicate.
+      await load(t.orgUUID, true, false)
       if (!isCurrentEnable()) return
       await refreshBindings()
     } catch (e: unknown) {
