@@ -643,6 +643,25 @@ in URL paths.
 
 ## Known gaps
 
+### Native control-plane dependencies
+
+Self-hosting currently retains the existing kcp and Kubernetes dependency
+versions. The following native control-plane limitations are accepted for now:
+
+| Area | Known limitation | Operational effect |
+| --- | --- | --- |
+| Quota admission | A cluster-scoped request can select the same quota twice; failed or duplicate creates can also reserve usage before storage rejects the request. | Provider registration can fail or report exhausted capacity even when capacity appears available. |
+| Quota reclamation | Resource replenishment events can lose their kcp logical-cluster scope. | Deleting a provider may not reclaim quota immediately. Native full recalculation runs every five minutes, but that does not correct the separate admission defect or guarantee a retry succeeds. |
+| Provider removal | Native garbage collection can PATCH an APIExport through its legacy v1alpha1 owner reference, which cannot represent v1alpha2 label-scoped Secret claims. | Cleanup can fail validation and leave a registration in Removing. Completion may require an upstream correction or a separately verified integration fix. |
+
+Keep permission-claim selectors and ownership/deletion checks intact while
+investigating these failures. Artificial quota-status edits, broader Secret
+permissions, and forced finalizer removal are not supported recovery procedures.
+Correcting these native defects is separate from the smaller Railgrid install,
+UI, routing, and authorization fixes; this document does not claim they are fixed.
+
+### Other gaps
+
 - **The agent holds cluster-admin in the tenant's cluster, and its ClusterRole
   now says so.** It used to be an allowlist of API groups, which read like a
   containment boundary and was not one: it granted
