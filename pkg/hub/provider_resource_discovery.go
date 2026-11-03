@@ -61,8 +61,36 @@ func (h *providerResourceDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Req
 	vars := mux.Vars(r)
 	name, resource := vars["provider"], vars["resource"]
 	apiVersion := r.URL.Query().Get("apiVersion")
-	entry, ok := h.registry.GetForOrg(caller.OrgUUID, name)
-	if !ok || entry.Export == nil {
+	// Discovery must describe the provider serving the tenant's actual APIs,
+	// not the organization-preferred installation offer. The bound callback uses
+	// the hub client to verify native coordinates; the caller client below keeps
+	// its original list-only role and is never used for binding discovery.
+	var entry providers.Provider
+	registered, selected := false, false
+	for _, candidate := range h.registry.List() {
+		if candidate.Name != name || (candidate.OrgUUID != "" && candidate.OrgUUID != caller.OrgUUID) {
+			continue
+		}
+		registered = true
+		bound, err := h.bound(r.Context(), caller.ClusterID, candidate)
+		if err != nil {
+			writeDiscoveryError(w, http.StatusServiceUnavailable, "binding_unavailable", "Provider enablement could not be verified.")
+			return
+		}
+		if !bound {
+			continue
+		}
+		if selected {
+			writeDiscoveryError(w, http.StatusServiceUnavailable, "binding_unavailable", "Provider enablement could not be verified.")
+			return
+		}
+		entry, selected = candidate, true
+	}
+	if registered && !selected {
+		writeDiscoveryError(w, http.StatusForbidden, "provider_not_enabled", "The requested provider is not enabled in this workspace.")
+		return
+	}
+	if !selected || entry.Export == nil {
 		writeDiscoveryError(w, http.StatusNotFound, "provider_unavailable", "The requested provider resource is unavailable.")
 		return
 	}
@@ -88,15 +116,6 @@ func (h *providerResourceDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Req
 	gv, err := schema.ParseGroupVersion(apiVersion)
 	if err != nil || gv.Group == "" || gv.Version == "" || kind == "" {
 		writeDiscoveryError(w, http.StatusNotFound, "resource_not_discoverable", "The requested resource has no current advertised actions.")
-		return
-	}
-	bound, err := h.bound(r.Context(), caller.ClusterID, entry)
-	if err != nil {
-		writeDiscoveryError(w, http.StatusServiceUnavailable, "binding_unavailable", "Provider enablement could not be verified.")
-		return
-	}
-	if !bound {
-		writeDiscoveryError(w, http.StatusForbidden, "provider_not_enabled", "The requested provider is not enabled in this workspace.")
 		return
 	}
 	client, err := h.client(caller)

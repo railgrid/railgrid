@@ -132,7 +132,11 @@ func (h *IdentityHandler) create(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "owner.provider is required")
 		return
 	}
-	subject, err := h.attestor.Attest(r.Context(), r, provider)
+	clusterID := strings.TrimSpace(req.ClusterID)
+	if clusterID == "" {
+		clusterID = strings.TrimSpace(req.Owner.ClusterID)
+	}
+	subject, err := h.attestInWorkspace(r, provider, clusterID)
 	if err != nil {
 		status, code := identityAuthStatus(err)
 		h.log.V(4).Info("scoped identity request not attested", "provider", provider, "err", err.Error())
@@ -186,7 +190,8 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "provider is required")
 		return
 	}
-	subject, err := h.attestor.Attest(r.Context(), r, provider)
+	clusterID := strings.TrimSpace(query.Get("clusterID"))
+	subject, err := h.attestCleanupInWorkspace(r, provider, clusterID)
 	if err != nil {
 		status, code := identityAuthStatus(err)
 		writeIdentityError(w, status, code, identityAuthMessage(status))
@@ -194,7 +199,6 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = subject
 
-	clusterID := strings.TrimSpace(query.Get("clusterID"))
 	var owner *identity.Owner
 	// ?owner=<kind>/<name>[/<uid>] narrows to one object. The provider and
 	// group are the caller's own, so they are not part of the selector.
@@ -222,6 +226,13 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]identityListItem, 0, len(records))
 	for i := range records {
+		// A legacy global platform listing must not expose an org copy's
+		// identities merely because both copies share a provider name.
+		if clusterID == "" {
+			if _, err := h.attestCleanupInWorkspace(r, provider, records[i].Spec.ClusterID); err != nil {
+				continue
+			}
+		}
 		items = append(items, identityListItemFor(&records[i]))
 	}
 	writeIdentityJSON(w, http.StatusOK, struct {
@@ -239,7 +250,23 @@ func (h *IdentityHandler) delete(w http.ResponseWriter, r *http.Request) {
 		writeIdentityError(w, http.StatusBadRequest, identity.CodeInvalidRequest, "provider is required")
 		return
 	}
-	if _, err := h.attestor.Attest(r.Context(), r, provider); err != nil {
+	clusterID := ""
+	if _, scoped := h.attestor.(workspaceIdentityAttestor); scoped {
+		lookup, ok := h.service.(interface {
+			RecordCluster(context.Context, string, string) (string, error)
+		})
+		if !ok {
+			writeIdentityError(w, http.StatusServiceUnavailable, "identity_service_unavailable", "the scoped identity service is unavailable")
+			return
+		}
+		var err error
+		clusterID, err = lookup.RecordCluster(r.Context(), provider, strings.TrimSpace(mux.Vars(r)["name"]))
+		if err != nil {
+			writeIdentityError(w, http.StatusBadGateway, "identity_release_failed", "the scoped identity could not be released")
+			return
+		}
+	}
+	if _, err := h.attestCleanupInWorkspace(r, provider, clusterID); err != nil {
 		status, code := identityAuthStatus(err)
 		writeIdentityError(w, status, code, identityAuthMessage(status))
 		return
@@ -258,6 +285,28 @@ func (h *IdentityHandler) delete(w http.ResponseWriter, r *http.Request) {
 	// provider, is reported the same way. Deleting twice is not an error and
 	// a caller cannot probe for other providers' records.
 	w.WriteHeader(http.StatusNoContent)
+}
+
+type workspaceIdentityAttestor interface {
+	AttestInWorkspace(context.Context, *http.Request, string, string) (string, error)
+}
+
+func (h *IdentityHandler) attestInWorkspace(r *http.Request, provider, clusterID string) (string, error) {
+	if scoped, ok := h.attestor.(workspaceIdentityAttestor); ok && clusterID != "" {
+		return scoped.AttestInWorkspace(r.Context(), r, provider, clusterID)
+	}
+	// Unscoped calls are intentionally still platform-only. An org provider
+	// must supply a consumer workspace; it can never enumerate global records.
+	return h.attestor.Attest(r.Context(), r, provider)
+}
+
+func (h *IdentityHandler) attestCleanupInWorkspace(r *http.Request, provider, clusterID string) (string, error) {
+	if scoped, ok := h.attestor.(interface {
+		AttestCleanupInWorkspace(context.Context, *http.Request, string, string) (string, error)
+	}); ok && clusterID != "" {
+		return scoped.AttestCleanupInWorkspace(r.Context(), r, provider, clusterID)
+	}
+	return h.attestInWorkspace(r, provider, clusterID)
 }
 
 func identityListItemFor(record *tenancyv1alpha1.ScopedIdentity) identityListItem {
