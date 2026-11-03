@@ -30,7 +30,11 @@ Workspace and submits a Helm Job on the target cluster. Closing the console does
 not stop the Job. Its real Kubernetes status drives progress; successful Helm
 completion is followed by a separate provider health check through the Edge.
 A failed attempt can be retried with the same chart version and values. Concurrent
-starts reuse the active attempt. A disconnected Edge leaves status unavailable,
+starts reuse the active attempt. For user-supplied Secret references, the installer
+first prepares its owned namespace and pauses before creating a runner or Helm Job.
+Create the named Secrets in that namespace, then choose **Continue installation**.
+Do not pre-create an unowned namespace for a Console installation.
+A disconnected Edge leaves status unavailable,
 not successful; reconnect it before retrying.
 
 The runner has no local Kubernetes ServiceAccount token or cluster role. Its
@@ -51,7 +55,10 @@ unowned installation namespaces rather than overwriting an existing deployment.
 Removing a registration drains its APIExports and their cached resources before
 deleting the provider workspace. This keeps API discovery available to kcp's
 cache cleanup controller. Teardown is bounded and retryable; it does not force
-finalizers or uninstall the Helm release on the Edge.
+finalizers or uninstall the Helm release on the Edge. Retaining that Helm release
+does not preserve the API identity: a new registration has a new identity, so
+reinstallation does not restore access to resources under the deleted export.
+Export resources before removal and recreate them under the new copy.
 
 ## Relationship to provider-scoping.md
 
@@ -77,8 +84,9 @@ Still unimplemented from that doc, and still relevant here: the per-Org `bind`
 ClusterRole (P-3) and `MaximalPermissionPolicy`. In a workspace where an org
 entry shadows a platform provider, the Catalog distinguishes which copy the
 current APIBinding actually uses. Disabling the platform copy requires a
-confirmation that warns it can delete provider resources; enabling the org copy
-is a separate action after Disable completes.
+confirmation explaining that the current Delete policy deletes provider resources.
+There is no automatic data migration: export what is needed and recreate it under
+the org copy after Disable completes and that copy is enabled.
 
 ## Workspace layout
 
@@ -635,8 +643,14 @@ to **Self-hosted**. That tag describes the catalog entries; it does not claim
 existing bindings use the org copy. A separate status uses the current,
 workspace-scoped binding projection to say **Enabled · platform copy** or
 **Enabled · org copy**, and reports the copy as unknown while that projection is
-stale or unavailable. The **Open** action is offered only when the current
-workspace actually binds the org copy.
+stale or unavailable. Navigation and **Open** use the exact provider copy selected
+by that binding, including a platform copy enabled before the org started
+self-hosting. The existing enabled-provider response includes the bound copy's
+UI metadata and integrity pin; the merged catalog still offers the org copy for
+new Enable operations. Authenticated workspace backend requests use the same
+binding coordinates. An unavailable or removed copy stays visible but cannot
+silently load a same-named replacement. Registering an org copy therefore does
+not require disabling a working platform binding to keep using its Console UI.
 
 Names must be RFC1123 labels: the name becomes a kcp workspace name and appears
 in URL paths.
@@ -702,8 +716,15 @@ in URL paths.
   `{name}` with a UI served by the same authority as its backend (the edge
   route fronts that Service), hashes the bundle through the caller's own
   delegated route for Subresource Integrity, and answers with
-  `/ui/providers/{name}/main.js?v=…&grant=…` plus the pin. The grant is a
-  sealed, five-minute, single-provider token naming `(user, org, workspace)`.
+  `/ui/providers/{name}/_grant/{sealed}/main.js?v=…` plus the pin. The grant is an
+  asset-only, one-hour token naming `(user, org, workspace, provider registration)`.
+  Every asset redemption rechecks workspace membership and rejects a replaced
+  registration. Relative lazy modules, CSS and fonts keep that scoped directory;
+  App Studio captures its bootstrap directory for Vite preload URLs. Query grants
+  remain accepted for older single-file bundles. No cookie or ambient org scope
+  is installed. The grant is stripped from the upstream path/query and Referer;
+  responses use no-store and no-referrer. After the bounded asset session expires,
+  reloading the provider obtains a new grant.
   When the script tag fetches that URL, the UI proxy opens the grant, resolves
   the ORG's copy, mints the delegated token for the tuple it names, and
   forwards over the edge hop — the same hop and token swap as

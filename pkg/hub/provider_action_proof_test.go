@@ -7,20 +7,25 @@ package hub
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	authnv1 "k8s.io/api/authentication/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	apiserverserviceaccount "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/fake"
+	"k8s.io/client-go/rest"
 	ktesting "k8s.io/client-go/testing"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -64,7 +69,7 @@ func TestProviderActionProofBridgeRechecksMembershipAndRBAC(t *testing.T) {
 	bindingGVR := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{bindingGVR: "APIBindingList"},
 		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "core.kcp.io/v1alpha1", "kind": "LogicalCluster", "metadata": map[string]any{"name": "cluster", "annotations": map[string]any{"kcp.io/path": "root:railgrid:tenants:org:ws"}}}},
-		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "app-studio"}, "spec": map[string]any{"reference": map[string]any{"export": map[string]any{"name": "ai.railgrid.ai", "path": "root:railgrid:providers:app-studio"}}}, "status": map[string]any{"phase": "Bound"}}},
+		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "app-studio"}, "spec": map[string]any{"reference": map[string]any{"export": map[string]any{"name": "ai.railgrid.ai", "path": "root:railgrid:providers:app-studio"}}}, "status": map[string]any{"phase": "Bound", "apiExportClusterName": "platform-provider"}}},
 		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "ai.railgrid.ai/v1alpha1", "kind": "Project", "metadata": map[string]any{"name": "demo"}}},
 	)
 	allowed, member := true, true
@@ -78,9 +83,10 @@ func TestProviderActionProofBridgeRechecksMembershipAndRBAC(t *testing.T) {
 		return true, &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"allowed": allowed}}}, nil
 	})
 	registry := providers.NewRegistry()
-	registry.Upsert(providers.Provider{Name: "app-studio", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio", Export: &providersv1alpha1.ProviderExport{
+	registry.Upsert(providers.Provider{Name: "app-studio", WorkspaceCluster: "platform-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio", Export: &providersv1alpha1.ProviderExport{
 		Name: "ai.railgrid.ai", Resources: []providersv1alpha1.ProviderExportResource{{Name: "projects", APIVersion: "ai.railgrid.ai/v1alpha1", Kind: "Project", Verbs: []providersv1alpha1.ProviderVerb{{Name: "publishing-members"}}}},
 	}})
+	registry.Upsert(providers.Provider{Name: "app-studio", OrgUUID: "org", WorkspaceCluster: "org-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:tenants:org:providers:app-studio"})
 	b := &providerActionProofBridge{
 		keys: serviceaccounts.StaticProofKeySource([]byte("01234567890123456789012345678901")), registry: registry,
 		identify: func(*http.Request) (browsersession.Identity, error) {
@@ -138,6 +144,20 @@ func TestProviderActionProofBridgeRechecksMembershipAndRBAC(t *testing.T) {
 	if err != nil || claims.RBACIdentity != "railgrid:alice" {
 		t.Fatalf("valid redemption: %#v %v", claims, err)
 	}
+	if claims.ProviderOrgUUID != "" {
+		t.Fatalf("platform binding acquired org proof: %#v", claims)
+	}
+	foreignClaims := claims
+	foreignClaims.ProviderOrgUUID = "org"
+	foreignProof, err := actionproof.Sign(context.Background(), b.keys, foreignClaims, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	redeem.Header.Set(actionproof.Header, foreignProof)
+	if _, err = b.verifier().Verify(context.Background(), redeem); err == nil {
+		t.Fatal("org-copy proof redeemed against platform binding")
+	}
+	redeem.Header.Set(actionproof.Header, proof)
 	member = false
 	if _, err = b.verifier().Verify(context.Background(), redeem); err == nil {
 		t.Fatal("revoked membership accepted")
@@ -334,5 +354,118 @@ func TestBindAppAccessTargetAllowsOnlySafeMissingRuntimeProofs(t *testing.T) {
 	claims.Method = http.MethodPost
 	if err := bindAppAccessTarget(context.Background(), malformedAPIClient, makeRoute("publishing"), &claims); err == nil {
 		t.Fatal("resource-level not found was treated as an absent runtime")
+	}
+}
+
+func TestActionProofProviderAuthenticationRejectsForeignIssuer(t *testing.T) {
+	for _, issuer := range []string{"providercluster", "foreigncluster", ""} {
+		t.Run(issuer, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/clusters/providercluster/apis/authentication.k8s.io/v1/tokenreviews" {
+					t.Errorf("unexpected review endpoint %s %s", r.Method, r.URL.Path)
+					http.Error(w, "wrong endpoint", http.StatusNotFound)
+					return
+				}
+				// Native kcp authenticates the foreign token at this endpoint too.
+				review := authnv1.TokenReview{Status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: providers.ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: {issuer}}}}}
+				review.APIVersion, review.Kind = "authentication.k8s.io/v1", "TokenReview"
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(review); err != nil {
+					t.Error(err)
+				}
+			}))
+			defer server.Close()
+			registry := providers.NewRegistry()
+			registry.Upsert(providers.Provider{Name: "app-studio", WorkspaceCluster: "providercluster", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio"})
+			registry.Upsert(providers.Provider{Name: "app-studio", OrgUUID: "org", WorkspaceCluster: "orgprovider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:tenants:org:providers:app-studio"})
+			bridge := newProviderActionProofBridge(&rest.Config{Host: server.URL}, nil, registry, nil, nil)
+			bridge.clients = func(string) (dynamic.Interface, error) {
+				return actionProofNativeBindingClient(actionProofNativeBinding("providercluster")), nil
+			}
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("Authorization", "Bearer native-provider-token")
+			err := bridge.authenticate(context.Background(), request, actionproof.Claims{Provider: "app-studio", ClusterID: "tenant1", OrgUUID: "org", WorkspaceUUID: "ws"})
+			if (err == nil) != (issuer == "providercluster") {
+				t.Fatalf("issuer %q: %v", issuer, err)
+			}
+		})
+	}
+}
+
+func actionProofNativeBinding(issuer string) *unstructured.Unstructured {
+	return &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding",
+		"metadata": map[string]any{"name": "app-studio"},
+		"spec":     map[string]any{"reference": map[string]any{"export": map[string]any{"name": "ai.railgrid.ai", "path": "root:railgrid:providers:app-studio"}}},
+		"status":   map[string]any{"phase": "Bound", "apiExportClusterName": issuer},
+	}}
+}
+
+func actionProofNativeBindingClient(binding *unstructured.Unstructured) *fake.FakeDynamicClient {
+	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}: "APIBindingList"},
+		&unstructured.Unstructured{Object: map[string]any{"apiVersion": "core.kcp.io/v1alpha1", "kind": "LogicalCluster", "metadata": map[string]any{"name": "cluster", "annotations": map[string]any{"kcp.io/path": "root:railgrid:tenants:org:ws"}}}}, binding)
+}
+
+func TestActionProofRequiresExactHealthyNativeBinding(t *testing.T) {
+	for name, mutate := range map[string]func(*unstructured.Unstructured){
+		"current": func(*unstructured.Unstructured) {},
+		"replaced workspace": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(b.Object, "replacement", "status", "apiExportClusterName")
+		},
+		"missing workspace": func(b *unstructured.Unstructured) {
+			unstructured.RemoveNestedField(b.Object, "status", "apiExportClusterName")
+		},
+		"retargeted export": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(b.Object, "replacement", "spec", "reference", "export", "name")
+		},
+		"retargeted path": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(b.Object, "root:railgrid:tenants:org:providers:app-studio", "spec", "reference", "export", "path")
+		},
+		"terminating": func(b *unstructured.Unstructured) { now := metav1.Now(); b.SetDeletionTimestamp(&now) },
+		"not bound": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedField(b.Object, "Binding", "status", "phase")
+		},
+		"export invalid": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(b.Object, []any{map[string]any{"type": "APIExportValid", "status": "False"}}, "status", "conditions")
+		},
+		"not ready": func(b *unstructured.Unstructured) {
+			_ = unstructured.SetNestedSlice(b.Object, []any{map[string]any{"type": "Ready", "status": "False"}}, "status", "conditions")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			binding := actionProofNativeBinding("platform-provider")
+			mutate(binding)
+			registry := providers.NewRegistry()
+			platform := providers.Provider{Name: "app-studio", WorkspaceCluster: "platform-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio"}
+			registry.Upsert(platform)
+			registry.Upsert(providers.Provider{Name: "app-studio", OrgUUID: "org", WorkspaceCluster: "org-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:tenants:org:providers:app-studio"})
+			bridge := &providerActionProofBridge{registry: registry, clients: func(string) (dynamic.Interface, error) { return actionProofNativeBindingClient(binding), nil }}
+			accepted, err := bridge.bound(context.Background(), "tenant1", platform)
+			if err != nil || accepted != (name == "current") {
+				t.Fatalf("native binding accepted=%v error=%v", accepted, err)
+			}
+			selected, err := bridge.currentProvider(context.Background(), "tenant1", "app-studio")
+			if (err == nil) != (name == "current") {
+				t.Fatalf("currentProvider=%#v error=%v", selected, err)
+			}
+			if err == nil && selected.OrgUUID != "" {
+				t.Fatal("catalog shadow stole platform proof")
+			}
+		})
+	}
+}
+
+func TestActionProofCurrentProviderUsesOrganizationBinding(t *testing.T) {
+	binding := actionProofNativeBinding("org-provider")
+	if err := unstructured.SetNestedField(binding.Object, "root:railgrid:tenants:org:providers:app-studio", "spec", "reference", "export", "path"); err != nil {
+		t.Fatal(err)
+	}
+	registry := providers.NewRegistry()
+	registry.Upsert(providers.Provider{Name: "app-studio", WorkspaceCluster: "platform-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio"})
+	registry.Upsert(providers.Provider{Name: "app-studio", OrgUUID: "org", WorkspaceCluster: "org-provider", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:tenants:org:providers:app-studio"})
+	bridge := &providerActionProofBridge{registry: registry, clients: func(string) (dynamic.Interface, error) { return actionProofNativeBindingClient(binding), nil }}
+	selected, err := bridge.currentProvider(context.Background(), "tenant1", "app-studio")
+	if err != nil || selected.OrgUUID != "org" || selected.WorkspaceCluster != "org-provider" {
+		t.Fatalf("selected=%#v error=%v", selected, err)
 	}
 }

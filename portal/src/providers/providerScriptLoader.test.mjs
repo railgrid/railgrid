@@ -412,3 +412,29 @@ test('generation fence rejects a stale tile completion after newer props win', a
 
   assert.deepEqual(commits, ['current'])
 })
+
+
+test('same-version provider copies never reuse a different registration bootstrap', async () => {
+  const doc = providerDocument()
+  const first = loadProviderScript('code', 'same-version', doc, 15_000, { identity: 'global:code' })
+  await Promise.resolve()
+  doc.appended[0].onload()
+  await first
+  await assert.rejects(loadProviderScript('code', 'same-version', doc, 15_000, { identity: 'org:o:provider-cluster' }), /copy changed; reload/)
+  assert.equal(doc.appended.length, 1)
+})
+
+test('App Studio replaces its granted lazy base when the registration/workspace identity changes', async () => {
+  const doc = providerDocument()
+  const first = loadProviderScript('app-studio', 'same-version', doc, 15_000, { identity: 'org:o:provider-cluster:workspace-a' })
+  await Promise.resolve()
+  doc.appended[0].onload()
+  await first
+  const second = loadProviderScript('app-studio', 'same-version', doc, 15_000, { identity: 'org:o:provider-cluster:workspace-b' })
+  await Promise.resolve()
+  await Promise.resolve()
+  assert.equal(doc.appended.length, 2)
+  doc.appended[1].onload()
+  await second
+  assert.equal(doc.appended[1].dataset.railgridProviderIdentity, 'org:o:provider-cluster:workspace-b')
+})

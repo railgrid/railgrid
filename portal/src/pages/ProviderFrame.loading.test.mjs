@@ -160,18 +160,20 @@ test('App Studio keeps its workspace default and dynamic overrides require host 
   const createValue = new Function('computed', 'isAppStudioWorkspaceRoute', 'providerFullBleedOverride', 'accessAllowed',
     `return computed(() => ${expression})`)
   const createAccess = new Function(
-    'computed', 'catalogSettled', 'entry', 'requiresBinding', 'bindingsAuthoritative', 'providerBound',
+    'computed', 'catalogSettled', 'entry', 'requiresBinding', 'bindingsAuthoritative', 'providerBound', 'bindingUnavailable',
     `return computed(() => ${accessExpression})`,
   )
   const computed = getter => ({ get value() { return getter() } })
-  const access = (ready, bound) => createAccess(
+  const access = (ready, bound, unavailable = false) => createAccess(
     computed,
     { value: true },
     { value: { ready, serving: { ui: '/main.js' } } },
     { value: true },
     { value: true },
     { value: bound },
+    { value: unavailable },
   ).value
+  assert.equal(access(true, true, true), false, 'an unhealthy/mismatched binding must not mount a catalog bundle')
   const fullBleed = (workspaceRoute, override, allowed = true) => createValue(
     computed,
     { value: workspaceRoute },
@@ -425,9 +427,11 @@ test('provider status refresh is a same-scope catalog read with a distinct recov
   assert.deepEqual(stateFor({ loaded: true, loading: true, catalogOrgUUID: 'org-b' }), { refreshing: false, loading: true })
 
   const calls = []
-  const retryCatalog = new Function('providers', 'tenant', `return function () { ${functionBody('retryCatalog')} }`)({
+  const retryCatalog = new Function('providers', 'tenant', 'props', `return function () { ${functionBody('retryCatalog')} }`)({
     load: orgUUID => { calls.push(orgUUID); return Promise.resolve() },
-  }, { orgUUID: 'org-a' })
+    isEnabled: name => name === 'edges',
+    refreshBindings: () => { calls.push('bindings'); return Promise.resolve() },
+  }, { orgUUID: 'org-a' }, { providerName: 'edges' })
   retryCatalog()
-  assert.deepEqual(calls, ['org-a'])
+  assert.deepEqual(calls, ['org-a', 'bindings'])
 })

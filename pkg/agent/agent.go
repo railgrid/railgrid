@@ -741,18 +741,16 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		path, _ := AgentCredentialPath(a.opts.EdgeName)
 		logger.Info("Enrolled: the provider issued this agent a scoped identity",
 			"edgeName", a.opts.EdgeName, "path", path, "expiresAt", credential.ExpiresAt)
-		// Rebuild the hub client from the bundle: the agent connected with a
-		// bootstrap join token, which is not a kcp credential at all, and
-		// everything it needs to become one is in the bundle (hub URL, CA,
-		// logical cluster).
+		// The tunnel adopted and persisted the bundle before this callback.
+		// Wake the startup goroutine to configure its client exactly once;
+		// reconnect callbacks must not overwrite a live rotating config.
 		deliverOnce.Do(func() {
-			a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
 			close(agentEnrolled)
 		})
 	}
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.credentials, a.opts.EdgeName, string(a.agentType), a.downstreamConfig, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, clusterName, onEnrolled, nil)
 
-	// Out-of-cluster join-token mode: the in-memory hubClient was built from
+	// Join-token mode (including Helm pods): hubClient was built from
 	// the bootstrap join token, which is not a valid kcp credential. Wait for
 	// the tunnel to deliver a SA kubeconfig via token-exchange, then rebuild
 	// hubClient from it so the reporters/reconcilers below have working
@@ -762,23 +760,14 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 	// bundle and the wait below would never end — taking the add-on plane, the
 	// status reporter and everything after them with it, on every restart. The
 	// hub client is still rebuilt from whichever credential the store holds.
-	if !IsInCluster() && (a.opts.Token != "" || a.hasIssuedCredential()) {
-		if !a.hasIssuedCredential() {
-			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
-			select {
-			case <-ctx.Done():
-				logger.Info("Agent shutting down before enrolment completed")
-				return nil
-			case <-agentEnrolled:
-			}
+	refreshed, err := a.hubClientAfterEnrollment(ctx, hubClient, agentEnrolled)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
 		}
-		refreshed, err := a.refreshHubClientFromCredential()
-		if err != nil {
-			return fmt.Errorf("refreshing hub client after enrolment: %w", err)
-		}
-		hubClient = refreshed
-		logger.Info("Refreshed hub client from the issued credential")
+		return fmt.Errorf("refreshing hub client after enrolment: %w", err)
 	}
+	hubClient = refreshed
 
 	// Workload plane: Workload/Placement scheduling onto this kubernetes
 	// edge. The edges provider's scheduler creates Placements for this edge in
@@ -811,29 +800,15 @@ func (a *Agent) runKubernetesMode(ctx context.Context, logger klog.Logger, hubCl
 		logger.Info("Workload plane started (Workload/Placement)")
 	}
 
-	// In-cluster join-token mode is the only path where the agent does not yet
-	// hold a valid kcp credential when reaching this point (it will os.Exit on
-	// kubeconfig delivery and the next pod restart picks up the saved one).
-	// Everywhere else we have working credentials and should run the
-	// edge_reporter so the agent owns its heartbeat instead of relying solely
-	// on the hub-side stamp.
-	if a.opts.Token != "" && IsInCluster() {
-		logger.Info("In-cluster join-token mode: hub manages edge status until kubeconfig-triggered restart")
-		go func() {
-			for range tunnelState {
-			}
-		}()
-	} else {
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
-		if a.agentType == AgentTypeMacOS {
-			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
+	// Enrollment has completed for both Helm pods and standalone agents, so
+	// reporters can use the issued hub credential immediately. Connectivity
+	// remains owned by the provider; this reporter publishes agent facts.
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+	go func() {
+		if err := reporter.Run(ctx); err != nil {
+			logger.Error(err, "Edge status reporter failed")
 		}
-		go func() {
-			if err := reporter.Run(ctx); err != nil {
-				logger.Error(err, "Edge status reporter failed")
-			}
-		}()
-	}
+	}()
 
 	logger.Info("Agent started successfully (kubernetes mode)")
 	<-ctx.Done()
@@ -958,7 +933,7 @@ func (a *Agent) savedCredentialMismatch(credential tunnel.Credential) string {
 // refreshHubClientFromCredential rebuilds the agent's kcp client from the
 // credential the provider issued, and updates a.hubConfig in place.
 //
-// Out-of-cluster join-token startup needs it: the in-memory client was built
+// Join-token startup needs it even in a pod: the in-memory client was built
 // from the bootstrap join token, which is not a kcp credential at all, so
 // every reporter call would fail until the agent transitioned. It used to
 // transition by loading a kubeconfig off disk; now everything it needs is in
@@ -978,12 +953,37 @@ func (a *Agent) refreshHubClientFromCredential() (*railgridclient.Client, error)
 	return railgridclient.NewFromDynamic(dynClient), nil
 }
 
+// hubClientAfterEnrollment transitions only the hub client. Being inside the
+// managed cluster does not make its Kubernetes ServiceAccount a hub credential,
+// and the downstream runtime client must retain its own configuration.
+func (a *Agent) hubClientAfterEnrollment(ctx context.Context, initial *railgridclient.Client, enrolled <-chan struct{}) (*railgridclient.Client, error) {
+	if a.opts.Token == "" && !a.hasIssuedCredential() {
+		return initial, nil
+	}
+	if !a.hasIssuedCredential() {
+		klog.FromContext(ctx).Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-enrolled:
+		}
+	}
+	client, err := a.refreshHubClientFromCredential()
+	if err == nil {
+		klog.FromContext(ctx).Info("Refreshed hub client from the issued credential")
+	}
+	return client, err
+}
+
 // configureHubFromCredential makes the issued identity the active source for
 // both kcp requests and the reverse tunnel. On a restart this must happen
 // before either path starts: the bootstrap token may already have been
 // cleared, and the saved credential also carries the tenant cluster and CA.
 func (a *Agent) configureHubFromCredential(credential tunnel.Credential) error {
 	config := hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
+	if err := useIssuedHubCredentials(config, a.credentials); err != nil {
+		return err
+	}
 	tlsConfig, err := rest.TLSConfigFor(config)
 	if err != nil {
 		return fmt.Errorf("building TLS config from the agent credential: %w", err)
@@ -1127,12 +1127,10 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 		path, _ := AgentCredentialPath(a.opts.EdgeName)
 		logger.Info("Enrolled: the provider issued this agent a scoped identity",
 			"edgeName", a.opts.EdgeName, "path", path, "expiresAt", credential.ExpiresAt)
-		// Rebuild the hub client from the bundle: the agent connected with a
-		// bootstrap join token, which is not a kcp credential at all, and
-		// everything it needs to become one is in the bundle (hub URL, CA,
-		// logical cluster).
+		// The tunnel adopted and persisted the bundle before this callback.
+		// Wake the startup goroutine to configure its client exactly once;
+		// reconnect callbacks must not overwrite a live rotating config.
 		serverDeliverOnce.Do(func() {
-			a.hubConfig = hubConfigFromCredential(credential, a.opts.InsecureSkipTLSVerify)
 			close(serverAgentEnrolled)
 		})
 	}

@@ -67,6 +67,24 @@ func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider,
 	if p.fallbackForSPA || p.tenantResolver == nil {
 		return p.reg.Get(name)
 	}
+	if p.boundCopy != nil && usesBoundBackendCopy(r.URL.Path, p.pathPrefix, name) && strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		user, tenantPath, err := p.resolveCaller(r)
+		if err != nil || user == "" {
+			return Provider{}, false
+		}
+		_, workspace := splitTenantPath(tenantPath)
+		if workspace != "" {
+			if p.clusterResolver == nil {
+				return Provider{}, false
+			}
+			cluster, err := p.clusterResolver(r.Context(), tenantPath)
+			if err != nil || cluster == "" {
+				return Provider{}, false
+			}
+			provider, err := p.boundCopy(r.Context(), tenantPath, cluster, name)
+			return provider, err == nil
+		}
+	}
 	orgUUID := p.callerOrgUUID(r)
 	if orgUUID == "" {
 		return p.reg.Get(name)

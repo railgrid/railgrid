@@ -32,6 +32,7 @@ package providers
 // changing anything in this file's inputs.
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -74,6 +75,8 @@ type ResolvedValue struct {
 	// Unresolved marks a value the installer must supply themselves — the
 	// command contains a placeholder that will not work as-is.
 	Unresolved bool `json:"unresolved,omitempty"`
+	// LiteralString keeps operator-supplied references out of Helm's value grammar.
+	LiteralString bool `json:"-"`
 }
 
 // InstallInstructions is everything an org needs to stand up its own copy.
@@ -107,6 +110,9 @@ type InstallInstructions struct {
 // InstallOptions carries the per-organization facts the provider's own
 // metadata cannot know.
 type InstallOptions struct {
+	Values map[string]string
+	// Insecure is set only by a development hub for its self-signed certificate.
+	Insecure bool
 	// ProviderName is the name the org registered its copy under.
 	ProviderName string
 	// WorkspacePath is the org provider workspace the credential targets.
@@ -115,6 +121,37 @@ type InstallOptions struct {
 	// externally reachable: the provider runs outside the platform, so an
 	// in-cluster service DNS name would be unroutable for it.
 	HubURL string
+}
+
+// InstallInputs returns only settings the operator must supply. Fixed recipe
+// values and hub-owned addressing/credential settings are never browser inputs.
+func (s *SelfHosting) InstallInputs() []SelfHostingValue {
+	var out []SelfHostingValue
+	if s != nil {
+		for _, v := range s.RequiredValues {
+			if v.Name != "" && v.Value == "" && hubKnownValue(v.Name, "hub") == "" {
+				out = append(out, SelfHostingValue{Name: v.Name, Description: v.Description})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func (s *SelfHosting) ValidateInstallInputs(values map[string]string) error {
+	allowed := map[string]bool{}
+	for _, v := range s.InstallInputs() {
+		allowed[v.Name] = true
+	}
+	for name, value := range values {
+		if !allowed[name] {
+			return fmt.Errorf("installation contains an undeclared or fixed setting")
+		}
+		if len(value) > 4096 || strings.ContainsAny(value, "\x00\r\n") {
+			return fmt.Errorf("installation setting %s must be a single line of at most 4096 bytes", name)
+		}
+	}
+	return nil
 }
 
 // RenderInstallInstructions builds the install steps for one provider.
@@ -181,6 +218,9 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 		Value:       "true",
 		Description: "Registers the provider with railgrid so your workspaces can enable it.",
 	})
+	if opts.Insecure {
+		addDefault(ResolvedValue{Name: "hub.insecure", Value: "true", Description: "Trust this development hub's self-signed TLS certificate. Development only."})
+	}
 	// hub.url must be the external address: the provider runs in the org's own
 	// cluster, where an in-cluster service DNS name does not resolve.
 	switch {
@@ -232,6 +272,9 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 				// user for something the hub can answer.
 				if known := hubKnownValue(v.Name, opts.HubURL); known != "" {
 					resolved.Value = known
+				} else if supplied := strings.TrimSpace(opts.Values[v.Name]); supplied != "" {
+					resolved.Value = supplied
+					resolved.LiteralString = true
 				} else {
 					resolved = unresolvedValue(resolved, v.Name, &out)
 				}
@@ -248,7 +291,12 @@ func RenderInstallInstructions(sh *SelfHosting, opts InstallOptions) InstallInst
 	}
 	fmt.Fprintf(helm, " \\\n  --namespace %s", namespace)
 	for _, v := range values {
-		fmt.Fprintf(helm, " \\\n  --set %s=%s", v.Name, shellQuote(v.Value))
+		if v.LiteralString {
+			literal, _ := json.Marshal(v.Value)
+			fmt.Fprintf(helm, " \\\n  --set-json %s=%s", v.Name, shellQuote(string(literal)))
+		} else {
+			fmt.Fprintf(helm, " \\\n  --set %s=%s", v.Name, shellQuote(v.Value))
+		}
 	}
 
 	out.Steps = []InstallStep{

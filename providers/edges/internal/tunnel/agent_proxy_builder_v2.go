@@ -210,6 +210,14 @@ func (p *Server) agentTunnelHandler(upgrader websocket.Upgrader) http.Handler {
 		if p.replicaID != "" {
 			pickupPath += "/" + p.replicaID
 		}
+		// Preserve the authenticated control tunnel's addressing on pickup.
+		// The hub uses the actual workspace binding and verifies the edge's
+		// credential again; these parameters are addressing, not authority.
+		pickupScope := url.Values{}
+		pickupScope.Set("railgrid.agent.cluster", cluster)
+		pickupScope.Set("railgrid.agent.resource", resource)
+		pickupScope.Set("railgrid.agent.name", name)
+		pickupPath += "?" + pickupScope.Encode()
 		dialer := revdial.NewDialer(conn, pickupPath)
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)

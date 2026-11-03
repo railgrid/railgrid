@@ -60,7 +60,7 @@ replace (
 	k8s.io/api => github.com/kcp-dev/kubernetes/staging/src/k8s.io/api v0.0.0-20260602065202-e006560fc76a
 	k8s.io/apiextensions-apiserver => github.com/kcp-dev/kubernetes/staging/src/k8s.io/apiextensions-apiserver v0.0.0-20260602065202-e006560fc76a
 	k8s.io/apimachinery => github.com/kcp-dev/kubernetes/staging/src/k8s.io/apimachinery v0.0.0-20260602065202-e006560fc76a
-	k8s.io/apiserver => github.com/kcp-dev/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20260602065202-e006560fc76a
+	k8s.io/apiserver => github.com/cwilhit/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20261102205739-1dd2c2cc013e
 	k8s.io/cli-runtime => github.com/kcp-dev/kubernetes/staging/src/k8s.io/cli-runtime v0.0.0-20260602065202-e006560fc76a
 	k8s.io/client-go => github.com/kcp-dev/kubernetes/staging/src/k8s.io/client-go v0.0.0-20260602065202-e006560fc76a
 	k8s.io/cloud-provider => github.com/kcp-dev/kubernetes/staging/src/k8s.io/cloud-provider v0.0.0-20260602065202-e006560fc76a
@@ -83,7 +83,7 @@ replace (
 	k8s.io/kube-scheduler => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kube-scheduler v0.0.0-20260602065202-e006560fc76a
 	k8s.io/kubectl => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kubectl v0.0.0-20260602065202-e006560fc76a
 	k8s.io/kubelet => github.com/kcp-dev/kubernetes/staging/src/k8s.io/kubelet v0.0.0-20260602065202-e006560fc76a
-	k8s.io/kubernetes => github.com/kcp-dev/kubernetes v1.37.0-alpha.0.0.20260602065202-e006560fc76a
+	k8s.io/kubernetes => github.com/cwilhit/kubernetes v1.37.0-alpha.0.0.20261102213053-907eec60a213
 	k8s.io/metrics => github.com/kcp-dev/kubernetes/staging/src/k8s.io/metrics v0.0.0-20260602065202-e006560fc76a
 	k8s.io/mount-utils => github.com/kcp-dev/kubernetes/staging/src/k8s.io/mount-utils v0.0.0-20260602065202-e006560fc76a
 	k8s.io/pod-security-admission => github.com/kcp-dev/kubernetes/staging/src/k8s.io/pod-security-admission v0.0.0-20260602065202-e006560fc76a
@@ -327,7 +327,9 @@ replace github.com/kcp-dev/multicluster-provider/client => github.com/kcp-dev/mu
 // staging module replaced locally upstream); pin the matching release.
 replace github.com/kcp-dev/code-generator/v3 => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/code-generator/v3 v3.0.0-20261028080645-9790f69ef65f
 
-replace github.com/kcp-dev/kcp => github.com/mjudeikis/kcp v0.0.0-20261028080645-9790f69ef65f
+// Preserve label-scoped APIExport claims during native garbage collection:
+// metadata operations use v1alpha2 even for a legacy v1alpha1 ownerReference.
+replace github.com/kcp-dev/kcp => github.com/cwilhit/kcp v0.0.0-20261102230429-705d1fb7cc11
 
 replace github.com/kcp-dev/sdk => github.com/mjudeikis/kcp/staging/src/github.com/kcp-dev/sdk v0.0.0-20261028080645-9790f69ef65f
 

@@ -92,6 +92,8 @@ github.com/cloudwego/eino-ext/libs/acl/openai v0.1.18-0.20260923024851-c21d73d93
 github.com/cloudwego/eino-ext/libs/acl/openai v0.1.18-0.20260923024851-c21d73d93527/go.mod h1:kpLaipPwJMJ88egYfEQ+wMn3Hte3CILL3fMVWzcAXy8=
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 h1:aBangftG7EVZoUb69Os8IaYg++6uMOdKK83QtkkvJik=
 github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2/go.mod h1:qwXFYgsP6T7XnJtbKlf1HP8AjxZZyzxMmc+Lq5GjlU4=
+github.com/cwilhit/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20261102205739-1dd2c2cc013e h1:U6wm5NCCXD4FVrnFtvMHrOpmVIMQmFZb2501moWE+0I=
+github.com/cwilhit/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20261102205739-1dd2c2cc013e/go.mod h1:s8FfBYA+n524vl2/8zneMteTeQD/artNu1uj1gJ6ciQ=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc h1:U9qPSI2PIWSS1VwoXQT9A3Wy9MM3WgvqSxFWenqJduM=

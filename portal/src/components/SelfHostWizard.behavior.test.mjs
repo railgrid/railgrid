@@ -12,7 +12,7 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing', registered = false, hidden = false } = {}) {
+function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing', registered = false, hidden = false, requiredValues = [] } = {}) {
   const provider = { name: 'code', registered: false, ready: false }
   const calls = { register: 0, registerTarget: null, instructions: 0, load: 0, install: 0, status: 0 }
   const store = Vue.reactive({ byName: registered ? { code: { ...provider, registered: true } } : {}, error: null, installTargetsEligible: true, installTargetsLoaded: true,
@@ -20,8 +20,8 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
     register: async (name, sourceProvider, target) => { calls.register++; calls.registerTarget = target; store.byName.code = { ...provider }; return { provider, kubeconfig: 'fixture-secret' } },
     instructions: async () => { calls.instructions++; return { provider, kubeconfig: 'fixture-secret' } },
     load: async () => { calls.load++; return true },
-    installationState: { phase: installationPhase, message: installationPhase === 'NotStarted' ? 'Installation has not started.' : installationPhase === 'Failed' ? 'Helm installation failed.' : 'Installing Helm.', canRetry: installationPhase === 'Failed', attempt: 1 },
-    startInstallation: async (name, target, retry) => { calls.install++; store.byName.code = { ...provider }; store.installationState = { phase: 'Installing', message: 'Installing Helm.', canRetry: false, attempt: retry ? 2 : 1 }; return { ...store.installationState } },
+    installationState: { phase: installationPhase, message: installationPhase === 'AwaitingConfiguration' ? 'Namespace owned-provider is ready. Create Secret database there. Helm has not started.' : installationPhase === 'NotStarted' ? 'Installation has not started.' : installationPhase === 'Failed' ? 'Helm installation failed.' : 'Installing Helm.', canRetry: ['Failed', 'AwaitingConfiguration'].includes(installationPhase), attempt: 1 },
+    startInstallation: async (name, target, retry, values) => { calls.install++; calls.installValues = values; store.byName.code = { ...provider }; store.installationState = { phase: 'Installing', message: 'Installing Helm.', canRetry: false, attempt: retry ? 2 : 1 }; return { ...store.installationState } },
     getInstallation: async () => { calls.status++; return { ...store.installationState, phase: store.byName.code?.ready && store.installationState.phase !== 'Failed' ? 'Ready' : store.installationState.phase } },
   })
   let focused
@@ -53,7 +53,7 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
   const renderer = Vue.createRenderer({
     createElement: type => Vue.markRaw({ type, props: {}, children: [], selectedIndex: -1,
       get options() { return this.children.filter(n => n.type === 'option') },
-      get value() { return this.props.value }, focus() { focused = this }, addEventListener() {} }),
+      get value() { return this.props.value }, set value(value) { this.props.value = value }, focus() { focused = this }, addEventListener() {} }),
     createText: text => ({ type: '#text', text }), createComment: () => ({ type: '#comment' }),
     setText: (n, text) => { n.text = text }, setElementText: (n, text) => { n.text = text },
     patchProp: (n, k, _, v) => { n.props[k] = v },
@@ -63,7 +63,7 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
   })
   const root = { children: [] }
   const app = renderer.createApp(exports.default, { name: 'code', displayName: 'Code', resume, manual: manualResume,
-    onCancel: () => events.push(['cancel']), onCompleted: name => events.push(['completed', name]), onManual: () => events.push(['manual']) })
+    requiredValues, onCancel: () => events.push(['cancel']), onCompleted: name => events.push(['completed', name]), onManual: () => events.push(['manual']) })
   app.mount(root)
   return { root, store, calls, events, timers, manual, document: fakeDocument, visibilityListeners, focused: () => focused, cleanup: () => app.unmount(),
     setHidden(value) { fakeDocument.hidden = value; fakeDocument.dispatchVisibility() },
@@ -754,5 +754,41 @@ test('a console status failure preserves progress and cannot complete from stale
   assert.deepEqual(detailSummaries(s), ['Installation details', 'Readiness details and troubleshooting'])
   assert.doesNotMatch(text(s.root), /Code is ready/)
   assert.equal(s.timers.size, 1)
+ } finally { s.cleanup() }
+})
+
+
+test('declared prerequisites gate console installation and are submitted without arbitrary overrides', async () => {
+ const previousDocument = globalThis.document
+ globalThis.document = { activeElement: null }
+ const s = scenario({ manual: false, requiredValues: [{ name: 'store.databaseURLSecretRef.name', description: 'Postgres Secret' }] })
+ try {
+  await settle()
+  const installButton = button(s, 'Install on edge')
+  assert.equal(installButton.props.disabled, true)
+  assert.match(text(s.root), /Postgres Secret/)
+  const input = nodes(s.root).find(n => n.type === 'input' && n.props.type === 'text')
+  input.props['onUpdate:modelValue']('postgres')
+  await settle()
+  assert.equal(installButton.props.disabled, false)
+  await submit(s)
+  assert.deepEqual(s.calls.installValues, { 'store.databaseURLSecretRef.name': 'postgres' })
+ } finally { s.cleanup(); if (previousDocument === undefined) delete globalThis.document; else globalThis.document = previousDocument }
+})
+
+test('a resumed configuration pause waits for an explicit continue before starting Helm', async () => {
+ const s = scenario({ manual:false, resume:true, registered:true, installationPhase:'AwaitingConfiguration' })
+ try {
+  await settle()
+  assert.match(text(s.root), /Add your configuration/)
+  assert.match(text(s.root), /Namespace owned-provider is ready.*Helm has not started/)
+  assert.doesNotMatch(text(s.root), /Installation continues if you leave|Your provider is being set up/)
+  assert.equal(s.calls.install, 0)
+  await s.poll()
+  assert.equal(s.calls.install, 0)
+  await button(s, 'Continue installation').props.onClick()
+  await settle()
+  assert.equal(s.calls.install, 1)
+  assert.match(text(s.root), /Installing Code/)
  } finally { s.cleanup() }
 })

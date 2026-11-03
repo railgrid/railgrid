@@ -53,6 +53,7 @@ const installProvider = computed(() => {
     displayName: providerDisplayName(existing ?? providers.byName(name) ?? { name }),
     resume: !!existing,
     manual: !!existing && route.query.manual === '1',
+    requiredValues: providers.byName(name)?.serving?.selfHosting?.requiredValues,
   }
 })
 const canManageSelfHostedCredentials = computed(() => tenant.activeOrg?.role === 'admin' || tenant.activeOrg?.catalogEntryCreation === 'members')
@@ -309,16 +310,15 @@ async function finishInstall(name: string) {
   if (dialogScope.value === targetScope) selfHostedHeading.value?.focus()
 }
 
-// The hub-owned catalog is authoritative for whether the Edges prerequisite
-// exists and is ready to open. Do not manufacture a provider route when the
-// entry is absent: ProviderFrame can explain a known-but-unready provider, but
-// it cannot make an unavailable catalog entry actionable.
+// Existing workspace connections follow their native Edges binding. An org
+// installation offer cannot hide a healthy platform copy or stand in for an
+// unavailable bound copy. Unbound workspaces still use the catalog offer.
 type EdgesSelfHostState = 'absent' | 'unready' | 'ready'
 
-const edgesProvider = computed(() => providers.byName('edges'))
+const edgesProvider = computed(() => providers.workspaceProvider('edges'))
 const edgesSelfHostState = computed<EdgesSelfHostState>(() => {
   const edges = edgesProvider.value
-  if (!edges) return 'absent'
+  if (!edges) return providers.isEnabled('edges') ? 'unready' : 'absent'
   return edges.ready && !!edges.serving?.ui ? 'ready' : 'unready'
 })
 
@@ -367,8 +367,23 @@ function canDisableFromThisProjection(p: ProviderDTO): boolean {
     : true
 }
 
+function bindingUnavailable(p: ProviderDTO): boolean {
+  const binding = currentWorkspaceBinding(p)
+  return !!binding && (binding.ready === false || !providers.workspaceProvider(p.name))
+}
+
+function canOpenProvider(p: ProviderDTO): boolean {
+  if (providers.isEnabled(p.name)) {
+    const bound = providers.workspaceProvider(p.name)
+    return bindingProjectionIsCurrent() && !bindingUnavailable(p) && !!bound?.ready && !!bound.serving?.ui
+  }
+  return !!p.ready && !!p.serving?.ui && !p.export?.name
+}
+
 function providerStatusLabel(p: ProviderDTO): string {
-  if (!p.ready) {
+  const binding = currentWorkspaceBinding(p)
+  if (bindingUnavailable(p)) return binding?.selfHosted ? 'Unavailable · org copy' : 'Unavailable · platform copy'
+  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) {
     const copy = providers.isSelfManaged(p) ? workspaceProviderCopy(p) : 'not-self-hosted'
     if (copy === 'platform') return 'Not ready · platform copy'
     if (copy === 'organization') return 'Not ready · org copy'
@@ -387,7 +402,8 @@ function providerStatusLabel(p: ProviderDTO): string {
 }
 
 function providerStatusClass(p: ProviderDTO): string {
-  if (!p.ready) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (bindingUnavailable(p)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (p.serving?.ui?.builtinRoute) return 'border border-border-default bg-surface-overlay text-text-secondary'
   if (providers.isDisabling(p.name)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (providers.isEnabled(p.name)) {
@@ -451,7 +467,7 @@ async function removeSelfHosted(name: string) {
     try {
       confirmed = await confirmDialog({
         title: `Remove self-hosted "${name}"?`,
-        message: 'This deletes the organization’s provider workspace, credential, and API registration. It does not uninstall the Helm release or workloads from your cluster. Workspaces that enabled this provider will stop working until you disable it there.',
+        message: 'Back up provider resources first. You’ll lose access to them, even after reinstalling.\nHelm releases and workloads must be uninstalled separately.',
         confirmLabel: 'Remove',
         danger: true,
       })
@@ -855,7 +871,7 @@ async function onDisable(p: ProviderDTO) {
       migrationConfirming.value = { ...migrationConfirming.value, [p.name]: true }
       const confirmed = await confirmDialog({
         title: `Disable the platform copy of ${providerDisplayName(p)}?`,
-        message: 'This workspace is currently bound to the platform copy. Disabling removes that binding and can delete resources created through the provider. After disabling completes, use Enable on this Catalog entry to bind the workspace to your organization’s copy. Back up any important resources before proceeding.',
+        message: 'This deletes this workspace’s provider resources. Export them first.\nThen enable your self-hosted copy and recreate the resources. Nothing is migrated automatically.',
         confirmLabel: 'Disable platform copy',
         danger: true,
       })
@@ -907,6 +923,7 @@ function dependencyNotice(p: ProviderDTO): string {
       :display-name="providerDisplayName(installProvider)"
       :resume="installProvider.resume"
       :manual="installProvider.manual"
+      :required-values="installProvider.requiredValues"
       @cancel="cancelInstall"
       @manual="resumeManualInstall"
       @completed="finishInstall"
@@ -1065,7 +1082,7 @@ function dependencyNotice(p: ProviderDTO): string {
                         : 'border border-warning/30 bg-warning-subtle text-warning'
                     "
                   >
-                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}
+                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration' }}
                   </span>
                   <span
                     v-if="p.upgradeAvailable && !p.deleting"
@@ -1087,7 +1104,7 @@ function dependencyNotice(p: ProviderDTO): string {
                       v-if="p.upgradeAvailable && p.availableVersion"
                     > · published {{ p.availableVersion }}</span>
                   </span>
-                  <span>Health: {{ p.deleting ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}</span>
+                  <span>Health: {{ p.deleting ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration' }}</span>
                 </p>
                 <!-- The gap between "workspace exists" and "chart installed" is
                      where a half-finished install sits; say so explicitly. -->
@@ -1099,7 +1116,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 </p>
                 <p v-else-if="!p.registered" class="mt-1 text-[11px] text-text-muted">
                   The workspace is ready but the provider has not registered itself yet.
-                  Continue installation to run the commands and watch for readiness.
+                  Continue installation to check progress and readiness.
                 </p>
                 <p v-else-if="!p.ready" class="mt-1 text-[11px] text-text-muted">
                   The provider registered, but is not ready. Resume to check its status and installation.
@@ -1347,6 +1364,10 @@ function dependencyNotice(p: ProviderDTO): string {
             </p>
           </div>
 
+          <p v-if="bindingUnavailable(p)" class="mt-3 text-xs text-warning" role="alert">
+            {{ currentWorkspaceBinding(p)?.unavailable || 'This workspace’s provider binding is unavailable. Disable it before enabling another copy.' }}
+          </p>
+
           <!-- An enabled provider that declares hub capabilities nobody here
                accepted (new in its catalog entry, or declined) works without
                them until someone reviews the request. -->
@@ -1468,7 +1489,7 @@ function dependencyNotice(p: ProviderDTO): string {
                  route; third-party load via /providers/{name} →
                  ProviderFrame. -->
             <router-link
-              v-if="p.serving?.ui && p.ready && (!p.export?.name || (providers.isEnabled(p.name) && (!providers.isSelfManaged(p) || workspaceProviderCopy(p) === 'organization')))"
+              v-if="canOpenProvider(p)"
               :to="scopePath(p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >

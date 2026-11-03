@@ -26,6 +26,7 @@ export type GrantFetch = (
 // the script tag fetches it.
 
 export interface ProviderBundle {
+  identity?: string
   // Explicit bundle URL, or undefined for the loader's default.
   src?: string
   // SRI pin, or undefined to load unpinned (the loader logs a warning).
@@ -33,6 +34,8 @@ export interface ProviderBundle {
 }
 
 interface UIGrantResponse {
+  registration?: string
+  workspace?: string
   url?: string
   integrity?: string
 }
@@ -62,7 +65,7 @@ export async function resolveProviderBundle(
   fetchImpl: GrantFetch,
 ): Promise<ProviderBundle> {
   if (!isOrgOwnedProvider(entry)) {
-    return { integrity: entry.serving?.ui?.mainJSIntegrity || undefined }
+    return { integrity: entry.serving?.ui?.mainJSIntegrity || undefined, identity: `global:${entry.name}` }
   }
   const res = await fetchImpl(`/api/providers/${encodeURIComponent(entry.name)}/ui-grant`, {
     method: 'POST',
@@ -85,5 +88,10 @@ export async function resolveProviderBundle(
   if (!src.startsWith('/') || src.startsWith('//')) {
     throw new ProviderBundleGrantError(entry.name, res.status, 'grant response carried no same-origin bundle URL')
   }
-  return { src, integrity: body.integrity || undefined }
+  const registration = body.registration || entry.name
+  // App Studio retains lazy loaders: changing a workspace must replace their
+  // granted asset base too. Direct-registration, single-file providers may
+  // reuse their immutable class within the same provider registration.
+  const workspace = entry.name === 'app-studio' ? `:${body.workspace || ''}` : ''
+  return { src, integrity: body.integrity || undefined, identity: `org:${entry.ownerOrg || ''}:${registration}${workspace}` }
 }

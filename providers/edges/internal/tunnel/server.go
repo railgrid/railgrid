@@ -358,6 +358,9 @@ func (p *Server) ConnManager() *ConnManager { return p.edgeConnManager }
 //	/agent/clusters/{cluster}/{resource}/{name}/proxy   control tunnel
 //	/agent/proxy                                        revdial pickup
 //	/agent/proxy/{replica}                              replica-addressed pickup
+//
+// Pickup URLs include railgrid.agent.cluster/resource/name query addressing so
+// the hub can select this workspace's bound provider and verify its credential.
 func (p *Server) AgentIngressHandler() http.Handler {
 	return p.buildEdgeAgentProxyHandler()
 }

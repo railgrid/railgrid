@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kcp-dev/embeddedetcd"
@@ -114,8 +116,10 @@ type EmbeddedKCPOptions struct {
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
 type EmbeddedKCP struct {
-	opts   EmbeddedKCPOptions
-	server *server.Server
+	opts            EmbeddedKCPOptions
+	server          *server.Server
+	actionMu        sync.RWMutex
+	actionTransport func(*http.Request, string, string, string) (*http.Response, error)
 
 	// readyCh is closed when kcp is ready to serve requests.
 	readyCh chan struct{}
@@ -315,6 +319,8 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("creating kcp server config: %w", err)
 	}
+
+	e.wrapProviderActions(serverConfig)
 
 	// Complete the config.
 	completedConfig, err := serverConfig.Complete()

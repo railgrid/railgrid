@@ -177,6 +177,7 @@ const providerStore = {
   hasMissingDependencies: () => false,
   dependencyLabels: () => [],
   byName: () => null,
+  workspaceProvider: name => providerStore.byName(name),
   load: () => undefined,
 }
 const orgProviderStore = {
@@ -942,6 +943,7 @@ test('ProvidersPage classifies a fresh manual deep link as review without page-s
     displayName: 'Kuery',
     resume: false,
     manual: false,
+    requiredValues: undefined,
   })
   assert.equal(registrations, 0, 'route normalization must not create an organization provider')
   assert.equal(instructionReads, 0, 'fresh install review must not fetch registered-provider credentials')

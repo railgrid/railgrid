@@ -104,6 +104,12 @@ github.com/cpuguy83/go-md2man/v2 v2.0.6/go.mod h1:oOW0eioCTA6cOiMLiUPZOpcVxMig6N
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
 github.com/cubewise-code/go-mime v0.0.0-20190322015324-9c5316ef3e8e/go.mod h1:4abs/jPXcmJzYoYGF91JF9Uq9s/KL5n1jvFDix8KcqY=
+github.com/cwilhit/kcp v0.0.0-20261102230429-705d1fb7cc11 h1:KW6HpvUg/Ww95aVr5nL5IxsDQ7sgYu32lAdN3NMYmQc=
+github.com/cwilhit/kcp v0.0.0-20261102230429-705d1fb7cc11/go.mod h1:7aLhLSOf2QBdbiWSUN6/A3sTfvLxeHKQlDQNQuqVKoA=
+github.com/cwilhit/kubernetes v1.37.0-alpha.0.0.20261102213053-907eec60a213 h1:7b39VgvxbdGzfhGbGsmmdwyN+gh5wjdZloyKexbpNfo=
+github.com/cwilhit/kubernetes v1.37.0-alpha.0.0.20261102213053-907eec60a213/go.mod h1:AFa3aeDT60XGwma3vwcqDzXJNx8csQ9u9r+/NmK7aHE=
+github.com/cwilhit/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20261102205739-1dd2c2cc013e h1:U6wm5NCCXD4FVrnFtvMHrOpmVIMQmFZb2501moWE+0I=
+github.com/cwilhit/kubernetes/staging/src/k8s.io/apiserver v0.0.0-20261102205739-1dd2c2cc013e/go.mod h1:s8FfBYA+n524vl2/8zneMteTeQD/artNu1uj1gJ6ciQ=
 github.com/cyphar/filepath-securejoin v0.6.1 h1:5CeZ1jPXEiYt3+Z6zqprSAgSWiggmpVyciv8syjIpVE=
 github.com/cyphar/filepath-securejoin v0.6.1/go.mod h1:A8hd4EnAeyujCJRrICiOWqjS1AX0a9kM5XL+NwKoYSc=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=

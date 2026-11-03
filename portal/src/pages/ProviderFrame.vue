@@ -94,8 +94,9 @@ onMounted(() => {
   }
 })
 
-const entry = computed(() => providers.byName(props.providerName))
+const entry = computed(() => providers.workspaceProvider(props.providerName) ?? providers.byName(props.providerName))
 const providerReadinessLabel = computed(() => {
+  if (bindingUnavailable.value) return 'Unavailable'
   if (entry.value?.ready) return 'Ready'
   switch (entry.value?.readinessReason) {
     case 'BackendUnhealthy': return 'Degraded'
@@ -105,6 +106,7 @@ const providerReadinessLabel = computed(() => {
   }
 })
 const providerReadinessClass = computed(() => {
+  if (bindingUnavailable.value) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (entry.value?.ready) return 'border border-success/30 bg-success-subtle text-success'
   if (entry.value?.readinessReason === 'HeartbeatStale') return 'border border-danger/30 bg-danger-subtle text-danger'
   if (entry.value?.readinessReason === 'BackendUnhealthy') return 'border border-warning/30 bg-warning-subtle text-warning'
@@ -120,7 +122,7 @@ const catalogRefreshing = computed(() =>
 const catalogLoading = computed(() =>
   !catalogError.value && !catalogSettled.value && !catalogRefreshing.value,
 )
-const catalogMissing = computed(() => catalogSettled.value && !entry.value)
+const catalogMissing = computed(() => catalogSettled.value && !entry.value && !providers.isEnabled(props.providerName))
 const providerRoutePath = computed(() => props.subPath.split('/').filter(Boolean).join('/'))
 const isAppStudioLandingRoute = computed(() =>
   props.providerName === 'app-studio' &&
@@ -143,7 +145,7 @@ const isBuiltinProvider = computed(() => {
 // builtin provider is shipped with the portal and remains usable without one.
 const requiresBinding = computed(() => {
   const p = entry.value
-  return !!p && !!p.serving?.ui && !isBuiltinProvider.value && !!(p.export?.name || p.export?.path)
+  return providers.isEnabled(props.providerName) || (!!p && !!p.serving?.ui && !isBuiltinProvider.value && !!(p.export?.name || p.export?.path))
 })
 
 const bindingRequestCurrent = computed(() =>
@@ -178,7 +180,7 @@ const bindingChecking = computed(() =>
   !bindingsAuthoritative.value,
 )
 const providerBound = computed(() =>
-  !!entry.value && providers.isEnabled(entry.value.name),
+  providers.isEnabled(props.providerName),
 )
 const canRetryProviderBundleInDocument = computed(() =>
   !!entry.value && canReloadProviderScriptInDocument(entry.value.name),
@@ -189,11 +191,20 @@ const bindingMissing = computed(() =>
   bindingsAuthoritative.value &&
   !providerBound.value,
 )
+const boundDetail = computed(() => providers.bindingsByProvider[props.providerName])
+const bindingUnavailable = computed(() => bindingsAuthoritative.value && providerBound.value && (
+  !providers.workspaceProvider(props.providerName) ||
+  boundDetail.value?.ready === false ||
+  (!!boundDetail.value?.exportPath && boundDetail.value.exportPath !== entry.value?.export?.path)
+))
+const bindingUnavailableMessage = computed(() => boundDetail.value?.unavailable ||
+  'This workspace is bound to a different provider copy. Review its binding in the provider catalog before continuing.')
 const accessAllowed = computed(() =>
   catalogSettled.value &&
   !!entry.value &&
   !!entry.value.serving?.ui &&
   !!entry.value.ready &&
+  !bindingUnavailable.value &&
   (!requiresBinding.value || (bindingsAuthoritative.value && providerBound.value)),
 )
 
@@ -239,6 +250,8 @@ watch(
     catalogSettled.value,
     accessAllowed.value,
     mountRef.value,
+    entry.value?.export?.path,
+    entry.value?.scope,
   ] as const,
   async ([name, version, ready, settled, allowed, mount]) => {
     clearMountedElement()
@@ -376,7 +389,7 @@ async function loadAndMount(name: string, version: string | undefined, mount: HT
     // browser rejects, and the hub re-pins from what it served.
     await loadProviderScript(name, version, document, undefined, {
       ...bundle,
-      refreshIntegrity: () => providers.refreshMainJSIntegrity(name),
+      refreshIntegrity: () => providers.refreshWorkspaceMainJSIntegrity(name),
     })
 
     // 5s timeout so a script that loaded but never called customElements.define
@@ -529,6 +542,7 @@ function onLayoutChange(e: Event) {
 
 function retryCatalog() {
   void providers.load(tenant.orgUUID).catch(() => {})
+  if (providers.isEnabled(props.providerName)) void providers.refreshBindings().catch(() => {})
 }
 
 function retryBindings() {
@@ -621,6 +635,11 @@ onBeforeUnmount(() => {
       </div>
       <div v-else-if="catalogMissing" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-4 text-sm text-text-muted">
         Provider <code class="font-mono text-text-secondary">{{ props.providerName }}</code> is not available in this catalog.
+      </div>
+      <div v-else-if="bindingUnavailable" class="rounded-lg border border-warning/30 bg-warning-subtle p-4 text-sm text-warning" role="alert">
+        <div class="font-medium">Provider binding unavailable</div>
+        <p class="mt-1">{{ bindingUnavailableMessage }}</p>
+        <RouterLink :to="scopePath('/providers')" class="k-btn k-btn--ghost mt-3">Review provider binding</RouterLink>
       </div>
       <div
         v-else-if="entry && !entry.ready"

@@ -957,11 +957,17 @@ func (s *Server) Run(ctx context.Context) error {
 			// for an asset fetch as for an API call.
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
+			uiProxy.SetUIGrantAuthorizer(func(ctx context.Context, user, org, workspace string) bool {
+				cluster, err := bootstrapper.GetChildWorkspaceClusterName(ctx, org, workspace)
+				return err == nil && kcpProxy.AuthorizeCluster(ctx, user, cluster)
+			})
 			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
+			backendProxy.SetBoundCopyResolver(newProviderBoundCopyResolver(kcpConfig, providerRegistry))
+			backendProxy.SetAgentIngressResolver(newProviderAgentIngressResolver(kcpConfig))
 			// The one data-plane hop the hub still makes on a caller's behalf
 			// — an org-owned provider's backend behind its edge — goes through
 			// kcp like every other verb, at the edges provider's
@@ -973,6 +979,9 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("building the kcp transport for the provider edge hop: %w", err)
 			} else {
 				backendProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
+				if embeddedKCP != nil {
+					embeddedKCP.SetProviderActionTransport(backendProxy.ForwardShardAction)
+				}
 				// An org-owned provider's UI bundle is fetched over the same
 				// hop (pkg/hub/providers/ui_grant.go).
 				uiProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
@@ -1092,12 +1101,16 @@ func (s *Server) Run(ctx context.Context) error {
 				WorkloadScopes: projectScopeResolver,
 				Logger:         logger.WithName("scoped-identity"),
 			}).Start(ctx)
-			// Provider-asserted identities authenticate exactly as heartbeats
-			// do, with the same authenticator instance and therefore the same
-			// TokenReview caches.
+			// Scoped provider identity requests authenticate against the exact
+			// registered copy bound by their target workspace. Unscoped legacy
+			// platform operations retain the heartbeat authenticator.
+			providerIdentityAttestor, err := identity.NewBoundProviderAttestor(kcpConfig, providerRegistry, heartbeatAuthenticator)
+			if err != nil {
+				return fmt.Errorf("creating provider identity attestor: %w", err)
+			}
 			restapi.NewIdentityHandler(
 				identityService,
-				identity.NewProviderAttestor(heartbeatAuthenticator),
+				providerIdentityAttestor,
 				logger.WithName("scoped-identity"),
 			).Register(router)
 

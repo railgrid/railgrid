@@ -145,11 +145,11 @@ type Provider struct {
 	// — the same cluster name kcp embeds in the provider SA's token claims.
 	// Set via SetWorkspaceCluster after provisioning; empty until then.
 	//
-	// Its one reader today is the admin providers API (pkg/hub/admin), which
-	// shows an operator which workspace a registered provider actually lives
-	// in. It used to anchor the qualified RBAC subject of the Enable-time
-	// edges-proxy grant; that grant was deleted (no provider authenticates as
-	// its own SA against a tenant workspace any more).
+	// Scoped provider attestation matches this cluster to the consumer's
+	// resolved APIBinding export and reviews the provider SA here. It can differ
+	// from CatalogEntryCluster for legacy platform entries; catalog placement
+	// does not establish where the export or credential lives. The admin API
+	// also exposes it for operators.
 	WorkspaceCluster string
 
 	// CatalogEntryCluster is the logical cluster the provider's CatalogEntry
@@ -785,6 +785,19 @@ func (r *Registry) CatalogEntryCluster(name string) (string, bool) {
 		return "", false
 	}
 	return p.CatalogEntryCluster, true
+}
+
+// ProviderWorkspaceCluster returns the platform provider's actual APIExport and
+// ServiceAccount workspace. CatalogEntryCluster remains the recorder's address
+// and may be a different legacy catalog workspace.
+func (r *Registry) ProviderWorkspaceCluster(name string) (string, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	p, ok := r.byKey[providerKey{Name: name}]
+	if !ok || p.WorkspaceCluster == "" {
+		return "", false
+	}
+	return p.WorkspaceCluster, true
 }
 
 // SetWorkspaceCluster records the logical cluster ID of the provider's
