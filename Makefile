@@ -206,7 +206,7 @@ build-infrastructure-provider: build-infrastructure-provider-portal ## Build the
 	cd providers/infrastructure && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/infrastructure-provider .
 
 build-edges-provider-portal: ## Build the edges provider's micro-frontend (Vite → portal/dist)
-	cd providers/edges/portal && npm install --no-audit --no-fund && npm run build
+	cd providers/edges/portal && npm ci --include=dev --no-audit --no-fund && npm run build
 
 build-edges-provider: build-edges-provider-portal ## Build the edges provider binary (portal embedded)
 	cd providers/edges && go build $(GOFLAGS) -o $(CURDIR)/$(BINDIR)/edges-provider .
@@ -242,7 +242,7 @@ codegen-edges-provider: $(CONTROLLER_GEN) $(KCP_APIGEN_GEN) ## Codegen for the e
 	./hack/ensure-boilerplate.sh
 
 .PHONY: codegen-quickstart-provider codegen-kuery-provider codegen-edges-provider build-edges-provider build-edges-provider-portal \
-	install-provider-edges init-provider-edges run-provider-edges uninstall-provider-edges docker-build-edges-provider
+	install-provider-edges init-provider-edges run-provider-edges serve-provider-edges uninstall-provider-edges docker-build-edges-provider
 
 ## --- edges provider dev lifecycle (install → init → run) --------------------
 install-provider-edges: ## Apply edges Provider + CatalogEntry into root:railgrid:providers
@@ -274,7 +274,12 @@ init-provider-edges: build-edges-provider ## Bootstrap edges APIExport + write d
 # for host binaries. A second instance: make run-provider-edges
 # EDGES_PORT=18088 EDGES_INTERNAL_PORT=18090 POD_NAME=edges-local-2
 EDGES_INTERNAL_PORT ?= 8090
-run-provider-edges: build-edges-provider ## Run the edges provider (needs: hub + install + init)
+run-provider-edges: build-edges-provider ## Build and run the edges provider (needs: hub + install + init)
+	@$(MAKE) serve-provider-edges
+
+# Tilt initializes the exact built binary and its credential before replacing
+# the server. Serving must not rebuild past that initialized version.
+serve-provider-edges: ## Run the already-built edges provider
 	@echo "Starting edges provider on :$(EDGES_PORT) (replica $${POD_NAME:-edges-local-1}, relay :$(EDGES_INTERNAL_PORT))"
 	PORT=$(EDGES_PORT) \
 	POD_NAME=$${POD_NAME:-edges-local-1} \
@@ -572,6 +577,10 @@ test-tilt-sandbox-default: ## Verify universal sandbox is opt-in in Tilt
 .PHONY: test-tilt-code-sequence
 test-tilt-code-sequence: ## Verify Code updates initialize before serving in Tilt
 	python3 hack/scripts/verify-tilt-code-sequence.test.py
+
+.PHONY: test-tilt-edges-sequence
+test-tilt-edges-sequence: ## Verify Edges updates initialize credentials before serving in Tilt
+	python3 hack/scripts/verify-tilt-edges-sequence.test.py
 
 .PHONY: test-tilt-app-studio-sequence
 test-tilt-app-studio-sequence: ## Verify App Studio builds once and ignores test-only edits in Tilt
@@ -2976,7 +2985,7 @@ clean:
 path: ## Print export command to add bin/ to PATH
 	@echo 'export PATH=$(CURDIR)/$(BINDIR):$$PATH'
 
-verify: test-tilt-checkout test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
+verify: test-tilt-checkout test-tilt-code-sequence test-tilt-edges-sequence test-app-studio-harness-scripts test-app-studio-harness lint-app-studio-harness verify-ci-selection verify-workflows verify-boilerplate verify-codegen verify-docs-cli verify-portalkit verify-provider-contract verify-design-docs verify-ui-conformance verify-tilt-browser-deployment test-tilt-app-studio-sequence test-tilt-external-providers verify-app-studio-preview-bridge-dev-key verify-app-studio-eval build-portal vet lint lint-provider-sdk lint-providers build test ## Run all checks
 
 # --- Helm chart packaging ---
 

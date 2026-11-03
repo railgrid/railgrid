@@ -13,6 +13,7 @@ import subprocess
 import sys
 import signal
 import time
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 PORTS = {'TILT_PORT': 10350, 'HUB_PORT': 9443, 'KCP_PORT': 6443,
@@ -233,7 +234,17 @@ def environment(config):
         flags = os.environ.get('GOFLAGS', '')
         env['GOFLAGS'] = flags if '-buildvcs=false' in flags.split() else (flags + ' -buildvcs=false').strip()
     hub = f"https://console-{key}.127.0.0.1.sslip.io:{p['HUB_PORT']}"
-    env.update(DEV_HUB_URL=hub, RAILGRID_HUB_EXTERNAL_URL=hub,
+    external_override = os.environ.get('RAILGRID_HUB_EXTERNAL_URL') or root_env.get('RAILGRID_HUB_EXTERNAL_URL')
+    external_hub = external_override or hub
+    public_host = urlsplit(external_hub).hostname
+    if public_host and ':' in public_host:
+        public_host = '[' + public_host + ']'
+    native_vw = os.environ.get('KCP_SHARD_VIRTUAL_WORKSPACE_URL', '')
+    if not native_vw and external_override and external_hub != hub and public_host:
+        native_vw = f"https://{public_host}:{p['KCP_PORT']}"
+    if native_vw:
+        env['KCP_SHARD_VIRTUAL_WORKSPACE_URL'] = native_vw
+    env.update(DEV_HUB_URL=hub, RAILGRID_HUB_EXTERNAL_URL=external_hub,
                RAILGRID_ACCESS_HUB_PUBLIC_URL=hub,
                HUB_INTERNAL_URL=f"https://host.docker.internal:{p['HUB_PORT']}",
                HUB_DATA_DIR=str(root / '.kcp/hub-data'),

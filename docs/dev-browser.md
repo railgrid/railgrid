@@ -211,3 +211,23 @@ proof. If recovery fails, report the concrete blocker and incomplete verificatio
 instead of looping. Leave the recovered stack warm when the run finishes; the
 runner still owns idle cleanup. Do not perform recovery while awaiting a user
 answer.
+
+## Self-hosted providers on a local Edge
+
+The Console browser origin is local to the checkout. A provider installed into
+an Edge cluster must also reach the hub from its Pods. Set
+`RAILGRID_HUB_EXTERNAL_URL` to an HTTPS address reachable from both the host
+and that cluster when starting Tilt, for example the Docker network gateway
+and the checkout's hub port. This does not change `DEV_HUB_URL` or the browser
+origin. The launcher derives a native kcp virtual-workspace address using
+that host and the checkout's kcp port. Tilt exposes that authenticated native
+listener to the cluster and advertises it in APIExport endpoints. Native kcp
+clients must reach this listener directly, preserving their authentication.
+Set `KCP_SHARD_VIRTUAL_WORKSPACE_URL` explicitly if that listener needs a
+different reachable address. Do not use a loopback-resolving hostname
+for this setting unless cluster DNS explicitly maps it to the host.
+
+Development install instructions set `hub.insecure=true` for the hub's
+self-signed certificate. Production recipes keep TLS verification enabled.
+External prerequisites such as a Postgres Secret still need operator
+provisioning; the Review fields collect references, not credentials.
