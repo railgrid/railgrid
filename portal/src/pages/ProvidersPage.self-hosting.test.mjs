@@ -170,3 +170,12 @@ test('confirmed self-host removal reloads the scoped catalog so the platform rec
   registrations.delete('kuery')
   assert.deepEqual(availableFrom([platformProvider]), [platformProvider])
 })
+
+test('explicit Console choice clears only the manual resume route marker', () => {
+ const body=source.match(/function resumeConsoleInstall\(\) \{([\s\S]*?)\n\}/)?.[1]
+ assert.ok(body)
+ const calls=[]
+ new Function('patchProviderQuery',body)((...args)=>calls.push(args))
+ assert.deepEqual(calls,[[{manual:null},true]])
+ assert.match(source,/@console="resumeConsoleInstall"/)
+})

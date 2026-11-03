@@ -205,6 +205,10 @@ function resumeManualInstall() {
   patchProviderQuery({ manual: '1' }, true)
 }
 
+function resumeConsoleInstall() {
+  patchProviderQuery({ manual: null }, true)
+}
+
 function clearProviderPageRouteState() {
   patchProviderQuery({ tab: null, install: null, manage: null, manual: null }, true)
 }
@@ -911,6 +915,7 @@ function dependencyNotice(p: ProviderDTO): string {
       :required-values="installProvider.requiredValues"
       @cancel="cancelInstall"
       @manual="resumeManualInstall"
+      @console="resumeConsoleInstall"
       @completed="finishInstall"
     />
     <div v-else>

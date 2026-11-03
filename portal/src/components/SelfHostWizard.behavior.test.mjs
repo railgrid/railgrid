@@ -12,10 +12,10 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing', registered = false, hidden = false, requiredValues = [] } = {}) {
-  const provider = { name: 'code', registered: false, ready: false }
-  const calls = { register: 0, registerTarget: null, instructions: 0, load: 0, install: 0, status: 0 }
-  const store = Vue.reactive({ byName: registered ? { code: { ...provider, registered: true } } : {}, error: null, installTargetsEligible: true, installTargetsLoaded: true,
+function scenario({ resume = false, role = 'admin', multiple = false, manual = true, manualResume = false, installationPhase = 'Installing', registered = false, providerRegistered = registered, hidden = false, requiredValues = [] } = {}) {
+  const provider = { name: 'code', registered: false, ready: false, hostingEdge: { workspace: 'ws', name: 'edge' } }
+  const calls = { register: 0, registerTarget: null, instructions: 0, load: 0, install: 0, status: 0, console: 0 }
+  const store = Vue.reactive({ byName: registered ? { code: { ...provider, registered: providerRegistered } } : {}, error: null, installTargetsEligible: true, installTargetsLoaded: true,
     eligibleInstallTargets: [{ name: 'edge', workspace: 'ws' }, ...(multiple ? [{ name: 'other', workspace: 'ws' }] : [])],
     register: async (name, sourceProvider, target) => { calls.register++; calls.registerTarget = target; store.byName.code = { ...provider }; return { provider, kubeconfig: 'fixture-secret' } },
     instructions: async () => { calls.instructions++; return { provider, kubeconfig: 'fixture-secret' } },
@@ -63,7 +63,7 @@ function scenario({ resume = false, role = 'admin', multiple = false, manual = t
   })
   const root = { children: [] }
   const app = renderer.createApp(exports.default, { name: 'code', displayName: 'Code', resume, manual: manualResume,
-    requiredValues, onCancel: () => events.push(['cancel']), onCompleted: name => events.push(['completed', name]), onManual: () => events.push(['manual']) })
+    requiredValues, onConsole: () => calls.console++, onCancel: () => events.push(['cancel']), onCompleted: name => events.push(['completed', name]), onManual: () => events.push(['manual']) })
   app.mount(root)
   return { root, store, calls, events, timers, manual, document: fakeDocument, visibilityListeners, focused: () => focused, cleanup: () => app.unmount(),
     setHidden(value) { fakeDocument.hidden = value; fakeDocument.dispatchVisibility() },
@@ -427,6 +427,8 @@ test('unmount during console start ignores the late status and never starts moni
   let resolve
   s.store.startInstallation = () => new Promise(done => { resolve = done })
   const pending = create(s)
+  await settle()
+  assert.equal(typeof resolve, 'function')
   s.cleanup()
   resolve({ phase: 'Installing', message: 'Installing Helm.', canRetry: false })
   await pending
@@ -791,4 +793,172 @@ test('a resumed configuration pause waits for an explicit continue before starti
   assert.equal(s.calls.install, 1)
   assert.match(text(s.root), /Installing Code/)
  } finally { s.cleanup() }
+})
+
+test('an unstarted registration needs an explicit Console choice and its required settings', async () => {
+ const previousDocument = globalThis.document
+ globalThis.document = { activeElement: null }
+ const s = scenario({ resume:true, registered:true, providerRegistered:false, manual:false,
+  installationPhase:'NotStarted', requiredValues:[{name:'store.databaseURLSecretRef.name',description:'Secret with database-url'}] })
+ try {
+  await settle()
+  assert.equal(s.calls.install,0)
+  assert.equal(s.calls.instructions,0)
+  await button(s,'Install through Console').props.onClick()
+  await settle()
+  assert.match(text(s.root),/Review installation/)
+  assert.match(text(s.root),/Secret with database-url/)
+  assert.equal(s.calls.install,0,'choosing Console only opens Review')
+  assert.equal(s.calls.console,1,'explicit Console choice clears the manual route marker')
+  assert.equal(button(s,'Install on edge').props.disabled,true)
+  await submit(s)
+  assert.equal(s.calls.install,0)
+  const input=nodes(s.root).find(n=>n.type==='input'&&n.props.type==='text')
+  input.props['onUpdate:modelValue']('database')
+  await settle()
+  await submit(s)
+  assert.equal(s.calls.install,1)
+  assert.deepEqual(s.calls.installValues,{'store.databaseURLSecretRef.name':'database'})
+ } finally {s.cleanup();if(previousDocument===undefined)delete globalThis.document;else globalThis.document=previousDocument}
+})
+
+test('a start failure that creates only a registration retains inputs for its retry', async () => {
+ const previousDocument=globalThis.document;globalThis.document={activeElement:null}
+ const s=scenario({manual:false,requiredValues:[{name:'store.databaseURLSecretRef.name'}]})
+ const successfulStart=s.store.startInstallation
+ try {
+  await settle()
+  nodes(s.root).find(n=>n.type==='input'&&n.props.type==='text').props['onUpdate:modelValue']('database')
+  await settle()
+  let firstValues
+  s.store.startInstallation=async(name,target,retry,values)=>{
+   firstValues=values
+   s.calls.install++
+   s.store.byName.code={name:'code',registered:false,ready:false,hostingEdge:{name:'edge',workspace:'ws'}}
+   s.store.installationState={phase:'NotStarted',message:'Installation has not started.',canRetry:false}
+   throw new Error('initial start failed')
+  }
+  await submit(s)
+  assert.match(text(s.root),/initial start failed/)
+  assert.deepEqual(firstValues,{'store.databaseURLSecretRef.name':'database'})
+  s.store.startInstallation=successfulStart
+  await submit(s)
+  await settle()
+  assert.equal(s.calls.install,2)
+  assert.deepEqual(s.calls.installValues,firstValues)
+  assert.match(text(s.root),/Installing Code/)
+ } finally {s.cleanup();if(previousDocument===undefined)delete globalThis.document;else globalThis.document=previousDocument}
+})
+
+test('a pinned retry neither renders editable values nor sends replacements', async () => {
+ const s=scenario({resume:true,registered:true,manual:false,installationPhase:'AwaitingConfiguration',requiredValues:[{name:'store.databaseURLSecretRef.name'}]})
+ try {
+  await settle()
+  assert.equal(nodes(s.root).filter(n=>n.type==='input').length,0)
+  await button(s,'Continue installation').props.onClick()
+  await settle()
+  assert.equal(s.calls.install,1)
+  assert.equal(s.calls.installValues,undefined)
+ } finally {s.cleanup()}
+})
+
+test('an already registered manual provider is never offered Console adoption', async () => {
+ const s=scenario({resume:true,registered:true,manual:false,installationPhase:'NotStarted'})
+ try {await settle();assert.equal(button(s,'Install through Console'),undefined);assert.equal(s.calls.install,0)}finally{s.cleanup()}
+})
+
+test('an unpinned NotStarted operation keeps required inputs editable in step two', async () => {
+ const previousDocument=globalThis.document;globalThis.document={activeElement:null}
+ const s=scenario({manual:false,requiredValues:[{name:'store.databaseURLSecretRef.name'}]})
+ try {
+  await settle()
+  nodes(s.root).find(n=>n.type==='input'&&n.props.type==='text').props['onUpdate:modelValue']('database')
+  await settle()
+  s.store.startInstallation=async(_name,_target,_retry,values)=>{
+   s.calls.install++;s.calls.installValues=values
+   s.store.byName.code={name:'code',registered:false,ready:false,hostingEdge:{name:'edge',workspace:'ws'}}
+   s.store.installationState={phase:'NotStarted',message:'Installation has not started.',canRetry:false}
+   return s.store.installationState
+  }
+  await submit(s)
+  assert.match(text(s.root),/Installation not started/)
+  const input=nodes(s.root).find(n=>n.type==='input'&&n.props.type==='text')
+  input.props['onUpdate:modelValue']('')
+  await settle()
+  assert.equal(button(s,'Install provider').props.disabled,true)
+  await button(s,'Install provider').props.onClick()
+  assert.equal(s.calls.install,1)
+  input.props['onUpdate:modelValue']('another-database')
+  await settle()
+  await button(s,'Install provider').props.onClick()
+  await settle()
+  assert.equal(s.calls.install,2)
+  assert.deepEqual(s.calls.installValues,{'store.databaseURLSecretRef.name':'another-database'})
+ } finally {s.cleanup();if(previousDocument===undefined)delete globalThis.document;else globalThis.document=previousDocument}
+})
+
+test('a lost initial response recovers the saved plan before retrying without input overrides', async () => {
+ const previousDocument=globalThis.document;globalThis.document={activeElement:null}
+ const s=scenario({manual:false,requiredValues:[{name:'store.databaseURLSecretRef.name'}]})
+ const successfulStart=s.store.startInstallation
+ try {
+  await settle()
+  nodes(s.root).find(n=>n.type==='input'&&n.props.type==='text').props['onUpdate:modelValue']('database')
+  await settle()
+  s.store.startInstallation=async()=>{
+   s.calls.install++
+   s.store.byName.code={name:'code',registered:false,ready:false,hostingEdge:{name:'edge',workspace:'ws'}}
+   s.store.installationState={phase:'Queued',message:'Installation queued.',canRetry:false}
+   throw new Error('response lost')
+  }
+  await submit(s)
+  assert.equal(nodes(s.root).filter(n=>n.type==='input').length,0)
+  s.store.startInstallation=successfulStart
+  await button(s,'Retry').props.onClick()
+  await settle()
+  assert.equal(s.calls.install,2)
+  assert.equal(s.calls.installValues,undefined)
+ } finally {s.cleanup();if(previousDocument===undefined)delete globalThis.document;else globalThis.document=previousDocument}
+})
+
+test('the refreshed inventory cannot recreate a vanished registration during retry', async () => {
+ const s=scenario({resume:true,registered:true,manual:false,installationPhase:'Failed'})
+ try {
+  await settle()
+  s.store.load=async()=>{delete s.store.byName.code;return true}
+  await button(s,'Retry installation').props.onClick()
+  await settle()
+  assert.match(text(s.root),/Review installation/)
+  assert.equal(s.calls.install,0)
+  assert.equal(s.calls.register,0)
+ } finally {s.cleanup()}
+})
+
+test('manual registration completing during Console review prevents adoption', async () => {
+ const s=scenario({resume:true,registered:true,providerRegistered:false,manual:false,installationPhase:'NotStarted'})
+ try {
+  await settle()
+  await button(s,'Install through Console').props.onClick()
+  await settle()
+  s.store.load=async()=>{s.store.byName.code.registered=true;return true}
+  await submit(s)
+  assert.equal(s.calls.install,0)
+  assert.equal(s.calls.instructions,0)
+  assert.match(text(s.root),/already registered/)
+  assert.equal(button(s,'Install through Console'),undefined)
+ } finally {s.cleanup()}
+})
+
+test('leaving during the pre-install inventory check never starts a job', async () => {
+ const s=scenario({manual:false})
+ let resolveInventory
+ s.store.load=()=>new Promise(resolve=>{resolveInventory=resolve})
+ const pending=create(s)
+ await settle()
+ assert.equal(typeof resolveInventory,'function')
+ s.cleanup()
+ resolveInventory(true)
+ await pending
+ assert.equal(s.calls.install,0)
+ assert.equal(s.timers.size,0)
 })
