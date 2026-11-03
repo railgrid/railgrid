@@ -306,9 +306,9 @@ const initialPlan = ref('')
 const initialOverrides = ref('')
 const initialEntitlement = ref('')
 type PendingAssignment = { name: string; requested: string; target: string; started: number; timedOut: boolean }
-const pending = ref<Record<string, PendingAssignment>>({})
-const pendingAssignments = computed(() => Object.values(pending.value))
-function assignmentPending(name: string): boolean { return !!pending.value[name] && !pending.value[name].timedOut }
+const pending = ref(new Map<string, PendingAssignment>())
+const pendingAssignments = computed(() => [...pending.value.values()])
+function assignmentPending(name: string): boolean { return pending.value.has(name) && !pending.value.get(name)!.timedOut }
 let poll: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 const organizationDetail = ref<HTMLElement | null>(null)
@@ -324,7 +324,7 @@ function orgLabel(name: string): string { return orgs.value.find(o => o.name ===
 function sourceFor(org: AdminOrg | undefined): string { return org ? assignmentSource(org.plan, entitlementFor(org.name), status.value?.defaultPlan) : 'Organization unavailable' }
 function planReferenceCount(name: string): number { return (items.value.entitlements ?? []).filter(e => e.spec?.plan === name).length }
 function planCount(name: string): number { return orgs.value.filter(org => org.plan === name || entitlementFor(org.name)?.spec?.plan === name).length }
-function planHasReferences(name: string): boolean { return planReferenceCount(name) > 0 || orgs.value.some(org => org.plan === name) || pendingAssignments.value.some(p => p.target === name) }
+function planHasReferences(name: string): boolean { return organizationsLoading.value || !organizationsLoaded.value || !!organizationError.value || planReferenceCount(name) > 0 || orgs.value.some(org => org.plan === name) || pendingAssignments.value.some(p => p.target === name) }
 const organizationColumns: Column[] = [
   { key: 'displayName', label: 'Organization', primary: true, sortable: true },
   { key: 'planName', label: 'Plan', sortable: true },
@@ -571,7 +571,7 @@ function checkPending(): void {
     const org = orgs.value.find(o => o.name === p.name)
     if (!organizationError.value && org && assignmentApplied(org.plan, p.requested, planFor(p.target), entitlementFor(p.name))) {
       notice.value = `${planLabel(p.target)} plan applied to ${orgLabel(p.name)}. Organization overrides were preserved.`
-      delete pending.value[p.name]
+      pending.value.delete(p.name)
     } else if (Date.now() - p.started >= 90_000) p.timedOut = true
   }
   if (!pendingAssignments.value.length && poll) clearTimeout(poll)
@@ -582,12 +582,12 @@ function schedulePoll(): void {
   poll = setTimeout(async () => { await refresh(false, 'background'); schedulePoll() }, 3000)
 }
 function retryPending(name: string): void {
-  const p = pending.value[name]
+  const p = pending.value.get(name)
   if (p) { p.started = Date.now(); p.timedOut = false }
   void refresh().then(schedulePoll)
 }
 function stopWatching(name: string): void {
-  delete pending.value[name]
+  pending.value.delete(name)
   if (!pendingAssignments.value.length && poll) clearTimeout(poll)
   notice.value = `Stopped watching ${orgLabel(name)}. The saved plan assignment remains in effect.`
 }
@@ -604,7 +604,7 @@ async function saveAssignment(): Promise<void> {
     })
     const acknowledgedOrg = orgs.value.find(org => org.name === draft.name)
     if (acknowledgedOrg) acknowledgedOrg.plan = draft.plan || undefined
-    pending.value[draft.name] = { name: draft.name, requested: draft.plan, target, started: Date.now(), timedOut: false }
+    pending.value.set(draft.name, { name: draft.name, requested: draft.plan, target, started: Date.now(), timedOut: false })
     notice.value = ''
     assignment.value = null
     await refresh()
@@ -632,6 +632,7 @@ async function deletePlan(name: string): Promise<void> {
   const using = planReferenceCount(name)
   if (using || planHasReferences(name) || name === status.value?.defaultPlan) return
   if (!await confirmDialog({ title: `Delete plan “${planLabel(name)}”?`, message: 'Organizations can no longer be placed on it. Existing usage data is kept.', danger: true, confirmLabel: 'Delete plan' })) return
+  if (planHasReferences(name)) return
   busy.value = name
   actionError.value = null
   try {

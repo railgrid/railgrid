@@ -19,6 +19,7 @@ package metering
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/klog/v2"
+
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 func plan(name string, limits ...map[string]any) *unstructured.Unstructured {
@@ -59,6 +62,7 @@ func entitlement(name, planName string) *unstructured.Unstructured {
 }
 
 type adminFixture struct {
+	writer *Writer
 	ws     dynamic.Interface
 	router *mux.Router
 }
@@ -76,10 +80,13 @@ func newAdminFixture(t *testing.T, installedNow bool, objs ...runtime.Object) ad
 	if installedNow {
 		d.set(&Endpoints{PortalURL: "http://metering"})
 	}
-	h := NewHandler(d).WithWriter(NewWriter(ws, "free", func(context.Context) string { return "admin@example.org" }, klog.Background()))
+	writer := NewWriter(ws, "free", func(context.Context) string { return "admin@example.org" }, klog.Background()).WithOrganizations(func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
+		return &tenancyv1alpha1.OrganizationList{}, nil
+	})
+	h := NewHandler(d).WithWriter(writer)
 	r := mux.NewRouter()
 	h.Register(r)
-	return adminFixture{ws: ws, router: r}
+	return adminFixture{ws: ws, router: r, writer: writer}
 }
 
 func (f adminFixture) do(t *testing.T, method, path, body string) (int, map[string]any) {
@@ -214,5 +221,43 @@ func TestWritesRefusedUntilInstalled(t *testing.T) {
 	code, out = f.do(t, http.MethodGet, "/metering", "")
 	if code != http.StatusOK || out["writable"] != true || out["defaultPlan"] != "free" {
 		t.Fatalf("status: %d %v", code, out)
+	}
+}
+
+// An organization assignment is durable intent before its entitlement exists
+// or switches plan. A missing/failed tenancy read must never permit deletion.
+func TestPlanDeleteOrganizationReferences(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		list   func(context.Context) (*tenancyv1alpha1.OrganizationList, error)
+		status int
+	}{
+		{name: "not configured", status: http.StatusServiceUnavailable},
+		{name: "unavailable", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
+			return nil, errors.New("tenancy unavailable")
+		}, status: http.StatusServiceUnavailable},
+		{name: "nil snapshot", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) { return nil, nil }, status: http.StatusServiceUnavailable},
+		{name: "organization only", list: func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
+			return &tenancyv1alpha1.OrganizationList{Items: []tenancyv1alpha1.Organization{{ObjectMeta: metav1.ObjectMeta{Name: "org-pending"}, Spec: tenancyv1alpha1.OrganizationSpec{Plan: "team"}}}}, nil
+		}, status: http.StatusConflict},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newAdminFixture(t, true, plan("team"), entitlement("org-pending", "free"))
+			f.writer.WithOrganizations(tc.list)
+			code, out := f.do(t, http.MethodDelete, "/metering/plans/team", "")
+			if code != tc.status {
+				t.Fatalf("delete status %d: %v", code, out)
+			}
+			if _, err := f.ws.Resource(gvrPlans).Get(context.Background(), "team", metav1.GetOptions{}); err != nil {
+				t.Fatalf("plan must remain: %v", err)
+			}
+			// Retrying after the authoritative snapshot no longer has references succeeds.
+			f.writer.WithOrganizations(func(context.Context) (*tenancyv1alpha1.OrganizationList, error) {
+				return &tenancyv1alpha1.OrganizationList{}, nil
+			})
+			if code, out := f.do(t, http.MethodDelete, "/metering/plans/team", ""); code != http.StatusNoContent {
+				t.Fatalf("retry status %d: %v", code, out)
+			}
+		})
 	}
 }

@@ -1196,7 +1196,9 @@ func (s *Server) Run(ctx context.Context) error {
 					if c, err := metering.MeteringClient(kcpConfig, s.opts.MeteringWorkspace); err != nil {
 						logger.Error(err, "Metering admin writes disabled")
 					} else {
-						h.WithWriter(metering.NewWriter(c, s.opts.MeteringDefaultPlan, admin.UserFromContext, logger.WithName("metering-admin")))
+						h.WithWriter(metering.NewWriter(c, s.opts.MeteringDefaultPlan, admin.UserFromContext, logger.WithName("metering-admin")).WithOrganizations(func(ctx context.Context) (*tenancyv1alpha1.OrganizationList, error) {
+							return userClient.Organizations().List(ctx, metav1.ListOptions{})
+						}))
 					}
 					h.Register(adminSub)
 				}

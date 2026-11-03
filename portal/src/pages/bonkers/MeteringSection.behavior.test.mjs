@@ -103,11 +103,11 @@ function productionFunction(name, context) {
 
 test('timeouts and stopping a watch are isolated by organization and preserve saved intent', () => {
   const context = {
-    pending: { value: { a: { name: 'a', started: Date.now() - 91_000, timedOut: false }, b: { name: 'b', started: Date.now(), timedOut: false } } },
+    pending: { value: new Map([['a', { name: 'a', started: Date.now() - 91_000, timedOut: false }], ['b', { name: 'b', started: Date.now(), timedOut: false }]]) },
     orgs: { value: [] }, organizationError: { value: null }, notice: { value: '' }, poll: 1,
     orgLabel: name => name, clears: 0, clearTimeout: () => { context.clears++ },
   }
-  context.pendingAssignments = { get value() { return Object.values(context.pending.value) } }
+  context.pendingAssignments = { get value() { return [...context.pending.value.values()] } }
   const check = productionFunction('checkPending', context)
   const isPending = productionFunction('assignmentPending', context)
   const stop = productionFunction('stopWatching', context)
@@ -115,11 +115,11 @@ test('timeouts and stopping a watch are isolated by organization and preserve sa
   assert.equal(isPending('a'), false, 'a timed-out organization can be superseded')
   assert.equal(isPending('b'), true, 'another organization keeps its own active watch')
   stop('a')
-  assert.equal(context.pending.value.b.name, 'b')
+  assert.equal(context.pending.value.get('b').name, 'b')
   assert.equal(context.clears, 0)
   assert.match(context.notice.value, /saved plan assignment remains in effect/)
   stop('b')
-  assert.equal(Object.keys(context.pending.value).length, 0)
+  assert.equal(context.pending.value.size, 0)
   assert.equal(context.clears, 1)
 })
 
@@ -151,4 +151,65 @@ test('organization failure preserves its last snapshot and independent metering 
   assert.equal(context.organizationsLoading.value, false)
   assert.match(context.organizationError.value, /Plans and raw metering resources remain available/)
   assert.equal(context.organizationsCheckedAt.value, 'previous-check')
+})
+
+test('prototype-named organizations can start, retry, and stop independent assignment watches', async () => {
+  const context = { ref: value => ({ value }), orgLabel: name => name, notice: { value: '' }, poll: undefined,
+    refresh: async () => {}, schedulePoll: () => {}, clearTimeout: () => {} }
+  const declaration = parsed.statements.flatMap(node => ts.isVariableStatement(node) ? [...node.declarationList.declarations] : [])
+    .find(node => node.name.getText(parsed) === 'pending')
+  const code = ts.transpileModule(`const ${declaration.getText(parsed)};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  context.pending = runInNewContext(`${code}\npending`, context)
+  context.pendingAssignments = { get value() { return [...context.pending.value.values()] } }
+  const isPending = productionFunction('assignmentPending', context)
+  const retry = productionFunction('retryPending', context)
+  const stop = productionFunction('stopWatching', context)
+  for (const name of ['constructor', 'toString', '__proto__']) {
+    assert.equal(isPending(name), false)
+    retry(name)
+    assert.equal(isPending(name), false)
+    context.pending.value.set(name, { name, started: 0, timedOut: true })
+    retry(name)
+    assert.equal(isPending(name), true)
+    stop(name)
+    assert.equal(isPending(name), false)
+  }
+  assert.equal(context.pending.value.size, 0)
+})
+
+test('plan deletion fails closed until organization references are authoritative', () => {
+  const context = { organizationsLoading: { value: false }, organizationsLoaded: { value: false }, organizationError: { value: null },
+    planReferenceCount: () => 0, orgs: { value: [] }, pendingAssignments: { value: [] } }
+  const blocked = productionFunction('planHasReferences', context)
+  assert.equal(blocked('team'), true, 'initial pending organization read')
+  context.organizationsLoaded.value = true
+  assert.equal(blocked('team'), false, 'authoritative empty snapshot')
+  context.organizationError.value = 'unavailable'
+  assert.equal(blocked('team'), true, 'failed refresh of an empty snapshot')
+  context.organizationError.value = null
+  context.organizationsLoading.value = true
+  assert.equal(blocked('team'), true, 'retry cannot reuse an empty stale snapshot')
+  context.organizationsLoading.value = false
+  context.orgs.value = [{ plan: 'team' }]
+  assert.equal(blocked('team'), true, 'intent without an entitlement')
+  context.orgs.value = []
+  context.pendingAssignments.value = [{ target: 'team' }]
+  assert.equal(blocked('team'), true, 'assignment in flight')
+})
+
+test('delete action cannot bypass unknown references or a failure during confirmation', async () => {
+  let blocked = true
+  let confirmations = 0
+  let writes = 0
+  const context = { planReferenceCount: () => 0, planHasReferences: () => blocked,
+    status: { value: { defaultPlan: 'free' } }, planLabel: name => name,
+    confirmDialog: async () => { confirmations++; blocked = true; return true },
+    busy: { value: null }, actionError: { value: null }, write: async () => { writes++ } }
+  const remove = productionFunction('deletePlan', context)
+  await remove('team')
+  assert.equal(confirmations, 0)
+  blocked = false
+  await remove('team')
+  assert.equal(confirmations, 1)
+  assert.equal(writes, 0)
 })

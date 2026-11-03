@@ -46,8 +46,10 @@ import (
 const (
 	// PlanSourceLabel records who owns an
 	// Entitlement's spec.plan. The hub writes PlanSourceOperator while an
-	// admin's Organization.spec.plan stands, so the deployment's billing
-	// reconciler leaves that plan alone, and clears it with the assignment.
+	// admin's Organization.spec.plan stands, and clears it with the assignment.
+	// Any external subscription reconciler must honor this label before writing
+	// spec.plan; this is an integration contract, not a contrib-metering feature.
+	// See docs/organizations.md#metering-deployment-compatibility.
 	// Use our domain: kcp reserves *.kcp.io metadata and rejects writes to it.
 	PlanSourceLabel = "metering.railgrid.ai/plan-source"
 	// PlanSourceOperator is the PlanSourceLabel value for a plan set by hand.

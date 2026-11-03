@@ -35,6 +35,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
+
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 )
 
 // The admin area's writes. Reads go through the metering API (proxy in
@@ -77,10 +79,11 @@ type PlanUpdate struct {
 
 // Writer performs the admin writes against the metering workspace.
 type Writer struct {
-	client      dynamic.Interface
-	defaultPlan string
-	caller      func(context.Context) string
-	logger      logr.Logger
+	organizations func(context.Context) (*tenancyv1alpha1.OrganizationList, error)
+	client        dynamic.Interface
+	defaultPlan   string
+	caller        func(context.Context) string
+	logger        logr.Logger
 }
 
 // NewWriter builds a Writer. caller returns the admin identity of a request
@@ -91,6 +94,13 @@ func NewWriter(client dynamic.Interface, defaultPlan string, caller func(context
 		caller = func(context.Context) string { return "" }
 	}
 	return &Writer{client: client, defaultPlan: defaultPlan, caller: caller, logger: logger}
+}
+
+// WithOrganizations supplies an authoritative read from the tenancy workspace.
+// Deletion fails closed unless this read succeeds, even if no entitlement exists.
+func (wr *Writer) WithOrganizations(list func(context.Context) (*tenancyv1alpha1.OrganizationList, error)) *Writer {
+	wr.organizations = list
+	return wr
 }
 
 // WithWriter enables the write routes on h.
@@ -266,11 +276,23 @@ func (wr *Writer) deletePlan(w http.ResponseWriter, r *http.Request) {
 	respond(w, nil, wr.DeletePlan(r.Context(), mux.Vars(r)["name"]))
 }
 
-// DeletePlan removes plan name unless it is the default plan or an
-// entitlement still subscribes to it.
+// DeletePlan removes plan name unless it is the default plan, an organization
+// has assigned it, or an entitlement still subscribes to it.
 func (wr *Writer) DeletePlan(ctx context.Context, name string) error {
 	if name == wr.defaultPlan {
 		return fail(http.StatusConflict, "%q is the default plan new organizations are placed on (--metering-default-plan); it cannot be deleted", name)
+	}
+	if wr.organizations == nil {
+		return fail(http.StatusServiceUnavailable, "cannot verify organization plan references; retry later")
+	}
+	orgs, err := wr.organizations(ctx)
+	if err != nil || orgs == nil {
+		return fail(http.StatusServiceUnavailable, "cannot verify organization plan references; retry later")
+	}
+	for _, org := range orgs.Items {
+		if org.Spec.Plan == name {
+			return fail(http.StatusConflict, "plan %q is assigned to organization %q", name, org.Name)
+		}
 	}
 	ents, err := wr.client.Resource(gvrEntitlements).List(ctx, metav1.ListOptions{})
 	if err != nil {
