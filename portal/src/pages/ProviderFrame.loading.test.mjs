@@ -21,6 +21,21 @@ import test from 'node:test'
 // mock-browser checks cover that shell; live provider/backend acceptance stays separate.
 const source = await readFile(new URL('./ProviderFrame.vue', import.meta.url), 'utf8')
 
+test('all Models tabs retain the landing shell while project routes remain full bleed', () => {
+  const expression = source.match(/const isAppStudioLandingRoute = computed\(\(\) =>([\s\S]*?)\n\)/)?.[1].trim().replace(/,$/, '')
+  assert.ok(expression)
+  const classify = new Function('props', 'providerRoutePath', 'APP_STUDIO_CREATE_ROUTE', 'APP_STUDIO_MODELS_ROUTE', 'APP_STUDIO_CREATE_MODEL_ROUTE', `return (${expression})`)
+  for (const [path, expected] of [
+    ['', true], ['~new', true], ['create/model', true],
+    ['~models', true], ['~models/provider-connections', true], ['~models/usage', true],
+    ['~models/provider-connections/', true],
+    ['my-project', false], ['my-project/settings', false], ['~models-project', false],
+  ]) {
+    assert.equal(classify({ providerName: 'app-studio' }, { value: path }, '~new', '~models', 'create/model'), expected, path)
+  }
+  assert.equal(classify({ providerName: 'agents' }, { value: '~models/usage' }, '~new', '~models', 'create/model'), false)
+})
+
 function functionBody(name) {
   const body = source.match(new RegExp(`function ${name}\\([^)]*\\)(?:\\s*:\\s*[^\\{]+)?\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1]
   assert.ok(body, `expected ${name} in ProviderFrame.vue`)

@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 34;
+  --railgrid-agent-ui-version: 36;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1012,12 +1012,13 @@ button.k-workbench-tab {
   height: auto;
   align-self: stretch;
   flex-shrink: 0;
-  transition: width var(--k-ai-pane-enter-duration) var(--k-ai-pane-easing);
+  /* Reserve layout space immediately; the panel below owns slide/fade motion. */
+  transition: none;
 }
 .k-ai-conversation-rail--desktop { position: absolute; inset: 0 auto 0 0; width: 0; }
 .k-ai-conversation-rail--mobile-open { position: absolute; inset: 0 auto 0 0; display: block; width: 256px; }
 .k-ai-conversation-rail--anchored { width: var(--k-ai-conversation-rail-width); }
-.k-ai-conversation-rail--collapsed { width: 0; transition-duration: var(--k-ai-pane-leave-duration); }
+.k-ai-conversation-rail--collapsed { width: 0; }
 .k-ai-conversation-rail__peek { position: absolute; inset: 0 auto 0 0; z-index: 1; width: 16px; cursor: e-resize; }
 .k-ai-conversation-rail__panel {
   position: absolute;
@@ -1206,6 +1207,16 @@ button.k-workbench-tab {
     min-width: 44px;
     min-height: 44px;
   }
+}
+
+/* Multiline credentials keep their editing space while single-line controls
+ * retain the touch-sized minimum above. This follows the touch rules so their
+ * stronger selector cannot collapse a textarea to the 44px control height. */
+.k-model-form .k-model-form-field>textarea.k-input,
+.k-model-form .k-model-form-section>textarea.k-input {
+  height: auto;
+  min-height: 132px;
+  resize: vertical;
 }
 
 /* Shared workbench AIWorkbenchTabs presentation, loaded by ensureAgentUIStyles. */
