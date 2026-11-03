@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/gorilla/mux"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/identity"
@@ -258,5 +259,193 @@ func TestDeleteIsAttestedAndScopedToTheCallingProvider(t *testing.T) {
 	unattested.ServeHTTP(recorder, httptest.NewRequest(http.MethodDelete, PathIdentities+"/si-x?provider=agents", nil))
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("unattested delete status = %d, want 401", recorder.Code)
+	}
+}
+
+// Production attestation has a stricter, workspace-bound path than the legacy
+// platform-only seam. Exercise dispatch on all identity HTTP operations so the
+// request cannot authenticate as one provider copy and act in another target.
+type workspaceStubAttestor struct {
+	allowed string
+	seen    []string
+}
+
+func (a *workspaceStubAttestor) Attest(context.Context, *http.Request, string) (string, error) {
+	return "", providers.ErrHeartbeatTokenRejected
+}
+func (a *workspaceStubAttestor) AttestInWorkspace(_ context.Context, _ *http.Request, provider, cluster string) (string, error) {
+	a.seen = append(a.seen, provider+"/"+cluster)
+	if cluster != a.allowed {
+		return "", providers.ErrHeartbeatWrongIdentity
+	}
+	return providers.ProviderSAUsername, nil
+}
+func (a *workspaceStubAttestor) AttestCleanupInWorkspace(ctx context.Context, r *http.Request, provider, cluster string) (string, error) {
+	return a.AttestInWorkspace(ctx, r, provider, cluster)
+}
+
+type workspaceStubService struct {
+	stubIdentityService
+	recordCluster string
+	listed        int
+}
+
+func (s *workspaceStubService) RecordCluster(context.Context, string, string) (string, error) {
+	return s.recordCluster, nil
+}
+func (s *workspaceStubService) List(context.Context, string, string, *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	s.listed++
+	return nil, nil
+}
+
+func TestScopedIdentityOperationsUseTargetBinding(t *testing.T) {
+	for _, allowed := range []bool{true, false} {
+		for _, method := range []string{http.MethodPost, http.MethodGet, http.MethodDelete} {
+			t.Run(fmt.Sprintf("%s/allowed=%v", method, allowed), func(t *testing.T) {
+				attestor := &workspaceStubAttestor{allowed: "cluster-1"}
+				if !allowed {
+					attestor.allowed = "unrelated-workspace"
+				}
+				service := &workspaceStubService{recordCluster: "cluster-1"}
+				path := PathIdentities + "?provider=agents&clusterID=cluster-1"
+				body := ""
+				if method == http.MethodPost {
+					body = identityBody
+				}
+				if method == http.MethodDelete {
+					path = PathIdentities + "/record?provider=agents&clusterID=forged-target"
+				}
+				r := httptest.NewRequest(method, path, strings.NewReader(body))
+				r.Header.Set("Authorization", "Bearer provider-token")
+				w := httptest.NewRecorder()
+				identityRouter(service, attestor).ServeHTTP(w, r)
+				want := http.StatusOK
+				if method == http.MethodDelete {
+					want = http.StatusNoContent
+				}
+				if !allowed {
+					want = http.StatusForbidden
+				}
+				if w.Code != want {
+					t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+				}
+				if len(attestor.seen) != 1 || attestor.seen[0] != "agents/cluster-1" {
+					t.Fatalf("attested wrong target: %v", attestor.seen)
+				}
+				if !allowed && (service.ensured != 0 || service.listed != 0 || len(service.released) != 0) {
+					t.Fatal("unattested operation reached service")
+				}
+				if allowed && method == http.MethodDelete && len(service.released) != 1 {
+					t.Fatal("attested record was not revoked")
+				}
+			})
+		}
+	}
+}
+
+// Distinguish global platform authentication from per-workspace cleanup checks.
+// A terminating/unready binding may permit cleanup while refusing minting.
+type listingAttestor struct {
+	results      map[string]error
+	cleanupCalls map[string]int
+	strictCalls  int
+}
+
+func (a *listingAttestor) Attest(context.Context, *http.Request, string) (string, error) {
+	return providers.ProviderSAUsername, nil
+}
+func (a *listingAttestor) AttestInWorkspace(context.Context, *http.Request, string, string) (string, error) {
+	a.strictCalls++
+	return "", providers.ErrHeartbeatWrongIdentity
+}
+func (a *listingAttestor) AttestCleanupInWorkspace(_ context.Context, _ *http.Request, _, cluster string) (string, error) {
+	a.cleanupCalls[cluster]++
+	return providers.ProviderSAUsername, a.results[cluster]
+}
+
+type listingService struct {
+	stubIdentityService
+	records []tenancyv1alpha1.ScopedIdentity
+}
+
+func (s *listingService) List(context.Context, string, string, *identity.Owner) ([]tenancyv1alpha1.ScopedIdentity, error) {
+	return s.records, nil
+}
+func listingRecord(name, cluster string) tenancyv1alpha1.ScopedIdentity {
+	record := tenancyv1alpha1.ScopedIdentity{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	record.Spec.ClusterID = cluster
+	return record
+}
+func getIdentityList(router *mux.Router, scope string) *httptest.ResponseRecorder {
+	request := httptest.NewRequest(http.MethodGet, PathIdentities+"?provider=agents"+scope, nil)
+	request.Header.Set("Authorization", "Bearer platform-provider-token")
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	return response
+}
+func TestUnscopedIdentityListFiltersCopiesAndMemoizesOnlyWithinRequest(t *testing.T) {
+	service := &listingService{records: []tenancyv1alpha1.ScopedIdentity{
+		listingRecord("platform-one", "platform-bound"), listingRecord("foreign-one", "org-bound"),
+		listingRecord("platform-two", "platform-bound"), listingRecord("foreign-two", "org-bound"),
+		listingRecord("unbound", "no-binding"),
+	}}
+	attestor := &listingAttestor{results: map[string]error{"org-bound": providers.ErrHeartbeatTokenRejected, "no-binding": providers.ErrHeartbeatWrongIdentity}, cleanupCalls: map[string]int{}}
+	router := identityRouter(service, attestor)
+	for request := 1; request <= 2; request++ {
+		response := getIdentityList(router, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		var body struct {
+			Items []identityListItem `json:"items"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Items) != 2 || body.Items[0].Name != "platform-one" || body.Items[1].Name != "platform-two" {
+			t.Fatalf("mixed-copy inventory = %#v", body.Items)
+		}
+		for _, cluster := range []string{"platform-bound", "org-bound", "no-binding"} {
+			if got := attestor.cleanupCalls[cluster]; got != request {
+				t.Fatalf("cleanup calls for %s=%d, want %d", cluster, got, request)
+			}
+		}
+	}
+	if attestor.strictCalls != 0 {
+		t.Fatal("listing used minting attestation")
+	}
+}
+func TestUnscopedIdentityListFailsInsteadOfReturningPartialInventory(t *testing.T) {
+	for _, failure := range []error{fmt.Errorf("%w: private-cluster: token-secret", providers.ErrHeartbeatAuthUnavailable), fmt.Errorf("unexpected transport: token-secret")} {
+		service := &listingService{records: []tenancyv1alpha1.ScopedIdentity{listingRecord("first-record", "healthy"), listingRecord("second-record", "unavailable")}}
+		attestor := &listingAttestor{results: map[string]error{"unavailable": failure}, cleanupCalls: map[string]int{}}
+		response := getIdentityList(identityRouter(service, attestor), "")
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+		for _, hidden := range []string{"first-record", "second-record", "token-secret", "private-cluster", `"items"`} {
+			if strings.Contains(response.Body.String(), hidden) {
+				t.Fatalf("partial inventory or verifier details leaked: %s", response.Body.String())
+			}
+		}
+		if !strings.Contains(response.Body.String(), "attestation_unavailable") {
+			t.Fatalf("wrong sanitized error: %s", response.Body.String())
+		}
+	}
+}
+func TestScopedIdentityListUsesRevocationAuthorityWithoutGrantingMinting(t *testing.T) {
+	service := &listingService{records: []tenancyv1alpha1.ScopedIdentity{listingRecord("cleanup-record", "terminating")}}
+	attestor := &listingAttestor{results: map[string]error{}, cleanupCalls: map[string]int{}}
+	router := identityRouter(service, attestor)
+	response := getIdentityList(router, "&clusterID=terminating")
+	if response.Code != http.StatusOK || attestor.cleanupCalls["terminating"] != 1 || attestor.strictCalls != 0 {
+		t.Fatalf("cleanup listing refused: %d %s", response.Code, response.Body.String())
+	}
+	request := httptest.NewRequest(http.MethodPost, PathIdentities, strings.NewReader(strings.Replace(identityBody, "cluster-1", "terminating", 1)))
+	request.Header.Set("Authorization", "Bearer provider-token")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || service.ensured != 0 || attestor.strictCalls != 1 {
+		t.Fatalf("cleanup authority granted minting: %d %s", response.Code, response.Body.String())
 	}
 }

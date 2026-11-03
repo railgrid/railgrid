@@ -34,8 +34,9 @@ import (
 
 // ProviderAttestor authenticates a provider-asserted request. It is
 // deliberately the SAME check the heartbeat performs — bearer → TokenReview in
-// the provider's own workspace → subject must be
-// system:serviceaccount:default:provider (pkg/hub/providers/heartbeat_auth.go)
+// the provider's actual workspace → verified issuer extra must match that
+// workspace and subject must be system:serviceaccount:default:provider
+// (pkg/hub/providers/heartbeat_auth.go)
 // — because a provider that can prove it is itself for a heartbeat can prove
 // it is itself for an identity request, and one verifier is one thing to get
 // right. The heartbeat authenticator's positive and negative caches come along

@@ -1097,12 +1097,16 @@ func (s *Server) Run(ctx context.Context) error {
 				WorkloadScopes: projectScopeResolver,
 				Logger:         logger.WithName("scoped-identity"),
 			}).Start(ctx)
-			// Provider-asserted identities authenticate exactly as heartbeats
-			// do, with the same authenticator instance and therefore the same
-			// TokenReview caches.
+			// Scoped provider identity requests authenticate against the exact
+			// registered copy bound by their target workspace. Unscoped legacy
+			// platform operations retain the heartbeat authenticator.
+			providerIdentityAttestor, err := identity.NewBoundProviderAttestor(kcpConfig, providerRegistry, heartbeatAuthenticator)
+			if err != nil {
+				return fmt.Errorf("creating provider identity attestor: %w", err)
+			}
 			restapi.NewIdentityHandler(
 				identityService,
-				identity.NewProviderAttestor(heartbeatAuthenticator),
+				providerIdentityAttestor,
 				logger.WithName("scoped-identity"),
 			).Register(router)
 

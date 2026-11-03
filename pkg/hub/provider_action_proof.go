@@ -79,8 +79,8 @@ func newProviderActionProofBridge(config *rest.Config, keys serviceaccounts.Proo
 		return review.Status.UserInfo, nil
 	}
 	b.authenticate = func(ctx context.Context, r *http.Request, claims actionproof.Claims) error {
-		entry, ok := registry.GetForOrg(claims.OrgUUID, claims.Provider)
-		if !ok || entry.OrgUUID != claims.ProviderOrgUUID || entry.WorkspaceCluster == "" {
+		entry, err := b.currentProvider(ctx, claims.ClusterID, claims.Provider)
+		if err != nil || entry.OrgUUID != claims.ProviderOrgUUID || entry.WorkspaceCluster == "" {
 			return fmt.Errorf("the proof's provider is unavailable")
 		}
 		cfg := rest.CopyConfig(config)
@@ -153,8 +153,8 @@ func (b *providerActionProofBridge) claims(r *http.Request, route dataplane.Subr
 		return claims, err
 	}
 	claims.OrgUUID, claims.WorkspaceUUID, _ = tenantaccess.ParseTenantPath(path)
-	entry, ok := b.registry.GetForOrg(claims.OrgUUID, claims.Provider)
-	if !ok || entry.Export == nil {
+	entry, err := resolveProviderBoundCopy(r.Context(), dyn, b.registry, path, route.ClusterID, claims.Provider)
+	if err != nil || entry.Export == nil {
 		return claims, fmt.Errorf("app-studio provider is unavailable")
 	}
 	claims.ProviderOrgUUID = entry.OrgUUID
@@ -566,8 +566,8 @@ func (b *providerActionProofBridge) validateScope(ctx context.Context, c actionp
 	if !ok || org != c.OrgUUID || workspace != c.WorkspaceUUID {
 		return fmt.Errorf("workspace identity changed")
 	}
-	entry, ok := b.registry.GetForOrg(c.OrgUUID, c.Provider)
-	if !ok || entry.OrgUUID != c.ProviderOrgUUID {
+	entry, err := resolveProviderBoundCopy(ctx, dyn, b.registry, path, c.ClusterID, c.Provider)
+	if err != nil || entry.OrgUUID != c.ProviderOrgUUID {
 		return fmt.Errorf("provider identity changed")
 	}
 	bound, err := b.bound(ctx, c.ClusterID, entry)
@@ -599,6 +599,32 @@ func (b *providerActionProofBridge) verifier() *actionproof.Verifier {
 	return &actionproof.Verifier{Keys: b.keys, Authenticate: b.authenticate, ValidateScope: b.validateScope}
 }
 
+// currentProvider selects the registered copy from the consumer's native
+// binding. Catalog shadowing must not transfer a platform action proof to an
+// org-owned provider with the same name.
+func (b *providerActionProofBridge) currentProvider(ctx context.Context, cluster, name string) (providers.Provider, error) {
+	dyn, err := b.clients(cluster)
+	if err != nil {
+		return providers.Provider{}, err
+	}
+	path, err := tenantaccess.WorkspacePath(ctx, dyn)
+	if err != nil {
+		return providers.Provider{}, err
+	}
+	entry, err := resolveProviderBoundCopy(ctx, dyn, b.registry, path, cluster, name)
+	if err != nil {
+		return providers.Provider{}, err
+	}
+	valid, err := b.bound(ctx, cluster, entry)
+	if err != nil {
+		return providers.Provider{}, err
+	}
+	if !valid {
+		return providers.Provider{}, fmt.Errorf("provider is not bound in this workspace")
+	}
+	return entry, nil
+}
+
 func (b *providerActionProofBridge) bound(ctx context.Context, cluster string, entry providers.Provider) (bool, error) {
 	dyn, err := b.clients(cluster)
 	if err != nil {
@@ -612,7 +638,20 @@ func (b *providerActionProofBridge) bound(ctx context.Context, cluster string, e
 		name, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
 		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
-		if name == entry.APIExportName && path == entry.APIExportPath && phase == "Bound" {
+		issuer, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
+		if name != entry.APIExportName || path != entry.APIExportPath || phase != "Bound" ||
+			item.GetDeletionTimestamp() != nil || entry.WorkspaceCluster == "" || issuer != entry.WorkspaceCluster {
+			continue
+		}
+		healthy := true
+		conditions, _, _ := unstructured.NestedSlice(item.Object, "status", "conditions")
+		for _, raw := range conditions {
+			if condition, ok := raw.(map[string]any); ok &&
+				(condition["type"] == "APIExportValid" || condition["type"] == "Ready") && condition["status"] == "False" {
+				healthy = false
+			}
+		}
+		if healthy {
 			return true, nil
 		}
 	}
