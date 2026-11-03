@@ -1872,8 +1872,6 @@ export class Resources {
       try { existing = await client.get<KubeModelCredential & KubeObject>(MODELCREDENTIALS, name) }
       catch (error) { if (isKubeNotFound(error)) return; throw error }
       if (!existing.spec?.connectionRef) {
-        const credentials = await client.listAll<KubeModelCredential & KubeObject>(MODELCREDENTIALS)
-        if (credentials.some(item => item.spec?.connectionRef === name)) throw validationError('Remove the models using this provider connection before deleting it.')
         if (existing.metadata.labels?.[LABEL_CREDENTIAL_PROBE] !== 'true' && !existing.metadata.finalizers?.includes(CREDENTIAL_SECRET_PROTECTION)) {
           const uid = existing.metadata.uid
           const resourceVersion = existing.metadata.resourceVersion

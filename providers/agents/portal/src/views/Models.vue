@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Brain, Check, CornerDownRight, Eye, Link2, Plus, Terminal, Trash2, Wrench } from 'lucide-vue-next'
+import { Play, ArrowLeft, Brain, Check, CornerDownRight, Eye, Link2, Plus, Trash2, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
@@ -11,6 +11,7 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
@@ -188,35 +189,47 @@ function statusTone(credential: Credential): 'success' | 'danger' | 'muted' {
   return 'muted'
 }
 function credentialIsBusy(name: string, connection = false): boolean { return credentialActions.value.has(credentialStateKey(name, connection)) }
-// A harness identity has no endpoint and no model, so on a card built to show
-// both it would otherwise read as a broken chat credential: an empty model, an
-// "Endpoint: Provider default" it does not have, a pricing line for tokens it
-// does not bill through us, and a Test button with nothing to call. Every one
-// of those is answered by the family, so the card says which family it is and
-// then says the true thing in each slot.
+// Harness identities share the credential API type, but are managed separately
+// from chat models and provider connections.
 function harnessCredential(credential: Credential): boolean { return isHarnessProvider(credential.provider) }
+function providerConnectionCredential(credential: Credential): boolean {
+  return credential.isConnection === true && !harnessCredential(credential)
+}
 function credentialLabel(credential: Credential): string { return credential.displayName || credential.name }
 function labelForName(name: string, connection = false): string {
-  return credentials.value.data.find(item => item.name === name && Boolean(item.isConnection) === connection)?.displayName || name
+  return credentials.value.data.find(item => item.name === name && providerConnectionCredential(item) === connection)?.displayName || name
 }
-function familyModel(credential: Credential): string {
-  return harnessCredential(credential) ? `${harnessLabel(credential.provider)} identity` : credential.model || '—'
-}
-function familyEndpoint(credential: Credential): string {
-  return harnessCredential(credential) ? 'Edge machine' : credential.baseURL || ''
-}
-const providerConnections = computed(() => credentials.value.data.filter(item => item.isConnection))
-const showProviderFirstRun = computed(() => credentials.value.loaded && !providerConnections.value.length && (!credentials.value.error || credentials.value.hasSnapshot))
-const connectionRows = computed(() => providerConnections.value.map(credential => ({
-  id: credential.name,
-  name: credential.displayName || credential.name,
-  endpoint: credential.baseURL || 'Provider default',
-  modelCount: credentials.value.data.filter(item => item.connectionRef === credential.name || (item.name === credential.name && item.model)).length,
-  credential,
-})))
+const providerConnections = computed(() => credentials.value.data.filter(providerConnectionCredential))
+const harnessIdentities = computed(() => credentials.value.data.filter(harnessCredential))
+const showProviderFirstRun = computed(() => credentials.value.loaded && !providerConnections.value.length && !harnessIdentities.value.length && (!credentials.value.error || credentials.value.hasSnapshot))
+const connectionRows = computed(() => [
+  ...providerConnections.value.map(credential => ({
+    id: `connection:${credential.name}`,
+    name: credentialLabel(credential),
+    type: 'API connection',
+    endpoint: credential.baseURL || 'Provider default',
+    modelCount: credentials.value.data.filter(item => !item.isConnection && !harnessCredential(item) && item.connectionRef === credential.name).length,
+    status: statusLabel(credential),
+    statusTone: statusTone(credential),
+    credential,
+  })),
+  ...harnessIdentities.value.map(credential => ({
+    id: `credential:${credential.name}`,
+    name: credentialLabel(credential),
+    type: `${harnessLabel(credential.provider)} identity`,
+    endpoint: 'Edge machine',
+    modelCount: '—',
+    status: statusLabel(credential),
+    statusTone: statusTone(credential),
+    credential,
+  })),
+])
 function connectionCredential(row: Record<string, unknown>): Credential { return row.credential as Credential }
-const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection).map(credential => ({
-  id: credential.name, name: credential.displayName || credential.name, model: familyModel(credential), endpoint: familyEndpoint(credential) || 'Provider default',
+function connectionModelCountSortValue(row: Record<string, unknown>): number | null {
+  return typeof row.modelCount === 'number' ? row.modelCount : null
+}
+const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection && !harnessCredential(item)).map(credential => ({
+  id: credential.name, name: credentialLabel(credential), model: credential.model || '—', endpoint: credential.baseURL || 'Provider default',
   configured: credential.secretResolved !== false,
   status: testing.value.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.value.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.value.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.value.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential),
   tone: tested.value.get(credentialStateKey(credential.name))?.ok ? 'success' as const : tested.value.has(credentialStateKey(credential.name)) ? 'danger' as const : statusTone(credential),
@@ -303,7 +316,7 @@ function continueWithSavedProvider(connectionName: string): void {
   editorGeneration.value++
 }
 function toggleEdit(credential: Credential): void {
-  if (credentialIsBusy(credential.name, Boolean(credential.isConnection))) return
+  if (credentialIsBusy(credential.name, providerConnectionCredential(credential))) return
   editingCredential.value = { ...credential }
   editorFamily.value = harnessCredential(credential) ? 'harness' : 'chat'
   editName.value = credential.name
@@ -312,6 +325,20 @@ function toggleEdit(credential: Credential): void {
 function beginModel(): void {
   if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
   else { selectingConnection.value = true; creating.value = true }
+}
+function beginHarness(): void {
+  if (props.routeOwned) {
+    emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })
+    return
+  }
+  initialConnection.value = ''
+  editingCredential.value = undefined
+  editName.value = null
+  selectingConnection.value = false
+  creating.value = true
+  editorFamily.value = 'harness'
+  saveError.value = null
+  editorGeneration.value++
 }
 function openProvider(): void {
   const continueToModel = selectingConnection.value
@@ -341,14 +368,14 @@ function cancelCreate(): void {
 }
 async function saveModel(body: CredentialWrite, probe?: CredentialTestResult): Promise<void> {
   if (createBusy.value) return
-  if (!editingCredential.value && credentials.value.data.some(item => item.name === body.name && (!body.connectionRef || item.connectionRef !== body.connectionRef))) { saveError.value = 'A model with this name already exists. Choose another name.'; return }
-  const authority = captureAuthority()
-  const fence = { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession }
   const edited = !!editingCredential.value
   const savingProviderConnection = !edited && !body.connectionRef && !body.newConnection && body.model === ''
+  if (!edited && credentials.value.data.some(item => providerConnectionCredential(item) === savingProviderConnection && item.name === body.name && (!body.connectionRef || item.connectionRef !== body.connectionRef))) { saveError.value = savingProviderConnection ? 'A provider connection with this name already exists. Choose another name.' : 'A model with this name already exists. Choose another name.'; return }
+  const authority = captureAuthority()
+  const fence = { store: props.store, authorityEpoch: props.authorityEpoch, createSession: props.createSession }
   createBusy.value = true
   saveError.value = null
-  invalidateProbe(body.name, Boolean(editingCredential.value?.isConnection) || savingProviderConnection)
+  invalidateProbe(body.name, (editingCredential.value ? providerConnectionCredential(editingCredential.value) : false) || savingProviderConnection)
   try {
     let savedConnection: Credential | undefined
     if (body.newConnection) {
@@ -459,7 +486,7 @@ defineExpose({ loadCatalog, loadUsage })
         <div class="agents-provider-connected__actions"><button type="button" class="k-btn k-btn--primary" @click="continueWithSavedProvider(connectedProvider.name)">Add model</button><button type="button" class="k-btn k-btn--ghost" @click="cancelCreate">Done</button></div>
       </section>
       <ProviderConnectionEditor v-else-if="!editorIsHarness" ref="editor" :key="`provider:${editorGeneration}:${createSession}:${editName || initialConnection || 'new'}`" :api="api" :credentials="credentials.data" :credential="editingCredential" :initial-connection="initialConnection" :select-connection="selectingConnection" :discovery-fallback="savedProviderDiscovery" :busy="createBusy" :error="saveError" @save="saveModel" @rename="renameModel" @cancel="cancelCreate" @connect-provider="openProvider" />
-      <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="initialFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
+      <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="editorFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
       <header class="k-resource-page__header">
@@ -477,65 +504,76 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="modelView && catalogError" class="k-stale" role="status">Could not refresh the model catalog. Showing the last loaded catalog. {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
       <header class="k-resource-page__header" aria-labelledby="available-models-title">
-        <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models and harness identities you can assign to agents.</p></div>
-        <button v-if="!showFirstRun" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
+        <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models you can assign to agents.</p></div>
+        <div class="k-resource-page__header-side">
+          <div class="k-resource-page__actions">
+            <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
+          </div>
+        </div>
       </header>
-      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider or add a harness identity" description="Bring an API key and reuse its provider connection across models, or add a Claude Code or Codex login for an agent running on a machine." primary-label="Connect provider" :secondary-label="routeOwned ? 'Add harness identity' : ''" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @secondary="emit('navigate', { kind: 'create', resource: 'model', type: 'harness' })" @primary="openProvider" />
+      <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
       <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       </template>
       <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
-        <header class="k-resource-page__header"><div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Each connection stores one key that its models reuse.</p></div><button v-if="!showProviderFirstRun" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button></header>
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Manage API access for models and harness identities for agents running on edge machines.</p></div>
+          <div class="k-resource-page__header-side">
+            <div class="k-resource-page__actions">
+              <button type="button" class="k-btn k-btn--ghost secondary" @click="beginHarness"><Plus :stroke-width="1.75" aria-hidden="true" /> Add harness identity</button>
+              <button type="button" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button>
+            </div>
+          </div>
+        </header>
         <div v-if="showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-        <FirstRunGuide v-if="showProviderFirstRun" title="No provider connections yet" description="Bring an API key to connect a provider once, then reuse its connection across models." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
+        <FirstRunGuide v-if="showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
         <ResourceTable
           v-else
-          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'endpoint', label: 'Endpoint', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
+          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, { key: 'endpoint', label: 'Endpoint / machine', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
           :rows="connectionRows"
           row-key="id"
-          aria-label="Provider connections"
+          aria-label="Provider connections and harness identities"
           :loaded="credentials.hasSnapshot"
           :loading="credentials.loading"
           :error="credentials.error"
           :stale="credentials.hasSnapshot && !!credentials.error"
           retryable
           searchable
-          search-placeholder="Search provider connections…"
-          :search-keys="['name', 'endpoint']"
-          empty-text="No provider connections yet. Connect a provider once, then reuse its key across models."
-          search-empty-text="No provider connections match your search."
+          search-placeholder="Search provider access and identities…"
+          :search-keys="['name', 'type', 'endpoint']"
+          empty-text="No provider connections or harness identities yet. Use the header actions to add one."
+          search-empty-text="No provider connections or harness identities match your search."
           paginated
           :interactive="false"
           @retry="store.load('credentials')"
         >
           <template #actions="{ row }">
-            <ResourceTableActionButton :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
-            <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="toggleEdit(connectionCredential(row))" />
-            <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :busy-label="`Deleting provider connection ${row.name}…`" :busy="credentialAction(connectionCredential(row).name, true) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="remove(connectionCredential(row).name, true)" />
+            <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
+            <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
+            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
+          </template>
+          <template #status="{ row }">
+            <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
+            <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
+            <TechnicalDetails :diagnostic="connectionCredential(row).statusMessage" />
           </template>
         </ResourceTable>
       </section>
       <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout">
         <template #cards="{ rows }">
-        <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.displayName || credential.name" :model="familyModel(credential)" :endpoint="familyEndpoint(credential)" :endpoint-label="harnessCredential(credential) ? 'Runs on' : 'Endpoint'" :resource-label="harnessCredential(credential) ? 'Harness identity' : 'Model'" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
+        <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.displayName || credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL || 'Provider default'" endpoint-label="Endpoint" resource-label="Model" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credentialStateKey(credential.name))?.ok ? 'success' : tested.has(credentialStateKey(credential.name)) ? 'danger' : statusTone(credential)">
-          <template v-if="harnessCredential(credential)">
-            <div class="agents-model-chips"><span class="agents-chip"><Terminal :stroke-width="1.75" aria-hidden="true" /> Harness identity</span></div>
-            <p class="agents-hint">Credential check validates the login format. A successful first run confirms the edge runner can use it. Usage is billed to its account.</p>
-          </template>
-          <template v-else>
           <p v-if="credential.connectionRef" class="agents-hint">Connection: {{ credential.connectionName || credential.connectionRef }}</p>
           <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>
           <p v-if="lookupModel(credential.model || '')" class="agents-hint">${{ lookupModel(credential.model || '')?.inputPer1M }} input · ${{ lookupModel(credential.model || '')?.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="agents-hint">{{ missingCatalogLabel() }}</p>
-          </template>
           <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
           <p v-if="tested.get(credentialStateKey(credential.name))?.error" class="k-error" role="alert">{{ tested.get(credentialStateKey(credential.name))?.error }}</p>
-          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">{{ harnessCredential(credential) ? 'The harness identity needs attention. Edit it to review the credential format.' : 'The model connection needs attention. Edit it to review the endpoint and credential.' }}</p>
+          <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">The model connection needs attention. Edit it to review the endpoint and credential.</p>
           <TechnicalDetails :diagnostic="tested.get(credentialStateKey(credential.name))?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
-          <p v-if="!harnessCredential(credential) && credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
-          <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)">Edit</button><button v-if="!harnessCredential(credential) && credential.model?.trim()" class="k-btn k-btn--ghost" :disabled="testing.has(credentialStateKey(credential.name)) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :title="`Delete ${credentialLabel(credential)}`" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credentialLabel(credential)}…` : `Delete ${credentialLabel(credential)}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
+          <p v-if="credential.discovered?.length" class="agents-hint">{{ credential.discovered.length }} chat model{{ credential.discovered.length === 1 ? '' : 's' }} available from this endpoint</p>
+          <template #actions><button class="k-btn k-btn--ghost" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)">Edit</button><button v-if="credential.model?.trim()" class="k-btn k-btn--ghost" :disabled="testing.has(credentialStateKey(credential.name)) || credentialIsBusy(credential.name)" @click="testCredential(credential.name)">Test connection</button><button class="k-icon-action" :disabled="credentialIsBusy(credential.name)" :aria-busy="credentialAction(credential.name) === 'deleting'" :title="`Delete ${credentialLabel(credential)}`" :aria-label="credentialAction(credential.name) === 'deleting' ? `Deleting ${credentialLabel(credential)}…` : `Delete ${credentialLabel(credential)}`" @click="remove(credential.name)"><Trash2 :stroke-width="1.75" aria-hidden="true" /></button></template>
         </ModelConnectionCard>
         </template>
         <template #details="{ row: { credential } }">
@@ -544,7 +582,7 @@ defineExpose({ loadCatalog, loadUsage })
         </template>
         <template #actions="{ row: { credential } }">
           <ResourceTableEditButton :label="`Edit ${credentialLabel(credential)}`" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)" />
-          <ResourceTableActionButton v-if="!harnessCredential(credential) && credential.model?.trim()" :icon="Play" :label="`Test connection for ${credentialLabel(credential)}`" :busy="testing.has(credentialStateKey(credential.name))" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
+          <ResourceTableActionButton v-if="credential.model?.trim()" :icon="Play" :label="`Test connection for ${credentialLabel(credential)}`" :busy="testing.has(credentialStateKey(credential.name))" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
           <ResourceTableDeleteButton :label="`Delete ${credentialLabel(credential)}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
         </template>
       </ModelCollection>

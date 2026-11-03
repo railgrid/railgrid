@@ -10,6 +10,11 @@ A `ModelCredential` selects a model through `spec.connectionRef`, naming a
 referencing ModelCredential names. Harness identities remain direct
 ModelCredential objects; they have no model-provider connection.
 
+In the portal, provider accounts and harness identities are managed under
+**Models → Provider connections**. The **Models** tab is for selecting and
+managing model bindings. Agent setup can open harness identity creation as a
+detour and returns to the in-progress agent draft afterward.
+
 Referenced models inherit transport and authentication from their connection.
 Admission rejects endpoint, Secret reference, workspace, and nondefault provider
 or Secret-key overrides on a binding rather than accepting values that would be

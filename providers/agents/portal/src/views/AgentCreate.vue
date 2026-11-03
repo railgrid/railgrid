@@ -228,7 +228,7 @@ const prerequisites = computed(() => isHarness.value
           : 'Checking for available machines…',
     harnessCredentials.value.length
       ? 'A Claude Code or Codex identity is available in this workspace.'
-      : 'Add a Claude Code or Codex identity under Models before creating the agent.',
+      : 'Add a Claude Code or Codex identity under Models → Provider connections before creating the agent.',
   ]
   : [
     credentialOptions.value.length
@@ -603,7 +603,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                   <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
                     No harness identities yet —
                     <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
-                      add a Claude Code or Codex one under Models
+                      add a Claude Code or Codex one under Models → Provider connections
                     </button>
                     first.
                   </span>

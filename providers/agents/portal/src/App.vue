@@ -95,7 +95,7 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
     activity: store.value.pendingInbox().length,
     connections: store.value.connections.data.length + store.value.toolsets.data.length,
     webhooks: store.value.webhooks.data.length,
-    models: store.value.credentials.data.filter(item => !item.isConnection).length,
+    models: store.value.credentials.data.filter(item => !item.isConnection && !isHarnessProvider(item.provider)).length,
   }
 })
 const live = computed(() => { storeRevision.value; return store.value.live })
@@ -157,7 +157,30 @@ function prepareAgentCreateRouteChange(previous: Route, next: Route): void {
   if (isAgentCreateRoute(next)) clearAgentCreateSetup()
 }
 
-let modelCreateOwner: Route = { kind: 'menu', menu: 'models' }
+function defaultModelCreateOwner(route?: Route): Route {
+  const modelsTab = route?.kind === 'create' && route.resource === 'model' && route.type === 'from-connection'
+    ? undefined
+    : 'provider-connections'
+  return { kind: 'menu', menu: 'models', ...(modelsTab ? { modelsTab } : {}) }
+}
+
+let modelCreateOwner: Route = defaultModelCreateOwner(route.value)
+
+function modelCreateOwnerForEntry(previous: Route, next: Route): Route {
+  return previous.kind === 'agent' || (previous.kind === 'menu' && previous.menu === 'models')
+    ? previous
+    : defaultModelCreateOwner(next)
+}
+
+function modelCreateReturnLabel(): string {
+  if (agentCredentialSetup.value) return 'Agent setup'
+  if (modelCreateOwner.kind === 'agent') return 'Conversation'
+  if (
+    modelCreateOwner.kind === 'menu' && modelCreateOwner.menu === 'models' &&
+    modelCreateOwner.modelsTab === 'provider-connections'
+  ) return 'Provider connections'
+  return 'Models'
+}
 
 function go(next: Route, mode?: 'push' | 'replace'): void {
   if (props.overlay) {
@@ -171,8 +194,7 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
     continueAddModelAfterProviderConnect.value = false
   }
   if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
-    modelCreateOwner = previous.kind === 'agent' || (previous.kind === 'menu' && previous.menu === 'models')
-      ? previous : { kind: 'menu', menu: 'models' }
+    modelCreateOwner = modelCreateOwnerForEntry(previous, next)
     if (previous.kind === 'agent') props.host.dispatchEvent(new Event('railgrid-chat-setup'))
   }
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
@@ -200,6 +222,9 @@ function restoreRouteFromHash(normalize: boolean): void {
   const previous = route.value
   const next = parseHash()
   if (!isModelCreateRoute(next)) continueAddModelAfterProviderConnect.value = false
+  if (isModelCreateRoute(next) && !isModelCreateRoute(previous)) {
+    modelCreateOwner = modelCreateOwnerForEntry(previous, next)
+  }
   prepareAgentCreateRouteChange(previous, next)
   if (route.value.kind === 'edit' && next.kind === 'menu' && next.menu === 'connections') {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
@@ -293,7 +318,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
   loadedTenant = null
   authority = nextApi.contextAuthority()
   if (resetRoute) {
-    modelCreateOwner = { kind: 'menu', menu: 'models' }
+    modelCreateOwner = defaultModelCreateOwner()
     continueAddModelAfterProviderConnect.value = false
   }
   if (resetRoute) clearAgentCreateSetup()
@@ -685,7 +710,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'create' && route.resource === 'model'"
-        :return-label="modelCreateOwner.kind === 'agent' ? 'Conversation' : 'Models'"
+        :return-label="modelCreateReturnLabel()"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
