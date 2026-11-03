@@ -29,6 +29,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,7 @@ import (
 	"github.com/railgrid/provider-agents/executor"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	"github.com/railgrid/provider-agents/tenant"
 )
 
 // channelWebhookName namespaces channel webhook tokens away from trigger ones.
@@ -158,7 +160,7 @@ func (s *Server) webhookChannel(w http.ResponseWriter, r *http.Request) {
 	// Session + inbox commands are handled synchronously (no LLM round-trip).
 	scope := s.bg.scopeFor(r.Context(), cluster, agent.Name)
 	session := "channel:" + name
-	if reply, handled := s.channelCommand(r, scope, dyn, name, agent, session, ev.Text); handled {
+	if reply, handled := s.channelCommand(r.Context(), scope, dyn, agent, session, ev.Text); handled {
 		if reply != "" {
 			s.bg.replyToChannel(r.Context(), dyn, name, reply)
 		}
@@ -223,17 +225,32 @@ func orNano(id string) string {
 	return strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
-// channelCommand handles slash commands from a channel. Returns
-// (reply, handled): handled=false means the text is a normal chat message.
-// Inbox commands act on PENDING items, numbered newest-first as shown by
-// /inbox — so "/approve 1" approves the most recent request.
-func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.Interface, connName string, agent *agentsv1alpha1.Agent, session, text string) (string, bool) {
+// channelCommand handles slash commands from a channel — the Slack and
+// Telegram webhooks and the Discord gateway all pass through it before a
+// message becomes a run. Returns (reply, handled): handled=false means the text
+// is a normal chat message. Inbox commands act on PENDING items, numbered
+// newest-first as shown by /inbox — so "/approve 1" approves the most recent
+// request.
+//
+// A decision that continues a parked run resumes it here, exactly as the
+// portal's inbox-resolve verb does: an approval on a verdict, a question on an
+// answer. scope.ClusterID addresses the tenant for that resume.
+func (s *Server) channelCommand(ctx context.Context, scope store.Scope, dyn dynamic.Interface, agent *agentsv1alpha1.Agent, session, text string) (string, bool) {
 	fields := strings.Fields(strings.TrimSpace(text))
 	if len(fields) == 0 || !strings.HasPrefix(fields[0], "/") {
 		return "", false
 	}
-	ctx := r.Context()
 	wsScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID}
+	resume := func(item store.InboxItem, state store.InboxItemState, note string) string {
+		if item.RunID == "" || !resolutionResumesRun(item.Kind, state) {
+			return ""
+		}
+		// The reply (or the denial's fallout) arrives on this channel when the
+		// resumed run finishes.
+		access := runAccess{Creds: vwSecrets{dyn}, CR: vwCR{dyn}, ClusterID: scope.ClusterID}
+		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, note)
+		return " Resuming the run…"
+	}
 	pending := func() []store.InboxItem {
 		items, _ := s.store.ListInbox(ctx, wsScope, store.InboxStatePending)
 		return items
@@ -255,7 +272,66 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 		return items[n-1], ""
 	}
 
+	// activeRuns is this agent's runs that can still be cancelled, newest
+	// first — the numbering /cancel N uses.
+	activeRuns := func() []store.Run {
+		agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: agent.Name}
+		var runs []store.Run
+		for _, phase := range []store.RunPhase{store.RunPhaseRunning, store.RunPhasePendingApproval, store.RunPhasePending} {
+			page, err := s.store.QueryRuns(ctx, agentScope, store.RunQuery{Phase: phase, Limit: 20})
+			if err == nil {
+				runs = append(runs, page.Items...)
+			}
+		}
+		sort.SliceStable(runs, func(i, j int) bool { return runs[i].CreatedAt.After(runs[j].CreatedAt) })
+		return runs
+	}
+
 	switch fields[0] {
+	case "/help":
+		return "Commands:\n" +
+			"/inbox — list pending approvals and questions\n" +
+			"/answer [N] <text> — answer a question; the run resumes\n" +
+			"/approve [N], /deny [N] — decide on an approval; the run resumes\n" +
+			"/cancel [N] — cancel one of " + agent.Name + "'s active runs\n" +
+			"/status — agent and pending summary\n" +
+			"/new — start a fresh chat session", true
+	case "/cancel":
+		runs := activeRuns()
+		if len(runs) == 0 {
+			return "Nothing of " + agent.Name + "'s is running.", true
+		}
+		var run store.Run
+		switch {
+		case len(fields) > 1:
+			n, err := strconv.Atoi(fields[1])
+			if err != nil || n < 1 || n > len(runs) {
+				return "Pick a run number from /cancel.", true
+			}
+			run = runs[n-1]
+		case len(runs) == 1:
+			run = runs[0]
+		default:
+			var b strings.Builder
+			fmt.Fprintf(&b, "%d active runs:\n", len(runs))
+			for i, r := range runs {
+				fmt.Fprintf(&b, "%d. [%s, %s] %s\n", i+1, r.Phase, r.Trigger, safeTruncate(strings.TrimSpace(r.Input), 120))
+			}
+			b.WriteString("Reply /cancel N.")
+			return b.String(), true
+		}
+		// The same cancel the portal's runs/cancel verb performs, acting as the
+		// provider through this tenant's virtual workspace.
+		c := agentsclient.NewFromScope(tenant.NewScopeFromDynamic(scope.ClusterID, dyn))
+		id := identity{tenant: scope.ClusterID, clusterID: scope.ClusterID, orgUUID: scope.OrgUUID, workspaceUUID: scope.WorkspaceUUID}
+		live, err := s.cancelStoredRun(ctx, c, id, run)
+		if err != nil {
+			return "⚠️ " + err.Error(), true
+		}
+		if live {
+			return "🛑 Cancelling the run — it stops at its next step.", true
+		}
+		return "🛑 Cancelled the run.", true
 	case "/new":
 		_ = s.store.DeleteSession(ctx, scope, session)
 		return "🆕 Started a fresh session.", true
@@ -296,31 +372,38 @@ func (s *Server) channelCommand(r *http.Request, scope store.Scope, dyn dynamic.
 		s.events.publish(wsScope, "inbox", map[string]any{
 			"id": resolved.ID, "state": string(resolved.State), "agent": resolved.AgentName, "runID": resolved.RunID,
 		})
-		extra := ""
-		if item.Kind == store.InboxKindApproval && resolved.RunID != "" {
-			// Resume the paused run through the virtual workspace — the reply
-			// (or the denial's fallout) arrives on this channel when it finishes.
-			access := runAccess{Creds: vwSecrets{dyn}, CR: vwCR{dyn}}
-			go s.resumeApprovedRun(wsScope, resolved, access, state == store.InboxStateApproved, "via channel")
-			extra = " Resuming the run…"
-		}
-		return verb + ": " + item.Prompt + extra, true
+		return verb + ": " + safeTruncate(item.Prompt, 300) + resume(resolved, state, "via channel"), true
 	case "/answer":
-		if len(fields) < 3 {
-			return "Usage: /answer N your answer text", true
+		// "/answer N your answer", or "/answer your answer" when exactly one
+		// item is pending — the common case of replying to the question that
+		// was just pushed to this channel. A leading number is an item index
+		// only when it names a pending item; otherwise it is part of the answer.
+		items := pending()
+		arg, answer := "", strings.Join(fields[1:], " ")
+		if len(fields) > 2 {
+			if n, err := strconv.Atoi(fields[1]); err == nil && n >= 1 && n <= len(items) {
+				arg, answer = fields[1], strings.Join(fields[2:], " ")
+			}
 		}
-		item, msg := pickItem(fields[1], pending())
+		if answer == "" {
+			return "Usage: /answer [N] your answer text", true
+		}
+		item, msg := pickItem(arg, items)
 		if msg != "" {
 			return msg, true
 		}
-		answer := strings.Join(fields[2:], " ")
-		if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, store.InboxStateAnswered, answer, time.Now().UTC()); err != nil {
+		if item.Kind != store.InboxKindQuestion {
+			return "That item is an approval, not a question — reply /approve or /deny.", true
+		}
+		resolved, err := s.resolveInboxDecision(ctx, wsScope, item.ID, store.InboxStateAnswered, answer, time.Now().UTC())
+		if err != nil {
 			return "Failed: " + err.Error(), true
 		}
-		return "💬 Answered: " + item.Prompt, true
+		s.events.publish(wsScope, "inbox", map[string]any{
+			"id": resolved.ID, "state": string(resolved.State), "agent": resolved.AgentName, "runID": resolved.RunID,
+		})
+		return "💬 Answered: " + safeTruncate(item.Prompt, 300) + resume(resolved, store.InboxStateAnswered, answer), true
 	}
-	_ = dyn
-	_ = connName
 	return "", false
 }
 

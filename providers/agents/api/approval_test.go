@@ -255,8 +255,7 @@ func TestChannelApprovalReportsUnavailableDisclosureWithoutMutating(t *testing.T
 		t.Fatal(err)
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/", nil)
-	listed, handled := s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/inbox")
+	listed, handled := s.channelCommand(ctx, scope, nil, mkAgent(agentsv1alpha1.AutonomyAsk), "", "/inbox")
 	if !handled || !strings.Contains(listed, "Allow the tool?") {
 		t.Fatalf("inbox disclosure = %q", listed)
 	}
@@ -264,7 +263,7 @@ func TestChannelApprovalReportsUnavailableDisclosureWithoutMutating(t *testing.T
 		t.Fatalf("malformed arguments were rendered back to the channel: %q", listed)
 	}
 
-	reply, handled := s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/approve 1")
+	reply, handled := s.channelCommand(ctx, scope, nil, mkAgent(agentsv1alpha1.AutonomyAsk), "", "/approve 1")
 	if !handled || !strings.Contains(reply, approvalDisclosureUnavailableMessage) {
 		t.Fatalf("approve reply = %q", reply)
 	}
@@ -273,7 +272,7 @@ func TestChannelApprovalReportsUnavailableDisclosureWithoutMutating(t *testing.T
 		t.Fatalf("invalid channel approval mutated inbox state to %q (err %v)", item.State, err)
 	}
 
-	if reply, handled = s.channelCommand(req, scope, nil, "", mkAgent(agentsv1alpha1.AutonomyAsk), "", "/deny 1"); !handled || !strings.Contains(reply, "Denied") {
+	if reply, handled = s.channelCommand(ctx, scope, nil, mkAgent(agentsv1alpha1.AutonomyAsk), "", "/deny 1"); !handled || !strings.Contains(reply, "Denied") {
 		t.Fatalf("deny reply = %q", reply)
 	}
 	item, err = st.GetInboxItem(ctx, scope, "i1")
