@@ -23,8 +23,11 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
+	kt "k8s.io/client-go/testing"
 
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
@@ -106,6 +109,24 @@ func TestOrgProviderWorkspaceDoesNotExposeMissingOrPartialEdgeAnnotations(t *tes
 			got := orgProviderWorkspace(workspace)
 			if got.HostingEdgeName != "" || got.HostingEdgeWorkspace != "" {
 				t.Fatalf("provider workspace exposed incomplete edge metadata: %+v", got)
+			}
+		})
+	}
+}
+
+func TestOrgProviderWorkspaceReportsAcceptedRemovalBeforeWorkspaceDeletion(t *testing.T) {
+	for _, marker := range []string{"", "old-registration", "current-registration"} {
+		t.Run(marker, func(t *testing.T) {
+			workspace := &unstructured.Unstructured{Object: map[string]any{
+				"metadata": map[string]any{
+					"name": "app-studio", "uid": "current-registration",
+					"annotations": map[string]any{ProviderRegistrationDeletingAnnotation: marker},
+				},
+				"status": map[string]any{"phase": "Ready"},
+			}}
+			got := orgProviderWorkspace(workspace)
+			if got.Deleting != (marker == "current-registration") {
+				t.Fatalf("marker %q: deleting = %v", marker, got.Deleting)
 			}
 		})
 	}
@@ -566,5 +587,26 @@ func TestDeleteOrgProviderWorkspaceIfUIDRejectsReplacementBeforeDraining(t *test
 	}
 	if state.workspaceDeleted || state.exportDeleteCalls != 0 {
 		t.Fatal("stale cleanup touched the replacement registration")
+	}
+}
+
+func TestEnsureProviderWorkspaceDoesNotReserveQuotaAgain(t *testing.T) {
+	client := fake.NewSimpleDynamicClient(runtime.NewScheme())
+	desired := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "tenancy.kcp.io/v1alpha1", "kind": "Workspace", "metadata": map[string]any{"name": "kuery"}}}
+	creates := 0
+	client.PrependReactor("create", "workspaces", func(kt.Action) (bool, runtime.Object, error) { creates++; return false, nil, nil })
+	for i := 0; i < 20; i++ {
+		if err := ensureProviderWorkspace(t.Context(), client.Resource(workspaceGVR), desired); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if creates != 1 {
+		t.Fatalf("reserved quota %d times for one workspace", creates)
+	}
+	client.PrependReactor("get", "workspaces", func(kt.Action) (bool, runtime.Object, error) {
+		return true, nil, apierrors.NewForbidden(workspaceGVR.GroupResource(), "kuery", fmt.Errorf("denied"))
+	})
+	if err := ensureProviderWorkspace(t.Context(), client.Resource(workspaceGVR), desired); !apierrors.IsForbidden(err) || creates != 1 {
+		t.Fatalf("read error caused create: %v, creates %d", err, creates)
 	}
 }

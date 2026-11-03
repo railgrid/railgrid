@@ -225,10 +225,16 @@ type providerBackendDTO struct{}
 // projected here — they reach the user through the install instructions the
 // register endpoint returns, which are rendered per organization.
 type providerSelfHostingDTO struct {
-	Supported bool `json:"supported"`
+	Supported      bool                      `json:"supported"`
+	RequiredValues []providerInstallInputDTO `json:"requiredValues,omitempty"`
 	// DocsURL is provider-specific setup guidance, surfaced next to the
 	// self-host action.
 	DocsURL string `json:"docsURL,omitempty"`
+}
+
+type providerInstallInputDTO struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // providerHubDTO mirrors CatalogEntry.spec.hub: what the provider asks of the
@@ -491,6 +497,9 @@ func servingDTO(p Provider) *providerServingDTO {
 	// would be a loop.
 	if p.OrgUUID == "" && p.SelfHosting.Installable() {
 		out.SelfHosting = &providerSelfHostingDTO{Supported: true, DocsURL: selfHostingDocsURL(p)}
+		for _, input := range p.SelfHosting.InstallInputs() {
+			out.SelfHosting.RequiredValues = append(out.SelfHosting.RequiredValues, providerInstallInputDTO{Name: input.Name, Description: input.Description})
+		}
 	}
 	if out.UI == nil && out.Backend == nil && out.SelfHosting == nil {
 		return nil

@@ -412,3 +412,37 @@ func TestShellQuote(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallInputsExcludeHubOwnedAndFixedValues(t *testing.T) {
+	sh := baseSelfHosting()
+	sh.RequiredValues = []SelfHostingValue{{Name: "store.databaseURLSecretRef.name", Description: "Postgres Secret"}, {Name: "hub.url"}, {Name: "image.tag", Value: "pinned"}}
+	inputs := sh.InstallInputs()
+	if len(inputs) != 1 || inputs[0].Name != "store.databaseURLSecretRef.name" {
+		t.Fatalf("editable inputs = %+v", inputs)
+	}
+	for _, values := range []map[string]string{{"hub.url": "https://evil.test"}, {"image.tag": "other"}, {"unknown": "x"}, {"store.databaseURLSecretRef.name": "x\ny"}} {
+		if sh.ValidateInstallInputs(values) == nil {
+			t.Fatal("accepted fixed, undeclared, or multiline input")
+		}
+	}
+	if err := sh.ValidateInstallInputs(map[string]string{"store.databaseURLSecretRef.name": "postgres"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDevelopmentInstructionsDoNotWeakenProductionTLS(t *testing.T) {
+	for _, insecure := range []bool{false, true} {
+		opts := baseOptions()
+		opts.Insecure = insecure
+		instructions := RenderInstallInstructions(baseSelfHosting(), opts)
+		found := false
+		for _, value := range instructions.Values {
+			if value.Name == "hub.insecure" {
+				found = value.Value == "true"
+			}
+		}
+		if found != insecure {
+			t.Fatalf("development TLS value = %v, want %v", found, insecure)
+		}
+	}
+}

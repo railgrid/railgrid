@@ -19,6 +19,7 @@ package restapi
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -31,8 +32,9 @@ import (
 )
 
 type startInstallationRequest struct {
-	Edge  *EdgeTargetRef `json:"edge,omitempty"`
-	Retry bool           `json:"retry,omitempty"`
+	Edge   *EdgeTargetRef    `json:"edge,omitempty"`
+	Retry  bool              `json:"retry,omitempty"`
+	Values map[string]string `json:"values,omitempty"`
 }
 
 func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +54,17 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 	var req startInstallationRequest
 	if !decodeJSON(w, r, &req) {
 		return
+	}
+	if len(req.Values) > 0 {
+		if h.mgr.providers == nil {
+			writeError(w, newValidationError("provider recipe is unavailable"))
+			return
+		}
+		platform, found := h.mgr.providers.Get(name)
+		if !found || platform.SelfHosting.ValidateInstallInputs(req.Values) != nil {
+			writeError(w, newValidationError("installation settings must be declared, editable recipe values of at most 4096 bytes on one line"))
+			return
+		}
 	}
 	ws, err := h.mgr.orgProviders.GetOrgProviderWorkspace(r.Context(), tc.OrgUUID, name)
 	if err != nil {
@@ -115,7 +128,7 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 		needsPlan = status.Phase == "NotStarted"
 	}
 	if needsPlan {
-		recipe := h.installInstructions(r.Context(), tc.OrgUUID, name, name)
+		recipe := h.installInstructions(r.Context(), tc.OrgUUID, name, name, req.Values)
 		if recipe == nil {
 			writeError(w, newValidationError("this provider has no installable platform recipe"))
 			return
@@ -125,11 +138,14 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 			writeError(w, newValidationError(err.Error()))
 			return
 		}
+	} else if len(req.Values) > 0 {
+		writeError(w, newValidationError("installation settings are fixed for an existing attempt; retry uses its saved settings"))
+		return
 	}
 	// Registration and credentials remain server side for console installation.
 	// No workspace APIBinding or Enable endpoint is involved.
 	if _, err = h.mgr.orgProviders.EnsureOrgProviderWorkspace(r.Context(), tc.OrgUUID, name); err != nil {
-		writeError(w, err)
+		writeOrgProviderProvisionError(w, err)
 		return
 	}
 	if err = h.mgr.orgProviders.RecordProviderEdgeBinding(r.Context(), tc.OrgUUID, name, req.Edge.Workspace, req.Edge.Name); err != nil {
@@ -152,6 +168,14 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 		return
 	}
 	writeJSON(w, http.StatusAccepted, status)
+}
+
+func writeOrgProviderProvisionError(w http.ResponseWriter, err error) {
+	if apierrors.IsForbidden(err) && strings.Contains(err.Error(), "exceeded quota:") {
+		writeStatus(w, http.StatusForbidden, "Forbidden", "Provider registration was denied by the organization's provider allowance. Review existing registrations and the allowance with an organization admin. If the reported usage does not match the provider list, ask the hub operator to check quota accounting before retrying.")
+		return
+	}
+	writeError(w, err)
 }
 func (h *Handler) getOrgProviderInstallation(w http.ResponseWriter, r *http.Request) {
 	// Organization members can read progress without gaining permission to

@@ -8,6 +8,13 @@ truth and carries the full inline notes; this table summarises it.
 ## Installing
 
 A provider needs a kcp credential for the workspace it registers into.
+App Studio also requires Postgres for persistent chat messages. Create a Secret
+in `railgrid-provider-app-studio` containing the connection URL under the
+`database-url` key, then pass its name as `store.databaseURLSecretRef.name`.
+The Console Review form accepts this Secret name for managed installation.
+Provision the Secret in the provider namespace when the managed installer
+creates it, or use manual installation to prepare the namespace and Secret
+before running Helm. The installer does not provision Postgres.
 
 - **On the platform**, an admin mints it during provider onboarding.
 - **Running it yourself**, railgrid creates the workspace, mints the credential,
@@ -26,7 +33,8 @@ helm upgrade --install app-studio oci://ghcr.io/railgrid/charts/railgrid-app-stu
   --set hub.url=https://railgrid.example.com \
   --set hub.publicURL=https://railgrid.example.com \
   --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
-  --set catalogEntry.enabled=true
+  --set catalogEntry.enabled=true \
+  --set store.databaseURLSecretRef.name=app-studio-postgres
 ```
 
 ## Dependencies
@@ -39,7 +47,7 @@ does to each is declared as a **requirement** on the CatalogEntry
 mints a short-lived, per-Project/per-Studio identity carrying exactly those
 rules.
 
-Nothing here has to be configured, and in particular **no APIExport identity
+These workspace dependencies need no chart configuration, and in particular **no APIExport identity
 hashes**. An earlier cut of this chart took a permission claim on those
 first-party kinds instead, which meant pinning the serving APIExport's
 `identityHash` per installation — and because one export pins one identity for

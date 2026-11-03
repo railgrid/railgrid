@@ -30,7 +30,11 @@ Workspace and submits a Helm Job on the target cluster. Closing the console does
 not stop the Job. Its real Kubernetes status drives progress; successful Helm
 completion is followed by a separate provider health check through the Edge.
 A failed attempt can be retried with the same chart version and values. Concurrent
-starts reuse the active attempt. A disconnected Edge leaves status unavailable,
+starts reuse the active attempt. For user-supplied Secret references, the installer
+first prepares its owned namespace and pauses before creating a runner or Helm Job.
+Create the named Secrets in that namespace, then choose **Continue installation**.
+Do not pre-create an unowned namespace for a Console installation.
+A disconnected Edge leaves status unavailable,
 not successful; reconnect it before retrying.
 
 The runner has no local Kubernetes ServiceAccount token or cluster role. Its
@@ -51,7 +55,10 @@ unowned installation namespaces rather than overwriting an existing deployment.
 Removing a registration drains its APIExports and their cached resources before
 deleting the provider workspace. This keeps API discovery available to kcp's
 cache cleanup controller. Teardown is bounded and retryable; it does not force
-finalizers or uninstall the Helm release on the Edge.
+finalizers or uninstall the Helm release on the Edge. Retaining that Helm release
+does not preserve the API identity: a new registration has a new identity, so
+reinstallation does not restore access to resources under the deleted export.
+Export resources before removal and recreate them under the new copy.
 
 ## Relationship to provider-scoping.md
 
@@ -268,6 +275,27 @@ selfHosting:
       description: Address agents reach kcp through.
 ```
 
+Required values ending in `SecretRef.name` declare Kubernetes Secret names,
+never connection strings or credentials. Console prepares the installation's
+owned namespace, then pauses before Helm until those Secrets exist there. A
+sibling `SecretRef.key` declares the nonempty data key the chart will consume;
+include it explicitly in the recipe even when the chart has the same default:
+
+```yaml
+requiredValues:
+  - name: store.databaseURLSecretRef.name
+    description: Name of the Secret containing your Postgres connection URL.
+  - name: store.databaseURLSecretRef.key
+    value: database-url
+    description: Data key containing the Postgres connection URL.
+```
+
+The installer checks the declared key before continuing, without returning
+Secret contents to Console. It does not infer a key from the provider name or
+fetch chart defaults. Older recipes and saved plans without a sibling key keep
+their name-only existence check. For manual installation, create the Secret
+with the declared key in the chart's namespace before running Helm.
+
 A `requiredValue` with no `value` is one the installer must type. Prefer a
 placeholder wherever the hub already knows the answer — every value a person has
 to look up and paste is a chance to get it wrong.
@@ -371,8 +399,8 @@ All nine, each embedding its own chart values reference:
 | `code` | none |
 | `databricks` | none |
 | `kuery` | none — its edges claim is identity-agnostic and resolves to whichever edges copy each workspace bound |
-| `app-studio` | none — its infrastructure and code claims are identity-agnostic and resolve per workspace |
-| `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency, and the hub cannot invent your database |
+| `app-studio` | `store.databaseURLSecretRef.name` — Postgres stores persistent chat messages; the recipe declares data key `database-url` |
+| `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency; the recipe declares data key `database-url` |
 
 A recipe value is a literal or a `{{placeholder}}` the hub substitutes; there
 is nothing per-organization for the hub to resolve beyond those.

@@ -38,6 +38,7 @@ import (
 type fakeConsoleInstaller struct {
 	deny               bool
 	started            bool
+	plan               *providerinstall.Plan
 	identity           string
 	retry              bool
 	startHook          func(context.Context)
@@ -59,6 +60,7 @@ func (*fakeConsoleInstaller) Target(context.Context, string, string) (*kcp.EdgeR
 }
 func (f *fakeConsoleInstaller) Start(ctx context.Context, _, _ string, p *providerinstall.Plan, credential []byte, retry bool) (*providerinstall.Status, error) {
 	f.started = true
+	f.plan = p
 	if f.startHook != nil {
 		f.startHook(ctx)
 	}
@@ -342,6 +344,54 @@ func TestDeleteOrgProviderKeepsCleanedUIDAndIsIdempotentWhenAbsent(t *testing.T)
 			}
 			if len(ops.deleted) != 0 {
 				t.Fatal("stale or absent registration triggered an unfenced delete")
+			}
+		})
+	}
+}
+
+func TestConsoleInstallAcceptsOnlyDeclaredLiteralInputs(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		values   map[string]string
+		accepted bool
+	}{
+		{"declared", map[string]string{"store.databaseURLSecretRef.name": "postgres"}, true},
+		{"invalid Secret name", map[string]string{"store.databaseURLSecretRef.name": "pg,hub.url=evil"}, false},
+		{"fixed addressing", map[string]string{"hub.url": "https://evil.test"}, false},
+		{"undeclared", map[string]string{"arbitrary": "x"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+			user := &tenancyv1alpha1.User{ObjectMeta: metav1.ObjectMeta{Name: "alice"}, Spec: tenancyv1alpha1.UserSpec{RBACIdentity: "railgrid:alice@example.com"}}
+			mgr, workspaces, _ := newTestManager(t, org, user)
+			_ = workspaces.EnsureOrgMembership(context.Background(), "org-a", "alice", tenancyv1alpha1.MembershipRoleAdmin)
+			_ = workspaces.EnsureChildWorkspace(context.Background(), "org-a", "ws-1")
+			ops := &fakeOrgProviderOps{targets: []kcp.EdgeInstallTarget{connectedEdge("ws-1", "devbox")}}
+			mgr.WithOrgProviders(ops, &fakeCredMinter{})
+			registry := providers.NewRegistry()
+			registry.Upsert(providers.Provider{Name: "kuery", EndpointsValid: true, SelfHosting: &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{{Name: "store.databaseURLSecretRef.name"}}}})
+			installer := &fakeConsoleInstaller{}
+			mgr.WithProviderRegistry(registry).WithKubeconfig(KubeconfigConfig{HubExternalURL: "https://hub.test"}).WithProviderInstaller(installer)
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+			defer srv.Close()
+			body, _ := json.Marshal(map[string]any{"edge": map[string]string{"workspace": "ws-1", "name": "devbox"}, "values": tc.values})
+			res, err := http.Post(srv.URL+"/api/orgs/org-a/providers/kuery/installation", "application/json", strings.NewReader(string(body)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = res.Body.Close() }()
+			if !tc.accepted {
+				if res.StatusCode != http.StatusBadRequest || installer.started || len(ops.registered) != 0 {
+					t.Fatalf("invalid settings provisioned: status=%d", res.StatusCode)
+				}
+				return
+			}
+			if res.StatusCode != http.StatusAccepted || installer.plan == nil {
+				t.Fatalf("declared inputs rejected: %d", res.StatusCode)
+			}
+			store := installer.plan.Values["store"].(map[string]any)
+			if got := store["databaseURLSecretRef"].(map[string]any)["name"]; got != tc.values["store.databaseURLSecretRef.name"] {
+				t.Fatalf("setting changed: %v", got)
 			}
 		})
 	}

@@ -134,7 +134,7 @@ func (i *Installer) ensureInstallationNamespace(ctx context.Context, edge kubern
 		labels := ns.GetLabels()
 		oldOwner := labels[ownerLabel]
 		if oldOwner == "" {
-			return fmt.Errorf("namespace %s is unlabelled and cannot be adopted; use manual installation or choose a clean namespace", p.Namespace)
+			return apierrors.NewConflict(corev1.Resource("namespaces"), p.Namespace, fmt.Errorf("namespace %s is unlabelled and cannot be adopted; use manual installation or choose a clean namespace", p.Namespace))
 		}
 		if oldOwner != p.Owner {
 			for key, value := range identity {
@@ -308,6 +308,9 @@ func terminalStatus(p *Plan, ready bool) *Status {
 	if p.JobResult == string(batchv1.JobFailed) {
 		out.Phase = "Failed"
 		out.Message = "Helm installation failed. Retry the installation, or inspect the installer Job in your cluster."
+		if p.NamespaceAdmissionKnown && !p.NamespaceAdmitted {
+			out.Message = "Installation preparation stopped before the target namespace was admitted. Helm was not started. Check namespace permissions and ownership, then retry."
+		}
 		out.CanRetry = true
 		return out
 	}
@@ -503,6 +506,9 @@ func (i *Installer) ReconcileCleanup(ctx context.Context, org, name string) erro
 			return nil
 		}
 		return i.finishWorkspaceDeleteIntent(ctx, org, name, owner)
+	}
+	if p.AwaitingConfiguration {
+		return nil // No execution identity or Job exists until configuration is supplied.
 	}
 	if p.CleanedUp {
 		return nil

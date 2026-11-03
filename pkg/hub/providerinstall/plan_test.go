@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -29,9 +30,42 @@ import (
 
 	"helm.sh/helm/v3/pkg/chart"
 	"helm.sh/helm/v3/pkg/chartutil"
+	"sigs.k8s.io/yaml"
 
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
+
+func TestAppStudioRecipeRequiresMessageStoreBeforeChartResolution(t *testing.T) {
+	manifest, err := os.ReadFile("../../../providers/app-studio/manifest.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entry providersv1alpha1.CatalogEntry
+	if err := yaml.Unmarshal(manifest, &entry); err != nil {
+		t.Fatal(err)
+	}
+	recipe := entry.Spec.Serving.SelfHosting
+	sh := &providers.SelfHosting{Supported: true, ChartRepo: recipe.Chart.Repository, ChartName: recipe.Chart.Name}
+	for _, value := range recipe.RequiredValues {
+		sh.RequiredValues = append(sh.RequiredValues, providers.SelfHostingValue{Name: value.Name, Value: value.Value, Description: value.Description})
+	}
+	instructions := providers.RenderInstallInstructions(sh, providers.InstallOptions{
+		ProviderName: "app-studio", HubURL: "https://hub.test",
+		WorkspacePath: "root:railgrid:tenants:org:providers:app-studio",
+	})
+	transport := &countingRoundTripper{}
+	_, err = resolvePlan(context.Background(), instructions, planResolverConfig{transport: transport})
+	if err == nil || !strings.Contains(err.Error(), "store.databaseURLSecretRef.name") {
+		t.Fatalf("missing message store was not rejected: %v", err)
+	}
+	if transport.calls.Load() != 0 {
+		t.Fatal("missing prerequisite must be rejected before chart resolution")
+	}
+	if !strings.Contains(instructions.Steps[2].Command, "store.databaseURLSecretRef.name=") {
+		t.Fatal("manual instructions omitted the message-store Secret reference")
+	}
+}
 
 func TestResolvePlanCancellationBoundsRemoteChartRequestsAndCleansCache(t *testing.T) {
 	for _, chartRef := range []string{
@@ -164,4 +198,71 @@ type countingRoundTripper struct {
 func (r *countingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 	r.calls.Add(1)
 	return nil, errors.New("unexpected HTTP request")
+}
+
+func TestOperatorValuesRemainLiteralStrings(t *testing.T) {
+	const supplied = "pg,providerKubeconfig.secretName=foreign,{x}\\quoted\"value"
+	sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{{Name: "store.reference"}}}
+	instructions := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"store.reference": supplied}})
+	plan, err := ResolvePlan(context.Background(), instructions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := plan.Values["store"].(map[string]any)
+	if got := store["reference"]; got != supplied {
+		t.Fatalf("input did not survive literally: %q", got)
+	}
+	if got := plan.Values["providerKubeconfig"].(map[string]any)["secretName"]; got != providers.KubeconfigSecretName {
+		t.Fatalf("input overrode credential routing: %v", got)
+	}
+}
+
+func TestRequiredSecretReferencesAreValidatedAndRecorded(t *testing.T) {
+	for _, name := range []string{"database", "bad,name"} {
+		sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{{Name: "store.databaseURLSecretRef.name"}}}
+		instructions := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"store.databaseURLSecretRef.name": name}})
+		plan, err := ResolvePlan(context.Background(), instructions)
+		if name == "bad,name" {
+			if err == nil {
+				t.Fatal("invalid Secret name accepted")
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(plan.RequiredSecrets) != 1 || plan.RequiredSecrets[0] != name {
+			t.Fatalf("missing prerequisite: %#v", plan.RequiredSecrets)
+		}
+	}
+}
+
+func TestSecretReferenceKeyComesOnlyFromDeclaredSibling(t *testing.T) {
+	for _, key := range []string{"custom-key", "invalid/key", ""} {
+		t.Run(key, func(t *testing.T) {
+			sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{
+				{Name: "settings.anySecretRef.name"}, {Name: "settings.anySecretRef.key", Value: key},
+			}}
+			in := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"settings.anySecretRef.name": "configuration"}})
+			plan, err := ResolvePlan(context.Background(), in)
+			if key != "custom-key" {
+				if err == nil {
+					t.Fatal("invalid or unresolved declared key accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := plan.RequiredSecretKeys["configuration"]; len(got) != 1 || got[0] != key {
+				t.Fatalf("declared key not recorded: %#v", plan.RequiredSecretKeys)
+			}
+		})
+	}
+	sh := &providers.SelfHosting{Supported: true, ChartRepo: "oci://registry.test/charts", ChartName: "provider", ChartVersion: "1.0.0", RequiredValues: []providers.SelfHostingValue{{Name: "settings.anySecretRef.name"}}}
+	in := providers.RenderInstallInstructions(sh, providers.InstallOptions{ProviderName: "provider", HubURL: "https://hub.test", Values: map[string]string{"settings.anySecretRef.name": "configuration"}})
+	plan, err := ResolvePlan(context.Background(), in)
+	if err != nil || len(plan.RequiredSecretKeys) != 0 {
+		t.Fatalf("undeclared key inferred: %#v, %v", plan, err)
+	}
 }

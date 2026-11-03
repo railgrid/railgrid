@@ -53,6 +53,7 @@ const installProvider = computed(() => {
     displayName: providerDisplayName(existing ?? providers.byName(name) ?? { name }),
     resume: !!existing,
     manual: !!existing && route.query.manual === '1',
+    requiredValues: providers.byName(name)?.serving?.selfHosting?.requiredValues,
   }
 })
 const canManageSelfHostedCredentials = computed(() => tenant.activeOrg?.role === 'admin' || tenant.activeOrg?.catalogEntryCreation === 'members')
@@ -202,6 +203,10 @@ function cancelInstall() {
 
 function resumeManualInstall() {
   patchProviderQuery({ manual: '1' }, true)
+}
+
+function resumeConsoleInstall() {
+  patchProviderQuery({ manual: null }, true)
 }
 
 function clearProviderPageRouteState() {
@@ -451,7 +456,7 @@ async function removeSelfHosted(name: string) {
     try {
       confirmed = await confirmDialog({
         title: `Remove self-hosted "${name}"?`,
-        message: 'This deletes the organization’s provider workspace, credential, and API registration. It does not uninstall the Helm release or workloads from your cluster. Workspaces that enabled this provider will stop working until you disable it there.',
+        message: 'Back up provider resources first. You’ll lose access to them, even after reinstalling.\nHelm releases and workloads must be uninstalled separately.',
         confirmLabel: 'Remove',
         danger: true,
       })
@@ -855,7 +860,7 @@ async function onDisable(p: ProviderDTO) {
       migrationConfirming.value = { ...migrationConfirming.value, [p.name]: true }
       const confirmed = await confirmDialog({
         title: `Disable the platform copy of ${providerDisplayName(p)}?`,
-        message: 'This workspace is currently bound to the platform copy. Disabling removes that binding and can delete resources created through the provider. After disabling completes, use Enable on this Catalog entry to bind the workspace to your organization’s copy. Back up any important resources before proceeding.',
+        message: 'This deletes this workspace’s provider resources. Export them first.\nThen enable your self-hosted copy and recreate the resources. Nothing is migrated automatically.',
         confirmLabel: 'Disable platform copy',
         danger: true,
       })
@@ -907,8 +912,10 @@ function dependencyNotice(p: ProviderDTO): string {
       :display-name="providerDisplayName(installProvider)"
       :resume="installProvider.resume"
       :manual="installProvider.manual"
+      :required-values="installProvider.requiredValues"
       @cancel="cancelInstall"
       @manual="resumeManualInstall"
+      @console="resumeConsoleInstall"
       @completed="finishInstall"
     />
     <div v-else>
@@ -1065,7 +1072,7 @@ function dependencyNotice(p: ProviderDTO): string {
                         : 'border border-warning/30 bg-warning-subtle text-warning'
                     "
                   >
-                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}
+                    {{ p.deleting || selfHostRemoval[p.name] === 'requesting' || selfHostRemoval[p.name] === 'deleting' ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration' }}
                   </span>
                   <span
                     v-if="p.upgradeAvailable && !p.deleting"
@@ -1087,7 +1094,7 @@ function dependencyNotice(p: ProviderDTO): string {
                       v-if="p.upgradeAvailable && p.availableVersion"
                     > · published {{ p.availableVersion }}</span>
                   </span>
-                  <span>Health: {{ p.deleting ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting install' }}</span>
+                  <span>Health: {{ p.deleting ? 'Removing' : p.ready ? 'Ready' : p.registered ? 'Not ready' : 'Awaiting registration' }}</span>
                 </p>
                 <!-- The gap between "workspace exists" and "chart installed" is
                      where a half-finished install sits; say so explicitly. -->
@@ -1099,7 +1106,7 @@ function dependencyNotice(p: ProviderDTO): string {
                 </p>
                 <p v-else-if="!p.registered" class="mt-1 text-[11px] text-text-muted">
                   The workspace is ready but the provider has not registered itself yet.
-                  Continue installation to run the commands and watch for readiness.
+                  Continue installation to check progress and readiness.
                 </p>
                 <p v-else-if="!p.ready" class="mt-1 text-[11px] text-text-muted">
                   The provider registered, but is not ready. Resume to check its status and installation.

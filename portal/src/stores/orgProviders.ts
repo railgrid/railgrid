@@ -48,7 +48,7 @@ export interface InstallInstructions {
 }
 
 export interface ProviderInstallation {
-  phase: 'NotStarted' | 'Preparing' | 'Queued' | 'Installing' | 'Checking' | 'Ready' | 'Failed'
+  phase: 'NotStarted' | 'AwaitingConfiguration' | 'Preparing' | 'Queued' | 'Installing' | 'Checking' | 'Ready' | 'Failed'
   message: string
   namespace?: string
   job?: string
@@ -72,8 +72,8 @@ export interface OrgProvider {
   // False while the workspace exists but the chart has not been installed yet —
   // the state a half-finished install sits in.
   registered: boolean
-  // True while kcp is deleting this provider workspace. The list keeps this
-  // row until the workspace and its owned APIs have finished deletion.
+  // True once removal is accepted, including installer and APIExport cleanup
+  // before kcp receives the workspace DELETE. The row remains until it is gone.
   deleting?: boolean
   displayName?: string
   description?: string
@@ -324,12 +324,12 @@ export const useOrgProvidersStore = defineStore('orgProviders', () => {
     return result
   }
 
-  async function startInstallation(name: string, edge?: Pick<EdgeInstallTarget, 'workspace' | 'name'>, retry = false): Promise<ProviderInstallation> {
+  async function startInstallation(name: string, edge?: Pick<EdgeInstallTarget, 'workspace' | 'name'>, retry = false, values?: Record<string, string>): Promise<ProviderInstallation> {
     const { orgUUID } = readTenantSelection()
     const generation = scopeGeneration
     const url = orgURL(`/${encodeURIComponent(name)}/installation`)
     if (!orgUUID || !url) throw new Error('select an organization first')
-    const res = await authFetch(url, { method: 'POST', tenant: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ edge: edge ? { workspace: edge.workspace, name: edge.name } : undefined, retry }) })
+    const res = await authFetch(url, { method: 'POST', tenant: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ edge: edge ? { workspace: edge.workspace, name: edge.name } : undefined, retry, values }) })
     assertCurrentOrganization(orgUUID, generation, `starting installation of ${name}`)
     if (!res.ok) throw await providerRequestError(res, `Could not install ${name}`)
     const result = await res.json() as ProviderInstallation

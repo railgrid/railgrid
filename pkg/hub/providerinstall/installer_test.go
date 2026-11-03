@@ -817,6 +817,40 @@ func TestPrepareDeleteAfterRejectedNamespaceOnlyRevokesOwnedLocalCredentials(t *
 	}
 }
 
+func TestRejectedNamespaceFailureDoesNotReportHelmFailure(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, p := fixture(t)
+	if _, err := edge.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: p.Namespace}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", p, []byte("credential"), false); err == nil {
+		t.Fatal("expected unowned namespace rejection")
+	}
+	if err := i.ReconcileCleanup(ctx, "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := i.Status(ctx, "org", "kuery", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Phase != "Failed" || !status.CanRetry || !strings.Contains(status.Message, "Helm was not started") || strings.Contains(status.Message, "Helm installation failed") {
+		t.Fatalf("unexpected namespace preparation status: %+v", status)
+	}
+	jobs, err := edge.BatchV1().Jobs(p.Namespace).List(ctx, metav1.ListOptions{})
+	if err != nil || len(jobs.Items) != 0 {
+		t.Fatalf("namespace refusal created a Job: jobs=%v err=%v", jobs, err)
+	}
+	// After the operator resolves the namespace collision, the persisted
+	// preparation failure must still support the normal retry path.
+	if err := edge.CoreV1().Namespaces().Delete(ctx, p.Namespace, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	retried, err := i.Start(ctx, "org", "kuery", nil, []byte("credential"), true)
+	if err != nil || retried.Attempt != 2 || retried.Phase == "Failed" {
+		t.Fatalf("preparation failure could not be retried: status=%+v err=%v", retried, err)
+	}
+}
+
 func TestNamespaceAdoptionWaitsForPriorAttemptToStop(t *testing.T) {
 	ctx := context.Background()
 	i, edge, _, p := fixture(t)
@@ -1215,5 +1249,200 @@ func TestRetryAcceptsPlanStoredBeforePreparationLeaseWasAdded(t *testing.T) {
 	}
 	if retried.Attempt != 2 {
 		t.Fatalf("unexpected attempt: %+v", retried)
+	}
+}
+
+func TestConfigurationPausePrecedesExecutionAndSurvivesCleanup(t *testing.T) {
+	i, edge, local, plan := fixture(t)
+	plan.RequiredSecrets = []string{"database"}
+	status, err := i.Start(context.Background(), "org", "kuery", plan, []byte("provider-credential"), false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("expected configuration pause: %#v %v", status, err)
+	}
+	jobs, _ := edge.BatchV1().Jobs(plan.Namespace).List(context.Background(), metav1.ListOptions{})
+	accounts, _ := local.CoreV1().ServiceAccounts("default").List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 0 || len(accounts.Items) != 0 {
+		t.Fatal("created execution resources before configuration")
+	}
+	if err := i.ReconcileCleanup(context.Background(), "org", "kuery"); err != nil {
+		t.Fatal(err)
+	}
+	status, err = i.Status(context.Background(), "org", "kuery", false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("pause did not survive reconciliation: %#v %v", status, err)
+	}
+	if _, err := edge.CoreV1().Secrets(plan.Namespace).Create(context.Background(), &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "database"}}, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = i.Start(context.Background(), "org", "kuery", nil, []byte("provider-credential"), true)
+	if err != nil || status.Phase == "AwaitingConfiguration" {
+		t.Fatalf("configuration did not resume: %#v %v", status, err)
+	}
+	jobs, _ = edge.BatchV1().Jobs(plan.Namespace).List(context.Background(), metav1.ListOptions{})
+	if len(jobs.Items) != 1 {
+		t.Fatalf("wanted exactly one installer Job, got %d", len(jobs.Items))
+	}
+}
+
+func TestConfigurationPauseRejectsNamespaceReplacement(t *testing.T) {
+	for _, change := range []string{"owner", "uid"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			i, edge, local, plan := fixture(t)
+			plan.RequiredSecrets = []string{"database"}
+			edge.PrependReactor("create", "namespaces", func(a kt.Action) (bool, runtime.Object, error) {
+				a.(kt.CreateAction).GetObject().(*corev1.Namespace).UID = "original-namespace"
+				return false, nil, nil
+			})
+			status, err := i.Start(ctx, "org", "kuery", plan, []byte("provider-credential"), false)
+			if err != nil || status.Phase != "AwaitingConfiguration" {
+				t.Fatalf("expected configuration pause: %#v %v", status, err)
+			}
+			ns, err := edge.CoreV1().Namespaces().Get(ctx, plan.Namespace, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if change == "owner" {
+				ns.Labels[ownerLabel] = "another-registration"
+			} else {
+				// Model observing a replacement namespace with identical labels.
+				ns.UID = "replacement-namespace"
+			}
+			if _, err := edge.CoreV1().Namespaces().Update(ctx, ns, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := i.Status(ctx, "org", "kuery", false); err == nil {
+				t.Fatal("status accepted changed namespace ownership")
+			}
+			if _, err := i.Start(ctx, "org", "kuery", nil, []byte("provider-credential"), true); err == nil {
+				t.Fatal("resume accepted changed namespace ownership")
+			}
+			for _, action := range append(edge.Actions(), local.Actions()...) {
+				if action.GetVerb() == "create" && (action.GetResource().Resource == "jobs" || action.GetResource().Resource == "serviceaccounts") {
+					t.Fatalf("executed after namespace ownership changed: %#v", action)
+				}
+			}
+		})
+	}
+}
+
+func TestConfigurationPauseCanBeRemovedWithoutExecution(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, plan := fixture(t)
+	plan.RequiredSecrets = []string{"database"}
+	status, err := i.Start(ctx, "org", "kuery", plan, []byte("provider-credential"), false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("expected configuration pause: %#v %v", status, err)
+	}
+	if err := i.PrepareDelete(ctx, "org", "kuery"); err != nil {
+		t.Fatalf("could not remove paused registration: %v", err)
+	}
+	stored, _, err := i.readPlan(ctx, "org", "kuery")
+	if err != nil || stored == nil || !stored.Deleting || !stored.CleanedUp {
+		t.Fatalf("paused removal was not fenced and cleaned: %#v %v", stored, err)
+	}
+	if _, err := i.Start(ctx, "org", "kuery", nil, []byte("provider-credential"), true); err == nil {
+		t.Fatal("removed registration could resume installation")
+	}
+	for _, action := range append(edge.Actions(), local.Actions()...) {
+		if action.GetVerb() == "create" && (action.GetResource().Resource == "jobs" || action.GetResource().Resource == "serviceaccounts") {
+			t.Fatalf("created execution resources for paused registration: %#v", action)
+		}
+	}
+}
+
+func TestConfigurationPauseRepreparesMissingNamespace(t *testing.T) {
+	ctx := context.Background()
+	i, edge, local, plan := fixture(t)
+	plan.RequiredSecrets = []string{"database"}
+	status, err := i.Start(ctx, "org", "kuery", plan, []byte("provider-credential"), false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("expected configuration pause: %#v %v", status, err)
+	}
+	if err := edge.CoreV1().Secrets(plan.Namespace).Delete(ctx, providers.KubeconfigSecretName, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := edge.CoreV1().Namespaces().Delete(ctx, plan.Namespace, metav1.DeleteOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	status, err = i.Status(ctx, "org", "kuery", false)
+	if err != nil || status.Phase != "AwaitingConfiguration" || !status.CanRetry {
+		t.Fatalf("missing namespace did not offer re-preparation: %#v %v", status, err)
+	}
+	status, err = i.Start(ctx, "org", "kuery", nil, []byte("provider-credential"), true)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("missing namespace could not be prepared again: %#v %v", status, err)
+	}
+	ns, err := edge.CoreV1().Namespaces().Get(ctx, plan.Namespace, metav1.GetOptions{})
+	if err != nil || ns.Labels[ownerLabel] == "" {
+		t.Fatalf("namespace was not re-prepared with ownership: %#v %v", ns, err)
+	}
+	for _, action := range append(edge.Actions(), local.Actions()...) {
+		if action.GetVerb() == "create" && (action.GetResource().Resource == "jobs" || action.GetResource().Resource == "serviceaccounts") {
+			t.Fatalf("executed before replacement namespace was configured: %#v", action)
+		}
+	}
+}
+
+func TestConfigurationPauseRequiresDeclaredSecretKeyBeforeHelm(t *testing.T) {
+	ctx := context.Background()
+	i, edge, _, plan := fixture(t)
+	plan.RequiredSecrets = []string{"database"}
+	plan.RequiredSecretKeys = map[string][]string{"database": {"connection-url"}}
+	status, err := i.Start(ctx, "org", "kuery", plan, []byte("provider-credential"), false)
+	if err != nil || status.Phase != "AwaitingConfiguration" {
+		t.Fatalf("initial pause: %#v %v", status, err)
+	}
+	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "database"}, Data: map[string][]byte{"wrong-key": []byte("private-database-credential")}}
+	secret, err = edge.CoreV1().Secrets(plan.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, correct := range []bool{false, true} {
+		if correct {
+			secret.Data["connection-url"] = []byte("private-database-credential")
+			if _, err := edge.CoreV1().Secrets(plan.Namespace).Update(ctx, secret, metav1.UpdateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		status, err = i.Start(ctx, "org", "kuery", nil, []byte("provider-credential"), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (status.Phase == "AwaitingConfiguration") == correct {
+			t.Fatalf("configuration readiness incorrect: correct=%t status=%#v", correct, status)
+		}
+		if strings.Contains(status.Message, "private-database-credential") {
+			t.Fatal("Secret value leaked in status")
+		}
+		jobs, err := edge.BatchV1().Jobs(plan.Namespace).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if correct {
+			want = 1
+		}
+		if len(jobs.Items) != want {
+			t.Fatalf("jobs = %d, want %d", len(jobs.Items), want)
+		}
+	}
+}
+
+func TestConfigurationSecretEmptyKeyIsNotReady(t *testing.T) {
+	edge := fake.NewSimpleClientset(&corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "database", Namespace: "owned"}, Data: map[string][]byte{"connection-url": {}}})
+	plan := &Plan{Namespace: "owned", RequiredSecrets: []string{"database"}, RequiredSecretKeys: map[string][]string{"database": {"connection-url"}}}
+	missing, err := missingConfigurationSecrets(context.Background(), edge, plan)
+	if err != nil || len(missing) != 1 || !strings.Contains(missing[0], "connection-url") {
+		t.Fatalf("empty key accepted: %v %v", missing, err)
+	}
+	// Persisted plans without the new optional map retain their name-only contract.
+	plan = new(Plan)
+	if err := json.Unmarshal([]byte(`{"namespace":"owned","requiredSecrets":["database"]}`), plan); err != nil {
+		t.Fatal(err)
+	}
+	missing, err = missingConfigurationSecrets(context.Background(), edge, plan)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("legacy plan changed behavior: %v %v", missing, err)
 	}
 }
