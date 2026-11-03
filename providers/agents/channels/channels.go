@@ -70,8 +70,7 @@ func messageLimit(typ string) int {
 // partial delivery is still a prefix of the real answer rather than a mix.
 func Send(ctx context.Context, m Message) error {
 	typ := strings.TrimSpace(m.Type)
-	parts := chunkMessage(m.Text, messageLimit(typ))
-	for _, part := range parts {
+	for _, part := range Split(typ, m.Text) {
 		if strings.TrimSpace(part) == "" {
 			continue
 		}
@@ -82,6 +81,13 @@ func Send(ctx context.Context, m Message) error {
 		}
 	}
 	return nil
+}
+
+// Split cuts text into the messages a channel type accepts, the way Send
+// does. It is for a caller that delivers on its own transport — the Discord
+// gateway session replying to a command — but must honour the same limit.
+func Split(typ, text string) []string {
+	return chunkMessage(text, messageLimit(strings.TrimSpace(typ)))
 }
 
 func sendOne(ctx context.Context, typ string, m Message) error {
