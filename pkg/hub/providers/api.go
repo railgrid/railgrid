@@ -359,48 +359,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 
 		items := make([]providerDTO, 0, len(entries))
 		for _, p := range entries {
-			displayName := p.DisplayName
-			if displayName == "" {
-				displayName = p.Name
-			}
-			iconURL := p.IconURL
-			// The default points at the hub's UI proxy, which resolves provider
-			// names globally — so it is only meaningful for platform providers.
-			// An org-owned provider that declares no explicit iconURL gets none,
-			// and the portal falls back to its generic provider glyph.
-			if iconURL == "" && p.UIURL != nil && p.OrgUUID == "" {
-				iconURL = "/ui/providers/" + p.Name + "/icon.svg"
-			}
-			// Only a platform provider can be a builtin — builtins ship inside
-			// the hub binary, so an Org cannot register one, and matching an
-			// org-owned provider by name here would wrongly grant it the
-			// builtin affordances (no Enable dialog).
-			_, isBuiltin := BuiltinByName(p.Name)
-			isBuiltin = isBuiltin && p.OrgUUID == ""
-			scope := ScopeGlobal
-			if p.OrgUUID != "" {
-				scope = ScopeOrg
-			}
-			ready, readinessReason, readinessMessage := p.Readiness()
-			items = append(items, providerDTO{
-				Name:             p.Name,
-				Scope:            scope,
-				OwnerOrg:         p.OrgUUID,
-				ShadowsPlatform:  p.ShadowsPlatform,
-				DisplayName:      displayName,
-				Description:      p.Description,
-				Version:          p.Version,
-				Category:         p.Category,
-				IconURL:          iconURL,
-				Ready:            ready,
-				ReadinessReason:  readinessReason,
-				ReadinessMessage: readinessMessage,
-				Builtin:          isBuiltin,
-				Export:           exportDTO(p),
-				Requires:         cloneProviderRequirements(p.Requires),
-				Serving:          servingDTO(p),
-				Hub:              hubDTO(p),
-			})
+			items = append(items, PresentProvider(p))
 		}
 
 		// Surface the canonical category registry so the portal can
@@ -418,6 +377,57 @@ func listHandlerFunc(reg *Registry) http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(listResponse{Items: items, Categories: cats})
 	})
+}
+
+// ProviderDTO is the stable portal-facing provider presentation. It excludes
+// backend addresses and credentials and is shared by catalog and bound-copy views.
+type ProviderDTO = providerDTO
+
+// PresentProvider projects one exact registered copy without resolving its name
+// through catalog shadowing. Callers select and authorize the copy first.
+func PresentProvider(p Provider) ProviderDTO {
+	displayName := p.DisplayName
+	if displayName == "" {
+		displayName = p.Name
+	}
+	iconURL := p.IconURL
+	// The default points at the hub's UI proxy, which resolves provider
+	// names globally — so it is only meaningful for platform providers.
+	// An org-owned provider that declares no explicit iconURL gets none,
+	// and the portal falls back to its generic provider glyph.
+	if iconURL == "" && p.UIURL != nil && p.OrgUUID == "" {
+		iconURL = "/ui/providers/" + p.Name + "/icon.svg"
+	}
+	// Only a platform provider can be a builtin — builtins ship inside
+	// the hub binary, so an Org cannot register one, and matching an
+	// org-owned provider by name here would wrongly grant it the
+	// builtin affordances (no Enable dialog).
+	_, isBuiltin := BuiltinByName(p.Name)
+	isBuiltin = isBuiltin && p.OrgUUID == ""
+	scope := ScopeGlobal
+	if p.OrgUUID != "" {
+		scope = ScopeOrg
+	}
+	ready, readinessReason, readinessMessage := p.Readiness()
+	return ProviderDTO{
+		Name:             p.Name,
+		Scope:            scope,
+		OwnerOrg:         p.OrgUUID,
+		ShadowsPlatform:  p.ShadowsPlatform,
+		DisplayName:      displayName,
+		Description:      p.Description,
+		Version:          p.Version,
+		Category:         p.Category,
+		IconURL:          iconURL,
+		Ready:            ready,
+		ReadinessReason:  readinessReason,
+		ReadinessMessage: readinessMessage,
+		Builtin:          isBuiltin,
+		Export:           exportDTO(p),
+		Requires:         cloneProviderRequirements(p.Requires),
+		Serving:          servingDTO(p),
+		Hub:              hubDTO(p),
+	}
 }
 
 // exportDTO projects the provider's declared export surface. Nil for a

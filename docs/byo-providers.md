@@ -84,8 +84,9 @@ Still unimplemented from that doc, and still relevant here: the per-Org `bind`
 ClusterRole (P-3) and `MaximalPermissionPolicy`. In a workspace where an org
 entry shadows a platform provider, the Catalog distinguishes which copy the
 current APIBinding actually uses. Disabling the platform copy requires a
-confirmation that warns it can delete provider resources; enabling the org copy
-is a separate action after Disable completes.
+confirmation explaining that the current Delete policy deletes provider resources.
+There is no automatic data migration: export what is needed and recreate it under
+the org copy after Disable completes and that copy is enabled.
 
 ## Workspace layout
 
@@ -663,8 +664,14 @@ to **Self-hosted**. That tag describes the catalog entries; it does not claim
 existing bindings use the org copy. A separate status uses the current,
 workspace-scoped binding projection to say **Enabled · platform copy** or
 **Enabled · org copy**, and reports the copy as unknown while that projection is
-stale or unavailable. The **Open** action is offered only when the current
-workspace actually binds the org copy.
+stale or unavailable. Navigation and **Open** use the exact provider copy selected
+by that binding, including a platform copy enabled before the org started
+self-hosting. The existing enabled-provider response includes the bound copy's
+UI metadata and integrity pin; the merged catalog still offers the org copy for
+new Enable operations. Authenticated workspace backend requests use the same
+binding coordinates. An unavailable or removed copy stays visible but cannot
+silently load a same-named replacement. Registering an org copy therefore does
+not require disabling a working platform binding to keep using its Console UI.
 
 Names must be RFC1123 labels: the name becomes a kcp workspace name and appears
 in URL paths.

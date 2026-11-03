@@ -314,16 +314,15 @@ async function finishInstall(name: string) {
   if (dialogScope.value === targetScope) selfHostedHeading.value?.focus()
 }
 
-// The hub-owned catalog is authoritative for whether the Edges prerequisite
-// exists and is ready to open. Do not manufacture a provider route when the
-// entry is absent: ProviderFrame can explain a known-but-unready provider, but
-// it cannot make an unavailable catalog entry actionable.
+// Existing workspace connections follow their native Edges binding. An org
+// installation offer cannot hide a healthy platform copy or stand in for an
+// unavailable bound copy. Unbound workspaces still use the catalog offer.
 type EdgesSelfHostState = 'absent' | 'unready' | 'ready'
 
-const edgesProvider = computed(() => providers.byName('edges'))
+const edgesProvider = computed(() => providers.workspaceProvider('edges'))
 const edgesSelfHostState = computed<EdgesSelfHostState>(() => {
   const edges = edgesProvider.value
-  if (!edges) return 'absent'
+  if (!edges) return providers.isEnabled('edges') ? 'unready' : 'absent'
   return edges.ready && !!edges.serving?.ui ? 'ready' : 'unready'
 })
 
@@ -372,8 +371,23 @@ function canDisableFromThisProjection(p: ProviderDTO): boolean {
     : true
 }
 
+function bindingUnavailable(p: ProviderDTO): boolean {
+  const binding = currentWorkspaceBinding(p)
+  return !!binding && (binding.ready === false || !providers.workspaceProvider(p.name))
+}
+
+function canOpenProvider(p: ProviderDTO): boolean {
+  if (providers.isEnabled(p.name)) {
+    const bound = providers.workspaceProvider(p.name)
+    return bindingProjectionIsCurrent() && !bindingUnavailable(p) && !!bound?.ready && !!bound.serving?.ui
+  }
+  return !!p.ready && !!p.serving?.ui && !p.export?.name
+}
+
 function providerStatusLabel(p: ProviderDTO): string {
-  if (!p.ready) {
+  const binding = currentWorkspaceBinding(p)
+  if (bindingUnavailable(p)) return binding?.selfHosted ? 'Unavailable · org copy' : 'Unavailable · platform copy'
+  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) {
     const copy = providers.isSelfManaged(p) ? workspaceProviderCopy(p) : 'not-self-hosted'
     if (copy === 'platform') return 'Not ready · platform copy'
     if (copy === 'organization') return 'Not ready · org copy'
@@ -392,7 +406,8 @@ function providerStatusLabel(p: ProviderDTO): string {
 }
 
 function providerStatusClass(p: ProviderDTO): string {
-  if (!p.ready) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (bindingUnavailable(p)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (p.serving?.ui?.builtinRoute) return 'border border-border-default bg-surface-overlay text-text-secondary'
   if (providers.isDisabling(p.name)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (providers.isEnabled(p.name)) {
@@ -1354,6 +1369,10 @@ function dependencyNotice(p: ProviderDTO): string {
             </p>
           </div>
 
+          <p v-if="bindingUnavailable(p)" class="mt-3 text-xs text-warning" role="alert">
+            {{ currentWorkspaceBinding(p)?.unavailable || 'This workspace’s provider binding is unavailable. Disable it before enabling another copy.' }}
+          </p>
+
           <!-- An enabled provider that declares hub capabilities nobody here
                accepted (new in its catalog entry, or declined) works without
                them until someone reviews the request. -->
@@ -1475,7 +1494,7 @@ function dependencyNotice(p: ProviderDTO): string {
                  route; third-party load via /providers/{name} →
                  ProviderFrame. -->
             <router-link
-              v-if="p.serving?.ui && p.ready && (!p.export?.name || (providers.isEnabled(p.name) && (!providers.isSelfManaged(p) || workspaceProviderCopy(p) === 'organization')))"
+              v-if="canOpenProvider(p)"
               :to="scopePath(p.serving?.ui?.builtinRoute ? `/${p.serving.ui.builtinRoute}` : `/providers/${p.name}`)"
               class="k-btn k-btn--ghost inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium text-accent transition-colors hover:bg-accent-subtle"
             >

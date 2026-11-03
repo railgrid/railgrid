@@ -45,12 +45,15 @@ func hubAccessTestManager(t *testing.T) (*Manager, *fakeOps) {
 	mgr, ops, _ := newTestManager(t)
 	reg := hubproviders.NewRegistry()
 	reg.Upsert(hubproviders.Provider{
-		Name:          "app-studio",
-		APIExportPath: "root:providers:app-studio",
-		APIExportName: "app-studio",
-		HubAccess:     appStudioHubAccess,
+		Name:             "app-studio",
+		APIExportPath:    "root:providers:app-studio",
+		APIExportName:    "app-studio",
+		WorkspaceCluster: "app-studio-export-cluster",
+		HubAccess:        appStudioHubAccess,
 	})
 	mgr.WithProviderRegistry(reg)
+	copy, _ := reg.Get("app-studio")
+	mgr.bootstrapper = &exactTestBindingOps{fakeOps: ops, copy: copy}
 	mgr.WithHubAccessGrants(hubaccess.NewStore(mgr.client), false)
 	return mgr, ops
 }

@@ -20,9 +20,9 @@ const source = await readFile(new URL('./ProvidersPage.vue', import.meta.url), '
 const providerStoreSource = await readFile(new URL('../stores/providers.ts', import.meta.url), 'utf8')
 const orgProviderTypes = await readFile(new URL('../stores/orgProviders.ts', import.meta.url), 'utf8')
 
-test('self-hosting Edges prerequisite uses catalog-owned availability states', () => {
-  assert.match(source, /const edgesProvider = computed\(\(\) => providers\.byName\('edges'\)\)/)
-  assert.match(source, /if \(!edges\) return 'absent'/)
+test('self-hosting Edges prerequisite uses workspace-bound availability states', () => {
+  assert.match(source, /const edgesProvider = computed\(\(\) => providers\.workspaceProvider\('edges'\)\)/)
+  assert.match(source, /if \(!edges\) return providers\.isEnabled\('edges'\) \? 'unready' : 'absent'/)
   assert.match(source, /return edges\.ready && !!edges\.serving\?\.ui \? 'ready' : 'unready'/)
 })
 
@@ -79,9 +79,9 @@ test('the org-shadow card reports the actual current workspace binding copy', ()
   assert.match(source, /const binding = currentWorkspaceBinding\(p\)[\s\S]*return binding\.selfHosted \? 'organization' : 'platform'/)
   assert.match(source, /copy === 'platform'\) return 'Enabled · platform copy'/)
   assert.match(source, /copy === 'organization'\) return 'Enabled · org copy'/)
-  assert.match(source, /if \(!p\.ready\)[\s\S]*copy === 'platform'\) return 'Not ready · platform copy'[\s\S]*copy === 'organization'\) return 'Not ready · org copy'/)
+  assert.match(source, /currentWorkspaceBinding\(p\) \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
   assert.match(source, /Your organization’s entry shadows the platform entry, but existing workspace bindings may still use either copy\./)
-  assert.match(source, /workspaceProviderCopy\(p\) === 'organization'/, 'Open is offered only when the current workspace actually uses the org copy')
+  assert.match(source, /v-if="canOpenProvider\(p\)"/, 'Open uses the actual bound copy, including retained platform bindings')
 })
 
 test('disabling an org-shadowed platform binding requires explicit confirmation and fresh binding identity', () => {

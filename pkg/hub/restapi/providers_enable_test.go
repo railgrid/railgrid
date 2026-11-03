@@ -17,12 +17,16 @@ limitations under the License.
 package restapi
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
@@ -51,12 +55,15 @@ func compositionTestManager(t *testing.T) (*Manager, *fakeOps) {
 	mgr, ops, _ := newTestManager(t)
 	reg := hubproviders.NewRegistry()
 	reg.Upsert(hubproviders.Provider{
-		Name:          "app-studio",
-		APIExportPath: "root:providers:app-studio",
-		APIExportName: "app-studio",
-		Requires:      appStudioComposes,
+		Name:             "app-studio",
+		APIExportPath:    "root:providers:app-studio",
+		APIExportName:    "app-studio",
+		WorkspaceCluster: "app-studio-export-cluster",
+		Requires:         appStudioComposes,
 	})
 	mgr.WithProviderRegistry(reg)
+	copy, _ := reg.Get("app-studio")
+	mgr.bootstrapper = &exactTestBindingOps{fakeOps: ops, copy: copy}
 	mgr.WithHubAccessGrants(hubaccess.NewStore(mgr.client), false)
 	// The dependencies are already enabled here, so the enable-time
 	// dependency gate is satisfied and the test is about consent only.
@@ -271,5 +278,188 @@ func TestEnableProvider_NoCompositionsReportsNone(t *testing.T) {
 	}
 	if appStudioGrant(t, mgr) != nil {
 		t.Fatal("a provider declaring nothing still got a grant")
+	}
+}
+
+// The catalog intentionally shadows platform entries. Existing bindings must
+// still present the exact platform bundle and SRI until a user changes them.
+func TestEnabledProviderPresentationUsesExactBoundCopy(t *testing.T) {
+	platform := hubproviders.Provider{Name: "edges", DisplayName: "Platform Edges", Version: "platform-v1", APIExportPath: "root:railgrid:providers:edges", APIExportName: "edges.providers.railgrid.ai", WorkspaceCluster: "platform-export-cluster", CatalogEntryCluster: "legacy-catalog-cluster", EndpointsValid: true, MainJSIntegrity: "sha384-platform", UIURL: &url.URL{Scheme: "http", Host: "platform.test"}}
+	org := platform
+	org.OrgUUID = "org-a"
+	org.DisplayName = "Organization Edges"
+	org.Version = "org-v2"
+	org.APIExportPath = "root:railgrid:tenants:org-a:providers:edges"
+	org.WorkspaceCluster = "org-export-cluster"
+	org.MainJSIntegrity = ""
+	binding := kcp.ProviderBinding{Name: "edges", Ready: true, ExportPath: platform.APIExportPath, ExportName: platform.APIExportName, ExportCluster: platform.WorkspaceCluster}
+	tests := []struct {
+		name               string
+		change             func(*kcp.ProviderBinding)
+		omitPlatform       bool
+		backendUnavailable bool
+		wantScope          string
+	}{
+		{name: "platform while org shadows", wantScope: hubproviders.ScopeGlobal},
+		{name: "organization exact", change: func(b *kcp.ProviderBinding) { b.ExportPath = org.APIExportPath; b.ExportCluster = org.WorkspaceCluster }, wantScope: hubproviders.ScopeOrg},
+		{name: "removed platform must not select org", omitPlatform: true},
+		{name: "resolved cluster replaced", change: func(b *kcp.ProviderBinding) { b.ExportCluster = "replacement-cluster" }},
+		{name: "missing resolved cluster", change: func(b *kcp.ProviderBinding) { b.ExportCluster = "" }},
+		{name: "different export", change: func(b *kcp.ProviderBinding) { b.ExportName = "different-export" }},
+		{name: "missing export reference", change: func(b *kcp.ProviderBinding) { b.ExportName = "" }},
+		{name: "other organization", change: func(b *kcp.ProviderBinding) {
+			b.ExportPath = "root:railgrid:tenants:other-org:providers:edges"
+			b.ExportCluster = org.WorkspaceCluster
+		}},
+		{name: "unavailable binding", change: func(b *kcp.ProviderBinding) { b.Ready = false; b.Unavailable = "The bound export was removed." }},
+		{name: "terminating binding", change: func(b *kcp.ProviderBinding) { b.Terminating = true }},
+		{name: "backend unavailable retains exact presentation", backendUnavailable: true, wantScope: hubproviders.ScopeGlobal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, ops, _ := newTestManager(t)
+			reg := hubproviders.NewRegistry()
+			p := platform
+			if tt.backendUnavailable {
+				p.EndpointsValid = false
+			}
+			if !tt.omitPlatform {
+				reg.Upsert(p)
+			}
+			reg.Upsert(org)
+			mgr.WithProviderRegistry(reg)
+			b := binding
+			if tt.change != nil {
+				tt.change(&b)
+			}
+			mgr.bootstrapper = &boundPresentationOps{fakeOps: ops, bindings: map[string]kcp.ProviderBinding{"edges": b}}
+			srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+			defer srv.Close()
+			detail := enabledListing(t, srv.URL).BindingsByProvider["edges"]
+			if detail.ExportName != b.ExportName || detail.ExportCluster != b.ExportCluster || detail.ExportPath != b.ExportPath {
+				t.Fatalf("binding identity lost: %+v", detail)
+			}
+			dto := detail.BoundProvider
+			if tt.wantScope == "" {
+				if dto != nil {
+					t.Fatalf("unexpected fallback: %+v", dto)
+				}
+				return
+			}
+			if dto == nil || dto.Scope != tt.wantScope {
+				t.Fatalf("bound presentation = %+v, want %s", dto, tt.wantScope)
+			}
+			if dto.Export == nil || dto.Export.Path != b.ExportPath || dto.Export.Name != b.ExportName {
+				t.Fatalf("wrong export: %+v", dto.Export)
+			}
+			if dto.Ready == tt.backendUnavailable {
+				t.Fatalf("actual backend readiness = %v", dto.Ready)
+			}
+			if dto.Scope == hubproviders.ScopeGlobal {
+				if dto.Version != platform.Version || dto.OwnerOrg != "" || dto.Serving == nil || dto.Serving.UI == nil || dto.Serving.UI.MainJSIntegrity != "sha384-platform" {
+					t.Fatalf("platform identity/pin replaced: %+v", dto)
+				}
+			} else if dto.Version != org.Version || dto.OwnerOrg != "org-a" {
+				t.Fatalf("organization identity replaced: %+v", dto)
+			}
+		})
+	}
+}
+
+type boundPresentationOps struct {
+	*fakeOps
+	bindings map[string]kcp.ProviderBinding
+}
+
+func (o *boundPresentationOps) ListProviderAPIBindings(context.Context, string, string) (map[string]kcp.ProviderBinding, error) {
+	return o.bindings, nil
+}
+
+// Consent lifecycle tests model the actual coordinates returned by native kcp,
+// while preserving fakeOps' dynamic enable/disable inventory.
+type exactTestBindingOps struct {
+	*fakeOps
+	copy hubproviders.Provider
+}
+
+func (o *exactTestBindingOps) ListProviderAPIBindings(ctx context.Context, org, workspace string) (map[string]kcp.ProviderBinding, error) {
+	bindings, err := o.fakeOps.ListProviderAPIBindings(ctx, org, workspace)
+	if err != nil {
+		return nil, err
+	}
+	if binding, found := bindings[o.copy.Name]; found {
+		binding.Ready = true
+		binding.ExportPath = o.copy.APIExportPath
+		binding.ExportName = o.copy.APIExportName
+		binding.ExportCluster = o.copy.WorkspaceCluster
+		bindings[o.copy.Name] = binding
+	}
+	return bindings, nil
+}
+
+func TestEnabledProviderGrantStateUsesExactBoundCopy(t *testing.T) {
+	platform := hubproviders.Provider{Name: "app-studio", APIExportPath: "root:railgrid:providers:app-studio", APIExportName: "ai.railgrid.ai", WorkspaceCluster: "platform-cluster", EndpointsValid: true,
+		HubAccess: []providersv1alpha1.ProviderHubAccess{{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeOrg}},
+		Requires:  []providersv1alpha1.ProviderRequirement{{Provider: "infrastructure", Group: "infrastructure.railgrid.ai", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "instances", Verbs: []providersv1alpha1.ProviderRequiredVerb{"create"}}}}},
+	}
+	org := platform
+	org.OrgUUID = "org-a"
+	org.APIExportPath = "root:railgrid:tenants:org-a:providers:app-studio"
+	org.WorkspaceCluster = "org-cluster"
+	org.HubAccess = append(append([]providersv1alpha1.ProviderHubAccess(nil), platform.HubAccess...), providersv1alpha1.ProviderHubAccess{Capability: providersv1alpha1.HubCapabilityMembershipsInvite, Scope: providersv1alpha1.HubAccessScopeOrg})
+	org.Requires = append(append([]providersv1alpha1.ProviderRequirement(nil), platform.Requires...), providersv1alpha1.ProviderRequirement{Provider: "code", Group: "code.railgrid.ai", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{"create"}}}})
+	for _, tc := range []struct {
+		name    string
+		copy    hubproviders.Provider
+		missing bool
+	}{
+		{name: "platform binding under organization shadow", copy: platform},
+		{name: "organization binding", copy: org},
+		{name: "replaced binding cannot read either grant", copy: platform, missing: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr, ops, _ := newTestManager(t)
+			registry := hubproviders.NewRegistry()
+			registry.Upsert(platform)
+			registry.Upsert(org)
+			mgr.WithProviderRegistry(registry)
+			mgr.WithHubAccessGrants(hubaccess.NewStore(mgr.client), false)
+			ctx := context.Background()
+			common := []tenancyv1alpha1.GrantedCapability{{Capability: "memberships.read", Scope: "org"}, {Capability: "compose:infrastructure.railgrid.ai/instances", Scope: "workspace"}}
+			if _, err := mgr.hubAccess.Record(ctx, hubaccess.GrantKey{OrgUUID: "org-a", WorkspaceUUID: "ws-1", Provider: "app-studio"}, func(*tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+				return common, nil
+			}, "alice"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := mgr.hubAccess.Record(ctx, hubaccess.GrantKey{OrgUUID: "org-a", WorkspaceUUID: "ws-1", Provider: "app-studio", ProviderOrgUUID: "org-a"}, func(*tenancyv1alpha1.Grant) ([]tenancyv1alpha1.GrantedCapability, []tenancyv1alpha1.CapabilityRef) {
+				return nil, []tenancyv1alpha1.CapabilityRef{{Capability: "memberships.read", Scope: "org"}, {Capability: "compose:infrastructure.railgrid.ai/instances", Scope: "workspace"}}
+			}, "alice"); err != nil {
+				t.Fatal(err)
+			}
+			binding := kcp.ProviderBinding{Name: "app-studio", Ready: true, ExportPath: tc.copy.APIExportPath, ExportName: tc.copy.APIExportName, ExportCluster: tc.copy.WorkspaceCluster}
+			if tc.missing {
+				binding.ExportCluster = "old-cluster"
+			}
+			mgr.bootstrapper = &boundPresentationOps{fakeOps: ops, bindings: map[string]kcp.ProviderBinding{"app-studio": binding}}
+			server := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+			defer server.Close()
+			detail := enabledListing(t, server.URL).BindingsByProvider["app-studio"]
+			if tc.missing {
+				if detail.HubAccess != nil || detail.Compositions != nil {
+					t.Fatalf("unknown copy inherited grant state: %+v", detail)
+				}
+				return
+			}
+			if detail.HubAccess == nil || detail.Compositions == nil {
+				t.Fatalf("missing bound grant state: %+v", detail)
+			}
+			if tc.copy.OrgUUID == "" {
+				if len(detail.HubAccess.Granted) != 1 || len(detail.HubAccess.Pending) != 0 || detail.HubAccess.Granted[0].Capability != "memberships.read" || len(detail.Compositions.Granted) != 1 || len(detail.Compositions.Pending) != 0 || detail.Compositions.Granted[0].Resource != "instances" {
+					t.Fatalf("platform state borrowed org declaration or grant: %+v %+v", detail.HubAccess, detail.Compositions)
+				}
+			} else if len(detail.HubAccess.Granted) != 0 || len(detail.HubAccess.Pending) != 2 || len(detail.Compositions.Granted) != 0 || len(detail.Compositions.Pending) != 2 {
+				t.Fatalf("org state borrowed platform declaration or grant: %+v %+v", detail.HubAccess, detail.Compositions)
+			}
+		})
 	}
 }
