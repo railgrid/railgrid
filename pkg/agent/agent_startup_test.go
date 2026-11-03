@@ -27,11 +27,67 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/rest"
+
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/agent/tunnel"
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
+
+func TestHelmJoinUsesIssuedHubCredentialAndPreservesRuntimeClient(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+	var observedAuthorization, observedPath string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedAuthorization, observedPath = r.Header.Get("Authorization"), r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"apiVersion":"edges.railgrid.ai/v1alpha1","kind":"PlacementList","metadata":{},"items":[]}`)
+	}))
+	defer hub.Close()
+	a := agentForCredentialTest("helm-edge", hub.URL)
+	a.hubConfig = &rest.Config{Host: hub.URL, BearerToken: "bootstrap-join-token"}
+	a.downstreamConfig = &rest.Config{Host: "https://runtime.invalid", BearerToken: "runtime-service-account"}
+	runtimeConfig := rest.CopyConfig(a.downstreamConfig)
+	a.credentials = &tunnel.CredentialStore{}
+	initial, err := railgridclient.NewForConfig(a.hubConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issued := tunnel.Credential{Token: "issued-agent-token", HubURL: hub.URL, ClusterID: "tenant-cluster", Resource: "kubernetesclusters", Name: "helm-edge", ExpiresAt: time.Now().Add(time.Hour)}
+	enrolled := make(chan struct{})
+	go func() {
+		if err := a.credentials.Adopt(issued); err != nil {
+			t.Error(err)
+		}
+		close(enrolled)
+	}()
+	client, err := a.hubClientAfterEnrollment(context.Background(), initial, enrolled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Dynamic().Resource(railgridclient.PlacementGVR).List(context.Background(), metav1.ListOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if observedAuthorization != "Bearer issued-agent-token" || !strings.HasPrefix(observedPath, "/clusters/tenant-cluster/") {
+		t.Fatalf("hub reporter did not use the issued tenant credential: path=%s", observedPath)
+	}
+	if a.downstreamConfig.Host != runtimeConfig.Host || a.downstreamConfig.BearerToken != runtimeConfig.BearerToken {
+		t.Fatal("hub credential transition changed the runtime cluster client")
+	}
+}
+
+func TestHelmJoinCancellationStopsCredentialWait(t *testing.T) {
+	t.Setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+	a := agentForCredentialTest("helm-edge", "https://hub.invalid")
+	a.credentials = &tunnel.CredentialStore{}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := a.hubClientAfterEnrollment(ctx, nil, make(chan struct{})); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enrollment wait ignored cancellation: %v", err)
+	}
+}
 
 func TestRestartWithSavedCredentialUsesItBeforeEdgeRegistration(t *testing.T) {
 	home := t.TempDir()
@@ -99,8 +155,8 @@ func TestRestartWithSavedCredentialUsesItBeforeEdgeRegistration(t *testing.T) {
 	if !agent.shouldSetupSSHCredentials() {
 		t.Fatal("restart with an issued credential must remain eligible to submit operator SSH credential rotations")
 	}
-	if agent.hubConfig.BearerToken != issued.Token {
-		t.Fatal("restart hub client did not use the saved issued credential")
+	if agent.hubConfig.BearerToken != "" || agent.hubConfig.WrapTransport == nil {
+		t.Fatal("restart hub client did not use the rotating issued credential transport")
 	}
 	if want := apiurl.HubServerURL(hubURL, issued.ClusterID); agent.hubConfig.Host != want {
 		t.Fatalf("restart hub client host = %q, want credential workspace host %q", agent.hubConfig.Host, want)
@@ -330,5 +386,107 @@ func TestRetryUntilSuccessStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("retryUntilSuccess did not return after its context was cancelled")
+	}
+}
+
+func TestNativeHubClientUsesRotatedIssuedTokenWithoutBootstrapFallback(t *testing.T) {
+	var observed []string
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed = append(observed, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"apiVersion":"edges.railgrid.ai/v1alpha1","kind":"PlacementList","items":[]}`)
+	}))
+	defer hub.Close()
+	a := agentForCredentialTest("rotating-edge", hub.URL)
+	a.opts.Token = "bootstrap-join-token"
+	a.credentials = &tunnel.CredentialStore{Fallback: func() string { return a.opts.Token }}
+	credential := tunnel.Credential{Token: "initial-issued", HubURL: hub.URL, ClusterID: "tenant", Resource: "kubernetesclusters", Name: "rotating-edge", ExpiresAt: time.Now().Add(time.Hour)}
+	if err := a.credentials.Adopt(credential); err != nil {
+		t.Fatal(err)
+	}
+	client, err := a.hubClientAfterEnrollment(context.Background(), nil, make(chan struct{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	list := func() {
+		t.Helper()
+		if _, err := client.Dynamic().Resource(railgridclient.PlacementGVR).List(context.Background(), metav1.ListOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list()
+	credential.Token = "fresh-issued"
+	if err := a.credentials.Adopt(credential); err != nil {
+		t.Fatal(err)
+	}
+	list()
+	if !a.credentials.Rejected() {
+		t.Fatal("test did not activate join-token fallback")
+	}
+	if a.credentials.Token() != a.opts.Token {
+		t.Fatal("test store is not presenting its bootstrap fallback")
+	}
+	list()
+	if len(observed) != 3 || observed[0] != "Bearer initial-issued" || observed[1] != "Bearer fresh-issued" || observed[2] != "Bearer fresh-issued" {
+		t.Fatalf("native client did not follow issued tokens independently of join fallback: %v", observed)
+	}
+	// An in-memory credential from another tenant/hub must not be sent through
+	// the old client's address or cause its TLS configuration to be rewritten.
+	for _, change := range []string{"cluster", "hub"} {
+		changed := credential
+		if change == "cluster" {
+			changed.ClusterID = "other-tenant"
+		} else {
+			changed.HubURL = "https://other.invalid"
+		}
+		if err := a.credentials.Adopt(changed); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := client.Dynamic().Resource(railgridclient.PlacementGVR).List(context.Background(), metav1.ListOptions{}); err == nil {
+			t.Fatalf("accepted changed %s addressing", change)
+		}
+	}
+	if len(observed) != 3 {
+		t.Fatal("a credential with changed addressing reached the old hub")
+	}
+	if a.hubConfig.Host != apiurl.HubServerURL(hub.URL, "tenant") {
+		t.Fatal("rotation changed the existing client address")
+	}
+}
+
+func TestNativeHubClientRefreshesWithoutTunnelReconnect(t *testing.T) {
+	refreshes, reads := 0, 0
+	var hub *httptest.Server
+	hub = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodPost && r.URL.Path == "/refresh" {
+			refreshes++
+			if r.Header.Get("Authorization") != "Bearer due-issued" {
+				t.Error("refresh did not use the issued token")
+			}
+			_ = json.NewEncoder(w).Encode(tunnel.Credential{Token: "refreshed-issued", HubURL: hub.URL, ClusterID: "tenant", Resource: "kubernetesclusters", Name: "refreshing-edge", RefreshPath: "/refresh", ExpiresAt: time.Now().Add(time.Hour)})
+			return
+		}
+		reads++
+		if r.Header.Get("Authorization") != "Bearer refreshed-issued" {
+			t.Error("native request did not use the refreshed token")
+		}
+		_, _ = io.WriteString(w, `{"apiVersion":"edges.railgrid.ai/v1alpha1","kind":"PlacementList","items":[]}`)
+	}))
+	defer hub.Close()
+	a := agentForCredentialTest("refreshing-edge", hub.URL)
+	a.credentials = &tunnel.CredentialStore{}
+	if err := a.credentials.Adopt(tunnel.Credential{Token: "due-issued", HubURL: hub.URL, ClusterID: "tenant", Resource: "kubernetesclusters", Name: "refreshing-edge", RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := a.refreshHubClientFromCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Dynamic().Resource(railgridclient.PlacementGVR).List(context.Background(), metav1.ListOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if refreshes != 1 || reads != 1 {
+		t.Fatalf("refresh calls=%d native reads=%d", refreshes, reads)
 	}
 }
