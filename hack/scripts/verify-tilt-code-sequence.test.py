@@ -19,7 +19,12 @@ class CodeSequence(unittest.TestCase):
     def test_update_initializes_before_serving_and_watches_only_inputs(self):
         self.assertEqual(ast.literal_eval(FIELDS['cmd']), 'make init-provider-code')
         self.assertEqual(ast.literal_eval(FIELDS['serve_cmd']), 'make serve-provider-code')
-        self.assertIn('code-register', ast.literal_eval(FIELDS['resource_deps']))
+        deps = FIELDS['resource_deps']
+        # Optional MinIO adds a conditional list to the required base. The
+        # registration dependency must remain unconditional in either mode.
+        if isinstance(deps, ast.BinOp) and isinstance(deps.op, ast.Add):
+            deps = deps.left
+        self.assertIn('code-register', ast.literal_eval(deps))
         deps = ast.literal_eval(FIELDS['deps'])
         self.assertIn('.kcp/admin.kubeconfig', deps)
         self.assertNotIn('.kcp/code-runtime.kubeconfig', deps)

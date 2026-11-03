@@ -227,6 +227,14 @@ class CheckoutTest(unittest.TestCase):
             with patch.dict(m.os.environ, {'GOFLAGS': '-mod=readonly'}):
                 self.assertEqual(m.environment(config)['GOFLAGS'], '-mod=readonly -buildvcs=false')
 
+    def test_external_hub_override_does_not_change_browser_origin(self):
+        with tempfile.TemporaryDirectory() as root, patch.dict(m.os.environ, {'RAILGRID_HUB_EXTERNAL_URL': 'https://172.19.0.1:20001'}, clear=True):
+            config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
+            env = m.environment(config)
+            self.assertEqual(env['RAILGRID_HUB_EXTERNAL_URL'], 'https://172.19.0.1:20001')
+            self.assertEqual(env['KCP_SHARD_VIRTUAL_WORKSPACE_URL'], 'https://172.19.0.1:' + str(m.PORTS['KCP_PORT']))
+            self.assertIn('console-abc.127.0.0.1.sslip.io', env['DEV_HUB_URL'])
+
     def test_preview_settings_default_to_checkout_domain_and_gateway_port(self):
         with tempfile.TemporaryDirectory() as root, patch.dict(m.os.environ, {}, clear=True):
             config = {'root': root, 'key': 'abc', 'ports': m.PORTS}
