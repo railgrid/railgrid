@@ -11,6 +11,47 @@ export interface RunFailurePresentation {
 }
 
 const MAX_DIAGNOSTIC_LENGTH = 4_000
+const HARNESS_START_404_PREFIX = 'starting the harness turn: runner HTTP 404:'
+const HARNESS_START_502_PREFIX = 'starting the harness turn: runner HTTP 502:'
+const EDGE_SERVICE_GROUP = 'edges.railgrid.ai'
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function missingRunnerService(diagnostic: string): string | undefined {
+  if (!diagnostic.startsWith(HARNESS_START_404_PREFIX)) return undefined
+
+  let status: Record<string, unknown> | undefined
+  try {
+    status = record(JSON.parse(diagnostic.slice(HARNESS_START_404_PREFIX.length).trim()))
+  } catch {
+    return undefined
+  }
+
+  if (
+    !status ||
+    status.kind !== 'Status' ||
+    status.apiVersion !== 'v1' ||
+    status.status !== 'Failure' ||
+    status.reason !== 'NotFound' ||
+    status.code !== 404
+  ) return undefined
+
+  const details = record(status.details)
+  const name = details?.name
+  if (
+    details?.group !== EDGE_SERVICE_GROUP ||
+    details.kind !== 'services' ||
+    typeof name !== 'string' ||
+    name.length > 63 ||
+    !/^[a-z0-9](?:[-a-z0-9]*[a-z0-9])?$/.test(name) ||
+    status.message !== `services.${EDGE_SERVICE_GROUP} "${name}" not found`
+  ) return undefined
+
+  return name
+}
 
 /**
  * Failure messages come from model APIs, tools, and stream transports. Keep
@@ -67,6 +108,25 @@ export function runFailurePresentation(phase: RunFailurePhase, diagnostic: strin
     }
   }
 
+  // A failed Start request can have an unknown outcome: the runner may have
+  // accepted it before the response was lost. Check the durable run before
+  // offering another attempt.
+  if (diagnostic.startsWith(HARNESS_START_502_PREFIX)) {
+    return {
+      title: 'Run status is unclear',
+      summary: 'Check the run’s latest status before trying again.',
+    }
+  }
+
+  const missingService = missingRunnerService(diagnostic)
+  if (missingService) {
+    return {
+      title: 'Couldn’t start this run',
+      summary: `Runner “${missingService}” wasn’t found.`,
+      recovery: { label: 'Review agent settings', target: 'agent-config' },
+    }
+  }
+
   const unsupportedReasoning = /reasoning[ _-]?(?:effort|setting|parameter|level)/i.test(diagnostic)
     && /unsupported|not supported|does not support|invalid/i.test(diagnostic)
   if (unsupportedReasoning) {
@@ -99,10 +159,8 @@ export function runFailurePresentation(phase: RunFailurePhase, diagnostic: strin
   }
 
   return {
-    title: 'The run failed before it could complete',
-    summary: diagnostic
-      ? 'Review the failed steps and technical details below. Any partial output is kept for inspection.'
-      : 'Review the failed steps below. Any partial output is kept for inspection.',
+    title: 'Run failed',
+    summary: 'Review the run details for more information.',
   }
 }
 

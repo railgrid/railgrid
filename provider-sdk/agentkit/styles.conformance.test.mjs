@@ -10,6 +10,7 @@ const source = readFileSync(new URL('./styles.ts', import.meta.url), 'utf8')
 const coreCSS = readFileSync(new URL('../portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 const coreSource = readFileSync(new URL('../portalkit/styles.ts', import.meta.url), 'utf8')
 const agentVersion = Number(source.match(/export const AGENT_UI_VERSION = (\d+)/)?.[1])
+const coreVersion = Number(coreSource.match(/export const RAILGRID_UI_CORE_VERSION = (\d+)/)?.[1])
 
 function styleNode(id, textContent = '') {
   const attributes = new Map()
@@ -96,7 +97,8 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
   assert.match(css, /\.k-model-connection\s*[,\{]/)
   assert.match(conversationCSS, /\.k-ai-turn-progress\s*\{/)
 
-  assert.match(coreCSS, /--railgrid-ui-core-version:\s*42;/)
+  assert(Number.isInteger(coreVersion), 'PortalKit declares an integer core style version')
+  assert.match(coreCSS, new RegExp(`--railgrid-ui-core-version:\\s*${coreVersion};`))
   assert.doesNotMatch(coreCSS, /--railgrid-ui-version/)
   assert.match(coreCSS, /\.k-back-action--icon-only\s*\{/)
   assert.doesNotMatch(coreCSS, /\.k-ai-|\.k-workbench-|\.k-model-/)

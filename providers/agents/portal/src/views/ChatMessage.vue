@@ -128,7 +128,16 @@ function openToolCitation(event: MouseEvent): void {
 const messageCreatedAt = computed(() => {
   return props.message.createdAt || null
 })
-const progressVisible = computed(() => props.message.role === 'assistant' && Boolean(props.message.progress))
+const progressVisible = computed(() => {
+  const progress = props.message.progress
+  if (props.message.role !== 'assistant' || !progress) return false
+  // A startup failure has no worked state unless the server recorded work.
+  // Keep actual trace details and durations available after a failed turn.
+  const hasRecordedDuration = typeof progress.durationMS === 'number'
+    && Number.isFinite(progress.durationMS)
+    && progress.durationMS > 0
+  return !failurePhase.value || progress.trace.length > 0 || hasRecordedDuration
+})
 const progressStatus = computed<AITurnProgressStatus>(() => props.message.progress?.status || 'pending')
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
