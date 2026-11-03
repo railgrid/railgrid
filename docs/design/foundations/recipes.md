@@ -36,6 +36,17 @@ copied only to registered AgentKit consumers. They use the same tokens and
 | `.k-avatar` (`--sm`) | Mono-initials circle, 28/20px; presence uses `.live-dot` |
 | `.k-dropzone` | Dashed drop target; drag-over accent tint, no glow |
 
+## Inline technical details
+
+Use `.k-resource-technical--compact` on the shared technical disclosure for
+diagnostics beneath a conversation message or inline failure. It keeps the
+native summary, keyboard focus, and chevron, removes the enclosing surface,
+and wraps raw diagnostic text. The containing page or transcript owns vertical
+scrolling. Copy and other diagnostic actions belong inside the disclosure.
+The summary is 32px high for fine pointers and at least 44×44px for coarse or
+hybrid pointers, regardless of viewport width. Providers select this shared
+variant rather than overriding `.k-resource-technical__*` selectors locally.
+
 Toasts use the [canonical toast contract](../components/toast.md). Signature
 host utilities are `.contour-grid`/`-fade` (sparingly for login and empty
 states), `.island` (floating dock card), `.live-dot` (provider-dependent

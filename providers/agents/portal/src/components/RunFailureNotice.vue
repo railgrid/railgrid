@@ -5,7 +5,6 @@ import TechnicalDetails from './TechnicalDetails.vue'
 import {
   runFailurePresentation,
   sanitizeTechnicalDiagnostic,
-  technicalDiagnosticExcerpt,
   type FailureRecoveryTarget,
   type RunFailurePhase,
 } from '../failure-presentation'
@@ -20,8 +19,6 @@ const emit = defineEmits<{
   recovery: [target: FailureRecoveryTarget]
 }>()
 
-const DIAGNOSTIC_EXCERPT_LIMIT = 360
-const excerpt = computed(() => technicalDiagnosticExcerpt(props.diagnostic, DIAGNOSTIC_EXCERPT_LIMIT))
 const safeDiagnostic = computed(() => sanitizeTechnicalDiagnostic(props.diagnostic))
 const presentation = computed(() => runFailurePresentation(props.phase, safeDiagnostic.value))
 </script>
@@ -29,23 +26,22 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 <template>
   <section
     class="agents-run-state"
-    :class="[{ 'k-inline-notification': !inspection, 'agents-run-state--inspection': inspection }, `agents-run-state--${phase}`, !inspection && (phase === 'failed' ? 'k-inline-notification--error' : 'k-inline-notification--info')]"
+    :class="[{ 'agents-run-state--inspection': inspection }, `agents-run-state--${phase}`]"
     :role="phase === 'failed' ? 'alert' : 'status'"
   >
     <TriangleAlert class="agents-run-state__icon" :stroke-width="1.9" aria-hidden="true" />
     <div class="agents-run-state__body">
       <h3>{{ presentation.title }}</h3>
       <p>{{ presentation.summary }}</p>
-      <pre v-if="inspection && safeDiagnostic" class="agents-run-state__diagnostic">{{ excerpt.text }}</pre>
       <button
         v-if="presentation.recovery"
-        class="k-btn k-btn--ghost secondary agents-run-state__recovery"
+        class="k-btn k-btn--primary agents-run-state__recovery"
         type="button"
         @click="emit('recovery', presentation.recovery.target)"
       >
         {{ presentation.recovery.label }}
       </button>
-      <TechnicalDetails v-if="!inspection || excerpt.truncated" class="agents-run-state__details" :diagnostic="safeDiagnostic" />
+      <TechnicalDetails class="agents-run-state__details" :diagnostic="safeDiagnostic" compact copyable />
     </div>
   </section>
 </template>
@@ -74,23 +70,23 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 .agents-run-state h3 {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
   line-height: 1.35;
 }
 
 .agents-run-state p {
-  margin: 3px 0 0;
+  margin: 5px 0 0;
   color: var(--color-text-secondary, #8a8ca6);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
 
 .agents-run-state__recovery {
-  min-height: 44px;
-  margin-block-start: 7px;
+  margin-block-start: 14px;
 }
 
-.agents-run-state__details { min-width: 0; margin-block-start: 5px; }
+.agents-run-state__details { min-width: 0; margin-block-start: 12px; }
+
 </style>

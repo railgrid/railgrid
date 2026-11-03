@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 42;
+  --railgrid-ui-core-version: 43;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -3190,6 +3190,37 @@ railgrid-resource-table-filter { display: contents; }
   white-space: pre;
 }
 
+/* Inline diagnostics keep their controls and raw text behind one quiet
+ * disclosure. The enclosing conversation or page owns vertical scrolling. */
+.k-resource-technical--compact { border: 0; background: transparent; }
+.k-resource-technical--compact .k-resource-technical__summary {
+  width: fit-content;
+  max-width: 100%;
+  min-height: 32px;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 12px;
+  font-weight: 400;
+}
+.k-resource-technical--compact .k-resource-technical__summary:hover {
+  color: var(--color-text-primary, #e9e9f2);
+  background: transparent;
+}
+.k-resource-technical--compact .k-resource-technical__body {
+  gap: 10px;
+  border: 0;
+  padding: 6px 0 0;
+}
+.k-resource-technical--compact .k-resource-technical__pre {
+  max-height: none;
+  overflow: visible;
+  border: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* Resource detail pages can be embedded in a host column, drawer, or split
  * view. Keep adaptation tied to the page's inline size rather than to the
  * viewport that happens to contain it. The fallback below preserves the same
@@ -3324,6 +3355,10 @@ railgrid-resource-table-filter { display: contents; }
     min-width: 44px;
   }
   .k-resource-technical__summary { min-height: 44px; }
+  .k-resource-technical--compact .k-resource-technical__summary {
+    min-height: 44px;
+    min-width: 44px;
+  }
   .k-toast__action,
   .k-toast-host .k-toast__action,
   .k-toast-host .k-toast__dismiss,
