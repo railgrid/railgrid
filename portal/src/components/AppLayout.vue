@@ -332,10 +332,14 @@ function navGroupPanelId(key: string): string {
 const providerBindingState = computed(() => providersStore.bindingsLoadState)
 const providerBindingsStale = computed(() => providersStore.bindingsStale)
 const providerBindingError = computed(() => providersStore.bindingsError)
+const providerBindingLoading = computed(() => providerBindingState.value === 'loading')
+const showProviderBindingLoading = useDelayedLoading(providerBindingLoading, 500)
+// Retain navigation during quick refreshes without flashing a status notice.
+// Staleness is expected while loading; surface it immediately once loading ends.
 const providerBindingStatusVisible = computed(() =>
-  providerBindingState.value === 'loading'
+  showProviderBindingLoading.value
   || providerBindingState.value === 'error'
-  || providerBindingsStale.value,
+  || (providerBindingsStale.value && !providerBindingLoading.value),
 )
 const providerBindingRetryable = computed(() => providerBindingState.value === 'error')
 const providerBindingStatusLabel = computed(() => {
