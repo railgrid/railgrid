@@ -2401,7 +2401,9 @@ railgrid-resource-table-filter { display: contents; }
   gap: 2px;
   margin-inline-start: 12px;
   opacity: 0;
-  pointer-events: none;
+  /* Keep the action hit area available while hover reveals it. Disabling
+   * pointer events here lets the primary cell intercept the first click. */
+  pointer-events: auto;
   transition: opacity 0.12s ease;
 }
 .k-table__row:hover .k-table__primary-actions,
