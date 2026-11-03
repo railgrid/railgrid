@@ -46,7 +46,7 @@ async function loadPlaywright() {
 }
 
 function routeFor(provider) {
-  return provider === 'app' ? 'create/model' : '#/create/model'
+  return provider === 'app' ? '~models/provider-connections' : '#/create/model'
 }
 
 function routeQuery(provider, theme) {
@@ -59,6 +59,11 @@ function describePairKey(theme, width) {
 
 function scenarioSuffix(scenario) {
   return scenario === 'openai' ? '' : `-${scenario}`
+}
+
+function scenariosFor(provider) {
+  // Agents does not expose a Vertex service-account credential flow.
+  return provider === 'app' ? ['openai', 'custom', 'vertex'] : ['openai', 'custom']
 }
 
 async function waitForRealFonts(page) {
@@ -75,41 +80,7 @@ async function waitForRealFonts(page) {
   })
 }
 
-async function collectAgentsProviderFlow(page, theme, width, scenario) {
-  const consoleErrors = [], pageErrors = []
-  const onConsole = message => { if (message.type() === 'error') consoleErrors.push(message.text()) }
-  page.on('console', onConsole)
-  page.on('pageerror', error => pageErrors.push(error.message))
-  await page.goto(`${origin}${routeQuery('agents', theme)}`, { waitUntil: 'domcontentloaded' })
-  await page.locator('.k-provider-connect').waitFor()
-  await waitForRealFonts(page)
-  if (scenario === 'custom') await page.locator('#model-provider').selectOption('custom')
-  const result = await page.evaluate(() => {
-    const form = document.querySelector('.k-provider-connect')
-    const select = form.querySelector('#model-provider')
-    const next = [...form.querySelectorAll('button')].find(button => button.textContent.trim() === 'Continue')
-    const title = document.querySelector('.k-create-title')
-    const style = getComputedStyle(title)
-    return { options: [...select.options].map(option => option.value), internalName: Boolean(form.querySelector('[name="name"]')), modelInitiallyVisible: Boolean(form.querySelector('#model-id')), continueDisabled: next.disabled, provider: select.value, password: form.querySelector('#model-credential').type, overflow: document.documentElement.scrollWidth > innerWidth, footerPosition: getComputedStyle(form.querySelector('footer')).position, title: { style: { fontFamily: style.fontFamily, fontSize: style.fontSize } } }
-  })
-  const screenshot = `${outputDir}/agents-${theme}-${width}${scenarioSuffix(scenario)}.png`
-  await page.locator('.k-create-page').screenshot({ path: screenshot, animations: 'disabled' })
-  const key = page.locator('#model-credential')
-  await key.fill('fixture-draft-only')
-  await page.locator('#model-provider').selectOption(scenario === 'custom' ? 'openai' : 'custom')
-  const providerChangeClearedCredential = await key.inputValue() === ''
-  await page.locator('#model-provider').selectOption('custom')
-  await page.locator('#model-base-url').fill('https://fixture.invalid/first')
-  await key.fill('fixture-draft-only')
-  await page.locator('#model-base-url').fill('https://fixture.invalid/second')
-  const endpointChangeClearedCredential = await key.inputValue() === ''
-  const calls = await page.evaluate(() => globalThis.__railgridModelFixture.calls)
-  page.off('console', onConsole)
-  return { ...result, providerFlow: true, provider: 'agents', selectedProvider: result.provider, theme, width, scenario, screenshot, consoleErrors, pageErrors, behavior: { providerChangeClearedCredential, endpointChangeClearedCredential, writeCalls: calls.filter(call => !['GET', 'HEAD'].includes(call.method)) } }
-}
-
 async function collect(page, provider, theme, width, scenario) {
-  if (provider === 'agents') return collectAgentsProviderFlow(page, theme, width, scenario)
   const consoleErrors = []
   const pageErrors = []
   const onConsole = message => {
@@ -117,19 +88,31 @@ async function collect(page, provider, theme, width, scenario) {
   }
   page.on('console', onConsole)
   page.on('pageerror', error => pageErrors.push(error.message))
+  const formSelector = provider === 'agents' ? '.agents-provider-connect' : '.k-model-form'
   await page.goto(`${origin}${routeQuery(provider, theme)}`, { waitUntil: 'domcontentloaded' })
-  await page.locator('.k-create-surface').waitFor({ state: 'visible', timeout: 15000 })
+  if (provider === 'app') {
+    // Activate the actual collection action through the keyboard so the
+    // route heading receives the same focus-visible treatment as Agents' URL
+    // entry point.
+    await page.getByRole('button', { name: 'Connect provider', exact: true }).press('Enter')
+  }
+  await page.locator(formSelector).waitFor({ state: 'visible', timeout: 15000 })
   await waitForRealFonts(page)
   if (scenario === 'custom') {
     const providerControl = page.locator('select[id$="-model-provider"], #model-provider, #agents-model-provider').first()
     await providerControl.waitFor({ state: 'visible', timeout: 15000 })
     await providerControl.selectOption('custom')
   }
+  if (scenario === 'vertex') {
+    assert.equal(provider, 'app', 'Vertex service-account evidence is only applicable to App Studio')
+    await page.locator('#model-provider').selectOption('google')
+    await page.locator('#model-credential-method').selectOption('service-account-json')
+  }
   await page.waitForTimeout(50)
 
-  const result = await page.evaluate(({ provider, theme, width, scenario }) => {
+  const result = await page.evaluate(({ provider, theme, width, scenario, formSelector }) => {
     const root = document.querySelector(provider === 'app' ? 'railgrid-provider-app-studio' : 'railgrid-provider-agents')
-    const form = root?.querySelector('.k-model-form')
+    const form = root?.querySelector(formSelector)
     const rect = node => {
       if (!node) return null
       const box = node.getBoundingClientRect()
@@ -189,6 +172,7 @@ async function collect(page, provider, theme, width, scenario) {
       type: node?.getAttribute?.('type') || null,
       disabled: node && 'disabled' in node ? node.disabled : null,
       ariaRequired: node?.getAttribute?.('aria-required') || null,
+      required: node && 'required' in node ? node.required : null,
       tabIndex: node instanceof HTMLElement ? node.tabIndex : null,
       rect: rect(node),
       style: style(node),
@@ -198,19 +182,20 @@ async function collect(page, provider, theme, width, scenario) {
     const firstByText = (selector, text, scope = root) => many(selector, scope).find(node => (node.textContent || '').includes(text)) || null
     const fieldFor = node => node?.closest?.('.k-model-form-field') || node?.closest?.('.k-model-form-section') || null
     const sectionFor = node => node?.closest?.('.k-model-form-section') || null
+    const isVisible = node => Boolean(node && node.getBoundingClientRect().width > 0 && node.getBoundingClientRect().height > 0 && getComputedStyle(node).display !== 'none' && getComputedStyle(node).visibility !== 'hidden')
 
     const nameInput = query('#model-display-name, input[name="name"]', form)
+    const connectionLabelInput = query('#provider-connection-name', form)
+    const connectionNameInput = query('#model-connection-name, input[name="connectionName"], input[name="displayName"]', form)
     const providerControl = query('#model-provider, #agents-model-provider, select[id$="-model-provider"], [data-form-select-trigger]', form)
-    const connectionSection = sectionFor(providerControl)
-    const endpointField = many('.k-model-form-field', connectionSection).find(node => {
-      const control = query('#model-base-url, input[name="baseURL"], .k-input', node)
-      return Boolean(control) && node !== fieldFor(providerControl)
-    }) || null
-    const endpointControl = query('#model-base-url, input[name="baseURL"], .k-input', endpointField)
+    const endpointControl = query('#model-base-url, input[name="baseURL"]', form)
+    const endpointField = fieldFor(endpointControl)
     const credentialInput = query('#model-credential, #agents-model-key, input[name="apiKey"], textarea[name="apiKey"]', form)
+    const credentialMethodControl = query('#model-credential-method', form)
     const findModels = firstByText('button', 'Find models', form)
     const modelControl = query('#model-id', form)
     const footer = query('.k-create-actions', form)
+    const primaryAction = many('.k-create-actions button', form).find(button => button.classList.contains('k-btn--primary')) || null
     const notices = many('.k-inline-notification, [role="alert"], [role="status"]', form)
     const fields = many('.k-model-form-field', form).map((node, index) => describe(node, `.k-model-form-field[${index}]`))
     const sections = many('.k-model-form-section', form).map((node, index) => ({
@@ -262,18 +247,23 @@ async function collect(page, provider, theme, width, scenario) {
       description: describe(query('.k-create-description')),
       form: describe(form),
       body: describe(query('.k-create-body', form)),
+      providerOptions: providerControl instanceof HTMLSelectElement ? [...providerControl.options].map(option => option.value) : [],
       landmarks: {
         nameField: describe(fieldFor(nameInput)),
         nameInput: describe(nameInput),
+        connectionNameInput: describe(connectionNameInput),
+        connectionLabelInput: describe(connectionLabelInput),
         providerField: describe(fieldFor(providerControl)),
         providerControl: describe(providerControl),
         endpointField: describe(endpointField),
         endpointControl: describe(endpointControl),
         credentialSection: describe(sectionFor(credentialInput)),
         credentialInput: describe(credentialInput),
+        credentialMethodControl: describe(credentialMethodControl),
         findModels: describe(findModels),
         modelSection: describe(sectionFor(modelControl)),
         modelControl: describe(modelControl),
+        primaryAction: describe(primaryAction),
         footer: describe(footer),
         footerButtons: many('button', footer).map((node, index) => describe(node, `footer-button[${index}]`)),
         blankNotices: notices.map((node, index) => describe(node, `blank-notice[${index}]`)),
@@ -295,6 +285,14 @@ async function collect(page, provider, theme, width, scenario) {
         forms: many('.k-model-form').length,
         sections: many('.k-model-form-heading', form).map(node => node.textContent.trim()),
       },
+      progressive: {
+        nameVisible: isVisible(nameInput),
+        connectionNameVisible: isVisible(connectionNameInput),
+        connectionLabelVisible: isVisible(connectionLabelInput),
+        modelVisible: isVisible(modelControl),
+        testActionVisible: isVisible(firstByText('button', 'Test connection', form)),
+        findModelsVisible: isVisible(findModels),
+      },
       accessibility: many('input:not([type="hidden"]),select,textarea', form).map(node => ({
         id: node.id,
         labelled: Boolean(node.labels?.length || node.getAttribute('aria-label') || node.getAttribute('aria-labelledby')?.split(/\s+/).every(id => document.getElementById(id))),
@@ -314,7 +312,7 @@ async function collect(page, provider, theme, width, scenario) {
       rootText: root?.textContent?.trim().replace(/\s+/g, ' ').slice(0, 2400),
       scroll: { width: document.documentElement.scrollWidth, height: document.documentElement.scrollHeight },
     }
-  }, { provider, theme, width, scenario })
+  }, { provider, theme, width, scenario, formSelector })
   const screenshot = `${outputDir}/${provider}-${theme}-${width}${scenarioSuffix(scenario)}.png`
   await page.locator('.k-create-page').screenshot({ path: screenshot, animations: 'disabled' })
   // Exercise destination changes only after the untouched screenshot. No
@@ -334,7 +332,7 @@ async function collect(page, provider, theme, width, scenario) {
   const draftCalls = await page.evaluate(() => globalThis.__railgridModelFixture.calls)
   page.off('console', onConsole)
   return {
-    ...result, screenshot, consoleErrors, pageErrors,
+    ...result, providerFlow: true, screenshot, consoleErrors, pageErrors,
     behavior: {
       providerChangeClearedCredential,
       endpointChangeClearedCredential,
@@ -344,66 +342,100 @@ async function collect(page, provider, theme, width, scenario) {
 }
 
 function checkContracts(result) {
-  if (result.providerFlow) return [
-    { name: 'API providers are separate from harness logins', passed: result.options.join('|') === 'openai|anthropic|openrouter|custom' },
-    { name: 'provider-first empty draft', passed: !result.internalName && !result.modelInitiallyVisible && result.continueDisabled && result.password === 'password' },
-    { name: 'explicit provider choice', passed: result.selectedProvider === result.scenario },
-    { name: 'no horizontal overflow or sticky field obstruction', passed: !result.overflow && result.footerPosition !== 'sticky' },
-    { name: 'provider and endpoint changes clear typed keys', passed: result.behavior.providerChangeClearedCredential && result.behavior.endpointChangeClearedCredential },
-    { name: 'draft changes do not mutate saved resources', passed: result.behavior.writeCalls.length === 0 },
-    { name: 'no browser errors', passed: !result.consoleErrors.length && !result.pageErrors.length },
-  ]
-  const checks = []
-  const check = (name, passed, evidence) => checks.push({ name, passed: Boolean(passed), evidence })
-  const { width, scenario, landmarks: l } = result
-  const provider = l.providerControl.rect
-  const endpoint = l.endpointControl.rect
-  check('one route heading and shared form', result.structure.pages === 1 && result.structure.headers === 1 && result.structure.titles === 1 && result.structure.forms === 1, result.structure)
-  check('fluid wide creation surface', result.page.style.display === 'block' && result.page.style.minWidth === '0px' && result.form.rect.width === result.page.rect.width, { page: result.page.rect, form: result.form.rect })
-  check('explicit route typography', result.page.style.fontSize === '14px' && result.page.style.lineHeight === '21px', result.page.style)
-  check('display heading', result.title.style.fontFamily.includes('Instrument Sans Variable') && result.title.style.fontStretch === '100%' && result.title.style.fontSize === '18px', result.title.style)
-  check('back then heading then form', result.back.rect.bottom <= result.header.rect.y && result.header.rect.bottom <= result.form.rect.y, { back: result.back.rect, header: result.header.rect, form: result.form.rect })
-  check('fixed back icon', result.backIcon.rect?.width === 14 && result.backIcon.rect?.height === 14 && result.backIcon.flexShrink === '0', result.backIcon)
-  check('route heading focus', result.focus.active?.class?.includes('k-create-title') && result.focus.active.tabIndex === -1 && result.focus.outlineStyle === 'solid' && result.focus.outlineWidth === '2px' && result.focus.outlineOffset === '2px' && result.focus.outlineColor === result.accentColor, result.focus)
-  check('named controls with resolvable help', result.accessibility.length > 0 && result.accessibility.every(control => control.labelled && control.missingDescriptions.length === 0), result.accessibility)
-  check('shared section hierarchy', result.structure.sections.join('|') === 'Connection|Credential|Model|Verify connection', result.structure.sections)
-  check('provider and endpoint equal control height', provider && endpoint && provider.height === endpoint.height, { provider, endpoint })
-  check(width < 640 ? 'connection controls stack on mobile' : 'connection controls top-align on desktop', provider && endpoint && (width < 640 ? endpoint.y > provider.y : endpoint.y === provider.y), { provider, endpoint })
-  check('model field sizes', result.modelInputs.length > 0 && result.modelInputs.every(control => control.rect && (width < 640 ? control.rect.height >= 44 : control.rect.height === 40)), result.modelInputs.map(control => ({ id: control.id, height: control.rect?.height })))
-  check('no horizontal overflow', result.scroll.width <= result.viewport.width, { scroll: result.scroll, viewport: result.viewport })
-  check('real host fonts loaded', result.fontEvidence.allRequiredFacesLoaded, result.fontEvidence.requiredFamilies)
-  check('no browser errors', result.consoleErrors.length === 0 && result.pageErrors.length === 0, { consoleErrors: result.consoleErrors, pageErrors: result.pageErrors })
-  check('empty new draft and explicit provider', l.nameInput.value === '' && l.credentialInput.value === '' && l.modelControl.value === '' && l.providerControl.value === (scenario === 'custom' ? 'custom' : 'openai'), { name: l.nameInput.value, credential: l.credentialInput.value, model: l.modelControl.value, provider: l.providerControl.value })
-  check('credential stays a password field', l.credentialInput.type === 'password', l.credentialInput.type)
-  check('explicit custom endpoint', scenario === 'custom' ? l.endpointControl.tag === 'input' && l.endpointControl.type === 'url' && l.endpointControl.ariaRequired === 'true' : l.endpointControl.tag === 'div' && l.endpointControl.text === 'https://api.openai.com/v1', l.endpointControl)
-  check('verification precedes final actions with verification gate', result.actionButtons.map(button => button.text).join('|') === 'Cancel|Connect model' && result.testAction.disabled && result.actionButtons[1].disabled && l.findModels.disabled && result.verificationBeforeActions, { test: result.testAction, actions: result.actionButtons })
-  if (width < 640) check('coarse pointer action targets', result.back.rect.height >= 44 && result.back.rect.width >= 44 && [result.testAction, ...result.actionButtons].every(button => button.rect.height >= 44), { back: result.back.rect, actions: result.actionButtons.map(button => button.rect) })
-  check('provider change clears typed credential', result.behavior.providerChangeClearedCredential, result.behavior)
-  check('endpoint change clears typed credential', result.behavior.endpointChangeClearedCredential, result.behavior)
-  check('draft provider changes do not mutate saved resources', result.behavior.writeCalls.length === 0, result.behavior.writeCalls)
-  return checks
+  if (result.providerFlow) {
+    const checks = []
+    const check = (name, passed, evidence) => checks.push({ name, passed: Boolean(passed), evidence })
+    const { width, scenario, landmarks: l, progressive: p } = result
+    const vertex = scenario === 'vertex'
+    const provider = l.providerControl.rect
+    const endpoint = l.endpointControl.rect
+    const credential = l.credentialInput.rect
+    const isAgents = result.provider === 'agents'
+    check('one route heading and provider connection form', result.structure.pages === 1 && result.structure.headers === 1 && result.structure.titles === 1 && result.structure.forms === 1, result.structure)
+    check('fluid wide creation surface', result.page.style.display === 'block' && result.page.style.minWidth === '0px' && result.form.rect.width === result.page.rect.width, { page: result.page.rect, form: result.form.rect })
+    check('explicit route typography', result.page.style.fontSize === '14px' && result.page.style.lineHeight === '21px', result.page.style)
+    check('display heading', result.title.style.fontFamily.includes('Instrument Sans Variable') && result.title.style.fontStretch === '100%' && result.title.style.fontSize === '18px', result.title.style)
+    check('back then heading then form', result.back.rect.bottom <= result.header.rect.y && result.header.rect.bottom <= result.form.rect.y, { back: result.back.rect, header: result.header.rect, form: result.form.rect })
+    check('fixed back icon', result.backIcon.rect?.width === 14 && result.backIcon.rect?.height === 14 && result.backIcon.flexShrink === '0', result.backIcon)
+    check('route heading focus', result.focus.active?.class?.includes('k-create-title') && result.focus.active.tabIndex === -1 && result.focus.outlineStyle === 'solid' && result.focus.outlineWidth === '2px' && result.focus.outlineOffset === '2px' && result.focus.outlineColor === result.accentColor, result.focus)
+    check('named controls with resolvable help', result.accessibility.length >= 2 && result.accessibility.every(control => control.labelled && control.missingDescriptions.length === 0), result.accessibility)
+    const credentialStagePresent = result.structure.sections.some(heading => /credential|api key/i.test(heading) || (vertex && /service account/i.test(heading)))
+    check('provider and credential stages precede model binding', result.structure.sections.length >= 2 && result.structure.sections.some(heading => /provider|connection/i.test(heading)) && credentialStagePresent && !result.structure.sections.some(heading => /model|verify/i.test(heading)), result.structure.sections)
+    check('model name and model selector wait until the provider stage is complete', !p.nameVisible && !p.connectionNameVisible && !p.modelVisible, { name: p.nameVisible, connectionName: p.connectionNameVisible, model: p.modelVisible })
+    if (!isAgents) check('optional connection label is editable in the initial form', p.connectionLabelVisible && l.connectionLabelInput.value === '' && l.connectionLabelInput.required === false, l.connectionLabelInput)
+    check('discovery and model verification wait until the provider stage is complete', !p.findModelsVisible && !p.testActionVisible, p)
+    check('primary provider action waits for a credential', l.primaryAction.disabled === true, l.primaryAction)
+    const expectedProvider = scenario === 'custom' ? 'custom' : vertex ? 'google' : 'openai'
+    check('provider choice is explicit', l.providerControl.value === expectedProvider, l.providerControl)
+    check(isAgents ? 'chat providers exclude harness identities' : 'App Studio provider options remain available', isAgents
+      ? result.providerOptions.join('|') === 'openai|anthropic|openrouter|custom'
+      : result.providerOptions.includes('google') && result.providerOptions.includes('custom'), result.providerOptions)
+    const targetControlHeight = width < 640 ? 44 : 40
+    const credentialControlSized = vertex
+      ? credential?.height >= 132 && l.credentialInput.tag === 'textarea'
+      : credential?.height >= targetControlHeight && (width < 640 || credential?.height === targetControlHeight)
+    check('provider and credential control sizes', provider?.height >= targetControlHeight && (width < 640 || provider?.height === targetControlHeight) && credentialControlSized, { provider: provider?.height, credential: credential?.height })
+    if (scenario === 'custom') {
+      check('custom endpoint is a named URL input', l.endpointControl.tag === 'input' && l.endpointControl.type === 'url' && l.endpointControl.ariaRequired === 'true', l.endpointControl)
+      check('custom endpoint aligns with provider control size', endpoint && provider && endpoint.height === provider.height, { provider, endpoint })
+      check(width < 640 ? 'custom endpoint follows provider on mobile' : 'custom endpoint stacks after provider on desktop', provider && endpoint && endpoint.y > provider.y, { provider, endpoint })
+    }
+    if (vertex) {
+      check('Google Vertex service-account method is selected', l.providerControl.value === 'google' && l.credentialMethodControl.value === 'service-account-json', { provider: l.providerControl, method: l.credentialMethodControl })
+      check('Vertex service-account JSON textarea is visible and empty', l.credentialInput.tag === 'textarea' && l.credentialInput.placeholder?.includes('service-account JSON') && l.credentialInput.value === '' && l.credentialInput.rect.height >= 132 && l.credentialInput.style.minHeight === '132px', l.credentialInput)
+      check('Vertex endpoint targets the Vertex AI API', l.endpointControl.value?.includes('aiplatform.googleapis.com'), l.endpointControl)
+    }
+    const formControlsMeetSize = result.modelInputs.length > 0 && result.modelInputs.every(control => {
+      if (!control.rect) return false
+      if (vertex && control.id === 'model-credential') return control.tag === 'textarea' && control.rect.height >= 132
+      return width < 640 ? control.rect.height >= 44 : control.rect.height === 40
+    })
+    check('form controls meet target sizes', formControlsMeetSize, result.modelInputs.map(control => ({ id: control.id, tag: control.tag, height: control.rect?.height })))
+    check('no horizontal overflow or sticky field obstruction', result.scroll.width <= result.viewport.width && l.footer.style.position !== 'sticky', { scroll: result.scroll, viewport: result.viewport, footer: l.footer.style.position })
+    check('real host fonts loaded', result.fontEvidence.allRequiredFacesLoaded, result.fontEvidence.requiredFamilies)
+    check('no browser errors', result.consoleErrors.length === 0 && result.pageErrors.length === 0, { consoleErrors: result.consoleErrors, pageErrors: result.pageErrors })
+    check(vertex ? 'Vertex credential stays a multiline control' : 'API key credential stays a password field', vertex ? l.credentialInput.tag === 'textarea' : l.credentialInput.type === 'password', l.credentialInput)
+    check('provider change clears typed key', result.behavior.providerChangeClearedCredential, result.behavior)
+    check('endpoint change clears typed key', result.behavior.endpointChangeClearedCredential, result.behavior)
+    check('draft destination changes issue no writes', result.behavior.writeCalls.length === 0, result.behavior.writeCalls)
+    if (width < 640) check('coarse pointer action targets', result.back.rect.height >= 44 && result.back.rect.width >= 44 && result.actionButtons.every(button => button.rect.height >= 44), { back: result.back.rect, actions: result.actionButtons.map(button => button.rect) })
+    return checks
+  }
+  throw new Error(`No provider-first visual contracts are defined for ${result.provider}`)
 }
 
 function checkSharedGeometry(app, agents) {
-  if (agents.providerFlow) return [{ name: 'shared route title typography across distinct provider flows', passed: app.title.style.fontFamily === agents.title.style.fontFamily && app.title.style.fontSize === agents.title.style.fontSize, evidence: { app: app.title.style, agents: agents.title.style } }]
-  // These landmarks precede provider-owned help, extra controls and notices.
-  // Later section/footer positions legitimately follow their content height.
-  const landmarks = ['back', 'header', 'title', 'description']
-  const checks = landmarks.map(name => ({
+  // Both routes now begin with the same provider-first task. Compare the
+  // controls users act on and the shared route frame; provider help remains
+  // visible in raw screenshots and may change vertical flow below its label.
+  const checks = []
+  const compareRect = (name, appRect, agentsRect, dimensions) => checks.push({
     name: `shared ${name} geometry`,
-    passed: ['x', 'y', 'width', 'height'].every(key => app[name].rect[key] === agents[name].rect[key]),
-    evidence: { app: app[name].rect, agents: agents[name].rect },
-  }))
-  for (const name of ['nameInput', 'providerControl', 'endpointControl']) {
-    // The stacked endpoint follows provider-owned help. Its y coordinate may
-    // differ on mobile when that help wraps to a different number of lines.
-    const dimensions = name === 'endpointControl' && app.width < 640 ? ['x', 'width', 'height'] : ['x', 'y', 'width', 'height']
-    checks.push({
-      name: `shared ${name} geometry`,
-      passed: dimensions.every(key => app.landmarks[name].rect[key] === agents.landmarks[name].rect[key]),
-      evidence: { app: app.landmarks[name].rect, agents: agents.landmarks[name].rect },
-    })
+    passed: Boolean(appRect && agentsRect) && dimensions.every(key => appRect[key] === agentsRect[key]),
+    evidence: { app: appRect, agents: agentsRect, dimensions },
+  })
+  // App Studio keeps its own section navigation above this nested route;
+  // compare the shared frame's size and alignment without requiring equal
+  // viewport Y coordinates across different host shells.
+  compareRect('back action', app.back.rect, agents.back.rect, ['x', 'width', 'height'])
+  compareRect('route title', app.title.rect, agents.title.rect, ['x', 'width', 'height'])
+  compareRect('form width', app.form.rect, agents.form.rect, ['x', 'width'])
+  compareRect('provider control', app.landmarks.providerControl.rect, agents.landmarks.providerControl.rect, ['x', 'width', 'height'])
+  compareRect('credential control', app.landmarks.credentialInput.rect, agents.landmarks.credentialInput.rect, ['x', 'width', 'height'])
+  if (app.scenario === 'custom') {
+    // Help copy may wrap to a different number of lines on mobile. Keep the
+    // endpoint's measured width and target size exact without hiding that copy.
+    // The provider-specific helper text changes where the endpoint lands in
+    // the vertical flow; compare the shared target's horizontal alignment and
+    // size while separately checking that it follows the provider control.
+    compareRect('custom endpoint', app.landmarks.endpointControl.rect, agents.landmarks.endpointControl.rect,
+      ['x', 'width', 'height'])
   }
+  checks.push({
+    name: 'shared route title typography',
+    passed: app.title.style.fontFamily === agents.title.style.fontFamily && app.title.style.fontSize === agents.title.style.fontSize,
+    evidence: { app: app.title.style, agents: agents.title.style },
+  })
   return checks
 }
 
@@ -580,13 +612,16 @@ function comparePngs(left, right) {
 async function run() {
   await mkdir(outputDir, { recursive: true })
   const { chromium } = await loadPlaywright()
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({
+    headless: true,
+    ...(process.env.MODEL_FORM_BROWSER_EXECUTABLE ? { executablePath: process.env.MODEL_FORM_BROWSER_EXECUTABLE } : {}),
+  })
   const results = []
   try {
     for (const theme of ['light', 'dark']) {
       for (const width of [1440, 390]) {
         for (const provider of ['app', 'agents']) {
-          for (const scenario of ['openai', 'custom']) {
+          for (const scenario of scenariosFor(provider)) {
             const context = await browser.newContext({
               viewport: { width, height: 1200 },
               deviceScaleFactor: 1,

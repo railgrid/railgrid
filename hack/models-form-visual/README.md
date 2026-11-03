@@ -3,8 +3,10 @@
 This fixture mounts the real App Studio and Agents provider entry
 points in one Vite document. It supplies the host `railgridContext`, tenant
 storage, and deterministic bound Kubernetes resources used by the visual comparator.
-Model configuration comes from the workspace Studio and ModelCredential objects;
-the fixture does not mock retired provider REST APIs or use real credentials.
+Model configuration comes from the workspace Studio plus its provider
+connections, and from Agents ModelCredential plus ModelProviderConnection
+objects. The fixture does not mock retired provider REST APIs or use real
+credentials.
 The stylesheet imports the portal's real `main.css` and scans the provider
 sources so utility classes are compiled in the external fixture root.
 
@@ -21,41 +23,44 @@ the browser tooling already available in the environment:
 
 ```sh
 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs \
+  MODEL_FORM_BROWSER_EXECUTABLE=/path/to/chromium \
   make test-model-form-visual MODEL_FORM_OUTPUT=/tmp/models-form-visual
 ```
 
 The comparator writes raw screenshots, unmasked PNG diffs, and a computed
 geometry/style report to `MODEL_FORM_OUTPUT` (or its temporary default). It
-captures both the initial OpenAI state and a `custom` state reached by changing
-the real provider control. Screenshot values are not filled, normalized, masked,
-or cropped to hide differences.
+captures the initial OpenAI state and a `custom` state reached by changing the
+real provider control for App Studio and Agents. It also captures App Studio's
+Google Vertex service-account mode at desktop and mobile sizes in both themes.
+Agents has no service-account credential mode, so that variant is not applicable
+to its form. The Vertex textarea is left empty; the fixture makes no Google
+requests and uses no real credentials. Screenshot values are not filled,
+normalized, masked, or cropped to hide differences.
 
-Agents now uses the provider-first BYOK flow, so its initial form is checked
-independently for API-only choices, progressive model selection, credential
-destination changes, and the non-sticky mobile action area. App Studio retains
-the shared model configuration form. The comparator checks shared route
-typography; cross-provider pixel differences remain observational.
+Both actual create routes now open on the provider-connection stage. The initial
+draft has no internal resource name or model binding. App Studio exposes an
+optional connection display label before verification. Setup does not depend on an
+existing configured model or model Secret. The fixture supplies the new bound
+`ModelProviderConnection` resource shape for each provider; App Studio's Studio
+starts with an empty model registry. After each untouched screenshot, the
+comparator makes only in-memory provider and endpoint edits to confirm a typed
+key is cleared and no resource write occurs.
 
 The gate checks the contracts in `docs/design/components/model-connections.md`:
 the fluid creation root and explicit typography, the shared header and back
-icon, the route's heading focus, section hierarchy, named fields and help,
-aligned desktop Connection controls, stacked mobile controls, 40px desktop and
-44px mobile field sizes, touch action targets, loaded host fonts, browser errors,
-and horizontal overflow. It also checks the new draft starts empty with an
-explicit provider choice and disabled discovery/test/save actions. After the
-screenshot, synthetic local edits verify that changing a provider or endpoint
-clears the typed credential and never writes saved resources. These edits do
-not invoke discovery, testing, or saving; API verification remains covered by
-`make test-model-connections` and `make test-model-connections-api`.
+icon, route heading focus, named provider and credential fields with help,
+40px desktop and 44px mobile controls, mobile action targets, loaded host fonts,
+browser errors, and horizontal overflow. It confirms that discovery and model
+verification wait until the provider stage is complete. The shared-geometry
+checks compare actual route landmarks and controls; no screenshot pixels are
+masked, normalized, or cropped to hide provider differences. The synthetic
+destination edits do not invoke discovery, testing, or saving. API behavior is
+covered by `make test-model-connections` and `make test-model-connections-api`.
 
 Cross-provider PNG differences remain complete review evidence with exact pixel
 counts and channel differences; they are observational and do not determine the
 exit code. App Studio supports Google credential variants and recommendations;
-Agents supports additional chat providers and harness identities. Credential
-storage guidance and test-prerequisite notices reflect each adapter's behavior.
-Custom endpoint guidance also describes their different supported transports.
-Those capabilities and copy legitimately change section and footer height.
-The check compares shared header and initial control geometry separately, and
-checks each form's alignment and field sizes without a pixel tolerance. A mobile
-endpoint follows the provider's wrapped help, so its vertical position may
-vary while its width and height must match.
+Agents offers additional chat providers and harness identities. Their provider
+guidance and storage copy remain visible in the captures. The geometry gate
+compares the shared route frame, provider controls, credential controls, and the
+custom endpoint target without modifying the screenshots.

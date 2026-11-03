@@ -45,24 +45,38 @@ function hostHeaders(init) {
   headers.set('X-Railgrid-Workspace', 'workspace-test')
   return Object.fromEntries(headers.entries())
 }
+const agentsProviderConnections = [{
+  apiVersion: 'agents.railgrid.ai/v1alpha1',
+  kind: 'ModelProviderConnection',
+  metadata: { name: 'openai-primary', uid: 'fixture-agent-connection', resourceVersion: '1' },
+  spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'fixture-agent-key' }, secretKey: 'apiKey' },
+  status: { conditions: [{ type: 'Ready', status: 'True' }, { type: 'SecretResolved', status: 'True' }, { type: 'Reachable', status: 'True' }], models: ['gpt-4o-mini'] },
+}]
 const agentsCredentials = [{
   apiVersion: 'agents.railgrid.ai/v1alpha1',
   kind: 'ModelCredential',
   metadata: { name: 'everyday', uid: 'fixture-model', resourceVersion: '1' },
-  spec: { provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o-mini', secretRef: { name: 'fixture-credential' } },
-  status: { conditions: [{ type: 'Ready', status: 'True' }, { type: 'SecretResolved', status: 'True' }, { type: 'Reachable', status: 'True' }], models: ['gpt-4o-mini'] },
+  spec: { connectionRef: 'openai-primary', model: 'gpt-4o-mini' },
+  status: { conditions: [{ type: 'Ready', status: 'True' }, { type: 'ConnectionReady', status: 'True' }, { type: 'ModelConfigured', status: 'True' }] },
 }]
 
 // Represent the actual bound CRs. There is no model configuration REST route,
 // and the fixture contains no real credential values or network requests.
+const appProviderConnections = [{
+  apiVersion: 'ai.railgrid.ai/v1alpha1',
+  kind: 'ModelProviderConnection',
+  metadata: { name: 'model-0123456789abcdef01234567', uid: 'fixture-app-connection', resourceVersion: '1', annotations: { 'ai.railgrid.ai/display-name': 'OpenAI production' } },
+  spec: { provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'fixture-app-key' }, secretKey: 'apiKey' },
+  status: { observedGeneration: 1, conditions: [{ type: 'Ready', status: 'True' }, { type: 'SecretResolved', status: 'True' }, { type: 'Reachable', status: 'True' }], models: ['gpt-5.4'] },
+}]
+
 const studio = {
   apiVersion: 'ai.railgrid.ai/v1alpha1', kind: 'Studio',
   metadata: { name: 'studio', uid: 'fixture-studio', resourceVersion: '1' },
-  spec: { llm: { defaultModel: 'app-default', models: [{
-    id: 'app-default', revisionID: 'fixture-revision', name: 'Workspace default',
-    provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4',
-  }] } },
-  status: { models: [{ id: 'app-default', configured: true }] },
+  // New model/provider creation starts with no model binding and needs no
+  // preconfigured model Secret. Connections are separate bound resources.
+  spec: { llm: { models: [] } },
+  status: { models: [] },
 }
 
 const usage = {
@@ -83,6 +97,7 @@ const json = (value, status = 200) => new Response(JSON.stringify(value), {
 })
 
 function emptyList() { return { metadata: { resourceVersion: '1' }, items: [] } }
+function resourceList(kind, items) { return { apiVersion: 'v1', kind, metadata: { resourceVersion: '1' }, items } }
 
 function streamResponse() {
   const stream = new ReadableStream({
@@ -101,7 +116,13 @@ function appFetch(input, init = {}) {
   const path = url.pathname
   calls.push({ provider: 'app', path, method: init.method || 'GET', headers: hostHeaders(init) })
   if (path === '/api/providers') return Promise.resolve(json(emptyList()))
+  if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/modelproviderconnections') {
+    return Promise.resolve(json(resourceList('ModelProviderConnectionList', appProviderConnections)))
+  }
   if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/studios/studio') return Promise.resolve(json(studio))
+  if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/studios/studio/create-readiness') {
+    return Promise.resolve(json({ gitConnection: { ready: false, status: 'connection-missing', message: 'No Git connection is configured.' } }))
+  }
   if (/^\/clusters\/workspace-test\/apis\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return Promise.resolve(json(emptyList()))
   return Promise.resolve(json({ message: `fixture did not mock ${path}` }, 404))
 }
@@ -112,7 +133,8 @@ function agentsFetch(input, init = {}) {
   calls.push({ provider: 'agents', path, method: init.method || 'GET', headers: hostHeaders(init) })
   if (path === '/services/providers/agents/oauth/providers') return Promise.resolve(json({ providers: {} }))
   if (path === '/ui/providers/agents/model-catalog.json') return Promise.resolve(json([{ id: 'gpt-4o-mini', inputPer1M: 0.15, outputPer1M: 0.6, contextWindow: 128000, vision: true, toolCall: true }]))
-  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelcredentials') return Promise.resolve(json({ metadata: { resourceVersion: '1' }, items: agentsCredentials }))
+  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelproviderconnections') return Promise.resolve(json(resourceList('ModelProviderConnectionList', agentsProviderConnections)))
+  if (path === '/clusters/workspace-test/apis/agents.railgrid.ai/v1alpha1/modelcredentials') return Promise.resolve(json(resourceList('ModelCredentialList', agentsCredentials)))
   if (/^\/clusters\/workspace-test\/apis\/[^/]+\/[^/]+\/[^/]+$/.test(path)) return Promise.resolve(json(emptyList()))
   if (/\/agents\/[^/]+\/events$/.test(path)) return Promise.resolve(streamResponse())
   if (/\/agents\/[^/]+\/usage$/.test(path)) return Promise.resolve(json({ result: usage }))
