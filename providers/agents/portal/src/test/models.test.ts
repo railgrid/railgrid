@@ -13,6 +13,7 @@ import Models from '../views/Models.vue'
 import { ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
 import { AppStore } from '../store'
+import type { Credential } from '../types'
 import { makeStore, stubApi } from './helpers'
 import { mountVue, settleVue, type MountedVue } from './vue-helper'
 
@@ -34,6 +35,34 @@ const usageWithNulls = {
   byAgent: null,
   byModel: null,
   series: null,
+}
+
+const harnessActionCredentialStates: { label: string; credentials: Credential[] }[] = [
+  { label: 'empty state', credentials: [] },
+  { label: 'a chat credential', credentials: [{ name: 'main', provider: 'openai', model: 'gpt-5' }] },
+  { label: 'a provider connection only', credentials: [{ name: 'production', provider: 'openai', isConnection: true, baseURL: 'https://api.openai.com/v1' }] },
+  { label: 'an existing harness identity', credentials: [{ name: 'my-claude', provider: 'claude-code', model: '' }] },
+]
+
+function headerAction(root: ParentNode, label: string, headerLabel: 'available-models-title' | 'provider-connections-title' = 'available-models-title'): HTMLButtonElement | undefined {
+  const selector = headerLabel === 'provider-connections-title'
+    ? `section[aria-labelledby="${headerLabel}"] > header`
+    : `header[aria-labelledby="${headerLabel}"]`
+  const header = root.querySelector<HTMLElement>(selector)
+  if (!header) throw new Error(`${headerLabel} header not found`)
+  return [...header.querySelectorAll<HTMLButtonElement>('button')]
+    .find(button => button.textContent?.includes(label))
+}
+
+function providerConnectionsHeaderAction(root: ParentNode, label: string): HTMLButtonElement | undefined {
+  return headerAction(root, label, 'provider-connections-title')
+}
+
+function loadedStore(api: ApiClient, credentials: Credential[]): AppStore {
+  const store = makeStore(api)
+  store.credentials.data = credentials
+  store.credentials.loaded = store.credentials.hasSnapshot = true
+  return store
 }
 
 describe('models view on an empty workspace', () => {
@@ -254,6 +283,56 @@ describe('models view on an empty workspace', () => {
     expect(el.querySelector('a[href="#/create/model"]')?.textContent).toBe('Connect provider')
   })
 
+  it.each(harnessActionCredentialStates)('routes the Provider connections harness action with $label credentials', async ({ credentials }) => {
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const view = await mountVue(Models, { store: loadedStore(api, credentials), api, routeOwned: true, modelsTab: 'provider-connections' })
+    const action = providerConnectionsHeaderAction(view.element, 'Add harness identity')
+
+    expect(action, 'Add harness identity should remain in the Provider connections header').toBeTruthy()
+    action!.click()
+    await settleVue()
+
+    expect(view.navigations).toEqual([{ kind: 'create', resource: 'model', type: 'harness' }])
+  })
+
+  it.each(harnessActionCredentialStates)('opens a new embedded HarnessCredentialForm from Provider connections with $label credentials', async ({ credentials }) => {
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const view = await mountVue(Models, { store: loadedStore(api, credentials), api, routeOwned: false, modelsTab: 'provider-connections' })
+    if (credentials.some(item => item.provider === 'claude-code')) {
+      expect(view.element.querySelector('table[aria-label="Provider connections and harness identities"]')?.textContent).toContain('my-claude')
+    }
+
+    const action = providerConnectionsHeaderAction(view.element, 'Add harness identity')
+    expect(action, 'Add harness identity should remain in the Provider connections header').toBeTruthy()
+    action!.click()
+    await settleVue()
+
+    expect(view.element.querySelector('h1.k-create-title')?.textContent?.trim()).toBe('Add harness identity')
+    expect(view.element.querySelector('form[aria-label="Harness identity form"]')).toBeTruthy()
+    expect([...view.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(option => option.value))
+      .toEqual(['claude-code', 'codex'])
+  })
+
+  it('returns to Provider connections and keeps Add model on the API connection flow after local harness cancel', async () => {
+    const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
+    const connection: Credential = { name: 'production', provider: 'openai', isConnection: true, baseURL: 'https://api.openai.com/v1' }
+    const view = await mountVue(Models, { store: loadedStore(api, [connection]), api, modelsTab: 'provider-connections' })
+
+    providerConnectionsHeaderAction(view.element, 'Add harness identity')!.click()
+    await settleVue()
+    expect(view.element.querySelector('form[aria-label="Harness identity form"]')).toBeTruthy()
+
+    view.element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
+    await settleVue()
+    expect(view.element.querySelector('table[aria-label="Provider connections and harness identities"]')).toBeTruthy()
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Add model to production"]')!.click()
+    await settleVue()
+
+    expect(view.element.querySelector('form[aria-label="Model configuration form"]')).toBeTruthy()
+    expect(view.element.querySelector('form[aria-label="Harness identity form"]')).toBeNull()
+    expect(view.element.querySelector('h1.k-create-title')?.textContent?.trim()).toBe('Add model')
+  })
+
   it.each(['claude-code', 'codex'])('keeps %s on the separate harness creation path', async provider => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
     const { element: el } = await mountVue(Models, { store: makeStore(api), api, createRoute: true, initialFamily: 'harness' })
@@ -263,42 +342,38 @@ describe('models view on an empty workspace', () => {
     expect([...select.options].map(item => item.value)).toEqual(['claude-code', 'codex'])
   })
 
-  it('tells the two credential families apart in the list', async () => {
-    // A harness identity has no endpoint and no model, so on a card built to
-    // show both it read as a broken chat credential: a blank model, an
-    // "Endpoint: Provider default" it does not have, a pricing line for tokens
-    // it does not bill through us, and a Test button with nothing to call.
+  it('keeps Models chat-only and lists harness identities with API connections', async () => {
     const api = stubApi({ catalog: () => Promise.resolve([]), usage: () => Promise.resolve(usageWithNulls) })
-    const store = makeStore(api)
-    store.credentials.data = [
+    const store = loadedStore(api, [
+      { name: 'production', displayName: 'Production', provider: 'openai', baseURL: 'https://api.openai.com/v1', isConnection: true },
       { name: 'chatty', provider: 'openai', baseURL: 'https://api.openai.com/v1', model: 'gpt-4o' },
       { name: 'my-claude', provider: 'claude-code', model: '', ready: true },
       { name: 'my-codex', provider: 'codex', model: '', ready: false },
-    ]
-    store.credentials.loaded = store.credentials.hasSnapshot = true
+    ])
     const { element: el } = await mountVue(Models, { store, api })
 
     const cards = [...el.querySelectorAll('.k-model-connection')]
-    const harness = cards.find(card => card.getAttribute('aria-label') === 'Harness identity my-claude')!
-    const codex = cards.find(card => card.getAttribute('aria-label') === 'Harness identity my-codex')!
     const chat = cards.find(card => card.getAttribute('aria-label') === 'Model chatty')!
-    expect(harness.textContent).toContain('Harness identity')
-    expect(harness.textContent).toContain('Claude Code identity')
-    expect(harness.textContent).toContain('Runs on')
-    expect(harness.textContent).toContain('Edge machine')
-    expect(harness.textContent).toContain('Credential checked')
-    expect(harness.textContent).toContain('first run confirms the edge runner can use it')
-    expect(harness.textContent).not.toContain('Provider default')
-    expect(harness.textContent).not.toContain('pricing unknown')
-    expect(harness.textContent).not.toContain('Not reachable')
-    expect(codex.textContent).toContain('Needs attention')
-    expect(codex.textContent).not.toContain('Not reachable')
-    expect([...harness.querySelectorAll('button')].map(b => b.textContent?.trim())).not.toContain('Test connection')
-    // The chat card is untouched: endpoint, model, catalog verdict, Test.
+    expect(cards).toHaveLength(1)
+    expect(chat).toBeTruthy()
     expect(chat.textContent).toContain('https://api.openai.com/v1')
     expect(chat.textContent).toContain('gpt-4o')
     expect([...chat.querySelectorAll('button')].map(b => b.textContent?.trim())).toContain('Test connection')
-    expect(el.querySelector('[aria-label="Delete my-claude"]')).toBeTruthy()
+    expect(el.querySelector('[aria-label="Harness identity my-claude"]')).toBeNull()
+    expect(el.querySelector('[aria-label="Harness identity my-codex"]')).toBeNull()
+    expect(headerAction(el, 'Add harness identity')).toBeUndefined()
+
+    el.querySelector<HTMLAnchorElement>('a[href="#/models/provider-connections"]')!.click()
+    await settleVue()
+    const table = el.querySelector('table[aria-label="Provider connections and harness identities"]')!
+    expect(table.textContent).toContain('Production')
+    expect(table.textContent).toContain('Claude Code identity')
+    expect(table.textContent).toContain('Codex identity')
+    expect(table.textContent).toContain('Edge machine')
+    expect(table.querySelector('[aria-label="Add model to Production"]')).toBeTruthy()
+    expect(table.querySelector('[aria-label="Add model to my-claude"]')).toBeNull()
+    expect(table.querySelector('[aria-label="Add model to my-codex"]')).toBeNull()
+    expect(table.querySelector('[aria-label="Test connection for my-claude"]')).toBeNull()
   })
 
   it('locks credential actions before confirmation and during deletion', async () => {
@@ -700,7 +775,7 @@ describe('model management navigation', () => {
       '#/models', '#/models/provider-connections', '#/models/workspace-assistant', '#/models/usage',
     ])
     expect(view.element.querySelector('.k-model-collection')).toBeTruthy()
-    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
+    expect(view.element.querySelector('table[aria-label="Provider connections and harness identities"]')).toBeNull()
     expect(view.element.querySelector('#workspace-assistant-settings')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     expect(usage).not.toHaveBeenCalled()
@@ -712,12 +787,12 @@ describe('model management navigation', () => {
     }
     await open('#/models/provider-connections')
     expect(view.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
-    expect(view.element.querySelector('table[aria-label="Provider connections"]')?.textContent).toContain('Production')
+    expect(view.element.querySelector('table[aria-label="Provider connections and harness identities"]')?.textContent).toContain('Production')
     expect(view.element.querySelector('.k-model-collection')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     await open('#/models/workspace-assistant')
     expect(view.element.querySelector('#workspace-assistant-settings')).toBeTruthy()
-    expect(view.element.querySelector('table[aria-label="Provider connections"]')).toBeNull()
+    expect(view.element.querySelector('table[aria-label="Provider connections and harness identities"]')).toBeNull()
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
     await open('#/models/usage')
     expect(usage).toHaveBeenCalledTimes(1)
@@ -732,13 +807,72 @@ describe('model management navigation', () => {
     const store = makeStore(api)
     store.credentials.loaded = store.credentials.hasSnapshot = true
     const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
-    expect(view.element.textContent).toContain('No provider connections yet')
+    expect(view.element.textContent).toContain('Add provider access or a harness identity')
+    expect(providerConnectionsHeaderAction(view.element, 'Add harness identity')).toBeTruthy()
     expect([...view.element.querySelectorAll('button')].some(button => button.textContent?.includes('Connect provider'))).toBe(true)
     expect(view.element.querySelector('.k-model-usage')).toBeNull()
   })
 })
 
 describe('provider connection table', () => {
+  it('counts models only against their explicit connection reference', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'shared', displayName: 'Connection A', isConnection: true, provider: 'openai' },
+      { name: 'other', displayName: 'Connection B', isConnection: true, provider: 'openai' },
+      { name: 'shared', connectionRef: 'other', model: 'gpt-5' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    const rows = [...view.element.querySelectorAll('table[aria-label="Provider connections and harness identities"] tbody tr')]
+    const connectionA = rows.find(row => row.textContent?.includes('Connection A'))!
+    const connectionB = rows.find(row => row.textContent?.includes('Connection B'))!
+
+    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0')
+    expect(connectionB.querySelectorAll('td')[3]?.textContent?.trim()).toBe('1')
+  })
+
+  it('does not count a same-name direct model without a connection reference', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'shared', displayName: 'Connection A', isConnection: true, provider: 'openai' },
+      { name: 'shared', model: 'gpt-5' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    const connectionA = [...view.element.querySelectorAll('table[aria-label="Provider connections and harness identities"] tbody tr')]
+      .find(row => row.textContent?.includes('Connection A'))!
+
+    expect(connectionA.querySelectorAll('td')[3]?.textContent?.trim()).toBe('0')
+  })
+
+  it('sorts numeric model counts while keeping harness identities last in both directions', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = makeStore(api)
+    store.credentials.data = [
+      { name: 'empty', displayName: 'Zero Models', isConnection: true, provider: 'openai' },
+      { name: 'full', displayName: 'Two Models', isConnection: true, provider: 'openai' },
+      { name: 'first-model', connectionRef: 'full', model: 'gpt-5' },
+      { name: 'second-model', connectionRef: 'full', model: 'gpt-4o' },
+      { name: 'identity', provider: 'codex', model: '' },
+    ]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
+    const table = view.element.querySelector('table[aria-label="Provider connections and harness identities"]')!
+    const names = () => [...table.querySelectorAll('tbody tr')]
+      .map(row => row.querySelector('.k-table__primary-value')?.textContent?.trim())
+
+    table.querySelector<HTMLButtonElement>('[aria-label="Sort by Models ascending"]')!.click()
+    await settleVue()
+    expect(names()).toEqual(['Zero Models', 'Two Models', 'identity'])
+
+    table.querySelector<HTMLButtonElement>('[aria-label="Sort by Models descending"]')!.click()
+    await settleVue()
+    expect(names()).toEqual(['Two Models', 'Zero Models', 'identity'])
+  })
+
   it('uses the shared searchable table and keeps Add model and Edit actions scoped to the connection', async () => {
     const api = stubApi({ catalog: async () => [] })
     const store = makeStore(api)
@@ -749,9 +883,11 @@ describe('provider connection table', () => {
     ]
     store.credentials.loaded = store.credentials.hasSnapshot = true
     const view = await mountVue(Models, { store, api, modelsTab: 'provider-connections' })
-    const table = view.element.querySelector('table[aria-label="Provider connections"]')!
+    const table = view.element.querySelector('table[aria-label="Provider connections and harness identities"]')!
     expect(table).toBeTruthy()
-    expect([...table.querySelectorAll('thead th')].map(cell => cell.textContent?.trim())).toEqual(['Name', 'Endpoint', 'Models'])
+    const headings = [...table.querySelectorAll('thead th')].map(cell => cell.textContent?.trim())
+    expect(headings).toContain('Name')
+    expect(headings).toContain('Type')
     const production = [...table.querySelectorAll('tbody tr')].find(row => row.textContent?.includes('Production'))!
     expect(production.textContent).toContain('https://api.openai.com/v1')
     expect(production.textContent).toContain('1')
@@ -771,6 +907,86 @@ describe('provider connection table', () => {
     await settleVue()
     expect(view.element.querySelector('.k-create-title')?.textContent).toBe('Edit provider connection')
     expect(view.element.querySelector('.k-create-description')?.textContent).toBe('Update the connection name or provider settings.')
+  })
+
+  it('keeps same-name API and harness entries distinct and uses each family’s edit/delete operation', async () => {
+    const connection: Credential = { name: 'shared', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1' }
+    const harness: Credential = { name: 'shared', provider: 'codex', model: '', ready: true }
+    const deleteProviderConnection = vi.fn().mockResolvedValue(undefined)
+    const deleteCredential = vi.fn().mockResolvedValue(undefined)
+    const api = stubApi({
+      catalog: async () => [],
+      listCredentials: async () => [connection, harness],
+      deleteProviderConnection,
+      deleteCredential,
+    })
+    const view = await mountVue(Models, { store: loadedStore(api, [connection, harness]), api, modelsTab: 'provider-connections' })
+    const table = view.element.querySelector('table[aria-label="Provider connections and harness identities"]')!
+
+    expect(table.querySelectorAll('tbody tr')).toHaveLength(2)
+    expect([...table.querySelectorAll('tbody tr')].map(row => row.textContent).join(' ')).toContain('API connection')
+    expect([...table.querySelectorAll('tbody tr')].map(row => row.textContent).join(' ')).toContain('Codex identity')
+    expect(table.querySelector('[aria-label="Add model to shared"]')).toBeTruthy()
+    expect(table.querySelector('[aria-label="Edit provider connection shared"]')).toBeTruthy()
+    expect(table.querySelector('[aria-label="Delete provider connection shared"]')).toBeTruthy()
+    expect(table.querySelector('[aria-label="Add model to shared harness identity"]')).toBeNull()
+    expect(table.querySelector('[aria-label="Edit shared harness identity"]')).toBeTruthy()
+    expect(table.querySelector('[aria-label="Delete shared harness identity"]')).toBeTruthy()
+
+    table.querySelector<HTMLButtonElement>('[aria-label="Edit shared harness identity"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-create-title')?.textContent).toBe('Edit harness identity')
+    expect(view.element.querySelector('form[aria-label="Harness identity form"]')).toBeTruthy()
+    expect([...view.element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(option => option.value)).toEqual(['claude-code', 'codex'])
+    view.element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
+    await settleVue()
+
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Edit provider connection shared"]')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-create-title')?.textContent).toBe('Edit provider connection')
+    expect(view.element.querySelector('form[aria-label="Model configuration form"]')).toBeTruthy()
+    view.element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
+    await settleVue()
+
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Delete shared harness identity"]')!.click()
+    resolveConfirm(true)
+    await settleVue(8)
+    expect(deleteCredential).toHaveBeenCalledExactlyOnceWith('shared')
+    expect(deleteProviderConnection).not.toHaveBeenCalled()
+
+    view.element.querySelector<HTMLButtonElement>('[aria-label="Delete provider connection shared"]')!.click()
+    resolveConfirm(true)
+    await settleVue(8)
+    expect(deleteProviderConnection).toHaveBeenCalledExactlyOnceWith('shared')
+  })
+
+  it('rejects a duplicate harness credential name without mistaking an API connection for the conflict', async () => {
+    const apiConnection: Credential = { name: 'shared', isConnection: true, provider: 'openai', baseURL: 'https://api.openai.com/v1' }
+    const existingHarness: Credential = { name: 'existing-harness', provider: 'claude-code', model: '' }
+    const saveCredential = vi.fn()
+    const api = stubApi({ catalog: async () => [], saveCredential })
+    const view = await mountVue(Models, {
+      store: loadedStore(api, [apiConnection, existingHarness]),
+      api,
+      modelsTab: 'provider-connections',
+    })
+
+    providerConnectionsHeaderAction(view.element, 'Add harness identity')!.click()
+    await settleVue()
+    const name = view.element.querySelector<HTMLInputElement>('#model-display-name')!
+    name.value = existingHarness.name
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const secret = view.element.querySelector<HTMLInputElement>('#harness-secret')!
+    secret.value = 'sk-ant-oat01-token'
+    secret.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    view.element.querySelector<HTMLFormElement>('form[aria-label="Harness identity form"]')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+
+    expect(saveCredential).not.toHaveBeenCalled()
+    expect(view.element.querySelector('form[aria-label="Harness identity form"] [role="alert"]')?.textContent)
+      .toContain('A model with this name already exists. Choose another name.')
   })
 })
 

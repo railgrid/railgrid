@@ -1752,6 +1752,7 @@ describe('agent creation backend choice', () => {
     backendRadio(noIdentity.el, 'harness').click()
     await settle(2)
     expect(text(noIdentity.el)).toContain('No harness identities yet')
+    expect(text(noIdentity.el)).toContain('Models → Provider connections')
     expect(primary(noIdentity.el).disabled).toBe(true)
   })
 
@@ -1909,7 +1910,8 @@ describe('agent backend', () => {
 
     expect(store.credentials.hasSnapshot).toBe(true)
     expect(el.querySelector('#agent-harness-credential-empty')?.textContent).toContain('No harness identities yet')
-    expect(el.querySelector('a[href*="create/model/harness"]')?.textContent).toContain('Add harness identity')
+    expect(el.querySelector('#agent-harness-credential-empty')?.textContent).toContain('Manage them under Models → Provider connections.')
+    expect(el.querySelector('a[href*="create/model/harness"]')?.textContent).toBe('Add harness identity (new tab)')
     expect(sectionButton(el, 'Save backend').disabled).toBe(false)
   })
 

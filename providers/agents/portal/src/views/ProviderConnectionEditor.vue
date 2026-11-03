@@ -46,7 +46,7 @@ function connectionModelOptions(name: string, persisted: string[] | undefined): 
 }
 const models = ref<string[]>(connectionModelOptions(originalConnection?.name || props.initialConnection || '', originalConnection?.discovered))
 const modelStage = ref(Boolean(props.credential || props.initialConnection))
-const alreadyConfigured = computed(() => !props.credential && Boolean(selectedConnection.value) && props.credentials.some(item => (item.connectionRef === selectedConnection.value || item.name === selectedConnection.value) && item.model === model.value.trim()))
+const alreadyConfigured = computed(() => !props.credential && Boolean(selectedConnection.value) && props.credentials.some(item => item.connectionRef === selectedConnection.value && item.model === model.value.trim()))
 const discovering = ref(false)
 const testing = ref(false)
 const discoveryError = ref('')

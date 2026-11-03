@@ -1383,10 +1383,23 @@ describe('shared provider connections', () => {
     expect(kcp.calls.some(call => call.url.includes('/secrets'))).toBe(false)
   })
 
-  it('refuses to delete a provider connection while models reference it', async () => {
-    kcp.reply('GET /modelcredentials/account', { metadata: { name: 'account' }, spec: { secretRef: { name: 'shared-key' } } })
+  it.each([
+    ['direct model', { baseURL: 'https://provider.example/v1', model: 'gpt-4o', secretRef: { name: 'direct-key' } }],
+    ['harness identity', { provider: 'codex', secretRef: { name: 'harness-key' } }],
+  ])('deletes a same-name %s independently of models using the provider connection', async (_label, spec) => {
+    kcp.reply('GET /modelcredentials/account', {
+      metadata: { name: 'account', uid: 'credential-uid', resourceVersion: '7', finalizers: ['agents.railgrid.ai/model-credential-secret-protection'] },
+      spec,
+    })
     kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } }] })
-    await expect(resources.deleteCredential('account')).rejects.toMatchObject({ status: 400 })
+    await resources.deleteCredential('account')
+    expect(kcp.lastOf('DELETE').url).toContain('/modelcredentials/account')
+    expect(kcp.lastOf('DELETE').body).toMatchObject({ preconditions: { uid: 'credential-uid', resourceVersion: '7' } })
+  })
+
+  it('refuses to delete a provider connection while models reference it', async () => {
+    kcp.reply('GET /modelcredentials', { items: [{ metadata: { name: 'model-two' }, spec: { connectionRef: 'account', model: 'two' } }] })
+    await expect(resources.deleteProviderConnection('account')).rejects.toMatchObject({ status: 400 })
     expect(kcp.calls.some(call => call.method === 'DELETE')).toBe(false)
   })
 
