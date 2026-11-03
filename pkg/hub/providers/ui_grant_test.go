@@ -46,12 +46,14 @@ type uiGrantFixture struct {
 	edgeURL *url.URL
 	// edgeStatus lets a test make the edge answer something other than 200.
 	edgeStatus int
+	headers    http.Header
 }
 
 func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFixture {
 	t.Helper()
 	f := &uiGrantFixture{edge: &edgeUpstream{}, edgeStatus: http.StatusOK, issuer: &recordingIssuer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.headers = r.Header.Clone()
 		f.edge.hit = true
 		f.edge.headers = r.Header.Clone()
 		f.edge.path = r.URL.Path
@@ -85,12 +87,13 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	f.reg.Upsert(Provider{Name: "infrastructure", UIURL: platformURL, BackendURL: platformURL, EndpointsValid: true, HeartbeatRequired: true, HeartbeatStale: true})
 	orgURL, _ := url.Parse("http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081")
 	f.reg.Upsert(Provider{
-		Name: "infrastructure", OrgUUID: testOrg, Version: "v0.1.20", EndpointsValid: true,
+		Name: "infrastructure", OrgUUID: testOrg, CatalogEntryCluster: "provider-cluster", Version: "v0.1.20", EndpointsValid: true,
 		UIURL: orgURL, BackendURL: orgURL,
 		EdgeRoute: &EdgeRoute{WorkspaceUUID: testWS, Cluster: testCluster, EdgeName: "prod-eu", ServiceName: "provider-infrastructure"},
 	})
 
 	f.ui = NewUIProxy(f.reg, logr.Discard())
+	f.ui.SetUIGrantAuthorizer(func(context.Context, string, string, string) bool { return true })
 	// The recording server stands in for kcp's front door, where the hop
 	// lands on the edges provider's services/{name}/proxy verb.
 	f.ui.SetKCPFrontDoor(edgesURL, http.DefaultTransport)
@@ -147,7 +150,7 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if grant.Integrity != wantPin {
 		t.Errorf("integrity = %q, want %q (the pin must be computed from the bytes the proxy serves)", grant.Integrity, wantPin)
 	}
-	if !strings.HasPrefix(grant.URL, "/ui/providers/infrastructure/main.js?") {
+	if !strings.HasPrefix(grant.URL, "/ui/providers/infrastructure/_grant/") {
 		t.Fatalf("url = %q, want the same-origin bundle path", grant.URL)
 	}
 	u, err := url.Parse(grant.URL)
@@ -157,8 +160,8 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if got := u.Query().Get("v"); got != "v0.1.20" {
 		t.Errorf("?v = %q, want the catalog version", got)
 	}
-	if !strings.HasPrefix(u.Query().Get(UIGrantQueryParam), uiGrantPrefix) {
-		t.Errorf("grant = %q, want a %s-prefixed grant", u.Query().Get(UIGrantQueryParam), uiGrantPrefix)
+	if !strings.HasPrefix(grantTokenFromURL(u), uiGrantPrefix) {
+		t.Errorf("grant = %q, want a %s-prefixed grant", grantTokenFromURL(u), uiGrantPrefix)
 	}
 	if grant.ExpiresAt.Before(time.Now().Add(uiGrantTTL-time.Minute)) || grant.ExpiresAt.After(time.Now().Add(uiGrantTTL+time.Minute)) {
 		t.Errorf("expiresAt = %v, want about %v from now", grant.ExpiresAt, uiGrantTTL)
@@ -332,7 +335,7 @@ func mintTestGrant(t *testing.T, claims uiGrantClaims) string {
 func validClaims() uiGrantClaims {
 	now := time.Now()
 	return uiGrantClaims{
-		OrgUUID: testOrg, WorkspaceUUID: testWS, User: "alice", Provider: "infrastructure",
+		OrgUUID: testOrg, WorkspaceUUID: testWS, User: "alice", Provider: "infrastructure", ProviderCluster: "provider-cluster",
 		IssuedAt: now.Unix(), ExpiresAt: now.Add(uiGrantTTL).Unix(),
 	}
 }
@@ -453,7 +456,7 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 		t.Errorf("hash fetch path %q, want %q", f.edge.path, wantHash)
 	}
 	u, _ := url.Parse(grant.URL)
-	got := f.fetchBundle("/ui/providers/infrastructure/icon.svg?" + UIGrantQueryParam + "=" + url.QueryEscape(u.Query().Get(UIGrantQueryParam)))
+	got := f.fetchBundle("/ui/providers/infrastructure/icon.svg?" + UIGrantQueryParam + "=" + url.QueryEscape(grantTokenFromURL(u)))
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %q)", got.Code, got.Body.String())
 	}
@@ -532,5 +535,69 @@ func TestUIGrantRedemptionStripsUntrustedIdentityEnvelope(t *testing.T) {
 		if got := f.edge.headers.Values(name); len(got) != 0 {
 			t.Errorf("untrusted %s forwarded on grant redemption: %q", name, got)
 		}
+	}
+}
+
+func grantTokenFromURL(u *url.URL) string {
+	if token := u.Query().Get(UIGrantQueryParam); token != "" {
+		return token
+	}
+	parts := strings.Split(u.Path, "/")
+	for i, part := range parts {
+		if part == "_grant" && i+1 < len(parts) {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+func TestUIGrantRelativeLazyAssetsAndRevocation(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	_, grant := f.requestGrant(t, "infrastructure")
+	base, _ := url.Parse(grant.URL)
+	asset := base.ResolveReference(&url.URL{Path: "assets/page.js"})
+	if got := f.fetchBundle(asset.String()); got.Code != http.StatusOK {
+		t.Fatalf("lazy asset status %d: %s", got.Code, got.Body.String())
+	}
+	if strings.Contains(f.edge.path, "_grant") || !strings.HasSuffix(f.edge.path, "/assets/page.js") {
+		t.Fatalf("upstream path %q", f.edge.path)
+	}
+	f.ui.SetUIGrantAuthorizer(func(context.Context, string, string, string) bool { return false })
+	if got := f.fetchBundle(asset.String()); got.Code != http.StatusForbidden {
+		t.Fatalf("revoked membership status %d", got.Code)
+	}
+}
+
+func TestUIGrantDoesNotFollowReplacementRegistration(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	_, grant := f.requestGrant(t, "infrastructure")
+	p, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+	p.CatalogEntryCluster = "replacement-cluster"
+	f.reg.Upsert(p)
+	if got := f.fetchBundle(grant.URL); got.Code != http.StatusUnauthorized {
+		t.Fatalf("replacement registration status %d", got.Code)
+	}
+}
+
+func TestUIGrantDoesNotForwardBrowserCredentialsOrGrantReferer(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	_, grant := f.requestGrant(t, "infrastructure")
+	r := httptest.NewRequest(http.MethodGet, grant.URL, nil)
+	r.Header.Set("Cookie", "portal-session=must-not-cross")
+	r.Header.Set("Proxy-Authorization", "Basic must-not-cross")
+	r.Header.Set("Authorization", "Bearer must-not-cross")
+	r.Header.Set("Referer", "https://console.invalid"+grant.URL)
+	w := httptest.NewRecorder()
+	f.ui.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, name := range []string{"Cookie", "Proxy-Authorization", "Authorization", "Referer"} {
+		if f.headers.Get(name) != "" {
+			t.Errorf("browser %s crossed provider boundary", name)
+		}
+	}
+	if w.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Fatal("grant assets should not become external referrers")
 	}
 }
