@@ -116,6 +116,12 @@ const heartbeatAuthNegativeCacheMax = 10_000
 // kubeconfig for. Every provider's heartbeat must authenticate as exactly it.
 const ProviderSAUsername = "system:serviceaccount:" + ProviderSANamespace + ":" + ProviderSAName
 
+// providerWorkspaceClusterResolver addresses the credential's actual home,
+// independently of the CatalogEntry location used by the status recorder.
+type providerWorkspaceClusterResolver interface {
+	ProviderWorkspaceCluster(name string) (string, bool)
+}
+
 // tokenReviewAuthenticator verifies heartbeat bearers with a TokenReview in
 // the provider's own workspace.
 //
@@ -126,12 +132,11 @@ const ProviderSAUsername = "system:serviceaccount:" + ProviderSANamespace + ":" 
 // (such as the workload-identity audience) would reject the very token the hub
 // minted for the provider.
 //
-// Running the review inside the provider workspace is what scopes the check:
-// kcp binds service-account tokens to the logical cluster they were issued in,
-// so a "provider" SA token from any other workspace does not authenticate here
-// at all, let alone as ProviderSAUsername.
+// The trusted issuer extra returned by TokenReview must match the actual
+// provider workspace. Native kcp can authenticate a foreign cluster's token
+// even when the TokenReview endpoint is addressed in another cluster.
 type tokenReviewAuthenticator struct {
-	clusters    ClusterResolver
+	clusters    providerWorkspaceClusterResolver
 	newClient   func(cluster string) (kubernetes.Interface, error)
 	now         func() time.Time
 	cacheTTL    time.Duration
@@ -171,12 +176,12 @@ type heartbeatAuthRejection struct {
 	until time.Time
 }
 
-// heartbeatAuthCacheKey is the sha256 of the token plus the provider it was
-// verified for, so a token verified for one provider never vouches for
-// another.
+// heartbeatAuthCacheKey pins the bearer to a provider and its current actual
+// workspace. A cached verification never vouches for another registration.
 type heartbeatAuthCacheKey struct {
 	tokenHash [sha256.Size]byte
 	provider  string
+	cluster   string
 }
 
 // NewTokenReviewHeartbeatAuthenticator returns a HeartbeatAuthenticator that
@@ -185,7 +190,7 @@ type heartbeatAuthCacheKey struct {
 // account. Successful verifications are cached for heartbeatAuthCacheTTL and
 // rejections for heartbeatAuthNegativeCacheTTL, at most
 // heartbeatAuthNegativeCacheMax of them at once.
-func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters ClusterResolver) (HeartbeatAuthenticator, error) {
+func NewTokenReviewHeartbeatAuthenticator(kcpConfig *rest.Config, clusters providerWorkspaceClusterResolver) (HeartbeatAuthenticator, error) {
 	if kcpConfig == nil {
 		return nil, fmt.Errorf("kcp config is required")
 	}
@@ -215,7 +220,13 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	if !ok {
 		return ErrHeartbeatNoBearer
 	}
-	key := heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: providerName}
+	// Resolve the current registration before consulting either cache. Removing
+	// or replacing a registration must not reuse a prior copy's positive result.
+	cluster, ok := a.clusters.ProviderWorkspaceCluster(providerName)
+	if !ok || cluster == "" {
+		return fmt.Errorf("%w: no provider workspace known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
+	}
+	key := heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: providerName, cluster: cluster}
 	now := a.now()
 	if a.cached(key, now) {
 		return nil
@@ -224,10 +235,6 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 		return err
 	}
 
-	cluster, ok := a.clusters.CatalogEntryCluster(providerName)
-	if !ok || cluster == "" {
-		return fmt.Errorf("%w: no CatalogEntry cluster known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
-	}
 	client, err := a.newClient(cluster)
 	if err != nil {
 		return fmt.Errorf("%w: creating client for cluster %s: %v", ErrHeartbeatAuthUnavailable, cluster, err)
@@ -238,7 +245,7 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	if err != nil {
 		return fmt.Errorf("%w: reviewing token in cluster %s: %v", ErrHeartbeatAuthUnavailable, cluster, err)
 	}
-	if !review.Status.Authenticated {
+	if !TokenReviewMatchesCluster(review.Status, cluster) {
 		return a.reject(key, now, ErrHeartbeatTokenRejected)
 	}
 	if review.Status.User.Username != ProviderSAUsername {

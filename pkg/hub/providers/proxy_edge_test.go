@@ -48,6 +48,7 @@ type edgeUpstream struct {
 	cluster       string
 	authorization string
 	upstreamAuth  string
+	headers       http.Header
 }
 
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
@@ -84,6 +85,7 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 	rec := &edgeUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.hit = true
+		rec.headers = r.Header.Clone()
 		rec.path = r.URL.Path
 		rec.user = r.Header.Get("X-Railgrid-User")
 		rec.tenant = r.Header.Get("X-Railgrid-Tenant")
@@ -533,5 +535,28 @@ func TestEdgeHopReplacesExistingKCPClusterScope(t *testing.T) {
 		if got.Path != want {
 			t.Fatalf("%s: got %s, want %s", base, got.Path, want)
 		}
+	}
+}
+
+// The hub's transport can become an admin-authenticated native request. A public
+// envelope must never acquire that authority when copied through an org route.
+func TestOrgBackendProxyStripsUntrustedIdentityEnvelope(t *testing.T) {
+	proxy, upstream := newEdgeBackedProxy(t, testOrg)
+	request := httptest.NewRequest(http.MethodPost, "/services/providers/infrastructure/mcp", nil)
+	request.Header.Set("Authorization", "Bearer "+callerBearer)
+	request.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
+	request.Header.Set("X-Remote-User", "kcp-admin")
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !upstream.hit {
+		t.Fatalf("request did not reach edge: %d %s", response.Code, response.Body.String())
+	}
+	for _, name := range []string{"X-Railgrid-Upstream-Identity", "X-Remote-User"} {
+		if got := upstream.headers.Values(name); len(got) != 0 {
+			t.Errorf("untrusted %s forwarded: %q", name, got)
+		}
+	}
+	if upstream.upstreamAuth != "Bearer "+delegatedToken {
+		t.Fatalf("delegated credential = %q", upstream.upstreamAuth)
 	}
 }

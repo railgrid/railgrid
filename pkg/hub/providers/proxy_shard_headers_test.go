@@ -46,11 +46,12 @@ func TestBackendProxyStripsShardIdentityHeaders(t *testing.T) {
 	reg.Upsert(Provider{Name: "quickstart", BackendURL: backendURL, EndpointsValid: true})
 	proxy := NewBackendProxy(reg, logr.Discard())
 
-	req := httptest.NewRequest(http.MethodPost, "/services/providers/quickstart/clusters/1v98kgkp03uox9qw/apis/quickstart.providers.railgrid.ai/v1alpha1/greetings/x/greet", nil)
+	req := httptest.NewRequest(http.MethodPost, "/services/providers/quickstart/mcp", nil)
 	req.Header.Set("X-Remote-User", "system:admin")
 	req.Header.Set("X-Remote-Group", "system:masters")
 	req.Header.Set("X-Remote-Extra-Scopes", "cluster:*")
 	req.Header.Set("X-Kcp-Internal-Proxy-Hops", "0")
+	req.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
 	req.Header.Set("X-Unrelated", "kept")
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
@@ -58,7 +59,7 @@ func TestBackendProxyStripsShardIdentityHeaders(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
-	for _, h := range []string{"X-Remote-User", "X-Remote-Group", "X-Remote-Extra-Scopes", "X-Kcp-Internal-Proxy-Hops"} {
+	for _, h := range []string{"X-Remote-User", "X-Remote-Group", "X-Remote-Extra-Scopes", "X-Kcp-Internal-Proxy-Hops", "X-Railgrid-Upstream-Identity"} {
 		if v := seen.Values(h); v != nil {
 			t.Errorf("%s = %q reached the provider through the hub; a shard-only identity header must be stripped", h, v)
 		}

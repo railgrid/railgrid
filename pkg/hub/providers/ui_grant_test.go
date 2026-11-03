@@ -53,6 +53,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	f := &uiGrantFixture{edge: &edgeUpstream{}, edgeStatus: http.StatusOK, issuer: &recordingIssuer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.edge.hit = true
+		f.edge.headers = r.Header.Clone()
 		f.edge.path = r.URL.Path
 		f.edge.user = r.Header.Get("X-Railgrid-User")
 		f.edge.tenant = r.Header.Get("X-Railgrid-Tenant")
@@ -508,6 +509,28 @@ func TestParseUIGrantPath(t *testing.T) {
 		name, ok := parseUIGrantPath(path)
 		if name != want.name || ok != want.ok {
 			t.Errorf("%s → (%q,%v), want (%q,%v)", path, name, ok, want.name, want.ok)
+		}
+	}
+}
+
+func TestUIGrantRedemptionStripsUntrustedIdentityEnvelope(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	response, grant := f.requestGrant(t, "infrastructure")
+	if response.Code != http.StatusOK {
+		t.Fatalf("grant status = %d: %s", response.Code, response.Body.String())
+	}
+	*f.edge = edgeUpstream{}
+	request := httptest.NewRequest(http.MethodGet, grant.URL, nil)
+	request.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
+	request.Header.Set("X-Remote-User", "kcp-admin")
+	response = httptest.NewRecorder()
+	f.ui.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || !f.edge.hit {
+		t.Fatalf("bundle status = %d: %s", response.Code, response.Body.String())
+	}
+	for _, name := range []string{"X-Railgrid-Upstream-Identity", "X-Remote-User"} {
+		if got := f.edge.headers.Values(name); len(got) != 0 {
+			t.Errorf("untrusted %s forwarded on grant redemption: %q", name, got)
 		}
 	}
 }

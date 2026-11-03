@@ -197,10 +197,10 @@ func TestRegistryHeartbeatIsGlobalOnly(t *testing.T) {
 // has no workspace the bare-name endpoint could review in at all.
 func TestHeartbeatRequiresOwnProviderSA(t *testing.T) {
 	reg := newScopedRegistry()
-	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster"})
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster", WorkspaceCluster: "edges-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
-		Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername},
+		Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"edges-cluster"}}},
 	}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -213,10 +213,10 @@ func TestHeartbeatRequiresOwnProviderSA(t *testing.T) {
 	}
 
 	// The same token presented for a different provider is reviewed afresh in
-	// THAT provider's workspace, where kcp would not know it; the cache entry
-	// earned for edges does not carry over.
-	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "edges-token"), "code"); err != nil {
-		t.Fatalf("Authenticate(code) = %v", err)
+	// THAT provider's workspace. Native kcp still authenticates the original
+	// issuer, so the trusted issuer extra (not the endpoint) must reject it.
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "edges-token"), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+		t.Fatalf("Authenticate(code) = %v, want foreign issuer rejected", err)
 	}
 	if len(f.clusters) != 2 || f.clusters[1] != "code-cluster" {
 		t.Fatalf("reviewed in %v, want a fresh review in code's workspace", f.clusters)

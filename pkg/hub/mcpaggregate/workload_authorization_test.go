@@ -26,6 +26,7 @@ import (
 	authnv1 "k8s.io/api/authentication/v1"
 	authorizationv1 "k8s.io/api/authorization/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -47,7 +48,7 @@ func TestWorkloadMCPAuthorization(t *testing.T) {
 		{name: "evaluation error", status: authorizationv1.SubjectAccessReviewStatus{Allowed: true, EvaluationError: "authorizer unavailable"}, wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			user := authnv1.UserInfo{Username: "system:serviceaccount:default:project", UID: "project-uid", Groups: []string{"system:serviceaccounts"}, Extra: map[string]authnv1.ExtraValue{"scope": {"verified"}}}
+			user := authnv1.UserInfo{Username: "system:serviceaccount:default:project", UID: "project-uid", Groups: []string{"system:serviceaccounts"}, Extra: map[string]authnv1.ExtraValue{"scope": {"verified"}, nativeSA.ClusterNameKey: {"tenant-a"}}}
 			cs := kubefake.NewClientset()
 			cs.PrependReactor("create", "tokenreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
 				req := action.(clienttesting.CreateAction).GetObject().(*authnv1.TokenReview)
@@ -60,7 +61,7 @@ func TestWorkloadMCPAuthorization(t *testing.T) {
 			cs.PrependReactor("create", "subjectaccessreviews", func(action clienttesting.Action) (bool, runtime.Object, error) {
 				checked = true
 				req := action.(clienttesting.CreateAction).GetObject().(*authorizationv1.SubjectAccessReview)
-				want := authorizationv1.SubjectAccessReviewSpec{User: user.Username, UID: user.UID, Groups: user.Groups, Extra: map[string]authorizationv1.ExtraValue{"scope": {"verified"}}, ResourceAttributes: &authorizationv1.ResourceAttributes{Group: "railgrid.ai", Resource: "mcpservers", Name: "default", Verb: "use"}}
+				want := authorizationv1.SubjectAccessReviewSpec{User: user.Username, UID: user.UID, Groups: user.Groups, Extra: map[string]authorizationv1.ExtraValue{"scope": {"verified"}, nativeSA.ClusterNameKey: {"tenant-a"}}, ResourceAttributes: &authorizationv1.ResourceAttributes{Group: "railgrid.ai", Resource: "mcpservers", Name: "default", Verb: "use"}}
 				if !reflect.DeepEqual(req.Spec, want) {
 					t.Fatalf("review = %#v, want %#v", req.Spec, want)
 				}
