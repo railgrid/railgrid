@@ -47,8 +47,15 @@ func TestProjectLLMRegistryRoundTripsMultipleModelsAndDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.Model != "gpt-test" || selected.APIKey != "openai-key" {
-		t.Fatalf("selected model = %#v, want gpt-test with its credential", selected)
+	if selected.Model != "gpt-test" || selected.APIKey != "" {
+		t.Fatalf("registry projection = %#v, want gpt-test without reading its credential", selected)
+	}
+	loaded, err := readProjectLLMModelForTurn(context.Background(), client, "gpt-high", got.Models[0].RevisionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Settings.Model != "gpt-test" || loaded.Settings.APIKey != "openai-key" {
+		t.Fatalf("selected model = %#v, want gpt-test with its credential", loaded.Settings)
 	}
 	view := got.view()
 	if view.DefaultModelID != "gemini-fast" || len(view.Models) != 2 || !view.Models[0].Default {

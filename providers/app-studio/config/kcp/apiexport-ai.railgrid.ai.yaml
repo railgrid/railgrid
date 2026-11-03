@@ -135,6 +135,11 @@ spec:
     - delete
   resources:
   - group: ai.railgrid.ai
+    name: modelproviderconnections
+    schema: v261103-5b8c7b0ce.modelproviderconnections.ai.railgrid.ai
+    storage:
+      crd: {}
+  - group: ai.railgrid.ai
     name: projects
     schema: v261012-6f27bf89.projects.ai.railgrid.ai
     storage:
@@ -146,9 +151,27 @@ spec:
       crd: {}
   - group: ai.railgrid.ai
     name: studios
-    schema: v261017-981162e2.studios.ai.railgrid.ai
+    schema: v261103-5b8c7b0ce.studios.ai.railgrid.ai
     storage:
       crd: {}
+  - group: ai.railgrid.ai
+    name: modelproviderconnections/discover
+    schema: v261103-c28f8792b.discover.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
+  - group: ai.railgrid.ai
+    name: modelproviderconnections/test
+    schema: v261103-c28f8792b.test.ai.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: ai.railgrid.ai
   - group: ai.railgrid.ai
     name: projects/adopt-session
     schema: v260924-87f1980f.adopt-session.ai.railgrid.ai

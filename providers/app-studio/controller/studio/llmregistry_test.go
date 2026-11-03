@@ -179,6 +179,20 @@ func checkWith(t *testing.T, st *aiv1alpha1.Studio, objects ...runtime.Object) l
 	return (&Reconciler{}).checkLLMRegistry(context.Background(), c, st)
 }
 
+func TestCheckLLMRegistryPreservesCredentialsWithMissingDefault(t *testing.T) {
+	st := studioWith(&aiv1alpha1.StudioLLM{
+		DefaultModel: "deleted-model",
+		Models:       []aiv1alpha1.StudioLLMModel{model("present", "r1", "Present"), model("missing", "r2", "Missing")},
+	})
+	got := checkWith(t, st, credentialSecret("present", "dummy-key"))
+	if got.condition.Reason != "DefaultModelMissing" || got.condition.Status != metav1.ConditionFalse {
+		t.Fatalf("condition = %+v, want False/DefaultModelMissing", got.condition)
+	}
+	if len(got.models) != 2 || got.models[0].ID != "missing" || got.models[0].Configured || got.models[1].ID != "present" || !got.models[1].Configured {
+		t.Fatalf("credential observations lost or incorrect: %+v", got.models)
+	}
+}
+
 func TestCheckLLMRegistryPreservesModelStatusWhenReasoningDefaultInvalid(t *testing.T) {
 	valid := model("valid", "revision-valid", "Valid")
 	valid.Model = "gpt-6-luna"

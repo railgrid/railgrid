@@ -306,13 +306,18 @@ func buildRules(bound []BoundResource, grants []SubresourceGrant, readOnly bool)
 	// migrate to connection references. Read-only clients may list metadata but
 	// must not use the provider account. Writable servers intentionally receive
 	// workspace-wide use (including future connections); a per-name Role cannot
-	// narrow this additive grant. See docs/mcp-architecture.md. Pin the grant to
-	// the first-party export.
+	// narrow this additive grant. Pin each grant to its first-party export.
 	if !readOnly {
-		for _, b := range bound {
-			if b.Group == "agents.railgrid.ai" && b.Resource == "modelproviderconnections" && b.APIExportPath == "root:railgrid:providers:agents" && b.APIExportName == "agents.railgrid.ai" {
-				rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{b.Group}, Resources: []string{b.Resource}, Verbs: []string{"use"}})
-				break
+		for _, target := range []BoundResource{
+			{BoundAPIResource: apisv1alpha2.BoundAPIResource{Group: "agents.railgrid.ai", Resource: "modelproviderconnections"}, APIExportPath: "root:railgrid:providers:agents", APIExportName: "agents.railgrid.ai"},
+			{BoundAPIResource: apisv1alpha2.BoundAPIResource{Group: "ai.railgrid.ai", Resource: "modelproviderconnections"}, APIExportPath: "root:railgrid:providers:app-studio", APIExportName: "ai.railgrid.ai"},
+		} {
+			for _, b := range bound {
+				if b.Group == target.Group && b.Resource == target.Resource &&
+					b.APIExportPath == target.APIExportPath && b.APIExportName == target.APIExportName {
+					rules = append(rules, rbacv1.PolicyRule{APIGroups: []string{target.Group}, Resources: []string{target.Resource}, Verbs: []string{"use"}})
+					break
+				}
 			}
 		}
 	}

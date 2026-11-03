@@ -90,14 +90,9 @@ spec:
                 type: object
               llm:
                 description: |-
-                  LLM is the workspace's model registry: which models the assistant may
-                  use, and where each one's credential lives. It belongs on the Studio
-                  for the same reason Search and Browser do — there is exactly one per
-                  workspace and every project addresses it.
-
-                  Credentials are NOT here. Each model names a Secret holding only its
-                  own apiKey, so editing one model never requires reading another's key,
-                  and listing models touches no Secret at all.
+                  LLM is the workspace's model registry: the models the assistant may use,
+                  their provider-connection references, and shared request settings. It
+                  belongs on the Studio because there is exactly one per workspace.
                 properties:
                   defaultModel:
                     description: |-
@@ -108,12 +103,19 @@ spec:
                     type: string
                   models:
                     description: |-
-                      Models holds every configuration, active and archived. Archived entries
-                      are revision history: a model can be rolled back to one, and a run
-                      pinned to a revisionID keeps resolving after the model is edited.
+                      Models holds every binding revision, active and archived. Archived
+                      entries retain direct connection data for compatibility and for runs
+                      pinned before a binding was promoted to a provider connection.
                     items:
                       description: StudioLLMModel is one model configuration revision.
                       properties:
+                        anthropicWorkspaceID:
+                          description: |-
+                            AnthropicWorkspaceID is the optional legacy direct-model Anthropic
+                            workspace header. New bindings inherit it from connectionRef.
+                          maxLength: 253
+                          pattern: ^(wrkspc_[A-Za-z0-9]+)?$
+                          type: string
                         archived:
                           description: |-
                             Archived marks a superseded revision: kept for rollback and for runs
@@ -123,6 +125,80 @@ spec:
                           description: BaseURL overrides the provider's default endpoint.
                           maxLength: 2048
                           type: string
+                        connectionRef:
+                          description: |-
+                            ConnectionRef names a ModelProviderConnection in this workspace. New
+                            model bindings inherit provider, endpoint, Anthropic workspace and key
+                            from this connection. Empty is accepted only for legacy direct models
+                            during automatic migration.
+                          maxLength: 253
+                          pattern: ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$
+                          type: string
+                        connectionSnapshot:
+                          description: |-
+                            ConnectionSnapshot freezes the connection settings and credential Secret
+                            identity this model revision uses. It carries no credential data. Active
+                            and archived revisions both keep snapshots, so connection edits cannot
+                            change a resumable run before the controller rolls the binding forward.
+                          properties:
+                            anthropicWorkspaceID:
+                              description: AnthropicWorkspaceID is sent only to the
+                                official Anthropic endpoint.
+                              maxLength: 253
+                              pattern: ^(wrkspc_[A-Za-z0-9]+)?$
+                              type: string
+                            baseURL:
+                              maxLength: 2048
+                              type: string
+                            connectionFingerprint:
+                              description: ConnectionFingerprint is the source connection's
+                                version token.
+                              maxLength: 64
+                              type: string
+                            connectionRef:
+                              description: ConnectionRef names the source connection.
+                              type: string
+                            connectionUID:
+                              description: |-
+                                ConnectionUID fences snapshots against a deleted and recreated object
+                                with the same name.
+                              type: string
+                            generatedSecretID:
+                              description: |-
+                                GeneratedSecretID identifies a provider-generated immutable Secret
+                                version when the connection owns the key.
+                              maxLength: 32
+                              type: string
+                            provider:
+                              description: Provider and BaseURL identify the transport
+                                used by the revision.
+                              maxLength: 63
+                              type: string
+                            secretKey:
+                              description: SecretKey names the credential entry in
+                                SecretRef.
+                              type: string
+                            secretRef:
+                              description: SecretRef preserves the exact key version
+                                needed by the revision.
+                              properties:
+                                name:
+                                  description: Name of the Secret. Its "apiKey" entry
+                                    is the credential.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            secretResourceVersion:
+                              type: string
+                            secretUID:
+                              description: |-
+                                SecretUID and SecretResourceVersion ensure a pinned revision never reads
+                                a replacement or subsequently edited Secret under the same name.
+                              type: string
+                          type: object
                         id:
                           description: |-
                             ID is the logical model a person picks. Revisions of the same model
@@ -143,8 +219,9 @@ spec:
                           minLength: 1
                           type: string
                         provider:
-                          description: Provider selects the wire protocol (openai,
-                            anthropic, google, ...).
+                          description: |-
+                            Provider is the legacy direct-model provider setting. New bindings leave
+                            it empty and inherit provider from connectionRef.
                           maxLength: 63
                           type: string
                         reasoningEffort:
@@ -165,10 +242,8 @@ spec:
                           type: string
                         secretRef:
                           description: |-
-                            SecretRef names the Secret holding this model's credential, in the
-                            Studio's own namespace, under the key "apiKey". Revisions of one model
-                            normally share it. A model without one is configured but unusable, and
-                            the reconciler says so.
+                            SecretRef is the legacy direct-model key reference. New bindings leave it
+                            empty and inherit the key Secret from connectionRef.
                           properties:
                             name:
                               description: Name of the Secret. Its "apiKey" entry
@@ -334,6 +409,178 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              legacyModelMigrations:
+                description: |-
+                  LegacyModelMigrations records controller-observed direct models before
+                  their shared keys become connection references. Callers cannot forge this
+                  provenance by adding another direct model to spec after migration starts.
+                items:
+                  description: StudioLegacyModelMigration pins a pre-migration binding
+                    and key identity.
+                  properties:
+                    model:
+                      description: StudioLLMModel is one model configuration revision.
+                      properties:
+                        anthropicWorkspaceID:
+                          description: |-
+                            AnthropicWorkspaceID is the optional legacy direct-model Anthropic
+                            workspace header. New bindings inherit it from connectionRef.
+                          maxLength: 253
+                          pattern: ^(wrkspc_[A-Za-z0-9]+)?$
+                          type: string
+                        archived:
+                          description: |-
+                            Archived marks a superseded revision: kept for rollback and for runs
+                            pinned to it, never offered as a choice.
+                          type: boolean
+                        baseURL:
+                          description: BaseURL overrides the provider's default endpoint.
+                          maxLength: 2048
+                          type: string
+                        connectionRef:
+                          description: |-
+                            ConnectionRef names a ModelProviderConnection in this workspace. New
+                            model bindings inherit provider, endpoint, Anthropic workspace and key
+                            from this connection. Empty is accepted only for legacy direct models
+                            during automatic migration.
+                          maxLength: 253
+                          pattern: ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$
+                          type: string
+                        connectionSnapshot:
+                          description: |-
+                            ConnectionSnapshot freezes the connection settings and credential Secret
+                            identity this model revision uses. It carries no credential data. Active
+                            and archived revisions both keep snapshots, so connection edits cannot
+                            change a resumable run before the controller rolls the binding forward.
+                          properties:
+                            anthropicWorkspaceID:
+                              description: AnthropicWorkspaceID is sent only to the
+                                official Anthropic endpoint.
+                              maxLength: 253
+                              pattern: ^(wrkspc_[A-Za-z0-9]+)?$
+                              type: string
+                            baseURL:
+                              maxLength: 2048
+                              type: string
+                            connectionFingerprint:
+                              description: ConnectionFingerprint is the source connection's
+                                version token.
+                              maxLength: 64
+                              type: string
+                            connectionRef:
+                              description: ConnectionRef names the source connection.
+                              type: string
+                            connectionUID:
+                              description: |-
+                                ConnectionUID fences snapshots against a deleted and recreated object
+                                with the same name.
+                              type: string
+                            generatedSecretID:
+                              description: |-
+                                GeneratedSecretID identifies a provider-generated immutable Secret
+                                version when the connection owns the key.
+                              maxLength: 32
+                              type: string
+                            provider:
+                              description: Provider and BaseURL identify the transport
+                                used by the revision.
+                              maxLength: 63
+                              type: string
+                            secretKey:
+                              description: SecretKey names the credential entry in
+                                SecretRef.
+                              type: string
+                            secretRef:
+                              description: SecretRef preserves the exact key version
+                                needed by the revision.
+                              properties:
+                                name:
+                                  description: Name of the Secret. Its "apiKey" entry
+                                    is the credential.
+                                  maxLength: 253
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - name
+                              type: object
+                            secretResourceVersion:
+                              type: string
+                            secretUID:
+                              description: |-
+                                SecretUID and SecretResourceVersion ensure a pinned revision never reads
+                                a replacement or subsequently edited Secret under the same name.
+                              type: string
+                          type: object
+                        id:
+                          description: |-
+                            ID is the logical model a person picks. Revisions of the same model
+                            share it, so exactly one of them may be active at a time.
+                          maxLength: 63
+                          minLength: 1
+                          pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                          type: string
+                        model:
+                          description: Model is the provider's own model identifier,
+                            e.g. gpt-5.
+                          maxLength: 253
+                          minLength: 1
+                          type: string
+                        name:
+                          description: Name is what the model is called in the UI.
+                          maxLength: 80
+                          minLength: 1
+                          type: string
+                        provider:
+                          description: |-
+                            Provider is the legacy direct-model provider setting. New bindings leave
+                            it empty and inherit provider from connectionRef.
+                          maxLength: 63
+                          type: string
+                        reasoningEffort:
+                          description: |-
+                            ReasoningEffort is the default effort for this model revision. Empty
+                            preserves automatic behavior. Supported values depend on the model and
+                            endpoint; the provider validates them against its reasoning profiles.
+                          maxLength: 32
+                          pattern: ^$|^[a-z][a-z0-9_-]*$
+                          type: string
+                        revisionID:
+                          description: |-
+                            RevisionID identifies this revision uniquely across the registry. It is
+                            what a long-running assistant turn pins, so editing a model cannot
+                            change the model a resumable run comes back to.
+                          maxLength: 63
+                          minLength: 1
+                          type: string
+                        secretRef:
+                          description: |-
+                            SecretRef is the legacy direct-model key reference. New bindings leave it
+                            empty and inherit the key Secret from connectionRef.
+                          properties:
+                            name:
+                              description: Name of the Secret. Its "apiKey" entry
+                                is the credential.
+                              maxLength: 253
+                              minLength: 1
+                              type: string
+                          required:
+                          - name
+                          type: object
+                      required:
+                      - id
+                      - model
+                      - name
+                      - revisionID
+                      type: object
+                    secretUID:
+                      type: string
+                  required:
+                  - model
+                  - secretUID
+                  type: object
+                maxItems: 200
+                type: array
+                x-kubernetes-list-type: atomic
               models:
                 description: |-
                   Models reports, per registry model, whether its credential Secret is
@@ -363,6 +610,50 @@ spec:
               phase:
                 description: Phase is Ready when every enabled service is Ready.
                 type: string
+              protectedModelCredentials:
+                description: |-
+                  ProtectedModelCredentials records external keys admitted to provider
+                  connections. It survives rotations and connection deletion, preventing
+                  caller-written legacy models from bypassing connection use permission.
+                items:
+                  description: StudioModelCredentialIdentity identifies a protected
+                    key without key material.
+                  properties:
+                    secretName:
+                      maxLength: 253
+                      type: string
+                    secretUID:
+                      maxLength: 128
+                      type: string
+                  required:
+                  - secretName
+                  - secretUID
+                  type: object
+                maxItems: 1000
+                type: array
+                x-kubernetes-list-type: atomic
+              retiredModelCredentials:
+                description: |-
+                  RetiredModelCredentials fences generated key identities selected for
+                  collection. A status CAS publishes retirement before deleting the key;
+                  caller-written model rows cannot reactivate those identities afterward.
+                items:
+                  description: StudioModelCredentialIdentity identifies a protected
+                    key without key material.
+                  properties:
+                    secretName:
+                      maxLength: 253
+                      type: string
+                    secretUID:
+                      maxLength: 128
+                      type: string
+                  required:
+                  - secretName
+                  - secretUID
+                  type: object
+                maxItems: 1000
+                type: array
+                x-kubernetes-list-type: atomic
               search:
                 description: Search reports the shared search backend.
                 properties:

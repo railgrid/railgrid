@@ -160,6 +160,7 @@ type projectAssistantRunAudit struct {
 	ActorDigest              string                                   `json:"actorDigest,omitempty"`
 	ModelID                  string                                   `json:"modelID,omitempty"`
 	ModelRevisionID          string                                   `json:"modelRevisionID,omitempty"`
+	ConnectionSnapshot       *aiv1alpha1.StudioLLMConnectionSnapshot  `json:"connectionSnapshot,omitempty"`
 	Reasoning                *projectAssistantAuditReasoning          `json:"reasoning,omitempty"`
 	CatalogDigest            string                                   `json:"catalogDigest,omitempty"`
 	SelectedSkills           []projectAssistantSkillReceipt           `json:"selectedSkills,omitempty"`
@@ -681,6 +682,9 @@ func (s *Server) resumeProjectAssistantRunWithRepositoryAndClient(
 	if err != nil {
 		return projectAssistantResumeResponse{}, err
 	}
+	if err := s.authorizeProjectAssistantRunModelUse(ctx, id, c, preflightRun); err != nil {
+		return projectAssistantResumeResponse{}, err
+	}
 	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, runID, preflightRun.ThreadID)
 	if accumulator == nil {
 		return projectAssistantResumeResponse{}, store.ErrAssistantRunConflict
@@ -824,7 +828,7 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if c == nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, fmt.Errorf("project client is required for assistant resume"))
 	}
-	selectedModel, err := readProjectLLMModelForRun(ctx, c, run)
+	selectedModel, err := s.readProjectLLMModelForRunForIdentity(ctx, id, c, run)
 	if err != nil {
 		return s.completeClaimedProjectAssistantRunAfterResumeError(ctx, messageScope, run, state, resumeReq, decision, id.user, out, nil, err)
 	}

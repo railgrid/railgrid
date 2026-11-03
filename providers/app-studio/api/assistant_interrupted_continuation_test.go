@@ -94,6 +94,13 @@ func TestProjectAssistantThreadContinueInterruptedTurnCreatesLinkedTurn(t *testi
 	if response.ContinuationOfTurnID != run.ID {
 		t.Fatalf("continuation predecessor = %q, want %q", response.ContinuationOfTurnID, run.ID)
 	}
+	continuedRun, err := memory.GetAssistantRun(context.Background(), scope, response.Turn.ID)
+	if err != nil {
+		t.Fatalf("get continued run: %v", err)
+	}
+	if modelID, revisionID := projectAssistantModelReferenceFromRunAudit(continuedRun); modelID != testLLMModelID || revisionID != "rev-"+testLLMModelID {
+		t.Fatalf("legacy continuation model pin = (%q, %q), want (%q, %q)", modelID, revisionID, testLLMModelID, "rev-"+testLLMModelID)
+	}
 
 	select {
 	case captured := <-engine.requests:

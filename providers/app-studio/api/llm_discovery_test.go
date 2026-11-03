@@ -25,6 +25,25 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
+func TestDiscoveryFallbackOnlyForUnsupportedEndpoints(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 405, 429, 500, 501, 503} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			response := httptest.NewRecorder()
+			writeProjectLLMDiscoveryError(response, &projectLLMDiscoveryUpstreamError{StatusCode: status, Message: "Provider rejected discovery."})
+			var body struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+				t.Fatal(err)
+			}
+			wantUnsupported := status == 404 || status == 405 || status == 501
+			if response.Code != http.StatusBadGateway || (body.Reason == "DiscoveryUnsupported") != wantUnsupported {
+				t.Fatalf("upstream %d produced %d/%s", status, response.Code, body.Reason)
+			}
+		})
+	}
+}
+
 func TestDiscoverProjectLLMModelsOpenAICompatible(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" {
