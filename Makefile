@@ -720,6 +720,11 @@ verify-agentkit: ## Verify optional AgentKit style loading and conversation cont
 test-scoped-navigation: ## Verify scoped portal URLs, login returns, and provider request isolation
 	cd portal && node --test src/router/scopedNavigation.test.mjs src/providers/providerFetch.test.mjs
 
+SELF_HOST_TEST_FLAGS ?= --test --test-reporter=tap
+.PHONY: test-self-hosting
+test-self-hosting: ## Verify Console self-hosting forms and consent behavior
+	cd portal && node $(SELF_HOST_TEST_FLAGS) src/components/SelfHostWizard.behavior.test.mjs src/pages/ProviderEnableDialog.deferred.test.mjs src/pages/ProvidersPage.self-hosting.test.mjs
+
 test-portal: ## Run the complete portal test suite
 	cd portal && npm test
 

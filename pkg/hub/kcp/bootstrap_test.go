@@ -413,3 +413,47 @@ func TestDeleteChildWorkspaceReportsOnlyALiveDeletion(t *testing.T) {
 		t.Errorf("kcp was asked to delete %v, want only the live workspace", deletes)
 	}
 }
+
+// Ready=True/Bound can survive an APIExport disappearing. The negative export
+// condition must win so clients do not substitute platform backend readiness.
+func TestProviderBindingReadinessRejectsMissingExport(t *testing.T) {
+	item := &unstructured.Unstructured{Object: map[string]any{
+		"status": map[string]any{"phase": "Bound", "conditions": []any{
+			map[string]any{"type": "Ready", "status": "True"},
+			map[string]any{"type": "APIExportValid", "status": "False", "reason": "APIExportNotFound", "message": "The bound export was removed."},
+		}},
+	}}
+	ready, message := providerBindingReadiness(item)
+	if ready || message != "The bound export was removed." {
+		t.Fatalf("ready=%v message=%q", ready, message)
+	}
+	item.Object["status"] = map[string]any{"phase": "Bound"}
+	if ready, _ = providerBindingReadiness(item); !ready {
+		t.Fatal("legacy Bound fixture without conditions should remain usable")
+	}
+}
+
+func TestListProviderAPIBindingsPreservesResolvedExportIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/apibindings") {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBindingList", "items": []any{map[string]any{
+			"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding", "metadata": map[string]any{"name": "edges"},
+			"spec":   map[string]any{"reference": map[string]any{"export": map[string]any{"path": "root:railgrid:providers:edges", "name": "edges.providers.railgrid.ai"}}},
+			"status": map[string]any{"phase": "Bound", "apiExportClusterName": "actual-provider-cluster"},
+		}}})
+	}))
+	defer server.Close()
+	bindings, err := NewBootstrapper(&rest.Config{Host: server.URL}).ListProviderAPIBindings(context.Background(), "org-a", "ws-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := bindings["edges"]
+	if !ok || !got.Ready || got.ExportPath != "root:railgrid:providers:edges" || got.ExportName != "edges.providers.railgrid.ai" || got.ExportCluster != "actual-provider-cluster" || got.SelfHosted {
+		t.Fatalf("bound identity = %+v, listed=%v", got, ok)
+	}
+}

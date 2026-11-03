@@ -102,7 +102,7 @@ function onArrangementAction(action: string): void {
 }
 
 watch(
-  () => [props.provider.name, props.provider.version, props.provider.ready] as const,
+  () => [props.provider.name, props.provider.version, props.provider.ready, props.provider.scope, props.provider.ownerOrg, props.provider.export?.path, props.provider.serving?.ui?.mainJSIntegrity] as const,
   async ([name, version, ready]) => {
     const generation = loadGeneration.begin()
     clearMountedTile()
@@ -148,7 +148,7 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // See ProviderFrame.vue: one pinned retry against the hub's corrected pin.
     await loadProviderScript(name, version, document, undefined, {
       ...bundle,
-      refreshIntegrity: () => providers.refreshMainJSIntegrity(name),
+      refreshIntegrity: () => providers.refreshWorkspaceMainJSIntegrity(name),
     })
   } catch {
     if (isCurrentLoad(generation, name, version)) loadState.value = 'error'

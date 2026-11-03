@@ -177,6 +177,7 @@ const providerStore = {
   hasMissingDependencies: () => false,
   dependencyLabels: () => [],
   byName: () => null,
+  workspaceProvider: name => providerStore.byName(name),
   load: () => undefined,
 }
 const orgProviderStore = {

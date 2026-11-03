@@ -38,6 +38,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providerclaims"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // EnableProviderRequest is the body of POST .../providers/{name}/enable.
@@ -489,9 +490,16 @@ type ListEnabledProvidersResponse struct {
 // would render that as plain "Enabled" and tell the user they are running their
 // own instance when they are not.
 type EnabledProviderDetail struct {
+	Ready       bool   `json:"ready"`
+	Unavailable string `json:"unavailable,omitempty"`
 	BindingName string `json:"bindingName"`
 	// ExportPath is the workspace path of the bound APIExport.
-	ExportPath string `json:"exportPath"`
+	ExportPath    string `json:"exportPath"`
+	ExportName    string `json:"exportName,omitempty"`
+	ExportCluster string `json:"exportCluster,omitempty"`
+	// BoundProvider presents the exact live copy selected by this binding.
+	// Missing or invalid binding identity never falls back to a same-name copy.
+	BoundProvider *providers.ProviderDTO `json:"boundProvider,omitempty"`
 	// SelfHosted is true when the binding targets the Org's own provider
 	// instance rather than the platform's.
 	SelfHosted bool `json:"selfHosted"`
@@ -615,15 +623,31 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 	details := make(map[string]EnabledProviderDetail, len(bindings))
 	for provider, binding := range bindings {
 		names[provider] = binding.Name
+		var presentation *providers.ProviderDTO
+		var access *HubAccessState
+		var compositions *CompositionState
+		if copy, found := h.boundProviderCopy(tc.OrgUUID, provider, binding); found {
+			if binding.Ready && !binding.Terminating {
+				dto := providers.PresentProvider(copy)
+				presentation = &dto
+			}
+			access = h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, copy)
+			compositions = h.compositionState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, copy)
+		}
 		details[provider] = EnabledProviderDetail{
 			BindingName:     binding.Name,
+			Ready:           binding.Ready,
+			Unavailable:     binding.Unavailable,
 			ExportPath:      binding.ExportPath,
+			ExportName:      binding.ExportName,
+			ExportCluster:   binding.ExportCluster,
+			BoundProvider:   presentation,
 			SelfHosted:      binding.SelfHosted,
 			Terminating:     binding.Terminating,
 			DeletionBlocked: binding.DeletionBlocked,
 			Claims:          claimStateOf(binding.Claims),
-			HubAccess:       h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
-			Compositions:    h.compositionState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, provider),
+			HubAccess:       access,
+			Compositions:    compositions,
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -634,19 +658,27 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// boundProviderCopy resolves an existing binding, never the catalog's preferred
+// same-name copy. Its UI metadata and grant state must describe one identity.
+func (h *Handler) boundProviderCopy(org, name string, binding kcp.ProviderBinding) (providers.Provider, bool) {
+	if h.mgr.providers == nil || binding.ExportPath == "" || binding.ExportName == "" || binding.ExportCluster == "" {
+		return providers.Provider{}, false
+	}
+	return h.mgr.providers.BoundCopy(org, name, binding.ExportPath, binding.ExportName, binding.ExportCluster)
+}
+
 // hubAccessState reports what the hub-access gate will allow the provider
 // bound under name in this workspace. Best-effort: a read failure omits it.
-func (h *Handler) hubAccessState(ctx context.Context, orgUUID, wsUUID, name string) *HubAccessState {
-	if h.mgr.hubAccess == nil || h.mgr.providers == nil {
+func (h *Handler) hubAccessState(ctx context.Context, orgUUID, wsUUID string, prov providers.Provider) *HubAccessState {
+	if h.mgr.hubAccess == nil {
 		return nil
 	}
-	prov, ok := h.mgr.providers.GetForOrg(orgUUID, name)
-	if !ok || len(prov.HubAccess) == 0 {
+	if len(prov.HubAccess) == 0 {
 		return nil
 	}
 	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
 	if err != nil {
-		klog.FromContext(ctx).Error(err, "Reading provider hub-access grant", "org", orgUUID, "workspace", wsUUID, "provider", name)
+		klog.FromContext(ctx).Error(err, "Reading provider hub-access grant", "org", orgUUID, "workspace", wsUUID, "provider", prov.Name)
 		return nil
 	}
 	state := &HubAccessState{}
@@ -670,12 +702,8 @@ func (h *Handler) hubAccessState(ctx context.Context, orgUUID, wsUUID, name stri
 // identity policy will admit in this workspace. Best-effort: a read failure
 // omits it, exactly as for hub access — a stale warning is recoverable, a
 // blank provider list is not.
-func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID, name string) *CompositionState {
-	if h.mgr.hubAccess == nil || h.mgr.providers == nil {
-		return nil
-	}
-	prov, ok := h.mgr.providers.GetForOrg(orgUUID, name)
-	if !ok {
+func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID string, prov providers.Provider) *CompositionState {
+	if h.mgr.hubAccess == nil {
 		return nil
 	}
 	declared := hubaccess.DeclaredCompositions(prov.Requires)
@@ -684,7 +712,7 @@ func (h *Handler) compositionState(ctx context.Context, orgUUID, wsUUID, name st
 	}
 	grant, err := h.mgr.hubAccess.Get(ctx, hubaccess.GrantKey{OrgUUID: orgUUID, WorkspaceUUID: wsUUID, Provider: prov.Name, ProviderOrgUUID: prov.OrgUUID})
 	if err != nil {
-		klog.FromContext(ctx).Error(err, "Reading provider composition grant", "org", orgUUID, "workspace", wsUUID, "provider", name)
+		klog.FromContext(ctx).Error(err, "Reading provider composition grant", "org", orgUUID, "workspace", wsUUID, "provider", prov.Name)
 		return nil
 	}
 	state := &CompositionState{}

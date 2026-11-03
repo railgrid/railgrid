@@ -332,6 +332,8 @@ type ProviderProxy struct {
 	// SetKCPFrontDoor and serveOverEdge.
 	kcpFrontDoor *url.URL
 	kcpTransport http.RoundTripper
+
+	boundCopy BoundCopyResolver
 }
 
 // SetKCPFrontDoor tells the backend proxy where kcp is and how to
