@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261103-5b8c7b0ce.modelproviderconnections.ai.railgrid.ai
+  name: v261103-105cb122c.modelproviderconnections.ai.railgrid.ai
 spec:
   group: ai.railgrid.ai
   names:
@@ -76,13 +76,16 @@ spec:
               type: string
             secretKey:
               default: apiKey
-              description: SecretKey names the Secret data entry that carries the
-                credential.
-              maxLength: 253
+              description: SecretKey is fixed to apiKey; arbitrary Secret entries
+                are never credentials.
+              enum:
+              - apiKey
               type: string
             secretRef:
-              description: SecretRef names the key Secret in namespace default of
-                this workspace.
+              description: |-
+                SecretRef names the key Secret in namespace default of this workspace.
+                External Secrets must carry railgrid.ai/owner: app-studio, set by a
+                Secret writer to opt their apiKey entry into App Studio credential use.
               properties:
                 name:
                   description: Name of the Secret. Its "apiKey" entry is the credential.
@@ -144,7 +147,10 @@ spec:
                   maxLength: 63
                   type: string
                 secretKey:
-                  description: SecretKey names the credential entry in SecretRef.
+                  description: SecretKey names the fixed apiKey credential entry in
+                    SecretRef.
+                  enum:
+                  - apiKey
                   type: string
                 secretRef:
                   description: SecretRef preserves the exact key version needed by

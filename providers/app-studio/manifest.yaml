@@ -234,7 +234,6 @@ spec:
         verbs:
           - name: discover
             description: "Discover models for this saved provider connection; requires use permission."
-            readOnly: true
           - name: test
             description: "Test a candidate model for this saved provider connection; requires use permission."
 

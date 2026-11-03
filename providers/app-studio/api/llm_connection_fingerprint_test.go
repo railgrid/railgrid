@@ -35,7 +35,7 @@ func fingerprintFixtures() (*aiv1alpha1.ModelProviderConnection, *unstructured.U
 			},
 		}, &unstructured.Unstructured{Object: map[string]interface{}{
 			"apiVersion": "v1", "kind": "Secret",
-			"metadata":   map[string]interface{}{"name": "account-key", "uid": "key-uid", "resourceVersion": "42"},
+			"metadata":   map[string]interface{}{"name": "account-key", "uid": "key-uid", "resourceVersion": "42", "labels": map[string]interface{}{aiv1alpha1.ModelProviderConnectionSecretOwnerLabel: aiv1alpha1.ModelProviderConnectionSecretOwner}},
 			"stringData": map[string]interface{}{"apiKey": "fixture-key-never-in-public-metadata"},
 		}}
 }

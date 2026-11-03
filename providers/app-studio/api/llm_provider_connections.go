@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -182,6 +183,30 @@ func readModelProviderConnectionSecret(ctx context.Context, c *asclient.Client, 
 		}
 		return nil, "", err
 	}
+	if err := ValidateModelProviderConnectionSecret(connection, secret); err != nil {
+		return nil, "", err
+	}
+	key := aiv1alpha1.ModelProviderConnectionSecretKey
+	value := strings.TrimSpace(secretDataValue(secret, key))
+	if value == "" {
+		return nil, "", newValidationError("provider connection key Secret is empty")
+	}
+	return secret, value, nil
+}
+
+// ValidateModelProviderConnectionSecret checks the Secret-writer opt-in and
+// fixed credential entry before a caller-writable reference may use the Secret.
+func ValidateModelProviderConnectionSecret(connection *aiv1alpha1.ModelProviderConnection, secret *unstructured.Unstructured) error {
+	if connection == nil || secret == nil {
+		return newValidationError("provider connection and key Secret are required")
+	}
+	if err := validateModelProviderSecretKey(connection.Spec.SecretKey); err != nil {
+		return err
+	}
+	secretName := strings.TrimSpace(connection.Spec.SecretRef.Name)
+	if secretName == "" || secret.GetName() != secretName {
+		return newValidationError("provider connection key Secret identity does not match")
+	}
 	generatedID := strings.TrimSpace(connection.Annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation])
 	generated := generatedID != "" || strings.HasPrefix(secretName, aiv1alpha1.ModelProviderConnectionSecretPrefix) || secret.GetAnnotations()[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != ""
 	for _, owner := range secret.GetOwnerReferences() {
@@ -193,18 +218,35 @@ func readModelProviderConnectionSecret(ctx context.Context, c *asclient.Client, 
 		immutable, _, _ := unstructured.NestedBool(secret.Object, "immutable")
 		if !validGeneratedSecretIdentity(secretName, generatedID) || labels[aiv1alpha1.ModelProviderConnectionSecretOwnerLabel] != aiv1alpha1.ModelProviderConnectionSecretOwner ||
 			annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != generatedID || !immutable || !secretOwnedByConnection(secret, connection) {
-			return nil, "", newValidationError("provider connection key Secret ownership could not be confirmed")
+			return newValidationError("provider connection key Secret ownership could not be confirmed")
 		}
 	}
-	key := strings.TrimSpace(connection.Spec.SecretKey)
-	if key == "" {
-		key = aiv1alpha1.ModelProviderConnectionSecretKey
+	if !generated {
+		return validateExternalModelProviderSecret(secret)
 	}
-	value := strings.TrimSpace(secretDataValue(secret, key))
-	if value == "" {
-		return nil, "", newValidationError("provider connection key Secret is empty")
+	return nil
+}
+
+func validateModelProviderSecretKey(key string) error {
+	if key = strings.TrimSpace(key); key != "" && key != aiv1alpha1.ModelProviderConnectionSecretKey {
+		return newValidationError("provider connection credentials must use the apiKey Secret entry")
 	}
-	return secret, value, nil
+	return nil
+}
+
+func validateExternalModelProviderSecret(secret *unstructured.Unstructured) error {
+	if secret.GetLabels()[aiv1alpha1.ModelProviderConnectionSecretOwnerLabel] != aiv1alpha1.ModelProviderConnectionSecretOwner {
+		return newValidationError("provider connection key Secret is not marked for App Studio use")
+	}
+	if strings.HasPrefix(secret.GetName(), aiv1alpha1.ModelProviderConnectionSecretPrefix) || secret.GetAnnotations()[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != "" {
+		return newValidationError("generated provider key Secret requires its generated identity")
+	}
+	for _, owner := range secret.GetOwnerReferences() {
+		if owner.APIVersion == aiv1alpha1.SchemeGroupVersion.String() && owner.Kind == "ModelProviderConnection" {
+			return newValidationError("generated provider key Secret requires its generated identity")
+		}
+	}
+	return nil
 }
 
 func secretOwnedByConnection(secret *unstructured.Unstructured, connection *aiv1alpha1.ModelProviderConnection) bool {
@@ -257,6 +299,9 @@ func (s *Server) resolveSavedConnectionCredentialForProbe(
 	}
 	// Saved-model probes can keep using the controller-admitted transport
 	// while a different desired configuration is waiting for revision space.
+	// Such a probe validates only the admitted transport, not the pending spec.
+	// The publisher intentionally declines the status write and logs that result
+	// when the desired fingerprint differs.
 	if active := connection.Status.ActiveSnapshot; active != nil && expectedFingerprint == active.ConnectionFingerprint && canonicalModelProvider(draftProvider) == active.Provider && strings.TrimRight(strings.TrimSpace(draftBaseURL), "/") == strings.TrimRight(active.BaseURL, "/") && strings.TrimSpace(draftWorkspaceID) == active.AnthropicWorkspaceID {
 		key, err := s.readAuthorizedConnectionSnapshotCredential(ctx, id, c, connection.Name, active)
 		if err != nil {
@@ -316,6 +361,9 @@ func readConnectionSnapshotCredential(ctx context.Context, c *asclient.Client, s
 	if snapshot.SecretUID != "" && string(secret.GetUID()) != snapshot.SecretUID {
 		return "", newValidationError("the pinned model credential Secret was replaced")
 	}
+	if err := validateModelProviderSecretKey(snapshot.SecretKey); err != nil {
+		return "", err
+	}
 	generatedID := strings.TrimSpace(snapshot.GeneratedSecretID)
 	if generatedID != "" {
 		labels, _, _ := unstructured.NestedStringMap(secret.Object, "metadata", "labels")
@@ -331,8 +379,13 @@ func readConnectionSnapshotCredential(ctx context.Context, c *asclient.Client, s
 		// Immutable generated Secrets may receive metadata-only owner-reference
 		// updates when a connection is removed. Their UID + immutable bit +
 		// generated ID continue to identify the exact key bytes.
-	} else if snapshot.SecretResourceVersion != "" && string(secret.GetResourceVersion()) != snapshot.SecretResourceVersion {
-		return "", newValidationError("the pinned model credential Secret changed after this revision was created")
+	} else {
+		if err := validateExternalModelProviderSecret(secret); err != nil {
+			return "", err
+		}
+		if snapshot.SecretResourceVersion != "" && string(secret.GetResourceVersion()) != snapshot.SecretResourceVersion {
+			return "", newValidationError("the pinned model credential Secret changed after this revision was created")
+		}
 	}
 	key := strings.TrimSpace(snapshot.SecretKey)
 	if key == "" {
@@ -430,6 +483,9 @@ func snapshotSecretOwnedByStudioOrConnection(secret *unstructured.Unstructured, 
 // ModelProviderConnectionSnapshot creates a non-secret immutable binding
 // snapshot from the connection and its resolved key Secret.
 func ModelProviderConnectionSnapshot(connection *aiv1alpha1.ModelProviderConnection, secret *unstructured.Unstructured) (*aiv1alpha1.StudioLLMConnectionSnapshot, error) {
+	if err := ValidateModelProviderConnectionSecret(connection, secret); err != nil {
+		return nil, err
+	}
 	settings, err := connectionSettings(connection)
 	if err != nil {
 		return nil, err
@@ -705,6 +761,7 @@ func publishModelProviderConnectionProbe(
 	for attempt := 0; attempt < 4; attempt++ {
 		object, err := c.Resource(modelProviderConnectionResource, "").Get(ctx, target.name, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			klog.FromContext(ctx).Info("Authorized model provider connection probe result was not recorded", "connection", target.name, "reason", "checked connection or credential version is no longer current")
 			return false, nil
 		}
 		if err != nil {
@@ -715,14 +772,17 @@ func publishModelProviderConnectionProbe(
 			return false, fmt.Errorf("decode model provider connection %q before status update: %w", target.name, err)
 		}
 		if !current.DeletionTimestamp.IsZero() || string(current.UID) != target.connectionUID || current.Generation != target.generation {
+			klog.FromContext(ctx).Info("Authorized model provider connection probe result was not recorded", "connection", target.name, "reason", "checked connection or credential version is no longer current")
 			return false, nil
 		}
 		secretName := strings.TrimSpace(current.Spec.SecretRef.Name)
 		if secretName == "" {
+			klog.FromContext(ctx).Info("Authorized model provider connection probe result was not recorded", "connection", target.name, "reason", "checked connection or credential version is no longer current")
 			return false, nil
 		}
 		secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, secretName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
+			klog.FromContext(ctx).Info("Authorized model provider connection probe result was not recorded", "connection", target.name, "reason", "checked connection or credential version is no longer current")
 			return false, nil
 		}
 		if err != nil {
@@ -733,6 +793,7 @@ func publishModelProviderConnectionProbe(
 			return false, err
 		}
 		if currentFingerprint != target.fingerprint {
+			klog.FromContext(ctx).Info("Authorized model provider connection probe result was not recorded", "connection", target.name, "reason", "checked connection or credential version is no longer current")
 			return false, nil
 		}
 		if current.ResourceVersion == "" {

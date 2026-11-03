@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-logr/logr"
 	"github.com/gorilla/mux"
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	asclient "github.com/railgrid/provider-app-studio/client"
@@ -35,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
+	"k8s.io/klog/v2"
 )
 
 func newConnectionProbeTestClient(t *testing.T, baseURL string, status aiv1alpha1.ModelProviderConnectionStatus) (*asclient.Client, *fake.FakeDynamicClient, *aiv1alpha1.ModelProviderConnection, *unstructured.Unstructured) {
@@ -55,6 +57,7 @@ func newConnectionProbeTestClient(t *testing.T, baseURL string, status aiv1alpha
 		"metadata": map[string]any{
 			"name": "primary-key", "namespace": projectLLMSecretNamespace,
 			"uid": "primary-key-uid", "resourceVersion": "42",
+			"labels": map[string]any{aiv1alpha1.ModelProviderConnectionSecretOwnerLabel: aiv1alpha1.ModelProviderConnectionSecretOwner},
 		},
 		"data": map[string]any{aiv1alpha1.ModelProviderConnectionSecretKey: encodeSecretValue("probe-test-api-key")},
 	}}
@@ -411,5 +414,58 @@ func TestStudioDraftDiscoveryDoesNotPublishTypedCredentialProbe(t *testing.T) {
 		if action.GetVerb() == "update" && action.GetResource().Resource == modelProviderConnectionsGVR.Resource && action.GetSubresource() == "status" {
 			t.Fatal("typed draft key published saved connection status")
 		}
+	}
+}
+
+type droppedProbeLog struct{ messages *[]string }
+
+func (l *droppedProbeLog) Init(logr.RuntimeInfo) {}
+func (l *droppedProbeLog) Enabled(int) bool      { return true }
+func (l *droppedProbeLog) Info(_ int, message string, _ ...interface{}) {
+	*l.messages = append(*l.messages, message)
+}
+func (l *droppedProbeLog) Error(_ error, message string, _ ...interface{}) {
+	*l.messages = append(*l.messages, message)
+}
+func (l *droppedProbeLog) WithValues(...interface{}) logr.LogSink { return l }
+func (l *droppedProbeLog) WithName(string) logr.LogSink           { return l }
+
+func TestActiveSnapshotProbeDropIsObservable(t *testing.T) {
+	c, dynamic, connection, secret := newConnectionProbeTestClient(t, "https://old.example/v1", aiv1alpha1.ModelProviderConnectionStatus{})
+	oldFingerprint := connection.Status.ConnectionFingerprint
+	connection.Spec.BaseURL = "https://pending.example/v1"
+	connection.Generation++
+	desiredFingerprint, err := ModelProviderConnectionFingerprint(connection, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.Status.ConnectionFingerprint = desiredFingerprint
+	encoded, err := runtime.DefaultUnstructuredConverter.ToUnstructured(connection)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := dynamic.Resource(modelProviderConnectionsGVR).Get(context.Background(), connection.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	object.Object = encoded
+	if _, err = dynamic.Resource(modelProviderConnectionsGVR).Update(context.Background(), object, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	messages := []string{}
+	ctx := klog.NewContext(context.Background(), logr.New(&droppedProbeLog{messages: &messages}))
+	recorded, err := publishModelProviderConnectionProbe(ctx, c, newModelProviderConnectionProbeTarget(connection, oldFingerprint), modelProviderConnectionProbeOutcome{reachable: metav1.ConditionTrue, reason: "Reachable", message: "The admitted model answered."}, time.Now())
+	if err != nil || recorded {
+		t.Fatalf("old admitted probe recorded=%v, err=%v", recorded, err)
+	}
+	if len(messages) != 1 || !strings.Contains(messages[0], "was not recorded") {
+		t.Fatalf("dropped probe was not logged: %v", messages)
+	}
+	stored, err := readModelProviderConnection(context.Background(), c, connection.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Status.LastProbeFingerprint != "" || stored.Status.LastProbeTime != nil {
+		t.Fatal("old admitted probe changed desired-config verification")
 	}
 }

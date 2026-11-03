@@ -136,7 +136,7 @@ spec:
   resources:
   - group: ai.railgrid.ai
     name: modelproviderconnections
-    schema: v261103-5b8c7b0ce.modelproviderconnections.ai.railgrid.ai
+    schema: v261103-105cb122c.modelproviderconnections.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai
@@ -151,7 +151,7 @@ spec:
       crd: {}
   - group: ai.railgrid.ai
     name: studios
-    schema: v261103-5b8c7b0ce.studios.ai.railgrid.ai
+    schema: v261103-105cb122c.studios.ai.railgrid.ai
     storage:
       crd: {}
   - group: ai.railgrid.ai
