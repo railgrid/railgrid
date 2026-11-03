@@ -51,6 +51,9 @@ try {
   await page.goto(new URL('bonkers/metering', portalURL).href)
   await page.locator('input[type=password]').fill(process.env.DEV_STATIC_TOKEN || 'dev-token')
   await page.getByRole('button', { name: 'Sign in with token' }).click()
+  await page.getByRole('button', { name: 'diagnostics', exact: true }).click()
+  await page.getByText('Advanced details', { exact: true }).click()
+  await page.getByLabel('Diagnostic collection', { exact: true }).selectOption('meteringconfigs')
   await page.getByRole('heading', { name: 'Metering configs', exact: true }).waitFor()
   await page.locator('[data-resource-table] tbody tr').last().waitFor()
   await page.addStyleTag({ content: css })
@@ -58,8 +61,8 @@ try {
   for (const width of [1437, 390]) {
     await page.setViewportSize({ width, height: 698 })
     await page.evaluate(async () => { await document.fonts.ready })
-    assert.equal(await page.locator('.k-table__live[role=status][aria-live=polite]').count(), 5,
-      'all populated tables retain their accessibility announcements')
+    assert.equal(await page.locator('details').filter({ has: page.getByLabel('Diagnostic collection', { exact: true }) }).locator('.k-table__live[role=status][aria-live=polite]:visible').count(), 1,
+      'the selected collection retains its accessibility announcement')
     const geometry = await page.evaluate(() => {
       const main = document.querySelector('main')
       main.scrollTo(0, main.scrollHeight)
@@ -73,7 +76,7 @@ try {
     assert.equal(geometry.documentHeight, geometry.viewport, `${width}px: document must stay within the viewport`)
     assert.equal(geometry.documentScroll, 0, `${width}px: the browser must not scroll into empty space`)
     assert.equal(geometry.sidebarBottom, geometry.viewport, `${width}px: sidebar stays at the viewport bottom`)
-    assert.ok(geometry.contentScroll > 0, `${width}px: populated content remains scrollable`)
+    if (geometry.contentScrollHeight > geometry.contentHeight) assert.ok(geometry.contentScroll > 0, `${width}px: overflowing content remains scrollable`)
     assert.ok(Math.abs(geometry.contentScroll + geometry.contentHeight - geometry.contentScrollHeight) <= 1,
       `${width}px: the final metering rows remain reachable`)
     console.log(`${width}px: passed ${JSON.stringify(geometry)}`)

@@ -387,15 +387,27 @@ func NewService(kcpConfig *rest.Config, hubExternalURL, hubInternalURL string, p
 	}
 }
 
+// WorkspaceProviderReference preserves the identity and state of a workspace binding.
+// Names alone cannot distinguish platform and organization-owned providers.
+type WorkspaceProviderReference struct {
+	Name            string `json:"name"`
+	ExportPath      string `json:"exportPath"`
+	Scope           string `json:"scope"`
+	Terminating     bool   `json:"terminating,omitempty"`
+	DeletionBlocked string `json:"deletionBlocked,omitempty"`
+}
+
 // OrgWorkspace is a child Workspace of an organization together with the
 // provider names enabled in it (derived from the workspace's provider
 // APIBindings).
 type OrgWorkspace struct {
-	UUID                string     `json:"uuid"`
-	DisplayName         string     `json:"displayName"`
-	ClusterName         string     `json:"clusterName"`
-	Providers           []string   `json:"providers"`
-	DeletionRequestedAt *time.Time `json:"deletionRequestedAt,omitempty"`
+	UUID                 string                       `json:"uuid"`
+	DisplayName          string                       `json:"displayName"`
+	ClusterName          string                       `json:"clusterName"`
+	Providers            []string                     `json:"providers"`
+	ProviderReferences   []WorkspaceProviderReference `json:"providerReferences"`
+	ProvidersUnavailable bool                         `json:"providersUnavailable,omitempty"`
+	DeletionRequestedAt  *time.Time                   `json:"deletionRequestedAt,omitempty"`
 	// DeletionForced is set when the deletion was requested without the
 	// recovery window: the cascade runs on the reconciler's next sweep and
 	// a restore is refused.
@@ -416,7 +428,7 @@ func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgW
 	}
 	out := make([]OrgWorkspace, 0, len(names))
 	for _, wsUUID := range names {
-		ws := OrgWorkspace{UUID: wsUUID, Providers: []string{}}
+		ws := OrgWorkspace{UUID: wsUUID, Providers: []string{}, ProviderReferences: []WorkspaceProviderReference{}}
 		if dn, err := s.bootstrapper.GetWorkspaceDisplayName(ctx, orgUUID, wsUUID); err == nil {
 			ws.DisplayName = dn
 		}
@@ -431,10 +443,21 @@ func (s *Service) ListOrgWorkspaces(ctx context.Context, orgUUID string) ([]OrgW
 			}
 		}
 		if bindings, err := s.bootstrapper.ListProviderAPIBindings(ctx, orgUUID, wsUUID); err == nil {
-			for name := range bindings {
+			for name, binding := range bindings {
 				ws.Providers = append(ws.Providers, name)
+				scope := "platform"
+				if binding.SelfHosted {
+					scope = "organization"
+				}
+				ws.ProviderReferences = append(ws.ProviderReferences, WorkspaceProviderReference{
+					Name: name, ExportPath: binding.ExportPath, Scope: scope,
+					Terminating: binding.Terminating, DeletionBlocked: binding.DeletionBlocked,
+				})
 			}
 			sort.Strings(ws.Providers)
+			sort.Slice(ws.ProviderReferences, func(i, j int) bool { return ws.ProviderReferences[i].Name < ws.ProviderReferences[j].Name })
+		} else {
+			ws.ProvidersUnavailable = true
 		}
 		out = append(out, ws)
 	}

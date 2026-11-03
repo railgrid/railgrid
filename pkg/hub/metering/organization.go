@@ -333,6 +333,11 @@ func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, org *ten
 		if !apierrors.IsNotFound(err) {
 			return err
 		}
+		if org.Spec.Plan == "" {
+			if err := requireAssignableDefaultPlan(ctx, r.opts.Metering, r.opts.DefaultPlan); err != nil {
+				return err
+			}
+		}
 		u := &unstructured.Unstructured{}
 		u.SetAPIVersion("metering.contrib.kcp.io/v1alpha1")
 		u.SetKind("Entitlement")
@@ -365,6 +370,11 @@ func (r *OrganizationReconciler) ensureEntitlement(ctx context.Context, org *ten
 		// spec.plan is empty and the hub did not write this plan: it is an
 		// admin's own, set on the Entitlement directly. Leave it.
 		return nil
+	}
+	if org.Spec.Plan == "" && current != want && want == r.opts.DefaultPlan {
+		if err := requireAssignableDefaultPlan(ctx, r.opts.Metering, r.opts.DefaultPlan); err != nil {
+			return err
+		}
 	}
 	if err := unstructured.SetNestedField(ent.Object, want, "spec", "plan"); err != nil {
 		return err

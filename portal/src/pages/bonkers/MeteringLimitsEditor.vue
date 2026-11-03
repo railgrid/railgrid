@@ -3,6 +3,7 @@
 // Plan's limits and an Entitlement's overrides. One editor for both, so the
 // two forms in the Metering section cannot drift.
 import { Plus, X } from 'lucide-vue-next'
+import { meterDefinition, meteringMeters } from '@/components/metering-meters'
 
 export type Limit = { meter: string; shape: string; enforce: string; max: string }
 
@@ -38,16 +39,23 @@ function remove(index: number): void {
 
 <template>
   <div>
+    <datalist :id="`${idPrefix}-known-meters`"><option v-for="meter in meteringMeters" :key="meter.id" :value="meter.id">{{ meter.label }} · {{ meter.unit }}</option></datalist>
     <div
       v-for="(limit, i) in modelValue"
       :key="i"
-      class="mb-2 flex flex-wrap items-end gap-2"
+      class="mb-5 flex flex-wrap items-end gap-2"
     >
+      <div class="w-full">
+        <p class="text-sm font-medium">{{ meterDefinition(limit.meter)?.label || `Custom ${rowLabel.toLowerCase()} ${i + 1}` }}</p>
+        <p :id="`${idPrefix}-hint-${i}`" class="mt-1 text-xs text-text-muted">{{ meterDefinition(limit.meter)?.description || 'Enter the exact meter ID supplied by your provider. Units are defined by that meter.' }}</p>
+      </div>
       <div>
-        <label :for="`${idPrefix}-meter-${i}`" class="block text-[11px] text-text-muted">Meter</label>
+        <label :for="`${idPrefix}-meter-${i}`" class="block text-[11px] text-text-muted">Meter ID</label>
         <input
           :id="`${idPrefix}-meter-${i}`"
           :value="limit.meter"
+          :list="`${idPrefix}-known-meters`"
+          :aria-describedby="`${idPrefix}-hint-${i}`"
           class="k-input mt-1 w-40 font-mono text-sm"
           placeholder="e.g. workspaces"
           :disabled="disabled"
@@ -84,11 +92,12 @@ function remove(index: number): void {
       </div>
       <div>
         <label :for="`${idPrefix}-max-${i}`" class="block text-[11px] text-text-muted">
-          Max<span v-if="limit.enforce === 'Meter'" class="text-text-muted"> (optional)</span>
+          Max<span v-if="meterDefinition(limit.meter)" class="text-text-muted"> ({{ meterDefinition(limit.meter)?.unit }})</span><span v-if="limit.enforce === 'Meter'" class="text-text-muted"> (optional)</span>
         </label>
         <input
           :id="`${idPrefix}-max-${i}`"
           :value="limit.max"
+          :aria-describedby="`${idPrefix}-hint-${i}`"
           class="k-input mt-1 w-24 font-mono text-sm"
           inputmode="decimal"
           placeholder="e.g. 10"

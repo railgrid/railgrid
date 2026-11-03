@@ -557,6 +557,10 @@ test:
 test-provider-provisioning: ## Verify provider provisioning and console installation
 	go test -count=1 -p=1 ./pkg/hub/providers ./pkg/hub/providerinstall
 
+.PHONY: test-admin
+test-admin: ## Verify platform-admin organization, provider, and metering actions
+	go test -count=1 ./pkg/hub/admin ./pkg/hub/metering
+
 .PHONY: test-organization-bootstrap
 test-organization-bootstrap: ## Verify personal and shared organization initialization and REST creation
 	go test -count=1 ./pkg/hub/controllers/organization ./pkg/hub/restapi ./pkg/hub/kcp ./pkg/hub/bootstrap

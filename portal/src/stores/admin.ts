@@ -13,11 +13,20 @@ export interface AdminUser {
   displayName: string
   rbacIdentity: string
 }
+export interface AdminProviderReference {
+  name: string
+  exportPath: string
+  scope: 'platform' | 'organization' | 'unknown'
+  terminating?: boolean
+  deletionBlocked?: string
+}
 export interface AdminWorkspace {
   uuid: string
   displayName: string
   clusterName: string
   providers: string[]
+  providerReferences?: AdminProviderReference[]
+  providersUnavailable?: boolean
   // Set while the workspace is soft-deleted. purgeAt is when the hub's
   // cascade runs (deletionRequestedAt + the hub's grace period) and so the
   // last moment a restore is accepted.
@@ -69,6 +78,7 @@ export const useAdminStore = defineStore('admin', () => {
   const loaded = ref(false)
   const forbidden = ref(false)
   const error = ref<string | null>(null)
+  const errorDetails = ref<string | null>(null)
   // isAdmin: null = not checked yet, true/false after checkAccess. Drives the
   // account menu item + the /bonkers route guard so non-admins never load the
   // page (which would 403 on its data fetches).
@@ -97,6 +107,7 @@ export const useAdminStore = defineStore('admin', () => {
     loading.value = false
     forbidden.value = false
     error.value = null
+    errorDetails.value = null
   }, { flush: 'sync' })
 
   function assertIdentity(revision: number): void {
@@ -148,6 +159,7 @@ export const useAdminStore = defineStore('admin', () => {
     const current = () => revision === identityRevision && sequence === refreshSequence
     loading.value = true
     error.value = null
+    errorDetails.value = null
     forbidden.value = false
     try {
       const [u, o, p] = await Promise.all([
@@ -164,7 +176,8 @@ export const useAdminStore = defineStore('admin', () => {
       if (!current()) return
       if ((e as Error).message === 'forbidden') forbidden.value = true
       else {
-        error.value = (e as Error).message
+        error.value = 'Couldn’t refresh platform data. Try again.'
+        errorDetails.value = (e as Error).message
       }
     } finally {
       if (current()) loading.value = false
@@ -275,5 +288,5 @@ export const useAdminStore = defineStore('admin', () => {
     URL.revokeObjectURL(url)
   }
 
-  return { users, orgs, providers, loading, loaded, forbidden, error, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, undeleteOrg, undeleteWorkspace, downloadProviderKubeconfig }
+  return { users, orgs, providers, loading, loaded, forbidden, error, errorDetails, isAdmin, kubeconfigServers, checkAccess, refresh, createProvider, deleteProvider, undeleteOrg, undeleteWorkspace, downloadProviderKubeconfig }
 })

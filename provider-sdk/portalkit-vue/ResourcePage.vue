@@ -23,6 +23,8 @@ const props = withDefaults(defineProps<{
   fill?: boolean
   /** Hide only the title/action header while retaining read-state handling. */
   showHeader?: boolean
+  /** Keep a single action or compact action menu beside the heading at narrow widths. */
+  compactActions?: boolean
   kind?: string
   subtitle?: string
   loaded?: ResourceReadState['loaded']
@@ -35,6 +37,7 @@ const props = withDefaults(defineProps<{
   variant: 'default',
   fill: false,
   showHeader: true,
+  compactActions: false,
   kind: '',
   subtitle: '',
   // A null sentinel preserves the distinction between an omitted read
@@ -118,7 +121,7 @@ watch(() => props.error, error => {
     </span>
     <!-- A narrow header slot replaces only this inner heading/action content;
       the outer page header and all read-state surfaces remain authoritative. -->
-    <header v-if="showHeader" class="k-resource-page__header">
+    <header v-if="showHeader" class="k-resource-page__header" :class="{ 'k-resource-page__header--compact-actions': compactActions }">
       <slot name="header">
         <div class="k-resource-page__heading">
           <h1 class="k-resource-page__title">{{ title }}</h1>

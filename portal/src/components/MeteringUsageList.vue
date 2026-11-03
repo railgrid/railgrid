@@ -17,6 +17,7 @@
 // table.
 import { computed, ref } from 'vue'
 import { ChevronRight } from 'lucide-vue-next'
+import { meterLabel as label } from './metering-meters'
 
 export type LimitRow = { meter?: unknown; shape?: unknown; enforce?: unknown; max?: unknown }
 export type UsageWindow = { start?: string; end?: string }
@@ -160,10 +161,6 @@ const filteredRows = computed(() => rows.value.filter((row) =>
   (!attentionOnly.value || needsAttention(row)) &&
   `${label(row.meter)} ${row.meter}`.toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase()),
 ))
-
-function label(meter: string): string {
-  return ({ workspaces: 'Workspaces', request_cost_rpm: 'API request cost' } as Record<string, string>)[meter] ?? meter
-}
 
 function description(row: Row): string {
   if (row.meter === 'request_cost_rpm') return 'Weighted request cost per minute'
