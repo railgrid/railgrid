@@ -749,8 +749,15 @@ UI, routing, and authorization fixes; this document does not claim they are fixe
   `{name}` with a UI served by the same authority as its backend (the edge
   route fronts that Service), hashes the bundle through the caller's own
   delegated route for Subresource Integrity, and answers with
-  `/ui/providers/{name}/main.js?v=…&grant=…` plus the pin. The grant is a
-  sealed, five-minute, single-provider token naming `(user, org, workspace)`.
+  `/ui/providers/{name}/_grant/{sealed}/main.js?v=…` plus the pin. The grant is an
+  asset-only, one-hour token naming `(user, org, workspace, provider registration)`.
+  Every asset redemption rechecks workspace membership and rejects a replaced
+  registration. Relative lazy modules, CSS and fonts keep that scoped directory;
+  App Studio captures its bootstrap directory for Vite preload URLs. Query grants
+  remain accepted for older single-file bundles. No cookie or ambient org scope
+  is installed. The grant is stripped from the upstream path/query and Referer;
+  responses use no-store and no-referrer. After the bounded asset session expires,
+  reloading the provider obtains a new grant.
   When the script tag fetches that URL, the UI proxy opens the grant, resolves
   the ORG's copy, mints the delegated token for the tuple it names, and
   forwards over the edge hop — the same hop and token swap as

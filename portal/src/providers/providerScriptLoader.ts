@@ -1,4 +1,5 @@
 interface ProviderScriptLoad {
+  identity: string
   version: string
   bootstrapGeneration: string
   promise: Promise<void>
@@ -19,9 +20,9 @@ const HOT_RELOADABLE_PROVIDER_BOOTSTRAPS = new Set(['app-studio'])
 export class ProviderPageReloadRequiredError extends Error {
   readonly code = 'PROVIDER_PAGE_RELOAD_REQUIRED'
 
-  constructor(name: string, loadedVersion: string, requestedVersion: string) {
+  constructor(name: string, loadedVersion: string, requestedVersion: string, copyChanged = false) {
     super(
-      `provider "${name}" version changed from ${loadedVersion} to ${requestedVersion}; reload the page to use the new version`,
+      copyChanged ? `provider "${name}" copy changed; reload the page to use the selected provider` : `provider "${name}" version changed from ${loadedVersion} to ${requestedVersion}; reload the page to use the new version`,
     )
     this.name = 'ProviderPageReloadRequiredError'
   }
@@ -81,6 +82,8 @@ function revokeProviderBootstrapGeneration(doc: Document, name: string, generati
 }
 
 export interface ProviderScriptOptions {
+  // Stable provider registration/copy identity, never the rotating asset grant.
+  identity?: string
   // Subresource Integrity metadata ("sha384-...") the hub computed for this
   // bundle at registration (catalog `serving.ui.mainJSIntegrity`). When present the
   // browser refuses a /main.js whose content differs; the ?v= cache-buster is
@@ -122,12 +125,14 @@ function injectProviderScript(
   timeoutMs: number,
   integrity: string | null,
   bundleSrc: string | null,
+  identity: string,
 ): ProviderScriptAttempt {
   const scriptID = `railgrid-provider-script-${name}`
   const current = doc.getElementById(scriptID) as HTMLScriptElement | null
   if (
     current?.dataset.railgridProviderVersion === version &&
-    current.dataset.railgridProviderLoadState === 'loaded'
+    current.dataset.railgridProviderLoadState === 'loaded' &&
+    (current.dataset.railgridProviderIdentity ?? '') === identity
   ) {
     return { promise: Promise.resolve(), cancel: () => {} }
   }
@@ -175,6 +180,7 @@ function injectProviderScript(
       )
     }
     script.dataset.railgridProviderVersion = version
+    script.dataset.railgridProviderIdentity = identity
     // Provider bootstraps with mutable global side effects must verify this
     // host-issued generation before installing them. Removing a prepared
     // classic script does not guarantee its body will not execute later.
@@ -207,19 +213,20 @@ export function loadProviderScript(
   options: ProviderScriptOptions = {},
 ): Promise<void> {
   const requestedVersion = version ?? '0'
+  const identity = options.identity ?? ''
   const integrity = options.integrity || null
   const bundleSrc = options.src || null
   const refreshIntegrity = options.refreshIntegrity || null
   const loads = documentLoads(doc)
   const current = loads.get(name)
-  if (current?.version === requestedVersion) return current.promise
+  if (current?.version === requestedVersion && current.identity === identity) return current.promise
   if (current && !canReloadProviderScriptInDocument(name)) {
     // A direct-registration provider cannot replace its custom-element class
     // without reloading the document. Reject this different catalog version
     // explicitly: resolving with the existing promise would falsely report the
     // requested bundle as loaded and mount the stale element against new APIs.
     return Promise.reject(
-      new ProviderPageReloadRequiredError(name, current.version, requestedVersion),
+      new ProviderPageReloadRequiredError(name, current.version, requestedVersion, current.identity !== identity),
     )
   }
 
@@ -258,16 +265,17 @@ export function loadProviderScript(
     // itself as stale and decline to install.
     const retryGeneration = claimProviderBootstrapGeneration(doc, name)
     record.bootstrapGeneration = retryGeneration
-    attempt = injectProviderScript(doc, name, requestedVersion, retryGeneration, timeoutMs, refreshed, bundleSrc)
+    attempt = injectProviderScript(doc, name, requestedVersion, retryGeneration, timeoutMs, refreshed, bundleSrc, identity)
     return attempt.promise
   }
 
   const record: ProviderScriptLoad = {
     version: requestedVersion,
+    identity,
     bootstrapGeneration,
     promise: predecessor.then(() => {
       if (cancelled) throw cancelled
-      attempt = injectProviderScript(doc, name, requestedVersion, bootstrapGeneration, timeoutMs, integrity, bundleSrc)
+      attempt = injectProviderScript(doc, name, requestedVersion, bootstrapGeneration, timeoutMs, integrity, bundleSrc, identity)
       // Only the FIRST attempt is given this catch, so a load can never be
       // retried more than once.
       return attempt.promise.catch(retryWithRefreshedPin)

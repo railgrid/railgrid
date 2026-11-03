@@ -102,10 +102,9 @@ const (
 	// the query is refused before any cryptography runs.
 	uiGrantPrefix = "fpui_"
 
-	// uiGrantTTL bounds a grant's lifetime. The portal requests one immediately
-	// before injecting the script and the loader gives up after 15s, so the
-	// grant only needs to outlive a slow first byte over the tunnel.
-	uiGrantTTL = 5 * time.Minute
+	// uiGrantTTL bounds an asset-only browser session, including lazy routes.
+	// Every redemption rechecks workspace membership and provider registration.
+	uiGrantTTL = time.Hour
 
 	// uiGrantKeyInfo domain-separates the grant key from every other subkey
 	// derived from the hub secret (app access tokens, delegated-identity
@@ -125,14 +124,15 @@ var errUIGrantInvalid = errors.New("invalid provider UI grant")
 // token is minted for on redemption, the provider the grant is bound to, and
 // its validity window.
 type uiGrantClaims struct {
-	Version       int    `json:"v"`
-	ID            string `json:"jti"`
-	OrgUUID       string `json:"o"`
-	WorkspaceUUID string `json:"w"`
-	User          string `json:"u"`
-	Provider      string `json:"p"`
-	IssuedAt      int64  `json:"iat"`
-	ExpiresAt     int64  `json:"exp"`
+	Version         int    `json:"v"`
+	ID              string `json:"jti"`
+	OrgUUID         string `json:"o"`
+	WorkspaceUUID   string `json:"w"`
+	User            string `json:"u"`
+	Provider        string `json:"p"`
+	ProviderCluster string `json:"c"`
+	IssuedAt        int64  `json:"iat"`
+	ExpiresAt       int64  `json:"exp"`
 }
 
 func (c uiGrantClaims) caller() DelegatedCaller {
@@ -206,7 +206,7 @@ func openUIGrant(secret []byte, grant string, now time.Time) (uiGrantClaims, err
 		return uiGrantClaims{}, fmt.Errorf("%w: unreadable claims", errUIGrantInvalid)
 	}
 	if claims.Version != uiGrantVersion || claims.OrgUUID == "" || claims.WorkspaceUUID == "" ||
-		claims.User == "" || claims.Provider == "" || claims.ExpiresAt == 0 {
+		claims.User == "" || claims.Provider == "" || claims.ProviderCluster == "" || claims.ExpiresAt == 0 {
 		return uiGrantClaims{}, fmt.Errorf("%w: incomplete claims", errUIGrantInvalid)
 	}
 	if !now.Before(time.Unix(claims.ExpiresAt, 0)) {
@@ -280,6 +280,14 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "provider has no org-owned UI bundle: "+name, http.StatusNotFound)
 		return
 	}
+	if claims.ProviderCluster != prov.CatalogEntryCluster {
+		http.Error(w, "provider registration changed; reload the provider", http.StatusUnauthorized)
+		return
+	}
+	if p.uiGrantAuthorize == nil || !p.uiGrantAuthorize(r.Context(), claims.User, claims.OrgUUID, claims.WorkspaceUUID) {
+		http.Error(w, "provider UI access is no longer authorized", http.StatusForbidden)
+		return
+	}
 	if !prov.Ready() {
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
@@ -330,6 +338,9 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			req.Host = dst.Host
 			// Identity under the ORG provider's name, as the backend proxy
 			// does (E-6): the headers describe who is fetching the bundle.
+			req.Header.Del("Cookie")
+			req.Header.Del("Proxy-Authorization")
+			req.Header.Del("Referer")
 			req.Header.Del("X-Railgrid-User")
 			req.Header.Del("X-Railgrid-Tenant")
 			req.Header.Del("X-Railgrid-Cluster")
@@ -343,6 +354,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			// response: after expiry the cached copy would answer a URL the
 			// hub no longer would.
 			resp.Header.Set("Cache-Control", "private, no-store")
+			resp.Header.Set("Referrer-Policy", "no-referrer")
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
@@ -403,6 +415,8 @@ func (h *UIGrantHandler) SetTenantResolver(r TenantResolver) {
 
 // uiGrantResponse is the wire shape of a minted grant.
 type uiGrantResponse struct {
+	Registration string `json:"registration"`
+	Workspace    string `json:"workspace"`
 	// URL is the bundle URL to load, grant included. Same-origin; the portal
 	// injects it as a classic <script src> exactly like a platform bundle.
 	URL string `json:"url"`
@@ -476,12 +490,13 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	now := h.now()
 	claims := uiGrantClaims{
-		OrgUUID:       orgUUID,
-		WorkspaceUUID: wsUUID,
-		User:          user,
-		Provider:      name,
-		IssuedAt:      now.Unix(),
-		ExpiresAt:     now.Add(uiGrantTTL).Unix(),
+		OrgUUID:         orgUUID,
+		WorkspaceUUID:   wsUUID,
+		User:            user,
+		Provider:        name,
+		ProviderCluster: prov.CatalogEntryCluster,
+		IssuedAt:        now.Unix(),
+		ExpiresAt:       now.Add(uiGrantTTL).Unix(),
 	}
 	grant, err := sealUIGrant(secret, h.rand, claims)
 	if err != nil {
@@ -493,15 +508,17 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	integrity := h.pinOrgUIIntegrity(r.Context(), prov, claims.caller())
 
 	bundle := url.URL{
-		Path:     apiurl.PathPrefixProvidersUI + "/" + prov.Name + "/main.js",
-		RawQuery: url.Values{"v": {prov.Version}, UIGrantQueryParam: {grant}}.Encode(),
+		Path:     apiurl.PathPrefixProvidersUI + "/" + prov.Name + "/_grant/" + grant + "/main.js",
+		RawQuery: url.Values{"v": {prov.Version}}.Encode(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	_ = json.NewEncoder(w).Encode(uiGrantResponse{
-		URL:       bundle.String(),
-		Integrity: integrity,
-		ExpiresAt: time.Unix(claims.ExpiresAt, 0).UTC(),
+		URL:          bundle.String(),
+		Registration: prov.CatalogEntryCluster,
+		Workspace:    wsUUID,
+		Integrity:    integrity,
+		ExpiresAt:    time.Unix(claims.ExpiresAt, 0).UTC(),
 	})
 }
 
@@ -527,7 +544,7 @@ func parseUIGrantPath(p string) (string, bool) {
 // otherwise yields "" (unpinned), logged — the same policy as
 // CatalogReconciler.pinUIIntegrity for platform bundles.
 func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, caller DelegatedCaller) string {
-	version := uiIntegrityVersion(prov.Version, prov.ReportedVersion)
+	version := uiIntegrityVersion(prov.Version, prov.ReportedVersion) + "\x00" + prov.CatalogEntryCluster
 	key := providerKey{Org: prov.OrgUUID, Name: prov.Name}
 	now := h.now()
 
@@ -590,4 +607,10 @@ func (h *UIGrantHandler) hashOrgProviderMainJS(ctx context.Context, prov Provide
 		return "", err
 	}
 	return read.integrity, nil
+}
+
+// SetUIGrantAuthorizer rechecks current workspace membership on every asset
+// redemption; a browser asset grant does not extend a revoked membership.
+func (p *ProviderProxy) SetUIGrantAuthorizer(authorize func(context.Context, string, string, string) bool) {
+	p.uiGrantAuthorize = authorize
 }
