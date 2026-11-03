@@ -80,7 +80,7 @@ function engage(): void { cancelClosingAnimation(); expanded.value = true }
 let element: OverlayElement | null = null
 let generation = 0
 
-const entry = computed(() => providers.byName('agents'))
+const entry = computed(() => providers.workspaceProvider('agents'))
 const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName &&
   tenant.activeWorkspaceUsable && routeContext.state === 'ready' &&
   !route.meta.public && !routeContext.blocksRoute(route.path, false) &&
@@ -88,9 +88,11 @@ const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName
   !!entry.value?.ready && !!entry.value.serving?.ui &&
   providers.bindingsLoadState === 'ready' && !providers.bindingsStale &&
   providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
-  providers.isEnabled('agents') && !providers.bindingsByProvider.agents?.terminating)
+  providers.isEnabled('agents') && providers.bindingsByProvider.agents?.ready !== false && !providers.bindingsByProvider.agents?.terminating)
 const authorityKey = computed(() => JSON.stringify([
   overlay.preferenceKey, auth.clusterName, entry.value?.scope, entry.value?.ownerOrg,
+  entry.value?.version, entry.value?.export?.path, providers.bindingsByProvider.agents?.exportCluster,
+  entry.value?.serving?.ui?.mainJSIntegrity,
 ]))
 const dedicatedChat = computed(() => route.params.name === 'agents' && route.hash.startsWith('#/agents/' + encodeURIComponent(overlay.selectedAgent || '') + '/'))
 const visible = computed(() => allowed.value && !!overlay.selectedAgent && !dedicatedChat.value)
@@ -182,7 +184,7 @@ async function mountAgent(): Promise<void> {
     const bundle = await resolveProviderBundle(provider, authFetch)
     if (!current()) return
     await loadProviderScript('agents', provider.version, document, undefined, {
-      ...bundle, refreshIntegrity: () => providers.refreshMainJSIntegrity('agents'),
+      ...bundle, refreshIntegrity: () => providers.refreshWorkspaceMainJSIntegrity('agents'),
     })
     if (!current() || !mount.value) return
     if (!customElements.get('railgrid-provider-agents')) throw new Error('The Agents interface did not load. Reload the page to try again.')

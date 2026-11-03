@@ -196,6 +196,7 @@ type KubeconfigConfig struct {
 // platform-global providers, so an Org's own provider would be invisible to
 // Enable. Get remains for the surfaces with no tenant context.
 type ProviderLookup interface {
+	BoundCopy(org, name, exportPath, exportName, exportCluster string) (providers.Provider, bool)
 	Get(name string) (providers.Provider, bool)
 	GetForOrg(orgUUID, name string) (providers.Provider, bool)
 	ListForOrg(orgUUID string) []providers.Provider

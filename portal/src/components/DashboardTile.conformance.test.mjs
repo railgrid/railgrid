@@ -36,7 +36,7 @@ test('dashboard tile load failures offer recovery without leaking raw transport 
   // The loader also gets refreshIntegrity, so a bundle rebuilt at an unchanged
   // version — which leaves this page holding a pin the browser refuses — can be
   // retried once against the pin the hub corrected from what it served.
-  assert.match(tile, /const bundle = await resolveProviderBundle\(props\.provider, authFetch\)\s*if \(!isCurrentLoad\(generation, name, version\)\) return\s*(?:\/\/[^\n]*\n\s*)*await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
+  assert.match(tile, /const bundle = await resolveProviderBundle\(props\.provider, authFetch\)\s*if \(!isCurrentLoad\(generation, name, version\)\) return\s*(?:\/\/[^\n]*\n\s*)*await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshWorkspaceMainJSIntegrity\(name\),\s*\}\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
   assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\) \|\| !mountRef\.value\) return/)
   assert.match(tile, /function retryLoad\(\)[\s\S]*if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
   assert.match(tile, /addEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)

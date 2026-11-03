@@ -10,7 +10,7 @@ import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
 import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
-import { useProvidersStore } from '@/stores/providers'
+import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
 import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
 import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
@@ -41,21 +41,12 @@ onMounted(() => {
   if (!providers.loaded) providers.load()
 })
 
-// Gated providers must match the side-nav "enabled" predicate exactly:
-// built-in providers (kubernetes-edges, server-edges, mcp, …) always
-// appear because they ship with the hub and need no per-workspace consent,
-// but third-party providers (infrastructure, quickstart, anything custom)
-// only show up when the current workspace has an APIBinding for them.
-// Without this gate the dashboard kept rendering a tile for a disabled
-// third-party provider — clicking it landed on a 403 "this provider is not
-// enabled in your workspace" wall.
+// Use the same workspace selection as navigation. The merged catalog is an
+// installation offer and may describe a different same-named org copy.
 const gated = computed(() =>
-  providers.items
-    .filter((p) => {
-      if (!p.ready || !p.serving?.ui) return false
-      if (p.serving.ui.builtinRoute || p.builtin) return true
-      return providers.isEnabled(p.name)
-    })
+  providers.enabledNavItems
+    .map(item => providers.workspaceProvider(item.name))
+    .filter((p): p is ProviderDTO => !!p?.ready && !!p.serving?.ui)
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),
 )
 
@@ -203,7 +194,7 @@ watch(
   { flush: 'sync' },
 )
 
-const providerFor = (name: string) => providers.byName(name)
+const providerFor = (name: string) => gated.value.find(provider => provider.name === name)
 
 // --- Customize mode ---
 const editMode = ref(false)

@@ -53,8 +53,8 @@ function categoryIcon(name: string) {
   return categoryIcons[category?.icon || ''] ?? fallbackCategoryIcon
 }
 const failedIcons = ref<Record<string, boolean>>({})
-const target = computed(() => providers.byName(goal.value))
-const plan = computed(() => planFor(goal.value, providers.byName))
+const target = computed(() => providers.workspaceProvider(goal.value))
+const plan = computed(() => planFor(goal.value, providers.workspaceProvider))
 const canOpen = computed(() => !!target.value?.ready && !!target.value?.serving?.ui && providers.isEnabled(goal.value) && !providers.hasMissingDependencies(target.value))
 // Members consume an existing setup; admins retain the setup preview. Only
 // current Workspace data can justify skipping the prerequisite review.

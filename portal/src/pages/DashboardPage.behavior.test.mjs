@@ -14,7 +14,7 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
 } }).outputText
 const { reactive, ref, h, createRenderer, nextTick } = Vue
 
-function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
+function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null } = {}) {
   let focused
   const previous = { window: globalThis.window, document: globalThis.document, localStorage: globalThis.localStorage }
   globalThis.window = { addEventListener() {}, removeEventListener() {} }
@@ -23,9 +23,10 @@ function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
   const tenant = reactive({ orgUUID: 'org', workspaceUUID: unscoped ? null : 'ws' })
   const providers = reactive({ loaded: true, loading: false, catalogOrgUUID: 'org', error: null,
     bindingsOrgUUID: 'org', bindingsWorkspace: 'ws', bindingsLoadState: error ? 'error' : 'ready',
-    bindingsStale: error, bindingNamesByProvider: {}, items: [], isEnabled: () => false, byName: () => null })
+    bindingsStale: error, bindingNamesByProvider: bound ? { [bound.name]: bound.name } : {}, items: catalog, enabledNavItems: bound ? [{ name: bound.name }] : [], workspaceProvider: name => name === bound?.name ? bound : undefined, isEnabled: name => name === bound?.name, byName: name => catalog.find(p => p.name === name) })
   let completeLoad
   const loads = []
+  const candidates = []
   providers.load = (org) => {
     loads.push(org)
     providers.loading = true
@@ -54,9 +55,10 @@ function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => p }) },
     '@/stores/providers': { useProvidersStore: () => providers },
     '@/stores/tenant': { useTenantStore: () => tenant },
-    '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: [], addable: [], sync() {} }) },
+    '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: bound ? [{ i: bound.name, x: 0, y: 0, w: 1, h: 2 }] : [], addable: [], sync(org, ws, names) { candidates.push(names) } }) },
     '@/lib/gettingStarted': { gettingStartedReadState },
     '@/components/WelcomeWizard.vue': { default: wizard },
+    '@/components/DashboardTile.vue': { default: { props: ['provider'], setup: props => () => h('article', { id: 'provider-tile', copy: props.provider.scope }, props.provider.displayName) } },
   }
   const exports = {}
   new Function('require', 'exports', code)(id => modules[id] ?? new Proxy({ default: shell }, { get: (o, k) => o[k] ?? shell }), exports)
@@ -74,7 +76,7 @@ function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
   const app = renderer.createApp(exports.default)
   app.component('router-link', shell)
   app.mount(root)
-  return { root, providers, tenant, loads, finishLoad: () => completeLoad(), focused: () => focused,
+  return { root, providers, tenant, loads, candidates, finishLoad: () => completeLoad(), focused: () => focused,
     cleanup() { app.unmount(); for (const [k,v] of Object.entries(previous)) { if (v === undefined) delete globalThis[k]; else globalThis[k] = v } } }
 }
 const nodes = n => [n, ...(n.children ?? []).flatMap(nodes)]
@@ -124,4 +126,31 @@ test('unscoped dashboard prompts for workspace selection instead of loading fore
     assert.doesNotMatch(text(s.root), /Loading this workspace/)
     assert.ok(!nodes(s.root).some(n => n.props?.id === 'wizard'))
   } finally { s.cleanup() }
+})
+
+test('dashboard uses the actual bound platform copy while an org copy shadows the catalog', async () => {
+ const bound = {name:'app-studio', scope:'global', displayName:'Platform Studio', ready:true, serving:{ui:{}}};
+ for (const ready of [true, false]) {
+  const shadow = {...bound, scope:'org', displayName:'Org Studio', ready};
+  const s = scenario({dismissed:true, catalog:[shadow], bound});
+  try {
+   await nextTick();
+   const tile=nodes(s.root).find(n=>n.props?.id==='provider-tile');
+   assert.ok(tile, 'healthy actual platform tile remains visible');
+   assert.equal(tile.props.copy,'global');
+   assert.equal(text(tile),'Platform Studio');
+   assert.deepEqual(s.candidates.at(-1),['app-studio']);
+  } finally {s.cleanup();}
+ }
+})
+
+test('dashboard does not load a catalog replacement when the actual bound provider is unavailable', async () => {
+ const catalog=[{name:'app-studio',scope:'global',displayName:'Wrong replacement',ready:true,serving:{ui:{}}}];
+ const bound={...catalog[0],scope:'org',ready:false};
+ const s=scenario({dismissed:true,catalog,bound});
+ try {
+  await nextTick();
+  assert.equal(nodes(s.root).some(n=>n.props?.id==='provider-tile'),false);
+  assert.deepEqual(s.candidates.at(-1),[]);
+ } finally {s.cleanup();}
 })

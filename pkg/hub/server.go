@@ -966,6 +966,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
+			backendProxy.SetBoundCopyResolver(newProviderBoundCopyResolver(kcpConfig, providerRegistry))
 			// The one data-plane hop the hub still makes on a caller's behalf
 			// — an org-owned provider's backend behind its edge — goes through
 			// kcp like every other verb, at the edges provider's

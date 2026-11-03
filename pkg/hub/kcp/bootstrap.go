@@ -2213,9 +2213,16 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		if phase != "Bound" && !terminating {
 			continue
 		}
+		ready, unavailable := providerBindingReadiness(&item)
+		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
+		exportCluster, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
 		out[providerName] = ProviderBinding{
 			Name:            item.GetName(),
+			Ready:           ready,
+			Unavailable:     unavailable,
 			ExportPath:      path,
+			ExportName:      exportName,
+			ExportCluster:   exportCluster,
 			SelfHosted:      strings.HasPrefix(path, kcppaths.TenantsParent+":"),
 			Terminating:     terminating,
 			DeletionBlocked: deletionBlockedMessage(&item),
@@ -2223,6 +2230,12 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 		}
 	}
 	return out, nil
+}
+
+// providerBindingReadiness checks conditions as well as phase: kcp can leave
+// phase Bound and Ready=True after the referenced export has disappeared.
+func providerBindingReadiness(item *unstructured.Unstructured) (bool, string) {
+	return providers.BindingReadiness(item)
 }
 
 // deletionBlockedMessage returns kcp's explanation of why a terminating
@@ -2265,10 +2278,18 @@ func deletionBlockedMessage(item *unstructured.Unstructured) string {
 // instance when they are not. Switching is a Disable + Enable, not an in-place
 // retarget, so the distinction has to survive all the way to the UI.
 type ProviderBinding struct {
+	// Ready reflects current binding conditions, not the catalog backend.
+	Ready bool
+	// Unavailable explains a binding that cannot currently serve its APIs.
+	Unavailable string
 	// Name is the APIBinding's metadata.name (by convention, the provider name).
 	Name string
 	// ExportPath is the workspace path of the APIExport it binds.
 	ExportPath string
+	// ExportName is the exact APIExport name in the binding reference.
+	ExportName string
+	// ExportCluster is the provider workspace resolved by kcp for this binding.
+	ExportCluster string
 	// SelfHosted is true when ExportPath is under the tenant fleet, i.e. the
 	// binding targets an Org's own provider rather than a platform one.
 	SelfHosted bool

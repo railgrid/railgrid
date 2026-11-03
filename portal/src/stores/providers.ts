@@ -284,8 +284,13 @@ export interface ClaimState {
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
+  ready?: boolean
+  unavailable?: string
   bindingName: string
   exportPath: string
+  exportName?: string
+  exportCluster?: string
+  boundProvider?: ProviderDTO
   // true when the binding targets this org's own instance rather than the
   // platform's.
   selfHosted: boolean
@@ -454,45 +459,36 @@ export const useProvidersStore = defineStore('providers', () => {
   //    current user has bound their APIExport.
   // The `to` distinguishes them: builtins route to /{builtinRoute},
   // third-party to /providers/{name}.
-  const enabledNavItems = computed<ProviderNavItem[]>(() =>
-    items.value
-      .filter((p) => {
-        // Provider destinations need a workspace. Organization-only settings
-        // must not turn every provider link into the same active fallback.
-        if (!useTenantStore().workspaceUUID) return false
-        // serving.ui present IS "this provider has a portal UI".
-        if (!p.ready || !p.serving?.ui) return false
-        // Legacy in-tree route OR new-style first-party provider:
-        // always shown, no binding required.
-        if (p.serving.ui.builtinRoute || p.builtin) return true
-        return !!bindingNamesByProvider.value[p.name]
-      })
-      .map((p) => {
-        // builtinRoute → in-tree SPA route (legacy).
-        // builtin (no route) → ProviderFrame at /providers/{name}.
-        // third-party → ProviderFrame at /providers/{name}.
-        const builtinRoute = p.serving?.ui?.builtinRoute ?? ''
-        const parentTo = scopedPath(builtinRoute ? `/${builtinRoute}` : `/providers/${p.name}`, useTenantStore())
-        return {
-          name: p.name,
-          label: p.displayName,
-          to: parentTo,
-          iconURL: p.iconURL ?? null,
-          version: p.version ?? '',
-          builtin: !!builtinRoute || !!p.builtin,
-          category: p.category ?? '',
-          // Child routes nest UNDER the parent for new-style providers
-          // (so kubernetes-edges' Workloads child lands at
-          // /providers/kubernetes-edges/workloads), while legacy
-          // builtinRoute providers keep their top-level child URLs
-          // (/workloads).
-          children: (p.serving?.ui?.children ?? []).map((c) => ({
-            label: c.displayName,
-            to: builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
-          })),
-        }
-      }),
-  )
+  const enabledNavItems = computed<ProviderNavItem[]>(() => {
+    if (!useTenantStore().workspaceUUID) return []
+    // Native bindings remain destinations even if a new org registration
+    // shadows their catalog entry or their original provider is unavailable.
+    const names = new Set([
+      ...Object.keys(bindingNamesByProvider.value),
+      ...items.value.filter(p => p.builtin || p.serving?.ui?.builtinRoute).map(p => p.name),
+    ])
+    return [...names].flatMap((name) => {
+      const bound = isEnabled(name)
+      const p = workspaceProvider(name) ?? (bound ? undefined : byName(name))
+      if (bound && p && !p.serving?.ui) return []
+      if (!bound && (!p?.ready || !p.serving?.ui)) return []
+      const builtinRoute = p?.serving?.ui?.builtinRoute ?? ''
+      const parentTo = scopedPath(builtinRoute ? `/${builtinRoute}` : `/providers/${name}`, useTenantStore())
+      return [{
+        name,
+        label: p?.displayName ?? name,
+        to: parentTo,
+        iconURL: p?.iconURL ?? null,
+        version: p?.version ?? '',
+        builtin: !!builtinRoute || !!p?.builtin,
+        category: p?.category ?? '',
+        children: (p?.serving?.ui?.children ?? []).map(c => ({
+          label: c.displayName,
+          to: builtinRoute ? scopedPath(`/${c.builtinRoute}`, useTenantStore()) : `${parentTo}/${c.builtinRoute}`,
+        })),
+      }]
+    })
+  })
 
   // categorizedNavItems groups enabledNavItems by category for the
   // sidebar's tree layout. Output is sorted by:
@@ -607,11 +603,13 @@ export const useProvidersStore = defineStore('providers', () => {
   const hasAnyEnabled = computed(() => Object.keys(bindingNamesByProvider.value).length > 0)
 
   function isDependencySatisfied(name: string): boolean {
+    if (isEnabled(name)) {
+      const p = workspaceProvider(name)
+      const binding = bindingsByProvider.value[name]
+      return !!p?.ready && binding?.ready !== false && !binding?.terminating
+    }
     const p = byName(name)
-    if (!p) return isEnabled(name)
-    if (!p.ready) return false
-    if (!p.export?.name || p.serving?.ui?.builtinRoute || p.builtin) return true
-    return isEnabled(p.name)
+    return !!p?.ready && (!p.export?.name || !!p.serving?.ui?.builtinRoute || !!p.builtin)
   }
 
   // The providers this one depends on: every spec.requires entry that names
@@ -715,7 +713,7 @@ export const useProvidersStore = defineStore('providers', () => {
     clearBindings()
   }
 
-  async function load(requestedOrgUUID?: string | null) {
+  async function load(requestedOrgUUID?: string | null, force = false, refreshWorkspaceBindings = true) {
     // App.vue passes the reactive tenant selection when an org switch is
     // already in flight. Reading the tab-local store keeps other callers
     // (including the initial auth bootstrap) compatible while ensuring a
@@ -724,7 +722,7 @@ export const useProvidersStore = defineStore('providers', () => {
       ? readTenantSelection().orgUUID
       : requestedOrgUUID
     const hasExplicitOrg = requestedOrgUUID !== undefined
-    if (loading.value && catalogRequestOrg === targetOrgUUID) return
+    if (!force && loading.value && catalogRequestOrg === targetOrgUUID) return
     const requestSequence = ++catalogRequestSequence
     catalogRequestOrg = targetOrgUUID
     loading.value = true
@@ -756,7 +754,7 @@ export const useProvidersStore = defineStore('providers', () => {
       // scope; the auth-cluster watcher will refresh once the new workspace
       // selection is resolved.
       const currentSelection = readTenantSelection()
-      if (currentSelection.orgUUID === targetOrgUUID && currentSelection.workspaceMode !== 'organization') {
+      if (refreshWorkspaceBindings && currentSelection.orgUUID === targetOrgUUID && currentSelection.workspaceMode !== 'organization') {
         await refreshBindings().catch(() => {
           /* surfaced via Disable button being unavailable */
         })
@@ -932,6 +930,12 @@ export const useProvidersStore = defineStore('providers', () => {
       // mutating the map. The refresh is itself generation-fenced, and if the
       // selection changed while the write completed it cannot retarget the new
       // workspace or expose A's binding under B.
+      bindingsStale.value = true
+      bindingsLoadState.value = 'loading'
+      // Enable owns the authoritative post-write read, including catalog failures
+      // and organization-only mode; suppress load's best-effort duplicate.
+      await load(t.orgUUID, true, false)
+      if (!isCurrentEnable()) return
       await refreshBindings()
     } catch (e: unknown) {
       // A rejected request from an old tenant must not surface after a switch;
@@ -1023,6 +1027,25 @@ export const useProvidersStore = defineStore('providers', () => {
     return items.value.find((p) => p.name === name)
   }
 
+  // Workspace rendering follows the actual native binding, while byName
+  // remains the merged catalog used for installation and migration choices.
+  function workspaceProvider(name: string): ProviderDTO | undefined {
+    const selection = useTenantStore()
+    if (!isEnabled(name)) return byName(name)
+    if (bindingsOrgUUID.value !== selection.orgUUID || bindingsWorkspace.value !== selection.workspaceUUID) return undefined
+    const binding = bindingsByProvider.value[name]
+    const p = binding?.boundProvider
+    if (!p || p.name !== name || !binding.exportPath || p.export?.path !== binding.exportPath ||
+      (binding.exportName && p.export?.name !== binding.exportName)) return undefined
+    return p
+  }
+
+  async function refreshWorkspaceMainJSIntegrity(name: string): Promise<string | null> {
+    if (!isEnabled(name)) return refreshMainJSIntegrity(name)
+    await refreshBindings()
+    return workspaceProvider(name)?.serving?.ui?.mainJSIntegrity ?? null
+  }
+
   // refreshMainJSIntegrity re-reads the catalog and answers with the provider's
   // CURRENT SRI pin, for a bundle whose load the browser just refused.
   //
@@ -1096,6 +1119,8 @@ export const useProvidersStore = defineStore('providers', () => {
     enable,
     disable,
     byName,
+    workspaceProvider,
+    refreshWorkspaceMainJSIntegrity,
     refreshMainJSIntegrity,
   }
 })

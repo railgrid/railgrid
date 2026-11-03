@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { X, ShieldCheck, ShieldAlert, Loader2 } from 'lucide-vue-next'
-import type { ProviderDTO, AcceptedClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
+import type { ProviderDTO, ProviderLabelSelector, AcceptedClaim, HubAccessRequest, AcceptedHubAccess, AcceptedComposition } from '@/stores/providers'
 
 const props = defineProps<{
   provider: ProviderDTO | null
@@ -36,6 +36,7 @@ interface ClaimOption {
   group: string
   resource: string
   verbs: string[]
+  selector?: ProviderLabelSelector
 }
 
 // CompositionOption is the same for a requirement that names a provider; that
@@ -45,6 +46,7 @@ interface CompositionOption {
   group: string
   resource: string
   verbs: string[]
+  selector?: ProviderLabelSelector
 }
 
 // One boolean per claim, indexed by claim key. Everything under requires is
@@ -173,7 +175,7 @@ function claimsOf(p: ProviderDTO | null): ClaimOption[] {
   for (const requirement of p?.requires ?? []) {
     if (requirement.provider) continue
     for (const resource of requirement.resources ?? []) {
-      out.push({ group: requirement.group ?? '', resource: resource.name, verbs: resource.verbs ?? [] })
+      out.push({ group: requirement.group ?? '', resource: resource.name, verbs: resource.verbs ?? [], selector: resource.selector })
     }
   }
   return out
@@ -192,6 +194,7 @@ function compositionsOf(p: ProviderDTO | null): CompositionOption[] {
         group: requirement.group ?? '',
         resource: resource.name,
         verbs: resource.verbs ?? [],
+        selector: resource.selector,
       })
     }
   }
@@ -360,6 +363,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                   <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
                     Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                   </p>
+                  <p v-if="c.selector?.matchLabels && Object.keys(c.selector.matchLabels).length" class="mt-1 text-[11px] text-text-secondary">
+                    Only resources with labels:
+                    <span v-for="(value, label) in c.selector.matchLabels" :key="label" class="font-mono"> {{ label }}={{ value }} </span>
+                  </p>
                 </div>
               </label>
             </li>
@@ -389,6 +396,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKeydown))
                 <div class="min-w-0 flex-1">
                   <span class="text-[11px] text-text-primary">{{ accessLabel(c.resource, c.verbs) }}</span>
                   <p class="mt-0.5 font-mono text-[10px] text-text-muted">{{ c.provider }} · {{ c.group }}/{{ c.resource }}</p>
+                  <p v-if="c.selector?.matchLabels && Object.keys(c.selector.matchLabels).length" class="mt-1 text-[11px] text-text-secondary">
+                    Only resources with labels:
+                    <span v-for="(value, label) in c.selector.matchLabels" :key="label" class="font-mono"> {{ label }}={{ value }} </span>
+                  </p>
                   <p v-if="c.verbs.length" class="mt-0.5 text-[10px] text-text-muted">
                     Technical verbs: <span class="font-mono">{{ verbsLabel(c) }}</span>
                   </p>

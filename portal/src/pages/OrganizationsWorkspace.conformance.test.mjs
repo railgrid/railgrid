@@ -1503,7 +1503,7 @@ test('provider frames gate APIExport providers on an authoritative workspace bin
   assert.match(providerFrame, /providers\.bindingsLoadState === 'ready'/)
   assert.match(providerFrame, /providers\.bindingsWorkspace === tenant\.workspaceUUID/)
   assert.match(providerFrame, /providers\.bindingsOrgUUID === tenant\.orgUUID/)
-  assert.match(providerFrame, /providers\.isEnabled\(entry\.value\.name\)/)
+  assert.match(providerFrame, /providers\.isEnabled\(props\.providerName\)/)
   assert.match(providerFrame, /const accessAllowed = computed/)
   assert.match(providerFrame, /!!entry\.value\.serving\?\.ui/)
   assert.match(providerFrame, /v-if="accessAllowed"[\s\S]*ref="mountRef"/)

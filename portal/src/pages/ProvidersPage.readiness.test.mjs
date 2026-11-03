@@ -21,13 +21,13 @@ const { useProvidersStore } = await vite.ssrLoadModule('/src/stores/providers.ts
 test.after(() => vite.close())
 
 test('provider cards distinguish unavailable providers from pending work', () => {
-  assert.match(source, /if \(!p\.ready\) \{[\s\S]*return 'Not ready'/)
+  assert.match(source, /currentWorkspaceBinding\(p\) \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
   assert.match(source, /p\.readinessMessage \|\| 'Provider is unavailable\.'/)
   assert.match(source, /<template v-if="p\.export\?\.name">/)
   assert.match(source, /v-else-if="bindingAction\(p\) === 'enable'"/)
   assert.match(source, /v-else-if="bindingAction\(p\) === 'disable'"[\s\S]*@click="onDisable\(p\)"/)
   assert.doesNotMatch(source, /Provider is starting/)
-  assert.match(source, /v-if="p\.serving\?\.ui && p\.ready && \(!p\.export\?\.name \|\| \(providers\.isEnabled\(p\.name\) && \(!providers\.isSelfManaged\(p\) \|\| workspaceProviderCopy\(p\) === 'organization'\)\)\)"/)
+  assert.match(source, /v-if="canOpenProvider\(p\)"/)
 })
 
 test('first-consumer providers remain available in onboarding while dependencies stay gated', () => {
@@ -62,4 +62,42 @@ test('provider binding actions cover readiness and enabled state independently',
   assert.equal(providerBindingAction({ ...state(true, false), hasAPIExport: false }), null)
   assert.equal(providerBindingAction({ ...state(false, false), disabling: true }), null)
   assert.equal(providerBindingAction({ ...state(false, false), hasAPIExport: false }), null)
+})
+
+test('Open uses bound health and UI rather than the offered replacement', () => {
+  const body = source.match(/function canOpenProvider\(p: ProviderDTO\): boolean \{([\s\S]*?)\n\}/)?.[1]
+  assert.ok(body)
+  let bound
+  let enabled = true
+  let unavailable = false
+  const providers = { isEnabled: () => enabled, workspaceProvider: () => bound }
+  const canOpen = new Function('p', 'providers', 'bindingProjectionIsCurrent', 'bindingUnavailable', body)
+  const check = offered => canOpen(offered, providers, () => true, () => unavailable)
+  const replacement = { name: 'edges', ready: false, export: { name: 'edges' }, serving: { ui: {} } }
+  bound = { ...replacement, scope: 'global', ready: true }
+  assert.equal(check(replacement), true, 'healthy platform binding opens while org replacement is down')
+  replacement.ready = true
+  assert.equal(check(replacement), true)
+  bound = { ...replacement, scope: 'org' }
+  assert.equal(check(replacement), true, 'healthy actual org binding opens')
+  bound.ready = false
+  assert.equal(check(replacement), false)
+  bound = undefined
+  assert.equal(check(replacement), false, 'removed actual copy cannot load the shadow bundle')
+  unavailable = true
+  bound = { ...replacement }
+  assert.equal(check(replacement), false)
+  enabled = false
+  unavailable = false
+  assert.equal(check(replacement), false, 'unbound exported provider still needs Enable')
+})
+
+test('self-hosting connection guidance follows the actual Edges copy', () => {
+  const body = source.match(/const edgesSelfHostState = computed<EdgesSelfHostState>\(\(\) => \{([\s\S]*?)\n\}\)/)?.[1]
+  assert.ok(body)
+  assert.match(source, /const edgesProvider = computed\(\(\) => providers\.workspaceProvider\('edges'\)\)/)
+  const state = new Function('edgesProvider', 'providers', body)
+  assert.equal(state({ value: { ready: true, serving: { ui: {} } } }, { isEnabled: () => true }), 'ready')
+  assert.equal(state({ value: undefined }, { isEnabled: () => true }), 'unready', 'missing bound copy cannot become a catalog fallback')
+  assert.equal(state({ value: undefined }, { isEnabled: () => false }), 'absent')
 })

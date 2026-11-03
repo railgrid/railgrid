@@ -25,7 +25,7 @@ test('provider page and dashboard consumers coordinate versioned bootstrap reloa
     // Plus the refreshIntegrity hook: one pinned retry when a bundle rebuilt
     // at an unchanged version leaves this page's pin describing bytes the hub
     // no longer serves.
-    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
+    assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshWorkspaceMainJSIntegrity\(name\),\s*\}\)/)
     assert.doesNotMatch(source, /document\.createElement\('script'\)/)
   }
   assert.match(frame, /invalidateProviderScript\(name, version\)/)
