@@ -12,6 +12,9 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 )
@@ -31,6 +34,29 @@ type AgentIngressResolver func(context.Context, string, string, string, string) 
 
 func (p *ProviderProxy) SetAgentIngressResolver(resolve AgentIngressResolver) {
 	p.agentIngress = resolve
+	p.agentIngressAdmission = &agentIngressAdmission{
+		limiter: rate.NewLimiter(rate.Every(10*time.Millisecond), 200),
+		active:  make(chan struct{}, 32),
+	}
+}
+
+// Admission bounds pre-authentication kcp work, not established tunnel count.
+// One fixed token bucket bounds total work without storing attacker-controlled keys.
+type agentIngressAdmission struct {
+	limiter interface{ Allow() bool }
+	active  chan struct{}
+}
+
+func (a *agentIngressAdmission) begin() (func(), bool) {
+	if !a.limiter.Allow() {
+		return nil, false
+	}
+	select {
+	case a.active <- struct{}{}:
+		return func() { <-a.active }, true
+	default:
+		return nil, false
+	}
 }
 
 // agentIngressScope recognizes only the closed agent-ingress grammar. Pickup
@@ -94,11 +120,26 @@ func (p *ProviderProxy) serveAgentIngress(w http.ResponseWriter, r *http.Request
 		return true
 	}
 	scheme, token, ok := strings.Cut(strings.TrimSpace(r.Header.Get("Authorization")), " ")
-	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" {
+	if !ok || !strings.EqualFold(scheme, "Bearer") || strings.TrimSpace(token) == "" || len(token) > 64*1024 || strings.ContainsAny(token, " \t\r\n") {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return true
 	}
-	target, err := p.agentIngress(r.Context(), cluster, resource, edge, token)
+	if r.Context().Err() != nil {
+		http.Error(w, "agent authentication canceled", http.StatusRequestTimeout)
+		return true
+	}
+	release, admitted := p.agentIngressAdmission.begin()
+	if !admitted {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "agent authentication temporarily busy", http.StatusTooManyRequests)
+		return true
+	}
+	// Release before forwarding: a long-lived control tunnel must not occupy an
+	// authentication slot. Deferring inside this scope also releases on panic.
+	target, err := func() (AgentIngressTarget, error) {
+		defer release()
+		return p.agentIngress(r.Context(), cluster, resource, edge, token)
+	}()
 	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return true

@@ -11,7 +11,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"golang.org/x/time/rate"
 
 	"github.com/go-logr/logr"
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -188,5 +193,114 @@ func TestAgentIngressRejectsReplacedOrForeignExportBeforeForwarding(t *testing.T
 				t.Fatalf("status=%d forwarded=%v", response.Code, forwarded)
 			}
 		})
+	}
+}
+
+func agentIngressTestRequest() *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/services/providers/edges/agent/clusters/consumer/kubernetesclusters/edge/proxy", nil)
+	r.Header.Set("Authorization", "Bearer bogus")
+	return r
+}
+
+func TestAgentIngressRateLimitPrecedesCredentialReads(t *testing.T) {
+	p := NewBackendProxy(NewRegistry(), logr.Discard())
+	calls := 0
+	p.SetAgentIngressResolver(func(context.Context, string, string, string, string) (AgentIngressTarget, error) {
+		calls++
+		return AgentIngressTarget{}, errors.New("invalid")
+	})
+	p.agentIngressAdmission.limiter = rate.NewLimiter(rate.Every(time.Hour), 1)
+	first := httptest.NewRecorder()
+	p.ServeHTTP(first, agentIngressTestRequest())
+	second := httptest.NewRecorder()
+	request := agentIngressTestRequest()
+	request.Header.Set("X-Forwarded-For", "203.0.113.1")
+	p.ServeHTTP(second, request)
+	if first.Code != http.StatusUnauthorized || second.Code != http.StatusTooManyRequests || second.Header().Get("Retry-After") != "1" || calls != 1 {
+		t.Fatalf("statuses=%d/%d calls=%d", first.Code, second.Code, calls)
+	}
+}
+
+type allowAgentIngress struct{}
+
+func (allowAgentIngress) Allow() bool { return true }
+
+func TestAgentIngressBoundsConcurrentCredentialChecks(t *testing.T) {
+	p := NewBackendProxy(NewRegistry(), logr.Discard())
+	started, release := make(chan struct{}, 2), make(chan struct{})
+	var calls atomic.Int32
+	p.SetAgentIngressResolver(func(context.Context, string, string, string, string) (AgentIngressTarget, error) {
+		calls.Add(1)
+		started <- struct{}{}
+		<-release
+		return AgentIngressTarget{}, errors.New("invalid")
+	})
+	p.agentIngressAdmission.limiter = allowAgentIngress{}
+	p.agentIngressAdmission.active = make(chan struct{}, 2)
+	done := make(chan struct{}, 2)
+	for range 2 {
+		go func() { p.ServeHTTP(httptest.NewRecorder(), agentIngressTestRequest()); done <- struct{}{} }()
+	}
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("credential checks did not start")
+		}
+	}
+	blocked := httptest.NewRecorder()
+	p.ServeHTTP(blocked, agentIngressTestRequest())
+	if blocked.Code != http.StatusTooManyRequests || calls.Load() != 2 {
+		close(release)
+		t.Fatalf("parallel checks were not bounded: status=%d calls=%d", blocked.Code, calls.Load())
+	}
+	close(release)
+	for range 2 {
+		<-done
+	}
+	// All slots must be released after credential resolution, including failures.
+	next := httptest.NewRecorder()
+	p.ServeHTTP(next, agentIngressTestRequest())
+	if next.Code != http.StatusUnauthorized || calls.Load() != 3 {
+		t.Fatalf("slot leaked: status=%d calls=%d", next.Code, calls.Load())
+	}
+}
+
+func TestAgentIngressRejectsMalformedBearerBeforeCredentialReads(t *testing.T) {
+	for _, token := range []string{"has spaces", strings.Repeat("a", 64*1024+1)} {
+		p := NewBackendProxy(NewRegistry(), logr.Discard())
+		p.SetAgentIngressResolver(func(context.Context, string, string, string, string) (AgentIngressTarget, error) {
+			t.Fatal("malformed token reached credential reads")
+			return AgentIngressTarget{}, nil
+		})
+		r := agentIngressTestRequest()
+		r.Header.Set("Authorization", "Bearer "+token)
+		result := httptest.NewRecorder()
+		p.ServeHTTP(result, r)
+		if result.Code != http.StatusUnauthorized {
+			t.Fatalf("status=%d", result.Code)
+		}
+	}
+}
+
+func TestAgentIngressCanceledRequestSkipsCredentialReads(t *testing.T) {
+	p := NewBackendProxy(NewRegistry(), logr.Discard())
+	p.SetAgentIngressResolver(func(context.Context, string, string, string, string) (AgentIngressTarget, error) {
+		t.Fatal("canceled request reached credential reads")
+		return AgentIngressTarget{}, nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result := httptest.NewRecorder()
+	p.ServeHTTP(result, agentIngressTestRequest().WithContext(ctx))
+	if result.Code != http.StatusRequestTimeout || len(p.agentIngressAdmission.active) != 0 {
+		t.Fatalf("status=%d active=%d", result.Code, len(p.agentIngressAdmission.active))
 	}
 }

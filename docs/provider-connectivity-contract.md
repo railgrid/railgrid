@@ -197,6 +197,26 @@ backend. This is a narrow agent transport path: human tokens, cookies and
 caller-supplied identity headers do not cross it. The provider still performs
 its own agent authentication and authorization.
 
+The hub intentionally accepts a narrower reconnect identity than the Edges
+backend's general TokenReview-and-SAR path: the ServiceAccount must be the
+hub-issued account for this Edge's current UID, in its consumer workspace,
+with the `https://kcp.default.svc` audience. Current enrollment and refresh mint
+exactly this identity. Legacy or hand-granted ServiceAccounts that merely have
+a `proxy` grant must reenroll; the hub does not forward their bearer into an
+organization backend. This also excludes human and delegated user credentials.
+
+Before any admin kcp reads, scoped ingress applies a fixed rate
+limiter and limits concurrent credential checks. Saturation returns HTTP 429
+with `Retry-After`; established tunnels do not hold authentication slots.
+The per-process budget allows 100 checks/second with a burst of 200 and at most
+32 concurrent checks. It deliberately bounds total admin work with fixed memory;
+a noisy peer can exhaust the shared budget and delay other peers. It does not
+provide per-source fairness.
+The budget is shared across scoped ingress, so forwarding headers cannot bypass it.
+Credential checks share HTTP transports and have a bounded timeout. Binding and
+Edge decisions remain live so deletion, retargeting and UID replacement are not
+hidden by a routing cache.
+
 Revdial pickup URLs carry `railgrid.agent.cluster`, `railgrid.agent.resource`
 and `railgrid.agent.name` query parameters supplied by the control tunnel. They
 are addressing only; the hub verifies the pickup credential against the same
