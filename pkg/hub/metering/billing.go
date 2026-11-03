@@ -249,9 +249,9 @@ func limitsOf(obj map[string]any, fields ...string) []Limit {
 
 // Checkout asks the deployment for a Checkout URL that puts org on plan. An
 // organization whose plan a platform administrator assigned
-// (PlanSourceOperator on its Entitlement) is refused: the deployment's
-// billing reconciler leaves such a plan alone, so paying would change
-// nothing until the administrator releases it.
+// (PlanSourceOperator on its Entitlement) is refused. A compatible external
+// subscription integration must preserve that plan until the administrator
+// releases it.
 func (b *Billing) Checkout(ctx context.Context, org, plan, successURL, cancelURL string) (string, error) {
 	ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
 	switch {

@@ -895,4 +895,7 @@ billing-owned plan reports its ownership before enabling checkout.
 Plan deletion reads organization assignments from the tenancy workspace as well
 as entitlement references from the metering workspace. If either read is
 unavailable, deletion is refused. Assignments awaiting entitlement creation or
-reconciliation therefore still prevent deletion.
+reconciliation therefore still prevent deletion. These are snapshot checks, not
+a distributed transaction with concurrent assignments. The pre-existing race
+between plan assignment and deletion across hub replicas remains; operators
+should serialize those operations until shared coordination is implemented.
