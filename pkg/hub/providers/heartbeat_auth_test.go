@@ -234,7 +234,7 @@ func TestHeartbeatEnforceRejectionBodiesRevealNothing(t *testing.T) {
 // anyone who can reach the hub.
 func TestHeartbeatEnforceHidesUnknownProviders(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 		return ErrHeartbeatTokenRejected
 	}, HeartbeatAuthEnforce, logr.Discard())
@@ -279,8 +279,8 @@ func TestHeartbeatEnforceStillReports503BeforeTheClusterIsKnown(t *testing.T) {
 	}
 
 	// Once the entry is observed the same beat authenticates and is recorded.
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
-	f.status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername}}
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
+	f.status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"code-cluster"}}}}
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
 	if rec.Code != http.StatusOK {
@@ -447,9 +447,9 @@ func newTestTokenReviewAuthenticator(reg *Registry, f *tokenReviewFake, now *tim
 
 func TestTokenReviewAuthenticatorRejectsAuthenticatedWrongUser(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
-		Authenticated: true, User: authnv1.UserInfo{Username: "system:serviceaccount:default:not-the-provider"},
+		Authenticated: true, User: authnv1.UserInfo{Username: "system:serviceaccount:default:not-the-provider", Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"code-cluster"}}},
 	}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -477,8 +477,8 @@ func TestTokenReviewAuthenticatorRejectsAuthenticatedWrongUser(t *testing.T) {
 // ever vouching for a token or outliving its short TTL.
 func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
-	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "edges", EndpointsValid: true, CatalogEntryCluster: "edges-cluster", WorkspaceCluster: "edges-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -511,7 +511,7 @@ func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
 		t.Fatalf("negative cache TTL %v must not exceed the positive TTL %v", heartbeatAuthNegativeCacheTTL, heartbeatAuthCacheTTL)
 	}
 	now = now.Add(heartbeatAuthNegativeCacheTTL + time.Second)
-	f.status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername}}
+	f.status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"code-cluster"}}}}
 	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "garbage"), "code"); err != nil {
 		t.Fatalf("after the negative entry expired: %v", err)
 	}
@@ -527,7 +527,8 @@ func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
 			t.Fatalf("err = %v, want ErrHeartbeatAuthUnavailable", err)
 		}
 	}
-	reg.Upsert(Provider{Name: "late", EndpointsValid: true, CatalogEntryCluster: "late-cluster"})
+	reg.Upsert(Provider{Name: "late", EndpointsValid: true, CatalogEntryCluster: "late-cluster", WorkspaceCluster: "late-cluster"})
+	f.status.User.Extra = map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"late-cluster"}}
 	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("late", "tok"), "late"); err != nil {
 		t.Fatalf("once the cluster is known: %v", err)
 	}
@@ -540,7 +541,7 @@ func TestTokenReviewAuthenticatorNegativelyCachesRejections(t *testing.T) {
 // evicted early costs kcp one review again — the pre-cache cost, not more.
 func TestTokenReviewAuthenticatorNegativeCacheIsBounded(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -552,7 +553,7 @@ func TestTokenReviewAuthenticatorNegativeCacheIsBounded(t *testing.T) {
 		}
 	}
 	key := func(token string) heartbeatAuthCacheKey {
-		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code", cluster: "code-cluster"}
 	}
 
 	for i := range a.negativeMax {
@@ -606,13 +607,13 @@ func TestTokenReviewAuthenticatorNegativeCacheIsBounded(t *testing.T) {
 // count every TTL.
 func TestTokenReviewAuthenticatorNegativeCacheRepeatRejectionKeepsOneSlot(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
 	a.negativeMax = 8
 	key := func(token string) heartbeatAuthCacheKey {
-		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code"}
+		return heartbeatAuthCacheKey{tokenHash: sha256.Sum256([]byte(token)), provider: "code", cluster: "code-cluster"}
 	}
 	garbage := key("garbage")
 
@@ -664,7 +665,7 @@ func TestTokenReviewAuthenticatorNegativeCacheRepeatRejectionKeepsOneSlot(t *tes
 // order queue, never by scanning the map on a lookup.
 func TestTokenReviewAuthenticatorNegativeCacheLookupDoesNotSweep(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -720,7 +721,7 @@ func TestTokenReviewAuthenticatorNegativeCacheLookupDoesNotSweep(t *testing.T) {
 
 func TestTokenReviewAuthenticatorRejectsUnauthenticatedToken(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: false}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -739,9 +740,9 @@ func TestTokenReviewAuthenticatorRejectsUnauthenticatedToken(t *testing.T) {
 
 func TestTokenReviewAuthenticatorAcceptsProviderSAAndCachesIt(t *testing.T) {
 	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster"})
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{
-		Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername},
+		Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"code-cluster"}}},
 	}}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
@@ -819,5 +820,31 @@ func TestBearerToken(t *testing.T) {
 		if got != want || ok != (want != "") {
 			t.Errorf("bearerToken(%q) = %q, %t; want %q", header, got, ok, want)
 		}
+	}
+}
+
+func TestHeartbeatIssuerAndCurrentRegistrationBoundary(t *testing.T) {
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "legacy-catalog", WorkspaceCluster: "actual-provider"})
+	f := &tokenReviewFake{status: authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: ProviderSAUsername, Extra: map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"foreign-org"}}}}}
+	now := time.Now()
+	a := newTestTokenReviewAuthenticator(reg, f, &now)
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "foreign"), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+		t.Fatalf("foreign provider accepted: %v", err)
+	}
+	f.status.User.Extra = map[string]authnv1.ExtraValue{"authentication.kcp.io/cluster-name": {"actual-provider"}}
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "actual"), "code"); err != nil {
+		t.Fatal(err)
+	}
+	if f.clusters[len(f.clusters)-1] != "actual-provider" {
+		t.Fatal("reviewed catalog placement rather than issuer workspace")
+	}
+	reg.Delete("code")
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "actual"), "code"); !errors.Is(err, ErrHeartbeatAuthUnavailable) {
+		t.Fatalf("cached acceptance survived deleted registration: %v", err)
+	}
+	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "legacy-catalog", WorkspaceCluster: "replacement-provider"})
+	if err := a.Authenticate(context.Background(), heartbeatRequestWithBearer("code", "actual"), "code"); !errors.Is(err, ErrHeartbeatTokenRejected) {
+		t.Fatalf("cached old provider accepted after replacement: %v", err)
 	}
 }

@@ -10,8 +10,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kcp-dev/logicalcluster/v3"
+
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -42,7 +45,9 @@ func VerifyProviderActionServiceAccount(ctx context.Context, cfg *rest.Config, t
 	if err != nil {
 		return "", err
 	}
-	if sa.DeletionTimestamp != nil || review.Status.User.UID == "" || string(sa.UID) != review.Status.User.UID {
+	issuers := review.Status.User.Extra[nativeSA.ClusterNameKey]
+	issuer := logicalcluster.From(sa).String()
+	if issuer == "" || len(issuers) != 1 || issuers[0] != issuer || sa.DeletionTimestamp != nil || review.Status.User.UID == "" || string(sa.UID) != review.Status.User.UID {
 		return "", fmt.Errorf("tenant action ServiceAccount identity changed")
 	}
 	// Managed identities must pass their existing scoped/proof verification.

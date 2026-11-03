@@ -25,6 +25,7 @@ import (
 
 	authnv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apiserverserviceaccount "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -156,6 +157,7 @@ func newCatalogProjectResolver(record *tenancyv1alpha1.ScopedIdentity, account s
 				User: authnv1.UserInfo{
 					Username: "system:serviceaccount:" + serviceaccounts.Namespace + ":" + account,
 					UID:      "service-account-uid",
+					Extra:    map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: {testCatalogProjectCluster}},
 				},
 			}, nil
 		},
@@ -217,7 +219,7 @@ func TestProviderCatalogScopedIdentityRejectsInvalidReviewAndStaleRecords(t *tes
 	reviewStatus := authnv1.TokenReviewStatus{
 		Authenticated: true,
 		Audiences:     []string{serviceaccounts.WorkloadIdentityTokenAudience},
-		User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + account},
+		User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + account, Extra: map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: {testCatalogProjectCluster}}},
 	}
 	validRecord := record.DeepCopy()
 	cases := map[string]struct {
@@ -227,6 +229,15 @@ func TestProviderCatalogScopedIdentityRejectsInvalidReviewAndStaleRecords(t *tes
 	}{
 		"unauthenticated": {mutateReview: func(status *authnv1.TokenReviewStatus) { status.Authenticated = false }, ownerFound: true},
 		"wrong audience":  {mutateReview: func(status *authnv1.TokenReviewStatus) { status.Audiences = []string{"other"} }, ownerFound: true},
+		"foreign issuer": {mutateReview: func(status *authnv1.TokenReviewStatus) {
+			status.User.Extra = map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: {"foreigncluster"}}
+		}, ownerFound: true},
+		"missing issuer": {mutateReview: func(status *authnv1.TokenReviewStatus) {
+			status.User.Extra = nil
+		}, ownerFound: true},
+		"ambiguous issuer": {mutateReview: func(status *authnv1.TokenReviewStatus) {
+			status.User.Extra = map[string]authnv1.ExtraValue{apiserverserviceaccount.ClusterNameKey: {testCatalogProjectCluster, "foreigncluster"}}
+		}, ownerFound: true},
 		"wrong subject": {mutateReview: func(status *authnv1.TokenReviewStatus) {
 			status.User.Username = "system:serviceaccount:default:railgrid-wi-fake"
 		}, ownerFound: true},

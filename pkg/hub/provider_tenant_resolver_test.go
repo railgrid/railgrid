@@ -19,6 +19,7 @@ package hub
 import (
 	"bytes"
 	"context"
+
 	"encoding/json"
 	"errors"
 	"io"
@@ -26,6 +27,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kcp-dev/logicalcluster/v3"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -74,7 +78,7 @@ func (rt workloadResolverRoundTripper) serviceAccountObject() *corev1.ServiceAcc
 			Name: rt.serviceAccount, Namespace: serviceaccounts.Namespace,
 			UID:         "uid-" + types.UID(rt.serviceAccount),
 			Labels:      map[string]string{serviceaccounts.LabelWorkloadIdentity: "true"},
-			Annotations: map[string]string{serviceaccounts.AnnotationWorkloadIdentityTenantPath: rt.tenantPath},
+			Annotations: map[string]string{serviceaccounts.AnnotationWorkloadIdentityTenantPath: rt.tenantPath, logicalcluster.AnnotationKey: "resolver-cluster"},
 		},
 	}
 	if rt.delegatedUser != "" {
@@ -138,7 +142,7 @@ func (rt workloadResolverRoundTripper) RoundTrip(r *http.Request) (*http.Respons
 			TypeMeta: metav1.TypeMeta{APIVersion: "authentication.k8s.io/v1", Kind: "TokenReview"},
 			Status: authnv1.TokenReviewStatus{
 				Authenticated: true,
-				User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + rt.serviceAccount},
+				User:          authnv1.UserInfo{Username: "system:serviceaccount:default:" + rt.serviceAccount, UID: "uid-" + rt.serviceAccount, Extra: map[string]authnv1.ExtraValue{nativeSA.ClusterNameKey: {"resolver-cluster"}}},
 				Audiences:     []string{serviceaccounts.WorkloadIdentityTokenAudience},
 			},
 		})

@@ -98,7 +98,7 @@ func newProviderActionProofBridge(config *rest.Config, keys serviceaccounts.Proo
 		if err != nil {
 			return err
 		}
-		if !review.Status.Authenticated || review.Status.User.Username != providers.ProviderSAUsername {
+		if !providers.TokenReviewMatchesCluster(review.Status, entry.WorkspaceCluster) || review.Status.User.Username != providers.ProviderSAUsername {
 			return fmt.Errorf("the bearer does not authenticate as the proof's provider")
 		}
 		return nil

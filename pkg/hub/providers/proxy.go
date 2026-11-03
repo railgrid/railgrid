@@ -33,6 +33,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
@@ -377,7 +379,7 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.denyHubOnlyEndpoints && isHubOnlyProviderPath(rest) {
+	if p.denyHubOnlyEndpoints && (isHubOnlyProviderPath(rest) || isShardProviderPath(rest)) {
 		http.NotFound(w, r)
 		return
 	}
@@ -517,6 +519,13 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // (/x/../workload-identities, /Workload-Identities) cannot slip through.
 var hubOnlyProviderPrefixes = []string{"/workload-identities"}
 
+// isShardProviderPath reserves native verb forwarding for kcp itself. Browser
+// backend calls must not bypass native authentication and authorization.
+func isShardProviderPath(rest string) bool {
+	clean := strings.ToLower(path.Clean("/" + strings.TrimPrefix(rest, "/")))
+	return clean == "/clusters" || strings.HasPrefix(clean, "/clusters/")
+}
+
 func isHubOnlyProviderPath(rest string) bool {
 	clean := strings.ToLower(path.Clean("/" + strings.TrimPrefix(rest, "/")))
 	for _, prefix := range hubOnlyProviderPrefixes {
@@ -628,6 +637,9 @@ func singleJoiningSlash(a, b string) string {
 // the hub's front door: a tenant could otherwise reach that route through
 // /services/providers/<name>/clusters/... wearing any identity it likes.
 func stripShardIdentityHeaders(h http.Header) {
+	// This envelope is reserved for a separately authenticated shard transport.
+	// Never promote a public caller's envelope into trusted hub authority.
+	h.Del(dataplane.HeaderUpstreamIdentity)
 	h.Del("X-Remote-User")
 	h.Del("X-Remote-Group")
 	h.Del("X-Kcp-Internal-Proxy-Hops")

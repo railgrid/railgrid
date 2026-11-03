@@ -30,6 +30,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -277,6 +278,13 @@ func (v *Verifier) verifyServiceAccount(ctx context.Context, token, cluster, mcp
 		return "", ErrUnauthenticated
 	}
 	user := review.Status.User
+	// Native TokenReview authenticates credentials issued by other logical
+	// clusters too. Require the authenticated issuer before either the own-SA
+	// shortcut or a tenant-local authorization review.
+	issuers := user.Extra[nativeSA.ClusterNameKey]
+	if cluster == "" || len(issuers) != 1 || issuers[0] != cluster {
+		return "", ErrUnauthenticated
+	}
 	if user.Username == ServiceAccountUsername(mcpServerName) {
 		return user.Username, nil
 	}

@@ -142,7 +142,7 @@ func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (stri
 	if err != nil {
 		return "", "", fmt.Errorf("reviewing project-scoped catalog identity: %w", err)
 	}
-	if !status.Authenticated || !hasAudience(status.Audiences, serviceaccounts.WorkloadIdentityTokenAudience) {
+	if !providers.TokenReviewMatchesCluster(status, clusterID) || !hasAudience(status.Audiences, serviceaccounts.WorkloadIdentityTokenAudience) {
 		return "", "", errors.New("project-scoped catalog token is not authenticated for the workload audience")
 	}
 	username, serviceAccountName, ok := parseProjectCatalogServiceAccount(status.User.Username)

@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	authnv1 "k8s.io/api/authentication/v1"
@@ -31,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/kubernetes"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/rest"
@@ -45,9 +45,9 @@ type fakeToken struct {
 	username string
 }
 
-// fakeKCP fakes TokenReview per tenant cluster: a token authenticates only
-// in the cluster it was issued for, mirroring kcp's per-logical-cluster
-// ServiceAccount validation. reviews counts TokenReview calls.
+// fakeKCP models native kcp TokenReview: a token issued by another logical
+// cluster still authenticates, with its actual issuer in trusted Extra.
+// reviews counts TokenReview calls.
 type fakeKCP struct {
 	tokens  map[string]fakeToken
 	reviews int
@@ -58,7 +58,6 @@ func (f *fakeKCP) clusterConfig(cluster string) *rest.Config {
 }
 
 func (f *fakeKCP) newClient(cfg *rest.Config) (kubernetes.Interface, error) {
-	cluster := strings.TrimPrefix(cfg.Host, "https://kcp.test/clusters/")
 	cs := kubefake.NewClientset()
 	cs.PrependReactor("create", "subjectaccessreviews", func(clienttesting.Action) (bool, runtime.Object, error) {
 		return true, &authorizationv1.SubjectAccessReview{}, nil // no explicit workload grants
@@ -67,8 +66,8 @@ func (f *fakeKCP) newClient(cfg *rest.Config) (kubernetes.Interface, error) {
 		f.reviews++
 		review := action.(clienttesting.CreateAction).GetObject().(*authnv1.TokenReview)
 		out := &authnv1.TokenReview{}
-		if tok, ok := f.tokens[review.Spec.Token]; ok && tok.cluster == cluster {
-			out.Status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: tok.username}}
+		if tok, ok := f.tokens[review.Spec.Token]; ok {
+			out.Status = authnv1.TokenReviewStatus{Authenticated: true, User: authnv1.UserInfo{Username: tok.username, Extra: map[string]authnv1.ExtraValue{nativeSA.ClusterNameKey: {tok.cluster}}}}
 		} else {
 			out.Status = authnv1.TokenReviewStatus{Authenticated: false, Error: "invalid bearer token"}
 		}
@@ -80,11 +79,12 @@ func (f *fakeKCP) newClient(cfg *rest.Config) (kubernetes.Interface, error) {
 func newTestVerifier(t *testing.T, opts ...VerifierOption) (*Verifier, *fakeKCP) {
 	t.Helper()
 	kcp := &fakeKCP{tokens: map[string]fakeToken{
-		"sa-tenant-a":    {cluster: "tenant-a", username: ServiceAccountUsername("default")},
-		"sa-other-a":     {cluster: "tenant-a", username: ServiceAccountUsername("other")},
-		"workload-a":     {cluster: "tenant-a", username: "system:serviceaccount:default:wl-abc"},
-		"sa-tenant-b":    {cluster: "tenant-b", username: ServiceAccountUsername("default")},
-		"user-shaped-sa": {cluster: "tenant-a", username: "alice"},
+		"sa-tenant-a":       {cluster: "tenant-a", username: ServiceAccountUsername("default")},
+		"sa-other-a":        {cluster: "tenant-a", username: ServiceAccountUsername("other")},
+		"workload-a":        {cluster: "tenant-a", username: "system:serviceaccount:default:wl-abc"},
+		"sa-missing-issuer": {username: ServiceAccountUsername("default")},
+		"sa-tenant-b":       {cluster: "tenant-b", username: ServiceAccountUsername("default")},
+		"user-shaped-sa":    {cluster: "tenant-a", username: "alice"},
 	}}
 	all := append([]VerifierOption{
 		WithKubeClientFactory(kcp.newClient),
@@ -121,6 +121,7 @@ func TestVerifierServiceAccountToken(t *testing.T) {
 		wantErr error // nil = allow
 	}{
 		{name: "own SA in its cluster", token: "sa-tenant-a", cluster: "tenant-a", mcpName: "default"},
+		{name: "own SA without issuer", token: "sa-missing-issuer", cluster: "tenant-a", mcpName: "default", wantErr: ErrUnauthenticated},
 		{name: "garbage bearer", token: "nope", cluster: "tenant-a", mcpName: "default", wantErr: ErrUnauthenticated},
 		{name: "token from another tenant cluster", token: "sa-tenant-b", cluster: "tenant-a", mcpName: "default", wantErr: ErrUnauthenticated},
 		{name: "another MCPServer's SA", token: "sa-other-a", cluster: "tenant-a", mcpName: "default", wantErr: ErrForbidden},

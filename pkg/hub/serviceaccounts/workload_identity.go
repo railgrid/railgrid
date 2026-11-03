@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/railgrid/provider-sdk/dataplane"
+
+	"github.com/kcp-dev/logicalcluster/v3"
 	sdkworkloadidentity "github.com/railgrid/provider-sdk/workloadidentity"
 	authnv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -35,6 +37,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	nativeSA "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -228,6 +231,14 @@ func VerifyWorkloadServiceAccountDetails(ctx context.Context, cfg *rest.Config, 
 	sa, err := client.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return "", nil, fmt.Errorf("getting workload ServiceAccount: %w", err)
+	}
+	// Native kcp can authenticate another cluster's identically named account.
+	// Bind the reviewed principal to the actual object we are about to trust,
+	// not the request endpoint, token payload, or that object's valid proof alone.
+	issuer := logicalcluster.From(sa).String()
+	issuers := review.Status.User.Extra[nativeSA.ClusterNameKey]
+	if issuer == "" || len(issuers) != 1 || issuers[0] != issuer || review.Status.User.UID == "" || sa.UID == "" || review.Status.User.UID != string(sa.UID) || sa.DeletionTimestamp != nil {
+		return "", nil, fmt.Errorf("workload ServiceAccount issuer or identity does not match the selected tenant")
 	}
 	if err := verifyWorkloadServiceAccountAnnotations(ctx, sa, expectedTenantPath, proofKeys); err != nil {
 		return "", nil, err
