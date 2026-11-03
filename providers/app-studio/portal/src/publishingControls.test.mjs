@@ -45,7 +45,7 @@ test('exposes Publishing separately and keeps workspace model config out of Proj
   assert.doesNotMatch(app, /aria-label="Project Settings sections"/)
   assert.doesNotMatch(app, /project-settings-tab-model/)
   assert.match(app, /v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"/)
-  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"/)
+  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"/)
   assert.doesNotMatch(app, /projectSettingsPane === 'production'/)
   assert.doesNotMatch(app, /project-settings-tab-production/)
   assert.doesNotMatch(app, /id: 'builtin:production'/)

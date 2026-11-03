@@ -59,6 +59,7 @@ async function contextStateHarness(t, initialContext) {
     const loadProviders = () => {};
     const loadCreateReadiness = () => {};
     const loadLLMSettings = () => {};
+    const loadModelProviderConnections = () => {};
     const loadImportRepositories = () => {};
     const loadDevelopmentTemplates = () => {};
     ${outputText}

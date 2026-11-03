@@ -110,3 +110,34 @@ The focused `make test-ui-e2e-report-portal` target includes the production buil
 and its budget gate; tests and typechecking alone do not establish that the
 emitted bundle fits. These are local build measurements, not live browser
 performance evidence. Larger growth still requires module-cost investigation.
+
+The provider-connection/model-binding revamp initially exceeded both startup
+budgets and the total budget. Its model registry had pulled credential-write
+transactions into the dashboard graph, and the Models surface retained a second
+legacy credential form. The final implementation removes that form, uses the
+same binding selector for legacy migration, and separates key-free metadata
+reads from lazy registry mutations. `ModelsSettings.vue` remains lazy loaded.
+
+The production module report excludes Vue's compiler and shows no duplicated
+large dependency closure. The metadata reader is 2,681 B gzip and the mutation
+chunk is 4,630 B gzip. Remaining model state in `App.vue` supports project
+creation, model selection, reasoning, and chat; removing it would change those
+flows. A separate read-only review found no further feature-specific reduction
+large enough to close the remaining total gap. These are emitted bundle
+measurements, not browser timing measurements.
+
+The complete feature adds 50,101 B raw / 13,285 B gzip to all emitted assets
+against the previous passing baseline. Its optimized dashboard and page fit
+their existing ceilings. The total-only ceiling deliberately accepts that
+measured optional feature cost with a fixed 50,000 B raw / 14,000 B gzip increase.
+It leaves about the same margin as the previous baseline; bootstrap, dashboard,
+page, and authentication settings ceilings remain unchanged.
+
+| Path | Measured raw | Measured gzip | Raw limit | Gzip limit | Gzip headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dashboard | 189,461 B | 57,826 B | 200,000 B | 62,000 B | 4,174 B |
+| Page | 1,222,888 B | 332,544 B | 1,230,000 B | 336,000 B | 3,456 B |
+| Total assets | 1,380,081 B | 381,298 B | 1,395,000 B | 386,000 B | 4,702 B |
+
+Future changes still have to pass these fixed budgets and investigate growth;
+the total limit does not track subsequent build output automatically.

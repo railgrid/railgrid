@@ -25,6 +25,9 @@ import type {
   ProjectAssistantTurn,
   ProjectAssistantTurnDetail,
   ProjectLLMSettings,
+  ProjectModelProviderConnection,
+  ProjectModelProviderConnectionDraft,
+  ProjectModelProviderConnectionWrite,
   ProjectLLMModelDiscovery,
   ProjectIntegration,
   ProjectIntegrationsDiscovery,
@@ -52,7 +55,6 @@ import type { PreviewBridgeSession } from './previewBridge'
 import { providerFetch, readTenant, tenantHeaders } from './portalkit/tenant'
 import { createKubeClient, isKubeNotFound, kubeVerbPath, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import { RequestTimeoutError, withRequestTimeout } from './requestTimeout'
-import * as llmRegistry from './llmRegistry'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
 import {
   classifyProjectFileError,
@@ -74,7 +76,7 @@ export class ProjectAPIInitializingError extends Error {
 }
 
 export class ProjectAPIRequestError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly reason = '') {
     super(message)
     this.name = 'ProjectAPIRequestError'
   }
@@ -133,6 +135,18 @@ function verbCluster(ctx: RailgridContext | null): string {
 const projectResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'projects' }
 const sessionResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'sessions' }
 const studioResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'studios' }
+const modelProviderConnectionResource: KubeResourceRef = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'modelproviderconnections' }
+
+// Keep both model reads and mutation helpers off the dashboard's initial API
+// graph. Page startup loads only the read core when it asks for settings; the
+// larger mutation module loads only when a model or connection is changed.
+function loadLLMRegistryRead() {
+  return import('./llmRegistryRead')
+}
+
+function loadLLMRegistry() {
+  return import('./llmRegistry')
+}
 
 // projectURL addresses a verb on one project. tail is the part of the address
 // INSIDE the object — an integration alias, a grant id, a skill package —
@@ -154,6 +168,10 @@ function sessionURL(ctx: RailgridContext | null, threadID: string, verb: string,
 // against instead of being a collection route.
 function studioURL(ctx: RailgridContext | null, verb: string): string {
   return kubeVerbPath(verbCluster(ctx), studioResource, STUDIO_NAME, verb)
+}
+
+function modelProviderConnectionURL(ctx: RailgridContext | null, name: string, verb: string): string {
+  return kubeVerbPath(verbCluster(ctx), modelProviderConnectionResource, name, verb)
 }
 
 // STUDIO_NAME mirrors aiv1alpha1.StudioName: one Studio per workspace.
@@ -302,7 +320,7 @@ export async function request<T>(ctx: RailgridContext | null, method: string, pa
     if (isProjectAPIInitializingResponse(res.status, reason, detail)) {
       throw new ProjectAPIInitializingError(detail)
     }
-    throw new ProjectAPIRequestError(detail, res.status)
+    throw new ProjectAPIRequestError(detail, res.status, reason)
   }
   return (text ? JSON.parse(text) : null) as T
 }
@@ -1258,34 +1276,68 @@ export const api = {
     )
   },
 
-  // The model registry is Studio spec plus one Secret per model, both written
-  // with the kube client as the caller — see ./llmRegistry. These stay on the
-  // api object so every call site keeps one import; only where the data lives
-  // has changed.
+  // The model registry is Studio spec plus one Secret per model, written with
+  // the kube client as the caller — see ./llmRegistryRead and ./llmRegistry.
+  // Keeping reads and mutations on this facade preserves existing call sites.
   //
   // `configured` comes from the Studio reconciler's status.models[], not from
   // a key the browser holds: the portal never reads credential material.
   async getLLMSettings(ctx: RailgridContext | null): Promise<ProjectLLMSettings> {
-    return llmRegistry.getLLMSettings(ctx)
+    return (await loadLLMRegistryRead()).getLLMSettings(ctx)
+  },
+
+  async listModelProviderConnections(ctx: RailgridContext | null): Promise<ProjectModelProviderConnection[]> {
+    return (await loadLLMRegistryRead()).listModelProviderConnections(ctx)
+  },
+
+  async getModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<ProjectModelProviderConnection> {
+    return (await loadLLMRegistryRead()).getModelProviderConnection(ctx, name)
+  },
+
+  async saveModelProviderConnection(
+    ctx: RailgridContext | null,
+    body: ProjectModelProviderConnectionWrite,
+    expectedConnection?: ProjectModelProviderConnection,
+  ): Promise<ProjectModelProviderConnection> {
+    return (await loadLLMRegistry()).saveModelProviderConnection(ctx, body, expectedConnection)
+  },
+
+  async deleteModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<void> {
+    return (await loadLLMRegistry()).deleteModelProviderConnection(ctx, name)
+  },
+
+  async discoverModelProviderConnection(ctx: RailgridContext | null, name: string): Promise<ProjectLLMModelDiscovery> {
+    return request<ProjectLLMModelDiscovery>(ctx, 'POST', modelProviderConnectionURL(ctx, name, 'discover'), {})
+  },
+
+  async testModelProviderConnection(
+    ctx: RailgridContext | null,
+    name: string,
+    body: { model: string; reasoningEffort?: string },
+  ): Promise<{ ok: boolean }> {
+    return request<{ ok: boolean }>(ctx, 'POST', modelProviderConnectionURL(ctx, name, 'test'), body, {
+      timeoutMS: 35_000,
+      timeoutMessage: 'model connection test timed out',
+    })
   },
 
   async discoverLLMModels(
     ctx: RailgridContext | null,
-    body: { provider: string; baseURL: string; apiKey?: string; existingModelID?: string },
+    body: ProjectModelProviderConnectionDraft,
   ): Promise<ProjectLLMModelDiscovery> {
     return studioRequest<ProjectLLMModelDiscovery>(ctx, 'POST', 'discover-models', body)
   },
 
   async createLLMModel(
     ctx: RailgridContext | null,
-    body: { name: string; provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey: string },
+    body: { name: string; provider?: string; baseURL?: string; connectionRef?: string; connectionInfo?: ProjectModelProviderConnection; model: string; reasoningEffort?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
-    return llmRegistry.createLLMModel(ctx, body)
+    return (await loadLLMRegistry()).createLLMModel(ctx, body)
   },
 
   async testLLMConnection(
     ctx: RailgridContext | null,
-    body: { provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey: string; existingModelID?: string },
+    body: ProjectModelProviderConnectionDraft & { provider?: string; model: string; reasoningEffort?: string; existingModelID?: string },
   ): Promise<{ ok: boolean }> {
     await ensureStudio(ctx)
     return request<{ ok: boolean }>(ctx, 'POST', `${studioURL(ctx, 'test-model')}`, body, {
@@ -1297,17 +1349,17 @@ export const api = {
   async patchLLMModel(
     ctx: RailgridContext | null,
     modelID: string,
-    body: { name?: string; provider?: string; baseURL?: string; model?: string; reasoningEffort?: string; apiKey?: string },
+    body: { name?: string; expectedName?: string; expectedRevisionID?: string; provider?: string; baseURL?: string; connectionRef?: string; connectionInfo?: ProjectModelProviderConnection; model?: string; reasoningEffort?: string; apiKey?: string },
   ): Promise<ProjectLLMSettings> {
-    return llmRegistry.patchLLMModel(ctx, modelID, body)
+    return (await loadLLMRegistry()).patchLLMModel(ctx, modelID, body)
   },
 
   async deleteLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
-    return llmRegistry.deleteLLMModel(ctx, modelID)
+    return (await loadLLMRegistry()).deleteLLMModel(ctx, modelID)
   },
 
   async setDefaultLLMModel(ctx: RailgridContext | null, modelID: string): Promise<ProjectLLMSettings> {
-    return llmRegistry.setDefaultLLMModel(ctx, modelID)
+    return (await loadLLMRegistry()).setDefaultLLMModel(ctx, modelID)
   },
 
   async getProject(
