@@ -962,10 +962,18 @@ func (a *Agent) hubClientAfterEnrollment(ctx context.Context, initial *railgridc
 	}
 	if !a.hasIssuedCredential() {
 		klog.FromContext(ctx).Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-enrolled:
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+	waiting:
+		for {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-enrolled:
+				break waiting
+			case <-ticker.C:
+				klog.FromContext(ctx).Info("Still waiting for the provider to issue this agent a scoped identity", "edgeName", a.opts.EdgeName)
+			}
 		}
 	}
 	client, err := a.refreshHubClientFromCredential()
@@ -1140,65 +1148,38 @@ func (a *Agent) runServerMode(ctx context.Context, logger klog.Logger, hubClient
 	// downstreamConfig is nil in server mode; the tunnel only serves /ssh.
 	go tunnel.StartProxyTunnel(ctx, tunnelURL, a.credentials, a.opts.EdgeName, string(a.agentType), nil, a.hubTLSConfig, tunnelState, a.opts.SSHProxyPort, a.svcProxy, serverClusterName, serverOnEnrolled, sshHeaders)
 
-	// Out-of-cluster join-token mode: wait for the SA kubeconfig before
-	// starting the edge_reporter, otherwise its patch calls would all return
-	// Unauthorized until a restart.
-	// An agent that already holds a saved credential has nothing to wait for:
-	// it reconnects with that credential, so the provider sends no enrolment
-	// bundle and the wait below would never end — taking the add-on plane, the
-	// status reporter and everything after them with it, on every restart. The
-	// hub client is still rebuilt from whichever credential the store holds.
-	if !IsInCluster() && (a.opts.Token != "" || a.hasIssuedCredential()) {
-		if !a.hasIssuedCredential() {
-			logger.Info("Join-token mode: waiting for the provider to issue this agent a scoped identity...")
-			select {
-			case <-ctx.Done():
-				logger.Info("Agent shutting down before enrolment completed")
-				return nil
-			case <-serverAgentEnrolled:
-			}
+	// Host agents can also run inside a pod. They need the same issued hub
+	// identity as cluster agents; a runtime ServiceAccount is not that identity.
+	refreshed, err := a.hubClientAfterEnrollment(ctx, hubClient, serverAgentEnrolled)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
 		}
-		refreshed, err := a.refreshHubClientFromCredential()
-		if err != nil {
-			return fmt.Errorf("refreshing hub client after enrolment: %w", err)
-		}
-		hubClient = refreshed
-		logger.Info("Refreshed hub client from the issued credential")
+		return fmt.Errorf("refreshing hub client after enrolment: %w", err)
 	}
+	hubClient = refreshed
 
-	// In-cluster join-token mode is the only path where we still lack working
-	// credentials at this point (the os.Exit-on-delivery handles the
-	// transition). Everywhere else we run the agent-side edge_reporter so the
-	// agent owns its heartbeat rather than relying solely on hub-side stamps.
-	if a.opts.Token != "" && IsInCluster() {
-		logger.Info("In-cluster join-token mode: hub manages edge status until kubeconfig-triggered restart")
-		go func() {
-			for range tunnelState {
-			}
-		}()
-	} else {
-		// Harness plane: spec.harness on this edge decides which coding
-		// harnesses the machine offers, the agent supervises one runner per
-		// enabled harness and applies a change live. Started before the
-		// reporter so the first heartbeat already carries status.harnesses, and
-		// handed to the tunnel's registry so /api/v1/services advertises the
-		// runners and the /svc proxy can inject their bearers.
-		harnesses := a.startHarnessPlane(ctx, logger)
+	// Harness plane: spec.harness on this edge decides which coding
+	// harnesses the machine offers, the agent supervises one runner per
+	// enabled harness and applies a change live. Started before the
+	// reporter so the first heartbeat already carries status.harnesses, and
+	// handed to the tunnel's registry so /api/v1/services advertises the
+	// runners and the /svc proxy can inject their bearers.
+	harnesses := a.startHarnessPlane(ctx, logger)
 
-		reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
-		if a.agentType == AgentTypeMacOS {
-			reporter.SetHostFacts(agentStatus.DarwinHostFacts())
-		}
-		if harnesses != nil {
-			a.runners.Set(harnesses)
-			reporter.SetHarnessSource(harnesses.Statuses)
-		}
-		go func() {
-			if err := reporter.Run(ctx); err != nil {
-				logger.Error(err, "Edge status reporter failed")
-			}
-		}()
+	reporter := agentStatus.NewEdgeReporter(a.opts.EdgeName, railgridclient.EdgeGVRForType(string(a.agentType)), hubClient, tunnelState, a.opts.SSHProxyPort)
+	if a.agentType == AgentTypeMacOS {
+		reporter.SetHostFacts(agentStatus.DarwinHostFacts())
 	}
+	if harnesses != nil {
+		a.runners.Set(harnesses)
+		reporter.SetHarnessSource(harnesses.Statuses)
+	}
+	go func() {
+		if err := reporter.Run(ctx); err != nil {
+			logger.Error(err, "Edge status reporter failed")
+		}
+	}()
 
 	logger.Info("Agent started successfully (host mode)", "type", a.agentType)
 	<-ctx.Done()

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -488,5 +489,39 @@ func TestNativeHubClientRefreshesWithoutTunnelReconnect(t *testing.T) {
 	}
 	if refreshes != 1 || reads != 1 {
 		t.Fatalf("refresh calls=%d native reads=%d", refreshes, reads)
+	}
+}
+
+func TestNativeHubClientBacksOffFailedRefresh(t *testing.T) {
+	var refreshes atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			refreshes.Add(1)
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer issued" {
+			t.Error("native request lost issued bearer")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"apiVersion":"edges.railgrid.ai/v1alpha1","kind":"PlacementList","items":[]}`)
+	}))
+	defer hub.Close()
+	a := agentForCredentialTest("backoff-edge", hub.URL)
+	a.credentials = &tunnel.CredentialStore{}
+	if err := a.credentials.Adopt(tunnel.Credential{Token: "issued", HubURL: hub.URL, ClusterID: "tenant", RefreshPath: "/refresh", ExpiresAt: time.Now().Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	client, err := a.refreshHubClientFromCredential()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		if _, err := client.Dynamic().Resource(railgridclient.PlacementGVR).List(context.Background(), metav1.ListOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if refreshes.Load() != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshes.Load())
 	}
 }

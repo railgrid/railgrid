@@ -22,7 +22,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 
 	"k8s.io/client-go/rest"
 
@@ -57,14 +56,9 @@ func useIssuedHubCredentials(cfg *rest.Config, store *tunnel.CredentialStore) er
 type issuedHubTokenSource struct {
 	store    *tunnel.CredentialStore
 	endpoint *url.URL
-	// Coalesce concurrent native-client refreshes. The refresh transport is
-	// independent of this client, so it cannot recurse into this lock.
-	mu sync.Mutex
 }
 
 func (s *issuedHubTokenSource) token(ctx context.Context) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	credential, ok := s.store.Current()
 	if !ok || apiurl.HubServerURL(credential.HubURL, credential.ClusterID) != s.endpoint.String() {
 		return "", fmt.Errorf("issued hub credential address changed; restart the agent")
