@@ -566,6 +566,26 @@ func (s *Service) Release(ctx context.Context, clusterID string, owner Owner) er
 	return nil
 }
 
+// RecordCluster returns the target of a provider's existing identity. The REST
+// boundary uses it to attest the provider against the real target binding before
+// deletion; a query parameter cannot redirect an existing record's authority.
+func (s *Service) RecordCluster(ctx context.Context, provider, name string) (string, error) {
+	if s == nil || s.records == nil {
+		return "", fmt.Errorf("identity service is unavailable")
+	}
+	record, err := s.records.Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if record.Spec.Owner.Provider != provider {
+		return "", nil
+	}
+	return record.Spec.ClusterID, nil
+}
+
 // ReleaseByName deletes one record by its object name, after checking that it
 // belongs to provider. A provider may only delete its own identities.
 func (s *Service) ReleaseByName(ctx context.Context, provider, name string) error {
