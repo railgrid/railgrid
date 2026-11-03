@@ -333,7 +333,9 @@ type ProviderProxy struct {
 	kcpFrontDoor *url.URL
 	kcpTransport http.RoundTripper
 
-	boundCopy BoundCopyResolver
+	boundCopy             BoundCopyResolver
+	agentIngress          AgentIngressResolver
+	agentIngressAdmission *agentIngressAdmission
 }
 
 // SetKCPFrontDoor tells the backend proxy where kcp is and how to
@@ -424,6 +426,9 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//
 	// Resolve the caller once here; resolveProvider, the delegated-token
 	// path, and setHeaders all read the memo (see resolveCaller).
+	if !p.fallbackForSPA && p.serveAgentIngress(w, r, name, rest) {
+		return
+	}
 	if p.fallbackForSPA {
 		if grant := r.URL.Query().Get(UIGrantQueryParam); grant != "" {
 			p.serveOrgUIAsset(w, r, name, rest, grant)

@@ -967,6 +967,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
 			backendProxy.SetBoundCopyResolver(newProviderBoundCopyResolver(kcpConfig, providerRegistry))
+			backendProxy.SetAgentIngressResolver(newProviderAgentIngressResolver(kcpConfig))
 			// The one data-plane hop the hub still makes on a caller's behalf
 			// — an org-owned provider's backend behind its edge — goes through
 			// kcp like every other verb, at the edges provider's
@@ -978,6 +979,9 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("building the kcp transport for the provider edge hop: %w", err)
 			} else {
 				backendProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
+				if embeddedKCP != nil {
+					embeddedKCP.SetProviderActionTransport(backendProxy.ForwardShardAction)
+				}
 				// An org-owned provider's UI bundle is fetched over the same
 				// hop (pkg/hub/providers/ui_grant.go).
 				uiProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)

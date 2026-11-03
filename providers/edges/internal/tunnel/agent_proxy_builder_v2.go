@@ -22,6 +22,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -206,11 +207,7 @@ func (p *Server) agentTunnelHandler(upgrader websocket.Upgrader) http.Handler {
 		// With replica routing enabled the pickup path is replica-addressed so
 		// pickups reach THIS process (the dialer closes over the socket) no
 		// matter which replica the Service hands them to.
-		pickupPath := p.agentPickupPath
-		if p.replicaID != "" {
-			pickupPath += "/" + p.replicaID
-		}
-		dialer := revdial.NewDialer(conn, pickupPath)
+		dialer := p.newAgentDialer(conn, cluster, resource, name)
 		p.edgeConnManager.Store(key, dialer)
 		p.logger.Info("Edge agent tunnel established", "key", key)
 
@@ -456,4 +453,18 @@ func extractSSHCredsFromHeaders(r *http.Request) *sshCredsFromAgent {
 		}
 	}
 	return creds
+}
+
+// newAgentDialer preserves the control tunnel's verified scope on the actual
+// revdial pickup wire, including its replica-addressed routing path.
+func (p *Server) newAgentDialer(conn net.Conn, cluster, resource, name string) *revdial.Dialer {
+	pickupPath := p.agentPickupPath
+	if p.replicaID != "" {
+		pickupPath += "/" + p.replicaID
+	}
+	pickupScope := url.Values{}
+	pickupScope.Set("railgrid.agent.cluster", cluster)
+	pickupScope.Set("railgrid.agent.resource", resource)
+	pickupScope.Set("railgrid.agent.name", name)
+	return revdial.NewDialer(conn, pickupPath+"?"+pickupScope.Encode())
 }

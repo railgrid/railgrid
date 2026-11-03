@@ -3282,3 +3282,19 @@ lint-agents-provider-connections: $(GOLANGCI_LINT) ## Lint the Agents provider c
 .PHONY: test-provider-issuer-boundary
 test-provider-issuer-boundary: ## Verify native SA issuers cannot cross provider or tenant authority
 	go test -count=1 ./pkg/hub/providers ./pkg/hub/serviceaccounts ./pkg/hub/mcpaggregate ./pkg/hub/identity ./pkg/hub/restapi ./pkg/hub
+
+.PHONY: test-provider-action-routing
+test-provider-action-routing: ## Test binding-scoped provider actions and agent ingress
+	go test -count=1 ./pkg/hub/kcp ./pkg/hub/providers ./pkg/hub -run 'TestShard|TestForwardShard|TestProviderAgentIngress|TestAgentIngress'
+	cd provider-sdk && go test -count=1 ./dataplane
+	cd providers/edges && go test -count=1 ./internal/tunnel
+
+.PHONY: test-provider-agent-ingress
+test-provider-agent-ingress: ## Test binding-scoped agent routing and credential isolation
+	go test -count=1 ./pkg/hub ./pkg/hub/providers -run 'TestProviderAgentIngress|TestAgentIngress'
+	cd providers/edges && go test -count=1 ./internal/tunnel
+
+.PHONY: fix-lint-provider-action-routing
+fix-lint-provider-action-routing: $(GOLANGCI_LINT) ## Format and lint the affected standalone packages
+	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./dataplane
+	cd providers/edges && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./internal/tunnel
