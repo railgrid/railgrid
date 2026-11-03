@@ -198,8 +198,9 @@ type StudioLLMConnectionSnapshot struct {
 	// SecretRef preserves the exact key version needed by the revision.
 	// +optional
 	SecretRef *StudioLLMSecretRef `json:"secretRef,omitempty"`
-	// SecretKey names the credential entry in SecretRef.
+	// SecretKey names the fixed apiKey credential entry in SecretRef.
 	// +optional
+	// +kubebuilder:validation:Enum=apiKey
 	SecretKey string `json:"secretKey,omitempty"`
 	// SecretUID and SecretResourceVersion ensure a pinned revision never reads
 	// a replacement or subsequently edited Secret under the same name.

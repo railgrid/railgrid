@@ -85,12 +85,14 @@ type ModelProviderConnectionSpec struct {
 	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
 
 	// SecretRef names the key Secret in namespace default of this workspace.
+	// External Secrets must carry railgrid.ai/owner: app-studio, set by a
+	// Secret writer to opt their apiKey entry into App Studio credential use.
 	SecretRef StudioLLMSecretRef `json:"secretRef"`
 
-	// SecretKey names the Secret data entry that carries the credential.
+	// SecretKey is fixed to apiKey; arbitrary Secret entries are never credentials.
 	// +optional
 	// +kubebuilder:default=apiKey
-	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Enum=apiKey
 	SecretKey string `json:"secretKey,omitempty"`
 }
 
