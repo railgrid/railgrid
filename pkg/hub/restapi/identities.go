@@ -191,6 +191,9 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clusterID := strings.TrimSpace(query.Get("clusterID"))
+	// Listing is part of revocation: allow the same exact provider copy to
+	// enumerate its identities while its binding terminates or backend is
+	// unready. Minting continues to require the stricter ready-binding check.
 	subject, err := h.attestCleanupInWorkspace(r, provider, clusterID)
 	if err != nil {
 		status, code := identityAuthStatus(err)
@@ -225,12 +228,30 @@ func (h *IdentityHandler) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := make([]identityListItem, 0, len(records))
+	// Cache only within this request, whose provider and bearer are fixed.
+	// A subsequent request must re-read bindings and validate the bearer.
+	attestations := make(map[string]error)
 	for i := range records {
 		// A legacy global platform listing must not expose an org copy's
 		// identities merely because both copies share a provider name.
 		if clusterID == "" {
-			if _, err := h.attestCleanupInWorkspace(r, provider, records[i].Spec.ClusterID); err != nil {
-				continue
+			cluster := records[i].Spec.ClusterID
+			err, checked := attestations[cluster]
+			if !checked {
+				_, err = h.attestCleanupInWorkspace(r, provider, cluster)
+				attestations[cluster] = err
+			}
+			if err != nil {
+				status, code := identityAuthStatus(err)
+				if status == http.StatusUnauthorized || status == http.StatusForbidden {
+					// A valid platform token has a foreign issuer in a workspace
+					// bound to an org copy; that definite refusal hides its records.
+					continue
+				}
+				// An unavailable verifier says nothing about record ownership.
+				// Return an error instead of a successful, incomplete inventory.
+				writeIdentityError(w, status, code, identityAuthMessage(status))
+				return
 			}
 		}
 		items = append(items, identityListItemFor(&records[i]))
