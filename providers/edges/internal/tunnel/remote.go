@@ -135,7 +135,7 @@ func (p *Server) pickupRouter(local http.Handler) http.Handler {
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
 				pr.Out.URL.Path = "/agent-pickup"
-				// Query (the revdial dialer id) rides along untouched.
+				// The dialer id and authenticated pickup addressing ride along.
 			},
 		}
 		proxy.ServeHTTP(w, r)

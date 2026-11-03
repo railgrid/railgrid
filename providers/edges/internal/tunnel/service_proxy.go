@@ -23,6 +23,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"slices"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -176,6 +177,16 @@ func (p *Server) serveService(w http.ResponseWriter, r *http.Request, req datapl
 	ctx := r.Context()
 	logger := klog.FromContext(ctx).WithName("edgeservice-proxy")
 
+	forwarded, err := providerActionIdentity(r, svcObj)
+	if err != nil {
+		http.Error(w, "invalid forwarded provider identity", http.StatusForbidden)
+		return
+	}
+	if forwarded != nil {
+		ctx = context.WithValue(ctx, providerActionIdentityKey{}, forwarded)
+		r = r.WithContext(ctx)
+		r.Header.Del(dataplane.HeaderUpstreamAuthorization)
+	}
 	svc, err := decodeServiceView(req.Name, svcObj)
 	if err != nil {
 		logger.Error(err, "decoding service", "cluster", req.ClusterID, "name", req.Name)
@@ -309,8 +320,9 @@ func (p *Server) serviceHTTPProxy(ctx context.Context, w http.ResponseWriter, r 
 
 // stampCallerForUpstream replaces what kcp stamped for THIS provider with what
 // a service behind the tunnel may reasonably want to know about the caller.
-// The requestheader identity (X-Remote-*) and the hop counter are meaningful
-// only to a server that trusts the shard, so they never cross the tunnel; the
+// Ordinary Service calls strip requestheader identity and the hop counter.
+// A provider action carries a separately verified hub-only envelope; only its
+// allowlisted identity headers are restored for the provider. For other calls, the
 // caller's user name and tenant travel as the railgrid headers a self-hosted
 // provider backend reads to attribute and scope the call (X-Railgrid-User,
 // X-Railgrid-Tenant, X-Railgrid-Cluster), overwriting anything the caller
@@ -323,6 +335,12 @@ func stampCallerForUpstream(h http.Header, ctx context.Context, cluster string) 
 	}
 	h.Set(dataplane.HeaderTenant, cluster)
 	h.Set(dataplane.HeaderCluster, cluster)
+	if forwarded, ok := ctx.Value(providerActionIdentityKey{}).(http.Header); ok {
+		for key, values := range forwarded {
+			h[key] = values
+		}
+		h.Set(dataplane.HeaderUser, forwarded.Get(dataplane.HeaderRemoteUser))
+	}
 }
 
 // applyServiceAuth sets the Authorization the agent-side upstream will see,
@@ -466,3 +484,21 @@ func (p *Server) readServiceToken(ctx context.Context, cluster string, svc *serv
 	}
 	return "", fmt.Errorf("auth secret %s/%s has no \"token\" key", ref.Namespace, ref.Name)
 }
+
+// Only the hub's authenticated shard identity may carry a provider action's
+// original caller through a hub-owned Service. The envelope is consumed here;
+// ordinary service traffic cannot smuggle X-Remote-* across the tunnel.
+func providerActionIdentity(r *http.Request, svc *unstructured.Unstructured) (http.Header, error) {
+	value := r.Header.Get(dataplane.HeaderUpstreamIdentity)
+	r.Header.Del(dataplane.HeaderUpstreamIdentity)
+	if value == "" {
+		return nil, nil
+	}
+	caller, ok := dataplane.ProxiedIdentityFrom(r.Context())
+	if !ok || caller.User != "kcp-admin" || !slices.Contains(caller.Groups, "system:kcp:admin") || svc.GetLabels()["providers.railgrid.ai/owned"] != "true" {
+		return nil, fmt.Errorf("only the hub may forward provider identity")
+	}
+	return dataplane.DecodeUpstreamIdentity(value)
+}
+
+type providerActionIdentityKey struct{}
