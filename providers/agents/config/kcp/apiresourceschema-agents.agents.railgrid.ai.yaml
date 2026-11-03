@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261017-9d583212.agents.agents.railgrid.ai
+  name: v261103-8d04f28c.agents.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -217,7 +217,8 @@ spec:
                 Channels binds named messaging channels to the agent. The channel marked
                 Primary (or, failing that, the first entry) is the default notify target
                 for output that does not name a channel — the notify/ask tools, approval
-                requests, and schedules/triggers with no ChannelRef. Schedules and
+                requests, and schedules/triggers with no ChannelRef (whose output
+                Notifications.RunOutput can silence). Schedules and
                 Triggers may deliver to any channel by referencing its Name. An agent also
                 receives inbound messages on every channel's Connection, so a user can
                 talk to it from more than one place (e.g. Telegram and Discord).
@@ -314,6 +315,70 @@ spec:
                   format: int32
                   minimum: 0
                   type: integer
+              type: object
+            notifications:
+              description: |-
+                Notifications controls what the agent posts to its channels on its own,
+                as opposed to answering a channel conversation.
+              properties:
+                runOutput:
+                  description: |-
+                    RunOutput says which unattended runs — schedules, triggers, wakeups and
+                    heartbeats — post their result to a channel: Always (the default), only
+                    a run that failed (OnFailure), or none (Never). Questions and approval
+                    requests a run is waiting on are always posted, and a conversation held
+                    in a channel is always answered there: those need the user, a finished
+                    run's output does not.
+                  enum:
+                  - Always
+                  - OnFailure
+                  - Never
+                  type: string
+              type: object
+            selfConfiguration:
+              description: |-
+                SelfConfiguration lets the agent change parts of its own configuration
+                from inside a run: its prompt, its triggers and their filters, and its
+                memory settings. Off unless enabled. The tool policy, autonomy, budget,
+                limits, backend, delegates and this block itself are never
+                self-configurable: those bound what the agent may do, and an agent that
+                could widen them would be bounded by nothing.
+              properties:
+                approval:
+                  description: |-
+                    Approval says which changes wait for the user to approve them: Always,
+                    Unattended (the default: changes made by runs nobody is watching) or
+                    Never.
+                  enum:
+                  - Always
+                  - Unattended
+                  - Never
+                  type: string
+                enabled:
+                  description: Enabled gives the agent its self-configuration tools.
+                  type: boolean
+                scopes:
+                  description: |-
+                    Scopes lists the parts of its configuration the agent may change.
+                    Empty means every scope.
+                  items:
+                    description: AgentSelfConfigurationScope names one part of the
+                      agent's configuration.
+                    properties:
+                      name:
+                        description: 'Name is the scope: Prompt, Triggers or Memory.'
+                        enum:
+                        - Prompt
+                        - Triggers
+                        - Memory
+                        type: string
+                    required:
+                    - name
+                    type: object
+                  type: array
+                  x-kubernetes-list-map-keys:
+                  - name
+                  x-kubernetes-list-type: map
               type: object
             systemPrompt:
               description: |-

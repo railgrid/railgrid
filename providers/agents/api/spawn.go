@@ -75,6 +75,9 @@ var workerExcludedTools = map[string]bool{
 	"notify": true, "ask": true, "memory_save": true,
 	"schedule_create": true, "schedule_update": true, "schedule_delete": true, "schedules_list": true,
 	"delegate": true,
+	// Self-configuration: a worker never rewrites the agent that spawned it.
+	"self_config_get": true, "self_prompt_update": true, "self_memory_update": true,
+	"triggers_list": true, "webhooks_list": true, "trigger_create": true, "trigger_update": true, "trigger_delete": true,
 }
 
 // workerRun marks a run as a spawned worker and carries the constraints its

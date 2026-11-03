@@ -122,12 +122,134 @@ type AgentSpec struct {
 	// Channels binds named messaging channels to the agent. The channel marked
 	// Primary (or, failing that, the first entry) is the default notify target
 	// for output that does not name a channel — the notify/ask tools, approval
-	// requests, and schedules/triggers with no ChannelRef. Schedules and
+	// requests, and schedules/triggers with no ChannelRef (whose output
+	// Notifications.RunOutput can silence). Schedules and
 	// Triggers may deliver to any channel by referencing its Name. An agent also
 	// receives inbound messages on every channel's Connection, so a user can
 	// talk to it from more than one place (e.g. Telegram and Discord).
 	// +optional
 	Channels []AgentChannel `json:"channels,omitempty"`
+
+	// Notifications controls what the agent posts to its channels on its own,
+	// as opposed to answering a channel conversation.
+	// +optional
+	Notifications *AgentNotifications `json:"notifications,omitempty"`
+
+	// SelfConfiguration lets the agent change parts of its own configuration
+	// from inside a run: its prompt, its triggers and their filters, and its
+	// memory settings. Off unless enabled. The tool policy, autonomy, budget,
+	// limits, backend, delegates and this block itself are never
+	// self-configurable: those bound what the agent may do, and an agent that
+	// could widen them would be bounded by nothing.
+	// +optional
+	SelfConfiguration *AgentSelfConfiguration `json:"selfConfiguration,omitempty"`
+}
+
+// Parts of its own configuration an agent may change, for
+// AgentSelfConfiguration.Scopes.
+const (
+	// SelfConfigScopePrompt covers spec.systemPrompt and spec.description.
+	SelfConfigScopePrompt = "Prompt"
+	// SelfConfigScopeTriggers covers the Triggers whose agentRef is this
+	// agent: creating, retasking, refiltering, rerouting, pausing and deleting
+	// them. Webhooks are read, never created.
+	SelfConfigScopeTriggers = "Triggers"
+	// SelfConfigScopeMemory covers spec.memory.
+	SelfConfigScopeMemory = "Memory"
+)
+
+// When a self-configuration change waits for the user, for
+// AgentSelfConfiguration.Approval.
+const (
+	// SelfConfigApprovalAlways gates every change.
+	SelfConfigApprovalAlways = "Always"
+	// SelfConfigApprovalUnattended gates a change made by a run nobody is
+	// watching — a schedule, trigger, wakeup or delegation, whose input may be
+	// a webhook payload — and lets a chat run apply its change directly.
+	SelfConfigApprovalUnattended = "Unattended"
+	// SelfConfigApprovalNever applies every change directly. Autonomy
+	// "suggest" still gates them, as it gates every consequential tool.
+	SelfConfigApprovalNever = "Never"
+)
+
+// AgentSelfConfiguration says whether, and how far, an agent may reconfigure
+// itself.
+type AgentSelfConfiguration struct {
+	// Enabled gives the agent its self-configuration tools.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Scopes lists the parts of its configuration the agent may change.
+	// Empty means every scope.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	Scopes []AgentSelfConfigurationScope `json:"scopes,omitempty"`
+
+	// Approval says which changes wait for the user to approve them: Always,
+	// Unattended (the default: changes made by runs nobody is watching) or
+	// Never.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;Unattended;Never
+	Approval string `json:"approval,omitempty"`
+}
+
+// AgentSelfConfigurationScope names one part of the agent's configuration.
+type AgentSelfConfigurationScope struct {
+	// Name is the scope: Prompt, Triggers or Memory.
+	// +kubebuilder:validation:Enum=Prompt;Triggers;Memory
+	Name string `json:"name"`
+}
+
+// SelfConfigures reports whether the agent may change scope of its own
+// configuration.
+func (s *AgentSpec) SelfConfigures(scope string) bool {
+	sc := s.SelfConfiguration
+	if sc == nil || !sc.Enabled {
+		return false
+	}
+	if len(sc.Scopes) == 0 {
+		return true
+	}
+	for _, sp := range sc.Scopes {
+		if sp.Name == scope {
+			return true
+		}
+	}
+	return false
+}
+
+// SelfConfigApproval returns spec.selfConfiguration.approval with its default.
+func (s *AgentSpec) SelfConfigApproval() string {
+	if s.SelfConfiguration == nil || s.SelfConfiguration.Approval == "" {
+		return SelfConfigApprovalUnattended
+	}
+	return s.SelfConfiguration.Approval
+}
+
+// SelfConfiguredByRunAnnotation records, on an Agent or Trigger the agent
+// changed through its self-configuration tools, the run that last changed it.
+const SelfConfiguredByRunAnnotation = "agents.railgrid.ai/self-configured-by-run"
+
+// Run-output delivery settings for AgentNotifications.RunOutput.
+const (
+	AgentRunOutputAlways    = "Always"
+	AgentRunOutputOnFailure = "OnFailure"
+	AgentRunOutputNever     = "Never"
+)
+
+// AgentNotifications controls the messages an agent sends to its channels
+// without being asked.
+type AgentNotifications struct {
+	// RunOutput says which unattended runs — schedules, triggers, wakeups and
+	// heartbeats — post their result to a channel: Always (the default), only
+	// a run that failed (OnFailure), or none (Never). Questions and approval
+	// requests a run is waiting on are always posted, and a conversation held
+	// in a channel is always answered there: those need the user, a finished
+	// run's output does not.
+	// +optional
+	// +kubebuilder:validation:Enum=Always;OnFailure;Never
+	RunOutput string `json:"runOutput,omitempty"`
 }
 
 // AgentBackendSpec selects where an agent's turns execute, and configures the
@@ -387,6 +509,22 @@ type AgentChannel struct {
 	// treated as primary.
 	// +optional
 	Primary bool `json:"primary,omitempty"`
+}
+
+// PostsRunOutput reports whether an unattended run's result is posted to a
+// channel, per spec.notifications.runOutput. failed is whether the run failed.
+func (s *AgentSpec) PostsRunOutput(failed bool) bool {
+	if s.Notifications == nil {
+		return true
+	}
+	switch s.Notifications.RunOutput {
+	case AgentRunOutputNever:
+		return false
+	case AgentRunOutputOnFailure:
+		return failed
+	default:
+		return true
+	}
 }
 
 // PrimaryChannel returns the agent's default notify channel: the one marked

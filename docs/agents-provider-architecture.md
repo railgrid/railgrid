@@ -172,6 +172,19 @@ and tools are edited inside the agent, next to a live chat playground.
     `schedule_delete`/`schedules_list` (cron/wakeup — agents schedule and
     re-schedule *themselves*; update/delete are scoped to the calling agent's
     own schedules), `notify`, `ask` (posts a question to the inbox + channel).
+  - `self` (not a grant — on whenever `spec.selfConfiguration.enabled`):
+    `self_config_get`, `self_prompt_update`, `self_memory_update`,
+    `webhooks_list`, `triggers_list`, `trigger_create`/`trigger_update`/
+    `trigger_delete`, each present only for a scope in
+    `spec.selfConfiguration.scopes` (`Prompt`, `Triggers`, `Memory`; empty =
+    all). Trigger tools are scoped to the calling agent's own triggers, and a
+    created trigger always drives the caller. `spec.selfConfiguration.approval`
+    (`Unattended` default, `Always`, `Never`) adds the mutating tools to the
+    run's `requireApproval` on top of autonomy; it can only add gates. The tool
+    policy, autonomy, budget, limits, backend, delegates and the block itself
+    are never self-configurable. Changes are stamped with
+    `agents.railgrid.ai/self-configured-by-run` and apply from the next run.
+    Spawned workers never get the family; a harness-backed agent rejects it.
   - `web`: `web_fetch` (SSRF-guarded at dial time — blocks private/loopback,
     defeats DNS rebinding) and `web_search`, backed by a `websearch`
     Connection speaking either a **self-hosted SearXNG instance** (no API key —
