@@ -231,6 +231,7 @@ export {
   watchCalls,
   timers, timerDelays, unmountCallbacks,
   toastCalls,
+  ${isWizard ? '' : 'providerStatusLabel, providerStatusClass, canOpenProvider, canDisableFromThisProjection,'}
   ${isWizard ? 'props, plan, goal, goalExplicit, step, audience, restore, storageKey, persist, selectAudience, canOpen, setupReady, setupDataCurrent, canSkipSetup, memberJourney, explore, exploring,' : 'onDisable, disableOperations, hasPendingDeletion, route, router, setTab, startInstall, cancelInstall, resumeManualInstall, showInstructions, canManageSelfHostedCredentials, activeRegistration, finishInstall, selfHostedHeading, selfHostNotice, removeSelfHosted, selfHostRemoval, removalOperations, clearSelfHostRemoval, confirmingRemoval, selfHostError, trackDeletingSelfHostedProviders, normalizeProviderRoute, installProvider, inventoryScope, currentTenantScope, refreshOrgProviderInventory, restartInventoryPolling, stopInventoryPolling, stopSelfHostRemovalPolling, onInventoryVisibilityChange, document, setInventoryPollingMounted, resetRouteState,'}
   confirmCalls,
   setConfirmBehavior,
@@ -789,6 +790,63 @@ test('ProvidersPage refuses to disable a changed workspace binding after migrati
 
   assert.equal(writes, 0, 'a binding that changed during confirmation is never disabled')
   assert.match(caller.actionError.value, /binding changed while confirmation was open/)
+})
+
+test('catalog retains confirmed copy labels during same-workspace refreshes while actions require fresh bindings', async () => {
+  const caller = await loadCaller('pages/ProvidersPage.vue')
+  const provider = { name: 'edges', scope: 'org', shadowsPlatform: true, ready: false }
+  const boundProvider = { ...provider, ready: true, serving: { ui: {} } }
+  const store = caller.providerStore
+  store.isEnabled = () => true
+  store.isSelfManaged = () => true
+  store.isDisabling = () => false
+  store.workspaceProvider = () => boundProvider
+
+  for (const selfHosted of [false, true]) {
+    store.bindingsByProvider = { edges: { bindingName: 'edges', selfHosted, ready: true } }
+    store.bindingsLoadState = 'ready'
+    store.bindingsStale = false
+    const label = selfHosted ? 'Enabled · org copy' : 'Enabled · platform copy'
+    assert.equal(caller.providerStatusLabel(provider), label)
+    const badgeClass = caller.providerStatusClass(provider)
+    assert.equal(caller.canOpenProvider(provider), true)
+    assert.equal(caller.canDisableFromThisProjection(provider), true)
+
+    store.bindingsLoadState = 'loading'
+    store.bindingsStale = true
+    assert.equal(caller.providerStatusLabel(provider), label)
+    assert.equal(caller.providerStatusClass(provider), badgeClass)
+    assert.equal(caller.canOpenProvider(provider), false)
+    assert.equal(caller.canDisableFromThisProjection(provider), false)
+
+    // A completed request replaces the old copy instead of pinning its label.
+    store.bindingsByProvider.edges.selfHosted = !selfHosted
+    store.bindingsLoadState = 'ready'
+    store.bindingsStale = false
+    assert.equal(caller.providerStatusLabel(provider), selfHosted ? 'Enabled · platform copy' : 'Enabled · org copy')
+    assert.equal(caller.canOpenProvider(provider), true)
+    assert.equal(caller.canDisableFromThisProjection(provider), true)
+  }
+
+  store.bindingsLoadState = 'loading'
+  store.bindingsStale = true
+  // Neither an initial read nor another tenant's retained data identifies a copy.
+  for (const [target, field, value] of [
+    [store, 'bindingsStale', false],
+    [store, 'bindingsOrgUUID', 'other-org'],
+    [store, 'bindingsWorkspace', 'other-workspace'],
+    [store, 'bindingsRequestOrgUUID', 'other-org'],
+    [store, 'bindingsRequestWorkspaceUUID', 'other-workspace'],
+    [caller.tenantStore, 'workspaceMode', 'organization'],
+    [store, 'bindingsLoadState', 'error'],
+  ]) {
+    const previous = target[field]
+    target[field] = value
+    assert.doesNotMatch(caller.providerStatusLabel(provider), /platform copy|org copy/, field)
+    assert.equal(caller.canOpenProvider(provider), false, field)
+    assert.equal(caller.canDisableFromThisProjection(provider), false, field)
+    target[field] = previous
+  }
 })
 
 test('ProvidersPage waits for a fresh organization inventory before choosing install review or resume', async () => {
