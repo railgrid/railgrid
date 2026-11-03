@@ -19,6 +19,7 @@ package metering
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,7 +93,7 @@ func newFixture(t *testing.T, orgs ...*tenancyv1alpha1.Organization) (*Organizat
 		gvrEntitlements:      "EntitlementList",
 		gvrMembershipReports: "MembershipReportList",
 	}
-	meteringWS := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds)
+	meteringWS := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, plan("free"))
 	// One fake per kcp path: the tenants parent holds the org Workspace, the
 	// org workspace holds its children.
 	tenants := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), listKinds, workspace("org-1", "lc-org"))
@@ -335,6 +336,74 @@ func TestReconcileKeepsAnExistingArchivedPlanAssignment(t *testing.T) {
 	}
 	if !IsPlanArchived(mustGetPlan(t, ws, "legacy")) {
 		t.Fatal("reconcile changed the plan's archived state")
+	}
+}
+
+func TestImplicitDefaultAssignmentRejectsArchivedConfiguredPlan(t *testing.T) {
+	o := org("org-1")
+	r, ws := newFixture(t, o)
+	r.opts.DefaultPlan = "team"
+	archived := plan("team")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	if _, err := ws.Resource(gvrPlans).Create(context.Background(), archived, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.ensureEntitlement(context.Background(), o, klog.Background()); err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("implicit default assignment error = %v, want archived-plan error", err)
+	}
+	if _, err := ws.Resource(gvrEntitlements).Get(context.Background(), o.Name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("rejected default assignment created an Entitlement: %v", err)
+	}
+	if o.Spec.Plan != "" {
+		t.Fatalf("rejected default assignment changed Organization.spec.plan: %q", o.Spec.Plan)
+	}
+}
+
+func TestExplicitArchivedOrganizationPlanStillReconciles(t *testing.T) {
+	o := org("org-1")
+	o.Spec.Plan = "team"
+	r, ws := newFixture(t, o)
+	r.opts.DefaultPlan = "team"
+	archived := plan("team")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	if _, err := ws.Resource(gvrPlans).Create(context.Background(), archived, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.ensureEntitlement(context.Background(), o, klog.Background()); err != nil {
+		t.Fatalf("persisted explicit archived plan should reconcile: %v", err)
+	}
+	if got := planOf(t, ws, o.Name); got != "team" {
+		t.Fatalf("explicit archived assignment = %q, want team", got)
+	}
+}
+
+func TestImplicitDefaultTransitionRejectsArchivedPlanWithoutChangingEntitlement(t *testing.T) {
+	o := org("org-1")
+	r, ws := newFixture(t, o)
+	r.opts.DefaultPlan = "team"
+	archived := plan("team")
+	archived.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+	if _, err := ws.Resource(gvrPlans).Create(context.Background(), archived, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	prior := entitlement(o.Name, "free")
+	prior.SetLabels(map[string]string{LabelOrganization: o.Name, LabelPlanFromSpec: "true", PlanSourceLabel: PlanSourceOperator})
+	if _, err := ws.Resource(gvrEntitlements).Create(context.Background(), prior, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := r.ensureEntitlement(context.Background(), o, klog.Background())
+	if err == nil || !strings.Contains(err.Error(), "archived") {
+		t.Fatalf("implicit default transition error = %v, want archived-plan error", err)
+	}
+	got := entitlementOf(t, ws, o.Name)
+	if planName, _, _ := unstructured.NestedString(got.Object, "spec", "plan"); planName != "free" {
+		t.Fatalf("rejected default transition changed Entitlement plan: %q", planName)
+	}
+	if got.GetLabels()[LabelPlanFromSpec] != "true" || got.GetLabels()[PlanSourceLabel] != PlanSourceOperator {
+		t.Fatalf("rejected default transition changed Entitlement ownership labels: %v", got.GetLabels())
 	}
 }
 

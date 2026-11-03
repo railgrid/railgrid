@@ -65,6 +65,14 @@ func planRouterWithWriters(t *testing.T, lookup func(context.Context, string) (b
 }
 
 func planRouterWithArchiveLookup(t *testing.T, lookup func(context.Context, string) (bool, error), archived func(context.Context, string) (bool, error), reset func(context.Context, string) error, assign func(context.Context, string, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
+	return planRouterWithValidation(t, lookup, archived, reset, assign, nil, orgs...)
+}
+
+func planRouterWithDefaultValidation(t *testing.T, lookup func(context.Context, string) (bool, error), validate func(context.Context) error, reset func(context.Context, string) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
+	return planRouterWithValidation(t, lookup, nil, reset, nil, validate, orgs...)
+}
+
+func planRouterWithValidation(t *testing.T, lookup func(context.Context, string) (bool, error), archived func(context.Context, string) (bool, error), reset func(context.Context, string) error, assign func(context.Context, string, string) error, validate func(context.Context) error, orgs ...*tenancyv1alpha1.Organization) (http.Handler, *railgridclient.Client) {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	if err := tenancyv1alpha1.AddToScheme(scheme); err != nil {
@@ -91,11 +99,45 @@ func planRouterWithArchiveLookup(t *testing.T, lookup func(context.Context, stri
 	if reset != nil {
 		h.WithPlanReset(reset)
 	}
+	if validate != nil {
+		h.WithDefaultPlanValidation(validate)
+	}
 	if assign != nil {
 		h.WithPlanAssignment(assign)
 	}
 	h.Register(sub)
 	return r, client
+}
+
+func TestSetOrganizationPlanValidatesDefaultBeforeClearingIntent(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{
+		TypeMeta:   metav1.TypeMeta{APIVersion: tenancyv1alpha1.SchemeGroupVersion.String(), Kind: "Organization"},
+		ObjectMeta: metav1.ObjectMeta{Name: "org-a"},
+		Spec:       tenancyv1alpha1.OrganizationSpec{Plan: "team"},
+	}
+	resetCalls := 0
+	validate := func(context.Context) error { return errors.New(`configured default plan "team" is archived`) }
+	reset := func(context.Context, string) error {
+		resetCalls++
+		return nil
+	}
+	h, client := planRouterWithDefaultValidation(t,
+		func(context.Context, string) (bool, error) { return true, nil }, validate, reset, org)
+
+	rec, _ := putPlan(h, "org-a", `{"plan":""}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
+	}
+	got, err := client.Organizations().Get(context.Background(), "org-a", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Spec.Plan != "team" {
+		t.Fatalf("default-plan preflight failure cleared Organization.spec.plan: %q", got.Spec.Plan)
+	}
+	if resetCalls != 0 {
+		t.Fatalf("reset ran after failed preflight: %d calls", resetCalls)
+	}
 }
 
 // An empty plan resets the Entitlement even when spec.plan was already
@@ -114,7 +156,7 @@ func TestSetOrganizationPlanEmptyResetsTheEntitlement(t *testing.T) {
 		resets = append(resets, name)
 		return resetErr
 	}
-	h, _ := planRouterWithReset(t, known, reset, org)
+	h, _ := planRouterWithValidation(t, known, nil, reset, nil, func(context.Context) error { return nil }, org)
 
 	// spec.plan is empty and stays empty; the reset still runs.
 	rec, _ := putPlan(h, "org-a", `{"plan":""}`)

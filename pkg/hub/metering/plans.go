@@ -110,6 +110,9 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 		ent, err := res.Get(ctx, org, metav1.GetOptions{})
 		if err != nil {
 			if apierrors.IsNotFound(err) {
+				if err := requireAssignableDefaultPlan(ctx, store, defaultPlan); err != nil {
+					return err
+				}
 				return nil
 			}
 			return err
@@ -120,6 +123,11 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 		_, sourced := labels[PlanSourceLabel]
 		if current == defaultPlan && !fromSpec && !sourced {
 			return nil
+		}
+		if current != defaultPlan {
+			if err := requireAssignableDefaultPlan(ctx, store, defaultPlan); err != nil {
+				return err
+			}
 		}
 		if err := unstructured.SetNestedField(ent.Object, defaultPlan, "spec", "plan"); err != nil {
 			return err
@@ -132,6 +140,34 @@ func ResetPlan(discovery Installed, store dynamic.Interface, defaultPlan string,
 		}
 		logger.Info("organization entitlement reset to the default plan", "organization", org, "from", current, "plan", defaultPlan)
 		return nil
+	}
+}
+
+// requireAssignableDefaultPlan checks the configured default against the
+// metering workspace before a caller makes a new assignment to it. This is a
+// live object check rather than replica-local configuration protection: during
+// a rolling configuration change, an older hub may have archived the plan
+// that a newer hub is configured to use.
+func requireAssignableDefaultPlan(ctx context.Context, store dynamic.Interface, defaultPlan string) error {
+	plan, err := store.Resource(gvrPlans).Get(ctx, defaultPlan, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf("configured default plan %q does not exist", defaultPlan)
+	}
+	if err != nil {
+		return err
+	}
+	if IsPlanArchived(plan) {
+		return fmt.Errorf("configured default plan %q is archived", defaultPlan)
+	}
+	return nil
+}
+
+// ValidateDefaultPlan returns a live check for the default plan configured on
+// this hub. Admin plan-reset routes use it before clearing Organization intent;
+// ResetPlan repeats the check before writing the Entitlement.
+func ValidateDefaultPlan(store dynamic.Interface, defaultPlan string) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		return requireAssignableDefaultPlan(ctx, store, defaultPlan)
 	}
 }
 

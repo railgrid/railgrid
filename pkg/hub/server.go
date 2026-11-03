@@ -1186,7 +1186,8 @@ func (s *Server) Run(ctx context.Context) error {
 					adminHandler.WithPlanLookup(metering.PlanExists(meteringDiscovery, meteringStore)).
 						WithArchivedPlanLookup(metering.PlanIsArchived(meteringStore)).
 						WithPlanAssignment(metering.AssignPlan(meteringDiscovery, meteringStore, logger.WithName("metering-admin"))).
-						WithPlanReset(metering.ResetPlan(meteringDiscovery, meteringStore, s.opts.MeteringDefaultPlan, logger.WithName("metering-admin")))
+						WithPlanReset(metering.ResetPlan(meteringDiscovery, meteringStore, s.opts.MeteringDefaultPlan, logger.WithName("metering-admin"))).
+						WithDefaultPlanValidation(metering.ValidateDefaultPlan(meteringStore, s.opts.MeteringDefaultPlan))
 				}
 				adminHandler.Register(adminSub)
 				// The admin area reads metering through this proxy.

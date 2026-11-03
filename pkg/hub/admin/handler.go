@@ -63,6 +63,9 @@ type Handler struct {
 	// admin edited directly (the reconciler leaves those alone), so the
 	// explicit reset goes to metering too. Nil skips it.
 	resetPlan func(ctx context.Context, org string) error
+	// validateDefaultPlan checks that the hub's configured default is still
+	// assignable before an empty plan request clears Organization.spec.plan.
+	validateDefaultPlan func(ctx context.Context) error
 }
 
 // NewHandler builds an admin Handler.
@@ -105,6 +108,15 @@ func (h *Handler) WithPlanAssignment(assign func(ctx context.Context, org, plan 
 // to the default plan whoever put it on its current one.
 func (h *Handler) WithPlanReset(reset func(ctx context.Context, org string) error) *Handler {
 	h.resetPlan = reset
+	return h
+}
+
+// WithDefaultPlanValidation checks the configured default before the plan
+// route clears Organization.spec.plan. ResetPlan repeats this check before it
+// writes the Entitlement, so a plan archived between the two reads is not
+// newly assigned.
+func (h *Handler) WithDefaultPlanValidation(validate func(ctx context.Context) error) *Handler {
+	h.validateDefaultPlan = validate
 	return h
 }
 
@@ -402,6 +414,16 @@ func (h *Handler) setOrganizationPlan(w http.ResponseWriter, r *http.Request) {
 		if !planAvailable && (!planArchived || org.Spec.Plan != req.Plan) {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("plan %q does not exist or is archived", req.Plan))
 			return
+		}
+		if req.Plan == "" && h.resetPlan != nil {
+			if h.validateDefaultPlan == nil {
+				writeError(w, http.StatusServiceUnavailable, "the configured default plan cannot be checked; organization plan was not changed")
+				return
+			}
+			if err := h.validateDefaultPlan(r.Context()); err != nil {
+				writeError(w, http.StatusServiceUnavailable, fmt.Sprintf("the configured default plan is unavailable; organization plan was not changed: %v", err))
+				return
+			}
 		}
 		if org.Spec.Plan != req.Plan {
 			org.Spec.Plan = req.Plan

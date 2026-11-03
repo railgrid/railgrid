@@ -898,7 +898,14 @@ The platform admin's **Archive plan** action retires a plan without deleting its
 resource or limits. The existing `DELETE /api/admin/metering/plans/{name}` route
 now archives the Plan by setting the annotation
 `metering.railgrid.ai/archived: "true"`; repeating the action is safe. The
-platform default plan cannot be archived. Archived plans cannot be edited or
+archive endpoint protects the serving hub's configured default plan. Every new
+implicit default assignment also verifies that the configured Plan exists and
+is active, including organization reconciliation and explicit resets. A reset
+checks this before clearing the organization's recorded plan intent. If replicas
+differ during a default-plan rollout and an old replica archives the new
+default, new default assignments fail rather than silently using that archived
+Plan; configure an active default to resume them. Existing archived assignments
+continue to resolve. Archived plans cannot be edited or
 selected for new assignments through the hub, and are removed from subscription
 offers except when displaying an organization's current plan.
 
@@ -908,7 +915,10 @@ admins can move them onto an active plan. Requests already in flight when a plan
 is archived may finish; their references remain valid because the resource
 still exists. This removes the assignment-versus-deletion race without a
 cross-workspace lock. There is no physical purge action or restore action in
-the platform admin UI.
+the platform admin UI. After a plan write, metering queues a foreground read
+behind any pending background poll and waits for it. A successful follow-up
+replaces the pre-write snapshot; a failed follow-up retains cached data with
+an error and Retry.
 
 A separately deployed subscription integration must also exclude archived plans
 from new subscriptions while continuing to service existing assignments. The

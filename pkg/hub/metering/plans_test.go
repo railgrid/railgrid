@@ -18,6 +18,8 @@ package metering
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/kcp-dev/kcp/pkg/admission/reservedmetadata"
@@ -52,6 +54,7 @@ func labelledEntitlement(name, planName string, labels map[string]string) *unstr
 // and clearing Organization.spec.plan would otherwise leave it alone.
 func TestResetPlanReturnsADirectlySetPlanToTheDefault(t *testing.T) {
 	store := planStore(
+		plan("free"),
 		labelledEntitlement("org-direct", "team", nil),
 		labelledEntitlement("org-spec", "enterprise", map[string]string{LabelPlanFromSpec: "true", PlanSourceLabel: PlanSourceOperator, LabelOrganization: "org-spec"}),
 		labelledEntitlement("org-free", "free", map[string]string{LabelOrganization: "org-free"}),
@@ -106,6 +109,56 @@ func TestResetPlanNeedsMetering(t *testing.T) {
 	reset := ResetPlan(installed(false), planStore(entitlement("org-1", "team")), "free", klog.Background())
 	if err := reset(context.Background(), "org-1"); err == nil {
 		t.Fatal("reset without metering succeeded")
+	}
+}
+
+func TestResetPlanRejectsUnavailableConfiguredDefaultWithoutChangingEntitlement(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		defaultPlan string
+		plans       []*unstructured.Unstructured
+		wantError   string
+	}{
+		{
+			name:        "archived default",
+			defaultPlan: "team",
+			plans: func() []*unstructured.Unstructured {
+				team := plan("team")
+				team.SetAnnotations(map[string]string{PlanArchivedAnnotation: "true"})
+				return []*unstructured.Unstructured{team}
+			}(),
+			wantError: "archived",
+		},
+		{
+			name:        "missing default",
+			defaultPlan: "team",
+			wantError:   "does not exist",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			objects := []runtime.Object{labelledEntitlement("org-a", "free", map[string]string{LabelOrganization: "org-a"})}
+			for _, p := range tc.plans {
+				objects = append(objects, p)
+			}
+			store := planStore(objects...)
+			before, err := store.Resource(gvrEntitlements).Get(context.Background(), "org-a", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			reset := ResetPlan(installed(true), store, tc.defaultPlan, klog.Background())
+			err = reset(context.Background(), "org-a")
+			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("reset error = %v, want %q", err, tc.wantError)
+			}
+			after, err := store.Resource(gvrEntitlements).Get(context.Background(), "org-a", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(before.Object, after.Object) {
+				t.Fatalf("rejected reset changed Entitlement\nbefore: %#v\nafter:  %#v", before.Object, after.Object)
+			}
+		})
 	}
 }
 

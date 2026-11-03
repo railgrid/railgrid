@@ -101,6 +101,42 @@ function productionFunction(name, context) {
   return runInNewContext(`${code}\n${name}`, context)
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+
+function refreshHarness(authFetch) {
+  const context = {
+    loading: { value: false }, refreshMode: { value: 'foreground' }, queuedRefreshMode: { value: null },
+    loaded: { value: false }, status: { value: null }, items: { value: {} }, error: { value: null },
+    lastCheckedAt: { value: '' }, diagnosticNow: { value: 0 }, pendingAssignments: { value: [] },
+    disposed: false, refreshRunning: false, queuedRefresh: null,
+    refreshOrganizations: () => {}, checkPending: () => {}, authFetch,
+  }
+  context.foregroundLoading = { get value() {
+    return context.loading.value && (context.refreshMode.value === 'foreground' || context.queuedRefreshMode.value === 'foreground')
+  } }
+  context.performRefresh = productionFunction('performRefresh', context)
+  context.runRefreshQueue = productionFunction('runRefreshQueue', context)
+  context.refresh = productionFunction('refresh', context)
+  return context
+}
+
+function response(value) {
+  return { ok: true, json: async () => value }
+}
+
+async function flushUntil(predicate, message) {
+  for (let i = 0; i < 20; i++) {
+    if (predicate()) return
+    await Promise.resolve()
+  }
+  assert.fail(message)
+}
+
 test('timeouts and stopping a watch are isolated by organization and preserve saved intent', () => {
   const context = {
     pending: { value: new Map([['a', { name: 'a', started: Date.now() - 91_000, timedOut: false }], ['b', { name: 'b', started: Date.now(), timedOut: false }]]) },
@@ -125,25 +161,131 @@ test('timeouts and stopping a watch are isolated by organization and preserve sa
 
 test('a pending organization read cannot hold successful metering reads or plan data', { timeout: 2000 }, async () => {
   let organizationReads = 0
-  const context = {
-    loading: { value: false }, refreshMode: { value: 'foreground' }, error: { value: null },
-    loaded: { value: false }, status: { value: null }, items: { value: {} },
-    lastCheckedAt: { value: '' }, diagnosticNow: { value: 0 }, pendingAssignments: { value: [] }, checkPending: () => {},
-    refreshOrganizations: () => { organizationReads++; return new Promise(() => {}) },
-    authFetch: async path => ({ ok: true, json: async () => path === '/api/admin/metering' ? { installed: true, collections: ['plans'] } : { items: [{ metadata: { name: 'free' } }] } }),
-  }
-  await productionFunction('refresh', context)()
+  const context = refreshHarness(async path => response(path === '/api/admin/metering' ? { installed: true, collections: ['plans'] } : { items: [{ metadata: { name: 'free' } }] }))
+  context.refreshOrganizations = () => { organizationReads++; return new Promise(() => {}) }
+  await context.refresh()
   assert.equal(context.loaded.value, true)
   assert.equal(context.loading.value, false)
   assert.equal(context.items.value.plans[0].metadata.name, 'free')
   assert.equal(organizationReads, 1)
 })
 
+test('archive waits for a serialized fresh read behind a pending background plan read', async () => {
+  const stalePlanRead = deferred()
+  const archivedPlanRead = deferred()
+  const firstPlanReadStarted = deferred()
+  const secondPlanReadStarted = deferred()
+  let planReads = 0
+  let activePlanReads = 0
+  let maxActivePlanReads = 0
+  let statusReads = 0
+  const context = refreshHarness(path => {
+    if (path === '/api/admin/metering') {
+      statusReads++
+      return Promise.resolve(response({ installed: true, writable: true, defaultPlan: 'free', collections: ['plans'] }))
+    }
+    assert.equal(path, '/api/admin/metering/plans')
+    planReads++
+    activePlanReads++
+    maxActivePlanReads = Math.max(maxActivePlanReads, activePlanReads)
+    const read = planReads === 1 ? stalePlanRead : archivedPlanRead
+    if (planReads === 1) firstPlanReadStarted.resolve()
+    else secondPlanReadStarted.resolve()
+    return read.promise.then(result => { activePlanReads--; return result }, error => { activePlanReads--; throw error })
+  })
+  context.status.value = { writable: true, defaultPlan: 'free' }
+  context.items.value = { plans: [{ metadata: { name: 'team' }, spec: { displayName: 'Team' } }] }
+  context.writable = { value: true }
+  context.busy = { value: null }
+  context.actionError = { value: null }
+  context.notice = { value: '' }
+  context.planFor = name => context.items.value.plans?.find(plan => plan.metadata.name === name)
+  context.isPlanArchived = plan => plan?.metadata.annotations?.['metering.railgrid.ai/archived'] === 'true'
+  context.planLabel = name => context.planFor(name)?.spec?.displayName ?? name
+  context.confirmDialog = async () => true
+  const writes = []
+  context.write = async (...args) => { writes.push(args) }
+
+  const archive = productionFunction('archivePlan', context)
+  const initialBackgroundRead = context.refresh(false, 'background')
+  await firstPlanReadStarted.promise
+  let archiveFinished = false
+  const archived = archive('team').then(() => { archiveFinished = true })
+  await flushUntil(() => context.queuedRefreshMode.value === 'foreground', 'archive should enqueue foreground reconciliation behind the active read')
+
+  assert.equal(archiveFinished, false, 'archive stays busy while its post-write read is queued')
+  assert.equal(context.busy.value, 'team')
+  assert.equal(context.foregroundLoading.value, true, 'queued foreground work is announced immediately')
+  assert.equal(planReads, 1, 'the queued read does not overlap the active Plan read')
+  assert.deepEqual(writes, [['DELETE', 'plans/team']])
+
+  stalePlanRead.resolve(response({ items: [{ metadata: { name: 'team' }, spec: { displayName: 'Team' } }] }))
+  await secondPlanReadStarted.promise
+  assert.equal(archiveFinished, false, 'the mutation does not finish until the fresh read completes')
+  assert.equal(statusReads, 2)
+  assert.equal(maxActivePlanReads, 1, 'reads are serialized')
+
+  archivedPlanRead.resolve(response({ items: [{
+    metadata: { name: 'team', annotations: { 'metering.railgrid.ai/archived': 'true' } },
+    spec: { displayName: 'Team' },
+  }] }))
+  await archived
+  await initialBackgroundRead
+
+  assert.equal(archiveFinished, true)
+  assert.equal(context.isPlanArchived(context.items.value.plans[0]), true, 'the final snapshot reflects the successful archive')
+  assert.equal(context.busy.value, null)
+  assert.equal(context.loading.value, false)
+  assert.equal(context.foregroundLoading.value, false)
+  assert.equal(planReads, 2)
+  assert.equal(statusReads, 2)
+})
+
+test('unmount drops queued refreshes and ignores a response from the active read', async () => {
+  const activePlanRead = deferred()
+  const planReadStarted = deferred()
+  let requests = 0
+  const originalPlan = { metadata: { name: 'retained' } }
+  const originalItems = { plans: [originalPlan] }
+  const context = refreshHarness(path => {
+    requests++
+    if (path === '/api/admin/metering') return Promise.resolve(response({ installed: true, collections: ['plans'], workspace: 'snapshot' }))
+    planReadStarted.resolve()
+    return activePlanRead.promise
+  })
+  context.items.value = originalItems
+  context.loaded.value = true
+  context.lastCheckedAt.value = 'previous-check'
+  context.diagnosticNow.value = 123
+  const originalError = context.error.value
+
+  const active = context.refresh(false, 'background')
+  await planReadStarted.promise
+  const queued = context.refresh(true, 'foreground')
+  assert.equal(context.queuedRefreshMode.value, 'foreground')
+  productionFunction('disposeRefreshes', context)()
+  await queued
+  assert.equal(context.queuedRefresh, null)
+  assert.equal(context.queuedRefreshMode.value, null)
+
+  activePlanRead.resolve(response({ items: [{ metadata: { name: 'late' } }] }))
+  await active
+  await context.refresh(true, 'foreground')
+
+  assert.equal(requests, 2, 'the queued and post-unmount refreshes never issue requests')
+  assert.deepEqual(context.status.value, { installed: true, collections: ['plans'], workspace: 'snapshot' })
+  assert.equal(context.items.value, originalItems, 'the late response cannot replace the last snapshot')
+  assert.equal(context.loaded.value, true)
+  assert.equal(context.lastCheckedAt.value, 'previous-check')
+  assert.equal(context.diagnosticNow.value, 123)
+  assert.equal(context.error.value, originalError)
+})
+
 test('organization failure preserves its last snapshot and independent metering state', async () => {
   const context = {
     organizationsLoading: { value: false }, organizationsLoaded: { value: true },
     organizationError: { value: null }, organizationsCheckedAt: { value: 'previous-check' },
-    orgs: { value: [{ name: 'retained' }] }, read: async () => { throw new Error('unavailable') }, checkPending: () => {},
+    orgs: { value: [{ name: 'retained' }] }, read: async () => { throw new Error('unavailable') }, checkPending: () => {}, disposed: false,
   }
   await productionFunction('refreshOrganizations', context)()
   assert.equal(context.orgs.value[0].name, 'retained')
@@ -190,7 +332,7 @@ test('archive action preserves referenced plans and communicates retained limits
     planFor: name => plans.find(plan => plan.metadata.name === name),
     isPlanArchived: plan => plan?.metadata.annotations?.['metering.railgrid.ai/archived'] === 'true',
     status: { value: { defaultPlan: 'free' } }, writable: { value: true }, busy: { value: null },
-    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' },
+    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' }, disposed: false,
     planLabel: name => plans.find(plan => plan.metadata.name === name)?.spec?.displayName ?? name,
     confirmDialog: async options => { confirmations.push(options); return true },
     write: async (...args) => writes.push(args), refresh: async () => { refreshes++ },
@@ -226,7 +368,7 @@ test('archive action refuses a plan that became archived while confirmation was 
     planFor: () => plan,
     isPlanArchived: item => item?.metadata.annotations?.['metering.railgrid.ai/archived'] === 'true',
     status: { value: { defaultPlan: 'free' } }, writable: { value: true }, busy: { value: null },
-    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' },
+    error: { value: null }, foregroundLoading: { value: false }, actionError: { value: null }, notice: { value: '' }, disposed: false,
     planLabel: name => name,
     confirmDialog: async () => { plan.metadata.annotations = { 'metering.railgrid.ai/archived': 'true' }; return true },
     write: async () => { writes++ }, refresh: async () => {},

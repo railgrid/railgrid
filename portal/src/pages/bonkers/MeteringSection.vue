@@ -48,7 +48,8 @@ const refreshMode = ref<ResourceRefreshMode>('foreground')
 const lastCheckedAt = ref('')
 const diagnosticNow = ref(Date.now())
 let diagnosticClock: ReturnType<typeof setInterval> | undefined
-const foregroundLoading = computed(() => loading.value && refreshMode.value === 'foreground')
+const queuedRefreshMode = ref<ResourceRefreshMode | null>(null)
+const foregroundLoading = computed(() => loading.value && (refreshMode.value === 'foreground' || queuedRefreshMode.value === 'foreground'))
 const error = ref<string | null>(null)
 const organizationsLoaded = ref(false)
 const organizationsLoading = ref(false)
@@ -242,23 +243,69 @@ function rowLabel(c: Collection, row: Row): string {
 
 const readyTone = computed(() => (status.value?.ready ? 'success' : 'danger'))
 
-async function refresh(force = false, mode: ResourceRefreshMode = 'foreground'): Promise<void> {
-  if (loading.value) return
-  loading.value = true
+function refresh(force = false, mode: ResourceRefreshMode = 'foreground'): Promise<void> {
+  if (disposed) return Promise.resolve()
+  return new Promise(resolve => {
+    const requested: QueuedRefresh = { force, mode, waiters: [resolve] }
+    if (refreshRunning) {
+      if (!queuedRefresh) queuedRefresh = requested
+      else {
+        queuedRefresh.force ||= force
+        if (mode === 'foreground') queuedRefresh.mode = mode
+        queuedRefresh.waiters.push(resolve)
+      }
+      queuedRefreshMode.value = queuedRefresh.mode
+      return
+    }
+    refreshRunning = true
+    loading.value = true
+    void runRefreshQueue(requested)
+  })
+}
+
+async function runRefreshQueue(first: QueuedRefresh): Promise<void> {
+  let request: QueuedRefresh | null = first
+  try {
+    while (request && !disposed) {
+      await performRefresh(request.force, request.mode)
+      for (const resolve of request.waiters) resolve()
+      request = queuedRefresh
+      queuedRefresh = null
+      queuedRefreshMode.value = null
+    }
+  } finally {
+    if (disposed) {
+      for (const resolve of queuedRefresh?.waiters ?? []) resolve()
+      queuedRefresh = null
+      queuedRefreshMode.value = null
+    } else {
+      loading.value = false
+      for (const p of pendingAssignments.value) if (Date.now() - p.started >= 90_000) p.timedOut = true
+    }
+    refreshRunning = false
+  }
+}
+
+async function performRefresh(force: boolean, mode: ResourceRefreshMode): Promise<void> {
+  if (disposed) return
   void refreshOrganizations()
   refreshMode.value = mode
   error.value = null
   try {
     const resp = await authFetch(`/api/admin/metering${force ? '?refresh=true' : ''}`)
+    if (disposed) return
     if (!resp.ok) throw new Error(`metering status: ${resp.status}`)
     const next = (await resp.json()) as Status
+    if (disposed) return
     status.value = next
     if (next.installed) {
       const fetched = await Promise.all(next.collections.map(async (c) => {
         const r = await authFetch(`/api/admin/metering/${encodeURIComponent(c)}`)
+        if (disposed) return [c, []] as const
         if (!r.ok) throw new Error(`${c}: ${r.status} ${(await r.text()).trim()}`)
         return [c, ((await r.json()) as { items: Item[] }).items ?? []] as const
       }))
+      if (disposed) return
       items.value = Object.fromEntries(fetched)
     } else {
       items.value = {}
@@ -268,29 +315,29 @@ async function refresh(force = false, mode: ResourceRefreshMode = 'foreground'):
     diagnosticNow.value = Date.now()
     checkPending()
   } catch (err) {
-    error.value = (err as Error).message
-  } finally {
-    loading.value = false
-    for (const p of pendingAssignments.value) if (Date.now() - p.started >= 90_000) p.timedOut = true
+    if (!disposed) error.value = (err as Error).message
   }
 }
 
 // Organization naming/ownership is a separate read contract. Its failure must
 // not discard successful Plan or raw metering reads.
 async function refreshOrganizations(): Promise<void> {
-  if (organizationsLoading.value) return
+  if (disposed || organizationsLoading.value) return
   organizationsLoading.value = true
   organizationError.value = null
   try {
     const organizations = await read<{ items: AdminOrg[] }>('/api/admin/organizations')
+    if (disposed) return
     orgs.value = organizations.items ?? []
     organizationsLoaded.value = true
     organizationsCheckedAt.value = new Date().toISOString()
   } catch {
-    organizationError.value = 'Could not refresh organization details. Plans and raw metering resources remain available.'
+    if (!disposed) organizationError.value = 'Could not refresh organization details. Plans and raw metering resources remain available.'
   } finally {
-    organizationsLoading.value = false
-    checkPending()
+    if (!disposed) {
+      organizationsLoading.value = false
+      checkPending()
+    }
   }
 }
 
@@ -313,6 +360,9 @@ const pendingAssignments = computed(() => [...pending.value.values()])
 function assignmentPending(name: string): boolean { return pending.value.has(name) && !pending.value.get(name)!.timedOut }
 let poll: ReturnType<typeof setTimeout> | undefined
 let disposed = false
+let refreshRunning = false
+type QueuedRefresh = { force: boolean; mode: ResourceRefreshMode; waiters: Array<() => void> }
+let queuedRefresh: QueuedRefresh | null = null
 const organizationDetail = ref<HTMLElement | null>(null)
 let organizationTrigger: HTMLElement | null = null
 
@@ -659,11 +709,12 @@ async function archivePlan(name: string): Promise<void> {
   actionError.value = null
   try {
     await write('DELETE', `plans/${encodeURIComponent(name)}`)
+    if (disposed) return
     notice.value = `Plan ${planLabel(name)} archived. Existing assignments and limits remain in effect; new assignments are blocked.`
     await refresh()
   }
-  catch (err) { actionError.value = (err as Error).message }
-  finally { busy.value = null }
+  catch (err) { if (!disposed) actionError.value = (err as Error).message }
+  finally { if (!disposed) busy.value = null }
 }
 async function saveEntitlement(): Promise<void> {
   const draft = entitlementDraft.value
@@ -686,11 +737,18 @@ async function saveEntitlement(): Promise<void> {
   } catch (err) { actionError.value = (err as Error).message }
   finally { busy.value = null }
 }
+function disposeRefreshes(): void {
+  disposed = true
+  const queued = queuedRefresh
+  queuedRefresh = null
+  queuedRefreshMode.value = null
+  for (const resolve of queued?.waiters ?? []) resolve()
+}
 onMounted(() => {
   void refresh()
   diagnosticClock = setInterval(() => { diagnosticNow.value = Date.now() }, 30_000)
 })
-onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); disposed = true; if (poll) clearTimeout(poll) })
+onBeforeUnmount(() => { if (diagnosticClock) clearInterval(diagnosticClock); disposeRefreshes(); if (poll) clearTimeout(poll) })
 </script>
 
 <template>
