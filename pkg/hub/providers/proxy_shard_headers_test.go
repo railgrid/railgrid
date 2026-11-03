@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	"github.com/go-logr/logr"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 // A kcp shard stamps X-Remote-User / X-Remote-Group / X-Remote-Extra-* and a
@@ -51,7 +53,7 @@ func TestBackendProxyStripsShardIdentityHeaders(t *testing.T) {
 	req.Header.Set("X-Remote-Group", "system:masters")
 	req.Header.Set("X-Remote-Extra-Scopes", "cluster:*")
 	req.Header.Set("X-Kcp-Internal-Proxy-Hops", "0")
-	req.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
+	req.Header.Set(dataplane.HeaderUpstreamIdentity, "forged-admin-envelope")
 	req.Header.Set("X-Unrelated", "kept")
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
@@ -59,7 +61,7 @@ func TestBackendProxyStripsShardIdentityHeaders(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
-	for _, h := range []string{"X-Remote-User", "X-Remote-Group", "X-Remote-Extra-Scopes", "X-Kcp-Internal-Proxy-Hops", "X-Railgrid-Upstream-Identity"} {
+	for _, h := range []string{"X-Remote-User", "X-Remote-Group", "X-Remote-Extra-Scopes", "X-Kcp-Internal-Proxy-Hops", dataplane.HeaderUpstreamIdentity} {
 		if v := seen.Values(h); v != nil {
 			t.Errorf("%s = %q reached the provider through the hub; a shard-only identity header must be stripped", h, v)
 		}

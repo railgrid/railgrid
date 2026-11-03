@@ -521,14 +521,14 @@ func TestUIGrantRedemptionStripsUntrustedIdentityEnvelope(t *testing.T) {
 	}
 	*f.edge = edgeUpstream{}
 	request := httptest.NewRequest(http.MethodGet, grant.URL, nil)
-	request.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
+	request.Header.Set(dataplane.HeaderUpstreamIdentity, "forged-admin-envelope")
 	request.Header.Set("X-Remote-User", "kcp-admin")
 	response = httptest.NewRecorder()
 	f.ui.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !f.edge.hit {
 		t.Fatalf("bundle status = %d: %s", response.Code, response.Body.String())
 	}
-	for _, name := range []string{"X-Railgrid-Upstream-Identity", "X-Remote-User"} {
+	for _, name := range []string{dataplane.HeaderUpstreamIdentity, "X-Remote-User"} {
 		if got := f.edge.headers.Values(name); len(got) != 0 {
 			t.Errorf("untrusted %s forwarded on grant redemption: %q", name, got)
 		}

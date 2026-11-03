@@ -544,14 +544,14 @@ func TestOrgBackendProxyStripsUntrustedIdentityEnvelope(t *testing.T) {
 	proxy, upstream := newEdgeBackedProxy(t, testOrg)
 	request := httptest.NewRequest(http.MethodPost, "/services/providers/infrastructure/mcp", nil)
 	request.Header.Set("Authorization", "Bearer "+callerBearer)
-	request.Header.Set("X-Railgrid-Upstream-Identity", "forged-admin-envelope")
+	request.Header.Set(dataplane.HeaderUpstreamIdentity, "forged-admin-envelope")
 	request.Header.Set("X-Remote-User", "kcp-admin")
 	response := httptest.NewRecorder()
 	proxy.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !upstream.hit {
 		t.Fatalf("request did not reach edge: %d %s", response.Code, response.Body.String())
 	}
-	for _, name := range []string{"X-Railgrid-Upstream-Identity", "X-Remote-User"} {
+	for _, name := range []string{dataplane.HeaderUpstreamIdentity, "X-Remote-User"} {
 		if got := upstream.headers.Values(name); len(got) != 0 {
 			t.Errorf("untrusted %s forwarded: %q", name, got)
 		}

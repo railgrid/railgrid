@@ -33,6 +33,8 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/railgrid/provider-sdk/dataplane"
+
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 )
@@ -637,7 +639,7 @@ func singleJoiningSlash(a, b string) string {
 func stripShardIdentityHeaders(h http.Header) {
 	// This envelope is reserved for a separately authenticated shard transport.
 	// Never promote a public caller's envelope into trusted hub authority.
-	h.Del("X-Railgrid-Upstream-Identity")
+	h.Del(dataplane.HeaderUpstreamIdentity)
 	h.Del("X-Remote-User")
 	h.Del("X-Remote-Group")
 	h.Del("X-Kcp-Internal-Proxy-Hops")

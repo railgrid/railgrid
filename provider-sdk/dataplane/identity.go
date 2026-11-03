@@ -32,6 +32,11 @@ const (
 	// passthrough Authorization was; the provider copies it onto the upstream
 	// request and forwards nothing else.
 	HeaderUpstreamAuthorization = "X-Railgrid-Upstream-Authorization"
+	// HeaderUpstreamIdentity reserves the identity envelope consumed by the
+	// shard-to-Edges action transport. Its encoder and trusted Edge consumer
+	// are installed with that transport; public hub proxies must strip this
+	// header before forwarding so callers cannot acquire hub authority.
+	HeaderUpstreamIdentity = "X-Railgrid-Upstream-Identity"
 )
 
 // Identity extracts the bearer-credentialed caller from an MCP request, the one
