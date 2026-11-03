@@ -21,7 +21,7 @@ const { useProvidersStore } = await vite.ssrLoadModule('/src/stores/providers.ts
 test.after(() => vite.close())
 
 test('provider cards distinguish unavailable providers from pending work', () => {
-  assert.match(source, /currentWorkspaceBinding\(p\) \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
+  assert.match(source, /binding \? providers\.workspaceProvider\(p\.name\)\?\.ready : p\.ready/)
   assert.match(source, /p\.readinessMessage \|\| 'Provider is unavailable\.'/)
   assert.match(source, /<template v-if="p\.export\?\.name">/)
   assert.match(source, /v-else-if="bindingAction\(p\) === 'enable'"/)

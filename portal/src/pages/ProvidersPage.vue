@@ -353,10 +353,21 @@ function currentWorkspaceBinding(p: ProviderDTO) {
   return bindingProjectionIsCurrent() ? providers.bindingsByProvider[p.name] ?? null : null
 }
 
+// Retain the confirmed copy for presentation while this same workspace is
+// refreshing. Actions must continue to use currentWorkspaceBinding instead.
+function displayedWorkspaceBinding(p: ProviderDTO) {
+  if (bindingProjectionIsCurrent()) return currentWorkspaceBinding(p)
+  const refreshingSameWorkspace = providers.bindingsLoadState === 'loading' && providers.bindingsStale &&
+    tenant.workspaceMode === 'workspace' && !!tenant.orgUUID && !!tenant.workspaceUUID &&
+    providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
+    providers.bindingsRequestOrgUUID === tenant.orgUUID && providers.bindingsRequestWorkspaceUUID === tenant.workspaceUUID
+  return refreshingSameWorkspace ? providers.bindingsByProvider[p.name] ?? null : null
+}
+
 function workspaceProviderCopy(p: ProviderDTO): WorkspaceProviderCopy {
   if (!providers.isSelfManaged(p)) return 'not-self-hosted'
   if (!providers.isEnabled(p.name)) return 'not-enabled'
-  const binding = currentWorkspaceBinding(p)
+  const binding = displayedWorkspaceBinding(p)
   if (!binding) return 'unknown'
   return binding.selfHosted ? 'organization' : 'platform'
 }
@@ -371,8 +382,7 @@ function canDisableFromThisProjection(p: ProviderDTO): boolean {
     : true
 }
 
-function bindingUnavailable(p: ProviderDTO): boolean {
-  const binding = currentWorkspaceBinding(p)
+function bindingUnavailable(p: ProviderDTO, binding = currentWorkspaceBinding(p)): boolean {
   return !!binding && (binding.ready === false || !providers.workspaceProvider(p.name))
 }
 
@@ -385,9 +395,9 @@ function canOpenProvider(p: ProviderDTO): boolean {
 }
 
 function providerStatusLabel(p: ProviderDTO): string {
-  const binding = currentWorkspaceBinding(p)
-  if (bindingUnavailable(p)) return binding?.selfHosted ? 'Unavailable · org copy' : 'Unavailable · platform copy'
-  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) {
+  const binding = displayedWorkspaceBinding(p)
+  if (bindingUnavailable(p, binding)) return binding?.selfHosted ? 'Unavailable · org copy' : 'Unavailable · platform copy'
+  if (!(binding ? providers.workspaceProvider(p.name)?.ready : p.ready)) {
     const copy = providers.isSelfManaged(p) ? workspaceProviderCopy(p) : 'not-self-hosted'
     if (copy === 'platform') return 'Not ready · platform copy'
     if (copy === 'organization') return 'Not ready · org copy'
@@ -406,8 +416,9 @@ function providerStatusLabel(p: ProviderDTO): string {
 }
 
 function providerStatusClass(p: ProviderDTO): string {
-  if (bindingUnavailable(p)) return 'border border-warning/30 bg-warning-subtle text-warning'
-  if (!(currentWorkspaceBinding(p) ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  const binding = displayedWorkspaceBinding(p)
+  if (bindingUnavailable(p, binding)) return 'border border-warning/30 bg-warning-subtle text-warning'
+  if (!(binding ? providers.workspaceProvider(p.name)?.ready : p.ready)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (p.serving?.ui?.builtinRoute) return 'border border-border-default bg-surface-overlay text-text-secondary'
   if (providers.isDisabling(p.name)) return 'border border-warning/30 bg-warning-subtle text-warning'
   if (providers.isEnabled(p.name)) {
@@ -1318,7 +1329,7 @@ function dependencyNotice(p: ProviderDTO): string {
             <p class="mt-0.5 text-[11px] text-text-muted">{{ sectionHeaderFor(p, i)!.subtitle }}</p>
           </li>
           <li
-            class="rounded-xl border border-border-subtle bg-surface-raised/60 p-4 transition-colors hover:border-accent/30"
+            class="min-w-0 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 [overflow-wrap:anywhere] transition-colors hover:border-accent/30"
           >
           <div class="flex items-start gap-3">
             <div class="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-overlay">
