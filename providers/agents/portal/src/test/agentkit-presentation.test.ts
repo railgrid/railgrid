@@ -293,7 +293,7 @@ describe('AgentKit timestamp and chat presentation', () => {
           runID: 'run-9',
           content: 'Partial answer',
           error: diagnostic,
-          progress: { status: 'failed', trace: [] },
+          progress: { status: 'failed', durationMS: 1000, trace: [] },
         }),
         onRecovery: (target: FailureRecoveryTarget) => recoveredTo.push(target),
         onViewRun: (runID: string) => viewedRuns.push(runID),

@@ -810,17 +810,14 @@ describe('RunDetail.vue', () => {
     expect(stepToggle().getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('shows a sanitized full diagnostic in a collapsed disclosure when the preview is long', async () => {
+  it('keeps a sanitized full diagnostic in collapsed details without an inline preview', async () => {
     const detailText = `HTTP 500: ${'upstream trace detail '.repeat(30)} Authorization: Bearer long-diagnostic-secret-value.`
     const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({ phase: 'Failed', message: detailText })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
     const failure = view.element.querySelector<HTMLElement>('.agents-run-state')!
-    const preview = failure.querySelector<HTMLElement>('.agents-run-state__diagnostic')!
     const technicalDetails = failure.querySelector<HTMLDetailsElement>('.agents-run-state__details')!
 
-    expect(text(preview)).toContain('HTTP 500')
-    expect(text(preview)).not.toContain('long-diagnostic-secret-value')
-    expect(text(preview).length).toBeLessThanOrEqual(361)
+    expect(failure.querySelector('.agents-run-state__diagnostic')).toBeNull()
     expect(technicalDetails.open).toBe(false)
     technicalDetails.querySelector('summary')!.click()
     await settleVue()
@@ -1312,15 +1309,19 @@ describe('RunDetail.vue', () => {
     const failure = stateMessage.querySelector<HTMLElement>('.agents-run-state')!
     const outputMessage = view.element.querySelector('.agents-run-output-message')!
     const trace = view.element.querySelector('.agents-run-activity')!
-    const diagnosticPreview = failure.querySelector<HTMLElement>('.agents-run-state__diagnostic')!
+    const technicalDetails = failure.querySelector<HTMLDetailsElement>('.agents-run-state__details')!
 
     expect(failure.getAttribute('role')).toBe('alert')
     expect(text(failure.querySelector('h3'))).toBe('The model rejected a reasoning setting')
     expect(Boolean(stateMessage.compareDocumentPosition(trace) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     expect(Boolean(trace.compareDocumentPosition(outputMessage) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
-    expect(text(diagnosticPreview)).toContain('HTTP 400')
-    expect(text(diagnosticPreview)).not.toContain('private-value-123456789')
-    expect(failure.querySelector('.agents-run-state__details')).toBeNull()
+    expect(failure.querySelector('.agents-run-state__diagnostic')).toBeNull()
+    expect(technicalDetails.open).toBe(false)
+    technicalDetails.querySelector('summary')!.click()
+    await settleVue()
+    const diagnosticText = text(technicalDetails.querySelector('pre'))
+    expect(diagnosticText).toContain('HTTP 400')
+    expect(diagnosticText).not.toContain('private-value-123456789')
     expect(text(view.element)).toContain('Partial output')
     expect(text(view.element.querySelector('.agents-run-output-message .agents-body'))).toContain('got this far')
     expect(view.element.querySelector('.agents-runsources a')?.getAttribute('href')).toBe('https://example.com/evidence')
