@@ -209,7 +209,9 @@ if kcp_image:
     kcp_server_flags = '  --external-kcp-kubeconfig=' + kcp_external_kubeconfig
     hub_deps = ['portal', 'kcp']
 else:
-    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380)) + external_shard_flags
+    native_vw = os.getenv('KCP_SHARD_VIRTUAL_WORKSPACE_URL', '')
+    native_vw_flags = (' --kcp-bind-address=0.0.0.0 --kcp-shard-virtual-workspace-url=%s' % native_vw) if native_vw else ''
+    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380)) + native_vw_flags + external_shard_flags
     hub_deps = ['portal']
 
 # ---------------------------------------------------------------------------
@@ -1341,8 +1343,9 @@ done
 # standby under the `replicas` label).
 #
 # Workflow:
-#   1. `edges` serves automatically; click ▶ on `edges-register` then
-#      `edges-init` to create its APIExport so tenants can Enable it.
+#   1. Click ▶ on `edges-register`; each `edges` update then builds and
+#      initializes its APIs/credential before replacing the server. The
+#      separate `edges-init` action remains available for explicit repair.
 #   2. Click ▶ on `edge-{kube,server}-create` to log in via static token,
 #      register the edge with the hub, and write .env.edge.<type>.
 #   3. Click ▶ on `edge-{kube,server}-agent` to run the agent.
@@ -1358,25 +1361,42 @@ done
 # ---------------------------------------------------------------------------
 
 # --- edges provider ---
+# Keep credentials, API initialization and the server in one update transaction.
+# Watch the admin credential input, never the runtime kubeconfig init writes:
+# watching that output would loop, and serving before init holds a stale client.
 local_resource(
     'edges',
-    cmd='make build-edges-provider',
-    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s make run-provider-edges' % railgrid_hub_external_url,
+    cmd='make init-provider-edges',
+    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s make serve-provider-edges' % railgrid_hub_external_url,
     deps=[
         'providers/edges/main.go',
+        'providers/edges/assets.go',
+        'providers/edges/catalogentry.go',
         'providers/edges/controller_manager.go',
         'providers/edges/init_cmd.go',
         'providers/edges/apis',
         'providers/edges/internal',
         'providers/edges/scheme',
+        'providers/edges/deploy/chart/files',
+        'providers/edges/manifest.yaml',
         'providers/edges/portal/src',
+        'providers/edges/portal/public',
         'providers/edges/portal/package.json',
+        'providers/edges/portal/package-lock.json',
+        'providers/edges/portal/vite.config.ts',
+        'providers/edges/portal/tsconfig.json',
         'providers/edges/go.mod',
+        'providers/edges/go.sum',
+        'provider-sdk',
+        'go.work',
+        'Makefile',
+        '.kcp/admin.kubeconfig',
     ],
-    resource_deps=['hub'],
+    ignore=['providers/edges/**/*_test.go', 'provider-sdk/**/*_test.go'],
+    resource_deps=['hub', 'edges-register'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=dev_port('EDGES_PORT', 8088), path='/healthz'),
+        http_get=http_get_action(port=dev_port('EDGES_PORT', 8088), path='/readyz'),
     ),
     labels=['edges'],
 )
@@ -1537,13 +1557,13 @@ local_resource(
 
 local_resource(
     'edges-2',
-    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s POD_NAME=edges-local-2 make run-provider-edges EDGES_PORT=%s EDGES_INTERNAL_PORT=%s' % (railgrid_hub_external_url, dev_port('EDGES_REPLICA_PORT', 18088), dev_port('EDGES_REPLICA_INTERNAL_PORT', 18090)),
+    serve_cmd='EDGES_HUB_EXTERNAL_URL=%s POD_NAME=edges-local-2 make serve-provider-edges EDGES_PORT=%s EDGES_INTERNAL_PORT=%s' % (railgrid_hub_external_url, dev_port('EDGES_REPLICA_PORT', 18088), dev_port('EDGES_REPLICA_INTERNAL_PORT', 18090)),
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['edges'],
     readiness_probe=probe(
         period_secs=5,
-        http_get=http_get_action(port=dev_port('EDGES_REPLICA_PORT', 18088), path='/healthz'),
+        http_get=http_get_action(port=dev_port('EDGES_REPLICA_PORT', 18088), path='/readyz'),
     ),
     labels=['replicas'],
 )
