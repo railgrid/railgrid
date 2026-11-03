@@ -19,6 +19,38 @@ scoping), and [`security.md`](./security.md) (auth setup).
 
 ---
 
+## Self-hosted actions on the embedded shard
+
+The embedded shard keeps native authentication and subresource authorization in
+front of self-hosted actions. Its virtual-resource transport resolves the
+consumer's APIBinding and selects the exact organization/export, then checks the
+advertised endpoint against that registration. The hub forwards the authorized
+request through the platform Edges provider's `services/{name}/proxy` verb for
+the hub-owned provider Service. It never dials the hosting cluster's private
+Service DNS from the hub.
+
+The outer Edge hop authenticates as the hub. An allowlisted, bounded identity
+envelope carries the original shard-stamped user, groups and extras; no caller
+bearer, cookie, impersonation header or shard credential crosses the tunnel.
+Edges consumes that envelope only for an authenticated `kcp-admin` in
+`system:kcp:admin` addressing a hub-owned provider Service. Other callers are
+refused. The provider receives the original identity and runs its ordinary
+parent-object SubjectAccessReview before acting as itself. Its consumer
+workspace can differ from the workspace hosting the Edge.
+
+This hook is installed by `pkg/hub/kcp/provider_action_transport.go` in the
+embedded kcp server, with the Edge hop in
+`pkg/hub/providers/action_transport.go`. An external shard needs an equivalent
+transport integration; changing its advertised virtual-workspace URL alone does
+not route provider actions through an Edge.
+
+Provider workspace provisioning reads before creating to avoid reserving quota
+for an existing object. Native quota admission, delayed quota reclamation and
+APIExport garbage-collection limitations remain documented under
+[Known gaps](./byo-providers.md#known-gaps).
+`make test-provider-action-routing` checks binding isolation, credential stripping
+and the Edge trust boundary using the current dependency versions.
+
 ## Restore-from-reboot summary
 
 - There are **three** legitimate data paths. UI data flows through the
@@ -157,6 +189,21 @@ not one of these classes is a deviation, even when it authorizes correctly.
 | **(f) Agent tunnel** | `/agent/clusters/{clusterID}/{resource}/{name}/proxy` | join token or edge ServiceAccount + SAR | edges `agent_proxy_builder_v2.go` |
 | **(g) Signed inbound webhook** | `/webhooks/{kind}/{clusterID}/{name}/{token}` | HMAC token; acts as the provider ServiceAccount | agents `api/server.go` |
 
+Agent ingress follows the addressed workspace's actual Edges APIBinding,
+including when its organization has installed a different copy. The hub verifies
+the matching Edge's bootstrap token/hash or online TokenReview of that Edge's
+UID-bound scoped ServiceAccount before forwarding its credential to an org
+backend. This is a narrow agent transport path: human tokens, cookies and
+caller-supplied identity headers do not cross it. The provider still performs
+its own agent authentication and authorization.
+
+Revdial pickup URLs carry `railgrid.agent.cluster`, `railgrid.agent.resource`
+and `railgrid.agent.name` query parameters supplied by the control tunnel. They
+are addressing only; the hub verifies the pickup credential against the same
+Edge before selecting its bound provider. Existing unscoped platform pickup
+URLs remain supported. Self-hosted Edges requires both this hub routing and an
+Edges build that emits scoped pickup URLs; no agent binary change is needed.
+
 Rules:
 
 1. **Nothing else. No `/api/*`.** If a UI needs to list, create or edit a
@@ -169,10 +216,10 @@ Rules:
    `X-Railgrid-Cluster` (the sidebar's `X-Railgrid-Org` / `X-Railgrid-Workspace`
    selection steers which). A provider may read those headers for
    **addressing** and **labels**; it must never derive authorization from
-   them. No route on the proxy names a cluster in its path any more, so there
-   is no path-cluster authorization at the hub and no path-versus-header
-   comparison in the provider. An anonymous request is unchanged: no identity
-   headers, no hub-side refusal.
+   them. The agent ingress exception above verifies its explicit cluster/Edge
+   scope; ordinary MCP and browser routes use the caller's resolved workspace.
+   An anonymous health probe is unchanged: no identity headers, no hub-side
+   refusal.
 
    On a verb the trust root is different, not weaker: there is no bearer, and
    the caller is the identity **kcp itself** authenticated and stamped into

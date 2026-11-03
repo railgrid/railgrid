@@ -23,6 +23,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 
 	"github.com/railgrid/provider-sdk/dataplane"
@@ -401,5 +402,100 @@ func TestReadServiceTokenSkipsKCPWithoutASecretRef(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Errorf("tenant config resolved %d times, want 0 for a secret-less service", calls)
+	}
+}
+
+func TestProviderActionIdentityRequiresHubAndOwnedService(t *testing.T) {
+	h := http.Header{}
+	h.Set(dataplane.HeaderRemoteUser, "alice")
+	h.Add(dataplane.HeaderRemoteGroup, "members")
+	encoded, err := dataplane.EncodeUpstreamIdentity(h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, user string
+		groups     []string
+		owned      bool
+		allow      bool
+	}{
+		{"hub", "kcp-admin", []string{"system:kcp:admin"}, true, true},
+		{"ordinary caller", "alice", []string{"system:authenticated"}, true, false},
+		{"forged admin name", "kcp-admin", []string{"system:authenticated"}, true, false},
+		{"ordinary service", "kcp-admin", []string{"system:kcp:admin"}, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: tc.user, Groups: tc.groups})
+			req, _ := http.NewRequestWithContext(ctx, "POST", "http://edges/test", nil)
+			req.Header.Set(dataplane.HeaderUpstreamIdentity, encoded)
+			svc := &unstructured.Unstructured{}
+			if tc.owned {
+				svc.SetLabels(map[string]string{"providers.railgrid.ai/owned": "true"})
+			}
+			got, err := providerActionIdentity(req, svc)
+			if (err == nil) != tc.allow {
+				t.Fatalf("allow=%v err=%v", tc.allow, err)
+			}
+			if tc.allow && got.Get(dataplane.HeaderRemoteUser) != "alice" {
+				t.Fatal("caller lost")
+			}
+			if tc.allow {
+				forwardCtx := context.WithValue(ctx, providerActionIdentityKey{}, got)
+				headers := http.Header{}
+				headers.Set(dataplane.HeaderRemoteUser, "forged")
+				stampCallerForUpstream(headers, forwardCtx, "hostingcluster")
+				if headers.Get(dataplane.HeaderRemoteUser) != "alice" || headers.Get(dataplane.HeaderRemoteGroup) != "members" {
+					t.Fatal("verified identity not restored across tunnel")
+				}
+			}
+
+			if req.Header.Get(dataplane.HeaderUpstreamIdentity) != "" {
+				t.Fatal("envelope leaked")
+			}
+		})
+	}
+}
+
+// The action proof is a separate hub-signed capability, not the transport
+// bearer. Org App Studio uses it for callbacks to the hub after this hop.
+func TestProviderActionServiceProxyPreservesOpaqueHubProof(t *testing.T) {
+	original := http.Header{}
+	original.Set(dataplane.HeaderRemoteUser, "alice")
+	envelope, err := dataplane.EncodeUpstreamIdentity(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "kcp-admin", Groups: []string{"system:kcp:admin"}})
+	req := httptest.NewRequest(http.MethodPost, "http://edges/services/provider-app-studio/proxy/clusters/consumer/apis/ai.railgrid.ai/v1alpha1/projects/demo/publishing-grants", nil).WithContext(ctx)
+	req.Header.Set(dataplane.HeaderUpstreamIdentity, envelope)
+	req.Header.Set(dataplane.HeaderActionProof, "hub-signed-action-proof")
+	req.Header.Set("Authorization", "Bearer transport-must-not-leak")
+	svcObject := &unstructured.Unstructured{}
+	svcObject.SetLabels(map[string]string{"providers.railgrid.ai/owned": "true"})
+	forwarded, err := providerActionIdentity(req, svcObject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx = context.WithValue(ctx, providerActionIdentityKey{}, forwarded)
+	req = req.WithContext(ctx)
+	svc := newServiceView(kubernetesClusterKind, "host", "providers", "app-studio", 8080)
+	svc.Spec.Auth = serviceAuthPassthrough
+	agent := &okDialer{}
+	response := httptest.NewRecorder()
+	(&Server{}).serviceHTTPProxy(ctx, response, req, "hostingcluster", svc, agent, "/clusters/consumer/apis/ai.railgrid.ai/v1alpha1/projects/demo/publishing-grants")
+	if response.Code != http.StatusOK {
+		t.Fatalf("proxy status %d: %s", response.Code, response.Body.String())
+	}
+	upstream := agent.last.Load()
+	if upstream == nil {
+		t.Fatal("provider never received request")
+	}
+	if upstream.Header.Get(dataplane.HeaderActionProof) != "hub-signed-action-proof" || upstream.Header.Get(dataplane.HeaderRemoteUser) != "alice" {
+		t.Fatal("provider lost the proof or its authenticated caller")
+	}
+	for _, name := range []string{"Authorization", dataplane.HeaderUpstreamAuthorization, dataplane.HeaderUpstreamIdentity} {
+		if upstream.Header.Get(name) != "" {
+			t.Fatalf("transport credential or envelope leaked: %s", name)
+		}
 	}
 }
