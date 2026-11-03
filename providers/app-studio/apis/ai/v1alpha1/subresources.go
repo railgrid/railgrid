@@ -362,6 +362,46 @@ type DiscoverModelsRequest struct {
 	Result runtime.RawExtension `json:"result,omitempty"`
 }
 
+// TestRequest is the payload of the "test" custom subresource on a
+// ModelProviderConnection.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=test,scope=Cluster
+type TestRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// DiscoverRequest is the payload of the "discover" custom subresource on a
+// ModelProviderConnection.
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=discover,scope=Cluster
+type DiscoverRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	// Input is the request body's "input" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// Result is the response's "result" member.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
 // EditRequest is the payload of the "edit" custom subresource on sessions.
 //
 // +kubebuilder:object:root=true
@@ -1242,6 +1282,7 @@ func init() {
 			&DevelopmentStatusRequest{},
 			&DevelopmentTemplatesRequest{},
 			&DiscardRequest{},
+			&DiscoverRequest{},
 			&DiscoverModelsRequest{},
 			&EditRequest{},
 			&EventsRequest{},
@@ -1284,6 +1325,7 @@ func init() {
 			&SteerRequest{},
 			&SyncDevelopmentRequest{},
 			&TestModelRequest{},
+			&TestRequest{},
 			&ThumbnailRequest{},
 			&TurnRequest{},
 			&TurnStatusRequest{},
