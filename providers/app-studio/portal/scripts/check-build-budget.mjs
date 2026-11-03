@@ -52,6 +52,8 @@ if (!trimmedEntrySource.startsWith('(()=>{') || !trimmedEntrySource.endsWith('})
 }
 const bootstrap = new Script(entrySource, { filename: 'dist/main.js' })
 const classicScriptContext = createContext({
+  URL,
+  document: { currentScript: { src: 'https://console.example/ui/providers/app-studio/_grant/test/main.js', dataset: {} }, createElement: () => ({ relList: { supports: () => true } }) },
   HTMLElement: class {},
   customElements: { get: () => true, define: () => undefined },
 })

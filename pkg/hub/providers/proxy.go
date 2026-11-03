@@ -262,11 +262,12 @@ func (p *ProviderProxy) SetClusterResolver(f func(ctx context.Context, tenantPat
 // so the server can call SetFallback on the UI proxy after the portal SPA
 // handler is built (the two are constructed at different points in Server.Run).
 type ProviderProxy struct {
-	reg        *Registry
-	log        logr.Logger
-	pathPrefix string // "/ui/providers" or "/services/providers"
-	pick       func(Provider) *url.URL
-	setHeaders func(req *http.Request, name, base string)
+	uiGrantAuthorize func(context.Context, string, string, string) bool
+	reg              *Registry
+	log              logr.Logger
+	pathPrefix       string // "/ui/providers" or "/services/providers"
+	pick             func(Provider) *url.URL
+	setHeaders       func(req *http.Request, name, base string)
 
 	// fallbackForSPA, when true, makes ServeHTTP route requests whose path
 	// doesn't look like a static asset (no "." in the last segment) to the
@@ -381,6 +382,18 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if p.denyHubOnlyEndpoints && (isHubOnlyProviderPath(rest) || isShardProviderPath(rest)) {
 		http.NotFound(w, r)
+		return
+	}
+
+	// A sealed grant in the asset directory is inherited by relative module,
+	// stylesheet and font URLs; it never scopes unrelated provider requests.
+	if p.fallbackForSPA && strings.HasPrefix(rest, "/_grant/") {
+		grant, asset, ok := strings.Cut(strings.TrimPrefix(rest, "/_grant/"), "/")
+		if !ok || grant == "" || !isAssetPath("/"+asset) || strings.Contains(asset, "..") {
+			http.NotFound(w, r)
+			return
+		}
+		p.serveOrgUIAsset(w, r, name, "/"+asset, grant)
 		return
 	}
 

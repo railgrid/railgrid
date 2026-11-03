@@ -42,7 +42,7 @@ test('a platform provider keeps the loader default and its catalog pin', async (
     { name: 'kuery', scope: 'global', serving: { ui: { mainJSIntegrity: 'sha384-abc' } } },
     fetchImpl,
   )
-  assert.deepEqual(bundle, { integrity: 'sha384-abc' })
+  assert.deepEqual(bundle, { integrity: 'sha384-abc', identity: 'global:kuery' })
   assert.equal(calls.length, 0)
 })
 
@@ -51,6 +51,8 @@ test('an org-owned provider loads the granted URL and pin as the user', async ()
     jsonResponse(200, {
       url: '/ui/providers/infrastructure/main.js?v=v0.1.20&grant=fpui_sealed',
       integrity: 'sha384-org',
+      registration: 'provider-cluster',
+      workspace: 'workspace-1',
       expiresAt: '2026-09-11T10:00:00Z',
     }),
   )
@@ -61,6 +63,7 @@ test('an org-owned provider loads the granted URL and pin as the user', async ()
   assert.deepEqual(bundle, {
     src: '/ui/providers/infrastructure/main.js?v=v0.1.20&grant=fpui_sealed',
     integrity: 'sha384-org',
+    identity: 'org:org-1:provider-cluster',
   })
   assert.equal(calls.length, 1)
   assert.equal(calls[0].path, '/api/providers/infrastructure/ui-grant')
@@ -98,5 +101,5 @@ test('an unpinned grant loads the bundle without an integrity attribute', async 
     jsonResponse(200, { url: '/ui/providers/infrastructure/main.js?grant=fpui_sealed' }),
   )
   const bundle = await resolveProviderBundle({ name: 'infrastructure', scope: 'org' }, fetchImpl)
-  assert.deepEqual(bundle, { src: '/ui/providers/infrastructure/main.js?grant=fpui_sealed', integrity: undefined })
+  assert.deepEqual(bundle, { src: '/ui/providers/infrastructure/main.js?grant=fpui_sealed', integrity: undefined, identity: 'org::infrastructure' })
 })

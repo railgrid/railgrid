@@ -3,6 +3,7 @@ import vue from '@vitejs/plugin-vue'
 import tailwindcss from '@tailwindcss/vite'
 import { resolve } from 'path'
 import { bundlePerformance } from './scripts/bundle-performance.mjs'
+import { scopedProviderAssets } from './scripts/scoped-assets.mjs'
 
 // Nested lazy routes must not cause Rollup to export Vite's shared preload
 // helper from the classic bootstrap. Give the bootstrap its own helper module;
@@ -48,6 +49,7 @@ export default defineConfig({
     vue(),
     tailwindcss(),
     isolateClassicBootstrap(),
+    scopedProviderAssets('/ui/providers/app-studio/'),
     bundlePerformance({ report: process.env.APP_STUDIO_BUNDLE_REPORT === '1' }),
   ],
   define: {

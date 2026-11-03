@@ -957,6 +957,10 @@ func (s *Server) Run(ctx context.Context) error {
 			// for an asset fetch as for an API call.
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
+			uiProxy.SetUIGrantAuthorizer(func(ctx context.Context, user, org, workspace string) bool {
+				cluster, err := bootstrapper.GetChildWorkspaceClusterName(ctx, org, workspace)
+				return err == nil && kcpProxy.AuthorizeCluster(ctx, user, cluster)
+			})
 			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
