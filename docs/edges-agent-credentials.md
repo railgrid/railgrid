@@ -73,10 +73,14 @@ provider is standing in for it, behind the agent's own proof of identity.
 `Ensure` is idempotent on the owner tuple, so a refresh reuses the same hub-side
 ServiceAccount and only the token is new — a rotation, not an accumulation.
 
-The agent refreshes **on the reconnect path at 80% of the TTL**, not from a
-timer: an agent that has stopped reconnecting has stopped needing a credential,
-and its identity should be allowed to lapse. A failed refresh is not fatal —
-there is a fifth of the TTL left to retry.
+The agent refreshes **on tunnel reconnects and native hub requests at 80% of
+the TTL**, rather than from a timer. Reporters keep their credential fresh even
+when a tunnel stays connected for hours; an idle agent does not refresh.
+Both paths share one refresh attempt and a 30-second backoff after a failure.
+Waiting callers can cancel independently. A failed refresh still permits use
+of the credential in hand while it remains valid. Credential adoption and
+persistence are ordered so concurrent enrollment and refresh cannot leave an
+older bundle persisted after a newer one.
 
 ## The TTL is also a power-off budget
 
