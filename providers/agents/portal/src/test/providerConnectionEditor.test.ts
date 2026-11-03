@@ -112,6 +112,25 @@ describe('provider-first BYOK flow', () => {
     expect(testProviderConnection).not.toHaveBeenCalled()
   })
 
+  it('allows a model to share its connection name when the existing same-name credential is direct', async () => {
+    const save = vi.fn()
+    const testProviderConnection = successfulConnectionTest()
+    const directModel = { name: 'account', provider: 'openai', baseURL: 'https://legacy.example/v1', model: 'first-model' }
+    const view = await mountEditor({ testProviderConnection }, {
+      credentials: [account, directModel],
+      initialConnection: 'account',
+      onSave: save,
+    })
+
+    await choose(view.element, 'first-model')
+    expect(button(view.element, 'Verify & connect').disabled).toBe(false)
+    expect(view.element.textContent).not.toContain('already configured')
+    button(view.element, 'Verify & connect').click(); await settleVue()
+
+    expect(testProviderConnection).toHaveBeenCalledExactlyOnceWith('account', 'first-model', expect.any(AbortSignal))
+    expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'first-model' })
+  })
+
   it('keeps a discovery failure recoverable through manual model entry', async () => {
     const save = vi.fn()
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => Promise.resolve(discover ? { ok: false, latencyMS: 0, error: 'Catalog unavailable' } : { ok: true, latencyMS: 1 }))

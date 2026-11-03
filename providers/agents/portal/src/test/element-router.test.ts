@@ -256,6 +256,73 @@ describe('public Agents shell routing', () => {
     expect(push).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps harness setup in Provider connections and returns there after cancel and save', async () => {
+    const element = await mountShell('#/models/provider-connections')
+    const store = element.store!
+    const connection: Credential = {
+      name: 'openai-production', provider: 'openai', displayName: 'OpenAI production',
+      baseURL: 'https://api.openai.com/v1', isConnection: true,
+    }
+    const existingHarness: Credential = { name: 'existing-codex', provider: 'codex', model: '', ready: true }
+    const chatModel: Credential = { name: 'fast-model', provider: 'openai', connectionRef: connection.name, model: 'gpt-4o' }
+    const createdHarness: Credential = { name: connection.name, provider: 'codex', model: '', ready: true }
+    const api = element.api!
+    const saveCredential = vi.fn().mockResolvedValue(createdHarness)
+    api.saveCredential = saveCredential as ApiClient['saveCredential']
+    api.listCredentials = vi.fn().mockResolvedValue([connection, existingHarness, chatModel, createdHarness]) as ApiClient['listCredentials']
+    store.credentials.data = [connection, existingHarness, chatModel]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue(6)
+
+    expect(element.querySelector('[data-k-tab-id="models"] .k-tab__count')?.textContent).toBe('1')
+    buttonWithText(element.querySelector('section[aria-labelledby="provider-connections-title"] > header')!, 'Add harness identity').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model/harness'))
+    await settleVue(8)
+    expect(element.querySelector('form[aria-label="Harness identity form"]')).toBeTruthy()
+    expect([...element.querySelectorAll<HTMLOptionElement>('#model-provider option')].map(option => option.value))
+      .toEqual(['claude-code', 'codex'])
+
+    element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    await settleVue(8)
+
+    buttonWithText(element.querySelector('section[aria-labelledby="provider-connections-title"] > header')!, 'Add harness identity').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model/harness'))
+    await settleVue(8)
+    const provider = element.querySelector<HTMLSelectElement>('#model-provider')!
+    provider.value = 'codex'
+    provider.dispatchEvent(new Event('change', { bubbles: true }))
+    await settleVue()
+    const name = element.querySelector<HTMLInputElement>('#model-display-name')!
+    name.value = createdHarness.name
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const secret = element.querySelector<HTMLTextAreaElement>('#harness-secret')!
+    secret.value = '{"tokens":{"access_token":"a"}}'
+    secret.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue(6)
+    element.querySelector<HTMLFormElement>('form[aria-label="Harness identity form"]')!
+      .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    await settleVue(8)
+
+    expect(saveCredential).toHaveBeenCalledWith(expect.objectContaining({
+      name: createdHarness.name,
+      provider: 'codex',
+      harnessSecret: { key: 'auth.json', value: '{"tokens":{"access_token":"a"}}' },
+    }))
+    expect(element.querySelector('table[aria-label="Provider connections and harness identities"]')?.textContent).toContain(createdHarness.name)
+    expect(element.querySelector('[aria-label="Edit openai-production harness identity"]')).toBeTruthy()
+    expect(element.querySelector('[aria-label="Add model to openai-production"]')).toBeNull()
+
+    element.querySelector<HTMLButtonElement>('[aria-label="Add model to OpenAI production"]')!.click()
+    await settleVue(6)
+    expect(element.querySelector('form[aria-label="Model configuration form"]')).toBeTruthy()
+    expect(element.querySelector('form[aria-label="Harness identity form"]')).toBeNull()
+    expect(element.querySelector('#model-id')).toBeTruthy()
+    element.remove()
+  })
+
   it('deep-links connection editing, replaces on save, and restores collection focus', async () => {
     const original: Connection = {
       metadata: { name: 'team/github' }, spec: { type: 'http', displayName: 'Team GitHub', baseURL: 'https://old.example.com' },
@@ -983,6 +1050,21 @@ describe('Models sub-tab shell routing', () => {
     await settleVue(6)
     expect(location.hash).toBe('#/models/provider-connections')
     expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+  })
+
+  it.each([
+    { from: '#/create/model/harness', to: '#/models/provider-connections', tab: 'Provider connections' },
+    { from: '#/create/model', to: '#/models/provider-connections', tab: 'Provider connections' },
+    { from: '#/create/model/from-connection', to: '#/models', tab: 'Models' },
+  ])('restores the expected owner when cancelling direct create deep link $from', async ({ from, to, tab }) => {
+    const element = await mountShell(from)
+    expect(element.querySelector('.k-create-title')).toBeTruthy()
+
+    element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
+    await vi.waitFor(() => expect(location.hash).toBe(to))
+    await settleVue(6)
+    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe(tab)
+    element.remove()
   })
 
   it('saves a provider without a model, then offers Add model and Done', async () => {
