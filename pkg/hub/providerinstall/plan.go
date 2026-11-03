@@ -19,6 +19,7 @@ package providerinstall
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -36,6 +37,7 @@ import (
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/strvals"
+	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
@@ -70,7 +72,22 @@ func resolvePlan(ctx context.Context, in providers.InstallInstructions, resolver
 		if v.Unresolved {
 			return nil, fmt.Errorf("set %s using manual installation", v.Name)
 		}
-		if err := strvals.ParseInto(v.Name+"="+v.Value, p.Values); err != nil {
+		// Declared Secret references must exist before Helm starts. The installer
+		// prepares its own credential Secret before checking these prerequisites.
+		if strings.HasSuffix(v.Name, "SecretRef.name") {
+			if problems := validation.IsDNS1123Subdomain(v.Value); len(problems) > 0 {
+				return nil, fmt.Errorf("%s must be a valid Secret name", v.Name)
+			}
+			p.RequiredSecrets = append(p.RequiredSecrets, v.Value)
+		}
+		var err error
+		if v.LiteralString {
+			literal, _ := json.Marshal(v.Value)
+			err = strvals.ParseJSON(v.Name+"="+string(literal), p.Values)
+		} else {
+			err = strvals.ParseInto(v.Name+"="+v.Value, p.Values)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("invalid installation value %s", v.Name)
 		}
 	}

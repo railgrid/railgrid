@@ -365,3 +365,41 @@ func mustProviderURL(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+func TestListHandlerExposesOnlyEditableInstallInputDescriptors(t *testing.T) {
+	sh := baseSelfHosting()
+	sh.RequiredValues = []SelfHostingValue{
+		{Name: "store.databaseURLSecretRef.name", Description: "Secret containing the database URL"},
+		{Name: "hub.url"},
+		{Name: "image.tag", Value: "private-fixed-setting"},
+	}
+	reg := NewRegistry()
+	reg.Upsert(Provider{Name: "app-studio", SelfHosting: sh, EndpointsValid: true})
+	w := httptest.NewRecorder()
+	NewListHandler(reg).ServeHTTP(w, httptest.NewRequest(http.MethodGet, PathListProviders, nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status %d", w.Code)
+	}
+	var result struct {
+		Items []struct {
+			Serving struct {
+				SelfHosting struct {
+					RequiredValues []map[string]any `json:"requiredValues"`
+				} `json:"selfHosting"`
+			} `json:"serving"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Items) != 1 {
+		t.Fatalf("items=%d", len(result.Items))
+	}
+	inputs := result.Items[0].Serving.SelfHosting.RequiredValues
+	if len(inputs) != 1 || inputs[0]["name"] != "store.databaseURLSecretRef.name" || len(inputs[0]) != 2 {
+		t.Fatalf("editable descriptors=%v", inputs)
+	}
+	if strings.Contains(w.Body.String(), "private-fixed-setting") {
+		t.Fatal("catalog leaked literal installation setting")
+	}
+}

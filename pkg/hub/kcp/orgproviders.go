@@ -68,6 +68,11 @@ var (
 )
 
 const (
+	// ProviderRegistrationDeletingAnnotation records accepted removal before the
+	// Workspace DELETE, while installer credentials and APIExport caches drain.
+	// Its value is the Workspace UID so a stale marker cannot hide a replacement.
+	ProviderRegistrationDeletingAnnotation = "providers.railgrid.ai/registration-deleting"
+
 	orgProviderExportCleanupTimeout = 45 * time.Second
 	orgProviderExportCleanupPoll    = 250 * time.Millisecond
 )
@@ -103,7 +108,7 @@ func (b *Bootstrapper) EnsureOrgProvidersWorkspace(ctx context.Context, orgUUID 
 		},
 	}}
 
-	if _, err := orgClient.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+	if err := ensureProviderWorkspace(ctx, orgClient.Resource(workspaceGVR), ws); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return fmt.Errorf("creating org providers workspace in org %s: %w", orgUUID, err)
 		}
@@ -165,7 +170,7 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		}
 	}
 
-	if _, err := parent.Resource(workspaceGVR).Create(ctx, ws, metav1.CreateOptions{}); err != nil {
+	if err := ensureProviderWorkspace(ctx, parent.Resource(workspaceGVR), ws); err != nil {
 		if !errors.IsAlreadyExists(err) {
 			return "", fmt.Errorf("creating org provider workspace %s in org %s: %w", name, orgUUID, err)
 		}
@@ -249,6 +254,21 @@ func (b *Bootstrapper) GetOrgProviderWorkspace(ctx context.Context, orgUUID, nam
 	return &workspace, nil
 }
 
+// Read before creating: quota admission reserves usage even when storage later
+// rejects a duplicate CREATE. Repeated ensure calls must not reserve capacity.
+func ensureProviderWorkspace(ctx context.Context, client dynamic.ResourceInterface, desired *unstructured.Unstructured) error {
+	if _, err := client.Get(ctx, desired.GetName(), metav1.GetOptions{}); err == nil {
+		return nil
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+	_, err := client.Create(ctx, desired, metav1.CreateOptions{})
+	if errors.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
 func orgProviderWorkspace(workspace *unstructured.Unstructured) OrgProviderWorkspace {
 	cluster, _, _ := unstructured.NestedString(workspace.Object, "spec", "cluster")
 	phase, _, _ := unstructured.NestedString(workspace.Object, "status", "phase")
@@ -264,7 +284,7 @@ func orgProviderWorkspace(workspace *unstructured.Unstructured) OrgProviderWorks
 		Name:                 workspace.GetName(),
 		Cluster:              cluster,
 		Phase:                phase,
-		Deleting:             workspace.GetDeletionTimestamp() != nil,
+		Deleting:             workspace.GetDeletionTimestamp() != nil || (workspace.GetUID() != "" && annotations[ProviderRegistrationDeletingAnnotation] == string(workspace.GetUID())),
 		HostingEdgeWorkspace: edgeWorkspace,
 		HostingEdgeName:      edgeName,
 	}

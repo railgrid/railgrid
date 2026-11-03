@@ -217,6 +217,7 @@ export interface ProviderUIDTO {
 export type ProviderBackendDTO = Record<string, never>
 
 export interface ProviderSelfHostingDTO {
+  requiredValues?: { name: string; description?: string }[]
   // True when the provider publishes enough deployment metadata for an
   // organization to run its own copy. Drives the Self-Hosting tab.
   supported: boolean

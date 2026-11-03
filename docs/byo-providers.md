@@ -30,7 +30,11 @@ Workspace and submits a Helm Job on the target cluster. Closing the console does
 not stop the Job. Its real Kubernetes status drives progress; successful Helm
 completion is followed by a separate provider health check through the Edge.
 A failed attempt can be retried with the same chart version and values. Concurrent
-starts reuse the active attempt. A disconnected Edge leaves status unavailable,
+starts reuse the active attempt. For user-supplied Secret references, the installer
+first prepares its owned namespace and pauses before creating a runner or Helm Job.
+Create the named Secrets in that namespace, then choose **Continue installation**.
+Do not pre-create an unowned namespace for a Console installation.
+A disconnected Edge leaves status unavailable,
 not successful; reconnect it before retrying.
 
 The runner has no local Kubernetes ServiceAccount token or cluster role. Its
@@ -51,7 +55,10 @@ unowned installation namespaces rather than overwriting an existing deployment.
 Removing a registration drains its APIExports and their cached resources before
 deleting the provider workspace. This keeps API discovery available to kcp's
 cache cleanup controller. Teardown is bounded and retryable; it does not force
-finalizers or uninstall the Helm release on the Edge.
+finalizers or uninstall the Helm release on the Edge. Retaining that Helm release
+does not preserve the API identity: a new registration has a new identity, so
+reinstallation does not restore access to resources under the deleted export.
+Export resources before removal and recreate them under the new copy.
 
 ## Relationship to provider-scoping.md
 
