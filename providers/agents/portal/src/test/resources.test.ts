@@ -441,11 +441,36 @@ describe('agents', () => {
         },
         tools: null,
         delegates: null,
+        selfConfiguration: null,
       },
     })
 
     await resources.patchAgent('scout', { backendType: 'model' })
     expect(kcp.lastOf('PATCH').body).toEqual({ spec: { backend: { type: 'model', harness: null } } })
+  })
+
+  it('writes run output under spec.notifications and clears it for Always', async () => {
+    // Always is the default, so it is the block's absence: merge patch deletes
+    // a key by setting it to null.
+    await resources.patchAgent('scout', { runOutput: 'Never' })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { notifications: { runOutput: 'Never' } } })
+    await resources.patchAgent('scout', { runOutput: 'Always' })
+    expect(kcp.lastOf('PATCH').body).toEqual({ spec: { notifications: null } })
+  })
+
+  it('writes self configuration whole, nulling what was cleared', async () => {
+    await resources.patchAgent('scout', {
+      selfConfiguration: { enabled: true, scopes: [{ name: 'Prompt' }, { name: 'Triggers' }], approval: 'Always' },
+    })
+    expect(kcp.lastOf('PATCH').body).toEqual({
+      spec: { selfConfiguration: { enabled: true, scopes: [{ name: 'Prompt' }, { name: 'Triggers' }], approval: 'Always' } },
+    })
+    // A merge patch keeps every key it does not name, so an unset one is
+    // spelled null rather than left out.
+    await resources.patchAgent('scout', { selfConfiguration: { enabled: false } })
+    expect(kcp.lastOf('PATCH').body).toEqual({
+      spec: { selfConfiguration: { enabled: false, scopes: null, approval: null } },
+    })
   })
 
   it('rejects a budget the CRD would happily store', async () => {

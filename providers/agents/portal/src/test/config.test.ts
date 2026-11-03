@@ -2184,3 +2184,90 @@ describe('stale configuration recovery', () => {
     expect([...el.querySelectorAll('button')].some(button => text(button) === 'Save model')).toBe(false)
   })
 })
+
+describe('agent config — run output', () => {
+  async function selectRunOutput(el: HTMLElement, match: string): Promise<void> {
+    const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
+      .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes('agent-run-output-label'))!
+    select.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settle()
+    ;[...document.querySelectorAll<HTMLElement>('[role="option"]')]
+      .find(o => (o.textContent || '').includes(match))!.click()
+    await settle()
+  }
+  const runOutputControl = (el: HTMLElement) => el.querySelector('[aria-labelledby*="agent-run-output-label"]')
+
+  it('is offered only once the agent has a channel', async () => {
+    const { el } = await mountConfig()
+    expect(runOutputControl(el)).toBeNull()
+  })
+
+  it('saves straight away', async () => {
+    const { el, patchAgent } = await mountConfig({ channels: [{ name: 'primary', connectionRef: 'dc', primary: true }] })
+    expect(runOutputControl(el)?.textContent).toContain('Every finished run')
+    await selectRunOutput(el, 'questions and approvals only')
+    expect(patchAgent).toHaveBeenLastCalledWith('scout', { runOutput: 'Never' })
+  })
+
+  it('goes back to Always', async () => {
+    const { el, patchAgent } = await mountConfig({
+      channels: [{ name: 'primary', connectionRef: 'dc', primary: true }],
+      notifications: { runOutput: 'Never' },
+    })
+    await selectRunOutput(el, 'Every finished run')
+    expect(patchAgent).toHaveBeenLastCalledWith('scout', { runOutput: 'Always' })
+  })
+
+  it('shows the stored setting', async () => {
+    const { el } = await mountConfig({
+      channels: [{ name: 'primary', connectionRef: 'dc', primary: true }],
+      notifications: { runOutput: 'OnFailure' },
+    })
+    expect(runOutputControl(el)?.textContent).toContain('Only failed runs')
+  })
+})
+
+describe('agent config — self configuration', () => {
+  const section = (el: HTMLElement) =>
+    [...el.querySelectorAll<HTMLElement>('section, [aria-labelledby]')]
+      .find(s => s.querySelector('[id$="agent-self-config-heading"]')) ?? el
+  const checkbox = (el: HTMLElement, label: string) =>
+    [...section(el).querySelectorAll('label')].find(l => (l.textContent || '').includes(label))!.querySelector('input') as HTMLInputElement
+  async function toggle(input: HTMLInputElement, on: boolean): Promise<void> {
+    input.checked = on
+    input.dispatchEvent(new Event('change'))
+    await settle()
+  }
+
+  it('enables with every scope written explicitly', async () => {
+    const { el, patchAgent } = await mountConfig()
+    expect(section(el).textContent).not.toContain('It may change')
+    await toggle(checkbox(el, 'Let this agent configure itself'), true)
+    // Explicit, so a scope the provider adds later is not granted silently.
+    expect(patchAgent).toHaveBeenLastCalledWith('scout', { selfConfiguration: {
+      enabled: true, scopes: [{ name: 'Prompt' }, { name: 'Triggers' }, { name: 'Memory' }], approval: 'Unattended',
+    } })
+  })
+
+  it('narrows scopes and will not drop the last one', async () => {
+    const { el, patchAgent } = await mountConfig({ selfConfiguration: { enabled: true, scopes: [{ name: 'Triggers' }, { name: 'Memory' }] } })
+    expect(checkbox(el, 'system prompt').checked).toBe(false)
+    await toggle(checkbox(el, 'memory settings'), false)
+    expect(patchAgent).toHaveBeenLastCalledWith('scout', { selfConfiguration: {
+      enabled: true, scopes: [{ name: 'Triggers' }], approval: 'Unattended',
+    } })
+  })
+
+  it('keeps the last scope checked', async () => {
+    const { el } = await mountConfig({ selfConfiguration: { enabled: true, scopes: [{ name: 'Triggers' }] } })
+    expect(checkbox(el, 'triggers').disabled).toBe(true)
+  })
+
+  it('is not offered on a harness-backed agent', async () => {
+    const { el } = await mountConfig(
+      { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
+      [{ name: 'my-claude', provider: 'anthropic' }],
+    )
+    expect(el.querySelector('[data-self-config-disabled]')).not.toBeNull()
+  })
+})

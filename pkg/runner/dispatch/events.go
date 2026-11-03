@@ -291,9 +291,10 @@ func (s *stream) progress(event runner.Event) {
 		s.tool(item)
 		return
 	}
-	// A Codex thread/start result is lifecycle data. Its human-readable message
-	// is useful to a runner log, but it is not assistant content.
-	if codexSessionStarted(event.Data) || strings.TrimSpace(event.Message) == "Codex session ready" {
+	// A Codex thread/start result or a Claude Code system/init record is
+	// lifecycle data. Its human-readable message ("… session ready") is useful
+	// to a runner log, but it is not assistant content.
+	if codexSessionStarted(event.Data) || claudeSessionStarted(event.Data) || strings.TrimSpace(event.Message) == "Codex session ready" {
 		return
 	}
 	// Codex sends the same text in Message and in Data.delta. The JSON-RPC
@@ -389,6 +390,22 @@ func codexSessionStarted(data json.RawMessage) bool {
 		return false
 	}
 	return len(rec.Thread) > 0 && strings.TrimSpace(string(rec.Thread)) != "null"
+}
+
+// claudeSessionStarted recognises the Claude Code harness's session event,
+// whose payload is the stream's raw system/init record.
+func claudeSessionStarted(data json.RawMessage) bool {
+	if len(data) == 0 {
+		return false
+	}
+	var rec struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+	}
+	if json.Unmarshal(data, &rec) != nil {
+		return false
+	}
+	return rec.Type == "system" && rec.Subtype == "init"
 }
 
 func (s *stream) observeClarification(event runner.Event) {

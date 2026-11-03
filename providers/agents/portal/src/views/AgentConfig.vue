@@ -47,6 +47,10 @@ import {
   type Agent,
   type AgentBackendType,
   type AgentChannel,
+  type AgentRunOutput,
+  type AgentSelfConfiguration,
+  type SelfConfigApproval,
+  type SelfConfigScope,
   type AgentHarnessBackend,
   type AgentPatch,
   type Autonomy,
@@ -75,8 +79,8 @@ const BACKEND_MODES: { id: AgentBackendType; label: string; blurb: string }[] = 
 
 interface ChannelRow extends AgentChannel { key: number }
 
-type SaveRegion = 'persona' | 'backend' | 'model' | 'policy' | 'tools' | 'channels' | 'delegates'
-type ManualSaveRegion = Exclude<SaveRegion, 'tools' | 'delegates'>
+type SaveRegion = 'persona' | 'backend' | 'model' | 'policy' | 'tools' | 'channels' | 'notifications' | 'delegates' | 'selfConfiguration'
+type ManualSaveRegion = Exclude<SaveRegion, 'tools' | 'notifications' | 'delegates' | 'selfConfiguration'>
 
 interface PersonaSnapshot {
   displayName: string
@@ -183,7 +187,9 @@ const saveState = reactive<Record<SaveRegion, SaveRegionState>>({
   policy: { status: 'idle', error: '', sequence: 0, submitted: null },
   tools: { status: 'idle', error: '', sequence: 0, submitted: null },
   channels: { status: 'idle', error: '', sequence: 0, submitted: null },
+  notifications: { status: 'idle', error: '', sequence: 0, submitted: null },
   delegates: { status: 'idle', error: '', sequence: 0, submitted: null },
+  selfConfiguration: { status: 'idle', error: '', sequence: 0, submitted: null },
 })
 
 const agent = computed(() => {
@@ -778,7 +784,7 @@ function hasSearchTool(source: Agent): boolean {
 }
 
 function saveImmediate(
-  region: 'tools' | 'delegates',
+  region: 'tools' | 'notifications' | 'delegates' | 'selfConfiguration',
   patch: AgentPatch,
   apply: (spec: Agent['spec']) => void,
   success: string,
@@ -944,6 +950,28 @@ async function saveChannels(): Promise<void> {
   await saveRegion('channels', payload, { channels: payload }, spec => { spec.channels = payload }, 'Channels saved.', 'channels')
 }
 
+const runOutputOptions: { value: AgentRunOutput; label: string }[] = [
+  { value: 'Always', label: 'Every finished run' },
+  { value: 'OnFailure', label: 'Only failed runs' },
+  { value: 'Never', label: 'Never — questions and approvals only' },
+]
+
+function runOutputOf(source: Agent): AgentRunOutput {
+  return source.spec?.notifications?.runOutput || 'Always'
+}
+
+function setRunOutput(value: string): void {
+  const runOutput = runOutputOptions.find(option => option.value === value)?.value
+  if (!runOutput) return
+  saveImmediate(
+    'notifications',
+    { runOutput },
+    spec => { spec.notifications = runOutput === 'Always' ? undefined : { runOutput } },
+    'Run output setting saved.',
+    'the run output setting',
+  )
+}
+
 async function enableInbound(name: string): Promise<void> {
   const authority = captureAuthority()
   const agentName = props.name
@@ -988,6 +1016,59 @@ function setDelegate(source: Agent, delegate: string, on: boolean): void {
     ? [...new Set([...(source.spec?.delegates || []), delegate])]
     : (source.spec?.delegates || []).filter(name => name !== delegate)
   saveImmediate('delegates', { delegates: next }, spec => { spec.delegates = next }, 'Delegates saved.', 'delegates')
+}
+
+const selfConfigScopes: { name: SelfConfigScope; label: string }[] = [
+  { name: 'Prompt', label: 'Its system prompt and description' },
+  { name: 'Triggers', label: 'Its triggers: tasks, filters, channels, and creating or deleting them' },
+  { name: 'Memory', label: 'Its memory settings' },
+]
+
+const selfConfigApprovalOptions: { value: SelfConfigApproval; label: string }[] = [
+  { value: 'Unattended', label: 'Changes made with nobody watching' },
+  { value: 'Always', label: 'Every change' },
+  { value: 'Never', label: 'No change — apply them directly' },
+]
+
+// The stored block spelled out: empty scopes on the object means every scope,
+// which the checkboxes show as all checked.
+function selfConfigOf(source: Agent): { enabled: boolean; scopes: SelfConfigScope[]; approval: SelfConfigApproval } {
+  const sc = source.spec?.selfConfiguration
+  const scopes = sc?.scopes?.map(scope => scope.name) ?? []
+  return {
+    enabled: Boolean(sc?.enabled),
+    scopes: scopes.length ? scopes : selfConfigScopes.map(scope => scope.name),
+    approval: sc?.approval || 'Unattended',
+  }
+}
+
+// Saves the whole block. Scopes are always written explicitly, so a scope the
+// provider adds later is not granted to this agent without anyone choosing it.
+function setSelfConfig(source: Agent, change: Partial<ReturnType<typeof selfConfigOf>>): void {
+  const next = { ...selfConfigOf(source), ...change }
+  if (next.enabled && next.scopes.length === 0) return
+  const block: AgentSelfConfiguration = {
+    enabled: next.enabled,
+    scopes: selfConfigScopes.filter(scope => next.scopes.includes(scope.name)).map(scope => ({ name: scope.name })),
+    approval: next.approval,
+  }
+  saveImmediate(
+    'selfConfiguration',
+    { selfConfiguration: block },
+    spec => { spec.selfConfiguration = block },
+    'Self configuration saved.',
+    'self configuration',
+  )
+}
+
+function setSelfConfigScope(source: Agent, scope: SelfConfigScope, on: boolean): void {
+  const scopes = selfConfigOf(source).scopes
+  setSelfConfig(source, { scopes: on ? [...new Set([...scopes, scope])] : scopes.filter(name => name !== scope) })
+}
+
+function setSelfConfigApproval(source: Agent, value: string): void {
+  const approval = selfConfigApprovalOptions.find(option => option.value === value)?.value
+  if (approval) setSelfConfig(source, { approval })
 }
 
 interface OptionalLimitValidation {
@@ -1323,6 +1404,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.channels.status === 'pending'" :aria-busy="saveState.channels.status === 'pending' ? 'true' : undefined" :aria-describedby="[channelError ? domID('agent-channels-error') : '', feedbackDescription('channels', channelsDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveChannels"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.channels.status === 'pending' ? 'Saving channels…' : 'Save channels' }}</button>
         <ConfigSaveFeedback :id="domID('agent-channels-save-feedback')" action="channels" :status="feedbackStatus('channels', channelsDirty)" :newer-edits="newerEdits('channels')" :error="feedbackError('channels')" />
       </div>
+      <div v-if="agent.spec?.channels?.length" class="agents-grid2">
+        <label><span :id="domID('agent-run-output-label')">Post run output</span><FormSelect :model-value="runOutputOf(agent)" :options="runOutputOptions" :disabled="saveState.notifications.status === 'pending'" :labelledby="domID('agent-run-output-label')" :describedby="[domID('agent-run-output-hint'), feedbackDescription('notifications') || ''].filter(Boolean).join(' ')" @update:model-value="setRunOutput" /><span :id="domID('agent-run-output-hint')" class="agents-hint">What schedules and triggers post when a run finishes. Questions and approval requests always reach the primary channel.</span></label>
+      </div>
+      <ConfigSaveFeedback v-if="agent.spec?.channels?.length" :id="domID('agent-notifications-save-feedback')" action="the run output setting" :status="feedbackStatus('notifications')" :error="feedbackError('notifications')" />
       <div v-if="connectionSlice.hasSnapshot && agent.spec?.channels?.length" class="agents-chan-inbound">
         <div v-for="bound in agent.spec.channels" :key="`${bound.name}-${bound.connectionRef}`" class="agents-inbound-line">
           <template v-if="inboundState(bound.connectionRef).found">
@@ -1352,6 +1437,27 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
       <ConfigSaveFeedback :id="domID('agent-delegates-save-feedback')" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
+    </ResourceSectionCard>
+
+    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-self-config-heading')" title="Self configuration" description="Let this agent change its own setup as it learns what you need. It can never change its tools, autonomy, budget, limits, backend, or these settings.">
+      <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-self-config-disabled role="status">
+        <Circle :stroke-width="1.75" aria-hidden="true" /> A coding-harness agent cannot configure itself: the self-configuration tools are agent tools, and the harness uses its own. Switch to <strong>Model</strong> above to allow it.
+      </p>
+      <template v-else>
+        <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).enabled" :disabled="saveState.selfConfiguration.status === 'pending'" @change="setSelfConfig(agent, { enabled: ($event.target as HTMLInputElement).checked })" /> Let this agent configure itself</label>
+        <template v-if="selfConfigOf(agent).enabled">
+          <fieldset class="agents-wire-fs">
+            <legend>It may change</legend>
+            <div class="agents-checkrow">
+              <label v-for="scope in selfConfigScopes" :key="scope.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).scopes.includes(scope.name)" :disabled="saveState.selfConfiguration.status === 'pending' || (selfConfigOf(agent).scopes.length === 1 && selfConfigOf(agent).scopes.includes(scope.name))" @change="setSelfConfigScope(agent, scope.name, ($event.target as HTMLInputElement).checked)" /> {{ scope.label }}</label>
+            </div>
+          </fieldset>
+          <div class="agents-grid2">
+            <label><span :id="domID('agent-self-config-approval-label')">Ask me to approve</span><FormSelect :model-value="selfConfigOf(agent).approval" :options="selfConfigApprovalOptions" :disabled="saveState.selfConfiguration.status === 'pending'" :labelledby="domID('agent-self-config-approval-label')" :describedby="domID('agent-self-config-approval-hint')" @update:model-value="setSelfConfigApproval(agent, $event)" /><span :id="domID('agent-self-config-approval-hint')" class="agents-hint">Schedules and triggers run with nobody watching, and a trigger’s task may carry text from outside. Changes take effect from the agent’s next run.</span></label>
+          </div>
+        </template>
+      </template>
+      <ConfigSaveFeedback :id="domID('agent-self-config-save-feedback')" action="self configuration" :status="feedbackStatus('selfConfiguration')" :error="feedbackError('selfConfiguration')" />
     </ResourceSectionCard>
 
     <slot name="destructive-actions" />

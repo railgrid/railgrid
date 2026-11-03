@@ -1240,6 +1240,9 @@ func (s *Server) startRun(ctx context.Context, scope store.Scope, agent *agentsv
 			s.deliverRunCallback(ctx, scope, runID, tr.Callback)
 			return
 		}
+		if !agent.Spec.PostsRunOutput(false) {
+			return
+		}
 		access.Notify(ctx, agent, tr.NotifyChannel, tr.SourceName, res.Content)
 	}()
 	return runAdmission{ID: runID, Phase: store.RunPhasePending}, nil

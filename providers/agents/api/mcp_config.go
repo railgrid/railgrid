@@ -344,6 +344,7 @@ type listToolFamiliesOutput struct {
 var toolFamilyDocs = []toolFamilyInfo{
 	{"visualization", "visualize_data: render bar, line, area, scatter, or pie charts from supplied data inline in Agents chat, with a data table and SVG export. No connection required; opt-in per interactive/background grant."},
 	{"core", "Always on: memory, self-scheduling (schedule_create/update/delete), notify, ask, delegate."},
+	{"self", "Not a grant: on whenever spec.selfConfiguration.enabled is set. self_config_get, self_prompt_update, self_memory_update and the trigger tools (triggers_list, webhooks_list, trigger_create/update/delete), per spec.selfConfiguration.scopes; spec.selfConfiguration.approval decides which changes wait for the user."},
 	{"web", "web_fetch (SSRF-guarded) and web_search; needs a websearch Connection for search."},
 	{"github", "GitHub tools via a github Connection (issues, PRs, code)."},
 	{"mcp", "Tools from any mcp Connection the agent is granted."},

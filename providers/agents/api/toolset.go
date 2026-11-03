@@ -142,6 +142,12 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	case agentsv1alpha1.AutonomyAuto:
 		grant.RequireApproval = nil
 	}
+	// Self-configuration carries its own approval setting, applied on top of
+	// autonomy: it can only add gates, so "suggest" still gates every change
+	// and "auto" does not wave through a change spec.selfConfiguration holds.
+	if selfConfigGated(deps.Agent, interactive) {
+		grant.RequireApproval = slices.Concat(grant.RequireApproval, tools.SelfConfigMutatingTools)
+	}
 	families := grant.Families
 	if len(families) == 0 {
 		families = defaultFamilies(interactive)
@@ -173,6 +179,7 @@ func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun)
 	if slices.Contains(families, "core") {
 		out = append(out, tools.Core(deps)...)
 	}
+	out = append(out, tools.SelfConfig(deps)...)
 	if slices.Contains(families, "web") {
 		out = append(out, tools.Web(deps)...)
 	}
@@ -445,6 +452,19 @@ func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigg
 		}
 	}
 	return id
+}
+
+// selfConfigGated reports whether this run's self-configuration changes wait
+// for the user, per spec.selfConfiguration.approval.
+func selfConfigGated(agent *agentsv1alpha1.Agent, interactive bool) bool {
+	switch agent.Spec.SelfConfigApproval() {
+	case agentsv1alpha1.SelfConfigApprovalNever:
+		return false
+	case agentsv1alpha1.SelfConfigApprovalAlways:
+		return true
+	default:
+		return !interactive
+	}
 }
 
 // toolNeedsApproval matches a tool name against the grant's requireApproval

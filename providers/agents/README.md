@@ -257,6 +257,29 @@ Anyone who can `get` a Webhook can read its sink, bodies included; set
 data. A sender's redelivery (same `X-GitHub-Delivery`) does not start a second
 run on a trigger that already fired for it.
 
+### Self-configuration
+
+`spec.selfConfiguration` lets an agent change its own setup from inside a run
+(**Self configuration** on the agent's config page):
+
+```yaml
+spec:
+  selfConfiguration:
+    enabled: true
+    scopes:            # empty = every scope
+    - name: Prompt     # systemPrompt + description
+    - name: Triggers   # its own triggers: create, retask, refilter, reroute, pause, delete
+    - name: Memory     # spec.memory
+    approval: Unattended  # Always | Unattended (default) | Never
+```
+
+`Unattended` makes a change from a schedule, trigger, wakeup or delegation
+wait in the approvals inbox; a trigger's task can carry webhook text, so this
+is the default. An agent can route a trigger from any existing Webhook but
+cannot create one, and it can never change its tools, autonomy, budget,
+limits, backend, delegates or `selfConfiguration` itself. Changes apply from
+its next run.
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

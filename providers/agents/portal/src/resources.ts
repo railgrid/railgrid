@@ -859,6 +859,7 @@ export class Resources {
       if (body.backendType === AGENT_BACKEND_HARNESS) {
         spec.tools = null
         spec.delegates = null
+        spec.selfConfiguration = null
       }
       if (body.systemPrompt !== undefined) spec.systemPrompt = body.systemPrompt
       if (body.description !== undefined) spec.description = body.description.trim()
@@ -874,6 +875,21 @@ export class Resources {
         const channels = normalizeChannels(body.channels)
         if (channels.length > 0) await this.assertChannelsUnclaimed(client, name, channels)
         spec.channels = channels
+      }
+      if (body.runOutput !== undefined) {
+        // Always is the default, so it is written as the absence of the block
+        // rather than as a value the reader then has to know is the default.
+        spec.notifications = body.runOutput === 'Always' ? null : { runOutput: body.runOutput }
+      }
+      if (body.selfConfiguration !== undefined) {
+        // Every key is spelled, null for an unset one, so the merge patch
+        // clears what the section cleared instead of keeping the stored value.
+        const sc = body.selfConfiguration
+        spec.selfConfiguration = {
+          enabled: Boolean(sc.enabled),
+          scopes: sc.scopes?.length ? sc.scopes : null,
+          approval: sc.approval || null,
+        }
       }
       if (body.delegates !== undefined) {
         // An agent delegating to itself is a loop with no exit; the REST

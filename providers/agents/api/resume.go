@@ -185,6 +185,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			s.sendToConnection(ctx, access, ck.SourceName, out)
 		case agentsv1alpha1.RunTriggerSchedule, agentsv1alpha1.RunTriggerHeartbeat,
 			agentsv1alpha1.RunTriggerWakeup, agentsv1alpha1.RunTriggerEvent:
+			if !agent.Spec.PostsRunOutput(false) {
+				break
+			}
 			if connName, ok := agent.Spec.ResolveChannelConnection(ck.NotifyChannel); ok {
 				s.sendToConnection(ctx, access, connName, fmt.Sprintf("[%s] %s", ck.SourceName, out))
 			}
