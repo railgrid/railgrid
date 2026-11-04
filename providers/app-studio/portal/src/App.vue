@@ -88,11 +88,6 @@ import {
   validateLLMModelForm,
   type LLMCredentialMode,
 } from './llmSettingsValidation'
-import {
-  inferLLMProviderPreset,
-  llmProviderSelection,
-  type LLMProviderPreset,
-} from './llmDiscovery'
 import AssistantActionLog from './AssistantActionLog.vue'
 import AssistantExecDetails from './AssistantExecDetails.vue'
 import {
@@ -384,6 +379,7 @@ import type {
   ProjectProviderBinding,
   ProjectLLMDiscoveredModel,
   ProjectLLMSettings,
+  ProjectModelProviderConnection,
   ProjectMessage,
   ProjectPromotionReadiness,
   ProjectSourceChange,
@@ -545,12 +541,12 @@ interface WorkbenchLauncherItem {
 
 interface LLMEditorSnapshot {
   name: string
+  connectionRef: string
   provider: string
   credentialMode: LLMCredentialMode
   baseURL: string
   model: string
   reasoningEffort: string
-  apiKey: string
 }
 type ProjectMessageViewStatus = 'interrupted'
 type ProjectAssistantComponentValue = ProjectAssistantUIComponent['component']
@@ -605,6 +601,8 @@ const GOOGLE_CLOUD_DEFAULT_MODEL = 'google/gemini-3.5-flash'
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com'
 const CREATE_PROJECT_ROUTE = '~new'
 const MODELS_ROUTE = '~models'
+const MODEL_PROVIDER_CONNECTIONS_ROUTE = '~models/provider-connections'
+const MODEL_USAGE_ROUTE = '~models/usage'
 const CREATE_MODEL_ROUTE = 'create/model'
 const PROJECT_DELETION_POLL_MS = 2000
 const appStudioSectionTabs = [
@@ -996,15 +994,28 @@ const draggedWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabID = ref<string | null>(null)
 const dragOverWorkbenchTabPlacement = ref<WorkbenchTabDropPlacement>('before')
 const llmSettings = ref<ProjectLLMSettings | null>(null)
+const llmConnections = ref<ProjectModelProviderConnection[]>([])
+const llmConnectionsLoading = ref(false)
+const llmConnectionsError = ref<string | null>(null)
+const llmConnectionsLoaded = ref(false)
+const llmConnectionStatusChecking = ref(false)
+const llmConnectionStatusTimedOutFor = ref('')
+const llmConnectionStatusPollRequested = ref(false)
+let llmConnectionsLoadSerial = 0
+let llmConnectionStatusPollSerial = 0
 const llmName = ref('')
+const llmSuggestedName = ref('')
+const llmNameTouched = ref(false)
 const llmEditingModelID = ref<string | null>(null)
+const llmEditingRevisionID = ref('')
+const llmEditingOriginalName = ref('')
+const llmBindingConnectionRef = ref('')
+const llmBindingConnectionInfo = ref<ProjectModelProviderConnection | null>(null)
 const selectedLLMModelID = ref('')
 const llmProvider = ref(OPENAI_COMPATIBLE_PROVIDER)
-const llmProviderPreset = ref<LLMProviderPreset>('openai')
 const llmBaseURL = ref('https://api.openai.com/v1')
 const llmModel = ref(OPENAI_DEFAULT_MODEL)
 const llmReasoningEffort = ref('')
-const llmApiKey = ref('')
 const llmCredentialMode = ref<LLMCredentialMode>('api-key')
 const llmSaving = ref(false)
 const llmTesting = ref(false)
@@ -1014,7 +1025,6 @@ const llmModelTests = ref<Record<string, { state: string; tone: 'success' | 'dan
 let llmModelTestRequestSerial = 0
 const llmTestedFingerprint = ref('')
 let llmConnectionTestSerial = 0
-const llmStatus = ref<string | null>(null)
 const llmActionError = ref<string | null>(null)
 const llmEditorOpen = ref(false)
 const llmEditorBaseline = ref<LLMEditorSnapshot | null>(null)
@@ -1024,10 +1034,24 @@ const llmSettingsLoading = ref(false)
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
 const llmDiscoveredModels = ref<ProjectLLMDiscoveredModel[]>([])
+const llmDiscoveryComplete = ref(false)
 const llmDiscoveryLoading = ref(false)
 const llmDiscoveryError = ref<string | null>(null)
 const llmDiscoveryStatus = ref<string | null>(null)
 let llmDiscoverySerial = 0
+const llmNameOnlyEdit = computed(() => {
+  const saved = llmSettings.value?.models.find(model => model.id === llmEditingModelID.value)
+  if (!saved || !llmName.value.trim() || llmName.value.trim() === saved.name) return false
+  const sameBinding = (saved.connectionRef ?? '') === llmBindingConnectionRef.value
+    && saved.model === llmModel.value.trim()
+    && (saved.reasoningEffort ?? '') === llmReasoningEffort.value
+  const sameProvider = saved.connectionRef || (
+    saved.provider === llmProvider.value.trim()
+    && saved.baseURL.trim().replace(/\/+$/, '') === llmBaseURL.value.trim().replace(/\/+$/, '')
+    && (saved.credentialMode ?? (isGoogleCloudBaseURL(saved.baseURL) ? 'service-account-json' : 'api-key')) === llmCredentialMode.value
+  )
+  return Boolean(sameBinding && sameProvider)
+})
 const wizardOpen = ref(false)
 const authCompatibleCreation = ref(false)
 const authCompatibleCreationPrompt = ref('')
@@ -1734,7 +1758,6 @@ function invalidateProjectContextState() {
   createReadinessError.value = null
   llmSettings.value = null
   llmSettingsError.value = null
-  llmStatus.value = null
   llmActionError.value = null
   resetWorkbench()
 }
@@ -2154,9 +2177,11 @@ const routeSegment = computed(() => {
 const routePath = computed(() => (props.ctx?.subPath ?? '').split('/').filter(Boolean).join('/'))
 const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
-const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
+const isProviderConnectionsRoute = computed(() => routePath.value === MODEL_PROVIDER_CONNECTIONS_ROUTE)
+const isModelUsageRoute = computed(() => routePath.value === MODEL_USAGE_ROUTE)
+const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE && !isProviderConnectionsRoute.value)
 const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE)
-const isModelEditorPage = computed(() => isCreateModelRoute.value || (isModelsRoute.value && llmEditorOpen.value))
+const isModelEditorPage = computed(() => isCreateModelRoute.value || (isModelsRoute.value && !isModelUsageRoute.value && llmEditorOpen.value))
 const modelCreateHeadingRef = ref<HTMLHeadingElement | null>(null)
 const projectIndexRoutePending = computed(() =>
   isProjectIndexRoute.value &&
@@ -2164,8 +2189,8 @@ const projectIndexRoutePending = computed(() =>
   (loading.value || !projectsLoaded.value),
 )
 const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
-const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
-const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
+const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
+const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value)
 
 watch(isCreateRoute, (active) => {
   if (active || !authCompatibleCreation.value) return
@@ -2196,7 +2221,9 @@ function shouldKeepProjectBoundFirstSubmission(): boolean {
 }
 
 const modelsReturnRoute = ref('')
-const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : 'Models')
+const llmProviderDetourActive = ref(false)
+const llmProviderDetourReturnRoute = ref('')
+const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : modelsReturnRoute.value === MODEL_PROVIDER_CONNECTIONS_ROUTE ? 'Provider connections' : 'Models')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
   (
@@ -2216,7 +2243,7 @@ const projectRouteShellVisible = computed(() => projectRouteLoading.value || pro
 const conversationLoading = computed(() => projectRouteLoading.value || threadHistoryLoading.value || !!selectingThreadID.value)
 const conversationInteractionBusy = computed(() => conversationLoading.value || conversationRefreshing.value || projectRouteFailure.value)
 const isBuilderVisible = computed(() =>
-  !isAppStudioLandingRoute.value || (!isModelsRoute.value && !isCreateModelRoute.value && selected.value !== null),
+  !isAppStudioLandingRoute.value || (!isModelsRoute.value && !isProviderConnectionsRoute.value && !isCreateModelRoute.value && selected.value !== null),
 )
 watch(
   isBuilderVisible,
@@ -2414,10 +2441,11 @@ const threadNavigationDisabled = computed(() => conversationInteractionBusy.valu
 const threadActionsDisabled = computed(() => threadNavigationDisabled.value || messageStreaming.value)
 const settingsProject = computed(() => (isAppStudioLandingRoute.value ? null : selected.value))
 const settingsTitle = computed(() => (
-  isCreateModelRoute.value ? 'New model' : settingsProject.value ? 'Project settings' : 'Models'
+  isCreateModelRoute.value ? 'New model' : isModelUsageRoute.value ? 'Usage & cost' : isProviderConnectionsRoute.value ? 'Provider connections' : settingsProject.value ? 'Project settings' : 'Models'
 ))
 const settingsDescription = computed(() => {
   if (isCreateModelRoute.value) return 'Configure the model credentials App Studio uses when creating and chatting in projects.'
+  if (isProviderConnectionsRoute.value) return 'Save provider credentials once and reuse them across model configurations.'
   if (settingsProject.value) return 'Update this project and manage its development preview access.'
   return 'Configure the model credentials App Studio uses when creating and chatting in projects.'
 })
@@ -2460,13 +2488,13 @@ const conversationWorkingLabel = computed(() => {
   return 'Running'
 })
 const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
-const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
+const createReadinessChecking = computed(() => createReadinessLoading.value || (hasProjectRequestTransport(props.ctx) && createReadiness.value === null && !createReadinessError.value))
 const createSetupItemsForPrompt = computed(() => createSetupItems({
   readiness: createReadiness.value,
   llmConfigured: llmConfigured.value,
   checkingGit: createReadinessChecking.value,
 }))
-const llmSettingsChecking = computed(() => llmSettingsLoading.value || (!!props.ctx?.token && llmSettings.value === null && !llmSettingsError.value))
+const llmSettingsChecking = computed(() => llmSettingsLoading.value || (hasProjectRequestTransport(props.ctx) && llmSettings.value === null && !llmSettingsError.value))
 const createSetupLoading = computed(() => llmSettingsChecking.value)
 const createPromptSubmitTitle = computed(() => {
   if (createSetupLoading.value) return 'Checking workspace setup'
@@ -2516,66 +2544,26 @@ const productionSummaryTarget = computed(() => {
   const previewURL = productionPreviewSummary.value
   return previewURL || 'Project has no deployable preview URL yet.'
 })
-const isGoogleGeminiProvider = computed(() => llmProvider.value.trim().toLowerCase() === GOOGLE_AI_STUDIO_PROVIDER)
-const isGoogleServiceAccountMode = computed(() =>
-  isGoogleGeminiProvider.value && llmCredentialMode.value === 'service-account-json',
-)
-const llmCredentialRequired = computed(() =>
-  !llmEditingModelID.value || llmSettings.value?.models.find((saved) => saved.id === llmEditingModelID.value)?.configured === false,
-)
-const llmApiKeyPlaceholder = computed(() =>
-  isGoogleServiceAccountMode.value ? 'Service account JSON' : isGoogleGeminiProvider.value ? 'Gemini API key' : 'API key',
-)
-const llmApiKeyHint = computed(() =>
-  llmEditingModelID.value && !llmCredentialRequired.value && !llmApiKey.value.trim()
-    ? 'Leave blank to keep the current credential.'
-    : isGoogleServiceAccountMode.value
-      ? 'Paste the complete Google service-account JSON key. Railgrid exchanges it for a short-lived OAuth token.'
-      : isGoogleGeminiProvider.value
-        ? 'Paste a Gemini API key string, not an OAuth or JWT token.'
-        : 'Stored for this workspace and never returned to the browser.',
-)
-const llmProviderGuidance = computed(() =>
-  llmProviderPreset.value === 'openai'
-    ? 'Uses OpenAI’s standard API endpoint.'
-    : llmProviderPreset.value === 'anthropic'
-    ? 'Use an Anthropic API key to connect Claude models.'
-    : llmProviderPreset.value === 'openrouter'
-    ? 'Use an OpenRouter API key and the full provider/model identifier.'
-    : isGoogleGeminiProvider.value
-    ? 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.'
-    : 'Use a provider or gateway that supports your model and GET /models. GPT-6 models use the Responses API; other models use Chat Completions.',
-)
 const llmModelHint = computed(() =>
-  isGoogleServiceAccountMode.value
+  llmCredentialMode.value === 'service-account-json'
     ? 'Use the exact Vertex AI model identifier, including its publisher prefix.'
     : 'Use the exact model identifier shown by your provider.',
 )
 const llmFormValidation = computed(() => validateLLMModelForm({
-  name: llmName.value,
-  provider: llmProvider.value,
-  credentialMode: llmCredentialMode.value,
-  baseURL: llmBaseURL.value,
+  name: llmName.value.trim() || llmSuggestedName.value || llmModel.value.trim().split('/').pop() || '',
+  // Provider credentials and endpoints are managed on the selected reusable
+  // connection. Validate only model-binding fields in this surface.
+  provider: OPENAI_COMPATIBLE_PROVIDER,
+  credentialMode: 'api-key',
+  baseURL: 'https://api.openai.com/v1',
   model: llmModel.value,
-  credential: llmApiKey.value,
-  credentialRequired: !llmEditingModelID.value || llmSettings.value?.models.find((saved) => saved.id === llmEditingModelID.value)?.configured === false,
+  credential: '',
+  credentialRequired: false,
   editingModelID: llmEditingModelID.value,
   existingModels: llmSettings.value?.models ?? [],
 }))
-const llmBaseURLError = computed(() => llmFormValidation.value.baseURL)
-const llmCanDiscover = computed(() => {
-  if (isGoogleServiceAccountMode.value || llmBaseURLError.value) return false
-  if (llmApiKey.value.trim()) return true
-  const saved = llmSettings.value?.models.find((model) => model.id === llmEditingModelID.value)
-  if (!saved?.configured) return false
-  const savedProvider = inferLLMProvider(saved.provider, saved.baseURL).trim().toLowerCase()
-  const sameProvider = savedProvider === llmProvider.value.trim().toLowerCase()
-  const sameBaseURL = saved.baseURL.trim().replace(/\/+$/, '') === llmBaseURL.value.trim().replace(/\/+$/, '')
-  return sameProvider && sameBaseURL
-})
 const llmNameError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.name : '')
 const llmModelError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.model : '')
-const llmCredentialError = computed(() => llmValidationAttempted.value ? llmFormValidation.value.credential : '')
 const llmEditorDirty = computed(() => {
   const baseline = llmEditorBaseline.value
   return baseline !== null && JSON.stringify(currentLLMEditorSnapshot()) !== JSON.stringify(baseline)
@@ -2981,12 +2969,12 @@ const settingsInWorkbench = computed(() => !!settingsProject.value && activeWork
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
 const projectControlSurfaceInWorkbench = computed(() => settingsInWorkbench.value || publishingInWorkbench.value || historyInWorkbench.value)
-const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isCreateModelRoute.value)
+const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value)
 const projectControlSurfaceTarget = computed(() => {
   if (publishingInWorkbench.value) return '#app-studio-publishing-host'
   if (historyInWorkbench.value) return '#app-studio-history-host'
   if (settingsInWorkbench.value) return '#app-studio-project-settings-host'
-  if (isModelsRoute.value || isCreateModelRoute.value) return '#app-studio-models-host'
+  if (isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value) return '#app-studio-models-host'
   return 'body'
 })
 const productionSurfaceActive = computed(() => publishingInWorkbench.value || shareDialogOpen.value)
@@ -3297,6 +3285,7 @@ onMounted(() => {
   void loadProviders()
   void loadCreateReadiness()
   void loadLLMSettings()
+  void loadModelProviderConnections()
   void loadImportRepositories()
   void loadDevelopmentTemplates()
   assistantDurationTimer = window.setInterval(() => {
@@ -3379,6 +3368,7 @@ watch(
     void loadProviders()
     void loadCreateReadiness()
     void loadLLMSettings()
+    void loadModelProviderConnections()
     void loadImportRepositories()
     void loadDevelopmentTemplates()
   },
@@ -3568,12 +3558,6 @@ watch(llmProvider, () => {
   llmModel.value = normalizeLLMModelForEditor(llmProvider.value, llmModel.value, llmCredentialMode.value)
 })
 
-watch(llmApiKey, (value) => {
-  if (isGoogleGeminiProvider.value && value.trim().startsWith('{')) {
-    llmCredentialMode.value = 'service-account-json'
-  }
-})
-
 watch(llmCredentialMode, () => {
   llmBaseURL.value = normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value)
   llmModel.value = normalizeLLMModelForEditor(llmProvider.value, llmModel.value, llmCredentialMode.value)
@@ -3703,7 +3687,7 @@ async function load() {
     void hydrateProjectThumbnails(visibleProjectList)
     projectsLoaded.value = true
     initializing.value = false
-    if (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value) {
+    if (isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value) {
       // A project can exist even when its first attachment upload or turn
       // start failed. Keep that submission bound to the project so returning
       // to ~new can retry uploads without creating a second project.
@@ -3848,7 +3832,7 @@ async function loadProviders() {
     providers.value = []
   }
   providerCatalogError.value = null
-  if (!props.ctx?.token) {
+  if (!hasProjectRequestTransport(props.ctx)) {
     // Invalidate the prior catalog even when logout means there is no request
     // to start. An older in-flight response must fail the serial check above.
     providers.value = []
@@ -3875,7 +3859,7 @@ async function loadProviders() {
 
 async function loadCreateReadiness() {
   const serial = ++createReadinessLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProjectRequestTransport(props.ctx)) {
     createReadinessLoading.value = false
     createReadiness.value = null
     createReadinessError.value = null
@@ -3896,16 +3880,130 @@ async function loadCreateReadiness() {
   }
 }
 
+async function loadModelProviderConnections() {
+  const serial = ++llmConnectionsLoadSerial
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  if (!hasProjectRequestTransport(props.ctx)) {
+    llmConnections.value = []
+    llmConnectionsLoading.value = false
+    llmConnectionsError.value = null
+    llmConnectionsLoaded.value = false
+    return
+  }
+  llmConnectionsLoading.value = true
+  try {
+    const connections = await api.listModelProviderConnections(props.ctx)
+    if (serial !== llmConnectionsLoadSerial || contextFingerprint !== appContextFingerprint(props.ctx)) return
+    llmConnections.value = connections.map(connection => {
+      const previous = llmConnections.value.find(item => item.name === connection.name && item.uid === connection.uid)
+      if (!previous || previous.secretName !== connection.secretName || previous.generatedSecretID !== connection.generatedSecretID) return connection
+      return { ...previous, ...connection }
+    })
+    syncSelectedLLMProviderConnection()
+    llmConnectionsLoaded.value = true
+    llmConnectionsError.value = null
+  } catch (error) {
+    if (serial !== llmConnectionsLoadSerial || contextFingerprint !== appContextFingerprint(props.ctx)) return
+    llmConnectionsError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (serial === llmConnectionsLoadSerial && contextFingerprint === appContextFingerprint(props.ctx)) llmConnectionsLoading.value = false
+  }
+}
+
+function isLLMConnectionSnapshotReady(connection: ProjectModelProviderConnection | undefined): boolean {
+  return Boolean(connection?.uid && !connection.activationPending && connection.secretName && connection.secretUID && connection.secretResourceVersion
+    && connection.connectionFingerprint && connection.generation !== undefined
+    && connection.observedGeneration === connection.generation)
+}
+
+function syncSelectedLLMProviderConnection() {
+  const selectedConnection = llmConnections.value.find(connection => connection.name === llmBindingConnectionRef.value)
+  if (selectedConnection && isLLMConnectionSnapshotReady(selectedConnection)) {
+    llmBindingConnectionInfo.value = selectedConnection
+  }
+}
+
+function llmConnectionStatusPollIsCurrent(
+  name: string,
+  route: string,
+  context: string,
+  serial: number,
+): boolean {
+  return serial === llmConnectionStatusPollSerial
+    && name === llmBindingConnectionRef.value
+    && route === routePath.value
+    && context === appContextFingerprint(props.ctx)
+    && (llmEditorOpen.value || isCreateModelRoute.value)
+}
+
+async function pollLLMConnectionStatus(name: string, route: string, context: string, serial: number): Promise<void> {
+  const attempts = 15
+  llmConnectionStatusChecking.value = true
+  llmConnectionStatusTimedOutFor.value = ''
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!llmConnectionStatusPollIsCurrent(name, route, context, serial)) return
+    await loadModelProviderConnections()
+    if (!llmConnectionStatusPollIsCurrent(name, route, context, serial)) return
+    if (isLLMConnectionSnapshotReady(llmConnections.value.find(connection => connection.name === name))) {
+      llmConnectionStatusChecking.value = false
+      llmConnectionStatusTimedOutFor.value = ''
+      return
+    }
+    if (attempt < attempts - 1) await new Promise(resolve => setTimeout(resolve, 1000))
+  }
+  if (!llmConnectionStatusPollIsCurrent(name, route, context, serial)) return
+  llmConnectionStatusTimedOutFor.value = name
+  llmConnectionStatusChecking.value = false
+}
+
+function retryLLMConnectionStatus(name: string) {
+  if (!name || name !== llmBindingConnectionRef.value || isLLMConnectionSnapshotReady(llmConnections.value.find(connection => connection.name === name))) return
+  llmConnectionStatusPollRequested.value = true
+  llmConnectionStatusPollSerial += 1
+  void pollLLMConnectionStatus(name, routePath.value, appContextFingerprint(props.ctx), llmConnectionStatusPollSerial)
+}
+
+watch(
+  () => {
+    const active = llmEditorOpen.value || isCreateModelRoute.value
+    const shouldRefresh = !llmEditingModelID.value || llmConnectionStatusPollRequested.value
+    const name = active && shouldRefresh && !llmNameOnlyEdit.value ? llmBindingConnectionRef.value : ''
+    const connection = llmConnections.value.find(item => item.name === name)
+    return [
+      name,
+      routePath.value,
+      appContextFingerprint(props.ctx),
+      isLLMConnectionSnapshotReady(connection),
+      connection?.uid,
+      connection?.generation,
+      connection?.observedGeneration,
+      connection?.secretName,
+      connection?.secretUID,
+      connection?.secretResourceVersion,
+      connection?.connectionFingerprint,
+    ] as const
+  },
+  (current, previous) => {
+    if (previous && current.every((value, index) => value === previous[index])) return
+    const [name, route, context, ready] = current
+    llmConnectionStatusPollSerial += 1
+    llmConnectionStatusChecking.value = false
+    llmConnectionStatusTimedOutFor.value = ''
+    if (!name || ready) return
+    void pollLLMConnectionStatus(name, route, context, llmConnectionStatusPollSerial)
+  },
+  { immediate: true },
+)
+
 async function loadLLMSettings() {
   const serial = ++llmSettingsLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProjectRequestTransport(props.ctx)) {
     llmSettingsLoading.value = false
     llmSettings.value = null
     llmSettingsError.value = null
     return
   }
   llmSettingsLoading.value = true
-  llmStatus.value = null
   llmActionError.value = null
   try {
     const settings = await api.getLLMSettings(props.ctx)
@@ -4862,12 +4960,12 @@ function isGoogleCloudBaseURL(baseURL: string): boolean {
 function currentLLMEditorSnapshot(): LLMEditorSnapshot {
   return {
     name: llmName.value,
+    connectionRef: llmBindingConnectionRef.value,
     provider: llmProvider.value,
     credentialMode: llmCredentialMode.value,
     baseURL: llmBaseURL.value,
     model: llmModel.value,
     reasoningEffort: llmReasoningEffort.value,
-    apiKey: llmApiKey.value,
   }
 }
 
@@ -4875,66 +4973,65 @@ function clearLLMDiscovery() {
   llmDiscoverySerial += 1
   llmDiscoveryLoading.value = false
   llmDiscoveredModels.value = []
+  llmDiscoveryComplete.value = false
   llmDiscoveryError.value = null
   llmDiscoveryStatus.value = null
 }
 
-function selectLLMProvider(preset: LLMProviderPreset) {
-  if (preset === llmProviderPreset.value) return
-  const selection = llmProviderSelection(preset, llmBaseURL.value)
-  llmProviderPreset.value = preset
-  llmProvider.value = selection.provider
-  llmCredentialMode.value = 'api-key'
-  llmApiKey.value = ''
-  llmValidationAttempted.value = false
+watch(() => {
+  const connection = llmConnections.value.find(item => item.name === llmBindingConnectionRef.value)
+  return [llmBindingConnectionRef.value, connection?.uid, connection?.generation, connection?.secretName]
+}, (current, previous) => {
+  if (previous && current.every((value, index) => value === previous[index])) return
   clearLLMDiscovery()
-  llmBaseURL.value = selection.baseURL
-  if (preset === 'google') {
-    llmModel.value = GEMINI_DEFAULT_MODEL
-    return
-  }
-  llmModel.value = preset === 'openai' && llmEditingModelID.value ? OPENAI_DEFAULT_MODEL : ''
-}
+})
 
-function updateLLMCredentialMode(mode: LLMCredentialMode) {
-  if (mode === llmCredentialMode.value) return
-  llmCredentialMode.value = mode
-  llmApiKey.value = ''
-  llmValidationAttempted.value = false
-  clearLLMDiscovery()
-}
-
-function updateLLMBaseURL(value: string) {
-  if (value !== llmBaseURL.value) {
-    llmApiKey.value = ''
-    llmValidationAttempted.value = false
-    invalidateLLMConnectionTest()
-  }
-  llmBaseURL.value = value
-  clearLLMDiscovery()
-}
-
-function updateLLMAPIKey(value: string) {
-  llmApiKey.value = value
-  clearLLMDiscovery()
-}
-
-function openLLMEditor(modelID?: string) {
+function openLLMEditor(
+  modelID?: string,
+  connectionRef?: string,
+  connectionInfo?: ProjectModelProviderConnection,
+) {
   invalidateLLMModelMutationState()
   invalidateLLMConnectionTest()
-  llmStatus.value = null
   llmActionError.value = null
   const saved = llmSettings.value?.models.find((model) => model.id === modelID)
+  llmConnectionStatusPollRequested.value = !saved
   llmEditingModelID.value = saved?.id ?? null
+  llmEditingRevisionID.value = saved?.revisionID ?? ''
+  llmEditingOriginalName.value = saved?.name ?? ''
   llmName.value = saved?.name ?? ''
-  const provider = inferLLMProvider(saved?.provider ?? OPENAI_COMPATIBLE_PROVIDER, saved?.baseURL ?? 'https://api.openai.com/v1')
+  llmSuggestedName.value = saved?.name ?? ''
+  llmNameTouched.value = Boolean(saved)
+  llmBindingConnectionRef.value = connectionRef ?? saved?.connectionRef ?? ''
+  const snapshot = saved?.connectionSnapshot
+  const snapshotConnection: ProjectModelProviderConnection | null = snapshot ? {
+    name: snapshot.connectionRef,
+    uid: snapshot.connectionUID,
+    displayName: saved?.connectionName,
+    provider: snapshot.provider,
+    baseURL: snapshot.baseURL,
+    anthropicWorkspaceID: snapshot.anthropicWorkspaceID,
+    connectionFingerprint: snapshot.connectionFingerprint,
+    secretUID: snapshot.secretUID,
+    secretResourceVersion: snapshot.secretResourceVersion,
+    secretName: snapshot.secretRef.name,
+    secretKey: snapshot.secretKey,
+    generatedSecretID: snapshot.generatedSecretID,
+    models: [],
+    conditions: [],
+  } : null
+  const linkedConnection = connectionInfo
+    ?? llmConnections.value.find(connection => connection.name === llmBindingConnectionRef.value)
+    ?? snapshotConnection
+    ?? null
+  llmBindingConnectionInfo.value = linkedConnection
+  const provider = inferLLMProvider(saved?.provider ?? linkedConnection?.provider ?? OPENAI_COMPATIBLE_PROVIDER, saved?.baseURL ?? linkedConnection?.baseURL ?? 'https://api.openai.com/v1')
   llmProvider.value = provider
-  llmProviderPreset.value = inferLLMProviderPreset(provider, saved?.baseURL ?? 'https://api.openai.com/v1')
-  llmCredentialMode.value = isGoogleCloudBaseURL(saved?.baseURL ?? '') ? 'service-account-json' : 'api-key'
-  llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? '', llmCredentialMode.value)
+  llmCredentialMode.value = saved?.credentialMode ?? linkedConnection?.credentialMode
+    ?? (isGoogleCloudBaseURL(saved?.baseURL ?? linkedConnection?.baseURL ?? '') ? 'service-account-json' : 'api-key')
+  llmBaseURL.value = normalizeLLMBaseURLInput(provider, saved?.baseURL ?? linkedConnection?.baseURL ?? '', llmCredentialMode.value)
   llmModel.value = saved ? normalizeLLMModelInput(provider, saved.model ?? '', llmCredentialMode.value) : ''
   llmReasoningEffort.value = saved?.reasoningEffort ?? ''
-  llmApiKey.value = ''
   llmValidationAttempted.value = false
   clearLLMDiscovery()
   llmEditorOpen.value = true
@@ -4942,7 +5039,7 @@ function openLLMEditor(modelID?: string) {
 }
 
 async function discoverLLMModels() {
-  if (!llmCanDiscover.value || llmDiscoveryLoading.value) return
+  if (!llmBindingConnectionRef.value || llmDiscoveryLoading.value) return
   const serial = ++llmDiscoverySerial
   const contextFingerprint = appContextFingerprint(props.ctx)
   const requestRoute = routePath.value
@@ -4950,14 +5047,10 @@ async function discoverLLMModels() {
   llmDiscoveryError.value = null
   llmDiscoveryStatus.value = null
   try {
-    const result = await api.discoverLLMModels(props.ctx, {
-      provider: llmProvider.value,
-      baseURL: llmBaseURL.value,
-      ...(llmApiKey.value.trim() ? { apiKey: llmApiKey.value } : {}),
-      ...(llmEditingModelID.value ? { existingModelID: llmEditingModelID.value } : {}),
-    })
+    const result = await api.discoverModelProviderConnection(props.ctx, llmBindingConnectionRef.value)
     if (serial !== llmDiscoverySerial || contextFingerprint !== appContextFingerprint(props.ctx) || requestRoute !== routePath.value) return
     llmDiscoveredModels.value = result.models
+    llmDiscoveryComplete.value = true
     const selectable = result.models.filter((model) => model.compatibility !== 'unsuitable').length
     const unavailable = result.models.length - selectable
     const total = result.models.length
@@ -4975,23 +5068,157 @@ async function discoverLLMModels() {
 
 function selectDiscoveredLLMModel(model: ProjectLLMDiscoveredModel) {
   llmModel.value = model.id
-  if (!llmName.value.trim()) llmName.value = model.name
+  llmConnectionStatusPollRequested.value = true
+  updateSuggestedLLMName(model.name || model.id)
+}
+
+function updateSuggestedLLMName(suggestion: string) {
+  const next = suggestion.trim()
+  if (!next) return
+  if (!llmNameTouched.value || !llmName.value.trim() || llmName.value === llmSuggestedName.value) llmName.value = next
+  llmSuggestedName.value = next
+}
+
+function updateLLMModel(value: string) {
+  llmModel.value = value
+  if (llmEditingModelID.value) llmConnectionStatusPollRequested.value = true
+  updateSuggestedLLMName(value.trim().split('/').pop() || value)
+}
+
+function updateLLMReasoningEffort(value: string) {
+  llmReasoningEffort.value = value
+  if (llmEditingModelID.value) llmConnectionStatusPollRequested.value = true
+}
+
+function updateLLMName(value: string) {
+  llmNameTouched.value = true
+  llmName.value = value
 }
 
 function openNewLLMModelEditor() {
   // Keep the project-creation handoff while it is active. A model opened
   // directly from the Models section has no stored handoff and returns there.
   if (!modelsReturnRoute.value && isCreateRoute.value) modelsReturnRoute.value = CREATE_PROJECT_ROUTE
+  else if (!modelsReturnRoute.value && isProviderConnectionsRoute.value) modelsReturnRoute.value = MODEL_PROVIDER_CONNECTIONS_ROUTE
   openLLMEditor()
   props.navigate(CREATE_MODEL_ROUTE)
 }
 
-function openModelEditor(modelID?: string) {
+function openModelEditor(
+  modelID?: string,
+  connectionRef?: string,
+  connectionInfo?: ProjectModelProviderConnection,
+) {
   if (modelID !== undefined) {
-    openLLMEditor(modelID)
+    openLLMEditor(modelID, connectionRef, connectionInfo)
     return
   }
-  openNewLLMModelEditor()
+  if (!modelsReturnRoute.value && isProviderConnectionsRoute.value) modelsReturnRoute.value = MODEL_PROVIDER_CONNECTIONS_ROUTE
+  else if (!modelsReturnRoute.value && isCreateRoute.value) modelsReturnRoute.value = CREATE_PROJECT_ROUTE
+  openLLMEditor(undefined, connectionRef, connectionInfo)
+  props.navigate(CREATE_MODEL_ROUTE)
+}
+
+function navigateModelSettings(route: string) {
+  props.navigate(route)
+}
+
+function startModelProviderSetup() {
+  if (!modelsReturnRoute.value) {
+    modelsReturnRoute.value = isCreateRoute.value ? CREATE_PROJECT_ROUTE : MODELS_ROUTE
+  }
+  props.navigate(MODEL_PROVIDER_CONNECTIONS_ROUTE)
+}
+
+function beginLLMProviderDetour() {
+  llmProviderDetourActive.value = true
+  llmProviderDetourReturnRoute.value = isCreateModelRoute.value ? CREATE_MODEL_ROUTE : MODELS_ROUTE
+  if (!modelsReturnRoute.value && isCreateModelRoute.value) modelsReturnRoute.value = MODELS_ROUTE
+  props.navigate(MODEL_PROVIDER_CONNECTIONS_ROUTE)
+}
+
+function finishLLMProviderDetour(returnRoute: string) {
+  llmProviderDetourActive.value = false
+  llmProviderDetourReturnRoute.value = ''
+  if (returnRoute) props.navigate(returnRoute, { replace: true })
+}
+
+function cancelLLMProviderDetour() {
+  if (!llmProviderDetourActive.value) return
+  finishLLMProviderDetour(llmProviderDetourReturnRoute.value)
+}
+
+function continueModelWithProvider(connection: ProjectModelProviderConnection) {
+  if (!llmProviderDetourActive.value || !connection.name) return
+  llmBindingConnectionRef.value = connection.name
+  llmBindingConnectionInfo.value = connection
+  llmProvider.value = connection.provider
+  llmCredentialMode.value = connection.credentialMode
+    ?? (isGoogleCloudBaseURL(connection.baseURL) ? 'service-account-json' : 'api-key')
+  llmBaseURL.value = normalizeLLMBaseURLInput(connection.provider, connection.baseURL, llmCredentialMode.value)
+  invalidateLLMConnectionTest()
+  clearLLMDiscovery()
+  llmConnectionStatusPollRequested.value = true
+  handleModelConnectionsChanged(connection)
+  finishLLMProviderDetour(llmProviderDetourReturnRoute.value)
+}
+
+function selectLLMModelConnection(connectionRef: string) {
+  const connection = llmConnections.value.find(item => item.name === connectionRef) ?? null
+  llmConnectionStatusPollRequested.value = true
+  llmBindingConnectionRef.value = connectionRef
+  llmBindingConnectionInfo.value = connection
+  llmTestError.value = null
+  llmTestStatus.value = null
+  llmTestedFingerprint.value = ''
+  clearLLMDiscovery()
+  if (connection) {
+    llmProvider.value = connection.provider
+    llmCredentialMode.value = connection.credentialMode
+      ?? (isGoogleCloudBaseURL(connection.baseURL) ? 'service-account-json' : 'api-key')
+    llmBaseURL.value = normalizeLLMBaseURLInput(connection.provider, connection.baseURL, llmCredentialMode.value)
+    if (!llmEditingModelID.value) {
+      llmModel.value = ''
+      llmReasoningEffort.value = ''
+      llmName.value = ''
+      llmSuggestedName.value = ''
+      llmNameTouched.value = false
+    }
+  }
+}
+
+function handleModelConnectionsChanged(connection?: ProjectModelProviderConnection) {
+  if (connection) {
+    const index = llmConnections.value.findIndex(item => item.name === connection.name)
+    if (index < 0) llmConnections.value = [...llmConnections.value, connection]
+    else llmConnections.value = llmConnections.value.map(item => item.name === connection.name ? connection : item)
+    llmBindingConnectionInfo.value = connection
+  }
+  void loadModelProviderConnections()
+}
+
+async function deleteModelProviderConnection(connection: ProjectModelProviderConnection) {
+  if (!connection || llmSaving.value) return
+  if (!(await confirmDialog({
+    title: `Delete ${connection.displayName || connection.name}?`,
+    message: 'This removes the saved provider connection and its generated key versions after retained model revisions no longer need them.',
+    danger: true,
+    confirmLabel: 'Delete connection',
+  }))) return
+  const guard = beginLLMModelMutation()
+  llmSaving.value = true
+  llmActionError.value = null
+  try {
+    await api.deleteModelProviderConnection(props.ctx, connection.name)
+    if (!llmModelMutationIsCurrent(guard)) return
+    llmConnections.value = llmConnections.value.filter(item => item.name !== connection.name)
+    toast('ok', 'Provider connection deleted.')
+  } catch (error) {
+    if (!llmModelMutationIsCurrent(guard)) return
+    llmActionError.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    if (llmModelMutationIsCurrent(guard)) llmSaving.value = false
+  }
 }
 
 async function editSelectedModelReasoningSettings() {
@@ -5012,10 +5239,9 @@ async function cancelLLMEditor() {
   }))) return
   const routeOwnedCreation = isCreateModelRoute.value
   const returnRoute = routeOwnedCreation
-    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : MODELS_ROUTE)
+    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : modelsReturnRoute.value === MODEL_PROVIDER_CONNECTIONS_ROUTE ? MODEL_PROVIDER_CONNECTIONS_ROUTE : MODELS_ROUTE)
     : null
   invalidateLLMModelMutationState()
-  llmStatus.value = null
   llmActionError.value = null
   llmEditorOpen.value = false
   llmEditingModelID.value = null
@@ -5035,12 +5261,12 @@ watch(
       // A direct link or a browser revisit must always start a fresh model,
       // even if a contextual edit or a previous draft was open before the
       // route changed.
-      openLLMEditor()
+      if (!llmEditorOpen.value) openLLMEditor()
       return
     }
     if (previous && llmCreateRouteSession.value) {
       llmCreateRouteSession.value = false
-      if (!llmEditingModelID.value) {
+      if (!llmEditingModelID.value && !llmProviderDetourActive.value) {
         llmEditorOpen.value = false
         llmEditorBaseline.value = null
         llmValidationAttempted.value = false
@@ -5144,10 +5370,10 @@ function normalizeLLMModelForEditor(provider: string, model: string, credentialM
 }
 
 const llmConnectionFingerprint = computed(() => JSON.stringify([
-  llmEditingModelID.value, llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmReasoningEffort.value, llmApiKey.value.trim(),
+  llmEditingModelID.value, llmBindingConnectionRef.value, llmBindingConnectionInfo.value?.connectionFingerprint || '', llmProvider.value.trim(), llmCredentialMode.value, llmBaseURL.value.trim(), llmModel.value.trim(), llmReasoningEffort.value,
 ]))
 const llmConnectionTested = computed(() => Boolean(llmTestedFingerprint.value) && llmTestedFingerprint.value === llmConnectionFingerprint.value)
-const llmConnectionTestRequired = computed(() => llmEditorOpen.value || isCreateModelRoute.value)
+const llmConnectionTestRequired = computed(() => (llmEditorOpen.value || isCreateModelRoute.value) && !llmNameOnlyEdit.value)
 
 function invalidateLLMConnectionTest() {
   llmConnectionTestSerial += 1
@@ -5165,41 +5391,74 @@ watch(llmConnectionFingerprint, () => {
 })
 
 async function saveLLMSettings() {
-  llmStatus.value = null
   llmActionError.value = null
   llmValidationAttempted.value = true
   if (hasLLMModelFormErrors(llmFormValidation.value)) return
   if (editorReasoningEffortError.value) return
+  if (!llmBindingConnectionRef.value && !llmNameOnlyEdit.value) {
+    llmActionError.value = 'Select a saved provider connection to migrate this model.'
+    return
+  }
   if (llmConnectionTestRequired.value && !llmConnectionTested.value) {
     llmTestError.value = 'Test this connection before saving it for the workspace.'
     return
   }
   const routeOwnedCreation = isCreateModelRoute.value && !llmEditingModelID.value
   const editingID = llmEditingModelID.value
+  const displayNameOnly = Boolean(editingID && llmNameOnlyEdit.value)
   const returnRoute = routeOwnedCreation
-    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : MODELS_ROUTE)
+    ? (modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? CREATE_PROJECT_ROUTE : modelsReturnRoute.value === MODEL_PROVIDER_CONNECTIONS_ROUTE ? MODEL_PROVIDER_CONNECTIONS_ROUTE : MODELS_ROUTE)
     : null
   const guard = beginLLMModelMutation()
   const mutationContext = props.ctx
   llmSaving.value = true
   try {
-    const body: { name: string; provider?: string; baseURL?: string; model: string; reasoningEffort?: string; apiKey?: string } = {
-      name: llmName.value.trim(),
-      provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
-      baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
+    const body: { name: string; expectedName?: string; expectedRevisionID?: string; connectionRef?: string; connectionInfo?: ProjectModelProviderConnection; model: string; reasoningEffort?: string } = {
+      name: llmName.value.trim() || llmSuggestedName.value || llmModel.value.trim().split('/').pop() || 'Model',
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
     }
-    if (editingID) body.reasoningEffort = llmReasoningEffort.value
+    if (llmBindingConnectionRef.value) {
+      body.connectionRef = llmBindingConnectionRef.value
+      if (llmBindingConnectionInfo.value) body.connectionInfo = llmBindingConnectionInfo.value
+    }
+    if (editingID) {
+      body.reasoningEffort = llmReasoningEffort.value
+      body.expectedRevisionID = llmEditingRevisionID.value
+      body.expectedName = llmEditingOriginalName.value
+    }
     else if (llmReasoningEffort.value) body.reasoningEffort = llmReasoningEffort.value
-    if (llmApiKey.value.trim()) body.apiKey = llmApiKey.value.trim()
     const settings = editingID
       ? await api.patchLLMModel(mutationContext, editingID, body)
-      : await api.createLLMModel(mutationContext, { ...body, apiKey: llmApiKey.value.trim() })
+      : await api.createLLMModel(mutationContext, body)
     if (!llmModelMutationIsCurrent(guard)) return
-    applyLLMSettings(settings)
-    llmStatus.value = editingID ? 'Model updated.' : 'Model connected.'
+    let projectedSettings = settings
+    const beforeRename = llmSettings.value
+    if (displayNameOnly && beforeRename) {
+      const previousByID = new Map(beforeRename.models.map(model => [model.id, model]))
+      projectedSettings = {
+        ...settings,
+        models: settings.models.map(model => {
+          const previous = previousByID.get(model.id)
+          if (!previous) return model
+          return {
+            ...model,
+            connectionName: model.connectionName ?? previous.connectionName,
+            connectionFingerprint: model.connectionFingerprint ?? previous.connectionFingerprint,
+            credentialMode: model.credentialMode ?? previous.credentialMode,
+          }
+        }).sort((left, right) => Number(right.default ?? false) - Number(left.default ?? false)
+          || left.name.toLowerCase().localeCompare(right.name.toLowerCase())),
+      }
+    }
+    applyLLMSettings(projectedSettings)
+    toast('ok', editingID ? 'Model updated.' : 'Model connected.')
     llmEditorOpen.value = false
     llmEditingModelID.value = null
+    llmEditingRevisionID.value = ''
+    llmEditingOriginalName.value = ''
+    llmBindingConnectionRef.value = ''
+    llmBindingConnectionInfo.value = null
+    llmConnectionStatusPollRequested.value = false
     llmEditorBaseline.value = null
     llmValidationAttempted.value = false
     if (returnRoute) {
@@ -5215,40 +5474,107 @@ async function saveLLMSettings() {
   }
 }
 
-async function testLLMConnection() {
+async function testLLMConnection(): Promise<boolean> {
   llmTestStatus.value = null
   llmTestError.value = null
-  if (llmBaseURLError.value) return
+  if (!llmBindingConnectionRef.value) {
+    llmTestError.value = 'Select a saved provider connection before verifying this model.'
+    return false
+  }
   if (!llmModel.value.trim()) {
     llmTestError.value = 'Enter a model ID before testing the connection.'
-    return
-  }
-  if (!llmApiKey.value.trim() && llmCredentialRequired.value) {
-    llmTestError.value = 'Enter a credential before testing the connection.'
-    return
+    return false
   }
   const serial = ++llmConnectionTestSerial
-  const fingerprint = llmConnectionFingerprint.value
+  const contextFingerprint = appContextFingerprint(props.ctx)
+  const requestRoute = routePath.value
+  const inputFingerprint = JSON.stringify([
+    llmBindingConnectionRef.value,
+    llmProvider.value.trim(),
+    llmBaseURL.value.trim(),
+    llmCredentialMode.value,
+    llmModel.value.trim(),
+    llmReasoningEffort.value,
+  ])
+  let verificationFingerprint = llmConnectionFingerprint.value
   llmTesting.value = true
   try {
+    let connectionInfo = llmBindingConnectionInfo.value
+    if (llmBindingConnectionRef.value) {
+      // Read only the selected public connection metadata immediately before
+      // verification. The server-issued fingerprint fences the draft probe
+      // against a key rotation between this read and the request. Name-only
+      // edits skip this function entirely and need no connection permission.
+      let confirmed: ProjectModelProviderConnection | null = null
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        if (serial !== llmConnectionTestSerial || contextFingerprint !== appContextFingerprint(props.ctx)
+          || requestRoute !== routePath.value || inputFingerprint !== JSON.stringify([
+            llmBindingConnectionRef.value,
+            llmProvider.value.trim(),
+            llmBaseURL.value.trim(),
+            llmCredentialMode.value,
+            llmModel.value.trim(),
+            llmReasoningEffort.value,
+          ])) return false
+        confirmed = await api.getModelProviderConnection(props.ctx, llmBindingConnectionRef.value)
+        if (serial !== llmConnectionTestSerial || contextFingerprint !== appContextFingerprint(props.ctx)
+          || requestRoute !== routePath.value || inputFingerprint !== JSON.stringify([
+            llmBindingConnectionRef.value,
+            llmProvider.value.trim(),
+            llmBaseURL.value.trim(),
+            llmCredentialMode.value,
+            llmModel.value.trim(),
+            llmReasoningEffort.value,
+          ])) return false
+        if (isLLMConnectionSnapshotReady(confirmed)) break
+        confirmed = null
+        if (attempt < 5) await new Promise(resolve => setTimeout(resolve, 250))
+      }
+      if (!confirmed) throw new Error('The provider connection is still confirming its saved key version. Refresh status and try again.')
+      connectionInfo = confirmed
+      llmBindingConnectionInfo.value = confirmed
+      llmProvider.value = confirmed.provider
+      llmCredentialMode.value = confirmed.credentialMode
+        ?? (isGoogleCloudBaseURL(confirmed.baseURL) ? 'service-account-json' : 'api-key')
+      llmBaseURL.value = normalizeLLMBaseURLInput(confirmed.provider, confirmed.baseURL, llmCredentialMode.value)
+      llmConnections.value = llmConnections.value.map(connection => connection.name === confirmed?.name
+        ? { ...connection, ...confirmed }
+        : connection)
+    }
+    if (serial !== llmConnectionTestSerial || contextFingerprint !== appContextFingerprint(props.ctx)
+      || requestRoute !== routePath.value) return false
+    const fingerprint = llmConnectionFingerprint.value
+    verificationFingerprint = fingerprint
     const result = await api.testLLMConnection(props.ctx, {
-      provider: llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER,
-      baseURL: normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
+      provider: connectionInfo?.provider ?? (llmProvider.value.trim() || OPENAI_COMPATIBLE_PROVIDER),
+      baseURL: connectionInfo?.baseURL ?? normalizeLLMBaseURLInput(llmProvider.value, llmBaseURL.value, llmCredentialMode.value),
+      ...(connectionInfo?.anthropicWorkspaceID ? { anthropicWorkspaceID: connectionInfo.anthropicWorkspaceID } : {}),
+      credentialMode: connectionInfo?.credentialMode ?? llmCredentialMode.value,
+      existingConnectionID: connectionInfo?.name ?? llmBindingConnectionRef.value,
+      connectionFingerprint: connectionInfo?.connectionFingerprint,
       model: normalizeLLMModelInput(llmProvider.value, llmModel.value, llmCredentialMode.value),
       reasoningEffort: llmReasoningEffort.value,
-      apiKey: llmApiKey.value.trim(),
-      existingModelID: llmEditingModelID.value || undefined,
     })
-    if (serial !== llmConnectionTestSerial || fingerprint !== llmConnectionFingerprint.value) return
+    if (serial !== llmConnectionTestSerial || contextFingerprint !== appContextFingerprint(props.ctx)
+      || requestRoute !== routePath.value || fingerprint !== llmConnectionFingerprint.value) return false
     if (!result.ok) throw new Error('The provider did not confirm this connection.')
     llmTestedFingerprint.value = fingerprint
     llmTestStatus.value = 'Connection verified. The model responded successfully.'
+    return true
   } catch (e) {
-    if (serial !== llmConnectionTestSerial || fingerprint !== llmConnectionFingerprint.value) return
+    if (serial !== llmConnectionTestSerial || verificationFingerprint !== llmConnectionFingerprint.value) return false
     llmTestError.value = e instanceof Error ? e.message : String(e)
+    return false
   } finally {
     if (serial === llmConnectionTestSerial) llmTesting.value = false
   }
+}
+
+async function verifyAndSaveLLMSettings() {
+  if (llmConnectionTestRequired.value && !llmConnectionTested.value) {
+    if (!await testLLMConnection()) return
+  }
+  await saveLLMSettings()
 }
 
 async function testSavedLLMModel(modelID: string) {
@@ -5259,7 +5585,9 @@ async function testSavedLLMModel(modelID: string) {
   const token = { state: 'Testing…', tone: 'muted' as const, requestID }
   llmModelTests.value = { ...llmModelTests.value, [modelID]: token }
   try {
-    const result = await api.testLLMConnection(props.ctx, { provider: saved.provider, baseURL: saved.baseURL, model: saved.model, reasoningEffort: saved.reasoningEffort ?? '', apiKey: '', existingModelID: modelID })
+    const result = saved.connectionRef
+      ? await api.testModelProviderConnection(props.ctx, saved.connectionRef, { model: saved.model, reasoningEffort: saved.reasoningEffort ?? '' })
+      : await api.testLLMConnection(props.ctx, { provider: saved.provider, baseURL: saved.baseURL, model: saved.model, reasoningEffort: saved.reasoningEffort ?? '', apiKey: '', existingModelID: modelID })
     if (!llmModelMutationIsCurrent(guard) || llmModelTests.value[modelID]?.requestID !== requestID) return
     if (!result.ok) throw new Error('The provider did not confirm this connection.')
     llmModelTests.value = { ...llmModelTests.value, [modelID]: { state: 'Test passed', tone: 'success', requestID } }
@@ -5296,16 +5624,17 @@ async function deleteLLMModel(modelID: string) {
   const guard = beginLLMModelMutation()
   const mutationContext = props.ctx
   llmSaving.value = true
-  llmStatus.value = null
   llmActionError.value = null
   try {
     const settings = await api.deleteLLMModel(mutationContext, modelID)
     if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
-    llmStatus.value = 'Model deleted.'
+    toast('ok', 'Model deleted.')
     if (llmEditingModelID.value === modelID) {
       llmEditorOpen.value = false
       llmEditingModelID.value = null
+  llmEditingRevisionID.value = ''
+  llmEditingOriginalName.value = ''
     }
   } catch (e) {
     if (!llmModelMutationIsCurrent(guard)) return
@@ -5319,13 +5648,12 @@ async function setDefaultLLMModel(modelID: string) {
   const guard = beginLLMModelMutation()
   const mutationContext = props.ctx
   llmSaving.value = true
-  llmStatus.value = null
   llmActionError.value = null
   try {
     const settings = await api.setDefaultLLMModel(mutationContext, modelID)
     if (!llmModelMutationIsCurrent(guard)) return
     applyLLMSettings(settings)
-    llmStatus.value = 'Default model updated.'
+    toast('ok', 'Default model updated.')
   } catch (e) {
     if (!llmModelMutationIsCurrent(guard)) return
     llmActionError.value = e instanceof Error ? e.message : String(e)
@@ -10252,7 +10580,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         v-if="!isCreateModelRoute"
         v-show="!llmEditorOpen"
         :tabs="appStudioSectionTabs"
-        :active="isModelsRoute || isCreateModelRoute ? 'models' : 'projects'"
+        :active="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute ? 'models' : 'projects'"
         aria-label="App Studio sections"
         @select="selectAppStudioSection"
       />
@@ -10776,7 +11104,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </main>
       </div>
 
-      <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isModelEditorPage ? 'k-create-page' : 'min-h-0 pb-6'">
+      <section v-else-if="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute" :class="isModelEditorPage ? 'k-create-page' : 'min-h-0 pb-6'">
         <button v-if="isModelEditorPage" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
           <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ llmCreateReturnLabel }}
         </button>
@@ -12133,7 +12461,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <Teleport defer :to="projectControlSurfaceTarget">
     <div
-      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
+      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
         ? 'h-full min-h-0'
         : 'fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
@@ -12145,14 +12473,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           ? 'k-ai-workbench-canvas h-full min-h-0 overflow-hidden'
           : isCreateModelRoute
             ? ''
-          : isModelsRoute
+          : isModelsRoute || isProviderConnectionsRoute
             ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
-        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute" :class="settingsInWorkbench ? 'k-ai-workbench-pane__header px-4 pt-4' : 'flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3'">
+        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute" :class="settingsInWorkbench ? 'k-ai-workbench-pane__header px-4 pt-4' : 'flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3'">
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <Cpu v-if="isModelsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
+              <Cpu v-if="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
               <Settings2 v-else-if="!settingsInWorkbench" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
               <h2 :class="settingsInWorkbench ? 'k-ai-workbench-pane__title' : 'truncate text-[15px] font-semibold text-text-primary'">{{ settingsTitle }}</h2>
             </div>
@@ -12161,7 +12489,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </p>
           </div>
           <button
-            v-if="!settingsInWorkbench && !isModelsRoute && !isCreateModelRoute"
+            v-if="!settingsInWorkbench && !isModelsRoute && !isProviderConnectionsRoute && !isCreateModelRoute"
             type="button"
             class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
@@ -12171,7 +12499,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 overflow-auto px-4 pb-4' : 'min-h-0 overflow-auto p-4'">
+        <div :class="isCreateModelRoute ? '' : isModelsRoute || isProviderConnectionsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 overflow-auto px-4 pb-4' : 'min-h-0 overflow-auto p-4'">
           <div class="grid gap-4">
           <div
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -12619,65 +12947,66 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </section>
 
           <ModelsSettings
-            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject"
-            :route-page="isModelsRoute"
+            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject && (isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute)"
+            :ctx="props.ctx"
+            :route-page="isModelsRoute || isProviderConnectionsRoute"
+            :provider-connections-route="isProviderConnectionsRoute"
+            :usage-route="isModelUsageRoute"
+            :provider-detour-active="llmProviderDetourActive"
+            :connections="llmConnections"
+            :connections-loading="llmConnectionsLoading"
+            :connections-error="llmConnectionsError"
+            :connection-status-checking="llmConnectionStatusChecking"
+            :connection-status-timed-out="llmConnectionStatusTimedOutFor === llmBindingConnectionRef"
             :model-tests="llmModelTests"
+            :model-tests-status="llmTestStatus"
             :settings="llmSettings"
             :loading="llmSettingsLoading"
             :load-error="llmSettingsError"
             :saving="llmSaving"
-            :status="llmStatus"
             :action-error="llmActionError"
-            :editor-open="llmEditorOpen || isCreateModelRoute"
+            :editor-open="!isModelUsageRoute && (llmEditorOpen || isCreateModelRoute)"
             :creation-route="isCreateModelRoute"
             :editing-model-i-d="llmEditingModelID"
+            :connection-ref="llmBindingConnectionRef"
             :name="llmName"
-            :provider-preset="llmProviderPreset"
-            :credential-mode="llmCredentialMode"
-            :base-u-r-l="llmBaseURL"
             :model="llmModel"
             :reasoning-effort="llmReasoningEffort"
             :reasoning-effort-options="editorReasoningEffortOptions"
             :reasoning-effort-error="editorReasoningEffortError"
-            :api-key="llmApiKey"
             :name-error="llmNameError"
-            :base-u-r-l-error="llmBaseURLError"
             :model-error="llmModelError"
-            :credential-error="llmCredentialError"
-            :credential-required="llmCredentialRequired"
-            :api-key-placeholder="llmApiKeyPlaceholder"
-            :api-key-hint="llmApiKeyHint"
-            :provider-guidance="llmProviderGuidance"
             :model-hint="llmModelHint"
-            :google-provider="isGoogleGeminiProvider"
-            :google-service-account-mode="isGoogleServiceAccountMode"
             :discovered-models="llmDiscoveredModels"
+            :discovery-complete="llmDiscoveryComplete"
             :discovery-loading="llmDiscoveryLoading"
             :discovery-error="llmDiscoveryError"
-            :discovery-status="llmDiscoveryStatus"
-            :can-discover="llmCanDiscover"
             :testing="llmTesting"
             :test-status="llmTestStatus"
             :test-error="llmTestError"
             :require-connection-test="llmConnectionTestRequired"
-            :connection-tested="llmConnectionTested"
+            :name-only-edit="llmNameOnlyEdit"
             @retry="loadLLMSettings"
             @open-editor="openModelEditor"
+            @navigate="navigateModelSettings"
+            @start-provider-setup="startModelProviderSetup"
+            @begin-provider-detour="beginLLMProviderDetour"
+            @continue-model-with-provider="continueModelWithProvider"
+            @cancel-provider-detour="cancelLLMProviderDetour"
+            @select-connection="selectLLMModelConnection"
+            @discover-connection="discoverLLMModels"
+            @connections-changed="handleModelConnectionsChanged"
+            @retry-connection-status="retryLLMConnectionStatus"
+            @delete-connection="deleteModelProviderConnection"
             @cancel-editor="cancelLLMEditor"
-            @save="saveLLMSettings"
-            @test="testLLMConnection"
+            @save="verifyAndSaveLLMSettings"
             @test-saved="testSavedLLMModel"
             @delete="deleteLLMModel"
             @set-default="setDefaultLLMModel"
-            @select-provider="selectLLMProvider"
-            @discover="discoverLLMModels"
             @select-discovered-model="selectDiscoveredLLMModel"
-            @update:name="llmName = $event"
-            @update:credential-mode="updateLLMCredentialMode"
-            @update:base-u-r-l="updateLLMBaseURL"
-            @update:model="llmModel = $event"
-            @update:reasoning-effort="llmReasoningEffort = $event"
-            @update:api-key="updateLLMAPIKey"
+            @update:name="updateLLMName"
+            @update:model="updateLLMModel"
+            @update:reasoning-effort="updateLLMReasoningEffort"
           />
 
           <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
