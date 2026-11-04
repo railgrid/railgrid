@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import ts from 'typescript'
@@ -12,12 +13,15 @@ const vite = await createServer({
   cacheDir: '/tmp/railgrid-vite-app-studio-models',
   configFile: false,
   plugins: [vue()],
-  server: { middlewareMode: true, hmr: false },
+  server: { middlewareMode: true, hmr: { server: new EventEmitter() } },
 })
 const { default: ModelsSettings } = await vite.ssrLoadModule('/src/ModelsSettings.vue')
 test.after(async () => vite.close())
 
 const baseProps = {
+  ctx: null,
+  connectionRef: '',
+  connections: [],
   settings: null,
   loading: false,
   loadError: null,
@@ -28,36 +32,44 @@ const baseProps = {
   creationRoute: false,
   editingModelID: null,
   name: '',
-  providerPreset: 'openai',
-  credentialMode: 'api-key',
-  baseURL: 'https://api.openai.com/v1',
   model: 'gpt-5.4',
-  apiKey: '',
   nameError: '',
-  baseURLError: '',
   modelError: '',
-  credentialError: '',
-  credentialRequired: true,
-  apiKeyPlaceholder: 'API key',
-  apiKeyHint: '',
-  providerGuidance: 'Use an OpenAI-compatible provider.',
   modelHint: 'Use the provider model ID.',
-  googleProvider: false,
-  googleServiceAccountMode: false,
   discoveredModels: [],
   discoveryLoading: false,
   discoveryError: null,
-  discoveryStatus: null,
-  canDiscover: false,
   testing: false,
   testStatus: null,
   testError: null,
   requireConnectionTest: false,
-  connectionTested: false,
+  nameOnlyEdit: false,
 }
 
 async function render(props = {}) {
   return renderToString(createSSRApp(ModelsSettings, { ...baseProps, ...props }))
+}
+
+const savedConnection = {
+  name: 'openai-main',
+  displayName: 'OpenAI main',
+  uid: 'connection-uid',
+  resourceVersion: '12',
+  generation: 1,
+  observedGeneration: 1,
+  provider: 'openai',
+  baseURL: 'https://api.openai.com/v1',
+  connectionFingerprint: 'fingerprint',
+  credentialMode: 'api-key',
+  secretName: 'key-version',
+  ready: true,
+  secretResolved: true,
+  reachable: true,
+  secretRef: { name: 'key-version' },
+  secretKey: 'apiKey',
+  secretUID: 'secret-uid',
+  secretResourceVersion: '4',
+  models: ['gpt-5.4'],
 }
 
 test('retains initial and stale model errors with one disabled busy retry action', async () => {
@@ -83,6 +95,7 @@ test('a pending model retry keeps its previous error until the read succeeds', a
   const { outputText } = ts.transpileModule(load.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
   const state = new Function('ref', `
     const props = { ctx: { token: 'token' } };
+    const hasProjectRequestTransport = () => true;
     let llmSettingsLoadSerial = 0;
     const llmSettings = ref(null);
     const llmSettingsLoading = ref(false);
@@ -107,51 +120,293 @@ test('a pending model retry keeps its previous error until the read succeeds', a
   assert.deepEqual(state.llmSettings.value, { models: [] })
 })
 
-test('changing an endpoint clears its typed replacement credential and verification immediately', async () => {
+test('selecting a saved provider clears stale verification and preserves the model draft', async () => {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
   const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const names = new Set(['updateLLMBaseURL', 'clearLLMDiscovery', 'invalidateLLMConnectionTest'])
+  const names = new Set(['selectLLMModelConnection', 'clearLLMDiscovery'])
   const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
   assert.equal(functions.length, names.size)
   const { outputText } = ts.transpileModule(functions.map(node => node.getText(ast)).join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
   const state = new Function('ref', `
-    const llmBaseURL = ref('https://original-provider.example/v1');
-    const llmApiKey = ref('typed-replacement-key');
+    const llmConnections = ref([${JSON.stringify(savedConnection)}]);
+    const llmConnectionStatusPollRequested = ref(false);
+    const llmBindingConnectionRef = ref('');
+    const llmBindingConnectionInfo = ref(null);
+    const llmProvider = ref('openai-compatible');
+    const llmCredentialMode = ref('api-key');
+    const llmBaseURL = ref('https://old-provider.example/v1');
+    const llmEditingModelID = ref('legacy-model');
     const llmName = ref('Saved model');
     const llmModel = ref('custom-model');
-    const llmValidationAttempted = ref(true);
+    const llmReasoningEffort = ref('high');
+    const llmTestError = ref('old test error');
+    const llmTestStatus = ref('old test success');
+    const llmTestedFingerprint = ref('old fingerprint');
     let llmDiscoverySerial = 0;
     const llmDiscoveryLoading = ref(true);
     const llmDiscoveredModels = ref([{ id: 'original-model' }]);
+    const llmDiscoveryComplete = ref(true);
     const llmDiscoveryError = ref(null);
     const llmDiscoveryStatus = ref('1 model found');
-    let llmConnectionTestSerial = 0;
-    const llmTesting = ref(true);
-    const llmTestStatus = ref('Connection verified');
-    const llmTestError = ref(null);
-    const llmTestedFingerprint = ref('original-endpoint-fingerprint');
+    const isGoogleCloudBaseURL = () => false;
+    const normalizeLLMBaseURLInput = (_provider, baseURL) => baseURL;
     ${outputText}
-    return { updateLLMBaseURL, llmBaseURL, llmApiKey, llmName, llmModel, llmValidationAttempted,
-      llmTesting, llmTestStatus, llmTestedFingerprint, llmDiscoveredModels,
-      testSerial: () => llmConnectionTestSerial };
+    return { selectLLMModelConnection, llmBindingConnectionRef, llmBindingConnectionInfo, llmProvider,
+      llmBaseURL, llmName, llmModel, llmReasoningEffort, llmTestError, llmTestStatus,
+      llmTestedFingerprint, llmDiscoveredModels, llmDiscoveryComplete, llmDiscoveryLoading, llmConnectionStatusPollRequested };
   `)(ref)
 
-  state.updateLLMBaseURL('https://original-provider.example/v1')
-  assert.equal(state.llmApiKey.value, 'typed-replacement-key', 'an unchanged endpoint retains its local draft')
-  assert.equal(state.testSerial(), 0)
-
-  state.updateLLMBaseURL('https://different-provider.example/v1')
-  assert.equal(state.llmBaseURL.value, 'https://different-provider.example/v1')
-  assert.equal(state.llmApiKey.value, '', 'the old typed key cannot follow a new destination')
-  assert.equal(state.llmTesting.value, false)
+  state.selectLLMModelConnection(savedConnection.name)
+  assert.equal(state.llmBindingConnectionRef.value, savedConnection.name)
+  assert.deepEqual(state.llmBindingConnectionInfo.value, savedConnection)
+  assert.equal(state.llmProvider.value, savedConnection.provider)
+  assert.equal(state.llmBaseURL.value, savedConnection.baseURL)
+  assert.equal(state.llmConnectionStatusPollRequested.value, true)
   assert.equal(state.llmTestStatus.value, null)
   assert.equal(state.llmTestedFingerprint.value, '')
-  assert.equal(state.testSerial(), 1, 'pending verification is fenced off synchronously')
+  assert.equal(state.llmTestError.value, null)
   assert.deepEqual(state.llmDiscoveredModels.value, [])
-  assert.equal(state.llmValidationAttempted.value, false)
+  assert.equal(state.llmDiscoveryComplete.value, false)
+  assert.equal(state.llmDiscoveryLoading.value, false)
   assert.equal(state.llmName.value, 'Saved model')
   assert.equal(state.llmModel.value, 'custom-model')
+  assert.equal(state.llmReasoningEffort.value, 'high')
+})
+
+test('model binding snapshots wait for an authoritative provider status and reject stale key identities', async () => {
+  const registry = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('llmRegistry.ts', registry, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'connectionSnapshotFor')
+  assert.ok(declaration)
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const snapshotFor = new Function('LLMRegistryError', 'MODEL_PROVIDER_CONNECTION_RESOURCE', 'CREDENTIAL_KEY', 'GENERATED_SECRET_ANNOTATION', `${outputText}; return connectionSnapshotFor`)(
+    class LLMRegistryError extends Error {},
+    { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'modelproviderconnections' },
+    'apiKey',
+    'ai.railgrid.ai/generated-secret-id',
+  )
+  const candidate = {
+    name: 'openai-main', uid: 'connection-uid', generation: 2, provider: 'openai',
+    baseURL: 'https://api.openai.com/v1', secretName: 'key-v2', secretKey: 'apiKey',
+    secretUID: 'secret-v2-uid', secretResourceVersion: '9', connectionFingerprint: 'current-fingerprint', generatedSecretID: 'ab'.repeat(16),
+  }
+  const object = status => ({
+    metadata: { name: candidate.name, uid: candidate.uid, generation: 2, annotations: { 'ai.railgrid.ai/generated-secret-id': candidate.generatedSecretID } },
+    spec: { provider: candidate.provider, baseURL: candidate.baseURL, secretRef: { name: candidate.secretName }, secretKey: candidate.secretKey },
+    status,
+  })
+  let current = object({ observedGeneration: 1, connectionFingerprint: 'stale-fingerprint', secretUID: 'old-secret', secretResourceVersion: '8' })
+  let reads = 0
+  const client = { get: async () => { reads += 1; return current } }
+  const pending = snapshotFor(client, candidate.name, candidate)
+  await new Promise(resolve => setTimeout(resolve, 300))
+  current = object({ observedGeneration: 2 })
+  await new Promise(resolve => setTimeout(resolve, 300))
+  const admitted = {
+    connectionRef: candidate.name, connectionUID: candidate.uid, provider: 'openai-compatible',
+    baseURL: 'https://api.openai.com/v1', secretRef: { name: candidate.secretName }, secretKey: 'apiKey',
+    secretUID: candidate.secretUID, secretResourceVersion: candidate.secretResourceVersion,
+    connectionFingerprint: candidate.connectionFingerprint, generatedSecretID: candidate.generatedSecretID,
+  }
+  current = object({ observedGeneration: 2, connectionFingerprint: 'current-fingerprint', activeSnapshot: admitted, secretUID: candidate.secretUID, secretResourceVersion: candidate.secretResourceVersion })
+  const snapshot = await pending
+  assert.ok(reads >= 3, 'waits for the controller to observe generation and key identity')
+  assert.equal(snapshot.connectionFingerprint, 'current-fingerprint')
+  assert.equal(snapshot.secretUID, 'secret-v2-uid')
+  assert.equal(snapshot.secretResourceVersion, '9')
+  assert.equal(snapshot.generatedSecretID, candidate.generatedSecretID)
+  assert.equal('apiKey' in snapshot, false, 'the immutable model snapshot contains no credential bytes')
+  assert.deepEqual(snapshot, admitted, 'captures the exact controller-admitted transport')
+  assert.notEqual(snapshot, admitted, 'keeps an independent revision snapshot')
+  current.spec.baseURL += '/'
+  const normalized = await snapshotFor({ get: async () => current }, candidate.name)
+  assert.deepEqual(normalized, admitted, 'trailing slash in spec does not change admitted transport')
+
+
+  current = object({ observedGeneration: 2, connectionFingerprint: 'different-key-fingerprint', secretUID: 'other-secret', secretResourceVersion: '10' })
+  await assert.rejects(snapshotFor({ get: async () => current }, candidate.name, candidate), /saved provider key changed/)
+
+  const deleting = object({ observedGeneration: 2 })
+  deleting.metadata.deletionTimestamp = '2026-11-03T12:00:00Z'
+  let deletingReads = 0
+  await assert.rejects(snapshotFor({ get: async () => { deletingReads += 1; return deleting } }, candidate.name, candidate), /provider connection is being deleted/)
+  assert.equal(deletingReads, 1, 'does not poll a connection after Kubernetes has started deleting it')
+})
+
+test('connection edits tolerate status-only resourceVersion changes but reject changed provider authority', async () => {
+  const registry = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('llmRegistry.ts', registry, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'expectedConnectionMatchesLatest')
+  assert.ok(declaration)
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const matches = new Function('CONNECTION_DISPLAY_NAME_ANNOTATION', 'CREDENTIAL_KEY', `${outputText}; return expectedConnectionMatchesLatest`)('ai.railgrid.ai/display-name', 'apiKey')
+  const expected = {
+    name: 'shared', uid: 'connection-uid', resourceVersion: '12', generation: 4, displayName: 'Shared provider',
+    provider: 'openai', baseURL: 'https://api.openai.com/v1', secretName: 'key-v2', secretKey: 'apiKey',
+    connectionFingerprint: 'fingerprint-a', secretUID: 'secret-uid-a', secretResourceVersion: '9',
+  }
+  const latest = {
+    metadata: { name: 'shared', uid: 'connection-uid', resourceVersion: '19', generation: 4, annotations: { 'ai.railgrid.ai/display-name': 'Shared provider' } },
+    spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1', secretRef: { name: 'key-v2' }, secretKey: 'apiKey' },
+    status: { connectionFingerprint: 'fingerprint-a', secretUID: 'secret-uid-a', secretResourceVersion: '9' },
+  }
+  assert.equal(matches(expected, latest), true, 'a status-only probe update advances resourceVersion but leaves the captured connection authority intact')
+  assert.equal(matches(expected, { ...latest, metadata: { ...latest.metadata, generation: 5 }, spec: { ...latest.spec, baseURL: 'https://other.example/v1' } }), false)
+  assert.equal(matches(expected, { ...latest, status: { ...latest.status, connectionFingerprint: 'fingerprint-b', secretUID: 'secret-uid-b' } }), false)
+  assert.match(registry, /const resourceVersion = existing\.metadata\.resourceVersion/)
+})
+
+test('display-name-only model edits save without an inference request', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const nameOnlyStatement = ast.statements.find(node => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some(declaration => declaration.name.getText(ast) === 'llmNameOnlyEdit'))
+  const verifyDeclaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'verifyAndSaveLLMSettings')
+  assert.ok(nameOnlyStatement)
+  assert.ok(verifyDeclaration)
+  const { outputText: nameOnlySource } = ts.transpileModule(nameOnlyStatement.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const saved = {
+    id: 'main', name: 'Main model', connectionRef: savedConnection.name,
+    connectionFingerprint: savedConnection.connectionFingerprint,
+    provider: 'openai', baseURL: savedConnection.baseURL, model: 'gpt-5.4', reasoningEffort: 'medium',
+  }
+  const values = {
+    llmSettings: { value: { models: [saved] } },
+    llmEditingModelID: { value: 'main' },
+    llmName: { value: 'Main model renamed' },
+    llmBindingConnectionRef: { value: savedConnection.name },
+    llmBindingConnectionInfo: { value: savedConnection },
+    llmModel: { value: 'gpt-5.4' },
+    llmReasoningEffort: { value: 'medium' },
+    llmProvider: { value: 'openai' },
+    llmBaseURL: { value: savedConnection.baseURL },
+    llmCredentialMode: { value: 'api-key' },
+  }
+  const getNameOnly = new Function('computed', ...Object.keys(values), `${nameOnlySource}; return () => llmNameOnlyEdit.value`)(
+    getter => ({ get value() { return getter() } }), ...Object.values(values),
+  )
+  assert.equal(getNameOnly(), true)
+  values.llmBindingConnectionInfo.value = null
+  assert.equal(getNameOnly(), true, 'a bound-model label change does not depend on connection metadata access')
+  values.llmBindingConnectionInfo.value = savedConnection
+  values.llmModel.value = 'gpt-5.5'
+  assert.equal(getNameOnly(), false, 'a model change still requires verification')
+  values.llmModel.value = 'gpt-5.4'
+  values.llmBindingConnectionRef.value = 'different-provider'
+  assert.equal(getNameOnly(), false, 'a provider migration still requires verification')
+
+  const { outputText: verifySource } = ts.transpileModule(verifyDeclaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  let inferenceRequests = 0
+  let saves = 0
+  const verifyAndSave = new Function('llmConnectionTestRequired', 'llmConnectionTested', 'testLLMConnection', 'saveLLMSettings', `${verifySource}; return verifyAndSaveLLMSettings`)(
+    { value: false }, { value: false }, async () => { inferenceRequests += 1; return true }, async () => { saves += 1 },
+  )
+  await verifyAndSave()
+  assert.equal(inferenceRequests, 0)
+  assert.equal(saves, 1)
+})
+
+test('a bound-model rename patches only the Studio label without connection or Secret reads', async () => {
+  const registry = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('llmRegistry.ts', registry, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = new Set(['writeRegistry', 'patchLLMModel'])
+  const declarations = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text))
+  assert.equal(declarations.length, names.size)
+  const source = declarations.map(node => node.getText(ast).replace(/^export\s+/, '')).join('\n')
+  const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const paths = []
+  const writes = []
+  const snapshotCalls = []
+  const credentialWrites = []
+  const model = {
+    id: 'main', revisionID: 'revision-a', name: 'Main model', connectionRef: 'shared', model: 'gpt-5.4', reasoningEffort: 'medium',
+    connectionSnapshot: {
+      connectionRef: 'shared', connectionUID: 'connection-uid', provider: 'openai', baseURL: 'https://api.openai.com/v1',
+      secretRef: { name: 'key-version' }, secretKey: 'apiKey', secretUID: 'secret-uid', secretResourceVersion: '4',
+      connectionFingerprint: 'fingerprint-a',
+    },
+  }
+  const studio = {
+    metadata: { name: 'studio', uid: 'studio-uid', resourceVersion: '17' },
+    spec: { llm: { defaultModel: 'main', models: [model] } },
+    status: { models: [{ id: 'main', configured: true }] },
+  }
+  const resource = { group: 'ai.railgrid.ai', version: 'v1alpha1', resource: 'studios' }
+  const client = {
+    get: async (ref, name) => { paths.push(`${ref.resource}/${name}`); return studio },
+    patch: async (ref, name, body, options) => { writes.push({ path: `${ref.resource}/${name}`, body, options }); return {} },
+  }
+  const patchModel = new Function(
+    'STUDIO_RESOURCE', 'STUDIO_NAME', 'MAX_ACTIVE_MODELS', 'MAX_REVISIONS', 'LLMRegistryError', 'isKubeConflict',
+    'kube', 'readStudio', 'toSettings', 'connectionSnapshotFor', 'newRevisionID', 'writeCredential',
+    `${outputText}; return patchLLMModel`,
+  )(
+    resource, 'studio', 20, 200, class LLMRegistryError extends Error {}, () => false,
+    () => client, async currentClient => currentClient.get(resource, 'studio'),
+    current => ({ models: current.spec.llm.models.filter(entry => !entry.archived) }),
+    async () => { snapshotCalls.push('connection'); throw new Error('connection read must not happen') },
+    () => { throw new Error('name-only edits must keep the revision identity') },
+    async () => { credentialWrites.push('secret'); throw new Error('Secret write must not happen') },
+  )
+
+  const result = await patchModel(null, 'main', {
+    name: 'Main model renamed', expectedName: 'Main model', expectedRevisionID: 'revision-a',
+    connectionRef: 'shared', model: 'gpt-5.4', reasoningEffort: 'medium',
+  })
+  assert.deepEqual(paths, ['studios/studio'])
+  assert.equal(writes.length, 1)
+  assert.equal(writes[0].path, 'studios/studio')
+  assert.equal(writes[0].body.metadata.uid, 'studio-uid')
+  assert.equal(writes[0].body.metadata.resourceVersion, '17')
+  assert.equal(result.models[0].name, 'Main model renamed')
+  assert.equal(result.models[0].revisionID, 'revision-a')
+  assert.equal(result.models[0].connectionSnapshot, model.connectionSnapshot)
+  assert.deepEqual(snapshotCalls, [])
+  assert.deepEqual(credentialWrites, [])
+
+  studio.spec.llm.models = [{ ...model, revisionID: 'revision-b', model: 'gpt-5.5' }]
+  await assert.rejects(patchModel(null, 'main', {
+    name: 'Main model renamed again', expectedName: 'Main model', expectedRevisionID: 'revision-a',
+    connectionRef: 'shared', model: 'gpt-5.4', reasoningEffort: 'medium',
+  }), /model changed while you were editing it/)
+  assert.equal(writes.length, 1, 'a stale editor cannot overwrite a controller or sibling model revision')
+  assert.deepEqual(snapshotCalls, [])
+  assert.deepEqual(credentialWrites, [])
+})
+
+test('a verified provider fingerprint replaces the create acknowledgement before model testing', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = ['isLLMConnectionSnapshotReady', 'syncSelectedLLMProviderConnection']
+  const declarations = names.map(name => {
+    const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, `${name} exists`)
+    return declaration.getText(ast)
+  }).join('\n')
+  const { outputText } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const sync = new Function('llmConnections', 'llmBindingConnectionRef', 'llmBindingConnectionInfo', `${outputText}; return syncSelectedLLMProviderConnection`)
+  const acknowledgement = { ...savedConnection, connectionFingerprint: undefined }
+  const connections = ref([acknowledgement])
+  const bindingRef = ref(savedConnection.name)
+  const bindingInfo = ref(acknowledgement)
+  const syncSelected = sync(connections, bindingRef, bindingInfo)
+  syncSelected()
+  assert.equal(bindingInfo.value.connectionFingerprint, undefined, 'an unobserved create acknowledgement is not used for verification')
+
+  const verifiedA = { ...savedConnection, connectionFingerprint: 'fingerprint-a' }
+  connections.value = [verifiedA]
+  syncSelected()
+  const testedFingerprint = bindingInfo.value.connectionFingerprint
+  assert.equal(testedFingerprint, 'fingerprint-a')
+
+  const rotatedB = { ...savedConnection, connectionFingerprint: 'fingerprint-b', secretUID: 'secret-b', secretResourceVersion: '10' }
+  connections.value = [rotatedB]
+  syncSelected()
+  assert.equal(bindingInfo.value.connectionFingerprint, 'fingerprint-b')
+  assert.notEqual(bindingInfo.value.connectionFingerprint, testedFingerprint, 'a concurrent key rotation invalidates the model test fingerprint')
 })
 
 test('presents multiple workspace models with explicit default and readiness state', async () => {
@@ -184,11 +439,11 @@ test('uses an explicit empty state before opening the model form', async () => {
   const html = await render()
 
   assert.match(html, /No models configured/)
-  assert.match(html, /Connect model/)
-  assert.doesNotMatch(html, /aria-label="Model configuration form"/)
+  assert.match(html, />Connect provider/)
+  assert.doesNotMatch(html, /aria-label="Model binding form"/)
 })
 
-test('renders the Models collection heading and an explicit unavailable usage card', async () => {
+test('keeps the usage tab separate from the Models collection', async () => {
   const html = await render({
     routePage: true,
     settings: {
@@ -202,14 +457,23 @@ test('renders the Models collection heading and an explicit unavailable usage ca
   })
 
   assert.match(html, /<h2[^>]*>Models<\/h2>/)
-  assert.match(html, /Configure the model credentials App Studio uses/)
-  const usageSection = html.match(/<section\b[^>]*aria-label="Usage and cost"[^>]*>/)?.[0]
-  assert.ok(usageSection, 'renders the accessible usage section')
-  const usageClasses = usageSection.match(/\bclass="([^"]*)"/)?.[1].split(/\s+/) ?? []
-  assert.ok(usageClasses.includes('k-model-usage'), 'retains the usage section styling')
-  assert.match(html, /class="k-model-usage__unavailable"/)
-  assert.match(html, /Usage reporting isn’t available yet/)
-  assert.match(html, /Spend will appear here when reporting is available/)
+  assert.match(html, /Usage &amp; cost/)
+  assert.doesNotMatch(html, /aria-label="Usage and cost"/)
+  assert.match(html, /aria-label="Model GPT High"/)
+})
+
+test('usage route renders its own section even without configured models', async () => {
+  for (const settings of [null, {
+    provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true,
+    models: [{ id: 'main', name: 'Main model', model: 'gpt-5.4', configured: true }],
+  }]) {
+    const html = await render({ routePage: true, usageRoute: true, settings })
+    assert.match(html, /data-k-tab-id="usage"[^>]*aria-current="page"/)
+    assert.match(html, /aria-label="Usage and cost"/)
+    assert.match(html, /Usage reporting isn’t available yet/)
+    assert.doesNotMatch(html, /No models configured|aria-label="Model Main model"|>Add model<|>Connect provider</)
+  }
+
 })
 
 test('route-owned model creation keeps the collection out of the form surface', async () => {
@@ -225,10 +489,10 @@ test('route-owned model creation keeps the collection out of the form surface', 
     },
   })
 
-  assert.match(html, /aria-label="Connect model"/)
-  assert.match(html, /aria-label="Model configuration form"/)
+  assert.match(html, /aria-label="Model binding form"/)
+  assert.match(html, /Saved provider connection/)
   assert.doesNotMatch(html, /aria-label="Model GPT High"/)
-  assert.doesNotMatch(html, />Connect model<\/button>/)
+  assert.doesNotMatch(html, />Add model<\/button>/)
 })
 
 test('route-owned model creation keeps the form actionable when settings load fails', async () => {
@@ -240,54 +504,400 @@ test('route-owned model creation keeps the form actionable when settings load fa
 
   assert.match(html, /Could not load model settings\./)
   assert.match(html, />Retry</)
-  assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, />\s*Name\s*</)
+  assert.match(html, /aria-label="Model binding form"/)
+  assert.match(html, /Saved provider connection/)
   assert.doesNotMatch(html, />New model</)
   assert.doesNotMatch(html, /No models configured/)
 })
 
-test('renders a guided provider, endpoint, and credential form', async () => {
+test('legacy model editing uses the shared binding flow and requires connection migration', async () => {
   const html = await render({
     editorOpen: true,
-    name: 'Gemini Fast',
-    providerPreset: 'google',
-    credentialMode: 'service-account-json',
-    baseURL: 'https://aiplatform.googleapis.com',
-    model: 'google/gemini-3.5-flash',
-    apiKeyPlaceholder: 'Service account JSON',
-    apiKeyHint: 'Paste the Google service-account JSON key.',
-    providerGuidance: 'Use a Gemini API key for Google AI Studio, or a service-account key for Vertex AI.',
-    modelHint: 'Use the exact Vertex AI model identifier, including its publisher prefix.',
-    googleProvider: true,
-    googleServiceAccountMode: true,
+    editingModelID: 'legacy-haiku',
+    connectionRef: '',
+    name: 'Legacy Claude',
+    model: 'claude-haiku-4-5',
+    settings: {
+      provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-5',
+      configured: true, defaultModelID: 'legacy-haiku',
+      models: [{ id: 'legacy-haiku', name: 'Legacy Claude', provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1', model: 'claude-haiku-4-5', configured: true, default: true }],
+    },
   })
+  assert.match(html, /aria-label="Model binding form"/)
+  assert.match(html, /This model uses a legacy direct credential\. Select a saved provider connection to migrate it/)
+  assert.match(html, /Saved provider connection/)
+  assert.match(html, /No provider connections are saved yet\.[\s\S]*Connect a provider/)
+  assert.match(html, />Verify &amp; migrate<\/button>/)
+  assert.match(html, /claude-haiku-4-5/)
+  assert.doesNotMatch(html, /ModelConnectionForm|legacy-model-connection|model-credential|API endpoint/)
 
-  assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, /id="model-provider"/)
-  assert.match(html, /Use a Gemini API key for Google AI Studio/)
-  assert.match(html, />\s*Name\s*</)
-  assert.match(html, /Credential method/)
-  assert.match(html, /Vertex AI service account/)
-  assert.match(html, /Find models/)
-  assert.match(html, /Service account JSON/)
-  assert.match(html, /Connect model/)
-  assert.match(html, /Test connection/)
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /ModelConnectionForm/)
+  assert.match(source, /const legacyEditing = computed\(\(\) => Boolean\(props\.editingModelID && !props\.connectionRef\)\)/)
+  assert.match(source, /modelCanSave = computed\(\(\) => Boolean\(props\.nameOnlyEdit \|\| \(props\.connectionRef && selectedConnectionSnapshotReady\.value\)\)/)
 })
 
-test('offers known provider endpoints and keeps custom endpoints editable', async () => {
-  const openAI = await render({ editorOpen: true, providerPreset: 'openai', canDiscover: true })
-  assert.match(openAI, />OpenAI</)
-  assert.match(openAI, /https:\/\/api\.openai\.com\/v1/)
-  assert.doesNotMatch(openAI, /id="model-base-url"/)
+test('provider detours preserve the original Models or project route and the model draft', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = ['startModelProviderSetup', 'beginLLMProviderDetour', 'finishLLMProviderDetour', 'continueModelWithProvider']
+  const declarations = names.map(name => {
+    const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, `${name} exists`)
+    return declaration.getText(ast)
+  }).join('\n')
+  const { outputText } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const buildState = ({ createRoute = false, createModelRoute = false, returnRoute = '' } = {}) => {
+    const navigation = []
+    const values = {
+      CREATE_PROJECT_ROUTE: '~new',
+      MODELS_ROUTE: '~models',
+      MODEL_PROVIDER_CONNECTIONS_ROUTE: '~models/provider-connections',
+      CREATE_MODEL_ROUTE: 'create/model',
+      modelsReturnRoute: ref(returnRoute),
+      llmProviderDetourActive: ref(false),
+      llmProviderDetourReturnRoute: ref(''),
+      isCreateRoute: ref(createRoute),
+      isCreateModelRoute: ref(createModelRoute),
+      isProviderConnectionsRoute: ref(false),
+      props: { navigate: (route, options) => navigation.push({ route, options }) },
+      llmBindingConnectionRef: ref('old-provider'),
+      llmBindingConnectionInfo: ref(null),
+      llmProvider: ref('openai'),
+      llmProviderPreset: ref('openai'),
+      llmCredentialMode: ref('api-key'),
+      llmBaseURL: ref('https://old.example/v1'),
+      llmConnectionStatusPollRequested: ref(false),
+      llmModel: ref('legacy-model'),
+      llmName: ref('Existing label'),
+      llmReasoningEffort: ref('high'),
+      inferLLMProviderPreset: () => 'anthropic',
+      isGoogleCloudBaseURL: () => false,
+      normalizeLLMBaseURLInput: (_provider, baseURL) => baseURL,
+      invalidateLLMConnectionTest: () => {},
+      clearLLMDiscovery: () => {},
+      handleModelConnectionsChanged: () => {},
+      navigation,
+    }
+    const functions = new Function(...Object.keys(values), `${outputText}; return { startModelProviderSetup, beginLLMProviderDetour, continueModelWithProvider }`)(...Object.values(values))
+    return { ...values, ...functions }
+  }
 
-  const custom = await render({
-    editorOpen: true,
-    providerPreset: 'custom',
-    baseURL: 'https://gateway.example/v1',
+  const models = buildState()
+  models.startModelProviderSetup()
+  assert.equal(models.modelsReturnRoute.value, '~models')
+  assert.deepEqual(models.navigation.at(-1), { route: '~models/provider-connections', options: undefined })
+
+  const project = buildState({ createRoute: true })
+  project.startModelProviderSetup()
+  assert.equal(project.modelsReturnRoute.value, '~new')
+  assert.deepEqual(project.navigation.at(-1), { route: '~models/provider-connections', options: undefined })
+
+  const editor = buildState({ createModelRoute: true, returnRoute: '~new' })
+  editor.beginLLMProviderDetour()
+  assert.equal(editor.llmProviderDetourReturnRoute.value, 'create/model')
+  assert.deepEqual(editor.navigation.at(-1), { route: '~models/provider-connections', options: undefined })
+  const modelDraft = [editor.llmModel.value, editor.llmName.value, editor.llmReasoningEffort.value]
+  editor.continueModelWithProvider({
+    name: 'new-provider', provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1', credentialMode: 'api-key',
   })
-  assert.match(custom, /Custom OpenAI-compatible/)
-  assert.match(custom, /id="model-base-url"/)
-  assert.match(custom, /queries \/models/)
+  assert.equal(editor.llmBindingConnectionRef.value, 'new-provider')
+  assert.deepEqual([editor.llmModel.value, editor.llmName.value, editor.llmReasoningEffort.value], modelDraft)
+  assert.equal(editor.llmProviderDetourActive.value, false)
+  assert.deepEqual(editor.navigation.at(-1), { route: 'create/model', options: { replace: true } })
+
+  const settings = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const settingsScript = settings.slice(settings.indexOf('>', settings.indexOf('<script')) + 1, settings.indexOf('</script>'))
+  const settingsAST = ts.createSourceFile('ModelsSettings.ts', settingsScript, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const accept = settingsAST.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'acceptSavedConnection')
+  assert.ok(accept)
+  const compiledAccept = ts.transpileModule(accept.getText(settingsAST), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const acceptedConnection = { name: 'new-provider', provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1' }
+  const buildAcceptance = providerDetourActive => {
+    const events = []
+    const state = new Function('ref', 'props', 'emit', `
+      const connectionSuccess = ref(null)
+      const connectionAPIKey = ref('typed-secret')
+      const connectionEditorOpen = ref(true)
+      const connectionOriginal = ref({ name: 'old-provider' })
+      const connectionNotice = ref('saved')
+      const connectionError = ref('stale error')
+      const connectionVerifiedFingerprint = ref('')
+      ${compiledAccept}
+      return { acceptSavedConnection, connectionSuccess, connectionAPIKey,
+        connectionEditorOpen, connectionOriginal, connectionNotice, connectionError,
+        connectionVerifiedFingerprint }
+    `)(ref, { providerDetourActive }, (...args) => events.push(args))
+    return { ...state, events }
+  }
+  const detour = buildAcceptance(true)
+  detour.acceptSavedConnection(acceptedConnection, 'new-fingerprint')
+  assert.deepEqual(detour.events, [
+    ['connectionsChanged', acceptedConnection],
+    ['continueModelWithProvider', acceptedConnection],
+  ])
+  assert.equal(detour.connectionAPIKey.value, '')
+  assert.equal(detour.connectionVerifiedFingerprint.value, 'new-fingerprint')
+  const standalone = buildAcceptance(false)
+  standalone.acceptSavedConnection(acceptedConnection, 'new-fingerprint')
+  assert.deepEqual(standalone.events, [['connectionsChanged', acceptedConnection]])
+
+  assert.match(app, /if \(!modelsReturnRoute\.value && isProviderConnectionsRoute\.value\) modelsReturnRoute\.value = MODEL_PROVIDER_CONNECTIONS_ROUTE/)
+  assert.match(settings, /Need another provider\? <button[^>]*@click="startProviderDetour"/)
+  assert.match(settings, /No provider connections are saved yet\.[\s\S]*@click="startProviderDetour"/)
+  assert.match(settings, /This model uses a legacy direct credential\. Select a saved provider connection to migrate it/)
+  assert.match(settings, /No provider connections are saved yet\.[\s\S]*@click="startProviderDetour"/)
+  assert.match(settings, /providerDetourActive \? 'Use provider' : 'Add model'/)
+  assert.match(app, /@continue-model-with-provider="continueModelWithProvider"/)
+})
+
+test('keeps the provider detour link visible beneath an existing model binding selection', async () => {
+  const html = await render({
+    creationRoute: true,
+    editorOpen: true,
+    connectionRef: savedConnection.name,
+    connections: [savedConnection],
+  })
+  assert.match(html, /Saved provider connection/)
+  assert.match(html, /Need another provider\?/)
+  assert.match(html, />Connect provider<\/button>/)
+})
+
+test('keeps Provider connections separate and defines a progressive provider-first connect form', async () => {
+  const html = await render({
+    providerConnectionsRoute: true,
+  })
+
+  assert.match(html, /aria-label="Provider connections"/)
+  assert.match(html, /Connect provider/)
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const start = source.indexOf('<template v-else-if="providerConnectionsRoute && connectionEditorOpen">')
+  const end = source.indexOf('\n    <template v-else>', start)
+  const form = source.slice(start, end)
+  assert.match(form, /<h1[^>]*tabindex="-1"/)
+  assert.match(form, /id="model-provider"/)
+  assert.match(form, /id="model-credential"/)
+  assert.doesNotMatch(form.slice(0, form.indexOf('connectionStage === \'verify\'')), /id="model-id"/)
+  assert.match(form.slice(0, form.indexOf('connectionStage === \'verify\'')), /Connection name \(optional\)/)
+  assert.match(form, /Discovery checks provider access without sending a model request or adding a model binding/)
+  assert.match(form, /No model request will be sent/)
+  assert.match(form, /connectionVerificationWillCallModel \? 'Verify sends the selected model request/)
+  assert.match(form, /<ArrowLeft class="h-3\.5 w-3\.5"/)
+})
+
+test('labels connections awaiting explicit discovery as not verified, not failed', async () => {
+  const html = await render({
+    providerConnectionsRoute: true,
+    connections: [{
+      ...savedConnection,
+      ready: false,
+      reachable: undefined,
+      lastProbeError: 'run authorized model discovery to verify this endpoint',
+      conditions: [{ type: 'Reachable', status: 'Unknown', reason: 'ExplicitDiscoveryRequired' }],
+    }],
+  })
+
+  assert.match(html, /Not verified/)
+  assert.match(html, /No provider check has been run yet\. Discover models or test a model to verify this connection\./)
+  assert.doesNotMatch(html, />Checking</)
+  assert.doesNotMatch(html, /Needs attention/)
+  assert.doesNotMatch(html, /run authorized model discovery/)
+})
+
+test('offers known provider presets and marks custom endpoints required', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  assert.match(source, /label: 'OpenAI'/)
+  assert.match(source, /label: 'Custom OpenAI-compatible'/)
+  assert.match(source, /label: 'Anthropic'/)
+  assert.match(source, /Google AI Studio \/ Vertex AI/)
+  assert.match(source, /:required="connectionPreset === 'custom'"/)
+  assert.match(source, /:aria-required="connectionPreset === 'custom'"/)
+})
+
+test('new provider connections get friendly preset labels while edits can clear their label', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const providerOptions = ast.statements.find(node => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some(declaration => ts.isIdentifier(declaration.name) && declaration.name.text === 'providerOptions'))
+  const providerPresetFor = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'providerPresetFor')
+  const displayNameForSave = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'connectionDisplayNameForSave')
+  assert.ok(providerOptions)
+  assert.ok(providerPresetFor)
+  assert.ok(displayNameForSave)
+  const declarations = [providerOptions.getText(ast), providerPresetFor.getText(ast), displayNameForSave.getText(ast)].join('\n')
+  const { outputText } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const displayName = new Function(`${outputText}; return connectionDisplayNameForSave`)()
+  const anthropic = { name: 'anthropic', provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1' }
+
+  assert.equal(displayName('', false, 'anthropic', []), 'Anthropic')
+  assert.equal(displayName('', false, 'anthropic', [{ ...anthropic, displayName: 'Anthropic' }]), 'Anthropic 2')
+  assert.equal(displayName('', false, 'openai', [savedConnection]), 'OpenAI')
+  assert.equal(displayName('', false, 'openai', [{ ...savedConnection, displayName: 'OpenAI 2' }]), 'OpenAI')
+  assert.equal(displayName('', false, 'openai', [
+    { ...savedConnection, displayName: 'OPENAI' },
+    { ...savedConnection, displayName: 'openai 2' },
+    { ...anthropic, displayName: 'OpenAI 3' },
+  ]), 'OpenAI 4')
+  assert.equal(displayName('', false, 'custom', [{ ...savedConnection, displayName: 'Custom OpenAI-compatible', baseURL: 'https://api.example.test/v1' }]), 'Custom OpenAI-compatible 2')
+  assert.equal(displayName('  Team key  ', false, 'openai', []), 'Team key')
+  assert.equal(displayName('', true, 'anthropic', []), '')
+
+  assert.equal((source.match(/displayName: connectionDisplayNameForSave\(/g) || []).length, 2,
+    'automatic discovery-save and manual verify-save both apply the fallback')
+  assert.match(source, /\.\.\.\(saved \? \{ name: saved\.name \} : \{\}\)/,
+    'new connections continue to use an opaque backend-generated resource ID')
+})
+
+test('saved provider connections open on cached models with the existing label visible', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = ['providerPresetFor', 'savedConnectionCredentialMode', 'openConnectionEditor']
+  const declarations = names.map(name => {
+    const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, `${name} exists`)
+    if (name === 'openConnectionEditor') assert.doesNotMatch(declaration.getText(ast), /api\.(?:test|discover)/)
+    return declaration.getText(ast)
+  }).join('\n')
+  const { outputText } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const state = {
+    connectionOriginal: ref(null), connectionSuccess: ref(null), connectionPreset: ref('openai'),
+    connectionProvider: ref(''), connectionBaseURL: ref(''), connectionCredentialMode: ref('api-key'),
+    connectionWorkspaceID: ref(''), connectionAPIKey: ref(''), connectionDisplayName: ref(''),
+    connectionVerificationModel: ref(''), connectionDiscoveredModels: ref([]),
+    connectionDiscoverySucceeded: ref(false), connectionStage: ref('details'), connectionEditorOpen: ref(false),
+  }
+  const openConnectionEditor = new Function('ref', 'invalidateConnectionProbe', ...Object.keys(state),
+    `${outputText}; return openConnectionEditor`)(ref, () => {}, ...Object.values(state))
+  openConnectionEditor(savedConnection)
+
+  assert.equal(state.connectionStage.value, 'verify')
+  assert.equal(state.connectionDisplayName.value, savedConnection.displayName)
+  assert.deepEqual(state.connectionDiscoveredModels.value, savedConnection.models)
+  assert.equal(state.connectionDiscoverySucceeded.value, false,
+    'cached models populate the selector without being treated as a fresh discovery check')
+  assert.match(source, /connectionStage\.value = saved \? 'verify' : 'details'/)
+  assert.match(source, /<label for="provider-connection-name"[^>]*>Connection name \(optional\)/)
+})
+
+test('saved connection label-only edits use a guarded metadata save without provider probes', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const nameOnlyDeclaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'isConnectionNameOnlyEdit')
+  const saveDeclaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'saveProviderConnection')
+  assert.ok(nameOnlyDeclaration)
+  assert.ok(saveDeclaration)
+  const helperSource = [
+    ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'savedConnectionCredentialMode')?.getText(ast),
+    nameOnlyDeclaration.getText(ast),
+  ].join('\n')
+  const { outputText: helperOutput } = ts.transpileModule(helperSource, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const isNameOnlyEdit = new Function(`${helperOutput}; return isConnectionNameOnlyEdit`)()
+  const vertexConnection = {
+    ...savedConnection,
+    name: 'vertex-main',
+    displayName: 'Vertex main',
+    provider: 'google-ai-studio',
+    baseURL: 'not-a-valid-url',
+    credentialMode: 'service-account-json',
+    anthropicWorkspaceID: '',
+  }
+  assert.equal(isNameOnlyEdit(vertexConnection, vertexConnection.provider, vertexConnection.baseURL, '', 'service-account-json', '', 'Vertex renamed', ''), true)
+  assert.equal(isNameOnlyEdit(vertexConnection, vertexConnection.provider, vertexConnection.baseURL, '', 'service-account-json', '', 'Vertex main', ''), false)
+  assert.equal(isNameOnlyEdit(vertexConnection, vertexConnection.provider, 'https://changed.example/v1', '', 'service-account-json', '', 'Vertex renamed', ''), false)
+  assert.equal(isNameOnlyEdit(vertexConnection, vertexConnection.provider, vertexConnection.baseURL, '', 'service-account-json', 'new-key', 'Vertex renamed', ''), false)
+  assert.equal(isNameOnlyEdit(vertexConnection, vertexConnection.provider, vertexConnection.baseURL, '', 'service-account-json', '', 'Vertex renamed', 'gemini-2.5-pro'), false)
+
+  const { outputText: saveOutput } = ts.transpileModule(saveDeclaration.getText(ast), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  })
+  const events = []
+  const saveState = new Function('ref', 'saved', 'events', `
+    let connectionRequestSerial = 0
+    const props = { ctx: { token: 'test-token' } }
+    const connectionError = ref('')
+    const connectionNotice = ref('')
+    const connectionOriginal = ref(saved)
+    const activeConnectionBindings = { value: () => [] }
+    const connectionAPIKey = ref('')
+    const connectionNameOnlyEdit = ref(true)
+    const connectionHasConfigChanges = ref(false)
+    const connectionStage = ref('verify')
+    const connectionBaseURLError = ref('The saved endpoint is currently invalid.')
+    const connectionHasReusableKey = ref(false)
+    const connectionCredentialMode = ref('service-account-json')
+    const connectionVerificationModel = ref('')
+    const connectionDiscoverySucceeded = ref(false)
+    const connectionDraftFingerprint = ref('draft-1')
+    const connectionBusy = ref(false)
+    const connectionVerified = ref(false)
+    const connectionVerifiedFingerprint = ref('')
+    const connectionDisplayName = ref('Vertex renamed')
+    const connectionPreset = ref('google')
+    const connectionRows = ref([saved])
+    const connectionProvider = ref(saved.provider)
+    const connectionEndpoint = ref(saved.baseURL)
+    const connectionWorkspaceID = ref('')
+    const verifyConnectionDraft = async () => { events.push(['test']) }
+    const connectionDisplayNameForSave = value => value.trim()
+    const verifyConnectionModels = async (...args) => {
+      const [bindings, optionalModel, verifyOptional, verify] = args
+      events.push(['verify-models', bindings, optionalModel, verifyOptional])
+      const checked = []
+      for (const binding of bindings) { await verify(binding.model, binding.reasoningEffort); checked.push(binding.model) }
+      if (optionalModel && verifyOptional) { await verify(optionalModel); checked.push(optionalModel) }
+      return checked.length
+    }
+    const api = {
+      discoverLLMModels: async () => { events.push(['discover']); return { models: [] } },
+      testLLMConnection: async () => { events.push(['test']); return { ok: true } },
+      saveModelProviderConnection: async (_ctx, body, expected) => {
+        events.push(['save', body, expected])
+        return { ...saved, displayName: body.displayName }
+      },
+    }
+    const acceptSavedConnection = (connection, fingerprint) => events.push(['accepted', connection, fingerprint])
+    ${saveOutput}
+    return { saveProviderConnection, connectionError, connectionBusy }
+  `)(ref, vertexConnection, events)
+
+  await saveState.saveProviderConnection()
+  assert.deepEqual(events.map(event => event[0]), ['verify-models', 'save', 'accepted'])
+  assert.deepEqual(events[0].slice(1), [[], '', true], 'no bound or optional model is tested for a label-only edit')
+  const saveEvent = events[1]
+  assert.equal(saveEvent[1].name, vertexConnection.name)
+  assert.equal(saveEvent[1].displayName, 'Vertex renamed')
+  assert.equal(saveEvent[1].baseURL, vertexConnection.baseURL, 'metadata-only save preserves the exact saved endpoint')
+  assert.equal('apiKey' in saveEvent[1], false)
+  assert.equal(saveEvent[2].uid, vertexConnection.uid, 'the metadata write retains the captured connection UID')
+  assert.equal(saveEvent[2].generation, vertexConnection.generation, 'the metadata write retains the captured spec generation')
+  assert.equal(saveState.connectionError.value, '')
+
+  assert.match(source, /connectionNameOnlyEdit\.value\s*\|\|\s*\(!connectionBaseURLError\.value/)
+  assert.match(source, /if \(connectionBaseURLError\.value && !nameOnlyEdit\)/)
+})
+
+test('fresh discovery replaces cached connection models, including an empty result', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some(item => item.name.getText(ast) === 'selectedModelRows'))
+  assert.ok(declaration)
+  const props = { discoveryComplete: false, discoveredModels: [] }
+  const selectedConnection = { value: { models: [{ id: 'cached' }] } }
+  const rows = new Function('props', 'selectedConnection', 'computed', `${declaration.getText(ast)}; return selectedModelRows`)(props, selectedConnection, fn => ({ get value() { return fn() } }))
+  assert.deepEqual(rows.value, [{ id: 'cached' }])
+  props.discoveredModels = [{ id: 'fresh' }]
+  props.discoveryComplete = true
+  assert.deepEqual(rows.value, [{ id: 'fresh' }])
+  props.discoveredModels = []
+  assert.deepEqual(rows.value, [])
+  props.discoveryComplete = false
+  assert.deepEqual(rows.value, [{ id: 'cached' }])
 })
 
 test('renders discovered suggestions while preserving manual model entry', async () => {
@@ -302,12 +912,12 @@ test('renders discovered suggestions while preserving manual model entry', async
     ],
   })
 
-  assert.match(html, /Recommended for App Studio/)
   assert.match(html, /id="model-id"/)
   assert.match(html, /aria-haspopup="listbox"/)
   assert.doesNotMatch(html, /<datalist/)
-  assert.match(html, /search or enter an ID/)
-  assert.match(html, /3 models found; 1 marked unavailable for chat/)
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  assert.match(source, /:models="selectedModelRows"/)
+  assert.match(source, /Choose a discovered model or enter its exact ID/)
 })
 
 test('keeps discovery failure separate from manual model validation', async () => {
@@ -325,21 +935,23 @@ test('editing replaces the collection with one focused form', async () => {
   const html = await render({
     editorOpen: true,
     editingModelID: 'gpt-high',
+    connectionRef: savedConnection.name,
+    connections: [savedConnection],
     name: 'GPT High',
+    requireConnectionTest: true,
     settings: {
       provider: 'openai-compatible',
       baseURL: 'https://api.openai.com/v1',
       model: 'gpt-5.4',
       configured: true,
       defaultModelID: 'gpt-high',
-      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
+      models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', connectionRef: savedConnection.name, configured: true, default: true }],
     },
   })
 
-  assert.match(html, /Edit model/)
-  assert.match(html, /aria-label="Model configuration form"/)
-  assert.match(html, /class="k-create-surface k-model-form"/)
-  assert.match(html, /Save changes/)
+  assert.match(html, /aria-label="Model binding form"/)
+  assert.match(html, /class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect"/)
+  assert.match(html, /Verify &amp; save/)
   assert.doesNotMatch(html, /aria-label="Model GPT High"/)
 })
 
@@ -348,39 +960,45 @@ test('Models-route editing uses the wide full-page form without an inner editor 
     routePage: true,
     editorOpen: true,
     editingModelID: 'gpt-high',
+    connectionRef: savedConnection.name,
+    connections: [savedConnection],
     name: 'GPT High',
   })
 
-  assert.match(html, /class="k-create-surface k-model-form k-create-surface--wide"/)
-  assert.match(html, /aria-label="Model configuration form"/)
+  assert.match(html, /class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect"/)
+  assert.match(html, /aria-label="Model binding form"/)
   assert.doesNotMatch(html, /<h4[^>]*>Edit model<\/h4>/)
 })
 
 test('associates field guidance and validation errors with their controls', async () => {
   const html = await render({
     editorOpen: true,
+    connectionRef: savedConnection.name,
+    connections: [savedConnection],
+    editingModelID: 'gpt-high',
+    model: 'gpt-5.4',
     nameError: 'Enter a display name.',
     modelError: 'Enter the provider’s exact model ID.',
-    credentialError: 'Enter a credential to connect this model.',
   })
 
   assert.match(html, /id="model-display-name"[^>]*aria-invalid="true"[^>]*aria-describedby="model-display-name-error"/)
-  assert.match(html, /id="model-id"[^>]*aria-invalid="true"[^>]*aria-describedby="model-id-error"/)
-  assert.match(html, /id="model-credential"[^>]*aria-invalid="true"[^>]*aria-describedby="model-credential-help"/)
-  assert.match(html, /id="model-display-name"[^>]*border-danger/)
-  assert.match(html, /id="model-id"[^>]*border-danger/)
-  assert.match(html, /Enter a credential to connect this model\./)
+  assert.match(html, /id="model-id"[^>]*aria-invalid="true"[^>]*aria-describedby="[^"]*model-id-error[^"]*binding-model-help"/)
+  assert.match(html, /id="model-display-name"[^>]*aria-describedby="model-display-name-error"/)
+  assert.match(html, /id="model-id"[^>]*aria-invalid="true"/)
+  assert.match(html, /Enter the provider’s exact model ID\./)
 })
 
 test('announces the active model mutation and disables competing card actions', async () => {
   const editing = await render({
     editorOpen: true,
     editingModelID: 'gpt-high',
+    connectionRef: savedConnection.name,
+    connections: [savedConnection],
     name: 'GPT High',
     saving: true,
   })
   assert.match(editing, /aria-busy="true"/)
-  assert.match(editing, /Saving changes…/)
+  assert.match(editing, /Saving…/)
 
   const collection = await render({
     saving: true,
@@ -396,21 +1014,130 @@ test('announces the active model mutation and disables competing card actions', 
   assert.match(collection, /<button type="button"[^>]*disabled[^>]*>\s*<svg[^>]*>[\s\S]*?<\/svg> Edit/)
 })
 
-test('first-time setup requires a verified model response before save and finish', async () => {
-  const html = await render({ creationRoute: true, name: 'OpenAI', apiKey: 'test-key', requireConnectionTest: true })
-  assert.match(html, /Test connection/)
-  assert.match(html, /Connect model/)
-  assert.match(html, /<button[^>]*class="k-btn k-btn--primary"[^>]*disabled[^>]*>[\s\S]*Connect model/)
+test('model binding combines verification and save in one primary action', async () => {
+  const html = await render({ creationRoute: true, name: '', model: 'gpt-5.4', connectionRef: savedConnection.name, connections: [savedConnection] })
+  assert.match(html, /Verify &amp; connect/)
+  assert.doesNotMatch(html, />Test connection<\/button>/)
+  assert.match(html, /Display name \(optional\)/)
+})
 
-  const verified = await render({
+test('model binding verification reads the selected connection fingerprint and uses the guarded draft probe', async () => {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'testLLMConnection')
+  assert.ok(declaration)
+  const source = declaration.getText(ast)
+  assert.match(source, /api\.getModelProviderConnection\(props\.ctx, llmBindingConnectionRef\.value\)/)
+  assert.match(source, /api\.testLLMConnection\(props\.ctx,[\s\S]*existingConnectionID: connectionInfo\?\.name[\s\S]*connectionFingerprint: connectionInfo\?\.connectionFingerprint/)
+  assert.doesNotMatch(source, /api\.testModelProviderConnection/)
+})
+
+test('a display-name-only edit stays saveable without provider connection metadata', async () => {
+  const stale = { ...savedConnection, observedGeneration: 0, connectionFingerprint: undefined, secretUID: undefined, secretResourceVersion: undefined }
+  const html = await render({
     creationRoute: true,
-    name: 'OpenAI',
-    apiKey: 'test-key',
-    requireConnectionTest: true,
-    connectionTested: true,
-    testStatus: 'Connection verified. The model responded successfully.',
+    editingModelID: 'main',
+    name: 'Main model renamed',
+    model: 'gpt-5.4',
+    connectionRef: stale.name,
+    connections: [stale],
+    nameOnlyEdit: true,
+    requireConnectionTest: false,
   })
-  assert.match(verified, /Connection verified\. The model responded successfully\./)
+  assert.match(html, /<button type="submit" class="k-btn k-btn--primary"[^>]*>Save changes<\/button>/)
+  assert.doesNotMatch(html, /Confirming the saved provider key version/)
+})
+
+test('connection edits verify every dependent model and the optional model before save', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'verifyConnectionModels')
+  const saveDeclaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'saveProviderConnection')
+  assert.ok(declaration)
+  assert.ok(saveDeclaration)
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const verifyModels = new Function(`${outputText}; return verifyConnectionModels`)()
+  const calls = []
+  const count = await verifyModels(
+    [{ model: 'claude-sonnet-4-5', reasoningEffort: 'medium' }, { model: 'gpt-5.4' }],
+    'gpt-5.4',
+    true,
+    async (model, effort) => { calls.push([model, effort]) },
+    () => true,
+  )
+  assert.deepEqual(calls, [['claude-sonnet-4-5', 'medium'], ['gpt-5.4', undefined]])
+  assert.equal(count, 2, 'an identical optional model is not tested twice')
+
+  const attempted = []
+  await assert.rejects(verifyModels(
+    [{ model: 'claude-sonnet-4-5' }],
+    'rejected-optional-model',
+    true,
+    async model => {
+      attempted.push(model)
+      if (model === 'rejected-optional-model') throw new Error('optional model rejected')
+    },
+    () => true,
+  ), /optional model rejected/)
+  assert.deepEqual(attempted, ['claude-sonnet-4-5', 'rejected-optional-model'])
+  assert.ok(saveDeclaration.getText(ast).indexOf('await verifyConnectionModels(') < saveDeclaration.getText(ast).indexOf('api.saveModelProviderConnection('))
+})
+
+test('provider connection edits explicitly send an empty Anthropic workspace when clearing it', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'draftProbeBody')
+  assert.ok(declaration)
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const buildBody = new Function('connectionOriginal', 'connectionHasReusableKey', 'connectionProvider', 'connectionEndpoint', 'connectionCredentialMode', 'connectionWorkspaceID', 'connectionAPIKey', `${outputText}; return draftProbeBody`)(
+    { value: null }, { value: false }, { value: 'anthropic' }, { value: 'https://api.anthropic.com/v1' },
+    { value: 'api-key' }, { value: '' }, { value: 'sk-test' },
+  )
+  assert.equal(buildBody().anthropicWorkspaceID, '')
+  assert.match(source, /anthropicWorkspaceID: nameOnlyEdit && saved \? saved\.anthropicWorkspaceID \|\| '' : connectionWorkspaceID\.value\.trim\(\)/)
+})
+
+test('waits for the saved key version and lets the binding action enable when status catches up', async () => {
+  const stale = { ...savedConnection, observedGeneration: 0, connectionFingerprint: undefined, secretUID: undefined, secretResourceVersion: undefined }
+  const waiting = await render({ creationRoute: true, name: '', model: 'gpt-5.4', connectionRef: stale.name, connections: [stale], connectionStatusChecking: true })
+  assert.match(waiting, /Confirming the saved provider key version/)
+  assert.match(waiting, /<button type="submit" class="k-btn k-btn--primary" disabled[^>]*>Verify &amp; connect/)
+
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const names = ['isLLMConnectionSnapshotReady', 'llmConnectionStatusPollIsCurrent', 'pollLLMConnectionStatus']
+  const declarations = names.map(name => {
+    const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, `${name} exists`)
+    return declaration.getText(ast)
+  }).join('\n')
+  const { outputText: pollSource } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const poll = new Function('ref', 'props', 'routePath', 'appContextFingerprint', 'llmBindingConnectionRef', 'llmEditorOpen', 'isCreateModelRoute', 'llmConnections', 'llmConnectionStatusPollSerial', 'llmConnectionStatusChecking', 'llmConnectionStatusTimedOutFor', 'loadModelProviderConnections', `${pollSource}; return pollLLMConnectionStatus`)
+  const ready = { ...savedConnection, observedGeneration: savedConnection.generation }
+  const staleStatus = { ...savedConnection, observedGeneration: 0, connectionFingerprint: undefined, secretUID: undefined, secretResourceVersion: undefined }
+  const llmConnections = ref([staleStatus])
+  let reads = 0
+  const pollStatus = poll(
+    ref,
+    { ctx: { token: 'token' } },
+    { value: 'create/model' },
+    () => 'context-fingerprint',
+    { value: savedConnection.name },
+    { value: true },
+    { value: false },
+    llmConnections,
+    7,
+    ref(false),
+    ref(''),
+    async () => { reads += 1; llmConnections.value = [reads < 2 ? staleStatus : ready] },
+  )
+  await pollStatus(savedConnection.name, 'create/model', 'context-fingerprint', 7)
+  assert.equal(reads, 2, 'retries after the first stale list read')
+  assert.equal(llmConnections.value[0].connectionFingerprint, 'fingerprint')
 })
 
 test('App Studio owns save state while the extracted surface owns presentation', async () => {
@@ -418,13 +1145,14 @@ test('App Studio owns save state while the extracted surface owns presentation',
 
   assert.match(app, /const CREATE_MODEL_ROUTE = 'create\/model'/)
   assert.match(app, /const isCreateModelRoute = computed\(\(\) => routePath\.value === CREATE_MODEL_ROUTE\)/)
-  assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && llmEditorOpen\.value\)\)/)
+  assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && !isModelUsageRoute\.value && llmEditorOpen\.value\)\)/)
   assert.match(app, /const routePath = computed\(\(\) => \(props\.ctx\?\.subPath \?\? ''\)\.split\('\/'\)\.filter\(Boolean\)\.join\('\/'\)\)/)
-  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
+  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isProviderConnectionsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
   assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
-  assert.match(app, /<ModelsSettings[\s\S]*@save="saveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
-  assert.match(app, /function selectLLMProvider[\s\S]*llmProviderSelection[\s\S]*llmProviderPreset\.value = preset/)
-  assert.match(app, /async function discoverLLMModels[\s\S]*api\.discoverLLMModels[\s\S]*existingModelID/)
+  assert.match(app, /<ModelsSettings[\s\S]*@save="verifyAndSaveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
+  assert.doesNotMatch(app, /llmApiKey|selectLLMProvider|updateLLMBaseURL|updateLLMAPIKey/)
+  assert.match(app, /async function discoverLLMModels[\s\S]*api\.discoverModelProviderConnection/)
+  assert.doesNotMatch(app, /api\.discoverLLMModels\(props\.ctx/)
   assert.match(app, /async function saveLLMSettings[\s\S]*api\.patchLLMModel[\s\S]*api\.createLLMModel/)
   assert.match(app, /async function deleteLLMModel[\s\S]*api\.deleteLLMModel/)
   assert.match(app, /catch \(e\)[\s\S]*llmActionError\.value = e instanceof Error/)
@@ -495,7 +1223,7 @@ test('guards delayed model mutations against context, route, and newer mutation 
 
 test('uses the stored project-creation destination and Models fallback for route-owned creation', async () => {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
-  assert.match(app, /modelsReturnRoute\.value === CREATE_PROJECT_ROUTE \? CREATE_PROJECT_ROUTE : MODELS_ROUTE/)
+  assert.match(app, /modelsReturnRoute\.value === CREATE_PROJECT_ROUTE \? CREATE_PROJECT_ROUTE : modelsReturnRoute\.value === MODEL_PROVIDER_CONNECTIONS_ROUTE \? MODEL_PROVIDER_CONNECTIONS_ROUTE : MODELS_ROUTE/)
   assert.match(app, /function openNewLLMModelEditor\(\)[\s\S]*if \(!modelsReturnRoute\.value && isCreateRoute\.value\) modelsReturnRoute\.value = CREATE_PROJECT_ROUTE/)
 
   const cancelStart = app.indexOf('async function cancelLLMEditor')
@@ -603,8 +1331,252 @@ test('restores the saved list layout with ResourceTable actions and model states
 })
 
 test('offers all Agents chat provider paths and keeps Google AI Studio', async () => {
-  const html = await render({ editorOpen: true })
-  for (const label of ['OpenAI', 'Anthropic (Claude, OpenAI-compat)', 'OpenRouter', 'Custom OpenAI-compatible', 'Google AI Studio']) {
+  const html = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  for (const label of ['OpenAI', 'Anthropic', 'OpenRouter', 'Custom OpenAI-compatible', 'Google AI Studio / Vertex AI']) {
     assert.ok(html.includes(label), `missing provider option: ${label}`)
+  }
+})
+
+test('provider key activation rejects insufficient revision capacity before changing the active spec', async () => {
+  const registry = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('llmRegistry.ts', registry, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const compile = (name, dependencies) => {
+    const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    assert.ok(declaration, name)
+    const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+    return new Function(...Object.keys(dependencies), `${outputText.replace(/^export /gm, '')}; return ${name}`)(...Object.values(dependencies))
+  }
+  let models = []
+  const capacity = compile('assertConnectionRolloverCapacity', {
+    readStudio: async () => ({ spec: { llm: { models } } }), MAX_REVISIONS: 200, LLMRegistryError: Error,
+  })
+  const history = count => Array.from({ length: count }, (_, index) => ({ id: `old-${index}`, archived: true }))
+  models = [...history(199), { id: 'active', connectionRef: 'primary' }]
+  await assert.rejects(capacity({}, 'primary'), /no room/)
+  models = [...history(198), { id: 'active', connectionRef: 'primary' }]
+  await capacity({}, 'primary')
+  models = [...history(197), { id: 'a', connectionRef: 'primary' }, { id: 'b', connectionRef: 'primary' }]
+  await assert.rejects(capacity({}, 'primary'), /no room/)
+  models = history(200)
+  await capacity({}, 'unused')
+
+  const pending = 'ai.railgrid.ai/pending-key-secret'
+  const spec = { provider: 'openai-compatible', baseURL: 'https://provider.example/v1', secretRef: { name: 'old-key' } }
+  const existing = { metadata: { name: 'primary', uid: 'uid', resourceVersion: '1', annotations: { [pending]: 'new-key' } }, spec }
+  let patches = 0
+  const client = { get: async () => existing, patch: async () => { patches++; throw new Error('must not activate') } }
+  const activate = compile('activateConnectionSecret', {
+    MODEL_PROVIDER_CONNECTION_RESOURCE: {}, PENDING_SECRET_ANNOTATION: pending, LLMRegistryError: Error,
+    sameJSONValue: (a, b) => JSON.stringify(a) === JSON.stringify(b), assertConnectionRolloverCapacity: capacity,
+  })
+  models = [...history(199), { id: 'active', connectionRef: 'primary' }]
+  await assert.rejects(activate(client, 'primary', 'uid', spec, { ...spec, secretRef: { name: 'new-key' } }, { id: 'new', name: 'new-key' }), /no room/)
+  assert.equal(patches, 0, 'a registry that fills during key staging must not activate the replacement')
+
+  let reservations = 0
+  let createdKeys = 0
+  const save = compile('saveModelProviderConnection', {
+    kube: () => client, MODEL_PROVIDER_CONNECTION_RESOURCE: {}, LLMRegistryError: Error,
+    expectedConnectionMatchesLatest: () => true, metadataDisplayNamePatch: () => undefined,
+    assertConnectionRolloverCapacity: capacity,
+    newProviderConnectionSecret: () => { createdKeys++; throw new Error('must not create') },
+    reserveConnectionKey: () => { reservations++; throw new Error('must not reserve') },
+  })
+  await assert.rejects(save(null, { name: 'primary', provider: spec.provider, baseURL: spec.baseURL, apiKey: 'replacement-key' }, {}), /no room/)
+  assert.equal(createdKeys, 0)
+  assert.equal(reservations, 0, 'the initial capacity check must leave the existing connection untouched')
+})
+
+test('pending activation uses warning copy and does not offer an unadmitted binding', async () => {
+  const html = await render({ routePage: true, providerConnectionsRoute: true, connections: [{ ...savedConnection, activationPending: true, ready: false }] })
+  assert.match(html, /Changes pending/)
+  const source = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  assert.match(source, /active\?\.secretRef\?\.name === secret\.name/)
+  assert.match(source, /condition\.reason === 'RevisionHistoryFull'/)
+})
+
+test('a capacity race saves pending desired state without admitting its key', async () => {
+  const source = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('registry.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const compile = (name, deps) => {
+    const fn = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
+    const { outputText } = ts.transpileModule(fn.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+    return new Function(...Object.keys(deps), `${outputText}; return ${name}`)(...Object.values(deps))
+  }
+  const pending = 'ai.railgrid.ai/pending-key-secret', generated = 'ai.railgrid.ai/generated-secret-id'
+  const active = { connectionRef: 'primary', connectionUID: 'uid', connectionFingerprint: 'old-fp', provider: 'openai-compatible', baseURL: 'https://old.example/v1', secretRef: { name: 'old-key' } }
+  const oldSpec = { provider: active.provider, baseURL: active.baseURL, secretRef: active.secretRef }
+  const desired = { ...oldSpec, baseURL: 'https://new.example/v1', secretRef: { name: 'new-key' } }
+  const models = [...Array.from({ length: 198 }, () => ({ archived: true })), { id: 'fast', connectionRef: 'primary' }]
+  let current = { metadata: { name: 'primary', uid: 'uid', resourceVersion: '1', generation: 1, annotations: { [pending]: 'new-key' } }, spec: oldSpec }
+  const capacity = compile('assertConnectionRolloverCapacity', { readStudio: async () => ({ spec: { llm: { models } } }), MAX_REVISIONS: 200, LLMRegistryError: Error })
+  const client = { get: async () => current, patch: async () => {
+    models.push({ archived: true }) // a different Studio edit fills history
+    current = { metadata: { name: 'primary', uid: 'uid', resourceVersion: '2', generation: 2, annotations: { [generated]: 'new-id' } }, spec: desired,
+      status: { observedGeneration: 2, activeSnapshot: active, connectionFingerprint: 'new-fp', conditions: [{ type: 'BindingsReady', status: 'False', reason: 'RevisionHistoryFull' }] } }
+    return current
+  } }
+  const activate = compile('activateConnectionSecret', { MODEL_PROVIDER_CONNECTION_RESOURCE: {}, PENDING_SECRET_ANNOTATION: pending, GENERATED_SECRET_ANNOTATION: generated, CONNECTION_DISPLAY_NAME_ANNOTATION: 'display-name', LLMRegistryError: Error, sameJSONValue: (a, b) => JSON.stringify(a) === JSON.stringify(b), assertConnectionRolloverCapacity: capacity })
+  const saved = await activate(client, 'primary', 'uid', oldSpec, desired, { id: 'new-id', name: 'new-key' })
+  assert.equal(models.length, 200)
+  assert.equal(saved.spec.secretRef.name, 'new-key')
+  assert.equal(saved.status.activeSnapshot.secretRef.name, 'old-key')
+  const readSource = await readFile(new URL('./llmRegistryRead.ts', import.meta.url), 'utf8')
+  const readAST = ts.createSourceFile('read.ts', readSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const fn = readAST.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'connectionView')
+  const js = ts.transpileModule(fn.getText(readAST), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText.replace(/^export /gm, '')
+  const view = new Function('GENERATED_SECRET_ANNOTATION', 'CONNECTION_DISPLAY_NAME_ANNOTATION', `${js}; return connectionView`)(generated, 'display-name')
+  assert.equal(view(saved).activationPending, true)
+  const normalized = view({ ...saved, spec: { ...oldSpec, secretRef: { name: ' old-key ' } }, status: { ...saved.status, activeSnapshot: active, connectionFingerprint: active.connectionFingerprint } })
+  assert.equal(normalized.activationPending, false, 'Secret references use the same normalization as backend admission')
+  assert.equal(normalized.secretName, 'old-key')
+
+  const settingsFunction = readAST.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'toSettings')
+  const settingsJS = ts.transpileModule(settingsFunction.getText(readAST), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText.replace(/^export /gm, '')
+  const toSettings = new Function('lookupCatalog', `${settingsJS}; return toSettings`)(() => undefined)
+  const settings = toSettings({ metadata: { name: 'studio' }, spec: { llm: { models: [{ id: 'fast', revisionID: 'old-revision', name: 'Fast', model: 'fixture-fast', provider: desired.provider, baseURL: desired.baseURL, connectionRef: 'primary', connectionSnapshot: active }] } } }, [view(saved)])
+  assert.equal(settings.models[0].baseURL, active.baseURL, 'model cards describe the admitted snapshot, including in-place migrated rows')
+
+})
+
+
+test('discovery failures keep credentials in place unless the endpoint is unsupported', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'continueConnection')
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const { ProjectAPIRequestError } = await vite.ssrLoadModule('/src/api.ts')
+  for (const reason of ['BadGateway', 'Forbidden', 'DiscoveryUnsupported']) {
+    let focused = false
+    const state = {
+      connectionError: ref(''), connectionNotice: ref(''), connectionCanContinue: ref(true),
+      connectionCredentialMode: ref('api-key'), connectionStage: ref('details'),
+      connectionRequestSerial: 0, connectionDraftFingerprint: ref('draft'), connectionBusy: ref(false),
+      connectionDiscoverySucceeded: ref(false), connectionDiscoveredModels: ref([]),
+      connectionAPIKey: ref('typed-key'), props: { ctx: null }, draftProbeBody: () => ({}),
+      connectionCredentialRef: ref({ focus: () => { focused = true } }),
+    }
+    const api = { discoverLLMModels: async () => { throw new ProjectAPIRequestError('Discovery failed', 502, reason) } }
+    const run = new Function('state', 'api', 'ProjectAPIRequestError', 'nextTick', `with (state) { ${outputText}; return continueConnection }`)(state, api, ProjectAPIRequestError, callback => callback())
+    await run()
+    assert.equal(state.connectionStage.value, reason === 'DiscoveryUnsupported' ? 'verify' : 'details')
+    assert.equal(focused, reason !== 'DiscoveryUnsupported')
+    assert.equal(state.connectionAPIKey.value, 'typed-key')
+    assert.equal(state.connectionBusy.value, false)
+    assert.equal(state.connectionDiscoverySucceeded.value, false)
+    assert.equal(state.connectionError.value, reason === 'DiscoveryUnsupported' ? '' : 'Discovery failed')
+  }
+})
+
+async function connectionWatchSource(marker) {
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const watcher = ast.statements.find(n => ts.isExpressionStatement(n) && n.getText(ast).startsWith('watch(') && n.getText(ast).includes(marker))
+  const functions = ast.statements.filter(n => ts.isFunctionDeclaration(n) && ['isLLMConnectionSnapshotReady', 'llmConnectionStatusPollIsCurrent', 'pollLLMConnectionStatus'].includes(n.name?.text))
+  const compile = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  return { watcher: compile(watcher.getText(ast)).trim().replace(/;$/, ''), functions: compile(functions.map(n => n.getText(ast)).join('\n')) }
+}
+
+test('identical pending responses reach the poll timeout without restarting', async () => {
+  const source = await connectionWatchSource('llmConnectionStatusPollSerial += 1')
+  const pending = { ...savedConnection, observedGeneration: 0 }
+  let reads = 0
+  const state = {
+    llmEditorOpen: ref(true), isCreateModelRoute: ref(false), llmEditingModelID: ref(null), llmConnectionStatusPollRequested: ref(true), llmNameOnlyEdit: ref(false),
+    llmBindingConnectionRef: ref(pending.name), llmConnections: ref([pending]), routePath: ref('create/model'), props: { ctx: {} }, appContextFingerprint: () => 'workspace',
+    llmConnectionStatusPollSerial: 0, llmConnectionStatusChecking: ref(false), llmConnectionStatusTimedOutFor: ref(''),
+    loadModelProviderConnections: async () => { reads += 1; assert.ok(reads <= 15); state.llmConnections.value = [{ ...pending }]; await nextTick() },
+  }
+  const { stop, tasks } = new Function('state', 'watch', 'setTimeout', `with (state) {
+    ${source.functions}
+    const tasks = []; const runPoll = pollLLMConnectionStatus;
+    pollLLMConnectionStatus = (...args) => { const task = runPoll(...args); tasks.push(task); return task; };
+    const stop = ${source.watcher}; return { stop, tasks };
+  }`)(state, watch, callback => queueMicrotask(callback))
+  try {
+    await tasks[0]
+    assert.equal(tasks.length, 1)
+    assert.equal(reads, 15)
+    assert.equal(state.llmConnectionStatusChecking.value, false)
+    assert.equal(state.llmConnectionStatusTimedOutFor.value, pending.name)
+  } finally { stop() }
+})
+
+test('discovery survives equivalent list refreshes and clears when configuration changes', async () => {
+  const { watcher } = await connectionWatchSource('return [llmBindingConnectionRef.value')
+  const connections = ref([{ ...savedConnection }]), selected = ref(savedConnection.name)
+  let clears = 0
+  const stop = new Function('watch', 'llmConnections', 'llmBindingConnectionRef', 'clearLLMDiscovery', `return ${watcher}`)(watch, connections, selected, () => { clears += 1 })
+  try {
+    for (let i = 0; i < 3; i += 1) { connections.value = [{ ...savedConnection, models: [`observed-${i}`] }]; await nextTick() }
+    assert.equal(clears, 0)
+    connections.value = [{ ...savedConnection, generation: 2 }]; await nextTick(); assert.equal(clears, 1)
+    connections.value = [{ ...savedConnection, generation: 2, secretName: 'rotated-key' }]; await nextTick(); assert.equal(clears, 2)
+    selected.value = 'another-connection'; await nextTick(); assert.equal(clears, 3)
+  } finally { stop() }
+})
+
+test('deleting an acknowledged connection removes its row and saved-success action', async () => {
+  const app = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const rows = ast.statements.find(n => ts.isVariableStatement(n) && n.declarationList.declarations.some(d => d.name.getText(ast) === 'connectionRows'))
+  const watcher = ast.statements.find(n => ts.isExpressionStatement(n) && n.getText(ast).startsWith('watch(() => props.connections,'))
+  const declarations = ts.transpileModule(`${rows.getText(ast)}\nconst stop = ${watcher.getText(ast)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const props = { connections: ref([{ ...savedConnection }]) }
+  const reactiveProps = { get connections() { return props.connections.value } }
+  const success = ref({ ...savedConnection })
+  const computed = fn => ({ get value() { return fn() } })
+  const state = new Function('props', 'connectionSuccess', 'computed', 'watch', `${declarations}; return { rows: connectionRows, stop }`)(reactiveProps, success, computed, watch)
+  try {
+    assert.equal(state.rows.value.length, 1)
+    props.connections.value = [{ ...savedConnection }]
+    await nextTick()
+    assert.ok(success.value, 'successful collection refresh retains the follow-up action')
+    props.connections.value = []
+    await nextTick()
+    assert.deepEqual(state.rows.value, [])
+    assert.equal(success.value, null)
+    props.connections.value = []
+    await nextTick()
+    assert.deepEqual(state.rows.value, [])
+  } finally { state.stop() }
+})
+
+
+test('discovery guidance only appears in the existing-connection editor', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'continueConnection')
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  for (const editing of [false, true]) {
+    const state = {
+      connectionError: ref(''), connectionNotice: ref(''), connectionCanContinue: ref(true),
+      connectionCredentialMode: ref('api-key'), connectionStage: ref('details'),
+      connectionRequestSerial: 0, connectionDraftFingerprint: ref('draft'), connectionBusy: ref(false),
+      connectionDiscoverySucceeded: ref(false), connectionDiscoveredModels: ref([]),
+      connectionOriginal: ref(editing ? savedConnection : null), connectionProvider: ref('openai'),
+      connectionEndpoint: ref('https://api.openai.com/v1'), connectionWorkspaceID: ref(''),
+      connectionDisplayName: ref(''), connectionPreset: ref('openai'), connectionRows: ref([]),
+      connectionAPIKey: ref('typed-key'), props: { ctx: null }, draftProbeBody: () => ({}),
+      connectionDisplayNameForSave: () => 'OpenAI',
+    }
+    let saves = 0
+    const api = {
+      discoverLLMModels: async () => ({ models: [{ id: 'model' }] }),
+      saveModelProviderConnection: async () => { saves += 1; return savedConnection },
+    }
+    const acceptSavedConnection = () => {
+      assert.equal(state.connectionNotice.value, '', 'no inaccessible choice is set before closing the new-connection form')
+    }
+    const run = new Function('state', 'api', 'acceptSavedConnection', `with (state) { ${outputText}; return continueConnection }`)(state, api, acceptSavedConnection)
+    await run()
+    assert.equal(state.connectionError.value, '')
+    assert.equal(saves, editing ? 0 : 1)
+    assert.equal(state.connectionNotice.value, editing ? '1 model found. Choose one to verify it, or save the changes.' : '')
+    assert.equal(state.connectionStage.value, editing ? 'verify' : 'details')
   }
 })

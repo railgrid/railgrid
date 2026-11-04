@@ -383,8 +383,12 @@ test('empty effort is serialized for turn and review, and the first send awaits 
 })
 
 test('model edits persist reasoning in a new revision and archive the previous snapshot', async () => {
-  const registry = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
-  assert.match(registry, /reasoningEffort: model\.reasoningEffort \|\| undefined/)
+  const [registry, reader] = await Promise.all([
+    readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./llmRegistryRead.ts', import.meta.url), 'utf8'),
+  ])
+  assert.match(reader, /reasoningEffort: model\.reasoningEffort \|\| undefined/)
   assert.match(registry, /revisionID: newRevisionID\(\)[\s\S]*reasoningEffort: body\.reasoningEffort === undefined \? current\.reasoningEffort : body\.reasoningEffort \|\| undefined/)
-  assert.match(registry, /models\.push\(\{ \.\.\.current, archived: true \}\)/)
+  assert.match(registry, /models\.push\(\{ \.\.\.archivedCurrent, archived: true \}\)/)
+  assert.match(registry, /const archivedCurrent = current\.connectionRef && !current\.connectionSnapshot[\s\S]*connectionSnapshotFor\(client, current\.connectionRef\)/)
 })

@@ -553,13 +553,36 @@ export interface ProjectRepositoryCommit {
 export interface ProjectLLMModelSettings {
   catalog?: { inputPer1M: number; outputPer1M: number; contextWindow?: number; vision?: boolean; toolCall?: boolean; reasoning?: boolean }
   id: string
+  /** Current Studio model revision; optimistic identity for model editor writes. */
+  revisionID: string
   name: string
+  /** The saved provider account used by this model binding. Older direct entries omit it. */
+  connectionRef?: string
+  connectionSnapshot?: ProjectLLMConnectionSnapshot
+  connectionName?: string
+  connectionFingerprint?: string
   provider: string
   baseURL: string
+  anthropicWorkspaceID?: string
+  credentialMode?: ProjectLLMCredentialMode
   model: string
   reasoningEffort?: string
   configured: boolean
   default?: boolean
+}
+
+export interface ProjectLLMConnectionSnapshot {
+  connectionRef: string
+  connectionUID: string
+  provider: string
+  baseURL: string
+  anthropicWorkspaceID?: string
+  secretRef: { name: string }
+  secretKey: string
+  secretUID: string
+  secretResourceVersion: string
+  connectionFingerprint: string
+  generatedSecretID?: string
 }
 
 export interface ProjectLLMSettings {
@@ -583,6 +606,66 @@ export interface ProjectLLMDiscoveredModel {
 export interface ProjectLLMModelDiscovery {
   models: ProjectLLMDiscoveredModel[]
   source: string
+}
+
+export interface ProjectModelProviderConnectionCondition {
+  type: 'SecretResolved' | 'Reachable' | 'Ready' | string
+  status: 'True' | 'False' | 'Unknown' | string
+  reason?: string
+  message?: string
+  lastTransitionTime?: string
+}
+
+/** Public, non-secret view of a reusable workspace model provider connection. */
+export interface ProjectModelProviderConnection {
+  activeSnapshot?: ProjectLLMConnectionSnapshot
+  activationPending?: boolean
+  name: string
+  /** Public Kubernetes identity metadata used to reject stale edits. */
+  uid?: string
+  resourceVersion?: string
+  generation?: number
+  observedGeneration?: number
+  displayName?: string
+  provider: string
+  baseURL: string
+  anthropicWorkspaceID?: string
+  credentialMode?: ProjectLLMCredentialMode
+  secretResolved?: boolean
+  reachable?: boolean
+  ready?: boolean
+  connectionFingerprint?: string
+  /** Secret identity metadata only. The portal never reads Secret data. */
+  secretUID?: string
+  secretResourceVersion?: string
+  secretName?: string
+  secretKey?: string
+  generatedSecretID?: string
+  models: ProjectLLMDiscoveredModel[]
+  conditions: ProjectModelProviderConnectionCondition[]
+  lastProbeTime?: string
+  lastProbeError?: string
+  deleting?: boolean
+}
+
+export type ProjectLLMCredentialMode = 'api-key' | 'service-account-json'
+
+export interface ProjectModelProviderConnectionDraft {
+  provider: string
+  baseURL: string
+  credentialMode?: ProjectLLMCredentialMode
+  anthropicWorkspaceID?: string
+  /** Write-only; omitted when the saved connection is reused. */
+  apiKey?: string
+  existingConnectionID?: string
+  connectionFingerprint?: string
+}
+
+export interface ProjectModelProviderConnectionWrite extends ProjectModelProviderConnectionDraft {
+  /** Omitted for create; the portal creates an opaque stable resource name. */
+  name?: string
+  displayName?: string
+  apiKey?: string
 }
 
 export interface ProviderChild {

@@ -72,7 +72,7 @@ test('presents Projects and Models through the shared tabs surface without a gen
   assert.match(app, /import Tabs from '\.\/portalkit\/Tabs\.vue'/)
   assert.match(app, /const appStudioSectionTabs = \[[\s\S]*id: 'projects'[\s\S]*Folder[\s\S]*id: 'models'[\s\S]*Cpu/)
   assert.match(landing, /<div class="flex min-h-full w-full flex-col gap-4">/)
-  assert.match(landing, /<Tabs[\s\S]*:tabs="appStudioSectionTabs"[\s\S]*:active="isModelsRoute \|\| isCreateModelRoute \? 'models' : 'projects'"[\s\S]*aria-label="App Studio sections"[\s\S]*@select="selectAppStudioSection"/)
+  assert.match(landing, /<Tabs[\s\S]*:tabs="appStudioSectionTabs"[\s\S]*:active="isModelsRoute \|\| isProviderConnectionsRoute \|\| isCreateModelRoute \? 'models' : 'projects'"[\s\S]*aria-label="App Studio sections"[\s\S]*@select="selectAppStudioSection"/)
   assert.match(app, /function selectAppStudioSection\(id: string\)[\s\S]*openModelsSection\(\)[\s\S]*openProjectsSection\(\)/)
   assert.doesNotMatch(landing, /<nav[^>]*aria-label="App Studio sections"/)
   assert.doesNotMatch(landing, /shadow-\[0_0_14px_var\(--color-accent-glow\)\]/)
@@ -80,8 +80,8 @@ test('presents Projects and Models through the shared tabs surface without a gen
   assert.doesNotMatch(landing, /Back to projects|closeNewProjectComposer/)
   assert.doesNotMatch(landing, />\s*Settings\s*</)
   assert.match(landing, /id="app-studio-models-host"/)
-  assert.match(app, /if \(isModelsRoute\.value \|\| isCreateModelRoute\.value\) return '#app-studio-models-host'/)
-  assert.match(app, /isCreateRoute\.value \|\| isModelsRoute\.value \|\| isCreateModelRoute\.value \? '' : routeSegment\.value/)
+  assert.match(app, /if \(isModelsRoute\.value \|\| isProviderConnectionsRoute\.value \|\| isCreateModelRoute\.value\) return '#app-studio-models-host'/)
+  assert.match(app, /isCreateRoute\.value \|\| isModelsRoute\.value \|\| isProviderConnectionsRoute\.value \|\| isCreateModelRoute\.value \? '' : routeSegment\.value/)
 })
 
 test('uses shared confirmation and status primitives without local duplicates', () => {

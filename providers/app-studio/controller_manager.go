@@ -47,6 +47,7 @@ import (
 
 	"github.com/railgrid/provider-app-studio/api"
 	"github.com/railgrid/provider-app-studio/bindings"
+	"github.com/railgrid/provider-app-studio/controller/modelproviderconnection"
 	"github.com/railgrid/provider-app-studio/controller/project"
 	"github.com/railgrid/provider-app-studio/controller/session"
 	"github.com/railgrid/provider-app-studio/controller/studio"
@@ -298,6 +299,9 @@ func runControllerManager(ctx context.Context, config *rest.Config, deps control
 		Watches: watches,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("studio controller: %w", err)
+	}
+	if err := (&modelproviderconnection.Reconciler{}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("model provider connection controller: %w", err)
 	}
 
 	if err := setupUsage(mgr, config); err != nil {
