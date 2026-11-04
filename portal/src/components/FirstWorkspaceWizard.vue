@@ -15,21 +15,33 @@ import { useScopedNavigation } from '@/composables/useScopedNavigation'
 
 import { computed, ref } from 'vue'
 import { useTenantStore } from '@/stores/tenant'
+import { useAuthStore } from '@/stores/auth'
+import { billingSettingsLocation, clearBillingState, saveWorkspaceBillingDraft, workspaceLimitError } from '@/lib/billing-flow'
 import { ArrowRight, FolderTree, Loader2, Sparkles, AlertCircle, Settings } from 'lucide-vue-next'
 
 const { scopePath } = useScopedNavigation()
 const router = useRouter()
 
 const tenant = useTenantStore()
+const auth = useAuthStore()
 const name = ref('')
 const busy = ref(false)
 const error = ref<string | null>(null)
 
 const trimmed = computed(() => name.value.trim())
 const canSubmit = computed(() => trimmed.value.length > 0 && !busy.value && !!tenant.orgUUID)
+async function reviewPlans() {
+  if (!tenant.orgUUID || busy.value) return
+  if (!saveWorkspaceBillingDraft(tenant.orgUUID, auth.user?.userId || '', name.value)) {
+    error.value = 'Your draft could not be saved. Keep a copy of the Workspace name before opening Organization settings.'
+    return
+  }
+  await router.push(billingSettingsLocation(tenant.orgUUID))
+}
 
 async function handleCreate() {
   if (!canSubmit.value || !tenant.orgUUID || busy.value) return
+  const userAtStart = auth.user?.userId || ''
   busy.value = true
   error.value = null
   try {
@@ -37,6 +49,7 @@ async function handleCreate() {
     if (!created) {
       error.value = tenant.error ?? 'Failed to create workspace'
     } else {
+      clearBillingState('draft', created.orgUUID, userAtStart)
       await router.push({ name: 'dashboard', params: { orgID: created.orgUUID, workspaceID: created.uuid } })
     }
     // The destination guard selects and verifies the new workspace,
@@ -82,6 +95,8 @@ async function handleCreate() {
           <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
           {{ error }}
         </div>
+
+        <button v-if="error && workspaceLimitError(error)" type="button" class="k-btn k-btn--ghost" @click="reviewPlans">Review plans · save this Workspace draft</button>
 
         <form class="space-y-5" @submit.prevent="handleCreate">
           <div>

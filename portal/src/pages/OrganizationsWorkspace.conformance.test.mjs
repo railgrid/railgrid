@@ -187,12 +187,13 @@ test('account popover actions leave focus on a connected control', () => {
   assert.match(accountMenu.slice(actionStart, actionEnd), /emit\('cli'\)[\s\S]*closeMenu\(true\)/)
 
   const panel = accountMenu.slice(accountMenu.indexOf('<Teleport'))
-  assert.equal((panel.match(/@click="closeMenu\(true\)"/g) ?? []).length, 4)
+  assert.equal((panel.match(/@click="closeMenu\(true\)"/g) ?? []).length, 5)
+  assert.match(panel, /query: \{ panel: 'billing' \}/)
 })
 
 test('settings use one top-level gap and one continuous Workspace detail page', () => {
   const tabsStart = tenantSettingsPage.indexOf('      <Tabs\n')
-  const contentBoundary = tenantSettingsPage.indexOf('      <div class="mt-4">', tabsStart)
+  const contentBoundary = tenantSettingsPage.indexOf("      <div :class=\"{ 'mt-4': !billingPlanFocused }\">", tabsStart)
   assert.ok(tabsStart >= 0 && contentBoundary > tabsStart)
 
   const tabsAndBoundary = tenantSettingsPage.slice(tabsStart, contentBoundary)
@@ -721,7 +722,8 @@ test('workspace creation and organization switching fence late responses', () =>
   assert.match(storeCreate, /const selectionRevisionAtStart = selectionRevision/)
   assert.match(storeCreate, /const workspaceAtStart = workspaceUUID\.value/)
   assert.match(tenant, /function isCurrentWorkspaceCreate\(/)
-  assert.match(storeCreate, /if \(isCurrentWorkspaceCreate\(targetOrgUUID, creationSequence, selectionRevisionAtStart\)\) \{[\s\S]*failed to create workspace/)
+  assert.match(storeCreate, /await hubMessage\(resp, `Failed to create workspace/)
+  assert.match(storeCreate, /if \(isCurrentWorkspaceCreate\(targetOrgUUID, creationSequence, selectionRevisionAtStart\)\) \{\s*error.value = message/)
   assert.match(storeCreate, /if \(!isCurrentWorkspaceCreate\(targetOrgUUID, creationSequence, selectionRevisionAtStart\)\) return created/)
   assert.match(tenant, /creationSequence === workspaceCreationSequence/)
   assert.match(tenant, /selectionRevision === selectionRevisionAtStart/)

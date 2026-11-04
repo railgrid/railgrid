@@ -873,15 +873,38 @@ the plan. kcp reserves `*.kcp.io` metadata, so the former
 `metering.contrib.kcp.io/plan-source` key is rejected by admission and is not a
 supported ownership marker.
 
-The Tilt checkout of `railgrid/contrib-metering` inspected for this change is
-`b673443a0601f0016f8eb5eac2988676d249c749`. It contains no subscription-plan
-reconciler, `/billing/*` server routes, or plan-source label reader/writer.
-Its entitlement reconciler reads `spec.plan` and updates usage/limits in status;
-it does not choose a subscription plan. There is consequently no verified
-contrib-metering release that reads the new ownership label. The inspected
-version supports the admin plan/usage flow without a billing-label rollout.
-The hub treats an absent `/billing/status` endpoint as subscription billing
-disabled. This does not verify custom or separately deployed billing extensions.
+The contrib-metering subscription implementation on `main` at
+`e1099504138cfde9e07c418351d12226bc7080ac` supports Stripe Checkout, the
+Customer Portal, webhook-driven subscription reconciliation and this ownership
+label. Older releases may lack these routes; the hub treats an absent
+`/billing/status` endpoint as subscription billing disabled.
+
+Organization settings exposes **General** and **Plan & billing** subsections.
+The billing summary reads configured prices through the metering deployment's
+operator-authenticated `GET /billing/prices`; the deployment resolves each
+`Plan.spec.subscription.priceID` against Stripe. The response is
+`{prices: {priceID: {id, amount, currency, interval, intervalCount, taxBehavior}}}`;
+`amount` is an exact decimal in major currency units. The Stripe restricted key
+needs **Prices: Read**. Inactive, metered, tiered, transformed or customer-adjustable
+prices are not presented as fixed subscriptions. Missing or unavailable prices
+remain unavailable and disable checkout; they never become a zero-price offer.
+The hub caches valid prices briefly, scoped to the discovered endpoint and token.
+
+The portal sends the reviewed `priceID` with checkout. Both the hub and metering
+service reject a changed plan-price mapping. The service rechecks the Stripe
+price before creating a session and directs existing subscribers to their
+Customer Portal. Deploy a metering release containing the live-price route
+alongside this portal; older deployments remain readable but cannot supply the
+price needed to start a new purchase.
+
+Checkout returns to `?panel=billing&billing=success&billingPlan=<plan>`, which is
+a request to check activation, not proof of payment. The portal polls for at
+most a minute and requires the expected subscription, billing-owned plan and
+applied effective allowances to agree. Delays have an explicit Check activation
+action. A saved Workspace draft is scoped to the organization and user in the
+current tab's session storage, expires after an hour, and resumes only with
+current create permission and available allowance. Resuming restores the name;
+it never submits a resource create automatically.
 
 For an installation with an external subscription reconciler, pause its plan
 writes first. Deploy and verify an integration that both preserves
@@ -891,6 +914,30 @@ subscription processing paused if that compatibility cannot be demonstrated;
 upgrading the hub alone does not establish this contract. Verify that a
 subscription update leaves an admin-assigned plan unchanged and that a
 billing-owned plan reports its ownership before enabling checkout.
+
+## Comparing organization plans
+
+Organization settings → Plan & billing → Change plan opens a focused comparison
+at the same settings route with `panel=billing&review=1`. The chooser reuses
+onboarding’s focused presentation: side navigation, settings tabs, assistant
+chrome and terminal chrome are hidden without ending sessions or changing
+navigation preferences. Browser Back and the
+in-page back action return to billing. Plan positioning and the joined card
+layout follow the marketing pricing page; plan names, recurring prices,
+currencies, billing intervals and capacities come from the billing response.
+No subscription amount or capacity is hardcoded in the product comparison.
+Existing organization overrides are included in the proposed allowances.
+
+The comparison retains permission gates, administrator-managed assignments,
+missing-price recovery, existing-subscription management, quota context, saved
+workspace drafts and verified activation. Compare plans and Pricing FAQ links open the relevant
+marketing sections in separate tabs without leaving the organization's billing flow.
+
+The contrib-metering Tilt seed (`hack/tilt/plans.json`) uses Free, Team and
+Enterprise. The seed preserves configured subscription Price IDs and archives
+Small/Large placeholders without deleting existing assignments. Development
+Stripe checkout still requires an enabled billing integration and a real Plan
+subscription Price ID; the UI does not substitute the marketing site's price.
 
 ## Plan archival
 

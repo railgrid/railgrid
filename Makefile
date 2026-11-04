@@ -3312,3 +3312,15 @@ test-provider-agent-ingress: ## Test binding-scoped agent routing and credential
 fix-lint-provider-action-routing: $(GOLANGCI_LINT) ## Format and lint the affected standalone packages
 	cd provider-sdk && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./dataplane
 	cd providers/edges && $(CURDIR)/$(GOLANGCI_LINT) run --fix ./internal/tunnel
+
+.PHONY: serve-billing-flow-visual test-billing-flow-visual
+serve-billing-flow-visual: ## Preview billing proposal inside the real portal route with fixture APIs
+	cd portal && node node_modules/vite/bin/vite.js --config ../hack/billing-flow-visual/vite.config.mjs
+
+test-billing-flow-visual: ## Check the billing proposal in the production portal route (requires preview server and Playwright)
+	node hack/billing-flow-visual/check.mjs
+
+.PHONY: test-billing
+test-billing: ## Verify billing prices, checkout and organization billing routes
+	go test -count=1 ./pkg/hub/metering ./pkg/hub/restapi
+	cd portal && node --test src/lib/billing-flow.test.mjs src/components/OrgBillingCard.behavior.test.mjs src/components/CreateWorkspaceDialog.test.mjs

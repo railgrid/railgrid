@@ -32,6 +32,7 @@ import AddMemberDialog from '@/components/AddMemberDialog.vue'
 import CreateServiceAccountDialog from '@/components/CreateServiceAccountDialog.vue'
 import WorkspaceControlHeader from '@/components/WorkspaceControlHeader.vue'
 import OrgBillingCard from '@/components/OrgBillingCard.vue'
+import CreateWorkspaceDialog from '@/components/CreateWorkspaceDialog.vue'
 import { useTenantStore, type AppAccessGrantRow, type MemberRow, type OrgRow, type SARow, type TokenResponse, type WorkspaceRow } from '@/stores/tenant'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsBulkAction, type SettingsBulkItem } from '@/composables/useSettingsBulkAction'
@@ -45,6 +46,7 @@ import InlineNotification from '@/portalkit/InlineNotification.vue'
 import type { TableFilterDefinition } from '@/portalkit/table'
 import { toast } from '@/portalkit/toast'
 import { useEscapeKey } from '@/composables/useEscapeKey'
+import { useGettingStartedFocus as useFocusedTask } from '@/composables/gettingStartedFocus'
 import Tabs from '@/portalkit/Tabs.vue'
 import {
   AlertCircle,
@@ -102,6 +104,16 @@ function navigateSettings(section: string): void {
 // ===== Active organization and workspace selection =========================
 
 const activeOrg = computed(() => tenant.activeOrg)
+const billingWorkspaceDraft = ref<string | null>(null)
+const organizationPanel = computed(() => route.query.panel === 'billing' || typeof route.query.billing === 'string' ? 'billing' : 'general')
+const billingPlanFocused = computed(() => activeSection.value === 'organizations' && organizationPanel.value === 'billing' && route.query.review === '1')
+// Reuse onboarding's presentation-only takeover. Navigation preferences and
+// running terminal/assistant sessions survive the focused plan selection.
+useFocusedTask(billingPlanFocused)
+function navigateOrganizationPanel(panel: string): void {
+  void router.replace({ query: { ...route.query, panel } })
+}
+watch(() => tenant.orgUUID, () => { billingWorkspaceDraft.value = null })
 let creationFeedbackGeneration = 0
 let pageDisposed = false
 
@@ -2338,8 +2350,8 @@ function fmtDate(s?: string | null): string {
 
 <template>
   <AppLayout>
-    <div>
-      <header class="mb-4">
+    <div :class="{ 'billing-focus-page': billingPlanFocused }">
+      <header v-if="!billingPlanFocused" class="mb-4">
         <div>
           <h1 class="flex items-center gap-2 text-xl font-semibold text-text-primary">
             <FolderTree v-if="activeSection === 'workspaces'" class="h-5 w-5 text-accent" :stroke-width="1.75" />
@@ -2358,13 +2370,14 @@ function fmtDate(s?: string | null): string {
       </header>
 
       <Tabs
+        v-if="!billingPlanFocused"
         :tabs="visibleSettingsTabs"
         :active="activeSection"
         aria-label="Settings sections"
         @select="navigateSettings"
       />
 
-      <div class="mt-4">
+      <div :class="{ 'mt-4': !billingPlanFocused }">
         <InlineNotification
           v-if="tenant.error && tenant.error !== workspaceListError && organizationSettingsOrg && !memberDialog && !createSADialogOpen"
           class="mb-4"
@@ -2821,6 +2834,14 @@ function fmtDate(s?: string | null): string {
            is absent from the refreshed org list, keeping Restore reachable. -->
       <template v-else-if="activeSection === 'organizations'">
         <div class="space-y-5">
+          <Tabs v-if="!billingPlanFocused" :tabs="[{ id: 'general', label: 'General' }, { id: 'billing', label: 'Plan & billing' }]"
+            :active="organizationPanel" aria-label="Organization settings sections" @select="navigateOrganizationPanel" />
+          <OrgBillingCard
+            v-if="organizationPanel === 'billing' && organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt"
+            :org-uuid="organizationSettingsOrg.uuid" :org-name="organizationSettingsOrg.displayName" :can-manage="canEditOrg"
+            @resume-workspace="billingWorkspaceDraft = $event"
+          />
+          <div v-else class="space-y-5">
           <section class="rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-settings-title">
             <div class="mb-4 flex items-start justify-between gap-3">
               <div class="min-w-0">
@@ -2959,12 +2980,6 @@ function fmtDate(s?: string | null): string {
               </div>
             </div>
           </section>
-
-          <OrgBillingCard
-            v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt"
-            :org-uuid="organizationSettingsOrg.uuid"
-            :can-manage="canEditOrg"
-          />
 
           <section v-if="organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt" class="space-y-4 rounded-xl border border-border-subtle bg-surface-raised/60 p-5" aria-labelledby="organization-workspaces-title" :aria-busy="workspaceListLoading">
             <div>
@@ -3219,6 +3234,7 @@ function fmtDate(s?: string | null): string {
               </div>
             </template>
           </section>
+          </div>
         </div>
       </template>
 
@@ -3226,6 +3242,7 @@ function fmtDate(s?: string | null): string {
       </div>
     </div>
 
+    <CreateWorkspaceDialog v-if="billingWorkspaceDraft !== null && (canEditOrg || tenant.activeOrg?.workspaceCreation === 'members')" :initial-name="billingWorkspaceDraft" @close="billingWorkspaceDraft = null" />
     <AddMemberDialog
       v-if="memberDialog === 'workspace' && selWs && canAddWsMembers"
       :key="`workspace/${tenant.orgUUID}/${selectedWorkspaceUUID}`"
@@ -3323,3 +3340,8 @@ function fmtDate(s?: string | null): string {
     </div>
   </AppLayout>
 </template>
+
+<style scoped>
+/* Focused task exception to the ordinary fluid settings shell. */
+.billing-focus-page{width:100%;max-width:1248px;margin-inline:auto}
+</style>

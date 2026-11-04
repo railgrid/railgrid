@@ -268,6 +268,14 @@ make build-hub
     # Service and is not a hub dependency; runner edits must not restart KCP.
     ignore=['pkg/runner'],
     resource_deps=hub_deps,
+    readiness_probe=probe(
+        period_secs=5,
+        timeout_secs=5,
+        exec=exec_action([
+            'python3', '-c',
+            "import ssl, urllib.request; urllib.request.urlopen('https://127.0.0.1:%s/readyz', context=ssl._create_unverified_context(), timeout=3).close()" % hub_port,
+        ]),
+    ),
     labels=['hub'],
 )
 
