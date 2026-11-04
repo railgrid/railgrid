@@ -1057,7 +1057,7 @@ func (s *Server) notifyInboxApproval(ctx context.Context, run taskRun, tool stri
 	_ = channels.Send(ctx, channels.Message{
 		Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config,
 		Text: "🔐 " + run.Agent.Name + " is asking permission to use " + safeTruncate(tool, 200) +
-			".\nReply /inbox to review — the run continues in place once you decide.",
+			".\nReply /approve or /deny — the run continues in place once you decide. /cancel stops it, /inbox lists everything pending.",
 	})
 }
 
@@ -1089,7 +1089,7 @@ func (s *Server) notifyInboxQuestion(ctx context.Context, run taskRun, question 
 	_ = channels.Send(ctx, channels.Message{
 		Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config,
 		Text: "❓ " + run.Agent.Name + " needs an answer to continue: " + safeTruncate(question, 3000) +
-			"\nReply /inbox to review — the run resumes automatically once you answer.",
+			"\nReply /answer <your answer> to continue, /cancel to stop the run, or /inbox to see everything pending.",
 	})
 }
 
