@@ -2298,6 +2298,7 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	fi; \
 	PORT=$(AGENTS_PORT) \
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
+	RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL:-$(AGENTS_HUB_URL)}" \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
 	RAILGRID_CATALOGENTRY_FILE=$(abspath $(AGENTS_MANIFEST)) \

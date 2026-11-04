@@ -71,6 +71,18 @@ type Credential struct {
 	// memory, never on disk — and the runner has already refused every name
 	// outside its allow-list, so an adapter sees only credential names.
 	Environment []EnvironmentVariable
+	// MCPServers are remote MCP servers the launch attaches, each with a
+	// bearer that lives exactly as Value does. The runner has validated the
+	// names and URLs; an adapter wires them into the harness's MCP
+	// configuration and redacts every Token from what it emits.
+	MCPServers []MCPServer
+}
+
+// MCPServer is one remote streamable-HTTP MCP server for a launch.
+type MCPServer struct {
+	Name  string
+	URL   string
+	Token string
 }
 
 // EnvironmentVariable is one name=value an identity brings to a launch.

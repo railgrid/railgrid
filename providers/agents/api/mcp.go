@@ -37,6 +37,14 @@ import (
 // isolated; tools close over the request and resolve the tenant client lazily,
 // so tools/list works even before identity headers are checked.
 func (s *Server) MCPHandler() http.Handler {
+	// A harness session's own bearer selects its own, much smaller server; see
+	// harness_mcp.go.
+	return s.harnessSessionMCP(s.callerMCPHandler())
+}
+
+// callerMCPHandler is /mcp for a hub-forwarded caller: the whole tool surface,
+// acting as that caller in their workspace.
+func (s *Server) callerMCPHandler() http.Handler {
 	return mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			srv := mcp.NewServer(&mcp.Implementation{

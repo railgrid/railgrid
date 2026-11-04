@@ -47,10 +47,6 @@ func UnsupportedFields(agent *agentsv1alpha1.Agent) (reason, message string) {
 		return agentsv1alpha1.ReasonMeaninglessForHarness,
 			"spec.delegates has no effect on a harness-backed agent: the provider's delegate tool is not available to the harness. Remove it or use a model-backed agent."
 	}
-	if sc := agent.Spec.SelfConfiguration; sc != nil && sc.Enabled {
-		return agentsv1alpha1.ReasonMeaninglessForHarness,
-			"spec.selfConfiguration has no effect on a harness-backed agent: the self-configuration tools are provider tools, and the harness brings its own. Disable it or use a model-backed agent."
-	}
 	if agent.Spec.Limits.MaxToolTurns > 0 {
 		return agentsv1alpha1.ReasonMeaninglessForHarness,
 			"spec.limits.maxToolTurns has no effect on a harness-backed agent: one runner turn can contain multiple tool calls, and the runner API has no matching tool-turn limit. Remove it or use a model-backed agent."
