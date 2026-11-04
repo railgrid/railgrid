@@ -79,6 +79,26 @@ const studio = {
   status: { models: [] },
 }
 
+// Tab-review data is opt-in so the create-form comparator keeps its empty registry.
+if (params.get('scenario') === 'tabs') {
+  const connection = appProviderConnections[0]
+  connection.metadata.generation = 1
+  connection.status.connectionFingerprint = 'fixture-fingerprint'
+  connection.status.activeSnapshot = {
+    provider: connection.spec.provider, baseURL: connection.spec.baseURL,
+    connectionRef: connection.metadata.name, connectionUID: connection.metadata.uid,
+    connectionGeneration: 1, connectionFingerprint: 'fixture-fingerprint',
+    secretRef: connection.spec.secretRef, secretKey: 'apiKey',
+    secretUID: 'fixture-key-uid', secretResourceVersion: '1',
+  }
+  studio.spec.llm.models = [{
+    id: 'fast', revisionID: 'fixture-revision', name: 'Everyday model', model: 'gpt-5.4',
+    provider: connection.spec.provider, baseURL: connection.spec.baseURL,
+    connectionRef: connection.metadata.name, connectionSnapshot: connection.status.activeSnapshot,
+  }]
+  studio.status.models = [{ id: 'fast', configured: true }]
+}
+
 const usage = {
   windowDays: 30,
   total: { key: 'total', runs: 28, errors: 1, inputTokens: 120000, outputTokens: 28000, usdMicros: 1840000, latencyP50MS: 620, latencyP95MS: 1500 },
@@ -119,6 +139,8 @@ function appFetch(input, init = {}) {
   if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/modelproviderconnections') {
     return Promise.resolve(json(resourceList('ModelProviderConnectionList', appProviderConnections)))
   }
+  const connection = appProviderConnections.find(item => path === `/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/modelproviderconnections/${item.metadata.name}`)
+  if (connection) return Promise.resolve(json(connection))
   if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/studios/studio') return Promise.resolve(json(studio))
   if (path === '/clusters/workspace-test/apis/ai.railgrid.ai/v1alpha1/studios/studio/create-readiness') {
     return Promise.resolve(json({ gitConnection: { ready: false, status: 'connection-missing', message: 'No Git connection is configured.' } }))
