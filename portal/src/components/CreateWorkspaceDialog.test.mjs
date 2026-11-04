@@ -17,7 +17,7 @@ function setup() {
   const timers = new Map()
   const navigations = []
   const route = ref({ fullPath: '/org-a/old/' })
-  const auth = reactive({ token: 'test-session' })
+  const auth = reactive({ token: 'test-session', user: { userId: 'alice' } })
   const state = { creates: 0, reads: [], rows: [], status: 'ready', creation: null, closed: 0, fetch: null }
   const created = { uuid: 'new', orgUUID: 'org-a', displayName: 'New workspace' }
   const tenant = reactive({
@@ -32,7 +32,7 @@ function setup() {
     },
     beginWorkspaceTransition: () => 1, endWorkspaceTransition() {},
   })
-  const api = runInNewContext(`${code}\n({ submit, checkReady, close, name, busy, created, error, timedOut, canCreate })`, {
+  const api = runInNewContext(`${code}\n({ submit, checkReady, close, name, busy, created, error, timedOut, canCreate, limitReached, reviewPlans })`, {
     authFetch: async (url, options) => {
       if (options.method === 'POST') {
         assert.equal(url, '/api/orgs/org-a/workspaces')
@@ -56,7 +56,10 @@ function setup() {
     },
     computed, ref, Error, useAuthStore: () => auth, useId: () => 'dialog', useTenantStore: () => tenant,
     useRouter: () => ({ currentRoute: route, async push(to) { navigations.push(to); tenant.workspaceUUID = to.params.workspaceID } }),
-    defineEmits: () => () => { state.closed++ },
+    defineEmits: () => () => { state.closed++ }, defineProps: () => ({}),
+    clearBillingState() {}, workspaceLimitError: message => /workspace.*limit.*(?:exceeded|reached)/i.test(message),
+    saveWorkspaceBillingDraft: (org, user, name) => { state.draft = { org, user, name }; return true },
+    billingSettingsLocation: org => ({ path: `/${org}/settings/organizations`, query: { panel: 'billing', meter: 'workspaces', review: '1' } }),
     isWorkspaceUsable: row => !!row?.clusterName && !row.deletionRequestedAt,
     watch: (_source, callback) => { orgChange = callback },
     onMounted() {}, onBeforeUnmount: callback => { dispose = callback },

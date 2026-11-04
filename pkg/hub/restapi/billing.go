@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	neturl "net/url"
 	"strings"
 
 	"github.com/railgrid/railgrid/pkg/hub/metering"
@@ -45,7 +46,8 @@ type BillingOps interface {
 
 // CheckoutRequest is the POST /api/orgs/{org}/billing/checkout body.
 type CheckoutRequest struct {
-	Plan string `json:"plan"`
+	Plan    string `json:"plan"`
+	PriceID string `json:"priceID,omitempty"`
 }
 
 // SessionResponse carries the hosted page's URL.
@@ -87,7 +89,20 @@ func (h *Handler) orgBillingCheckout(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusServiceUnavailable, "BillingUnavailable", "metering is not configured on this hub")
 		return
 	}
-	url, err := h.mgr.billing.Checkout(r.Context(), tc.OrgUUID, req.Plan, h.billingReturnURL(tc.OrgUUID, "success"), h.billingReturnURL(tc.OrgUUID, "canceled"))
+	var url string
+	var err error
+	if req.PriceID != "" {
+		quoted, ok := h.mgr.billing.(interface {
+			CheckoutQuoted(context.Context, string, string, string, string, string) (string, error)
+		})
+		if !ok {
+			writeStatus(w, http.StatusServiceUnavailable, "BillingUnavailable", "the billing integration cannot confirm the reviewed price")
+			return
+		}
+		url, err = quoted.CheckoutQuoted(r.Context(), tc.OrgUUID, req.Plan, req.PriceID, h.billingReturnURL(tc.OrgUUID, "success")+"&billingPlan="+neturl.QueryEscape(req.Plan), h.billingReturnURL(tc.OrgUUID, "canceled")+"&billingPlan="+neturl.QueryEscape(req.Plan))
+	} else {
+		url, err = h.mgr.billing.Checkout(r.Context(), tc.OrgUUID, req.Plan, h.billingReturnURL(tc.OrgUUID, "success"), h.billingReturnURL(tc.OrgUUID, "canceled"))
+	}
 	if err != nil {
 		writeBillingError(w, r, err)
 		return
@@ -115,7 +130,7 @@ func (h *Handler) orgBillingPortal(w http.ResponseWriter, r *http.Request) {
 // billingReturnURL is the organization's settings page, which reads the
 // billing query parameter into a notice.
 func (h *Handler) billingReturnURL(org, outcome string) string {
-	return strings.TrimRight(h.mgr.hubExternalURL, "/") + "/ui/" + org + "/settings/organizations?billing=" + outcome
+	return strings.TrimRight(h.mgr.hubExternalURL, "/") + "/ui/" + org + "/settings/organizations?billing=" + outcome + "&panel=billing"
 }
 
 // writeBillingError answers a billing failure. A BillingError carries a

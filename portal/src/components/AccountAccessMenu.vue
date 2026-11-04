@@ -24,6 +24,7 @@ import {
   ChevronDown,
   Code2,
   Copy,
+  CreditCard,
   LogOut,
   Monitor,
   Moon,
@@ -553,6 +554,16 @@ onBeforeUnmount(() => {
       >
         <Settings class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">Settings</span>
+        <ChevronDown class="h-3 w-3 -rotate-90 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
+      </router-link>
+      <router-link
+        v-if="tenant.orgUUID"
+        :to="{ path: scopePath('/settings/organizations'), query: { panel: 'billing' } }"
+        class="account-menu-item k-menu-item"
+        @click="closeMenu(true)"
+      >
+        <CreditCard class="h-3.5 w-3.5 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
+        <span class="flex-1">Plan &amp; billing</span>
         <ChevronDown class="h-3 w-3 -rotate-90 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
       </router-link>
       <router-link

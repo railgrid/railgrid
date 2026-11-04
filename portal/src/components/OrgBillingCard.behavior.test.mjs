@@ -14,10 +14,10 @@ const source = fs.readFileSync(new URL('./OrgBillingCard.vue', import.meta.url),
 const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
 const parsed = ts.createSourceFile('OrgBillingCard.ts', script, ts.ScriptTarget.Latest, true)
 
-function loadFunction(name, context) {
-  const declaration = parsed.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
+function loadFunction(name, context, functionSource = parsed) {
+  const declaration = functionSource.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
   assert.ok(declaration, `${name} exists in the production component`)
-  const code = ts.transpileModule(declaration.getText(parsed), {
+  const code = ts.transpileModule(declaration.getText(functionSource), {
     compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
   }).outputText
   return runInNewContext(`${code}\n${name}`, context)
@@ -30,13 +30,39 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('a stored checkout intent only starts activation after a successful Stripe return', () => {
+  for (const outcome of [undefined, 'portal', 'canceled', 'success']) {
+    const cleared = []
+    const context = {
+      props: { orgUuid: 'org-a' }, auth: { user: { userId: 'alice' } },
+      route: { query: { panel: 'billing', review: '1', billing: outcome, billingPlan: 'team' } },
+      router: { replace: () => {} },
+      savedDraft: { value: null }, workspaceBillingDraft: () => null,
+      pendingCheckout: () => ({ plan: 'team' }),
+      checkoutPlan: { value: '' }, activation: { value: 'idle' },
+      reviewOpen: { value: false }, focusedMeter: { value: null }, returnNotice: { value: '' },
+      clearBillingState: (...args) => cleared.push(args),
+    }
+    loadFunction('handleReturn', context)()
+    assert.equal(context.activation.value, outcome === 'success' ? 'checking' : 'idle')
+    assert.equal(context.checkoutPlan.value, outcome === 'success' ? 'team' : '')
+    assert.equal(context.reviewOpen.value, true)
+    assert.deepEqual(cleared, outcome === 'success' ? [] : [['checkout', 'org-a', 'alice']])
+  }
+})
+
 function cardFixture() {
   const checkout = deferred()
   const portal = deferred()
   const calls = { assign: [], checkout: [], portal: [] }
   let authRevision = 1
   const context = {
-    props: { orgUuid: 'org-a' },
+    props: { orgUuid: 'org-a', canManage: true },
+    auth: { user: { userId: 'alice' } },
+    billing: { value: { plans: [{ name: 'team', sellable: true, price: { id: 'price_team' } }] } },
+    priceAvailable: price => !!price?.id,
+    awaitingActivation: { value: false }, managedByOperator: { value: false }, hasSubscription: { value: false },
+    failedAction: { value: null }, checkoutPlan: { value: '' }, savePendingCheckout: () => true,
     route: { fullPath: '/org-a/settings/organizations' },
     tenant: {
       orgUUID: 'org-a',
@@ -53,7 +79,7 @@ function cardFixture() {
     // The sandboxed functions check `err as Error`; share this realm's Error.
     Error,
   }
-  for (const name of ['hostedPageRequest', 'hostedPageStillWanted', 'upgrade', 'manage']) context[name] = loadFunction(name, context)
+  for (const name of ['hostedPageRequest', 'hostedPageStillWanted', 'upgrade', 'manage', 'retryHostedAction']) context[name] = loadFunction(name, context)
   return { context, calls, checkout, portal }
 }
 
@@ -135,7 +161,58 @@ test('the generation moves synchronously on scope changes and on unmount', () =>
   for (const sourceExpr of ['route.fullPath', 'props.orgUuid', 'tenant.orgUUID']) {
     assert.ok(watcher[1].includes(sourceExpr), `the scope watcher watches ${sourceExpr}`)
   }
-  assert.match(script, /onBeforeUnmount\(\(\) => \{\s*disposed = true\s*hostedPageGeneration\+\+\s*\}\)/)
+  assert.match(script, /onBeforeUnmount\(\(\) => \{\s*disposed = true\s*hostedPageGeneration\+\+\s*clearTimeout\(pollTimer\)\s*loadAbort\?\.abort\(\)\s*\}\)/)
+})
+
+test('Retry repeats the failed hosted action without reloading the summary', () => {
+  const { context } = cardFixture()
+  const attempts = []
+  context.upgrade = plan => attempts.push(['checkout', plan])
+  context.manage = () => attempts.push(['portal'])
+  context.failedAction.value = { kind: 'checkout', plan: 'team' }
+  context.retryHostedAction()
+  context.failedAction.value = { kind: 'portal' }
+  context.retryHostedAction()
+  assert.deepEqual(attempts, [['checkout', 'team'], ['portal']])
+})
+
+test('missing prices and duplicate submits cannot open checkout', async () => {
+  const missing = cardFixture()
+  delete missing.context.billing.value.plans[0].price
+  await missing.context.upgrade('team')
+  assert.equal(missing.calls.checkout.length, 0)
+  const duplicate = cardFixture()
+  const first = duplicate.context.upgrade('team')
+  await duplicate.context.upgrade('team')
+  assert.equal(duplicate.calls.checkout.length, 1)
+  duplicate.checkout.resolve('https://checkout.example/one')
+  await first
+})
+
+test('activation polling stops at its deadline and fences disposed contexts', async () => {
+  for (const leave of [false, true]) {
+    let now = 0
+    let queued
+    let reads = 0
+    const context = {
+      pollTimer: undefined, pollStarted: 0, disposed: false, props: { orgUuid: 'org-a' },
+      activation: { value: 'idle' }, checkoutPlan: { value: 'team' },
+      Date: { now: () => now }, Math, authSessionRevision: () => 1,
+      clearTimeout: () => { queued = undefined },
+      setTimeout: (callback, delay) => { assert.ok(delay <= 3000); queued = callback; return 1 },
+      load: async () => { reads++ },
+    }
+    loadFunction('startActivationCheck', context)()
+    for (let turn = 0; !queued && turn < 10; turn++) await Promise.resolve()
+    assert.equal(reads, 1)
+    assert.equal(typeof queued, 'function')
+    if (leave) context.disposed = true
+    else now = 60000
+    queued()
+    await Promise.resolve()
+    assert.equal(reads, 1, 'no fetch starts past the deadline or after disposal')
+    if (!leave) assert.equal(context.activation.value, 'delayed')
+  }
 })
 
 const recommendedPlan = loadFunction('recommendedPlan', { Number, Math })
@@ -249,22 +326,6 @@ test('an archived current plan remains readable but is not offered as a plan cha
   assert.deepEqual(evaluate('offers').value.map(plan => plan.name), ['team'], 'only noncurrent plans are eligible choices')
 })
 
-test('admin request drafts distinguish empty, populated, and unknown overrides', () => {
-  for (const overrides of [[], [planLimit('1')], undefined]) {
-    const context = {
-      billing: { value: { limits: [planLimit('1')], usage: { workspaces: '1' }, overrides } },
-      reviewPlan: { value: planOffer('small', '10') }, reviewLimits: { value: [planLimit('10')] },
-      reviewMeters: { value: ['workspaces'] }, focusedMeter: { value: null },
-      planLabel: { value: 'Free' }, props: { orgUuid: 'org-a' }, requestDraft: { value: '' },
-      overridesKnown: { value: overrides !== undefined }, limitsPending: { value: false },
-      quantity: (value) => value, meterLabel: (meter) => meter,
-      allowance: (limits, meter) => limits.find(limit => limit.meter === meter)?.max,
-    }
-    loadFunction('prepareRequest', context)()
-    assert.equal(context.requestDraft.value.includes('Existing organization overrides remain in effect.'), !!overrides?.length)
-    assert.equal(context.requestDraft.value.includes('This hub does not report organization overrides.'), overrides === undefined)
-  }
-})
 
 test('pending allowance changes suppress upgrade hints until the applied snapshot catches up', () => {
   const proposedLimits = loadFunction('proposedLimits', { Map })
@@ -283,4 +344,88 @@ test('pending allowance changes suppress upgrade hints until the applied snapsho
   assert.equal(allowancesPending(value), true)
   value.limits = [planLimit('20')]
   assert.equal(allowancesPending(value), false)
+})
+
+test('the comparison checkout respects quoted prices, permissions, subscriptions, activation and focused capacity', () => {
+  const plan = planOffer('team', '25', { sellable: true, price: { id: 'price_live', amount: '73', currency: 'EUR' } })
+  const context = {
+    billing: { value: { enabled: true } }, props: { canManage: true },
+    managedByOperator: { value: false }, hasSubscription: { value: false },
+    awaitingActivation: { value: false }, focusedMeter: { value: null },
+    priceAvailable: price => !!price?.id, suggestionForPlan: () => false,
+  }
+  const canCheckout = loadFunction('canCompareCheckout', context)
+  assert.equal(canCheckout(plan), true)
+  for (const flag of ['managedByOperator', 'hasSubscription', 'awaitingActivation']) {
+    context[flag].value = true
+    assert.equal(canCheckout(plan), false, flag)
+    context[flag].value = false
+  }
+  assert.equal(canCheckout({ ...plan, price: undefined }), false)
+  assert.equal(canCheckout({ ...plan, current: true }), false)
+  assert.equal(canCheckout({ ...plan, sellable: false }), false)
+  context.props.canManage = false
+  assert.equal(canCheckout(plan), false)
+  context.props.canManage = true
+  context.focusedMeter.value = 'workspaces'
+  assert.equal(canCheckout(plan), false, 'the proposed allowance must resolve the blocked action')
+  context.suggestionForPlan = () => true
+  assert.equal(canCheckout(plan), true)
+  context.billing.value.enabled = false
+  assert.equal(canCheckout(plan), false)
+})
+
+
+test('first-workspace creation clears only the successful creator’s saved billing draft', async () => {
+  const wizard = fs.readFileSync(new URL('./FirstWorkspaceWizard.vue', import.meta.url), 'utf8')
+  const wizardScript = wizard.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const wizardParsed = ts.createSourceFile('FirstWorkspaceWizard.ts', wizardScript, ts.ScriptTarget.Latest, true)
+  for (const success of [true, false]) {
+    const creation = deferred()
+    const cleared = []
+    const context = {
+      canSubmit: { value: true }, busy: { value: false }, error: { value: null },
+      trimmed: { value: 'Production' }, auth: { user: { userId: 'alice' } },
+      tenant: { orgUUID: 'org-a', error: 'Workspace limit reached', createWorkspace: () => creation.promise },
+      clearBillingState: (...args) => cleared.push(args), router: { push: async () => {} }, Error,
+    }
+    const pending = loadFunction('handleCreate', context, wizardParsed)()
+    context.auth.user.userId = 'bob'
+    creation.resolve(success ? { orgUUID: 'org-a', uuid: 'ws-new' } : null)
+    await pending
+    assert.deepEqual(cleared, success ? [['draft', 'org-a', 'alice']] : [])
+  }
+})
+
+test('paid subscribers downgrade through the existing billing portal, without checkout or request drafts', () => {
+  const source = fs.readFileSync(new URL('./BillingPlanComparison.vue', import.meta.url), 'utf8')
+  const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const comparison = ts.createSourceFile('BillingPlanComparison.ts', script, ts.ScriptTarget.Latest, true)
+  const events = []
+  const context = {
+    props: { canManage: true, billing: { enabled: true, defaultPlan: 'free' }, busy: null, awaitingActivation: false, canCheckout: () => true },
+    hasSubscription: { value: true }, managed: { value: false },
+    emit: (...args) => events.push(args), priceAvailable: () => false,
+  }
+  for (const name of ['checkoutPlan', 'action', 'choose', 'disabled']) context[name] = loadFunction(name, context, comparison)
+  const free = { name: 'free', current: false, sellable: false }
+  assert.equal(context.action(free), 'Downgrade to Free')
+  assert.equal(context.disabled(free), false)
+  context.choose(free)
+  assert.deepEqual(events, [['manage']])
+  // A manual plan assignment cannot prevent cancellation of an existing bill.
+  context.managed.value = true
+  assert.equal(context.action(free), 'Manage subscription')
+  assert.equal(context.disabled(free), false)
+  context.choose(free)
+  assert.deepEqual(events, [['manage'], ['manage']])
+  context.props.canManage = false
+  assert.equal(context.disabled(free), true)
+  context.choose(free)
+  assert.equal(events.length, 2, 'members cannot invoke subscription changes')
+  context.props.canManage = true
+  context.hasSubscription.value = false
+  assert.equal(context.disabled(free), true)
+  context.choose(free)
+  assert.equal(events.length, 2, 'an assigned plan is not a self-service subscription')
 })
