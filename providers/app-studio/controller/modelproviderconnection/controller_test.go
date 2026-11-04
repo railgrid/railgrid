@@ -577,7 +577,7 @@ func legacyStudio(uid types.UID, modelID, secretName, baseURL string) *aiv1alpha
 
 func legacyKeySecret(name, key string) *corev1.Secret {
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID("secret-" + key), ResourceVersion: "1"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default", UID: types.UID("secret-" + key), ResourceVersion: "1", Labels: map[string]string{aiv1alpha1.ModelProviderConnectionSecretOwnerLabel: aiv1alpha1.ModelProviderConnectionSecretOwner}},
 		Data:       map[string][]byte{aiv1alpha1.ModelProviderConnectionSecretKey: []byte(key)},
 	}
 }

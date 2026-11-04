@@ -358,6 +358,7 @@ func (r *Reconciler) migrateLegacyBindings(ctx context.Context, c client.Client,
 	if err := captureLegacyMigrationPlan(ctx, c, reader, &studio); err != nil {
 		return err
 	}
+	var migrationErr error
 	for _, model := range studio.Spec.LLM.Models {
 		if model.Archived || model.ConnectionRef != "" || model.SecretRef == nil || strings.TrimSpace(model.SecretRef.Name) == "" || strings.TrimSpace(model.Provider) == "harness" {
 			continue
@@ -368,16 +369,17 @@ func (r *Reconciler) migrateLegacyBindings(ctx context.Context, c client.Client,
 				return err
 			}
 			klog.FromContext(ctx).Error(err, "migrating legacy Studio model binding", "model", model.ID)
-			return err
+			migrationErr = errors.Join(migrationErr, err)
+			continue
 		}
 		if !migrated {
 			continue
 		}
 		// One transactional model rewrite at a time. A new Studio watch event or
 		// the connection watch resumes remaining rows after this write.
-		return nil
+		return migrationErr
 	}
-	return nil
+	return migrationErr
 }
 
 // Capture every eligible direct binding in one status CAS before promoting
@@ -917,19 +919,14 @@ func resolveSecret(ctx context.Context, reader client.Reader, connection *aiv1al
 		}
 		return nil, "", "", "", err
 	}
-	generatedID := strings.TrimSpace(connection.Annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation])
-	keyName := strings.TrimSpace(connection.Spec.SecretKey)
-	if keyName == "" {
-		keyName = aiv1alpha1.ModelProviderConnectionSecretKey
+	object, err := secretUnstructured(&secret)
+	if err != nil {
+		return nil, "", "", "", err
 	}
-	key := strings.TrimSpace(string(secret.Data[keyName]))
-	generated := generatedID != "" || strings.HasPrefix(secret.Name, aiv1alpha1.ModelProviderConnectionSecretPrefix) || secret.Annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != ""
-	for _, owner := range secret.OwnerReferences {
-		generated = generated || (owner.APIVersion == aiv1alpha1.SchemeGroupVersion.String() && owner.Kind == "ModelProviderConnection")
+	if err := api.ValidateModelProviderConnectionSecret(connection, object); err != nil {
+		return nil, "", "SecretOwnershipInvalid", err.Error(), nil
 	}
-	if generated && (!validGeneratedSecretIdentity(secret.Name, generatedID) || secret.Annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != generatedID || secret.Labels[aiv1alpha1.ModelProviderConnectionSecretOwnerLabel] != aiv1alpha1.ModelProviderConnectionSecretOwner || secret.Immutable == nil || !*secret.Immutable || !secretOwnedByConnection(&secret, connection)) {
-		return nil, "", "SecretOwnershipInvalid", "the generated key Secret failed its immutable ownership check", nil
-	}
+	key := strings.TrimSpace(string(secret.Data[aiv1alpha1.ModelProviderConnectionSecretKey]))
 	if key == "" {
 		return nil, "", "SecretIncomplete", "the referenced key Secret has no nonempty credential entry", nil
 	}
@@ -1139,7 +1136,8 @@ func protectExternalCredentials(ctx context.Context, c client.Client, reader cli
 	}
 	var studio aiv1alpha1.Studio
 	if err := reader.Get(ctx, types.NamespacedName{Name: aiv1alpha1.StudioName}, &studio); err != nil {
-		return err
+		// No Studio means there are no model rows that could reuse the key.
+		return client.IgnoreNotFound(err)
 	}
 	changed := false
 	for _, identity := range identities {
