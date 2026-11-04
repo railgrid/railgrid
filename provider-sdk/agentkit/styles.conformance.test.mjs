@@ -106,6 +106,16 @@ test('AgentKit owns optional recipes and keeps the core contract separate', () =
   assert.match(coreSource, /RAILGRID_UI_CORE_VERSION_MARKER/)
 })
 
+test('multiline model-form credentials retain their textarea height on coarse pointers', () => {
+  const compact = css.replace(/\s+/g, ' ')
+  const touchRules = compact.indexOf('/* Model connection controls keep the shared touch target contract. */')
+  const textareaRule = compact.indexOf('.k-model-form .k-model-form-field>textarea.k-input, .k-model-form .k-model-form-section>textarea.k-input')
+  assert.ok(touchRules >= 0 && textareaRule > touchRules, 'textarea sizing follows the coarse-pointer minimum rules')
+  assert.match(compact, /\.k-model-form \.k-model-form-field>textarea\.k-input, \.k-model-form \.k-model-form-section>textarea\.k-input \{ height: auto; min-height: 132px; resize: vertical; \}/)
+  assert.match(compact, /\.k-model-form \.k-input \{ min-width: 44px; min-height: 44px; \}/,
+    'the existing 44px touch minimum for single-line controls remains in place')
+})
+
 test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
   const helper = loadAgentHelper({ coreVersion: '34' })
   assert.equal(helper.document.head.children.length, 0, 'loading the module must not inject styles')

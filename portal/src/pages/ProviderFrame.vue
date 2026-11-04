@@ -126,7 +126,9 @@ const catalogMissing = computed(() => catalogSettled.value && !entry.value && !p
 const providerRoutePath = computed(() => props.subPath.split('/').filter(Boolean).join('/'))
 const isAppStudioLandingRoute = computed(() =>
   props.providerName === 'app-studio' &&
-  ['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_MODELS_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value),
+  (['', APP_STUDIO_CREATE_ROUTE, APP_STUDIO_CREATE_MODEL_ROUTE].includes(providerRoutePath.value) ||
+    providerRoutePath.value === APP_STUDIO_MODELS_ROUTE ||
+    providerRoutePath.value.startsWith(`${APP_STUDIO_MODELS_ROUTE}/`)),
 )
 const isAppStudioWorkspaceRoute = computed(() => props.providerName === 'app-studio' && !isAppStudioLandingRoute.value)
 // Full bleed hides the host identity/readiness header and content padding;
