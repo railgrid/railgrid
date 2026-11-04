@@ -7,7 +7,16 @@ package kcp
 
 import (
 	"context"
+	"strconv"
+	"sync"
 	"testing"
+	"time"
+
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/fake"
+	clienttesting "k8s.io/client-go/testing"
 
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -141,4 +150,121 @@ func TestTenantAdminMigrationCoversManagedCredentialsAndLeavesScopedIdentities(t
 			t.Errorf("%s role=%s want=%s", tc.name, actual, tc.want)
 		}
 	}
+}
+
+func TestTerminatingProviderRetainsFinalizerCleanup(t *testing.T) {
+	b := tenantBinding("notes.example.com")
+	wants := []rbacv1.PolicyRule{{APIGroups: []string{"notes.example.com"}, Resources: []string{"boards"}, Verbs: []string{"get", "patch"}}}
+	if ok, _ := rbacvalidation.Covers(tenantAdminRules([]unstructured.Unstructured{b}), wants); !ok {
+		t.Fatal("control: bound provider not accessible")
+	}
+	now := metav1.Now()
+	b.SetDeletionTimestamp(&now)
+	if ok, _ := rbacvalidation.Covers(tenantAdminRules([]unstructured.Unstructured{b}), wants); !ok {
+		t.Fatal("terminating APIBinding retains its APIs but tenant administrator cannot inspect or patch a stuck finalizer")
+	}
+}
+
+type bindingListBlocker struct {
+	dynamic.Interface
+	seen, resume chan struct{}
+	once         *sync.Once
+}
+type bindingResourceBlocker struct {
+	dynamic.NamespaceableResourceInterface
+	seen, resume chan struct{}
+	once         *sync.Once
+}
+
+func (c bindingListBlocker) Resource(gvr schema.GroupVersionResource) dynamic.NamespaceableResourceInterface {
+	r := c.Interface.Resource(gvr)
+	if gvr == apiBindingGVR {
+		return bindingResourceBlocker{r, c.seen, c.resume, c.once}
+	}
+	return r
+}
+func (r bindingResourceBlocker) List(ctx context.Context, opts metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	list, err := r.NamespaceableResourceInterface.List(ctx, opts)
+	r.once.Do(func() {
+		close(r.seen)
+		select {
+		case <-r.resume:
+		case <-ctx.Done():
+		}
+	})
+	return list, err
+}
+func TestTenantRoleRefreshDoesNotOverwriteNewerBinding(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cl := newCRBClient(t)
+	installRoleVersionChecks(t, cl)
+	if err := ensureTenantAdminRole(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+	a := tenantBinding("a.example")
+	a.SetName("a")
+	if _, err := cl.Resource(apiBindingGVR).Create(ctx, &a, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	seen, resume := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- ensureTenantAdminRole(ctx, bindingListBlocker{cl, seen, resume, &sync.Once{}}) }()
+	select {
+	case <-seen:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	b := tenantBinding("b.example")
+	b.SetName("b")
+	if _, err := cl.Resource(apiBindingGVR).Create(ctx, &b, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureTenantAdminRole(ctx, cl); err != nil {
+		t.Fatal(err)
+	}
+	close(resume)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	obj, err := cl.Resource(tenantAdminRoleGVR).Get(ctx, TenantAdminRoleName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var role rbacv1.ClusterRole
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &role); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := rbacvalidation.Covers(role.Rules, []rbacv1.PolicyRule{{APIGroups: []string{"b.example"}, Resources: []string{"boards"}, Verbs: []string{"get"}}}); !ok {
+		t.Fatal("stale login refresh overwrote a completed binding event refresh and revoked the new provider group")
+	}
+}
+
+// The dynamic fake has no resource-version enforcement. Model the API server's
+// optimistic update semantics so the stale writer has to retry its inputs.
+func installRoleVersionChecks(t *testing.T, client dynamic.Interface) {
+	t.Helper()
+	cl := client.(*fake.FakeDynamicClient)
+	version := 0
+	cl.PrependReactor("create", "clusterroles", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		obj := action.(clienttesting.CreateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		version++
+		obj.SetResourceVersion(strconv.Itoa(version))
+		err := cl.Tracker().Create(tenantAdminRoleGVR, obj, "")
+		return true, obj, err
+	})
+	cl.PrependReactor("update", "clusterroles", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		obj := action.(clienttesting.UpdateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+		current, err := cl.Tracker().Get(tenantAdminRoleGVR, "", obj.GetName())
+		if err != nil {
+			return true, nil, err
+		}
+		if obj.GetResourceVersion() != current.(*unstructured.Unstructured).GetResourceVersion() {
+			return true, nil, apierrors.NewConflict(tenantAdminRoleGVR.GroupResource(), obj.GetName(), nil)
+		}
+		version++
+		obj.SetResourceVersion(strconv.Itoa(version))
+		err = cl.Tracker().Update(tenantAdminRoleGVR, obj, "")
+		return true, obj, err
+	})
 }

@@ -21,11 +21,6 @@ import (
 	"errors"
 	"testing"
 
-	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
-	"github.com/railgrid/railgrid/pkg/kcppaths"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -33,6 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/dynamic/fake"
+
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 type testOrgGrantReader struct {
@@ -95,8 +96,8 @@ func newOrgScopeFixture(t *testing.T, targetPath string, dependencyConsent bool)
 	if dependencyConsent {
 		reg.Upsert(providers.Provider{
 			Name: dependency, APIExportPath: kcppaths.ProviderPath(dependency), APIExportName: dependencyExport,
-			APIGroups: []string{dependencyGroup},
-			Export:    &providersv1alpha1.ProviderExport{Name: dependencyExport},
+			APIGroups: []string{dependencyGroup}, WorkspaceCluster: "provider-cluster-databricks",
+			Export: &providersv1alpha1.ProviderExport{Name: dependencyExport},
 		})
 	}
 
@@ -130,7 +131,7 @@ func newOrgScopeFixture(t *testing.T, targetPath string, dependencyConsent bool)
 	providerParent := testDynamicClient(providerWorkspace)
 	orgWorkspace := testUnstructured("tenancy.kcp.io/v1alpha1", "Workspace", orgUUID, nil,
 		map[string]any{"cluster": "org-cluster", "type": map[string]any{"name": "organization"}}, map[string]any{"phase": "Ready"})
-	organization := testUnstructured("tenancy.railgrid.ai/v1alpha1", "Organization", orgUUID, nil, nil,
+	organization := testUnstructured(tenancyv1alpha1.SchemeGroupVersion.String(), "Organization", orgUUID, nil, nil,
 		map[string]any{"conditions": []any{map[string]any{"type": "Ready", "status": "True"}}})
 	tenants := testDynamicClient(orgWorkspace, organization)
 	teamWorkspace := testUnstructured("tenancy.kcp.io/v1alpha1", "Workspace", "team-a", nil,
@@ -194,7 +195,7 @@ func testBinding(name, path, exportName string, claims []any) *unstructured.Unst
 	if claims != nil {
 		spec["permissionClaims"] = claims
 	}
-	status := map[string]any{"phase": "Bound"}
+	status := map[string]any{"phase": "Bound", "apiExportClusterName": "provider-cluster-" + name}
 	if claims != nil {
 		status["appliedPermissionClaims"] = []any{map[string]any{"group": "databricks.example", "resource": "tables", "verbs": []any{"get"}}}
 		status["exportPermissionClaims"] = []any{map[string]any{"group": "databricks.example", "resource": "tables", "verbs": []any{"get"}}}
@@ -280,6 +281,56 @@ func TestOrgIdentityForeignRulesNeedCurrentDependencyGrantAndAppliedClaim(t *tes
 	}
 }
 
+func TestOrgIdentityDependencyUsesExactBoundPlatformCopyDespiteOrgShadow(t *testing.T) {
+	fixture := newOrgScopeFixture(t, kcppaths.WorkspacePath("org-a", "team-a"), true)
+	platform, ok := fixture.registry.Get("databricks")
+	if !ok {
+		t.Fatal("fixture platform dependency is missing")
+	}
+	platform.Export = &providersv1alpha1.ProviderExport{Name: platform.APIExportName, Resources: []providersv1alpha1.ProviderExportResource{{
+		Name: "tables", APIVersion: "databricks.example/v1", Kind: "Table",
+		Verbs: []providersv1alpha1.ProviderVerb{{Name: "lookup"}},
+	}}}
+	fixture.registry.Upsert(platform)
+	fixture.registry.Upsert(providers.Provider{
+		Name: "databricks", OrgUUID: "org-a",
+		APIExportPath: kcppaths.OrgProviderPath("org-a", "databricks"), APIExportName: platform.APIExportName,
+		APIGroups: []string{"databricks.example"},
+		Export: &providersv1alpha1.ProviderExport{Name: platform.APIExportName, Resources: []providersv1alpha1.ProviderExportResource{{
+			Name: "tables", APIVersion: "databricks.example/v1", Kind: "Table",
+			Verbs: []providersv1alpha1.ProviderVerb{{Name: "purge"}},
+		}}},
+	})
+
+	policy, err := fixture.resolver.Resolve(context.Background(), "org-a", "factory", "team-cluster")
+	if err != nil {
+		t.Fatalf("Resolve with platform dependency binding and same-named org copy: %v", err)
+	}
+	requested := []rbacv1.PolicyRule{{
+		APIGroups: []string{"databricks.example"}, Resources: []string{"tables"}, Verbs: []string{"get"}, ResourceNames: []string{"table-a"},
+	}}
+	if _, err := policy.Authorize("factory", "team-cluster", requested); err != nil {
+		t.Fatalf("platform-bound dependency read was refused due to org shadow: %v", err)
+	}
+	catalog, ok := policy.catalog.(orgIdentityCatalog)
+	if !ok {
+		t.Fatalf("policy catalog type = %T", policy.catalog)
+	}
+	if verbs := catalog.DeclaredVerbs("databricks", "tables"); len(verbs) != 1 || verbs[0] != "lookup" {
+		t.Fatalf("bound platform verbs = %v, want [lookup] rather than the org copy's [purge]", verbs)
+	}
+
+	platform.WorkspaceCluster = "new-platform-databricks-cluster"
+	fixture.registry.Upsert(platform)
+	policy, err = fixture.resolver.Resolve(context.Background(), "org-a", "factory", "team-cluster")
+	if err != nil {
+		t.Fatalf("Resolve with recreated platform source: %v", err)
+	}
+	if _, err := policy.Authorize("factory", "team-cluster", requested); err == nil {
+		t.Fatal("accepted the prior APIBinding issuer after the provider source was recreated")
+	}
+}
+
 func TestOrgIdentityOwnRuleRefusesAForeignGroup(t *testing.T) {
 	registry := providers.NewRegistry()
 	registry.Upsert(providers.Provider{Name: "edges", APIGroups: []string{"edges.railgrid.ai"}})
@@ -326,5 +377,70 @@ func TestAcceptedAppliedClaimsRejectSelectorsAndUnappliedClaims(t *testing.T) {
 	}}, "status", "exportPermissionClaims")
 	if got := acceptedAppliedClaims(binding); len(got) != 0 {
 		t.Fatalf("selector-limited claim was escalated into an identity: %v", got)
+	}
+}
+
+func TestAcceptedAppliedClaimsHandlesKCPMatchAllWithoutWideningSelectors(t *testing.T) {
+	cases := []struct {
+		name     string
+		selector any
+		allowed  bool
+	}{
+		{"KCP unrestricted default", map[string]any{"matchAll": true}, true},
+		{"omitted", nil, true},
+		{"false", map[string]any{"matchAll": false}, false},
+		{"empty", map[string]any{}, false},
+		{"malformed", "matchAll", false},
+		{"nonboolean", map[string]any{"matchAll": "true"}, false},
+		{"labels", map[string]any{"matchLabels": map[string]any{"tenant": "a"}}, false},
+		{"mixed", map[string]any{"matchAll": true, "resourceSelector": []any{map[string]any{"name": "one"}}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claim := map[string]any{"group": "dep.example", "resource": "tables", "verbs": []any{"get"}}
+			accepted := runtime.DeepCopyJSONValue(claim).(map[string]any)
+			accepted["state"] = "Accepted"
+			applied := runtime.DeepCopyJSONValue(claim).(map[string]any)
+			accepted["selector"] = tc.selector
+			applied["selector"] = tc.selector
+			binding := testUnstructured("apis.kcp.io/v1alpha2", "APIBinding", "factory", nil,
+				map[string]any{"permissionClaims": []any{accepted}},
+				map[string]any{"appliedPermissionClaims": []any{applied}, "exportPermissionClaims": []any{claim}})
+			got := acceptedAppliedClaims(binding)["dep.example/tables"]["get"]
+			if got != tc.allowed {
+				t.Fatalf("effective get=%v, want %v", got, tc.allowed)
+			}
+		})
+	}
+}
+
+func TestOrgIdentityPolicyAdmitsKCPDefaultedUnrestrictedComposition(t *testing.T) {
+	fixture := newOrgScopeFixture(t, kcppaths.WorkspacePath("org-a", "team-a"), true)
+	target := fixture.clients["team-cluster"]
+	binding, err := target.Resource(orgIdentityBindingGVR).Get(context.Background(), "factory", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range [][]string{{"spec", "permissionClaims"}, {"status", "appliedPermissionClaims"}} {
+		claims, _, err := unstructured.NestedSlice(binding.Object, path...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, raw := range claims {
+			raw.(map[string]any)["selector"] = map[string]any{"matchAll": true}
+		}
+		if err := unstructured.SetNestedSlice(binding.Object, claims, path...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := target.Resource(orgIdentityBindingGVR).Update(context.Background(), binding, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := fixture.resolver.Resolve(context.Background(), "org-a", "factory", "team-cluster")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := policy.Authorize("factory", "team-cluster", []rbacv1.PolicyRule{{APIGroups: []string{"databricks.example"}, Resources: []string{"tables"}, Verbs: []string{"get"}, ResourceNames: []string{"table-a"}}}); err != nil {
+		t.Fatalf("unrestricted accepted KCP composition refused: %v", err)
 	}
 }

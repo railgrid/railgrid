@@ -263,3 +263,158 @@ test('organization enable submits the reviewed snapshot and never retries change
   await assert.rejects(store.enable({ ...provider, consentDigest: undefined }, []), /Refresh the provider catalog/)
   assert.equal(calls, 1, 'missing consent snapshot must not issue a write')
 })
+
+test('SRI refresh follows a platform binding without replacing the org catalog', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const orgEntry = { name: 'edges', scope: 'org', ownerOrg: 'org-a', shadowsPlatform: true,
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:tenants:org-a:providers:edges' },
+    serving: { ui: { mainJSIntegrity: 'sha384-org' } } }
+  const platformEntry = { name: 'edges', scope: 'global', export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:providers:edges' },
+    serving: { ui: { mainJSIntegrity: 'sha384-platform' } } }
+  globalThis.__providerAuthFetch = async (url, init) => {
+    if (url === '/api/providers' && init?.headers?.['X-Railgrid-Org'] === 'org-a') return response({ items: [orgEntry] })
+    if (url === '/api/providers') return response({ items: [platformEntry] })
+    return response({ bindingNamesByProvider: { edges: 'edges' }, bindingsByProvider: {
+      edges: { bindingName: 'edges', selfHosted: false, exportPath: 'root:railgrid:providers:edges' },
+    } })
+  }
+  await store.load('org-a')
+  await store.loadPlatformCatalog()
+  let source = 'root:railgrid:providers:edges'
+  globalThis.__providerAuthFetch = async (url, init) => {
+    assert.equal(url, '/api/providers')
+    assert.equal(init.headers, undefined, 'platform refresh must not send the selected org header')
+    return response({ items: [{ name: 'edges', scope: 'global', export: { name: 'edges.providers.railgrid.ai', path: source },
+      serving: { ui: { mainJSIntegrity: 'sha384-platform' } } }] })
+  }
+  assert.equal(await store.refreshMainJSIntegrity('edges'), 'sha384-platform')
+  assert.equal(store.byName('edges').scope, 'org', 'SRI refresh must retain the enrollment catalog')
+  source = 'root:unrelated:edges'
+  assert.equal(await store.refreshMainJSIntegrity('edges'), null, 'a changed export must not supply a retry pin')
+})
+
+test('workspace provider metadata follows the exact bound copy instead of the shadow catalog copy', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const platform = {
+    name: 'edges', scope: 'global', displayName: 'Platform Edges', version: '2.0.0', ready: true,
+    sourceCluster: 'cluster-platform',
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:providers:edges' },
+    serving: { ui: { children: [{ displayName: 'Workloads', builtinRoute: 'workloads' }] } },
+  }
+  const orgCopy = {
+    name: 'edges', scope: 'org', ownerOrg: 'org-a', shadowsPlatform: true,
+    displayName: 'My Edges', version: '2.0.0', ready: false, readinessMessage: 'org copy starting',
+    sourceCluster: 'cluster-org-v1',
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:tenants:org-a:providers:edges' },
+    serving: { ui: { children: [{ displayName: 'My Workloads', builtinRoute: 'workloads' }] } },
+  }
+  let binding = { bindingName: 'edges', exportName: platform.export.name, exportPath: platform.export.path, exportCluster: platform.sourceCluster, selfHosted: false }
+  globalThis.__providerAuthFetch = async (url, init) => {
+    if (url.endsWith('/providers/enabled')) return response({
+      bindingNamesByProvider: { edges: 'edges' }, bindingsByProvider: { edges: binding },
+    })
+    if (url === '/api/providers' && init?.headers?.['X-Railgrid-Org'] === 'org-a') return response({ items: [orgCopy] })
+    if (url === '/api/providers') {
+      assert.equal(init?.tenant, false, 'platform metadata reads must omit tenant scope')
+      assert.equal(init?.cache, 'no-store')
+      assert.equal(init?.redirect, 'error')
+      assert.ok(init?.signal instanceof AbortSignal)
+      return response({ items: [platform] })
+    }
+    throw new Error(`unexpected provider request ${url}`)
+  }
+  await store.load('org-a')
+  await store.loadPlatformCatalog()
+
+  assert.equal(store.byName('edges').displayName, 'My Edges', 'catalog keeps the organization enrollment copy')
+  assert.equal(store.workspaceProvider('edges').displayName, 'Platform Edges')
+  assert.equal(store.workspaceProvider('edges').ready, true, 'the bound platform readiness wins')
+  assert.equal(store.enabledNavItems.find(item => item.name === 'edges').label, 'Platform Edges')
+  assert.match(store.enabledNavItems.find(item => item.name === 'edges').children[0].to, /workloads$/)
+  assert.equal(store.workspaceProviders.find(item => item.name === 'edges').version, '2.0.0')
+
+  platform.version = '3.0.0'
+  platform.ready = false
+  await store.load('org-a')
+  await store.loadPlatformCatalog()
+  assert.equal(store.workspaceProvider('edges').version, '3.0.0', 'an explicit catalog refresh updates platform metadata')
+  assert.equal(store.workspaceProvider('edges').ready, false)
+  assert.equal(store.enabledNavItems.some(item => item.name === 'edges'), false, 'platform readiness, not the shadow copy, gates navigation')
+  assert.equal(store.byName('edges').displayName, 'My Edges', 'platform refresh does not replace the self-host enrollment DTO')
+
+  binding = { bindingName: 'edges', exportName: orgCopy.export.name, exportPath: orgCopy.export.path, exportCluster: orgCopy.sourceCluster, selfHosted: true }
+  await store.refreshBindings()
+  assert.equal(store.workspaceProvider('edges').displayName, 'My Edges')
+  orgCopy.sourceCluster = 'cluster-org-v2'
+  assert.equal(store.workspaceProviderState('edges'), 'missing', 'same-path source recreation with a different issuer cannot satisfy the old binding')
+  binding = { bindingName: 'edges', exportName: orgCopy.export.name, exportPath: orgCopy.export.path, exportCluster: orgCopy.sourceCluster, selfHosted: true }
+  await store.refreshBindings()
+  assert.equal(store.workspaceProvider('edges').displayName, 'My Edges', 'the refreshed issuer selects the recreated same-name, same-version copy')
+  assert.equal(store.workspaceProvider('edges').ready, false)
+  assert.equal(store.workspaceProviderState('edges'), 'ready', 'source is resolved even while that copy is unready')
+})
+
+test('navigation retains last confirmed provider metadata only during a same-scope refresh', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  const platform = {
+    name: 'edges', scope: 'global', displayName: 'Platform Edges', version: '2.0.0', ready: true,
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:providers:edges' },
+    serving: { ui: { children: [{ displayName: 'Workloads', builtinRoute: 'workloads' }] } },
+  }
+  const orgCopy = {
+    name: 'edges', scope: 'org', ownerOrg: 'org-a', shadowsPlatform: true,
+    displayName: 'Org Edges', version: '9.0.0', ready: true,
+    export: { name: 'edges.providers.railgrid.ai', path: 'root:railgrid:tenants:org-a:providers:edges' },
+    serving: { ui: { children: [{ displayName: 'Org Workloads', builtinRoute: 'workloads' }] } },
+  }
+  globalThis.__providerAuthFetch = async (url, init) => {
+    if (url.endsWith('/providers/enabled')) return response({
+      bindingNamesByProvider: { edges: 'edges' },
+      bindingsByProvider: { edges: { bindingName: 'edges', exportName: platform.export.name, exportPath: platform.export.path, selfHosted: false } },
+    })
+    if (url === '/api/providers' && init?.headers?.['X-Railgrid-Org'] === 'org-a') return response({ items: [orgCopy] })
+    if (url === '/api/providers') return response({ items: [platform] })
+    throw new Error(`unexpected provider request ${url}`)
+  }
+  await store.load('org-a')
+  await store.loadPlatformCatalog()
+  assert.equal(store.enabledNavItems.find(item => item.name === 'edges').label, 'Platform Edges')
+
+  const pending = deferred()
+  globalThis.__providerAuthFetch = () => pending.promise
+  const refresh = store.refreshBindings()
+  assert.equal(store.workspaceProvider('edges'), undefined, 'runtime selection fails closed while stale')
+  assert.equal(store.enabledNavItems.find(item => item.name === 'edges').label, 'Platform Edges', 'navigation retains last confirmed source metadata')
+  assert.match(store.enabledNavItems.find(item => item.name === 'edges').children[0].to, /workloads$/)
+
+  setSelection('org-b', 'workspace-b')
+  assert.equal(store.workspaceProvider('edges'), undefined)
+  assert.equal(store.enabledNavItems.some(item => item.name === 'edges'), false, 'a scope switch immediately clears retained navigation')
+  pending.resolve(response({ bindingNamesByProvider: { edges: 'edges' } }))
+  await refresh
+})
+
+test('an organization binding without its organization catalog entry never falls back to the platform copy', async () => {
+  setSelection('org-a', 'workspace-a')
+  const store = storeModule.useProvidersStore()
+  globalThis.__providerAuthFetch = async url => {
+    if (url.endsWith('/providers/enabled')) return response({
+      bindingNamesByProvider: { kuery: 'kuery' },
+      bindingsByProvider: { kuery: { bindingName: 'kuery', exportName: 'kuery.providers.railgrid.ai', exportPath: 'root:railgrid:tenants:org-a:providers:kuery', selfHosted: true } },
+    })
+    return response({ items: [{
+      name: 'kuery', scope: 'global', displayName: 'Platform Kuery', ready: true,
+      export: { name: 'kuery.providers.railgrid.ai', path: 'root:railgrid:providers:kuery' },
+      serving: { ui: {} },
+    }] })
+  }
+  await store.load('org-a')
+
+  assert.equal(store.workspaceProviderState('kuery'), 'missing')
+  assert.equal(store.workspaceProvider('kuery'), undefined)
+  assert.equal(store.workspaceProviders.some(provider => provider.name === 'kuery'), false)
+  assert.equal(store.enabledNavItems.some(item => item.name === 'kuery'), false)
+})

@@ -354,6 +354,22 @@ func streaming(r *http.Request) bool {
 	return ok && (i.Verb == "watch" || i.Subresource != "" && i.Subresource != "status" && i.Subresource != "scale")
 }
 
+// customSubresourceRequest is deliberately derived from kcp's parsed
+// RequestInfo, not URL prefixes or caller-controlled Upgrade/query headers.
+// Token minting, status and scale do not receive the upload-sized allowance.
+func customSubresourceRequest(r *http.Request) bool {
+	i, ok := request.RequestInfoFrom(r.Context())
+	return ok && i.IsResourceRequest && i.Resource != "" && i.Subresource != "" &&
+		i.Subresource != "status" && i.Subresource != "scale" && i.Subresource != "token"
+}
+
+func (g *Guard) requestBodyLimit(r *http.Request) int64 {
+	if customSubresourceRequest(r) && g.config.MaxStreamRequestBytes > 0 {
+		return g.config.MaxStreamRequestBytes
+	}
+	return g.config.MaxRequestBytes
+}
+
 func deny(w http.ResponseWriter, code int, err error) {
 	w.Header().Set("Retry-After", "1")
 	http.Error(w, err.Error(), code)
@@ -377,12 +393,13 @@ func (g *Guard) Wrap(next http.Handler) http.Handler {
 			return
 		}
 		stream := streaming(r)
+		requestLimit := g.requestBodyLimit(r)
 		release, err := g.acquire(orgs, stream)
 		if err != nil {
 			deny(w, http.StatusTooManyRequests, err)
 			return
 		}
-		if r.ContentLength > g.config.MaxRequestBytes {
+		if r.ContentLength > requestLimit {
 			release()
 			deny(w, http.StatusRequestEntityTooLarge, fmt.Errorf("organization request exceeds byte limit"))
 			return
@@ -394,7 +411,7 @@ func (g *Guard) Wrap(next http.Handler) http.Handler {
 		ctx, cancel := context.WithTimeout(context.WithValue(r.Context(), accountedKey{}, g), duration)
 		defer cancel()
 		r = r.WithContext(ctx)
-		r.Body = http.MaxBytesReader(w, r.Body, g.config.MaxRequestBytes)
+		r.Body = http.MaxBytesReader(w, r.Body, requestLimit)
 		lifetime := newLifetime(w, time.Now().Add(duration), release)
 		defer lifetime.finish()
 		if err := lifetime.prepare(); err != nil {

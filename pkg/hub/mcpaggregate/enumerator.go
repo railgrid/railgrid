@@ -24,6 +24,7 @@ import (
 	"github.com/go-logr/logr"
 
 	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 // OrgProviderRouter resolves how a hub-originated request reaches an org-owned
@@ -39,13 +40,16 @@ type OrgProviderRouter interface {
 // aggregate endpoint and the MCPServer status controller.
 //
 // What a caller sees is the catalog of the Org its bearer was verified
-// against, and nothing else:
+// against, and nothing else. When a selected team workspace and bound-copy
+// resolver are available, API-backed entries are first selected by that
+// workspace's APIBinding; callers without a team workspace keep the legacy
+// platform-only/org-unavailable behavior:
 //
-//   - The provider set is reg.ListForOrg(caller.OrgUUID): every platform
+//   - The fallback provider set is reg.ListForOrg(caller.OrgUUID): every platform
 //     provider plus that Org's own. Another Org's providers are never listed,
 //     so their tools cannot appear and their backends are never contacted.
 //     An empty OrgUUID lists the platform catalog only — never every org's.
-//   - An org-owned provider shadows the platform provider of the same name
+//   - In fallback mode, an org-owned provider shadows the platform provider of the same name
 //     (ListForOrg drops the platform copy), matching what
 //     /services/providers/{name} routes to for that Org. The two never both
 //     register "<name>__*" tools, and when the org copy cannot be federated
@@ -93,6 +97,50 @@ func RegistryEnumerator(reg *providers.Registry, router OrgProviderRouter, log l
 			}
 		}
 		return out
+	}
+}
+
+// BoundRegistryEnumerator selects API-backed provider copies from the
+// verified caller's actual workspace bindings before building MCP targets.
+// API-less providers retain the existing catalog behavior because they have
+// no export binding to select. If binding or cluster resolution fails, only
+// those API-less entries remain visible.
+func BoundRegistryEnumerator(reg *providers.Registry, router OrgProviderRouter, log logr.Logger,
+	resolveCopies providers.BoundCopySnapshotResolver,
+) ProviderEnumerator {
+	legacy := RegistryEnumerator(reg, router, log)
+	return func(ctx context.Context, caller Caller) []ProviderTarget {
+		if reg == nil || caller.OrgUUID == "" || caller.WorkspaceUUID == "" || resolveCopies == nil {
+			return legacy(ctx, caller)
+		}
+		path := kcppaths.WorkspacePath(caller.OrgUUID, caller.WorkspaceUUID)
+		boundCopies, err := resolveCopies(ctx, path)
+		selected := providers.NewRegistry()
+		candidates := reg.ListCopiesForOrg(caller.OrgUUID)
+		names := make(map[string]bool, len(candidates))
+		for _, candidate := range candidates {
+			if candidate.APIExportPath != "" && candidate.APIExportName != "" {
+				names[candidate.Name] = true
+			} else if _, exists := names[candidate.Name]; !exists {
+				names[candidate.Name] = false
+			}
+		}
+		for name, hasExport := range names {
+			if !hasExport {
+				// No APIExport means there is no binding coordinate. Keep the
+				// established MCP behavior for this provider.
+				if p, ok := reg.GetForOrg(caller.OrgUUID, name); ok {
+					selected.Upsert(p)
+				}
+				continue
+			}
+			if err == nil {
+				if p, ok := boundCopies[name]; ok {
+					selected.Upsert(p)
+				}
+			}
+		}
+		return RegistryEnumerator(selected, router, log)(ctx, caller)
 	}
 }
 

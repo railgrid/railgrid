@@ -15,7 +15,7 @@ Workload kind depends on the kcp mode:
 {{- end }}
 {{- $orgLimits := default dict .Values.hub.organizationLimits }}
 {{- $orgLimitsEnabled := false }}
-{{- range $key := list "maxObjectBytes" "maxRequestBytes" "requestsPerSecond" "requestBurst" "maxConcurrentRequests" "maxConcurrentStreams" "maxActiveOrganizations" "requestTimeout" "streamTimeout" "maxConsumerWorkspaces" "maxResourceTypes" "maxObjectsPerResource" "maxLiveBytes" }}
+{{- range $key := list "maxObjectBytes" "maxRequestBytes" "maxStreamRequestBytes" "requestsPerSecond" "requestBurst" "maxConcurrentRequests" "maxConcurrentStreams" "maxActiveOrganizations" "requestTimeout" "streamTimeout" "maxConsumerWorkspaces" "maxResourceTypes" "maxObjectsPerResource" "maxLiveBytes" }}
 {{- if not (has (toString (default 0 (get $orgLimits $key))) (list "0" "0s")) }}
 {{- $orgLimitsEnabled = true }}
 {{- end }}
@@ -44,6 +44,11 @@ Workload kind depends on the kcp mode:
 {{- end }}
 {{- if lt (int64 $orgLimits.maxRequestBytes) (int64 $orgLimits.maxObjectBytes) }}
 {{- fail "hub.organizationLimits.maxRequestBytes must cover maxObjectBytes" }}
+{{- end }}
+{{- with $orgLimits.maxStreamRequestBytes }}
+{{- if or (not (regexMatch "^[1-9][0-9]*$" (toString .))) (lt (int64 .) (int64 $orgLimits.maxRequestBytes)) }}
+{{- fail "hub.organizationLimits.maxStreamRequestBytes must be an integer covering maxRequestBytes" }}
+{{- end }}
 {{- end }}
 {{- range $key := list "requestTimeout" "streamTimeout" }}
 {{- $duration := toString (get $orgLimits $key) }}
@@ -103,6 +108,9 @@ spec:
             {{- if $orgLimitsEnabled }}
             - --org-max-object-bytes={{ $orgLimits.maxObjectBytes }}
             - --org-max-request-bytes={{ $orgLimits.maxRequestBytes }}
+            {{- with $orgLimits.maxStreamRequestBytes }}
+            - --org-max-stream-request-bytes={{ . }}
+            {{- end }}
             - --org-requests-per-second={{ $orgLimits.requestsPerSecond }}
             - --org-request-burst={{ $orgLimits.requestBurst }}
             - --org-max-concurrent-requests={{ $orgLimits.maxConcurrentRequests }}
@@ -202,10 +210,9 @@ spec:
             - --dev-mode
             {{- end }}
             {{- /*
-            Provider hardening flags. Each renders only when set so an
-            unchanged values file keeps the binary's defaults for this release
-            (warn / off / cluster-admin) and the rendered workload is
-            byte-identical to earlier chart versions.
+            Provider hardening flags render only when set. Unset values inherit
+            the binary defaults: enforced heartbeats, platform delegation, a
+            narrow provider workspace role, and explicit hub-capability consent.
             */}}
             {{- with .Values.hub.security }}
             {{- if .providerHeartbeatAuth }}
@@ -253,7 +260,7 @@ spec:
             truth. Keep this list in step with the flags rendered above.
             */}}
             {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-relay-url" "provider-relay-listen-addr" "provider-relay-cert-file" "provider-relay-key-file" "provider-relay-client-ca-file" "provider-relay-allowed-names" "provider-hub-access-platform-default" "data-dir" }}
-            {{- $modelled = concat $modelled (list "org-max-object-bytes" "org-max-request-bytes" "org-requests-per-second" "org-request-burst" "org-max-concurrent-requests" "org-max-concurrent-streams" "org-max-active-organizations" "org-request-timeout" "org-stream-timeout") }}
+            {{- $modelled = concat $modelled (list "org-max-object-bytes" "org-max-request-bytes" "org-max-stream-request-bytes" "org-requests-per-second" "org-request-burst" "org-max-concurrent-requests" "org-max-concurrent-streams" "org-max-active-organizations" "org-request-timeout" "org-stream-timeout") }}
             {{- $modelled = concat $modelled (list "org-max-consumer-workspaces" "org-max-resource-types" "org-max-objects-per-resource" "org-max-live-bytes") }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}

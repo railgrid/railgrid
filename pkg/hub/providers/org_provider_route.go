@@ -70,7 +70,7 @@ func (p *ProviderProxy) OrgProviderRoute(ctx context.Context, prov Provider, cal
 	if prov.OrgUUID == "" {
 		return OrgProviderRoute{}, fmt.Errorf("provider %q: %w", prov.Name, errNotOrgOwned)
 	}
-	hop, err := p.resolveEdgeHop(prov)
+	hop, err := p.resolveEdgeHop(ctx, prov)
 	if err != nil {
 		return OrgProviderRoute{}, fmt.Errorf("provider %q: %w", prov.Name, err)
 	}

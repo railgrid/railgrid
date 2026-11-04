@@ -21,6 +21,17 @@ import test from 'node:test'
 // mock-browser checks cover that shell; live provider/backend acceptance stays separate.
 const source = await readFile(new URL('./ProviderFrame.vue', import.meta.url), 'utf8')
 
+test('organization providers mount as approved trusted bundles in the ordinary content track', () => {
+  assert.match(source, /<AppLayout :full-bleed="isFullBleedProvider">/)
+  assert.doesNotMatch(source, /<iframe|sandbox=/)
+  assert.match(source, /const selectedEntry = computed\(\(\) => providers\.workspaceProvider\(props\.providerName\)\)/)
+  assert.match(source, /await resolveProviderBundle\(entry\.value, authFetch, tenant\.orgUUID\)/)
+  assert.match(source, /providerSourceMissing/)
+  assert.match(source, /await loadProviderScript\(name, version, document, undefined, \{[\s\S]*?\.\.\.bundle/)
+  assert.doesNotMatch(source, /providerOrigin|ProviderOrigin|sessionLease|\/sessions/)
+  assert.match(source, /<header v-if="catalogSettled && entry && !isFullBleedProvider"/)
+})
+
 function functionBody(name) {
   const body = source.match(new RegExp(`function ${name}\\([^)]*\\)(?:\\s*:\\s*[^\\{]+)?\\s*\\{([\\s\\S]*?)\\n\\}`))?.[1]
   assert.ok(body, `expected ${name} in ProviderFrame.vue`)
@@ -222,11 +233,11 @@ test('query-only navigation advances the page epoch and republishes current scop
   assert.match(routeWatch, /flush: 'sync'/)
   assert.ok(contextWatch)
   assert.match(contextWatch, /JSON\.stringify\(auth\.user\)/)
-  assert.match(contextWatch, /JSON\.stringify\(entry\.value\?\.requires\)/)
-  assert.match(contextWatch, /bindingsByProvider\[props\.providerName\]\?\.claims/)
-  assert.match(contextWatch, /bindingsByProvider\[props\.providerName\]\?\.compositions\?\.granted/)
+  assert.match(contextWatch, /tenant\.orgUUID/)
+  assert.match(contextWatch, /tenant\.workspaceUUID/)
+  assert.doesNotMatch(contextWatch, /bindingsByProvider|apiGroups|requires/)
   assert.match(contextWatch, /router\.currentRoute\.value\.fullPath/)
-  assert.match(source, /sandboxController\.update\(isolatedContext\(\)\)/)
+  assert.doesNotMatch(source, /originController|providerOriginContext/)
 })
 
 test('A-B-A navigation retires page callbacks while same-owner transport and token refresh stay current', () => {
@@ -287,7 +298,7 @@ test('mounted-element cleanup clears the override and removes the mount listener
   const makeCleanup = new Function(
     'pageResource', 'resourceSource', 'routeFocus', 'boundMount',
     'onRouteReady', 'onNavigate', 'onLayoutChange', 'onProviderBootstrapRetry',
-    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride', 'entry', 'sandboxController',
+    'elementRef', 'mountRef', 'loadState', 'loadError', 'providerFullBleedOverride',
     `let mountGeneration = 0; return function () { ${body} }`,
   )
   const removedListeners = []
@@ -310,7 +321,6 @@ test('mounted-element cleanup clears the override and removes the mount listener
     loadError,
     state,
     { value: null },
-    null,
   )
 
   clear()

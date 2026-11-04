@@ -59,7 +59,7 @@ func compositionTestManager(t *testing.T) (*Manager, *fakeOps) {
 	reg := hubproviders.NewRegistry()
 	reg.Upsert(hubproviders.Provider{
 		Name:          "app-studio",
-		APIExportPath: "root:providers:app-studio",
+		APIExportPath: "root:railgrid:providers:app-studio",
 		APIExportName: "app-studio",
 		Requires:      appStudioComposes,
 	})
@@ -72,6 +72,81 @@ func compositionTestManager(t *testing.T) (*Manager, *fakeOps) {
 		"code":           "code",
 	}
 	return mgr, ops
+}
+
+type projectionBindingOps struct {
+	*fakeOps
+	binding kcp.ProviderBinding
+}
+
+func (o projectionBindingOps) ListProviderAPIBindings(context.Context, string, string) (map[string]kcp.ProviderBinding, error) {
+	return map[string]kcp.ProviderBinding{o.binding.Name: o.binding}, nil
+}
+
+func TestListEnabledProvidersUsesExactBoundProviderForGrantProjection(t *testing.T) {
+	mgr, ops, _ := newTestManager(t)
+	registry := hubproviders.NewRegistry()
+	registry.Upsert(hubproviders.Provider{
+		Name: "app-studio", APIExportPath: "root:railgrid:providers:app-studio",
+		APIExportName:    "app-studio.providers.railgrid.ai",
+		WorkspaceCluster: "platform-app-studio-cluster",
+		HubAccess:        []providersv1alpha1.ProviderHubAccess{{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeWorkspace}},
+	})
+	registry.Upsert(hubproviders.Provider{
+		Name: "app-studio", OrgUUID: "org-a", APIExportPath: "root:railgrid:tenants:org-a:providers:app-studio",
+		APIExportName:    "app-studio.providers.railgrid.ai",
+		WorkspaceCluster: "org-app-studio-cluster",
+		HubAccess:        []providersv1alpha1.ProviderHubAccess{{Capability: providersv1alpha1.HubCapabilityMembershipsRead, Scope: providersv1alpha1.HubAccessScopeOrg}},
+		Requires: []providersv1alpha1.ProviderRequirement{{
+			Provider: "code", Group: "code.railgrid.ai",
+			Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{"get"}}},
+		}},
+	})
+	mgr.WithProviderRegistry(registry)
+	mgr.WithHubAccessGrants(hubaccess.NewStore(mgr.client), false)
+	mgr.bootstrapper = projectionBindingOps{fakeOps: ops, binding: kcp.ProviderBinding{
+		Name: "app-studio", ExportPath: "root:railgrid:providers:app-studio", ExportName: "app-studio.providers.railgrid.ai", ExportCluster: "platform-app-studio-cluster",
+	}}
+
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"))
+	defer srv.Close()
+	listing := enabledListing(t, srv.URL)
+	detail := listing.BindingsByProvider["app-studio"]
+	if detail.ExportPath != "root:railgrid:providers:app-studio" || detail.ExportName != "app-studio.providers.railgrid.ai" || detail.ExportCluster != "platform-app-studio-cluster" || detail.SelfHosted {
+		t.Fatalf("binding projection = %+v, want the platform export", detail)
+	}
+	if detail.HubAccess == nil || len(detail.HubAccess.Pending) != 1 || detail.HubAccess.Pending[0] != (AcceptedHubAccess{Capability: "memberships.read", Scope: "workspace"}) {
+		t.Fatalf("hub access came from the wrong provider copy: %+v", detail.HubAccess)
+	}
+	if detail.Compositions != nil {
+		t.Fatalf("platform binding inherited org-copy compositions: %+v", detail.Compositions)
+	}
+
+	// The converse binding must project the organization copy, even though its
+	// same-named platform counterpart remains registered.
+	orgBinding := projectionBindingOps{fakeOps: ops, binding: kcp.ProviderBinding{
+		Name: "app-studio", ExportPath: "root:railgrid:tenants:org-a:providers:app-studio", ExportName: "app-studio.providers.railgrid.ai", ExportCluster: "org-app-studio-cluster", SelfHosted: true,
+	}}
+	mgr.bootstrapper = orgBinding
+	listing = enabledListing(t, srv.URL)
+	detail = listing.BindingsByProvider["app-studio"]
+	if !detail.SelfHosted || detail.ExportPath != orgBinding.binding.ExportPath {
+		t.Fatalf("org binding projection = %+v, want the organization export", detail)
+	}
+	if detail.HubAccess == nil || len(detail.HubAccess.Pending) != 1 || detail.HubAccess.Pending[0] != (AcceptedHubAccess{Capability: "memberships.read", Scope: "org"}) {
+		t.Fatalf("org binding hub access came from the wrong provider copy: %+v", detail.HubAccess)
+	}
+	if detail.Compositions == nil || len(detail.Compositions.Pending) != 1 || detail.Compositions.Pending[0].Resource != "repositories" {
+		t.Fatalf("org binding compositions came from the wrong provider copy: %+v", detail.Compositions)
+	}
+
+	orgBinding.binding.ExportCluster = "old-org-app-studio-cluster"
+	mgr.bootstrapper = orgBinding
+	listing = enabledListing(t, srv.URL)
+	detail = listing.BindingsByProvider["app-studio"]
+	if detail.HubAccess != nil || detail.Compositions != nil {
+		t.Fatalf("stale issuer resolved to a registered provider copy: %+v", detail)
+	}
 }
 
 func enabledListing(t *testing.T, url string) ListEnabledProvidersResponse {

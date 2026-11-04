@@ -330,6 +330,7 @@ type ProviderProxy struct {
 	// SetKCPFrontDoor and serveOverEdge.
 	kcpFrontDoor *url.URL
 	kcpTransport http.RoundTripper
+	boundCopy    BoundCopyResolver
 }
 
 // SetKCPFrontDoor tells the backend proxy where kcp is and how to
@@ -387,7 +388,7 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// static asset (no "." in the last segment). Without this fallback, a
 	// browser refresh of /ui/providers/quickstart/anything would serve the
 	// provider's raw HTML and the portal chrome would be lost.
-	if p.fallbackForSPA && !isAssetPath(rest) {
+	if p.fallbackForSPA && !isAssetPath(rest) && !isScopedUIGrantPath(rest) {
 		if p.fallback != nil {
 			p.fallback.ServeHTTP(w, r)
 			return
@@ -409,6 +410,15 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Resolve the caller once here; resolveProvider, the delegated-token
 	// path, and setHeaders all read the memo (see resolveCaller).
 	if p.fallbackForSPA {
+		if isScopedUIGrantPath(rest) {
+			assetPath, grant, ok := splitScopedUIGrantPath(rest)
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			p.serveOrgUIAsset(w, r, name, assetPath, grant)
+			return
+		}
 		if grant := r.URL.Query().Get(UIGrantQueryParam); grant != "" {
 			p.serveOrgUIAsset(w, r, name, rest, grant)
 			return
@@ -416,7 +426,12 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		r = p.withResolvedCaller(r)
 	}
-	prov, found := p.resolveProvider(r, name)
+	prov, found, resolveErr := p.resolveProvider(r, name)
+	if resolveErr != nil {
+		p.log.Info("provider source resolution failed", "provider", name, "err", resolveErr.Error())
+		http.Error(w, "provider source is unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if !found {
 		http.Error(w, "provider not found: "+name, http.StatusNotFound)
 		return
@@ -514,6 +529,14 @@ func (p *ProviderProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	rp.ServeHTTP(w, r)
+}
+
+// SetBoundCopyResolver installs the live workspace APIBinding lookup used for
+// authenticated MCP, OAuth, and health requests. UI grants share the same
+// resolver through their handler; ordinary UI script requests remain platform
+// scoped unless they carry an org UI grant.
+func (p *ProviderProxy) SetBoundCopyResolver(resolve BoundCopyResolver) {
+	p.boundCopy = resolve
 }
 
 // hubOnlyProviderPrefixes are backend paths only the hub itself may dial.

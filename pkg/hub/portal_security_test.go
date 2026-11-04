@@ -83,82 +83,14 @@ func TestWithPortalSecurityHeadersSetsExactContentSecurityPolicy(t *testing.T) {
 	}
 }
 
-func TestWithPortalSecurityHeadersScopesSandboxPolicyToSandboxDocument(t *testing.T) {
-	t.Parallel()
-
-	handler := WithPortalSecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	request := httptest.NewRequest(http.MethodGet, "/ui/provider-sandbox.html", nil)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	csp := recorder.Result().Header.Get("Content-Security-Policy")
-	for _, directive := range []string{"script-src 'self' http://example.com blob:;", "connect-src 'none';", "frame-src 'none';", "object-src 'none';"} {
-		if !strings.Contains(csp, directive) {
-			t.Fatalf("sandbox CSP %q is missing %q", csp, directive)
+func TestRetiredProviderBridgeAssetsDoNotFallThroughToPortalSPA(t *testing.T) {
+	handler := WithPortalSecurityHeaders(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("retired bridge reached portal") }))
+	for _, path := range []string{"/ui/provider-sandbox.html", "/ui/provider-sandbox-bootstrap.js"} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusGone {
+			t.Fatalf("%s status=%d", path, rec.Code)
 		}
-	}
-	if strings.Contains(csp, "connect-src 'self'") {
-		t.Fatalf("sandbox CSP permits direct network access: %q", csp)
-	}
-
-	request = httptest.NewRequest(http.MethodGet, "/ui/", nil)
-	recorder = httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if got := recorder.Result().Header.Get("Content-Security-Policy"); strings.Contains(got, "script-src 'self' blob:") {
-		t.Fatalf("portal CSP was widened for the sandbox: %q", got)
-	}
-}
-
-func TestSandboxPolicyFallsBackToValidatedLocalRequestOrigin(t *testing.T) {
-	t.Parallel()
-
-	handler := WithPortalSecurityHeadersForHub(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}), "")
-	request := httptest.NewRequest(http.MethodGet, "http://localhost:9443/ui/provider-sandbox.html", nil)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	csp := recorder.Result().Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "script-src 'self' http://localhost:9443 blob:;") {
-		t.Fatalf("sandbox CSP %q does not allow its validated local request origin", csp)
-	}
-	if strings.Contains(csp, "https:") || strings.Contains(csp, "http:;") {
-		t.Fatalf("sandbox CSP contains a broad script scheme: %q", csp)
-	}
-}
-
-func TestSandboxPolicyRejectsUntrustedHostHeaderAsCSPSource(t *testing.T) {
-	t.Parallel()
-
-	handler := WithPortalSecurityHeadersForHub(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}), "invalid")
-	request := httptest.NewRequest(http.MethodGet, "/ui/provider-sandbox.html", nil)
-	request.Host = "localhost; script-src 'unsafe-inline'"
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	csp := recorder.Result().Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "script-src 'self' blob:;") || strings.Contains(csp, "script-src 'self' http://localhost;") {
-		t.Fatalf("sandbox CSP used an invalid host as a source: %q", csp)
-	}
-}
-
-func TestSandboxPolicyAllowsBootstrapOnlyFromConfiguredHubOrigin(t *testing.T) {
-	t.Parallel()
-
-	handler := WithPortalSecurityHeadersForHub(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}), "https://console.example.test/base/path")
-	request := httptest.NewRequest(http.MethodGet, "/ui/provider-sandbox.html", nil)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	csp := recorder.Result().Header.Get("Content-Security-Policy")
-	if !strings.Contains(csp, "script-src 'self' https://console.example.test blob:;") {
-		t.Fatalf("sandbox CSP %q does not allow the configured hub origin for its bootstrap", csp)
-	}
-	if strings.Contains(csp, "https://*") || strings.Contains(csp, "'unsafe-eval'") {
-		t.Fatalf("sandbox CSP unexpectedly widens trusted script sources: %q", csp)
 	}
 }
 

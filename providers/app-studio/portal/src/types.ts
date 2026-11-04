@@ -4,7 +4,7 @@ import type { JSONSchema } from './productionForm'
 
 export interface RailgridContext {
   // fetch is the host-owned transport: it injects Authorization and the
-  // tenant headers and refuses paths outside this provider's allow list.
+  // tenant scope; the org gateway preserves the current caller's RBAC.
   // Send every hub request through portalkit providerFetch(ctx).
   fetch?: ProviderFetch | null
   /** @deprecated Read-only fallback for older hosts; use fetch. */

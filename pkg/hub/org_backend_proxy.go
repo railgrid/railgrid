@@ -100,10 +100,27 @@ func orgBackendRequestMatchesCluster(r *http.Request, clusterID string) bool {
 func stripOrgBackendDispatchHeaders(header http.Header) {
 	for name := range header {
 		lower := strings.ToLower(name)
-		if lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" || lower == "cookie2" || lower == "sec-websocket-protocol" ||
+		if lower == "authorization" || lower == "proxy-authorization" || lower == "cookie" || lower == "cookie2" ||
 			strings.HasPrefix(lower, "x-railgrid-") || strings.HasPrefix(lower, "x-remote-") || strings.HasPrefix(lower, "impersonate-") {
 			header.Del(name)
 		}
+	}
+	stripOrgBackendBearerSubprotocols(header)
+}
+
+func stripOrgBackendBearerSubprotocols(header http.Header) {
+	var protocols []string
+	for _, value := range header.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(value, ",") {
+			protocol = strings.TrimSpace(protocol)
+			if protocol != "" && !strings.HasPrefix(strings.ToLower(protocol), "base64url.bearer.authorization.k8s.io.") {
+				protocols = append(protocols, protocol)
+			}
+		}
+	}
+	header.Del("Sec-WebSocket-Protocol")
+	if len(protocols) != 0 {
+		header.Set("Sec-WebSocket-Protocol", strings.Join(protocols, ", "))
 	}
 }
 

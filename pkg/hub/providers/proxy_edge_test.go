@@ -88,6 +88,9 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 	t.Helper()
 	rec := &edgeUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestPlatformEdgeBinding(w, r) {
+			return
+		}
 		rec.hit = true
 		rec.path = r.URL.Path
 		rec.user = r.Header.Get("X-Railgrid-User")
@@ -154,6 +157,13 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		return "alice", path, nil
 	}))
 	proxy.SetClusterResolver(testClusterResolver)
+	proxy.SetBoundCopyResolver(func(_ context.Context, tenantPath, _, providerName string) (Provider, error) {
+		orgUUID, _ := splitTenantPath(tenantPath)
+		if p, ok := reg.GetForOrg(orgUUID, providerName); ok {
+			return p, nil
+		}
+		return Provider{}, ErrBoundCopyUnavailable
+	})
 	return proxy, rec
 }
 
@@ -201,6 +211,29 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	wantPrefix := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 	if got := rec.path; got != wantPrefix+"/mcp" {
 		t.Errorf("kcp saw path %q, want %q", got, wantPrefix+"/mcp")
+	}
+}
+
+func TestBackendProxyUsesSelectedPlatformBindingForFullServicePath(t *testing.T) {
+	platformHit := false
+	platform := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		platformHit = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(platform.Close)
+	platformURL, _ := url.Parse(platform.URL)
+	proxy, edge := newEdgeBackedProxy(t, testOrg)
+	proxy.reg.Upsert(Provider{Name: "infrastructure", BackendURL: platformURL, EndpointsValid: true})
+	proxy.SetBoundCopyResolver(func(_ context.Context, _, _, name string) (Provider, error) {
+		if p, ok := proxy.reg.Get(name); ok {
+			return p, nil
+		}
+		return Provider{}, ErrBoundCopyUnavailable
+	})
+
+	w := serveProxy(proxy, "/services/providers/infrastructure/mcp")
+	if w.Code != http.StatusOK || !platformHit || edge.hit {
+		t.Fatalf("status=%d platformHit=%v edgeHit=%v; want selected platform source", w.Code, platformHit, edge.hit)
 	}
 }
 
@@ -568,6 +601,9 @@ func TestBackendProxyOrgProviderNeverSeesUserBearer(t *testing.T) {
 func TestBackendProxyPlatformProviderStillReceivesCallerBearer(t *testing.T) {
 	var gotAuthorization string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestPlatformEdgeBinding(w, r) {
+			return
+		}
 		gotAuthorization = r.Header.Get("Authorization")
 	}))
 	t.Cleanup(upstream.Close)
@@ -789,5 +825,91 @@ func TestBackendProxyReplacesKCPWorkspaceScope(t *testing.T) {
 	want := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/readyz"
 	if rec.path != want {
 		t.Fatalf("path = %q, want %q", rec.path, want)
+	}
+}
+
+// The front door fixture must model binding discovery independently of the
+// provider response, just as the real kcp API does.
+func serveTestPlatformEdgeBinding(w http.ResponseWriter, r *http.Request) bool {
+	if !strings.HasSuffix(r.URL.Path, "/apis/apis.kcp.io/v1alpha2/apibindings") {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(`{"apiVersion":"apis.kcp.io/v1alpha2","kind":"APIBindingList","items":[{"metadata":{"name":"edges"},"spec":{"reference":{"export":{"path":"root:railgrid:providers:edges","name":"edges.providers.railgrid.ai"}}},"status":{"phase":"Bound"}}]}`))
+	return true
+}
+
+func TestEdgeHopRejectsOrganizationHostingBinding(t *testing.T) {
+	platform := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if platform {
+			serveTestPlatformEdgeBinding(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"apiVersion":"apis.kcp.io/v1alpha2","kind":"APIBindingList","items":[{"metadata":{"name":"edges"},"spec":{"reference":{"export":{"path":"root:railgrid:tenants:org:providers:edges","name":"edges.providers.railgrid.ai"}}},"status":{"phase":"Bound"}}]}`))
+	}))
+	defer srv.Close()
+	proxy, _ := newEdgeBackedProxy(t, testOrg)
+	endpoint, _ := url.Parse(srv.URL)
+	proxy.SetKCPFrontDoor(endpoint, http.DefaultTransport)
+	prov, _ := proxy.reg.GetForOrg(testOrg, "infrastructure")
+	if _, err := proxy.resolveEdgeHop(context.Background(), prov); err != nil {
+		t.Fatal(err)
+	}
+	platform = false
+	if _, err := proxy.resolveEdgeHop(context.Background(), prov); err == nil || !strings.Contains(err.Error(), "hosting workspace requires the platform Edges binding") {
+		t.Fatalf("expected platform-source refusal, got %v", err)
+	}
+}
+
+func TestEdgeHopHostingBindingPolicy(t *testing.T) {
+	cases := []struct {
+		name, source, export, phase, metadata, body string
+		status                                      int
+		allowed                                     bool
+	}{
+		{name: "platform path", source: "root:railgrid:providers:edges", export: "edges.providers.railgrid.ai", phase: "Bound", allowed: true},
+		{name: "logical cluster", source: "platform-edges-cluster", export: "edges.providers.railgrid.ai", phase: "Bound", allowed: true},
+		{name: "other org", source: "root:railgrid:tenants:other:providers:edges", export: "edges.providers.railgrid.ai", phase: "Bound"},
+		{name: "wrong export", source: "root:railgrid:providers:edges", export: "other", phase: "Bound"},
+		{name: "not bound", source: "root:railgrid:providers:edges", export: "edges.providers.railgrid.ai", phase: "Binding"},
+		{name: "terminating", source: "root:railgrid:providers:edges", export: "edges.providers.railgrid.ai", phase: "Bound", metadata: `"deletionTimestamp":"2026-11-03T00:00:00Z"`},
+		{name: "forbidden", status: 403}, {name: "redirect", status: 302},
+		{name: "invalid JSON", body: `{`}, {name: "empty list", body: `{"apiVersion":"apis.kcp.io/v1alpha2","kind":"APIBindingList","items":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			proxy, _ := newEdgeBackedProxy(t, testOrg)
+			prov, _ := proxy.reg.GetForOrg(testOrg, "infrastructure")
+			edges, _ := proxy.reg.Get("edges")
+			edges.CatalogEntryCluster = "platform-edges-cluster"
+			proxy.reg.Upsert(edges)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				want := "/clusters/" + prov.EdgeRoute.Cluster + "/apis/apis.kcp.io/v1alpha2/apibindings"
+				if r.URL.Path != want || r.Method != http.MethodGet {
+					t.Errorf("lookup = %s %s, want GET %s", r.Method, r.URL.Path, want)
+				}
+				if r.Header.Get("Authorization") != "" {
+					t.Error("unexpected caller authorization")
+				}
+				if tc.status != 0 {
+					w.WriteHeader(tc.status)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if tc.body != "" {
+					_, _ = w.Write([]byte(tc.body))
+					return
+				}
+				_, _ = w.Write([]byte(`{"apiVersion":"apis.kcp.io/v1alpha2","kind":"APIBindingList","items":[{"metadata":{` + tc.metadata + `},"spec":{"reference":{"export":{"path":"` + tc.source + `","name":"` + tc.export + `"}}},"status":{"phase":"` + tc.phase + `"}}]}`))
+			}))
+			defer srv.Close()
+			base, _ := url.Parse(srv.URL + "/clusters/root")
+			proxy.SetKCPFrontDoor(base, http.DefaultTransport)
+			_, err := proxy.resolveEdgeHop(context.Background(), prov)
+			if (err == nil) != tc.allowed {
+				t.Fatalf("allowed=%v err=%v", tc.allowed, err)
+			}
+		})
 	}
 }

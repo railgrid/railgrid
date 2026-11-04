@@ -43,6 +43,10 @@ import (
 	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
+// Request kinds for custom subresources each need their own schema. App Studio
+// alone ships 65; keep admission bounded without excluding that supported provider.
+const orgProviderBootstrapSchemaLimit = 128
+
 // OrgProviderBootstrapHandler installs validated declarations on behalf of
 // restricted organization providers after resource containment is verified.
 type OrgProviderBootstrapHandler struct {
@@ -298,8 +302,11 @@ func validateOrgBootstrap(name, org string, reg *Registry, request sdkinstall.Or
 	if out.APIExport.GetName() != entry.Spec.Export.Name {
 		return out, fmt.Errorf("APIExport must match CatalogEntry spec.export.name")
 	}
-	if len(request.Schemas) == 0 || len(request.Schemas) > 64 || len(request.PrivateCRDs) > OrgProviderPrivateResourceLimit {
-		return out, fmt.Errorf("invalid schema count")
+	if len(request.Schemas) == 0 || len(request.Schemas) > orgProviderBootstrapSchemaLimit {
+		return out, fmt.Errorf("schema count must be between 1 and %d", orgProviderBootstrapSchemaLimit)
+	}
+	if len(request.PrivateCRDs) > OrgProviderPrivateResourceLimit {
+		return out, fmt.Errorf("private schema count exceeds %d", OrgProviderPrivateResourceLimit)
 	}
 	schemas := map[string]*unstructured.Unstructured{}
 	for _, raw := range request.Schemas {

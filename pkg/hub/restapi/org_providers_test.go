@@ -322,6 +322,11 @@ func TestRegisterOrgProvider_RefusesWithoutConnectedEdge(t *testing.T) {
 			targets: []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")},
 			edge:    &EdgeTargetRef{Workspace: "ws-2", Name: "prod"},
 		},
+		{
+			name:    "forged URL is not an edge",
+			targets: []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")},
+			edge:    &EdgeTargetRef{Workspace: "ws-1", Name: "https://attacker.example"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ops, creds, url := newOrgProviderTestServer(t, tc.targets)
@@ -377,11 +382,9 @@ func TestRegisterOrgProvider_MissingEdgeRefIsValidationError(t *testing.T) {
 	}
 }
 
-// Edges live in team workspaces, which have a membership boundary. A member
-// must not learn the Org's cluster inventory from workspaces they do not belong
-// to, nor install a provider into one — and the refusal must read the same as
-// "no such edge", so the difference cannot be used to probe.
-func TestOrgProviderInstallTargets_RespectsWorkspaceMembership(t *testing.T) {
+// Install-target discovery filters inaccessible workspaces. Members cannot use
+// a hand-crafted registration to target an edge outside their membership.
+func TestRegisterOrgProvider_RejectsEdgeOutsideMembership(t *testing.T) {
 	// alice is a plain member of ws-1 only; the connected edge is in ws-2.
 	umi := &tenancyv1alpha1.UserMembershipIndex{
 		ObjectMeta: metav1.ObjectMeta{Name: "alice"},
@@ -393,18 +396,17 @@ func TestOrgProviderInstallTargets_RespectsWorkspaceMembership(t *testing.T) {
 	}
 	targets := []kcp.EdgeInstallTarget{connectedEdge("ws-2", "prod")}
 	ops, creds, url := newOrgProviderTestServerAs(t, targets, memberTC("alice", "org-a", "ws-1"), []runtime.Object{umi})
-
 	resp, err := http.Get(url() + "/api/orgs/org-a/providers/install-targets")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
 	var listed ListEdgeInstallTargetsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
+	_ = resp.Body.Close()
 	if len(listed.Items) != 0 || listed.Eligible {
-		t.Fatalf("leaked an edge from a workspace the caller is not in: %+v", listed)
+		t.Fatalf("leaked inaccessible edge: %+v", listed)
 	}
 
 	// Naming it directly must fail too, and without creating anything.
@@ -421,32 +423,16 @@ func TestOrgProviderInstallTargets_RespectsWorkspaceMembership(t *testing.T) {
 	}
 }
 
-// The install-targets endpoint has to answer WHY, not just no: "no edge at
-// all" and "an edge whose agent is down" send the user to different places.
-func TestListOrgProviderInstallTargets_ReportsEligibilityAndReason(t *testing.T) {
+func TestListOrgProviderInstallTargetsReportsEligibilityAndReason(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		targets      []kcp.EdgeInstallTarget
-		wantEligible bool
-		wantReason   string
+		name     string
+		targets  []kcp.EdgeInstallTarget
+		eligible bool
+		reason   string
 	}{
-		{
-			name:         "none onboarded",
-			targets:      nil,
-			wantEligible: false,
-			wantReason:   "connected as an edge",
-		},
-		{
-			name:         "onboarded but disconnected",
-			targets:      []kcp.EdgeInstallTarget{{Workspace: "ws-1", Name: "prod", Phase: "AwaitingAgent"}},
-			wantEligible: false,
-			wantReason:   "no connected edge",
-		},
-		{
-			name:         "one connected",
-			targets:      []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")},
-			wantEligible: true,
-		},
+		{name: "none onboarded", reason: "connected as an edge"},
+		{name: "disconnected", targets: []kcp.EdgeInstallTarget{{Workspace: "ws-1", Name: "prod", Phase: "AwaitingAgent"}}, reason: "no connected edge"},
+		{name: "connected", targets: []kcp.EdgeInstallTarget{connectedEdge("ws-1", "prod")}, eligible: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, url := newOrgProviderTestServer(t, tc.targets)
@@ -462,17 +448,14 @@ func TestListOrgProviderInstallTargets_ReportsEligibilityAndReason(t *testing.T)
 			if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			if got.Eligible != tc.wantEligible {
-				t.Fatalf("eligible: got %v, want %v (%+v)", got.Eligible, tc.wantEligible, got)
+			if got.Eligible != tc.eligible || len(got.Items) != len(tc.targets) {
+				t.Fatalf("unexpected response: %+v", got)
 			}
-			if len(got.Items) != len(tc.targets) {
-				t.Fatalf("items: got %d, want %d", len(got.Items), len(tc.targets))
+			if tc.reason != "" && !strings.Contains(got.Reason, tc.reason) {
+				t.Fatalf("reason %q does not contain %q", got.Reason, tc.reason)
 			}
-			if tc.wantReason != "" && !bytes.Contains([]byte(got.Reason), []byte(tc.wantReason)) {
-				t.Fatalf("reason %q does not mention %q", got.Reason, tc.wantReason)
-			}
-			if tc.wantEligible && got.Reason != "" {
-				t.Fatalf("eligible response carried a reason: %q", got.Reason)
+			if tc.eligible && got.Reason != "" {
+				t.Fatalf("eligible response has reason %q", got.Reason)
 			}
 		})
 	}

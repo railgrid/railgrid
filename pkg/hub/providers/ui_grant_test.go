@@ -58,6 +58,9 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	t.Helper()
 	f := &uiGrantFixture{edge: &edgeUpstream{}, edgeStatus: http.StatusOK, issuer: &recordingIssuer{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestPlatformEdgeBinding(w, r) {
+			return
+		}
 		f.edge.hit = true
 		f.edge.path = r.URL.Path
 		f.edge.user = r.Header.Get("X-Railgrid-User")
@@ -107,6 +110,8 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	orgURL, _ := url.Parse("http://infrastructure.railgrid-infrastructure-provider.svc.cluster.local:8081")
 	f.reg.Upsert(Provider{
 		Name: "infrastructure", OrgUUID: testOrg, Version: "v0.1.20", EndpointsValid: true,
+		APIExportPath: "root:railgrid:tenants:" + testOrg + ":providers:infrastructure",
+		APIExportName: "infrastructure.providers.railgrid.ai", WorkspaceCluster: "provider-infrastructure-cluster",
 		UIURL: orgURL, BackendURL: orgURL,
 		EdgeRoute: &EdgeRoute{WorkspaceUUID: testWS, Cluster: testCluster, EdgeName: "prod-eu", ServiceName: "provider-infrastructure"},
 	})
@@ -115,6 +120,7 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 	// The recording server stands in for kcp's front door, where the hop
 	// lands on the edges provider's services/{name}/proxy verb.
 	f.ui.SetKCPFrontDoor(edgesURL, http.DefaultTransport)
+	f.ui.SetClusterResolver(testClusterResolver)
 	f.ui.SetUIGrantKeys(uiGrantTestKey)
 	f.ui.SetDelegatedTokenIssuer(f.issuer)
 	f.grants = NewUIGrantHandler(f.reg, f.ui, logr.Discard())
@@ -128,6 +134,13 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		}
 		return "alice", path, nil
 	}))
+	f.grants.SetBoundCopyResolver(func(_ context.Context, tenantPath, _, providerName string) (Provider, error) {
+		orgUUID, _ := splitTenantPath(tenantPath)
+		if p, ok := f.reg.GetForOrg(orgUUID, providerName); ok {
+			return p, nil
+		}
+		return Provider{}, ErrBoundCopyUnavailable
+	})
 	return f
 }
 
@@ -174,8 +187,8 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if grant.Integrity != wantPin {
 		t.Errorf("integrity = %q, want %q (the pin must be computed from the bytes the proxy serves)", grant.Integrity, wantPin)
 	}
-	if !strings.HasPrefix(grant.URL, "/ui/providers/infrastructure/main.js?") {
-		t.Fatalf("url = %q, want the same-origin bundle path", grant.URL)
+	if !strings.HasPrefix(grant.URL, "/ui/providers/infrastructure/"+scopedUIGrantSegment+"/") {
+		t.Fatalf("url = %q, want the same-origin scoped bundle path", grant.URL)
 	}
 	u, err := url.Parse(grant.URL)
 	if err != nil {
@@ -184,11 +197,17 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	if got := u.Query().Get("v"); got != "v0.1.20" {
 		t.Errorf("?v = %q, want the catalog version", got)
 	}
-	if !strings.HasPrefix(u.Query().Get(UIGrantQueryParam), uiGrantPrefix) {
-		t.Errorf("grant = %q, want a %s-prefixed grant", u.Query().Get(UIGrantQueryParam), uiGrantPrefix)
+	assetPath, pathGrant, ok := splitScopedUIGrantPath(strings.TrimPrefix(u.Path, "/ui/providers/infrastructure"))
+	if !ok || assetPath != "/main.js" || !strings.HasPrefix(pathGrant, uiGrantPrefix) {
+		t.Errorf("scoped path = (%q, %q, %v), want an opaque grant for /main.js", assetPath, pathGrant, ok)
 	}
-	if grant.ExpiresAt.Before(time.Now().Add(uiGrantTTL-time.Minute)) || grant.ExpiresAt.After(time.Now().Add(uiGrantTTL+time.Minute)) {
-		t.Errorf("expiresAt = %v, want about %v from now", grant.ExpiresAt, uiGrantTTL)
+	secret, _ := uiGrantTestKey.DelegatedProofKey(context.Background())
+	claims, err := openUIGrant(secret, pathGrant, time.Now())
+	if err != nil || claims.Scope != uiAssetGrantScope {
+		t.Errorf("scoped claims = %+v, err=%v; want asset-only scope", claims, err)
+	}
+	if grant.ExpiresAt.Before(time.Now().Add(uiAssetGrantTTL-time.Minute)) || grant.ExpiresAt.After(time.Now().Add(uiAssetGrantTTL+time.Minute)) {
+		t.Errorf("expiresAt = %v, want about %v from now", grant.ExpiresAt, uiAssetGrantTTL)
 	}
 	// The hash fetch went over the edge as alice with the delegated token as
 	// the upstream credential.
@@ -238,6 +257,107 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	}
 	if !strings.HasPrefix(got.Header().Get("Content-Type"), "application/javascript") {
 		t.Errorf("Content-Type = %q, want the provider's", got.Header().Get("Content-Type"))
+	}
+}
+
+func TestScopedUIGrantCarriesAuthorityToLazyAsset(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	w, grant := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusOK {
+		t.Fatalf("grant status = %d: %s", w.Code, w.Body.String())
+	}
+	u, err := url.Parse(grant.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, ok := splitScopedUIGrantPath(strings.TrimPrefix(u.Path, "/ui/providers/infrastructure"))
+	if !ok {
+		t.Fatalf("grant URL path is not scoped: %q", u.Path)
+	}
+
+	assetURL := "/ui/providers/infrastructure/" + scopedUIGrantSegment + "/" + token + "/assets/page-chunk.js"
+	got := f.fetchBundle(assetURL)
+	if got.Code != http.StatusOK {
+		t.Fatalf("lazy asset status = %d: %s", got.Code, got.Body.String())
+	}
+	wantPath := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/assets/page-chunk.js"
+	if f.edge.path != wantPath {
+		t.Errorf("edge path = %q, want %q", f.edge.path, wantPath)
+	}
+	if f.edge.upstreamAuth != "Bearer "+delegatedToken {
+		t.Errorf("lazy asset upstream identity = %q, want delegated token", f.edge.upstreamAuth)
+	}
+}
+
+func TestLongLivedAssetGrantRechecksIssuerOnEveryRequest(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	w, grant := f.requestGrant(t, "infrastructure")
+	if w.Code != http.StatusOK {
+		t.Fatalf("grant status = %d", w.Code)
+	}
+	u, _ := url.Parse(grant.URL)
+	_, token, _ := splitScopedUIGrantPath(strings.TrimPrefix(u.Path, "/ui/providers/infrastructure"))
+	*f.edge = edgeUpstream{}
+	f.issuer.err = errors.New("membership or provider approval revoked")
+	assetURL := "/ui/providers/infrastructure/" + scopedUIGrantSegment + "/" + token + "/assets/lazy.js"
+	got := f.fetchBundle(assetURL)
+	if got.Code != http.StatusServiceUnavailable || f.edge.hit {
+		t.Fatalf("revoked grant status=%d edgeHit=%v; want 503 before dispatch", got.Code, f.edge.hit)
+	}
+}
+
+func TestScopedUIGrantRejectsChangedProviderSource(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Provider)
+	}{
+		{"export path", func(p *Provider) { p.APIExportPath += ":recreated" }},
+		{"export name", func(p *Provider) { p.APIExportName = "replacement.providers.railgrid.ai" }},
+		{"issuer cluster", func(p *Provider) { p.WorkspaceCluster = "replacement-provider-cluster" }},
+		{"source version", func(p *Provider) { p.Version = "v9.9.9" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newUIGrantFixture(t, testOrg, testWS)
+			response, grant := f.requestGrant(t, "infrastructure")
+			if response.Code != http.StatusOK {
+				t.Fatalf("grant status = %d", response.Code)
+			}
+			u, _ := url.Parse(grant.URL)
+			_, token, _ := splitScopedUIGrantPath(strings.TrimPrefix(u.Path, "/ui/providers/infrastructure"))
+			provider, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+			tc.mutate(&provider)
+			f.reg.Upsert(provider)
+			*f.edge = edgeUpstream{}
+			got := f.fetchBundle("/ui/providers/infrastructure/" + scopedUIGrantSegment + "/" + token + "/assets/lazy.js")
+			if got.Code != http.StatusUnauthorized || f.edge.hit {
+				t.Fatalf("changed source status=%d edgeHit=%v; want 401 before dispatch", got.Code, f.edge.hit)
+			}
+		})
+	}
+}
+
+func TestSplitScopedUIGrantPathRejectsTraversal(t *testing.T) {
+	for _, input := range []string{"/_grant/fpui_secret/../main.js", "/_grant/fpui_secret/..\\main.js", "/_grant/fpui_secret/", "/_grant/other/main.js"} {
+		if _, _, ok := splitScopedUIGrantPath(input); ok {
+			t.Errorf("accepted invalid scoped path %q", input)
+		}
+	}
+}
+
+func TestInvalidScopedUIGrantPathDoesNotFallBackToPlatform(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	for _, p := range []string{
+		"/ui/providers/infrastructure/_grant/not-a-grant/main.js",
+		"/ui/providers/infrastructure/_grant/fpui_secret/%2e%2e/main.js",
+	} {
+		got := f.fetchBundle(p)
+		if got.Code != http.StatusNotFound {
+			t.Errorf("path %q status = %d, want 404 (body %q)", p, got.Code, got.Body.String())
+		}
+	}
+	if f.edge.hit {
+		t.Fatal("invalid scoped path reached the org edge")
 	}
 }
 
@@ -353,6 +473,29 @@ func TestUIGrantKeepsSameVersionPinWhenRevalidationFails(t *testing.T) {
 	}
 	if second.Integrity != want {
 		t.Errorf("second grant pin = %q, want the cached %q", second.Integrity, want)
+	}
+}
+
+func TestUIGrantDoesNotReusePinAcrossSameVersionSourceChange(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	_, first := f.requestGrant(t, "infrastructure")
+	if first.Integrity == "" {
+		t.Fatal("first source received no SRI pin")
+	}
+	provider, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+	provider.APIExportPath += ":recreated"
+	f.reg.Upsert(provider)
+	f.edgeStatus = http.StatusBadGateway
+	*f.edge = edgeUpstream{}
+	response, second := f.requestGrant(t, "infrastructure")
+	if response.Code != http.StatusServiceUnavailable || second.Integrity != "" || second.URL != "" {
+		t.Fatalf("changed-source grant status=%d pin=%q URL=%q; want failed fetch and no stale pin", response.Code, second.Integrity, second.URL)
+	}
+	if !f.edge.hit {
+		t.Fatal("changed same-version source reused the previous pin without fetching")
+	}
+	if f.edgeIfNoneMatch != "" {
+		t.Errorf("changed source sent old ETag %q", f.edgeIfNoneMatch)
 	}
 }
 
@@ -517,6 +660,24 @@ func TestUIProxyRefusesBadGrants(t *testing.T) {
 			wantStatus: http.StatusNotFound,
 		},
 		{
+			name:       "mcp is not a static asset surface",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/mcp/tools.js",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "oauth is not a static asset surface",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/oauth/callback.js",
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:       "clusters is not a static asset surface",
+			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
+			path:       "/ui/providers/infrastructure/clusters/example.js",
+			wantStatus: http.StatusNotFound,
+		},
+		{
 			name:       "hub-only path is not an asset",
 			grant:      func(t *testing.T) string { return mintTestGrant(t, validClaims()) },
 			path:       "/ui/providers/infrastructure/workload-identities/review.json",
@@ -570,7 +731,8 @@ func TestUIGrantCarriesUIPathPrefix(t *testing.T) {
 		t.Errorf("hash fetch path %q, want %q", f.edge.path, wantHash)
 	}
 	u, _ := url.Parse(grant.URL)
-	got := f.fetchBundle("/ui/providers/infrastructure/icon.svg?" + UIGrantQueryParam + "=" + url.QueryEscape(u.Query().Get(UIGrantQueryParam)))
+	_, token, _ := splitScopedUIGrantPath(strings.TrimPrefix(u.Path, "/ui/providers/infrastructure"))
+	got := f.fetchBundle("/ui/providers/infrastructure/icon.svg?" + UIGrantQueryParam + "=" + url.QueryEscape(token))
 	if got.Code != http.StatusOK {
 		t.Fatalf("status = %d (body %q)", got.Code, got.Body.String())
 	}

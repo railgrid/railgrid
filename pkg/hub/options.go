@@ -267,7 +267,7 @@ func NewOptions() *Options {
 		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,
 		FreeOrgsPerUser:       quota.DefaultFreeOrgsPerUser,
 
-		ProviderHeartbeatAuth: string(providers.HeartbeatAuthEnforce),
+		ProviderHeartbeatAuth:          string(providers.HeartbeatAuthEnforce),
 		ProviderWorkspaceClusterAdmin:  false,
 		ProviderDelegatedTokens:        string(providers.DelegationPlatform),
 		ProviderDelegatedTokensExclude: append([]string(nil), providers.DefaultDelegationExclude...),

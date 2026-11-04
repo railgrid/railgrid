@@ -29,10 +29,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
-	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/client"
-	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
@@ -51,17 +49,23 @@ type orgBackendTestOps struct {
 	bindings       map[string]kcp.ProviderBinding
 	providerSource *kcp.OrgProviderWorkspace
 	cluster        string
+	clusterReads   int
+	bindingReads   int
+	sourceReads    int
 }
 
 func (o *orgBackendTestOps) GetChildWorkspaceClusterName(context.Context, string, string) (string, error) {
+	o.clusterReads++
 	return o.cluster, nil
 }
 
 func (o *orgBackendTestOps) ListProviderAPIBindings(context.Context, string, string) (map[string]kcp.ProviderBinding, error) {
+	o.bindingReads++
 	return o.bindings, nil
 }
 
 func (o *orgBackendTestOps) GetOrgProviderWorkspace(context.Context, string, string) (*kcp.OrgProviderWorkspace, error) {
+	o.sourceReads++
 	if o.providerSource == nil {
 		return nil, nil
 	}
@@ -69,12 +73,15 @@ func (o *orgBackendTestOps) GetOrgProviderWorkspace(context.Context, string, str
 	return &source, nil
 }
 
+func (o *orgBackendTestOps) resetReadCounts() {
+	o.clusterReads, o.bindingReads, o.sourceReads = 0, 0, 0
+}
+
 type orgBackendFixture struct {
 	mgr      *Manager
 	client   *client.Client
 	ops      *orgBackendTestOps
 	registry *providers.Registry
-	grants   *hubaccess.Store
 	key      serviceaccounts.StaticProofKeySource
 	provider providers.Provider
 	claims   kcp.ProviderBinding
@@ -115,7 +122,8 @@ func newOrgBackendFixture(t *testing.T) *orgBackendFixture {
 	}
 	providerBinding := kcp.ProviderBinding{
 		Name: "vault", UID: "binding-uid-original", ExportPath: provider.APIExportPath, ExportName: provider.APIExportName,
-		SelfHosted: true, BoundResources: []kcp.BoundResource{{Group: "vault.example", Resource: "secretsstores"}},
+		ExportCluster: "provider-cluster-vault",
+		SelfHosted:    true, BoundResources: []kcp.BoundResource{{Group: "vault.example", Resource: "secretsstores"}},
 	}
 	ops := &orgBackendTestOps{
 		fakeOps: newFakeOps(), fakeOrgProviderOps: &fakeOrgProviderOps{},
@@ -125,12 +133,13 @@ func newOrgBackendFixture(t *testing.T) *orgBackendFixture {
 	}
 	registry := providers.NewRegistry()
 	registry.Upsert(provider)
-	grants := newSandboxGrantStore(t)
 	key := serviceaccounts.StaticProofKeySource(strings.Repeat("k", 32))
 	creds := &fakeCredMinter{}
-	mgr := NewManager(c, ops).WithProviderRegistry(registry).WithHubAccessGrants(grants, false).
-		WithOrgProviders(ops, creds).WithProviderSandboxClusterAuthorizer(func(context.Context, string, string) bool { return true })
-	return &orgBackendFixture{mgr: mgr, client: c, ops: ops, registry: registry, grants: grants, key: key, provider: provider, claims: providerBinding}
+	mgr := NewManager(c, ops).WithProviderRegistry(registry).WithOrgProviders(ops, creds)
+	store := newMemoryOrgTrustStore()
+	putOrgTrust(t, store, orgBackendTestOrg, "vault", "provider-cluster-vault", "fixture-revision")
+	mgr.WithOrgTrust(store)
+	return &orgBackendFixture{mgr: mgr, client: c, ops: ops, registry: registry, key: key, provider: provider, claims: providerBinding}
 }
 
 func (f *orgBackendFixture) issue(t *testing.T, org, workspace string) string {
@@ -185,119 +194,29 @@ func TestOrgBackendTokenRunsThroughLiveIdentityAndConsentPipeline(t *testing.T) 
 	}
 }
 
-func TestOrgBackendTokenAllowsOnlyExplicitlyApprovedDependency(t *testing.T) {
+func TestOrgBackendHandlerPerformsOneFreshAuthorization(t *testing.T) {
 	f := newOrgBackendFixture(t)
-	dependency := providers.Provider{Name: "code", APIExportPath: "root:railgrid:providers:code", APIExportName: "code.export", APIGroups: []string{"code.example"}}
-	f.registry.Upsert(dependency)
-	portal := f.provider
-	portal.Requires = []providersv1alpha1.ProviderRequirement{{Provider: "code", Group: "code.example", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet}}}}}
-	f.registry.Upsert(portal)
-	f.ops.bindings["code"] = kcp.ProviderBinding{Name: "code", ExportPath: dependency.APIExportPath, ExportName: dependency.APIExportName,
-		BoundResources: []kcp.BoundResource{{Group: "code.example", Resource: "repositories"}}}
-	f.ops.bindings["vault"] = withAcceptedClaim(f.ops.bindings["vault"], "code.example", "repositories", []string{"get"})
 	token := f.issue(t, orgBackendTestOrg, orgBackendTestWorkspace)
-	called := 0
-	f.bindDispatcher(func(w http.ResponseWriter, _ *http.Request, _ serviceaccounts.OrgBackendClaims) {
-		called++
-		w.WriteHeader(http.StatusOK)
-	})
-	path := "/clusters/" + orgBackendTestCluster + "/apis/code.example/v1/repositories/repo-1"
-	if response := f.request(token, path); response.Code != http.StatusForbidden || called != 0 {
-		t.Fatalf("dependency without Grant: status=%d calls=%d", response.Code, called)
-	}
-	if _, err := f.grants.Put(context.Background(), hubaccess.GrantKey{OrgUUID: orgBackendTestOrg, WorkspaceUUID: orgBackendTestWorkspace, Provider: "vault", ProviderOrgUUID: orgBackendTestOrg},
-		tenancyGrantedComposition("code", "code.example", "repositories"), nil, "alice"); err != nil {
-		t.Fatal(err)
-	}
-	if response := f.request(token, path); response.Code != http.StatusOK || called != 1 {
-		t.Fatalf("dependency with current Grant: status=%d calls=%d", response.Code, called)
-	}
-	if _, err := f.grants.Put(context.Background(), hubaccess.GrantKey{OrgUUID: orgBackendTestOrg, WorkspaceUUID: orgBackendTestWorkspace, Provider: "vault", ProviderOrgUUID: orgBackendTestOrg}, nil, nil, "alice"); err != nil {
-		t.Fatal(err)
-	}
-	if response := f.request(token, path); response.Code != http.StatusForbidden || called != 1 {
-		t.Fatalf("dependency after Grant revocation: status=%d calls=%d", response.Code, called)
-	}
-}
-
-func TestOrgBackendTokenRejectsForeignClaimPendingRejectedAndMismatch(t *testing.T) {
-	for _, state := range []string{"pending", "rejected", "mismatch"} {
-		t.Run(state, func(t *testing.T) {
-			f := newOrgBackendFixture(t)
-			dependency := providers.Provider{Name: "code", APIExportPath: "code-path", APIExportName: "code.export", APIGroups: []string{"code.example"}}
-			f.registry.Upsert(dependency)
-			portal := f.provider
-			portal.Requires = []providersv1alpha1.ProviderRequirement{{Provider: "code", Group: "code.example", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet}}}}}
-			f.registry.Upsert(portal)
-			f.ops.bindings["code"] = kcp.ProviderBinding{Name: "code", ExportPath: dependency.APIExportPath, ExportName: dependency.APIExportName, BoundResources: []kcp.BoundResource{{Group: "code.example", Resource: "repositories"}}}
-			binding := f.ops.bindings["vault"]
-			switch state {
-			case "pending":
-				binding.Claims.Pending = []kcp.ClaimRef{{Group: "code.example", Resource: "repositories"}}
-			case "rejected":
-				binding.Claims.Rejected = []kcp.ClaimRef{{Group: "code.example", Resource: "repositories"}}
-			case "mismatch":
-				binding.Claims.Mismatch = "PermissionClaimsValid=False"
-				binding = withAcceptedClaim(binding, "code.example", "repositories", []string{"get"})
-			}
-			f.ops.bindings["vault"] = binding
-			if _, err := f.grants.Put(context.Background(), hubaccess.GrantKey{OrgUUID: orgBackendTestOrg, WorkspaceUUID: orgBackendTestWorkspace, Provider: "vault", ProviderOrgUUID: orgBackendTestOrg}, tenancyGrantedComposition("code", "code.example", "repositories"), nil, "alice"); err != nil {
-				t.Fatal(err)
-			}
-			token := f.issue(t, orgBackendTestOrg, orgBackendTestWorkspace)
-			called := 0
-			f.bindDispatcher(func(http.ResponseWriter, *http.Request, serviceaccounts.OrgBackendClaims) { called++ })
-			response := f.request(token, "/clusters/"+orgBackendTestCluster+"/apis/code.example/v1/repositories/repo-1")
-			if response.Code != http.StatusForbidden || called != 0 {
-				t.Fatalf("status=%d calls=%d, want denied before dispatch", response.Code, called)
-			}
-		})
-	}
-}
-
-func TestOrgBackendTokenStopsStreamOnLiveGrantRevocation(t *testing.T) {
-	f := newOrgBackendFixture(t)
-	dependency := providers.Provider{Name: "code", APIExportPath: "code-path", APIExportName: "code.export", APIGroups: []string{"code.example"}}
-	f.registry.Upsert(dependency)
-	portal := f.provider
-	portal.Requires = []providersv1alpha1.ProviderRequirement{{Provider: "code", Group: "code.example", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "repositories", Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet}}}}}
-	f.registry.Upsert(portal)
-	f.ops.bindings["code"] = kcp.ProviderBinding{Name: "code", ExportPath: dependency.APIExportPath, ExportName: dependency.APIExportName, BoundResources: []kcp.BoundResource{{Group: "code.example", Resource: "repositories"}}}
-	f.ops.bindings["vault"] = withAcceptedClaim(f.ops.bindings["vault"], "code.example", "repositories", []string{"get"})
-	grantKey := hubaccess.GrantKey{OrgUUID: orgBackendTestOrg, WorkspaceUUID: orgBackendTestWorkspace, Provider: "vault", ProviderOrgUUID: orgBackendTestOrg}
-	if _, err := f.grants.Put(context.Background(), grantKey, tenancyGrantedComposition("code", "code.example", "repositories"), nil, "alice"); err != nil {
-		t.Fatal(err)
-	}
-	token := f.issue(t, orgBackendTestOrg, orgBackendTestWorkspace)
-	dispatches := 0
+	f.ops.resetReadCounts()
+	calls := 0
 	f.bindDispatcher(func(w http.ResponseWriter, r *http.Request, _ serviceaccounts.OrgBackendClaims) {
-		dispatches++
-		_, _ = w.Write([]byte("first"))
-		if _, err := f.grants.Put(context.Background(), grantKey, nil, nil, "alice"); err != nil {
-			t.Errorf("revoke Grant: %v", err)
-			return
+		calls++
+		if r.URL.Path != "/clusters/"+orgBackendTestCluster+"/api/v1/configmaps" {
+			t.Errorf("dispatch path=%q", r.URL.Path)
 		}
-		if _, err := w.Write([]byte("second")); err == nil {
-			t.Error("second chunk passed after Grant revocation")
-		}
-		select {
-		case <-r.Context().Done():
-		default:
-			t.Error("dispatcher context was not cancelled after revocation")
-		}
+		_, _ = w.Write([]byte("ok"))
 	})
-	path := "/clusters/" + orgBackendTestCluster + "/apis/code.example/v1/repositories/repo-1"
-	response := f.request(token, path)
-	if response.Code != http.StatusOK || response.Body.String() != "first" || dispatches != 1 {
-		t.Fatalf("stream status=%d body=%q dispatches=%d", response.Code, response.Body.String(), dispatches)
+	response := f.request(token, "/clusters/"+orgBackendTestCluster+"/api/v1/configmaps")
+	if response.Code != http.StatusOK || calls != 1 {
+		t.Fatalf("status=%d calls=%d body=%s", response.Code, calls, response.Body.String())
 	}
-	if next := f.request(token, path); next.Code != http.StatusForbidden || dispatches != 1 {
-		t.Fatalf("next request status=%d dispatches=%d, want denied before dispatch", next.Code, dispatches)
+	if f.ops.sourceReads != 1 || f.ops.clusterReads != 1 || f.ops.bindingReads != 1 {
+		t.Fatalf("fresh authorization source/cluster/binding reads=%d/%d/%d, want 1/1/1", f.ops.sourceReads, f.ops.clusterReads, f.ops.bindingReads)
 	}
 }
 
 func TestOrgBackendTokenPinsUserMembershipSourceAndBindingLifecycle(t *testing.T) {
-	for _, mutation := range []string{"user UID replacement", "membership removal", "source deletion", "source replacement", "source termination", "source unrestricted", "binding UID replacement", "binding deletion", "wrong selected cluster", "cross-org mint"} {
+	for _, mutation := range []string{"user UID replacement", "membership removal", "source deletion", "source replacement", "source termination", "source unrestricted", "binding UID replacement", "binding issuer replacement", "binding deletion", "wrong selected cluster", "cross-org mint"} {
 		t.Run(mutation, func(t *testing.T) {
 			f := newOrgBackendFixture(t)
 			token := f.issue(t, orgBackendTestOrg, orgBackendTestWorkspace)
@@ -332,6 +251,10 @@ func TestOrgBackendTokenPinsUserMembershipSourceAndBindingLifecycle(t *testing.T
 				b := f.ops.bindings["vault"]
 				b.UID = "binding-uid-recreated"
 				f.ops.bindings["vault"] = b
+			case "binding issuer replacement":
+				b := f.ops.bindings["vault"]
+				b.ExportCluster = "provider-cluster-recreated"
+				f.ops.bindings["vault"] = b
 			case "binding deletion":
 				delete(f.ops.bindings, "vault")
 			case "wrong selected cluster":
@@ -356,34 +279,5 @@ func TestOrgBackendTokenPinsUserMembershipSourceAndBindingLifecycle(t *testing.T
 				t.Fatalf("status=%d calls=%d, want invalid identity before dispatch", response.Code, called)
 			}
 		})
-	}
-}
-
-func TestOrgBackendSelectedSecretRequiresLabelsAndRejectsServiceAccountToken(t *testing.T) {
-	f := newOrgBackendFixture(t)
-	selector := &providersv1alpha1.ProviderLabelSelector{MatchLabels: map[string]string{"app": "vault"}}
-	portal := f.provider
-	portal.Requires = []providersv1alpha1.ProviderRequirement{{Group: "", Resources: []providersv1alpha1.ProviderRequiredResource{{Name: "secrets", Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet}, Selector: selector}}}}
-	f.registry.Upsert(portal)
-	binding := f.ops.bindings["vault"]
-	binding.Claims.Accepted = []kcp.AcceptedClaimScope{{Group: "", Resource: "secrets", Verbs: []string{"get"}, Selector: kcp.AcceptedClaimSelector{MatchLabels: map[string]string{"app": "vault"}}}}
-	f.ops.bindings["vault"] = binding
-	token := f.issue(t, orgBackendTestOrg, orgBackendTestWorkspace)
-	f.bindDispatcher(func(w http.ResponseWriter, _ *http.Request, _ serviceaccounts.OrgBackendClaims) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"metadata":{"labels":{"app":"vault"}},"data":{"password":"secret"}}`))
-	})
-	path := "/clusters/" + orgBackendTestCluster + "/api/v1/namespaces/default/secrets/provider-secret"
-	response := f.request(token, path)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"password":"secret"`) {
-		t.Fatalf("selected Secret status=%d body=%q", response.Code, response.Body.String())
-	}
-	f.bindDispatcher(func(w http.ResponseWriter, _ *http.Request, _ serviceaccounts.OrgBackendClaims) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"metadata":{"labels":{"app":"vault"}},"type":"kubernetes.io/service-account-token","data":{"token":"native-bearer"}}`))
-	})
-	response = f.request(token, path)
-	if response.Code != http.StatusForbidden || strings.Contains(response.Body.String(), "native-bearer") {
-		t.Fatalf("service account token Secret status=%d body=%q", response.Code, response.Body.String())
 	}
 }

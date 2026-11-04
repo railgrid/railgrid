@@ -182,7 +182,14 @@ func newOrgFixture(t *testing.T) *orgFixture {
 		return u
 	}
 	newBackend := func(h http.HandlerFunc) *url.URL {
-		srv := httptest.NewServer(h)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/apis/apis.kcp.io/v1alpha2/apibindings") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"apiVersion":"apis.kcp.io/v1alpha2","kind":"List","items":[{"metadata":{"name":"edges"},"spec":{"reference":{"export":{"path":"root:railgrid:providers:edges","name":"edges.providers.railgrid.ai"}}},"status":{"phase":"Bound"}}]}`))
+				return
+			}
+			h(w, r)
+		}))
 		t.Cleanup(srv.Close)
 		return mustURL(srv.URL)
 	}

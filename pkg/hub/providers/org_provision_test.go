@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
@@ -69,6 +70,9 @@ func TestOrgProviderRoleAllowsRuntimeWithoutBootstrapAuthority(t *testing.T) {
 		{"", "events", "create", "anything", false},
 		{"", "resourcequotas", "update", "anything", false},
 		{"core.kcp.io", "logicalclusters", "update", "cluster", false},
+		{"dataplane.railgrid.ai", "dataplaneendpointslices", "get", "planner.example.com", false},
+		{"dataplane.railgrid.ai", "dataplaneendpointslices", "create", "planner.example.com", false},
+		{"dataplane.railgrid.ai", "dataplaneendpointslices", "update", "planner.example.com", false},
 		{"dataplane.railgrid.ai", "dataplaneendpointslices/status", "update", "planner.example.com", false},
 		{"providers.railgrid.ai", "catalogentries", "update", "planner", false},
 		{"tenant.example.com", "privateobjects", "create", "anything", false},
@@ -174,7 +178,10 @@ func TestOrgProviderQuotaProtectsClusterScopedAndFormerPrivateResources(t *testi
 		t.Fatal("quota does not cover whole workspace")
 	}
 	hard, _, _ := unstructured.NestedStringMap(quota.Object, "spec", "hard")
-	for key, want := range map[string]string{"count/secrets": "64", "count/configmaps": "64", "count/leases.coordination.k8s.io": "32", "count/apiresourceschemas.apis.kcp.io": "64", "count/customresourcedefinitions.apiextensions.k8s.io": "9", "count/receipts.planner.example": "32", "count/runs.planner.example": "32"} {
+	if orgProviderBootstrapSchemaLimit < 65 {
+		t.Fatalf("bootstrap schema admission limit = %d, want capacity for App Studio's 65 schemas", orgProviderBootstrapSchemaLimit)
+	}
+	for key, want := range map[string]string{"count/secrets": "64", "count/configmaps": "64", "count/leases.coordination.k8s.io": "32", "count/apiresourceschemas.apis.kcp.io": strconv.Itoa(orgProviderBootstrapSchemaLimit), "count/customresourcedefinitions.apiextensions.k8s.io": "9", "count/receipts.planner.example": "32", "count/runs.planner.example": "32"} {
 		if hard[key] != want {
 			t.Errorf("quota %s=%s want %s", key, hard[key], want)
 		}

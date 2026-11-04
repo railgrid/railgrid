@@ -120,26 +120,6 @@ func (r *kcpTenantResolver) Resolve(req *http.Request) (string, string, error) {
 	return r.resolve(req)
 }
 
-// AuthorizeCluster answers: may user address clusterID? Data-plane verbs no
-// longer pass through the backend proxy (kcp authorizes them on
-// /clusters/{id} itself), so nothing on that path asks this any more; it
-// remains the hub's one membership answer for other callers.
-//
-// The answer comes from the SAME check the kcp proxy applies to
-// /clusters/{id} (pkg/server/proxy authorizer.go): a workspace-scope
-// Membership for that workspace, or an org-scope one for its org. Asking it
-// twice, in two places, is how "kubectl can reach it but the provider cannot"
-// (and its more dangerous mirror) gets introduced, so there is one
-// implementation and this delegates to it.
-//
-// Failure is closed: no proxy, no name, no cluster — no.
-func (r *kcpTenantResolver) AuthorizeCluster(ctx context.Context, user, clusterID string) bool {
-	if r == nil || r.kcpProxy == nil || user == "" || clusterID == "" {
-		return false
-	}
-	return r.kcpProxy.AuthorizeCluster(ctx, user, clusterID)
-}
-
 // ErrAnonymousProviderCaller is returned by the tenant resolver when
 // the caller carries no bearer token. The backend proxy treats this
 // as a non-error "forward without identity headers" so unauthenticated

@@ -23,7 +23,8 @@ function scenario({ unscoped = false, error = false, dismissed = false } = {}) {
   const tenant = reactive({ orgUUID: 'org', workspaceUUID: unscoped ? null : 'ws' })
   const providers = reactive({ loaded: true, loading: false, catalogOrgUUID: 'org', error: null,
     bindingsOrgUUID: 'org', bindingsWorkspace: 'ws', bindingsLoadState: error ? 'error' : 'ready',
-    bindingsStale: error, bindingNamesByProvider: {}, items: [], isEnabled: () => false, byName: () => null })
+    bindingsStale: error, bindingNamesByProvider: {}, items: [], workspaceProviders: [],
+    isEnabled: () => false, byName: () => null })
   let completeLoad
   const loads = []
   providers.load = (org) => {

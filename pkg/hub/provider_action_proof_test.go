@@ -81,6 +81,10 @@ func TestProviderActionProofBridgeRechecksMembershipAndRBAC(t *testing.T) {
 	registry.Upsert(providers.Provider{Name: "app-studio", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:providers:app-studio", Export: &providersv1alpha1.ProviderExport{
 		Name: "ai.railgrid.ai", Resources: []providersv1alpha1.ProviderExportResource{{Name: "projects", APIVersion: "ai.railgrid.ai/v1alpha1", Kind: "Project", Verbs: []providersv1alpha1.ProviderVerb{{Name: "publishing-members"}}}},
 	}})
+	// A same-named org registration must not capture a platform-bound operation.
+	registry.Upsert(providers.Provider{Name: "app-studio", OrgUUID: "org", APIExportName: "ai.railgrid.ai", APIExportPath: "root:railgrid:tenants:org:providers:app-studio", Export: &providersv1alpha1.ProviderExport{
+		Name: "ai.railgrid.ai", Resources: []providersv1alpha1.ProviderExportResource{{Name: "projects", APIVersion: "ai.railgrid.ai/v1alpha1", Kind: "Project", Verbs: []providersv1alpha1.ProviderVerb{{Name: "other-org-verb"}}}},
+	}})
 	b := &providerActionProofBridge{
 		keys: serviceaccounts.StaticProofKeySource([]byte("01234567890123456789012345678901")), registry: registry,
 		identify: func(*http.Request) (browsersession.Identity, error) {
@@ -135,7 +139,7 @@ func TestProviderActionProofBridgeRechecksMembershipAndRBAC(t *testing.T) {
 	redeem.Header.Set("X-Railgrid-Cluster", "tenant1")
 	redeem.Header.Set("X-Railgrid-Tenant", "tenant1")
 	claims, err := b.verifier().Verify(context.Background(), redeem)
-	if err != nil || claims.RBACIdentity != "railgrid:alice" {
+	if err != nil || claims.RBACIdentity != "railgrid:alice" || claims.ProviderOrgUUID != "" {
 		t.Fatalf("valid redemption: %#v %v", claims, err)
 	}
 	member = false

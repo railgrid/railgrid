@@ -64,7 +64,7 @@ func TestOrgBackendDispatcherImpersonatesLiveUserAndDropsInboundCredentials(t *t
 	request.Header.Set("Cookie", "session=attacker")
 	request.Header.Set("Cookie2", "legacy=session")
 	request.Header.Set("Proxy-Authorization", "Basic dXNlcjpwYXNz")
-	request.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io.token")
+	request.Header.Set("Sec-WebSocket-Protocol", "base64url.bearer.authorization.k8s.io.token, v5.channel.k8s.io")
 	request.Header.Set("X-Railgrid-User", "attacker")
 	request.Header.Set("X-Remote-User", "attacker")
 	request.Header.Set("Impersonate-User", "system:admin")
@@ -87,10 +87,13 @@ func TestOrgBackendDispatcherImpersonatesLiveUserAndDropsInboundCredentials(t *t
 	if groups := captured.Values("Impersonate-Group"); len(groups) != 1 || groups[0] != "system:authenticated" {
 		t.Fatalf("Impersonate-Group = %v", groups)
 	}
-	for _, header := range []string{"Cookie", "Cookie2", "Proxy-Authorization", "Sec-WebSocket-Protocol", "X-Railgrid-User", "X-Remote-User", "X-Railgrid-Action-Proof"} {
+	for _, header := range []string{"Cookie", "Cookie2", "Proxy-Authorization", "X-Railgrid-User", "X-Remote-User", "X-Railgrid-Action-Proof"} {
 		if got := captured.Get(header); got != "" {
 			t.Errorf("upstream retained %s=%q", header, got)
 		}
+	}
+	if got := captured.Values("Sec-WebSocket-Protocol"); len(got) != 1 || got[0] != "v5.channel.k8s.io" {
+		t.Errorf("upstream subprotocols = %v, want application protocol only", got)
 	}
 }
 

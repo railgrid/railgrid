@@ -64,6 +64,7 @@ config.define_string('kcp-image')
 config.define_string('code-bundle-store', usage='Code provider transient store: file (default) or s3 (adds a local MinIO resource)')
 cfg = config.parse()
 
+
 # ---------------------------------------------------------------------------
 # External provider checkouts (loaded fully further down, once the hub is
 # defined) may need the kcp SHARD configured at startup: an admission
@@ -130,6 +131,8 @@ kcp_external_kubeconfig = kcp_external_root + '/admin.kubeconfig'
 # external endpoint uses the normal HTTPS port.
 railgrid_hub_external_url = os.getenv('RAILGRID_HUB_EXTERNAL_URL', os.getenv('DEV_HUB_URL', 'https://console.127.0.0.1.sslip.io:9443'))
 preview_app_base_domain = os.getenv('RAILGRID_APP_BASE_DOMAIN', 'apps.127.0.0.1.sslip.io')
+# Host-run trusted backends accept shard identity headers and must be private.
+host_provider_listen_host = os.getenv('RAILGRID_LISTEN_HOST', '127.0.0.1')
 preview_gateway_port = os.getenv('PREVIEW_GATEWAY_PORT', '10443')
 preview_app_public_port = os.getenv('RAILGRID_APP_PUBLIC_PORT', preview_gateway_port)
 preview_app_public_port_suffix = (':' + preview_app_public_port) if preview_app_public_port else ''
@@ -199,8 +202,28 @@ if kcp_image:
     kcp_server_flags = '  --external-kcp-kubeconfig=' + kcp_external_kubeconfig
     hub_deps = ['portal', 'kcp']
 else:
-    kcp_server_flags = ' --embedded-kcp --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380)) + external_shard_flags
+    # Provider export endpoints also reach embedded kcp over the Docker bridge.
+    kcp_server_flags = ' --embedded-kcp --kcp-bind-address=0.0.0.0 --kcp-root-dir=.kcp --kcp-secure-port=%s --kcp-etcd-client-port=%s --kcp-etcd-peer-port=%s' % (kcp_port, dev_port('KCP_ETCD_CLIENT_PORT', 2379), dev_port('KCP_ETCD_PEER_PORT', 2380)) + external_shard_flags
     hub_deps = ['portal']
+
+hub_byo_environment = ''
+hub_byo_flags = ''
+if not kcp_image:
+    hub_byo_environment = 'RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS=1 '
+    hub_byo_flags = '''  --org-max-object-bytes=262144 \
+  --org-max-request-bytes=1048576 \
+  --org-max-stream-request-bytes=268435456 \
+  --org-requests-per-second=1000 \
+  --org-request-burst=2000 \
+  --org-max-concurrent-requests=256 \
+  --org-max-concurrent-streams=128 \
+  --org-max-active-organizations=32 \
+  --org-request-timeout=30s \
+  --org-stream-timeout=5m \
+  --org-max-consumer-workspaces=8 \
+  --org-max-resource-types=32 \
+  --org-max-objects-per-resource=32 \
+  --org-max-live-bytes=8589934592'''
 
 # ---------------------------------------------------------------------------
 local_resource(
@@ -209,7 +232,7 @@ local_resource(
 make certs && \
 make build-hub
 ''',
-    serve_cmd=('''RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS=1 ./bin/railgrid-hub \
+    serve_cmd=('''exec env %s./bin/railgrid-hub \
   --serving-cert-file=certs/apiserver.crt \
   --serving-key-file=certs/apiserver.key \
   --hub-external-url=%s \
@@ -221,29 +244,19 @@ make build-hub
   --listen-addr=:%s \
   --data-dir=%s \
   --portal-dev-url=http://localhost:%s \
-  --org-max-object-bytes=262144 \
-  --org-max-request-bytes=1048576 \
-  --org-requests-per-second=1000 \
-  --org-request-burst=2000 \
-  --org-max-concurrent-requests=256 \
-  --org-max-concurrent-streams=128 \
-  --org-max-active-organizations=32 \
-  --org-request-timeout=30s \
-  --org-stream-timeout=5m \
-  --org-max-consumer-workspaces=8 \
-  --org-max-resource-types=32 \
-  --org-max-objects-per-resource=32 \
-  --org-max-live-bytes=8589934592 \
+%s \
   --portal-frame-source=%s \
   --published-apps-domain=%s \
   --kubeconfig=.railgrid-kro.kubeconfig \
   --hub-internal-url=%s
 ''' % (
+        hub_byo_environment,
         railgrid_hub_external_url,
         kcp_server_flags,
         hub_port,
         os.getenv('HUB_DATA_DIR', '/tmp/railgrid-data'),
         portal_port,
+        hub_byo_flags,
         preview_app_frame_source,
         preview_app_base_domain,
         hub_internal_url,
@@ -352,6 +365,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('QUICKSTART_PORT', 8081), path='/healthz'),
     ),
     labels=['providers-quickstart'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -410,7 +424,7 @@ local_resource(
     'code',
     cmd='make init-provider-code',
     serve_cmd='make serve-provider-code',
-    serve_env={'CODE_BUNDLE_STORE': code_bundle_store},
+    serve_env={'CODE_BUNDLE_STORE': code_bundle_store, 'RAILGRID_LISTEN_HOST': host_provider_listen_host},
     deps=[
         'providers/code/main.go',
         'providers/code/assets.go',
@@ -566,6 +580,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('APP_STUDIO_PORT', 8085), path='/healthz'),
     ),
     labels=['providers-app-studio'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -663,6 +678,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('AGENTS_PORT', 8087), path='/healthz'),
     ),
     labels=['providers-agents'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -856,6 +872,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('KUERY_PORT', 8084), path='/healthz'),
     ),
     labels=['providers-kuery'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -1137,6 +1154,7 @@ make run-provider-infrastructure
         http_get=http_get_action(port=dev_port('KROMC_PORT', 8082), path='/healthz'),
     ),
     labels=['providers-kro'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -1265,7 +1283,7 @@ while true; do
     continue
   fi
   kubectl --kubeconfig "$KRO_KUBECONFIG" --context "$CTX" \
-    -n %s port-forward "svc/$svc" %s:%s >/dev/null &
+    -n %s port-forward --address=127.0.0.1 "svc/$svc" %s:%s >/dev/null &
   pf=$!
   fails=0
   probe_ticks=0
@@ -1373,6 +1391,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('EDGES_PORT', 8088), path='/healthz'),
     ),
     labels=['edges'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -1505,7 +1524,7 @@ local_resource(
 local_resource(
     'code-2',
     serve_cmd='make run-provider-code CODE_PORT=%s' % dev_port('CODE_REPLICA_PORT', 18083),
-    serve_env={'CODE_BUNDLE_STORE': code_bundle_store},
+    serve_env={'CODE_BUNDLE_STORE': code_bundle_store, 'RAILGRID_LISTEN_HOST': host_provider_listen_host},
     trigger_mode=TRIGGER_MODE_MANUAL,
     auto_init=False,
     resource_deps=['code'],
@@ -1527,6 +1546,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('KUERY_REPLICA_PORT', 18084), path='/healthz'),
     ),
     labels=['replicas'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 local_resource(
@@ -1540,6 +1560,7 @@ local_resource(
         http_get=http_get_action(port=dev_port('EDGES_REPLICA_PORT', 18088), path='/healthz'),
     ),
     labels=['replicas'],
+    serve_env={'RAILGRID_LISTEN_HOST': host_provider_listen_host},
 )
 
 # ---------------------------------------------------------------------------

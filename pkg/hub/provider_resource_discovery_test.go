@@ -51,6 +51,7 @@ func TestProviderResourceDiscoveryBoundaries(t *testing.T) {
 					Actions: []providersv1alpha1.ProviderAction{{Name: "query-table", Version: "v1"}},
 				}},
 			}})
+			registry.Upsert(providers.Provider{Name: "databricks", OrgUUID: "org", EndpointsValid: true, Export: &providersv1alpha1.ProviderExport{Name: "other-org-export"}})
 			dyn := fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{gvr: "TableList"}, &unstructured.Unstructured{Object: map[string]any{
 				"apiVersion": "databricks.railgrid.ai/v1alpha1", "kind": "Table",
 				"metadata": map[string]any{"name": "orders", "uid": "table-uid", "resourceVersion": "42", "annotations": map[string]any{"private": "must-not-escape"}},
@@ -76,7 +77,7 @@ func TestProviderResourceDiscoveryBoundaries(t *testing.T) {
 					if cluster != "tenant1" || provider.Name != "databricks" {
 						t.Fatal("scope changed")
 					}
-					return tc.bound, nil
+					return tc.bound && provider.OrgUUID == "", nil
 				},
 				client: func(c actionproof.Claims) (dynamic.Interface, error) {
 					if c.ClusterID != "tenant1" || c.RBACIdentity != "alice" {

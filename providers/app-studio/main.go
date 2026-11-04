@@ -341,7 +341,7 @@ func runServe() {
 	// and marks their requests forwarded (the loop guard).
 	core := apiServer.ReplicaAffinity(handler)
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              serve.ListenAddress(port),
 		Handler:           apiServer.StripReplicaHeaders(core),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -363,12 +363,12 @@ func runServe() {
 	internalMux.Handle("/", apiServer.InternalReplicaHandler(core))
 	if replicaAddr != "" {
 		internalSrv := &http.Server{
-			Addr:              ":" + internalPort,
+			Addr:              serve.ListenAddress(internalPort),
 			Handler:           internalMux,
 			ReadHeaderTimeout: 10 * time.Second,
 		}
 		go func() {
-			log.Printf("app-studio internal listener (peer-forwarded project requests) on :%s replica=%s", internalPort, replicaID)
+			log.Printf("app-studio internal listener (peer-forwarded project requests) on %s replica=%s", serve.ListenAddress(internalPort), replicaID)
 			if err := internalSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				log.Printf("internal listener failed; peers cannot forward to this replica: %v", err)
 			}

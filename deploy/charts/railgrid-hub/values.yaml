@@ -94,6 +94,8 @@ hub:
   organizationLimits:
     maxObjectBytes: 0
     maxRequestBytes: 0
+    # Optional larger bound for streamed provider verbs, not stored objects.
+    maxStreamRequestBytes: 0
     requestsPerSecond: 0
     requestBurst: 0
     maxConcurrentRequests: 0
@@ -172,19 +174,14 @@ hub:
   # published-app access (public apps are unaffected — they never touch the
   # hub).
   publishedAppsDomain: ""
-  # -- Provider hardening. Every key here is unset by default, which leaves
-  # the binary's own default for this release; nothing is rendered into the
-  # hub args until you set a value. The binary defaults are the soft, staged
-  # ones (warn / off / cluster-admin) so providers installed from older charts
-  # keep working while they are rolled forward. The NEXT release flips them to
-  # enforce / platform / false; set them here to move to that posture early
-  # and shake out any provider that needs it. See docs/helm.md "Turning on the
-  # hardened defaults early".
+  # -- Provider hardening. Unset keys inherit the binary defaults:
+  # authenticated heartbeats, delegated platform tokens, a narrow workspace
+  # role, and explicit hub-capability consent. Set compatibility overrides
+  # explicitly when migrating legacy providers.
   security:
     # What the hub does with a provider heartbeat whose bearer token does not
     # verify as that provider's own service account: "warn" logs and accepts
-    # it, "enforce" rejects it. Binary default this release: warn. Next
-    # release: enforce. Recommended for production: enforce (once every
+    # it, "enforce" rejects it. Binary default: enforce. Recommended for production: enforce (once every
     # provider runs a chart that sends its own service-account token).
     providerHeartbeatAuth: ""
     # Which platform providers receive a short-lived workspace-scoped
@@ -192,8 +189,7 @@ hub:
     # /services/providers/*: "off" (caller's bearer, historical behaviour),
     # "platform" (delegated, except the names in providerDelegatedTokensExclude),
     # or "all" (delegated, exclusion list ignored). Org-owned providers are
-    # always delegated regardless. Binary default this release: off. Next
-    # release: platform. Recommended for production: platform.
+    # always delegated regardless. Binary default: platform. Recommended for production: platform.
     providerDelegatedTokens: ""
     # Platform providers that keep receiving the caller's bearer under
     # providerDelegatedTokens=platform. Empty leaves the binary's built-in
@@ -204,20 +200,15 @@ hub:
     # Role bound to each provider's ServiceAccount inside its own provider
     # workspace: true keeps cluster-admin, false binds the narrower generated
     # railgrid:provider ClusterRole. null (default) leaves the binary default,
-    # which is true this release so an operator can stage the change; the
-    # next release defaults to false. The narrow role cannot be the default
-    # yet because the infrastructure provider defines and serves its own CRDs
-    # from its provider workspace, which the generated role does not grant, so
-    # flip this per deployment once you have confirmed your providers do not
-    # need it. Flipping either way replaces the existing binding (RoleRef is
-    # immutable; the hub deletes and recreates it).
+    # which is false. Infrastructure bootstrap may require the explicit true
+    # compatibility override until its runtime-role migration is complete.
+    # Flipping replaces the existing binding because RoleRef is immutable.
     providerWorkspaceClusterAdmin: null
     # Whether platform providers may use the hub capabilities they declare
     # (CatalogEntry spec.hubAccess — e.g. App Studio reading member lists and
     # inviting people) in workspaces where nobody has accepted or declined
     # them yet. Org-owned providers always need an explicit acceptance in the
-    # Enable dialog. null (default) leaves the binary default, true, which
-    # keeps existing workspaces working across the upgrade; false requires
+    # Enable dialog. null (default) leaves the binary default, false, requiring
     # acceptance for every provider.
     providerHubAccessPlatformDefault: null
   # -- Extra command-line flags appended to the hub container after the flags

@@ -340,21 +340,19 @@ Platform bundles load as classic scripts into the portal document, pinned with
 the hub's SRI hash, and render their registered custom element. They are trusted
 portal code and receive the ordinary host-owned `railgridContext`.
 
-Org-owned BYO bundles use a separate path. The host redeems the UI grant,
-fetches the bytes, verifies the returned SHA-384 pin with WebCrypto, then sends
-the verified bytes to `/ui/provider-sandbox.html` in an opaque-origin iframe
-with `sandbox="allow-scripts"`. The grant URL and user's bearer never enter
-the frame. A MessageChannel bridge checks every request against the active
-principal/workspace and allows the provider's export API groups, own
-health/MCP/assets, and dependency claims that the current APIBinding reports
-as applied and accepted. Core Secret GETs additionally require an accepted
-selector, and the host verifies response labels before forwarding bytes. The
-bridge denies hub admin/auth endpoints, other groups, redirects and
-cross-origin requests, and bounds concurrent request/response data. BYO
-dashboard tiles and the Agents overlay show an explicit Open-provider
-fallback instead of loading org JavaScript in the portal document. See
-[`docs/providers.md`](docs/providers.md) §"ProviderFrame.vue" and
-[`docs/byo-providers.md`](docs/byo-providers.md).
+Org administrators may approve `organization-v1` for registered providers.
+Organization bundles now use the existing trusted custom-element loader inside
+this portal document, with authenticated source-specific bundle grants and SRI.
+They have the signed-in user's full browser authority, including portal token,
+other memberships and any platform privileges that user holds. This is an
+explicit trust policy, not containment of hostile UI code. No dedicated provider
+origin, provider iframe, browser lease/renewal or MessagePort network bridge
+remains. The org-bound backend relay still pins org/workspace/caller/source/
+binding/approval and applies native caller RBAC and infrastructure fences to its
+opaque credentials. Keep those separate from the trusted UI authority. Existing
+Self-Hosting catalog and installation instructions remain. See
+[`docs/byo-providers.md`](docs/byo-providers.md) and
+[`docs/design/byo-organization-trust.md`](docs/design/byo-organization-trust.md).
 
 The Agents portal has one narrow nested-frame exception for attended MCP App
 result views. It is limited to app HTML whose provider/resource identity and

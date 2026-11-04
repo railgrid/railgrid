@@ -40,6 +40,9 @@ func TestProviderRelayRequiresTrustedShardAndSignsBoundRoute(t *testing.T) {
 	path := "/clusters/consumer/apis/planner.example/v1/boards/demo/run"
 	requests := make(chan *http.Request, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if serveTestPlatformEdgeBinding(w, r) {
+			return
+		}
 		requests <- r.Clone(r.Context())
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Set-Cookie", "provider-session=secret; Path=/")

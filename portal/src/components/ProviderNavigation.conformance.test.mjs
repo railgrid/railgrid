@@ -14,17 +14,15 @@ test('provider host consumers honor replace navigation while preserving push by 
   }
 })
 
-test('provider page isolates BYO code; dashboard only loads trusted platform bundles', () => {
-  assert.match(frame, /createProviderSandboxFrame, fetchVerifiedProviderBundle/)
-  assert.match(frame, /entry\.value\.scope === 'org' \|\| !!entry\.value\.ownerOrg/)
-  assert.match(frame, /await resolveProviderBundle\(entry\.value, authFetch\)/)
-  assert.match(frame, /fetchVerifiedProviderBundle\(bundle, name/)
-  assert.match(frame, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
+test('provider page runs an org-approved bundle through the trusted portal loader', () => {
+  assert.match(frame, /await resolveProviderBundle\(entry\.value, authFetch, tenant\.orgUUID\)/)
+  assert.doesNotMatch(frame, /providerOrigin|ProviderOrigin|sessionLease|\/sessions|<iframe|sandbox=/)
+  assert.match(frame, /await loadProviderScript\(name, version, document, undefined, \{[\s\S]*?\.\.\.bundle,[\s\S]*?refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\)/)
+  assert.match(frame, /!isOrgOwnedProviderEntry\.value \? \{ refreshIntegrity:/)
   assert.doesNotMatch(frame, /document\.createElement\('script'\)/)
 
-  assert.match(tile, /isOrgOwnedProvider\(props\.provider\)[\s\S]*?loadState\.value = 'no-tile'[\s\S]*?return/)
-  assert.match(tile, /await resolveProviderBundle\(props\.provider, authFetch\)/)
-  assert.match(tile, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)/)
+  assert.match(tile, /await resolveProviderBundle\(provider, authFetch, tenant\.orgUUID\)/)
+  assert.match(tile, /await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*\.\.\.\(!isOrgOwnedProvider\(provider\) \? \{ refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\) \} : \{\}\),\s*\}\)/)
   assert.doesNotMatch(tile, /document\.createElement\('script'\)/)
   assert.match(frame, /invalidateProviderScript\(name, version\)/)
   assert.match(frame, /@click="retryProviderBundle"/)
@@ -37,7 +35,7 @@ test('provider hosts recover a retained wrapper after its lazy chunk is retired'
     assert.match(source, /removeEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
   }
   assert.match(frame, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*retryProviderBundle\(\)/)
-  assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*invalidateProviderScript\(props\.provider\.name, props\.provider\.version\)[\s\S]*retryLoad\(\)/)
+  assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*invalidateProviderScript\(provider\.value\.name, provider\.value\.version\)[\s\S]*retryLoad\(\)/)
 })
 
 test('direct-registration provider failures require a page reload', () => {

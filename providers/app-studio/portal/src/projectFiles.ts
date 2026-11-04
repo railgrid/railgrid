@@ -156,7 +156,7 @@ export function projectFileErrorMessage(reason: ProjectFileErrorReason, detail: 
     case 'changed':
       return 'The file changed since it was loaded. Refresh and try again.'
     case 'too-large':
-      return 'The file is too large. Files must be 25 MiB or smaller.'
+      return tooLargeProjectFileMessage(detail)
     case 'not-found':
       return 'The file no longer exists. Refresh the file list.'
     case 'invalid':
@@ -164,4 +164,35 @@ export function projectFileErrorMessage(reason: ProjectFileErrorReason, detail: 
     default:
       return detail || 'The file request failed.'
   }
+}
+
+function tooLargeProjectFileMessage(detail: string): string {
+  // Only surface limits from the provider's known error formats. Other 413s
+  // can come from the request gateway, whose cap is not a per-file limit.
+  const textLimit = detail.match(/^text file ".*" is too large: \d+ > (\d+) bytes$/u)
+  if (textLimit) {
+    const limit = safeLimit(textLimit[1])
+    if (limit !== null) return `Text files must be ${formatByteSize(limit)} or smaller.`
+  }
+  const binaryFileLimit = detail.match(/^binary file ".*" is too large: \d+ > (\d+) bytes$/u)
+  if (binaryFileLimit) {
+    const limit = safeLimit(binaryFileLimit[1])
+    if (limit !== null) return `Binary files must be ${formatByteSize(limit)} or smaller.`
+  }
+  const binaryUploadLimit = detail.match(/^file ".*" exceeds the (\d+)-byte binary limit$/u)
+  if (binaryUploadLimit) {
+    const limit = safeLimit(binaryUploadLimit[1])
+    if (limit !== null) return `Binary files must be ${formatByteSize(limit)} or smaller.`
+  }
+  const requestLimit = detail.match(/^upload exceeds the (\d+)-byte request limit$/u)
+  if (requestLimit) {
+    const limit = safeLimit(requestLimit[1])
+    if (limit !== null) return `The upload request exceeds the ${formatByteSize(limit)} request limit.`
+  }
+  return 'The upload exceeds a server request-size limit. Try a smaller file.'
+}
+
+function safeLimit(value: string): number | null {
+  const limit = Number(value)
+  return Number.isSafeInteger(limit) && limit > 0 ? limit : null
 }

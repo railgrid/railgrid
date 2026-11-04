@@ -4,6 +4,7 @@ import { File as FileIcon, FileText, Image, Loader2 } from 'lucide-vue-next'
 import type { RailgridContext, ProjectAssistantAttachmentReceipt } from './types'
 import { api } from './api'
 import { assistantAttachmentContentTypeKind, assistantAttachmentSizeLabel } from './assistantAttachments'
+import { providerContextFingerprint } from './authContext'
 
 const props = defineProps<{
   attachments: ProjectAssistantAttachmentReceipt[]
@@ -70,7 +71,7 @@ async function loadImagePreview(attachment: ProjectAssistantAttachmentReceipt) {
 }
 
 function syncImagePreviews() {
-  const nextScope = `${props.projectName}\u0000${props.ctx?.token ?? ''}\u0000${props.ctx?.tenant ?? ''}\u0000${props.ctx?.orgUUID ?? ''}\u0000${props.ctx?.workspaceUUID ?? ''}`
+  const nextScope = `${props.projectName}\u0000${providerContextFingerprint(props.ctx)}`
   if (nextScope !== previewScope) {
     for (const attachmentID of new Set([...previewControllers.keys(), ...Object.keys(imagePreviews.value)])) releasePreview(attachmentID)
     previewScope = nextScope
@@ -91,10 +92,7 @@ function syncImagePreviews() {
 watch([
   attachmentSignature,
   () => props.projectName,
-  () => props.ctx?.token,
-  () => props.ctx?.tenant,
-  () => props.ctx?.orgUUID,
-  () => props.ctx?.workspaceUUID,
+  () => providerContextFingerprint(props.ctx),
 ], syncImagePreviews, { immediate: true })
 
 onBeforeUnmount(() => {

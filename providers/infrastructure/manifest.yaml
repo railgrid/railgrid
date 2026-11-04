@@ -121,7 +121,7 @@ spec:
           - name: env
             description: "Set or read the instance's runtime environment."
           - name: exec
-            description: "Open an interactive shell or run a command in the instance."
+            description: "Run a bounded command in the instance and retrieve its output."
             stream: true
           - name: log
             description: "Stream the instance's logs."

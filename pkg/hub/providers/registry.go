@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -671,6 +672,32 @@ func (r *Registry) ListForOrg(orgUUID string) []Provider {
 		}
 		out = append(out, cloneProvider(*p))
 	}
+	return out
+}
+
+// ListCopiesForOrg returns every platform and same-org registration, including
+// a platform copy hidden by an org copy of the same name. Runtime callers that
+// have a selected workspace binding use this to discover candidate names,
+// then resolve each name against that binding. Results are sorted by name and
+// scope to keep discovery deterministic.
+func (r *Registry) ListCopiesForOrg(orgUUID string) []Provider {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]Provider, 0, len(r.byKey))
+	for _, provider := range r.byKey {
+		if provider.OrgUUID == "" || (orgUUID != "" && provider.OrgUUID == orgUUID) {
+			out = append(out, cloneProvider(*provider))
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].OrgUUID < out[j].OrgUUID
+	})
 	return out
 }
 

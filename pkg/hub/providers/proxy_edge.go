@@ -13,13 +13,18 @@ package providers
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
 	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
@@ -66,15 +71,57 @@ func (p *ProviderProxy) SetDelegatedTokenIssuer(i DelegatedTokenIssuer) {
 // assets embedded in the hub or fetched from a platform URL, and an org's
 // bundle is not something the hub hosts, so org-scoping there would only
 // produce 404s where the platform asset used to work.
-func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider, bool) {
+func (p *ProviderProxy) resolveProvider(r *http.Request, name string) (Provider, bool, error) {
 	if p.fallbackForSPA || p.tenantResolver == nil {
-		return p.reg.Get(name)
+		provider, found := p.reg.Get(name)
+		return provider, found, nil
+	}
+	_, rest, backendPath := splitProviderPath(r.URL.Path, p.pathPrefix)
+	if backendPath && usesBoundBackendCopy(rest) && strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		if p.boundCopy == nil {
+			return Provider{}, false, errors.New("bound provider source resolver unavailable")
+		}
+		user, tenantPath, err := p.resolveCaller(r)
+		if err != nil || user == "" {
+			return Provider{}, false, nil
+		}
+		orgUUID, wsUUID := splitTenantPath(tenantPath)
+		if orgUUID == "" {
+			return Provider{}, false, nil
+		}
+		if wsUUID == "" {
+			// Preserve the existing refusal from delegatedAuthorization for an
+			// org-scope selection, which has no workspace to mint identity in.
+			provider, found := p.reg.GetForOrg(orgUUID, name)
+			return provider, found, nil
+		}
+		cluster, err := p.resolveClusterID(r.Context(), tenantPath)
+		if err != nil {
+			return Provider{}, false, err
+		}
+		provider, err := p.boundCopy(r.Context(), tenantPath, cluster, name)
+		if errors.Is(err, ErrBoundCopyUnavailable) {
+			return Provider{}, false, nil
+		}
+		return provider, err == nil, err
 	}
 	orgUUID := p.callerOrgUUID(r)
 	if orgUUID == "" {
-		return p.reg.Get(name)
+		provider, found := p.reg.Get(name)
+		return provider, found, nil
 	}
-	return p.reg.GetForOrg(orgUUID, name)
+	provider, found := p.reg.GetForOrg(orgUUID, name)
+	return provider, found, nil
+}
+
+func usesBoundBackendCopy(path string) bool {
+	path = strings.TrimSuffix(path, "/")
+	for _, prefix := range []string{"/mcp", "/oauth"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return path == "/healthz" || path == "/readyz"
 }
 
 // callerOrgUUID derives the caller's Org from the tenant workspace path the
@@ -325,9 +372,9 @@ type edgeHop struct {
 // The tunnel is platform infrastructure, so the edges provider is resolved from
 // the PLATFORM registry, never org-scoped: an org supplying the transport for
 // its own traffic would sit on both ends of the trust boundary. kcp resolves
-// the export behind the tenant's APIBinding itself; the registry check here is
-// the hub's own readiness gate on that provider.
-func (p *ProviderProxy) resolveEdgeHop(prov Provider) (edgeHop, error) {
+// the export behind the tenant's APIBinding itself, so the hosting binding is
+// checked against that platform source before any hop is constructed.
+func (p *ProviderProxy) resolveEdgeHop(ctx context.Context, prov Provider) (edgeHop, error) {
 	if !prov.EdgeRoute.Usable() {
 		return edgeHop{}, errEdgeRouteUnusable
 	}
@@ -338,7 +385,50 @@ func (p *ProviderProxy) resolveEdgeHop(prov Provider) (edgeHop, error) {
 	if p.kcpFrontDoor == nil || p.kcpTransport == nil {
 		return edgeHop{}, errEdgeTransportUnavailable
 	}
+	if err := p.requirePlatformEdgeBinding(ctx, prov.EdgeRoute.Cluster, edges); err != nil {
+		return edgeHop{}, fmt.Errorf("%w: %v", errEdgeTransportUnavailable, err)
+	}
 	return edgeHop{target: *p.kcpFrontDoor, transport: p.kcpTransport, route: *prov.EdgeRoute}, nil
+}
+
+// requirePlatformEdgeBinding checks the live hosting binding before forwarding
+// credentials or a signed relay envelope through that workspace's Edges API.
+func (p *ProviderProxy) requirePlatformEdgeBinding(ctx context.Context, cluster string, edges Provider) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	targetURL := apiurl.KCPClusterURL(p.kcpFrontDoor.String(), cluster) + "/apis/apis.kcp.io/v1alpha2/apibindings"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := p.kcpTransport.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("hosting binding lookup returned %d", resp.StatusCode)
+	}
+	var list unstructured.UnstructuredList
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&list); err != nil {
+		return err
+	}
+	exportPath, exportName := edges.APIExportPath, edges.APIExportName
+	if exportPath == "" {
+		exportPath = kcppaths.ProviderPath(EdgesProviderName)
+	}
+	if exportName == "" {
+		exportName = "edges.providers.railgrid.ai"
+	}
+	for _, binding := range list.Items {
+		phase, _, _ := unstructured.NestedString(binding.Object, "status", "phase")
+		path, _, _ := unstructured.NestedString(binding.Object, "spec", "reference", "export", "path")
+		name, _, _ := unstructured.NestedString(binding.Object, "spec", "reference", "export", "name")
+		if binding.GetDeletionTimestamp() == nil && phase == "Bound" && name == exportName && (path == exportPath || (edges.CatalogEntryCluster != "" && path == edges.CatalogEntryCluster)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("hosting workspace requires the platform Edges binding")
 }
 
 // url returns the kcp URL that carries rest (a path relative to the provider's
@@ -369,7 +459,7 @@ func (h edgeHop) url(rest string) *url.URL {
 // never a fallback to BackendURL — so the bearer substitution in
 // delegatedAuthorization covers every request such a provider can receive.
 func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, prov Provider, rest string) {
-	hop, err := p.resolveEdgeHop(prov)
+	hop, err := p.resolveEdgeHop(r.Context(), prov)
 	switch {
 	case errors.Is(err, errEdgeRouteUnusable):
 		// Recorded but not yet resolvable — the workspace's cluster ID is

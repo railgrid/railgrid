@@ -79,8 +79,7 @@ function engage(): void { cancelClosingAnimation(); expanded.value = true }
 let element: OverlayElement | null = null
 let generation = 0
 
-const entry = computed(() => providers.byName('agents'))
-const isOrgOwnedAgents = computed(() => !!entry.value && isOrgOwnedProvider(entry.value))
+const entry = computed(() => providers.workspaceProvider('agents'))
 const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName &&
   tenant.activeWorkspaceUsable && routeContext.state === 'ready' &&
   !route.meta.public && !routeContext.blocksRoute(route.path, false) &&
@@ -90,7 +89,8 @@ const allowed = computed(() => !!auth.token && !!auth.user && !!auth.clusterName
   providers.bindingsOrgUUID === tenant.orgUUID && providers.bindingsWorkspace === tenant.workspaceUUID &&
   providers.isEnabled('agents') && !providers.bindingsByProvider.agents?.terminating)
 const authorityKey = computed(() => JSON.stringify([
-  overlay.preferenceKey, auth.clusterName, entry.value?.scope, entry.value?.ownerOrg,
+  overlay.preferenceKey, auth.clusterName, entry.value?.name, entry.value?.version,
+  entry.value?.scope, entry.value?.ownerOrg, entry.value?.export?.name, entry.value?.export?.path,
 ]))
 const dedicatedChat = computed(() => route.params.name === 'agents' && route.hash.startsWith('#/agents/' + encodeURIComponent(overlay.selectedAgent || '') + '/'))
 const visible = computed(() => allowed.value && !!overlay.selectedAgent && !dedicatedChat.value)
@@ -179,14 +179,11 @@ async function mountAgent(): Promise<void> {
   loading.value = true
   try {
     const provider = entry.value
-    if (isOrgOwnedProvider(provider)) {
-      error.value = 'Organization-owned Agents runs on its isolated provider page. Open Agents to continue.'
-      return
-    }
-    const bundle = await resolveProviderBundle(provider, authFetch)
+    const bundle = await resolveProviderBundle(provider, authFetch, tenant.orgUUID)
     if (!current()) return
     await loadProviderScript('agents', provider.version, document, undefined, {
-      ...bundle, refreshIntegrity: () => providers.refreshMainJSIntegrity('agents'),
+      ...bundle,
+      ...(!isOrgOwnedProvider(provider) ? { refreshIntegrity: () => providers.refreshMainJSIntegrity('agents') } : {}),
     })
     if (!current() || !mount.value) return
     if (!customElements.get('railgrid-provider-agents')) throw new Error('The Agents interface did not load. Reload the page to try again.')
@@ -362,7 +359,7 @@ onBeforeUnmount(() => {
         <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
-      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><router-link v-if="isOrgOwnedAgents" class="k-btn k-btn--ghost" :to="scopePath('/providers/agents')">Open Agents</router-link><button v-else class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
+      <div v-if="error" class="agent-overlay__state" role="alert"><p>{{ error }}</p><button class="k-btn k-btn--ghost" type="button" @click="retry++"><RefreshCw :size="14" aria-hidden="true" /> Retry</button></div>
       <Hexagon v-show="!expanded" class="agent-overlay__brand" :size="20" aria-hidden="true" />
       <div ref="mount" class="agent-overlay__mount" v-show="!error && !loading" />
       <div v-show="!expanded" class="agent-overlay__bar-actions">

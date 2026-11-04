@@ -412,3 +412,37 @@ test('generation fence rejects a stale tile completion after newer props win', a
 
   assert.deepEqual(commits, ['current'])
 })
+
+
+test('same-version direct providers cannot reuse a bootstrap from a different copy', async () => {
+  const doc = providerDocument()
+  const platform = loadProviderScript('edges', '1', doc, 5000, { sourceKey: 'platform:edges' })
+  await Promise.resolve()
+  doc.appended[0].onload()
+  await platform
+  const same = loadProviderScript('edges', '1', doc, 5000, { sourceKey: 'platform:edges', src: '/fresh-public-url' })
+  assert.strictEqual(same, platform)
+  await assert.rejects(loadProviderScript('edges', '1', doc, 5000, {
+    sourceKey: 'org:org-a:edges', src: '/ui/providers/edges/main.js?grant=new',
+  }), error => error instanceof ProviderPageReloadRequiredError && /copy changed/.test(error.message))
+  assert.equal(doc.appended.length, 1)
+})
+
+test('same-version App Studio can replace its retained wrapper source', async () => {
+  const doc = providerDocument()
+  const platform = loadProviderScript('app-studio', '1', doc, 5000, { sourceKey: 'platform:app-studio' })
+  await Promise.resolve()
+  doc.appended[0].onload()
+  await platform
+  const org = loadProviderScript('app-studio', '1', doc, 5000, {
+    sourceKey: 'org:org-a:app-studio', src: '/ui/providers/app-studio/main.js?grant=org',
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(doc.appended.length, 2, 'the same-version DOM fast path must not retain another copy')
+  assert.equal(doc.appended[1].dataset.railgridProviderSource, 'org:org-a:app-studio')
+  doc.appended[1].onload()
+  await org
+  assert.strictEqual(loadProviderScript('app-studio', '1', doc, 5000, {
+    sourceKey: 'org:org-a:app-studio', src: '/ui/providers/app-studio/main.js?grant=refreshed',
+  }), org, 'fresh grants for the same source must coalesce')
+})

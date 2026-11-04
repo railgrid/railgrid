@@ -74,6 +74,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -91,11 +92,9 @@ const (
 	// handler first.
 	PathProviderUIGrant = PathListProviders + "/{name}/ui-grant"
 
-	// UIGrantQueryParam is the query parameter the UI proxy reads the grant
-	// from. It sits in the query rather than the path so the bundle URL keeps
-	// the /ui/providers/{name}/ shape the provider's own portalkit derives its
-	// service base from, and so the portal's provider-fetch allow list is
-	// unchanged.
+	// UIGrantQueryParam is the legacy query parameter accepted by the UI proxy.
+	// New grants use a scoped asset directory so relative lazy assets carry the
+	// same opaque authority as the bootstrap.
 	UIGrantQueryParam = "grant"
 
 	// uiGrantPrefix marks a grant so a stray app token or bearer pasted into
@@ -107,6 +106,12 @@ const (
 	// grant only needs to outlive a slow first byte over the tunnel.
 	uiGrantTTL = 5 * time.Minute
 
+	// uiAssetGrantTTL covers interactive workday sessions. It is an
+	// asset-only authority and each request still checks live org approval,
+	// workspace binding, membership and trust through the delegated issuer.
+	uiAssetGrantTTL   = 8 * time.Hour
+	uiAssetGrantScope = "assets"
+
 	// uiGrantKeyInfo domain-separates the grant key from every other subkey
 	// derived from the hub secret (app access tokens, delegated-identity
 	// proofs). uiGrantAAD binds the ciphertext to this construction.
@@ -116,6 +121,49 @@ const (
 	uiGrantIDBytes = 16
 	uiGrantMinKey  = 32
 )
+
+const scopedUIGrantSegment = "_grant"
+
+func isUIStaticAssetPath(rest string) bool {
+	if !isAssetPath(rest) {
+		return false
+	}
+	clean := strings.ToLower(path.Clean("/" + strings.TrimPrefix(rest, "/")))
+	for _, reserved := range []string{"/mcp", "/oauth", "/clusters", "/webhooks", "/agent", "/healthz", "/readyz", "/workload-identities"} {
+		if clean == reserved || strings.HasPrefix(clean, reserved+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+// splitScopedUIGrantPath extracts an opaque grant from an asset directory URL
+// and returns the provider-relative asset path. The grant remains in every
+// relative lazy-chunk/CSS/font URL derived from the bootstrap's currentScript.
+func splitScopedUIGrantPath(rest string) (assetPath, grant string, ok bool) {
+	segments := strings.Split(strings.TrimPrefix(rest, "/"), "/")
+	if len(segments) < 3 || segments[0] != scopedUIGrantSegment || !strings.HasPrefix(segments[1], uiGrantPrefix) {
+		return "", "", false
+	}
+	assetPath = "/" + strings.Join(segments[2:], "/")
+	if assetPath == "/" || strings.Contains(assetPath, "\\") || path.Clean(assetPath) != assetPath {
+		return "", "", false
+	}
+	return assetPath, segments[1], true
+}
+
+func isScopedUIGrantPath(rest string) bool {
+	return strings.Split(strings.TrimPrefix(rest, "/"), "/")[0] == scopedUIGrantSegment
+}
+
+func uiOrgIntegrityCacheVersion(prov Provider) string {
+	return strings.Join([]string{
+		uiIntegrityVersion(prov.Version, prov.ReportedVersion),
+		prov.APIExportPath,
+		prov.APIExportName,
+		prov.WorkspaceCluster,
+	}, "\x00")
+}
 
 // errUIGrantInvalid is every reason a presented grant is not usable. The UI
 // proxy answers 401 and logs the wrapped detail.
@@ -131,6 +179,11 @@ type uiGrantClaims struct {
 	WorkspaceUUID string `json:"w"`
 	User          string `json:"u"`
 	Provider      string `json:"p"`
+	Scope         string `json:"scope,omitempty"`
+	SourcePath    string `json:"sourcePath,omitempty"`
+	SourceExport  string `json:"sourceExport,omitempty"`
+	SourceIssuer  string `json:"sourceIssuer,omitempty"`
+	SourceVersion string `json:"sourceVersion,omitempty"`
 	IssuedAt      int64  `json:"iat"`
 	ExpiresAt     int64  `json:"exp"`
 }
@@ -212,6 +265,18 @@ func openUIGrant(secret []byte, grant string, now time.Time) (uiGrantClaims, err
 	if !now.Before(time.Unix(claims.ExpiresAt, 0)) {
 		return uiGrantClaims{}, fmt.Errorf("%w: expired", errUIGrantInvalid)
 	}
+	maxTTL := uiGrantTTL
+	if claims.Scope == uiAssetGrantScope {
+		maxTTL = uiAssetGrantTTL
+	} else if claims.Scope != "" {
+		return uiGrantClaims{}, fmt.Errorf("%w: unsupported scope", errUIGrantInvalid)
+	}
+	if claims.IssuedAt == 0 || claims.ExpiresAt > claims.IssuedAt+int64(maxTTL.Seconds()) {
+		return uiGrantClaims{}, fmt.Errorf("%w: grant lifetime exceeds its scope", errUIGrantInvalid)
+	}
+	if claims.Scope == uiAssetGrantScope && (claims.SourcePath == "" || claims.SourceExport == "" || claims.SourceIssuer == "" || claims.SourceVersion == "") {
+		return uiGrantClaims{}, fmt.Errorf("%w: scoped grant has no provider source pin", errUIGrantInvalid)
+	}
 	return claims, nil
 }
 
@@ -271,6 +336,14 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "invalid or expired provider UI grant", http.StatusUnauthorized)
 		return
 	}
+	if isScopedUIGrantPath(rest) && claims.Scope != uiAssetGrantScope {
+		http.Error(w, "invalid or expired provider UI grant", http.StatusUnauthorized)
+		return
+	}
+	if !isUIStaticAssetPath(rest) {
+		http.NotFound(w, r)
+		return
+	}
 	// The grant names the org, so resolution is in THAT org — never the
 	// platform record, which is what a grant-less request reaches. GetForOrg
 	// falls back to the platform copy when the org has none; refuse that
@@ -278,6 +351,13 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 	prov, found := p.reg.GetForOrg(claims.OrgUUID, name)
 	if !found || prov.OrgUUID != claims.OrgUUID || !orgUIOverEdge(prov) {
 		http.Error(w, "provider has no org-owned UI bundle: "+name, http.StatusNotFound)
+		return
+	}
+	if claims.Scope == uiAssetGrantScope &&
+		(claims.SourcePath != prov.APIExportPath || claims.SourceExport != prov.APIExportName ||
+			claims.SourceIssuer != prov.WorkspaceCluster || claims.SourceVersion != uiIntegrityVersion(prov.Version, prov.ReportedVersion)) {
+		p.log.Info("refusing provider UI asset: pinned source registration changed", "provider", name, "org", claims.OrgUUID)
+		http.Error(w, "invalid or expired provider UI grant", http.StatusUnauthorized)
 		return
 	}
 	// The grant is an asset credential, not a second route into the provider's
@@ -292,7 +372,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 		http.Error(w, "provider not ready: "+name, http.StatusServiceUnavailable)
 		return
 	}
-	hop, err := p.resolveEdgeHop(prov)
+	hop, err := p.resolveEdgeHop(r.Context(), prov)
 	switch {
 	case errors.Is(err, errEdgeRouteUnusable):
 		p.log.Info("org-owned provider has no usable edge route yet", "provider", prov.Name, "org", prov.OrgUUID)
@@ -370,8 +450,9 @@ type UIGrantHandler struct {
 	now   func() time.Time
 	rand  io.Reader
 
-	mu       sync.RWMutex
-	resolver TenantResolver
+	mu        sync.RWMutex
+	resolver  TenantResolver
+	boundCopy BoundCopyResolver
 
 	// uiIntegrity caches the SRI pin per org provider and version, on the
 	// same terms as the catalog reconciler's cache for platform bundles.
@@ -405,6 +486,14 @@ func (h *UIGrantHandler) SetTenantResolver(r TenantResolver) {
 	h.resolver = r
 }
 
+// SetBoundCopyResolver requires the selected workspace's live APIBinding to
+// name this org provider before an executable UI grant is minted.
+func (h *UIGrantHandler) SetBoundCopyResolver(resolve BoundCopyResolver) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.boundCopy = resolve
+}
+
 // uiGrantResponse is the wire shape of a minted grant.
 type uiGrantResponse struct {
 	// URL is the bundle URL to load, grant included. Same-origin; the portal
@@ -432,8 +521,9 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	h.mu.RLock()
 	resolver := h.resolver
+	boundCopy := h.boundCopy
 	h.mu.RUnlock()
-	if resolver == nil || h.proxy.uiGrantKeys == nil {
+	if resolver == nil || boundCopy == nil || h.proxy.uiGrantKeys == nil {
 		h.log.Info("refusing provider UI grant request: grants are not configured", "provider", name)
 		http.Error(w, "provider UI grants are not available", http.StatusServiceUnavailable)
 		return
@@ -456,11 +546,28 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a workspace selection (X-Railgrid-Workspace) is required to load provider: "+name, http.StatusForbidden)
 		return
 	}
-	prov, found := h.reg.GetForOrg(orgUUID, name)
-	if !found || prov.OrgUUID != orgUUID || prov.UIURL == nil {
+	clusterID, err := h.proxy.resolveClusterID(r.Context(), tenantPath)
+	if err != nil {
+		http.Error(w, "provider source is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	prov, err := boundCopy(r.Context(), tenantPath, clusterID, name)
+	if errors.Is(err, ErrBoundCopyUnavailable) {
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		http.Error(w, "provider source is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if prov.OrgUUID != orgUUID || prov.UIURL == nil {
 		// Platform bundles need no grant, and a provider without a UI has
 		// nothing to grant; both are "not found" for this endpoint.
 		http.Error(w, "provider has no org-owned UI bundle: "+name, http.StatusNotFound)
+		return
+	}
+	if prov.APIExportPath == "" || prov.APIExportName == "" || prov.WorkspaceCluster == "" || uiIntegrityVersion(prov.Version, prov.ReportedVersion) == "" {
+		http.Error(w, "provider source is unavailable", http.StatusServiceUnavailable)
 		return
 	}
 	if !orgUIOverEdge(prov) {
@@ -492,8 +599,13 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		WorkspaceUUID: wsUUID,
 		User:          user,
 		Provider:      name,
+		Scope:         uiAssetGrantScope,
+		SourcePath:    prov.APIExportPath,
+		SourceExport:  prov.APIExportName,
+		SourceIssuer:  prov.WorkspaceCluster,
+		SourceVersion: uiIntegrityVersion(prov.Version, prov.ReportedVersion),
 		IssuedAt:      now.Unix(),
-		ExpiresAt:     now.Add(uiGrantTTL).Unix(),
+		ExpiresAt:     now.Add(uiAssetGrantTTL).Unix(),
 	}
 	grant, err := sealUIGrant(secret, h.rand, claims)
 	if err != nil {
@@ -514,8 +626,8 @@ func (h *UIGrantHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	bundle := url.URL{
-		Path:     apiurl.PathPrefixProvidersUI + "/" + prov.Name + "/main.js",
-		RawQuery: url.Values{"v": {prov.Version}, UIGrantQueryParam: {grant}}.Encode(),
+		Path:     apiurl.PathPrefixProvidersUI + "/" + prov.Name + "/" + scopedUIGrantSegment + "/" + grant + "/main.js",
+		RawQuery: url.Values{"v": {prov.Version}}.Encode(),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
@@ -557,13 +669,14 @@ func parseUIGrantPath(p string) (string, bool) {
 // is returned and the caller refuses the grant.
 func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, caller DelegatedCaller) (string, error) {
 	version := uiIntegrityVersion(prov.Version, prov.ReportedVersion)
+	cacheVersion := uiOrgIntegrityCacheVersion(prov)
 	key := providerKey{Org: prov.OrgUUID, Name: prov.Name}
 	now := h.now()
 
 	h.uiIntegrityMu.Lock()
 	cached, ok := h.uiIntegrity[key]
 	h.uiIntegrityMu.Unlock()
-	fresh := ok && cached.version == version
+	fresh := ok && cached.version == cacheVersion
 	if fresh && cached.etag == "" && now.Sub(cached.hashedAt) < UIIntegrityResync {
 		// Nothing to revalidate against, so the interval is the only guard.
 		return cached.integrity, nil
@@ -598,7 +711,7 @@ func (h *UIGrantHandler) pinOrgUIIntegrity(ctx context.Context, prov Provider, c
 	if h.uiIntegrity == nil {
 		h.uiIntegrity = map[providerKey]uiIntegrityRecord{}
 	}
-	h.uiIntegrity[key] = uiIntegrityRecord{version: version, integrity: read.integrity, hashedAt: now, etag: read.etag}
+	h.uiIntegrity[key] = uiIntegrityRecord{version: cacheVersion, integrity: read.integrity, hashedAt: now, etag: read.etag}
 	h.uiIntegrityMu.Unlock()
 	if !ok || cached.integrity != read.integrity {
 		h.log.Info("Pinned org-owned provider UI bundle", "provider", prov.Name, "org", prov.OrgUUID, "version", version, "integrity", read.integrity)

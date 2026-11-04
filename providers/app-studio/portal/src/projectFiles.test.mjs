@@ -78,7 +78,11 @@ test('classifies busy, exists, changed, and too-large responses', () => {
   assert.equal(files.classifyProjectFileError(400, 'bad path', {}), 'invalid')
   assert.equal(files.classifyProjectFileError(500, 'boom', {}), 'other')
   assert.match(files.projectFileErrorMessage('busy', ''), /assistant is working/)
-  assert.match(files.projectFileErrorMessage('too-large', ''), /25 MiB/)
+  assert.match(files.projectFileErrorMessage('too-large', 'text file "origin-transfer.bin" is too large: 9437184 > 262144 bytes'), /Text files must be 256 KiB or smaller/)
+  assert.match(files.projectFileErrorMessage('too-large', 'binary file "origin-transfer.bin" is too large: 31457280 > 26214400 bytes'), /Binary files must be 25 MiB or smaller/)
+  assert.match(files.projectFileErrorMessage('too-large', 'file "origin-transfer.bin" exceeds the 26214400-byte binary limit'), /Binary files must be 25 MiB or smaller/)
+  assert.match(files.projectFileErrorMessage('too-large', 'upload exceeds the 51380224-byte request limit'), /49 MiB request limit/)
+  assert.equal(files.projectFileErrorMessage('too-large', '<script>alert(1)</script>'), 'The upload exceeds a server request-size limit. Try a smaller file.')
 })
 
 test('file API routes use providerFetch with tenant headers and the agreed wire contract', async () => {

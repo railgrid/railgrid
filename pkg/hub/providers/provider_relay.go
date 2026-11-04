@@ -135,7 +135,7 @@ func (h *ProviderRelay) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "provider binding denied", http.StatusForbidden)
 		return
 	}
-	hop, err := h.Proxy.resolveEdgeHop(prov)
+	hop, err := h.Proxy.resolveEdgeHop(r.Context(), prov)
 	if err != nil {
 		http.Error(w, "provider tunnel unavailable", http.StatusServiceUnavailable)
 		return

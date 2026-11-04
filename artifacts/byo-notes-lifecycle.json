@@ -1,0 +1,107 @@
+{
+  "provider": "byo-mvp-notes-20261104-a91e",
+  "portalOrigin": "https://deathstar.tail1bddb4.ts.net:20001",
+  "checks": {
+    "created": true,
+    "readAfterReload": true,
+    "updated": true,
+    "deleted": true,
+    "emptyAfterDelete": true,
+    "lazyAssetMarker": "byo-mvp-notes-20261104-a91e (organization)",
+    "grantHTTP200": true,
+    "mainAssetHTTP200": true,
+    "lazyAssetHTTP200": true,
+    "orgScopedAssetGraph": true,
+    "grantHttpStatuses": [
+      200,
+      200
+    ],
+    "assetKinds": [
+      {
+        "kind": "main",
+        "status": 200,
+        "scoped": true
+      },
+      {
+        "kind": "lazy",
+        "status": 200,
+        "scoped": true
+      },
+      {
+        "kind": "main",
+        "status": 200,
+        "scoped": true
+      },
+      {
+        "kind": "lazy",
+        "status": 200,
+        "scoped": true
+      }
+    ],
+    "browserErrors": 0,
+    "apiResponses": [
+      {
+        "method": "GET",
+        "status": 200,
+        "resource": "collection"
+      },
+      {
+        "method": "POST",
+        "status": 201,
+        "resource": "collection"
+      },
+      {
+        "method": "GET",
+        "status": 200,
+        "resource": "collection"
+      },
+      {
+        "method": "GET",
+        "status": 200,
+        "resource": "collection"
+      },
+      {
+        "method": "PUT",
+        "status": 200,
+        "resource": "named-note"
+      },
+      {
+        "method": "GET",
+        "status": 200,
+        "resource": "collection"
+      },
+      {
+        "method": "DELETE",
+        "status": 200,
+        "resource": "named-note"
+      },
+      {
+        "method": "GET",
+        "status": 200,
+        "resource": "collection"
+      }
+    ],
+    "crudHTTPStatuses": {
+      "GET:collection": [
+        200,
+        200,
+        200,
+        200,
+        200
+      ],
+      "POST:collection": [
+        201
+      ],
+      "PUT:named-note": [
+        200
+      ],
+      "DELETE:named-note": [
+        200
+      ]
+    },
+    "orgSourceKeyUsed": true,
+    "screenshotBytes": 74145
+  },
+  "screenshot": "artifacts/screenshots/byo-notes-lifecycle.png",
+  "passed": true
+}

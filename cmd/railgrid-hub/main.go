@@ -114,6 +114,7 @@ func main() {
 	cmd.Flags().BoolVar(&opts.EmbeddedKCP, "embedded-kcp", opts.EmbeddedKCP, "Enable embedded kcp server (runs kcp in-process)")
 	cmd.Flags().Int64Var(&opts.OrganizationLimits.MaxObjectBytes, "org-max-object-bytes", 0, "Maximum serialized object bytes admitted in organization workspaces; set a complete organization limit policy to support BYO")
 	cmd.Flags().Int64Var(&opts.OrganizationLimits.MaxRequestBytes, "org-max-request-bytes", 0, "Maximum organization request body bytes at the authenticated shard boundary")
+	cmd.Flags().Int64Var(&opts.OrganizationLimits.MaxStreamRequestBytes, "org-max-stream-request-bytes", 0, "Maximum streamed custom-subresource request bytes; zero retains the ordinary request limit")
 	cmd.Flags().Float64Var(&opts.OrganizationLimits.RequestsPerSecond, "org-requests-per-second", 0, "Maximum sustained requests per organization across shard and virtual-workspace listeners")
 	cmd.Flags().IntVar(&opts.OrganizationLimits.Burst, "org-request-burst", 0, "Maximum request burst per organization")
 	cmd.Flags().IntVar(&opts.OrganizationLimits.MaxConcurrentRequests, "org-max-concurrent-requests", 0, "Maximum simultaneous requests per organization, including long-lived requests")

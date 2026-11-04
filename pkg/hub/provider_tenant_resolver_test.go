@@ -430,19 +430,3 @@ func TestKCPTenantResolverRejectsUnavailableWorkloadIdentity(t *testing.T) {
 }
 
 var _ providers.TenantResolver = (*kcpTenantResolver)(nil)
-
-func TestKCPTenantResolverAuthorizeClusterFailsClosed(t *testing.T) {
-	// No kcp proxy (so no membership index), no user, no cluster: each is a
-	// "no". Authorization is what stands between a caller and another
-	// tenant's workspace, so it must never default to yes.
-	r := &kcpTenantResolver{}
-	for name, tc := range map[string]struct{ user, cluster string }{
-		"no proxy wired": {user: "alice", cluster: "1dwl9p41626ptykp"},
-		"no user":        {user: "", cluster: "1dwl9p41626ptykp"},
-		"no cluster":     {user: "alice", cluster: ""},
-	} {
-		if r.AuthorizeCluster(context.Background(), tc.user, tc.cluster) {
-			t.Errorf("%s: AuthorizeCluster = true, want false", name)
-		}
-	}
-}

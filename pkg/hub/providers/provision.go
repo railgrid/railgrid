@@ -295,6 +295,11 @@ func providerClusterRoleRules() []any {
 		rule([]string{"apis.kcp.io"},
 			[]string{"apiresourceschemas", "apiexports", "apiexportendpointslices", "apibindings"},
 			readWrite),
+		// Platform init owns its custom-subresource endpoint declaration and
+		// publishes its URL through the status subresource. Organization
+		// providers use the separate restricted role and hub-owned bootstrap.
+		rule([]string{"dataplane.railgrid.ai"}, []string{"dataplaneendpointslices"}, []string{"get", "create", "update"}),
+		rule([]string{"dataplane.railgrid.ai"}, []string{"dataplaneendpointslices/status"}, []string{"update"}),
 		// The APIExport virtual workspace gates EVERY call through a SAR for
 		// apiexports/content with the verb of the in-flight request — discovery
 		// included — so the verb set has to be open. Scope comes from the

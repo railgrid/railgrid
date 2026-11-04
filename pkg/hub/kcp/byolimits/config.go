@@ -17,10 +17,15 @@ import (
 // enabled configuration must supply every limit. Limits are per organization,
 // shared across the main shard and virtual-workspace handlers in this process.
 type Config struct {
-	MaxObjectBytes    int64
-	MaxRequestBytes   int64
-	RequestsPerSecond float64
-	Burst             int
+	MaxObjectBytes  int64
+	MaxRequestBytes int64
+	// MaxStreamRequestBytes optionally raises the request-body cap for actual
+	// Kubernetes custom-subresource requests (for example provider upload
+	// verbs). Zero inherits MaxRequestBytes. It does not change persisted object
+	// size limits or ordinary resource request limits.
+	MaxStreamRequestBytes int64
+	RequestsPerSecond     float64
+	Burst                 int
 	// MaxConcurrentRequests covers all requests, including streams.
 	MaxConcurrentRequests int
 	// MaxConcurrentStreams is an additional cap within the total above.
@@ -38,7 +43,7 @@ func (c Config) Validate() error {
 	if !c.Enabled() {
 		return nil
 	}
-	if c.MaxObjectBytes <= 0 || c.MaxRequestBytes < c.MaxObjectBytes || c.RequestsPerSecond <= 0 || math.IsInf(c.RequestsPerSecond, 0) || math.IsNaN(c.RequestsPerSecond) || c.Burst <= 0 || c.MaxConcurrentRequests <= 0 || c.MaxConcurrentStreams <= 0 || c.MaxOrganizations <= 0 || c.RequestTimeout <= 0 || c.StreamTimeout <= 0 {
+	if c.MaxObjectBytes <= 0 || c.MaxRequestBytes < c.MaxObjectBytes || c.MaxStreamRequestBytes < 0 || c.MaxStreamRequestBytes > 0 && c.MaxStreamRequestBytes < c.MaxRequestBytes || c.RequestsPerSecond <= 0 || math.IsInf(c.RequestsPerSecond, 0) || math.IsNaN(c.RequestsPerSecond) || c.Burst <= 0 || c.MaxConcurrentRequests <= 0 || c.MaxConcurrentStreams <= 0 || c.MaxOrganizations <= 0 || c.RequestTimeout <= 0 || c.StreamTimeout <= 0 {
 		return fmt.Errorf("BYO limits require positive object/request bytes, finite QPS, burst, request/stream concurrency, organization capacity and timeouts; request bytes must cover object bytes")
 	}
 	return nil

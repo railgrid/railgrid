@@ -134,3 +134,10 @@ provider's `APIExportEndpointSlice`. The export must also claim
 `authorization.k8s.io/subjectaccessreviews` (`create`, tenantScoped in the
 manifest): kcp serves that builtin through the virtual workspace only for an
 export that claims it.
+
+For a host-run provider, use `serve.ListenAddress(port)` for the HTTP server's
+address and set `RAILGRID_LISTEN_HOST=127.0.0.1` when the Hub/shard runs locally.
+This keeps the shard-trusted backend off tenant-hosting networks. The environment
+variable is operator configuration; it does not authorize requests. When unset,
+the helper preserves the existing all-interface container listener, which must be
+protected by the deployment's private network/transport boundary.

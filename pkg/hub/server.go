@@ -436,8 +436,14 @@ func (s *Server) Run(ctx context.Context) error {
 		previewAppCodeStore        *sharedstore.AppCodeStore
 		actionProofUses            actionproof.UseStore
 		sharedStores               []*sharedstore.Store
+		providerTrustStore         *sharedstore.Store
 	)
 	if kcpConfig != nil {
+		var err error
+		providerTrustStore, err = sharedstore.New(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace, "railgrid-provider-trust-v1")
+		if err != nil {
+			return fmt.Errorf("creating organization provider trust store: %w", err)
+		}
 		sessionBackend, err := sharedstore.NewSessionBackend(bootstrapper.ControllersConfig(), kcp.HubSystemNamespace)
 		if err != nil {
 			return fmt.Errorf("creating shared browser-session store: %w", err)
@@ -462,6 +468,7 @@ func (s *Server) Run(ctx context.Context) error {
 		browserSessionStore = browsersession.New(browsersession.Config{Backend: sessionBackend})
 		previewBrowserSessionStore = browsersession.New(browsersession.Config{Backend: previewSessionBackend})
 		sharedStores = append(sharedStores,
+			providerTrustStore,
 			sessionBackend.Store(), appCodeStore.Store(),
 			previewSessionBackend.Store(), previewAppCodeStore.Store(), proofUseStore,
 		)
@@ -635,19 +642,26 @@ func (s *Server) Run(ctx context.Context) error {
 	// tools per request) and the MCPServer status controller.
 	//
 	// Security: the enumerator is scoped by the tenant the bearer verifier
-	// resolved from the request's cluster (never by client headers), and lists
-	// reg.ListForOrg(thatOrg) — platform providers plus that Org's own, with an
-	// org copy shadowing the platform provider of the same name. So one Org's
-	// providers never appear to, or receive requests from, another Org's
-	// callers, and `<provider>__<tool>` cannot collide across Orgs. Platform
-	// providers are still dialled directly with the caller's bearer. An
+	// resolved from the request's cluster (never by client headers), then
+	// selects API-backed provider copies from that workspace's actual binding.
+	// An org copy shadows the platform copy only when the workspace binds the
+	// org export. Providers without an APIExport retain their catalog behavior.
+	// One Org's providers never appear to, or receive requests from, another
+	// Org's callers, and `<provider>__<tool>` cannot collide across Orgs.
+	// Platform providers are dialled directly with the caller's bearer. An
 	// org-owned provider is reached only through backendProxy.OrgProviderRoute
 	// — the same edge hop and delegated-token swap /services/providers/{name}
 	// uses — so it never receives the caller's bearer; when no delegated token
 	// can be minted (ServiceAccount bearer, org-scope cluster, no issuer) the
 	// provider is skipped for that request. See
 	// pkg/hub/mcpaggregate/enumerator.go.
-	mcpProviderEnumerator := mcpaggregate.RegistryEnumerator(providerRegistry, backendProxy, logger)
+	var mcpProviderEnumerator mcpaggregate.ProviderEnumerator
+	if kcpConfig != nil {
+		mcpProviderEnumerator = mcpaggregate.BoundRegistryEnumerator(providerRegistry, backendProxy, logger,
+			newProviderBoundCopySnapshotResolver(kcpConfig, providerRegistry))
+	} else {
+		mcpProviderEnumerator = mcpaggregate.RegistryEnumerator(providerRegistry, backendProxy, logger)
+	}
 	// Every aggregate request is verified against the tenant cluster named in
 	// its path before anything is federated: a TokenReview must prove the
 	// bearer is that MCPServer's own ServiceAccount, or (wired below once the
@@ -1014,17 +1028,21 @@ func (s *Server) Run(ctx context.Context) error {
 			membershipResolver := hubaccess.DelegatedUserResolver(userResolver)
 			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys)
 			backendProxy.SetTenantResolver(providerTenantResolver)
+			boundCopyResolver := newProviderBoundCopyResolver(kcpConfig, providerRegistry)
+			backendProxy.SetBoundCopyResolver(boundCopyResolver)
 			// The UI proxy serves an org-owned bundle only against a grant the
 			// portal obtained as the user. Minting and redemption share the
 			// cross-replica secret and the delegated issuer with the backend
 			// proxy, so the tenant's cluster sees the same delegated identity
 			// for an asset fetch as for an API call.
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
+			providerUIGrantHandler.SetBoundCopyResolver(boundCopyResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
 			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
 			// ID) so providers can address per-workspace surfaces that key on
 			// the ID — notably the kcp proxy at /clusters/{id}.
 			backendProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
+			uiProxy.SetClusterResolver(newClusterIDResolver(kcpConfig))
 			// The one data-plane hop the hub still makes on a caller's behalf
 			// — an org-owned provider's backend behind its edge — goes through
 			// kcp like every other verb, at the edges provider's
@@ -1061,6 +1079,7 @@ func (s *Server) Run(ctx context.Context) error {
 				WithSoftDeleteGracePeriod(s.opts.SoftDeleteGracePeriod).
 				WithOrgCaps(quota.Caps{Organizations: s.opts.DefaultOrgsPerUser, FreeOrganizations: s.opts.FreeOrgsPerUser})
 			apiMgr.WithOrgBackendDelegation(delegatedProofKeys, orgBackendKCPDispatcher(kcpConfig, userClient))
+			apiMgr.WithOrgTrust(providerTrustStore)
 			kcpProxy.SetOrgBackendHandler(apiMgr.OrgBackendHandler())
 			legacyTokenIssuer := serviceaccounts.NewManager(bootstrapper, delegatedProofKeys)
 			delegatedIssuer := orgAwareDelegatedTokenIssuer(legacyTokenIssuer, apiMgr)
@@ -1069,9 +1088,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// Provider registry powers POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable
 			// (server-side APIBinding create — see pkg/hub/restapi/providers_enable.go).
 			apiMgr.WithProviderRegistry(providerRegistry)
-			apiMgr.WithHubAccessGrants(hubAccessGrants, s.opts.ProviderHubAccessPlatformDefault).
-				WithProviderSandboxDispatcher(kcpAPIHandler).
-				WithProviderSandboxClusterAuthorizer(kcpProxy.AuthorizeCluster)
+			apiMgr.WithHubAccessGrants(hubAccessGrants, s.opts.ProviderHubAccessPlatformDefault)
 			// Org-owned ("bring your own") providers: the Bootstrapper builds
 			// the Org's provider workspaces, the Provisioner mints the
 			// workspace-scoped install credential. Both need kcp, so this is
@@ -1610,10 +1627,10 @@ func (s *Server) Run(ctx context.Context) error {
 				// base=/ui/ so it already expects /ui/*.
 			},
 		}
-		portalSPA = WithPortalSecurityHeadersForHub(devProxy, s.opts.HubExternalURL, s.opts.PortalFrameSources...)
+		portalSPA = WithPortalSecurityHeaders(devProxy, s.opts.PortalFrameSources...)
 		portalAvailable = true
 		logger.Info("Portal dev proxy enabled", "target", s.opts.PortalDevURL)
-	} else if h, portalErr := registerPortalRoutes(router, s.opts.HubExternalURL, s.opts.PortalFrameSources...); portalErr != nil {
+	} else if h, portalErr := registerPortalRoutes(router, s.opts.PortalFrameSources...); portalErr != nil {
 		logger.Info("Portal not available", "reason", portalErr.Error())
 	} else {
 		portalSPA = h

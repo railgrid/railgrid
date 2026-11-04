@@ -8,6 +8,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -21,6 +22,30 @@ import (
 )
 
 const providerDiscoveryLimit = 1000
+
+// registeredBoundProvider resolves a visible registered copy using the live
+// binding check, without allowing a same-named catalog shadow to choose it.
+func registeredBoundProvider(ctx context.Context, registry *providers.Registry, org, name string, bound func(context.Context, providers.Provider) (bool, error)) (providers.Provider, bool, error) {
+	var selected providers.Provider
+	found := false
+	for _, candidate := range registry.List() {
+		if candidate.Name != name || candidate.OrgUUID != "" && candidate.OrgUUID != org {
+			continue
+		}
+		matches, err := bound(ctx, candidate)
+		if err != nil {
+			return providers.Provider{}, false, err
+		}
+		if !matches {
+			continue
+		}
+		if found {
+			return providers.Provider{}, false, fmt.Errorf("provider binding is ambiguous")
+		}
+		selected, found = candidate, true
+	}
+	return selected, found, nil
+}
 
 // providerResourceDiscovery exposes metadata, never arbitrary resource bodies.
 // The signed initiating caller must be allowed to list the advertised kind in
@@ -61,8 +86,22 @@ func (h *providerResourceDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Req
 	vars := mux.Vars(r)
 	name, resource := vars["provider"], vars["resource"]
 	apiVersion := r.URL.Query().Get("apiVersion")
-	entry, ok := h.registry.GetForOrg(caller.OrgUUID, name)
-	if !ok || entry.Export == nil {
+	if _, exists := h.registry.GetForOrg(caller.OrgUUID, name); !exists {
+		writeDiscoveryError(w, http.StatusNotFound, "provider_unavailable", "The requested provider resource is unavailable.")
+		return
+	}
+	entry, ok, err := registeredBoundProvider(r.Context(), h.registry, caller.OrgUUID, name, func(ctx context.Context, candidate providers.Provider) (bool, error) {
+		return h.bound(ctx, caller.ClusterID, candidate)
+	})
+	if err != nil {
+		writeDiscoveryError(w, http.StatusServiceUnavailable, "binding_unavailable", "Provider enablement could not be verified.")
+		return
+	}
+	if !ok {
+		writeDiscoveryError(w, http.StatusForbidden, "provider_not_enabled", "The requested provider is not enabled in this workspace.")
+		return
+	}
+	if entry.Export == nil {
 		writeDiscoveryError(w, http.StatusNotFound, "provider_unavailable", "The requested provider resource is unavailable.")
 		return
 	}
@@ -90,15 +129,7 @@ func (h *providerResourceDiscovery) ServeHTTP(w http.ResponseWriter, r *http.Req
 		writeDiscoveryError(w, http.StatusNotFound, "resource_not_discoverable", "The requested resource has no current advertised actions.")
 		return
 	}
-	bound, err := h.bound(r.Context(), caller.ClusterID, entry)
-	if err != nil {
-		writeDiscoveryError(w, http.StatusServiceUnavailable, "binding_unavailable", "Provider enablement could not be verified.")
-		return
-	}
-	if !bound {
-		writeDiscoveryError(w, http.StatusForbidden, "provider_not_enabled", "The requested provider is not enabled in this workspace.")
-		return
-	}
+
 	client, err := h.client(caller)
 	if err != nil {
 		writeDiscoveryError(w, http.StatusServiceUnavailable, "discovery_unavailable", "Provider resource discovery is unavailable.")

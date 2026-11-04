@@ -229,7 +229,7 @@ func runServe() {
 	}
 
 	httpSrv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              serve.ListenAddress(port),
 		Handler:           srv,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

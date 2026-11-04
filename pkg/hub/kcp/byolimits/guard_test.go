@@ -83,6 +83,114 @@ func TestConfigRequiresCompleteExplicitLimits(t *testing.T) {
 	if err := testConfig().Validate(); err != nil {
 		t.Fatal(err)
 	}
+	tooSmallStream := testConfig()
+	tooSmallStream.MaxStreamRequestBytes = tooSmallStream.MaxRequestBytes - 1
+	if tooSmallStream.Validate() == nil {
+		t.Fatal("stream request limit below the ordinary request limit was accepted")
+	}
+}
+
+func TestCustomSubresourceRequestBodyLimitIsSeparateFromObjectLimit(t *testing.T) {
+	g := testGuard(t)
+	g.config.MaxRequestBytes = 1 << 20
+	g.config.MaxStreamRequestBytes = 2 << 20
+	g.config.Burst = 20
+
+	serve := func(route request.RequestInfo, bodySize int, contentLength int64) int {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := request.WithRequestInfo(scopedContext("a", &user.DefaultInfo{Name: "tenant"}), &route)
+			g.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, err := io.Copy(io.Discard, r.Body)
+				if err != nil {
+					http.Error(w, "request body limit", http.StatusRequestEntityTooLarge)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			})).ServeHTTP(w, r.WithContext(ctx))
+		}))
+		defer server.Close()
+		body := strings.NewReader(strings.Repeat("x", bodySize))
+		req, err := http.NewRequest(http.MethodPost, server.URL, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentLength >= 0 {
+			req.ContentLength = contentLength
+		} else {
+			req.ContentLength = -1
+		}
+		response, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = response.Body.Close() }()
+		return response.StatusCode
+	}
+
+	customVerb := request.RequestInfo{IsResourceRequest: true, Verb: "create", Resource: "pods", Name: "p1", Subresource: "exec"}
+	largeCustomRequest := (3 << 20) / 2
+	if code := serve(customVerb, largeCustomRequest, int64(largeCustomRequest)); code != http.StatusNoContent {
+		t.Fatalf("large custom-subresource request status=%d, want 204", code)
+	}
+	if code := serve(customVerb, 3<<20, -1); code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("chunked oversized custom-subresource request status=%d, want 413", code)
+	}
+
+	for _, route := range []request.RequestInfo{
+		{IsResourceRequest: true, Verb: "create", Resource: "configmaps"},
+		{IsResourceRequest: true, Verb: "update", Resource: "pods", Name: "p1", Subresource: "status"},
+		{IsResourceRequest: true, Verb: "update", Resource: "deployments", Name: "d1", Subresource: "scale"},
+		{IsResourceRequest: true, Verb: "create", Resource: "serviceaccounts", Name: "sa", Subresource: "token"},
+		{IsResourceRequest: false, Verb: "post", Resource: "pods", Name: "p1", Subresource: "exec"},
+	} {
+		if code := serve(route, largeCustomRequest, int64(largeCustomRequest)); code != http.StatusRequestEntityTooLarge {
+			t.Errorf("route %+v status=%d, want ordinary 413", route, code)
+		}
+	}
+}
+
+func TestCustomSubresourceUsesBoundedStreamLifetimeAndConcurrency(t *testing.T) {
+	for _, subresource := range []string{"upload", "status", "scale", ""} {
+		t.Run(subresource, func(t *testing.T) {
+			g := testGuard(t)
+			g.config.RequestTimeout = 5 * time.Second
+			g.config.StreamTimeout = time.Minute
+			route := &request.RequestInfo{IsResourceRequest: true, Resource: "objects", Name: "one", Subresource: subresource}
+			type observation struct {
+				long    bool
+				streams int
+			}
+			observed := make(chan observation, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				ctx := request.WithRequestInfo(scopedContext("a", &user.DefaultInfo{Name: "tenant"}), route)
+				g.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					deadline, ok := r.Context().Deadline()
+					g.mu.Lock()
+					streams := g.accounts["org-a"].streams
+					g.mu.Unlock()
+					observed <- observation{long: ok && time.Until(deadline) > 30*time.Second, streams: streams}
+					w.WriteHeader(http.StatusNoContent)
+				})).ServeHTTP(w, r.WithContext(ctx))
+			}))
+			defer server.Close()
+			response, err := server.Client().Post(server.URL, "application/octet-stream", http.NoBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if response.StatusCode != http.StatusNoContent {
+				t.Fatalf("handler did not run: %d", response.StatusCode)
+			}
+			result := <-observed
+			wantStreams := 0
+			if subresource == "upload" {
+				wantStreams = 1
+			}
+			if result.long != (subresource == "upload") || result.streams != wantStreams {
+				t.Fatalf("%q: %+v", subresource, result)
+			}
+		})
+	}
 }
 
 func TestOwnersUseAuthenticatedOriginAndResolvedDomain(t *testing.T) {

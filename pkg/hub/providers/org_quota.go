@@ -44,7 +44,7 @@ func orgProviderBaseQuota() map[string]string {
 	return map[string]string{
 		"count/secrets": "64", "count/configmaps": "64",
 		"count/leases.coordination.k8s.io":                     "32",
-		"count/apiresourceschemas.apis.kcp.io":                 "64",
+		"count/apiresourceschemas.apis.kcp.io":                 strconv.Itoa(orgProviderBootstrapSchemaLimit),
 		"count/apiexports.apis.kcp.io":                         "1",
 		"count/apiexportendpointslices.apis.kcp.io":            "1",
 		"count/customresourcedefinitions.apiextensions.k8s.io": strconv.Itoa(OrgProviderPrivateResourceLimit + 1),

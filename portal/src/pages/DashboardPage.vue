@@ -50,12 +50,8 @@ onMounted(() => {
 // third-party provider — clicking it landed on a 403 "this provider is not
 // enabled in your workspace" wall.
 const gated = computed(() =>
-  providers.items
-    .filter((p) => {
-      if (!p.ready || !p.serving?.ui) return false
-      if (p.serving.ui.builtinRoute || p.builtin) return true
-      return providers.isEnabled(p.name)
-    })
+  providers.workspaceProviders
+    .slice()
     .sort((a, b) => a.displayName.localeCompare(b.displayName)),
 )
 

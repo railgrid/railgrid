@@ -355,9 +355,9 @@ test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening v
 			--set-string hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/admin-false-string.yaml"; \
 		grep -q -- '- --provider-workspace-cluster-admin=false$$' "$$tmp_dir/admin-false-string.yaml"; \
 		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
-			--set 'hub.extraArgs={--providers=edges\,infrastructure,--disable-token-login}' >"$$tmp_dir/extra.yaml"; \
+			--set 'hub.extraArgs={--providers=edges\,infrastructure,--v=4}' >"$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--providers=edges,infrastructure"$$' "$$tmp_dir/extra.yaml"; \
-		grep -q -- '- "--disable-token-login"$$' "$$tmp_dir/extra.yaml"; \
+		grep -q -- '- "--v=4"$$' "$$tmp_dir/extra.yaml"; \
 		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
 			echo "invalid providerHeartbeatAuth unexpectedly rendered"; exit 1; \
 		fi; \
@@ -581,11 +581,11 @@ test-org-provider-security: ## Verify organization provider registration, bootst
 	go test -p 1 -count=1 ./pkg/hub/providers ./pkg/hub/providerclaims ./pkg/hub/hubaccess ./pkg/hub/kcp ./pkg/hub/restapi ./pkg/hub/serviceaccounts ./pkg/hub/tenant ./pkg/kcppaths ./pkg/server/proxy
 .PHONY: test-byo-providers
 test-byo-providers: test-org-provider-security ## Verify BYO control plane, relay, and isolated portal contracts
-	python3 hack/audit-historical-credentials.test.py
-	go test -p 1 -count=1 ./pkg/hub -run 'TestOrganizationProviderAvailability|TestProviderRelay|TestProviderAppSandbox|TestWithPortalSecurityHeaders|TestSandboxPolicy|TestPortalFrameSources|TestOrgBackend|TestKCPTenantResolver|TestHubAccessGate'
-	cd provider-sdk && go test -p 1 -count=1 ./install ./providerrelay
+	python3 hack/scripts/verify-tilt-provider-listeners.test.py
+	go test -p 1 -count=1 ./pkg/hub -run 'TestOrganizationProviderAvailability|TestProviderRelay|TestProviderAppSandbox|TestWithPortalSecurityHeaders|TestPortalFrameSources|TestOrgBackend|TestKCPTenantResolver|TestHubAccessGate'
+	cd provider-sdk && go test -p 1 -count=1 ./install ./providerrelay ./serve
 	cd providers/edges && go test -p 1 -count=1 ./internal/tunnel
-	cd portal && node --test src/providers/providerSandbox.test.mjs src/providers/providerSandboxBootstrap.test.mjs src/stores/orgProviders-install-targets.test.mjs src/stores/providers-binding-state.test.mjs src/components/DashboardTile.conformance.test.mjs src/components/ProviderNavigation.conformance.test.mjs src/pages/ProviderFrame.loading.test.mjs src/pages/ProvidersPage.self-hosting.test.mjs src/pages/ProviderCreatePage.security.test.mjs src/lib/onboarding.test.mjs
+	cd portal && node --test src/stores/providers-binding-state.test.mjs src/components/DashboardTile.conformance.test.mjs src/components/ProviderNavigation.conformance.test.mjs src/pages/ProviderFrame.loading.test.mjs src/pages/ProvidersPage.self-hosting.test.mjs src/stores/orgProviders-install-targets.test.mjs src/lib/onboarding.test.mjs
 .PHONY: test-byo-availability
 test-byo-availability: ## Verify native org limits on isolated embedded kcp (no Docker or quota workaround)
 	go test -p 1 -count=1 ./pkg/hub/kcp/byolimits
@@ -1222,6 +1222,7 @@ dev-browser-down: ## Stop only this checkout's owned dev resources, retaining ev
 test-dev-browser:
 	python3 hack/scripts/write-kind-kubeconfig.test.py
 	python3 hack/scripts/dev-browser.test.py
+
 
 .PHONY: tilt tilt-start tilt-status
 .PHONY: test-tilt-checkout
@@ -1986,7 +1987,7 @@ AGENTS_POSTGRES_DATA_DIR ?= $(KCP_DATA_DIR)/agents-postgres
 run-provider-infrastructure: build-infrastructure-provider app-studio-preview-bridge-dev-key ## Run the infrastructure provider (requires: make run-hub-embedded-static + make install-provider-infrastructure)
 	@echo "Starting infrastructure provider on :$(KROMC_PORT)"
 	@echo "  hub:   $(KROMC_HUB_URL)"
-	@echo "  token: $(KROMC_TOKEN)"
+	@echo "  heartbeat identity: provider kubeconfig"
 	@# Prefer an explicit KRO_KUBECONFIG from the caller's env, then
 	@# fall back to the dev-kro management cluster's kubeconfig when
 	@# present, and finally to stub mode if neither exists.
@@ -1998,6 +1999,7 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 		echo "  kro:   <unset → stub catalog; run 'make dev-kro-up' for real RGDs>"; \
 	fi
 	PORT=$(KROMC_PORT) \
+	RAILGRID_HUB_TOKEN=$${RAILGRID_HUB_TOKEN:-$$(if [ -f "$(INFRASTRUCTURE_PROVIDER_KUBECONFIG)" ]; then kubectl --kubeconfig="$(INFRASTRUCTURE_PROVIDER_KUBECONFIG)" config view --raw --minify -o jsonpath='{.users[0].user.token}'; fi)} \
 	RAILGRID_HUB_URL=$(KROMC_HUB_URL) \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=infrastructure \

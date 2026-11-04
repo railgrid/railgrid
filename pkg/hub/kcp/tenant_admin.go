@@ -50,7 +50,8 @@ func tenantAdminRules(bindings []unstructured.Unstructured) []rbacv1.PolicyRule 
 	coordinates := map[string]map[string]bool{}
 	for _, binding := range bindings {
 		phase, _, _ := unstructured.NestedString(binding.Object, "status", "phase")
-		if binding.GetDeletionTimestamp() != nil || phase != "Bound" {
+		// A terminating binding still serves objects until finalizer cleanup finishes.
+		if phase != "Bound" {
 			continue
 		}
 		resources, _, _ := unstructured.NestedSlice(binding.Object, "status", "boundResources")
@@ -100,27 +101,32 @@ func tenantDataGroup(group string) bool {
 }
 
 func ensureTenantAdminRole(ctx context.Context, client dynamic.Interface) error {
-	bindings, err := client.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return err
-	}
-	role := &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metav1.ObjectMeta{Name: TenantAdminRoleName}, Rules: tenantAdminRules(bindings.Items)}
-	desired, err := toUnstructured(role)
-	if err != nil {
-		return err
-	}
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Read the role version before its inputs so a concurrent refresh cannot
+		// commit newer bindings and then be overwritten by this stale snapshot.
 		current, err := client.Resource(tenantAdminRoleGVR).Get(ctx, TenantAdminRoleName, metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			_, err = client.Resource(tenantAdminRoleGVR).Create(ctx, desired, metav1.CreateOptions{})
+		creating := apierrors.IsNotFound(err)
+		if err != nil && !creating {
 			return err
 		}
+		bindings, err := client.Resource(apiBindingGVR).List(ctx, metav1.ListOptions{})
 		if err != nil {
 			return err
 		}
-		next := desired.DeepCopy()
-		next.SetResourceVersion(current.GetResourceVersion())
-		_, err = client.Resource(tenantAdminRoleGVR).Update(ctx, next, metav1.UpdateOptions{})
+		role := &rbacv1.ClusterRole{TypeMeta: metav1.TypeMeta{APIVersion: rbacv1.SchemeGroupVersion.String(), Kind: "ClusterRole"}, ObjectMeta: metav1.ObjectMeta{Name: TenantAdminRoleName}, Rules: tenantAdminRules(bindings.Items)}
+		desired, err := toUnstructured(role)
+		if err != nil {
+			return err
+		}
+		if creating {
+			_, err = client.Resource(tenantAdminRoleGVR).Create(ctx, desired, metav1.CreateOptions{})
+			if apierrors.IsAlreadyExists(err) {
+				return apierrors.NewConflict(tenantAdminRoleGVR.GroupResource(), TenantAdminRoleName, err)
+			}
+			return err
+		}
+		desired.SetResourceVersion(current.GetResourceVersion())
+		_, err = client.Resource(tenantAdminRoleGVR).Update(ctx, desired, metav1.UpdateOptions{})
 		return err
 	})
 	if err != nil {

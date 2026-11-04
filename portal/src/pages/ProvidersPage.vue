@@ -360,13 +360,19 @@ function requestEnableDialog(p: ProviderDTO) {
   openEnableDialog(p)
 }
 
-watch(enrollmentAvailable, (available) => {
-  if (!available) {
+watch(
+  () => [enrollmentAvailable.value, orgProviders.loading] as const,
+  ([available, loading]) => {
+    if (available) return
     if (dialogProvider.value?.scope === 'org') closeEnableDialog()
-    selfHostRequestGeneration += 1
-    selfHostBusy.value = {}
-  }
-})
+    // A same-scope refresh temporarily clears enrollment. Only a settled
+    // refusal invalidates the registration response already in flight.
+    if (!loading) {
+      selfHostRequestGeneration += 1
+      selfHostBusy.value = {}
+    }
+  },
+)
 
 // Always refetch on mount. The store's initial load happens at app boot
 // (App.vue), but new CatalogEntry installs are common while the portal is
@@ -505,9 +511,6 @@ function dependencyNotice(p: ProviderDTO): string {
       <div v-else-if="tab === 'self-hosting'" class="space-y-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <h2 class="text-base font-semibold text-text-primary">Providers you run</h2>
-          <router-link v-if="canManageProviders && enrollmentAvailable" :to="scopePath('/settings/providers/new')" class="k-btn k-btn--primary">
-            <Plus class="h-4 w-4" :stroke-width="1.75" /> Register your own provider
-          </router-link>
         </div>
         <p class="text-sm text-text-muted">
           When hosted enrollment is available, bring a provider you built, or run your own copy of a platform provider. Railgrid

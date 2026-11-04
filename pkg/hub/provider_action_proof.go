@@ -79,8 +79,8 @@ func newProviderActionProofBridge(config *rest.Config, keys serviceaccounts.Proo
 		return review.Status.UserInfo, nil
 	}
 	b.authenticate = func(ctx context.Context, r *http.Request, claims actionproof.Claims) error {
-		entry, ok := registry.GetForOrg(claims.OrgUUID, claims.Provider)
-		if !ok || entry.OrgUUID != claims.ProviderOrgUUID || entry.WorkspaceCluster == "" {
+		entry, ok := proofProvider(registry, claims)
+		if !ok || entry.WorkspaceCluster == "" {
 			return fmt.Errorf("the proof's provider is unavailable")
 		}
 		cfg := rest.CopyConfig(config)
@@ -153,8 +153,10 @@ func (b *providerActionProofBridge) claims(r *http.Request, route dataplane.Subr
 		return claims, err
 	}
 	claims.OrgUUID, claims.WorkspaceUUID, _ = tenantaccess.ParseTenantPath(path)
-	entry, ok := b.registry.GetForOrg(claims.OrgUUID, claims.Provider)
-	if !ok || entry.Export == nil {
+	entry, ok, err := registeredBoundProvider(r.Context(), b.registry, claims.OrgUUID, claims.Provider, func(ctx context.Context, candidate providers.Provider) (bool, error) {
+		return b.bound(ctx, route.ClusterID, candidate)
+	})
+	if err != nil || !ok || entry.Export == nil {
 		return claims, fmt.Errorf("app-studio provider is unavailable")
 	}
 	claims.ProviderOrgUUID = entry.OrgUUID
@@ -566,8 +568,8 @@ func (b *providerActionProofBridge) validateScope(ctx context.Context, c actionp
 	if !ok || org != c.OrgUUID || workspace != c.WorkspaceUUID {
 		return fmt.Errorf("workspace identity changed")
 	}
-	entry, ok := b.registry.GetForOrg(c.OrgUUID, c.Provider)
-	if !ok || entry.OrgUUID != c.ProviderOrgUUID {
+	entry, ok := proofProvider(b.registry, c)
+	if !ok {
 		return fmt.Errorf("provider identity changed")
 	}
 	bound, err := b.bound(ctx, c.ClusterID, entry)
@@ -599,6 +601,18 @@ func (b *providerActionProofBridge) verifier() *actionproof.Verifier {
 	return &actionproof.Verifier{Keys: b.keys, Authenticate: b.authenticate, ValidateScope: b.validateScope}
 }
 
+// proofProvider uses the signed owner, never catalog name precedence.
+func proofProvider(registry *providers.Registry, claims actionproof.Claims) (providers.Provider, bool) {
+	if claims.ProviderOrgUUID == "" {
+		return registry.Get(claims.Provider)
+	}
+	if claims.ProviderOrgUUID != claims.OrgUUID {
+		return providers.Provider{}, false
+	}
+	entry, found := registry.GetForOrg(claims.OrgUUID, claims.Provider)
+	return entry, found && entry.OrgUUID == claims.ProviderOrgUUID
+}
+
 func (b *providerActionProofBridge) bound(ctx context.Context, cluster string, entry providers.Provider) (bool, error) {
 	dyn, err := b.clients(cluster)
 	if err != nil {
@@ -611,8 +625,10 @@ func (b *providerActionProofBridge) bound(ctx context.Context, cluster string, e
 	for _, item := range bindings.Items {
 		name, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
-		phase, _, _ := unstructured.NestedString(item.Object, "status", "phase")
-		if name == entry.APIExportName && path == entry.APIExportPath && phase == "Bound" {
+		ready, _ := providers.BindingReadiness(&item)
+		issuer, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
+		if name == entry.APIExportName && path == entry.APIExportPath && ready && item.GetDeletionTimestamp() == nil &&
+			(entry.WorkspaceCluster == "" || issuer == entry.WorkspaceCluster) {
 			return true, nil
 		}
 	}

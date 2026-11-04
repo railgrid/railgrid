@@ -84,7 +84,7 @@ class AppStudioSequence(unittest.TestCase):
     def test_preview_port_forward_suppresses_kubectl_stdout(self):
         fields = resource_fields('app-studio-preview-port-forward')
         command = ast.unparse(fields['serve_cmd'])
-        self.assertIn('port-forward "svc/$svc" %s:%s >/dev/null &', command)
+        self.assertIn('port-forward --address=127.0.0.1 "svc/$svc" %s:%s >/dev/null &', command)
 
 
 if __name__ == '__main__':

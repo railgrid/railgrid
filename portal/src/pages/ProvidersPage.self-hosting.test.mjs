@@ -15,6 +15,9 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
+import { ref, computed, watch, nextTick } from 'vue'
+import { createPinia, setActivePinia, defineStore } from 'pinia'
 
 const source = await readFile(new URL('./ProvidersPage.vue', import.meta.url), 'utf8')
 
@@ -69,11 +72,51 @@ test('hosted enrollment status fails closed without mixing it with Edge eligibil
   assert.match(source, /dialogProvider\.value\?\.scope === 'org'/)
 })
 
-test('closed enrollment disables creation, credential refetch, Upgrade and Enable while preserving cleanup', () => {
-  assert.match(source, /<router-link v-if="canManageProviders && enrollmentAvailable"/)
+test('closed enrollment disables self-hosting and Enable while preserving cleanup', () => {
+  assert.match(source, /const canSelfHost = computed\(\(\) => canManageProviders\.value && enrollmentAvailable\.value && orgProviders\.installTargetsEligible && !!selectedEdge\.value\)/)
+  assert.match(source, /:disabled="!!selfHostBusy\[p\.name\] \|\| !canSelfHost"/)
+  assert.doesNotMatch(source, /settings\/providers\/new|ProviderCreatePage/)
   assert.match(source, /:disabled="!!selfHostBusy\[p\.name\] \|\| !enrollmentAvailable"/)
   assert.match(source, /:disabled="!!busy\[p\.name\] \|\| providers\.hasMissingDependencies\(p\) \|\| \(p\.scope === 'org' && !enrollmentAvailable\)"/)
   assert.match(source, /@click="requestEnableDialog\(p\)"/)
   assert.match(source, /@click="removeSelfHosted\(p\.name\)"/)
   assert.match(source, /@click="onDisable\(p\)"/)
+})
+
+
+test('successful self-host registration survives its own enrollment refresh but settled refusal invalidates it', async () => {
+  setActivePinia(createPinia())
+  let available = true
+  const storeSource = (await readFile(new URL('../stores/orgProviders.ts', import.meta.url), 'utf8'))
+    .replace(/^import .*\n/gm, '').replace('export const useOrgProvidersStore', 'const useOrgProvidersStore')
+  const compile = code => ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText.replace('export {};', '')
+  const authFetch = async (_url, init) => {
+    await nextTick() // Exercise the ordinary pre-flush watcher while load is pending.
+    return { ok: true, status: init?.method === 'POST' ? 201 : 200,
+      json: async () => init?.method === 'POST'
+        ? { provider: { name: 'quickstart' }, kubeconfig: 'fake-test-credential' }
+        : { items: [], enrollment: { available } } }
+  }
+  const useStore = new Function('defineStore', 'ref', 'computed', 'useTenantStore', 'authFetch',
+    compile(storeSource) + ';return useOrgProvidersStore;')(defineStore, ref, computed, () => ({ orgUUID: 'org-a' }), authFetch)
+  const orgProviders = useStore()
+  await orgProviders.load()
+  const selfHost = source.slice(source.indexOf('async function selfHost('), source.indexOf('\nasync function showInstructions'))
+  const watcher = source.slice(source.indexOf('watch(\n  () => [enrollmentAvailable'), source.indexOf('// Always refetch'))
+  const harness = `let selfHostRequestGeneration=0;
+    const canSelfHost=computed(()=>true), enrollmentAvailable=computed(()=>orgProviders.enrollment?.available===true);
+    const enrollmentMessage=computed(()=>'unavailable');
+    const selectedEdge=ref({workspace:'ws',name:'edge'}), selfHostError=ref(null), activeRegistration=ref(null), selfHostBusy=ref({});
+    const dialogScope=ref('org-a/ws'), dialogProvider=ref(null), closeEnableDialog=()=>{}, edgeKey=e=>e.workspace+'/'+e.name;
+    ${selfHost}\n${watcher}\nreturn { selfHost, activeRegistration, selfHostBusy, generation:()=>selfHostRequestGeneration };`
+  const state = new Function('orgProviders', 'computed', 'ref', 'watch', compile(harness))(orgProviders, computed, ref, watch)
+  await state.selfHost({ name: 'quickstart' })
+  await nextTick()
+  assert.equal(state.activeRegistration.value.kubeconfig, 'fake-test-credential')
+  assert.equal(state.selfHostBusy.value.quickstart, false)
+  assert.equal(state.generation(), 1)
+  available = false
+  await orgProviders.load()
+  await nextTick()
+  assert.equal(state.generation(), 2, 'a settled refusal still invalidates pending work')
 })

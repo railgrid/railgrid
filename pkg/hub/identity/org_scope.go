@@ -24,12 +24,6 @@ import (
 	"sort"
 	"strings"
 
-	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
-	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/apiurl"
-	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
-	"github.com/railgrid/railgrid/pkg/kcppaths"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -38,12 +32,19 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
+
+	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
+	"github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
 var (
 	orgIdentityWorkspaceGVR      = schema.GroupVersionResource{Group: "tenancy.kcp.io", Version: "v1alpha1", Resource: "workspaces"}
 	orgIdentityLogicalClusterGVR = schema.GroupVersionResource{Group: "core.kcp.io", Version: "v1alpha1", Resource: "logicalclusters"}
-	orgIdentityOrganizationGVR   = schema.GroupVersionResource{Group: "tenancy.railgrid.ai", Version: "v1alpha1", Resource: "organizations"}
+	orgIdentityOrganizationGVR   = tenancyv1alpha1.SchemeGroupVersion.WithResource("organizations")
 	orgIdentityBindingGVR        = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}
 	orgIdentityAPIExportGVR      = schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
 	orgIdentityCatalogEntryGVR   = schema.GroupVersionResource{Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"}
@@ -153,13 +154,14 @@ func (r *OrgIdentityPolicyResolver) Resolve(ctx context.Context, orgUUID, provid
 	consented := acceptedAppliedClaims(findExactBoundExport(bindings.Items, requester.APIExportPath, requester.APIExportName))
 	catalog := orgIdentityCatalog{
 		registry: r.registry, orgUUID: orgUUID, requester: requester, dependencies: map[string]map[string]bool{},
-		ownResources: sourceSurface.resources,
+		boundProviders: map[string]providers.Provider{requester.Name: requester},
+		ownResources:   sourceSurface.resources,
 	}
 	for _, coordinate := range providersv1alpha1.RequiredCoordinates(requester.Requires) {
 		if coordinate.Provider == "" || coordinate.Group == "" || coordinate.Selector != nil {
 			continue
 		}
-		dep, found := r.registry.GetForOrg(orgUUID, coordinate.Provider)
+		dep, found := boundProviderForName(r.registry, orgUUID, coordinate.Provider, bindings.Items)
 		if !found || !containsAny(dep.APIGroups, coordinate.Group) {
 			continue
 		}
@@ -177,17 +179,19 @@ func (r *OrgIdentityPolicyResolver) Resolve(ctx context.Context, orgUUID, provid
 		} else {
 			claimAllowed = claimAllowed && claimVerbs["get"]
 		}
-		if !hasExactBoundExport(bindings.Items, dep.APIExportPath, dep.APIExportName) ||
-			!compositionAccepted(grant, coordinate.Group, coordinate.Resource) ||
+		if !compositionAccepted(grant, coordinate.Group, coordinate.Resource) ||
 			!claimAllowed {
 			continue
 		}
+		catalog.boundProviders[dep.Name] = dep
 		if catalog.dependencies[coordinate.Group] == nil {
 			catalog.dependencies[coordinate.Group] = map[string]bool{}
 		}
 		catalog.dependencies[coordinate.Group][coordinate.Resource] = true
 	}
-	return NewPolicy(catalog, orgIdentityBindings{registry: r.registry, orgUUID: orgUUID, bindings: bindings.Items}), nil
+	return NewPolicy(catalog, orgIdentityBindings{
+		registry: r.registry, orgUUID: orgUUID, bindings: bindings.Items, boundProviders: catalog.boundProviders,
+	}), nil
 }
 
 func (r *OrgIdentityPolicyResolver) verifyProviderExportSurface(ctx context.Context, orgUUID string, provider providers.Provider) (providerExportSurface, error) {
@@ -564,7 +568,16 @@ func hasClaimSelector(claim map[string]any) bool {
 	if !exists || selector == nil {
 		return false
 	}
-	return true
+	// KCP defaults an unrestricted binding claim to {matchAll: true}, even
+	// when the export omitted its selector. It is not a narrowing constraint.
+	// Accept only that exact shape: a restricted, mixed or unknown selector
+	// cannot be converted into an unrestricted workload identity.
+	fields, ok := selector.(map[string]any)
+	if !ok || len(fields) != 1 {
+		return true
+	}
+	matchAll, ok := fields["matchAll"].(bool)
+	return !ok || !matchAll
 }
 
 func claimHasIdentityHash(claim map[string]any) bool {
@@ -577,11 +590,12 @@ func compositionAccepted(grant *tenancyv1alpha1.Grant, group, resource string) b
 }
 
 type orgIdentityCatalog struct {
-	registry     *providers.Registry
-	orgUUID      string
-	requester    providers.Provider
-	dependencies map[string]map[string]bool
-	ownResources map[string]map[string]bool
+	registry       *providers.Registry
+	orgUUID        string
+	requester      providers.Provider
+	dependencies   map[string]map[string]bool
+	boundProviders map[string]providers.Provider
+	ownResources   map[string]map[string]bool
 }
 
 func (c orgIdentityCatalog) GroupOwner(group string) (string, bool) {
@@ -589,7 +603,7 @@ func (c orgIdentityCatalog) GroupOwner(group string) (string, bool) {
 		if requirement.Provider == "" || requirement.Group != group {
 			continue
 		}
-		provider, ok := c.registry.GetForOrg(c.orgUUID, requirement.Provider)
+		provider, ok := c.boundProvider(requirement.Provider)
 		if ok && containsAny(provider.APIGroups, group) {
 			return provider.Name, true
 		}
@@ -605,11 +619,24 @@ func (c orgIdentityCatalog) ExportedGroups(provider string) []string {
 }
 
 func (c orgIdentityCatalog) DeclaredVerbs(providerName, resource string) []string {
-	provider, ok := c.registry.GetForOrg(c.orgUUID, providerName)
+	provider, ok := c.boundProvider(providerName)
 	if !ok {
 		return nil
 	}
 	return dedupeSorted(providersv1alpha1.ProviderDeclaredVerbs(provider.Export, resource))
+}
+
+func (c orgIdentityCatalog) boundProvider(name string) (providers.Provider, bool) {
+	if provider, ok := c.boundProviders[name]; ok {
+		return provider, true
+	}
+	// Compatibility for catalogs assembled directly by older tests and
+	// embedders. Resolve always supplies a live binding snapshot above.
+	if c.registry != nil && c.boundProviders == nil {
+		provider, ok := c.registry.GetForOrg(c.orgUUID, name)
+		return provider, ok
+	}
+	return providers.Provider{}, false
 }
 
 func (c orgIdentityCatalog) AllowsForeignRule(requester, providerName, group string, resources []string) bool {
@@ -646,15 +673,49 @@ func (c orgIdentityCatalog) AllowsOwnRule(requester, group string, resources []s
 }
 
 type orgIdentityBindings struct {
-	registry *providers.Registry
-	orgUUID  string
-	bindings []unstructured.Unstructured
+	registry       *providers.Registry
+	orgUUID        string
+	bindings       []unstructured.Unstructured
+	boundProviders map[string]providers.Provider
 }
 
 func (b orgIdentityBindings) IsBound(_ string, providerName string) (bool, error) {
+	if provider, ok := b.boundProviders[providerName]; ok {
+		return hasExactBoundExport(b.bindings, provider.APIExportPath, provider.APIExportName), nil
+	}
+	if b.boundProviders != nil {
+		return false, nil
+	}
 	provider, ok := b.registry.GetForOrg(b.orgUUID, providerName)
 	if !ok || provider.OrgUUID != "" && provider.OrgUUID != b.orgUUID {
 		return false, nil
 	}
 	return hasExactBoundExport(b.bindings, provider.APIExportPath, provider.APIExportName), nil
+}
+
+// boundProviderForName chooses the platform or same-org provider copy whose
+// exact APIExport is present in the live workspace bindings. GetForOrg alone
+// is unsuitable here: it intentionally returns an org shadow even when this
+// workspace is still bound to the platform export.
+func boundProviderForName(registry *providers.Registry, orgUUID, name string, bindings []unstructured.Unstructured) (providers.Provider, bool) {
+	if registry == nil || name == "" || len(bindings) == 0 {
+		return providers.Provider{}, false
+	}
+	var matched providers.Provider
+	for i := range bindings {
+		path, _, _ := unstructured.NestedString(bindings[i].Object, "spec", "reference", "export", "path")
+		exportName, _, _ := unstructured.NestedString(bindings[i].Object, "spec", "reference", "export", "name")
+		exportCluster, _, _ := unstructured.NestedString(bindings[i].Object, "status", "apiExportClusterName")
+		candidate, ok := registry.GetForExport(orgUUID, path, exportName)
+		if !ok || candidate.Name != name || candidate.OrgUUID != "" && candidate.OrgUUID != orgUUID ||
+			(exportCluster != "" && candidate.WorkspaceCluster != exportCluster) ||
+			!hasExactBoundExport(bindings, candidate.APIExportPath, candidate.APIExportName) {
+			continue
+		}
+		if matched.Name != "" {
+			return providers.Provider{}, false
+		}
+		matched = candidate
+	}
+	return matched, matched.Name != ""
 }

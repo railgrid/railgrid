@@ -2214,6 +2214,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 	for _, item := range list.Items {
 		path, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "path")
 		exportName, _, _ := unstructured.NestedString(item.Object, "spec", "reference", "export", "name")
+		exportCluster, _, _ := unstructured.NestedString(item.Object, "status", "apiExportClusterName")
 		providerName, ok := providerNameFromExportPath(path, orgUUID)
 		if !ok {
 			continue
@@ -2245,6 +2246,7 @@ func (b *Bootstrapper) ListProviderAPIBindings(ctx context.Context, orgUUID, wsU
 			UID:             string(item.GetUID()),
 			ExportPath:      path,
 			ExportName:      exportName,
+			ExportCluster:   exportCluster,
 			SelfHosted:      strings.HasPrefix(path, kcppaths.TenantsParent+":"),
 			Terminating:     terminating,
 			DeletionBlocked: deletionBlockedMessage(&item),
@@ -2304,6 +2306,9 @@ type ProviderBinding struct {
 	ExportName string
 	// ExportPath is the workspace path of the APIExport it binds.
 	ExportPath string
+	// ExportCluster is the APIExport's logical-cluster issuer recorded by kcp.
+	// Empty only for compatibility with APIBinding fixtures/older status shapes.
+	ExportCluster string
 	// SelfHosted is true when ExportPath is under the tenant fleet, i.e. the
 	// binding targets an Org's own provider rather than a platform one.
 	SelfHosted bool

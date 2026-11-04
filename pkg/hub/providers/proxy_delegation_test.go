@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package providers
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,13 @@ func newPlatformProxy(t *testing.T, name, wsOfCaller string) (*ProviderProxy, *p
 		return "alice", path, nil
 	}))
 	proxy.SetClusterResolver(testClusterResolver)
+	proxy.SetBoundCopyResolver(func(_ context.Context, tenantPath, _, providerName string) (Provider, error) {
+		orgUUID, _ := splitTenantPath(tenantPath)
+		if p, ok := reg.GetForOrg(orgUUID, providerName); ok {
+			return p, nil
+		}
+		return Provider{}, ErrBoundCopyUnavailable
+	})
 	return proxy, rec
 }
 

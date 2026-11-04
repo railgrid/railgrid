@@ -12,6 +12,9 @@ import { authFetch } from '@/auth/session'
 export type ProviderScope = 'global' | 'org'
 
 export interface ProviderDTO {
+  // Immutable logical cluster of this provider registration, when reported.
+  sourceCluster?: string
+
   // Snapshot of the permissions displayed for explicit organization-provider consent.
   consentDigest?: string
   name: string
@@ -278,7 +281,7 @@ export interface AcceptedClaimScope extends ClaimRef {
 // left here needs a person.
 export interface ClaimState {
   // Current export claims the hub observed kcp apply to this exact binding.
-  // This positive snapshot is required before an isolated provider UI may
+  // This positive snapshot is required before an organization provider UI may
   // bridge a dependency; absence never means accepted.
   accepted?: AcceptedClaimScope[]
   // Declared by the export, absent from the binding: a composition nobody
@@ -294,8 +297,12 @@ export interface ClaimState {
 // EnabledProviderDetail mirrors pkg/hub/restapi.EnabledProviderDetail — which
 // APIExport a workspace's binding actually points at.
 export interface EnabledProviderDetail {
+  // Actual issuer reported by the selected APIBinding.
+  exportCluster?: string
+
   bindingName: string
   exportPath: string
+  exportName?: string
   // true when the binding targets this org's own instance rather than the
   // platform's.
   selfHosted: boolean
@@ -387,6 +394,15 @@ export const useProvidersStore = defineStore('providers', () => {
   const catalogOrgUUID = ref<string | null>(null)
   let catalogRequestSequence = 0
   let catalogRequestOrg: string | null = null
+  // The tenant-visible catalog shadows platform records by name. Keep a
+  // separate platform-only snapshot so workspace bindings can select the
+  // exact source they actually reference.
+  const platformItems = ref<ProviderDTO[]>([])
+  const platformCatalogLoaded = ref(false)
+  const platformCatalogLoading = ref(false)
+  const platformCatalogError = ref<string | null>(null)
+  let platformCatalogRequest: Promise<void> | null = null
+  let platformCatalogSequence = 0
 
   // bindingNamesByProvider maps provider-name → kcp APIBinding name in the
   // user's tenant workspace. Empty when the provider is not enabled for
@@ -456,6 +472,99 @@ export const useProvidersStore = defineStore('providers', () => {
     children: { label: string; to: string }[]
   }
 
+  type WorkspaceProviderState = 'ready' | 'checking' | 'unbound' | 'missing'
+
+  function bindingProjectionIsCurrent(): boolean {
+    const t = readTenantSelection()
+    return !!t.orgUUID && !!t.workspaceUUID &&
+      bindingsLoadState.value === 'ready' && !bindingsStale.value &&
+      bindingsOrgUUID.value === t.orgUUID && bindingsWorkspace.value === t.workspaceUUID &&
+      bindingsRequestOrgUUID.value === t.orgUUID && bindingsRequestWorkspaceUUID.value === t.workspaceUUID
+  }
+
+  function retainedBindingProjectionMatchesCurrentScope(): boolean {
+    const t = readTenantSelection()
+    return !!t.orgUUID && !!t.workspaceUUID && bindingsStale.value &&
+      (bindingsLoadState.value === 'loading' || bindingsLoadState.value === 'error') &&
+      bindingsOrgUUID.value === t.orgUUID && bindingsWorkspace.value === t.workspaceUUID &&
+      loaded.value && catalogOrgUUID.value === t.orgUUID
+  }
+
+  function exportMatchesBinding(provider: ProviderDTO, binding: EnabledProviderDetail): boolean {
+    const providerPath = provider.export?.path ?? ''
+    if (binding.exportPath || providerPath) {
+      if (!binding.exportPath || !providerPath || binding.exportPath !== providerPath) return false
+    }
+    if (binding.exportName && provider.export?.name !== binding.exportName) return false
+    if (binding.exportCluster && provider.sourceCluster !== binding.exportCluster) return false
+    return true
+  }
+
+  function resolveWorkspaceProvider(name: string, allowRetainedDisplay = false): ProviderDTO | undefined {
+    const t = readTenantSelection()
+    if (!t.workspaceUUID) return undefined
+    const visible = byName(name)
+    if (!visible) return undefined
+    if (visible.scope !== 'org' && (visible.builtin || visible.serving?.ui?.builtinRoute)) return visible
+    if (!bindingProjectionIsCurrent() && !(allowRetainedDisplay && retainedBindingProjectionMatchesCurrentScope())) return undefined
+    const binding = bindingsByProvider.value[name]
+    if (!binding) return undefined
+
+    if (binding.selfHosted) {
+      const orgProvider = items.value.find(p => p.name === name && p.scope === 'org' && p.ownerOrg === t.orgUUID)
+      if (!orgProvider || !exportMatchesBinding(orgProvider, binding)) return undefined
+      return orgProvider
+    }
+
+    // Without a shadow, the tenant-visible catalog record is already the
+    // platform source. With a shadow, resolve the platform-only snapshot.
+    const platformProvider = visible.scope === 'global'
+      ? visible
+      : platformItems.value.find(p => p.name === name && p.scope === 'global' && !p.ownerOrg)
+    if (!platformProvider || !exportMatchesBinding(platformProvider, binding)) return undefined
+    return platformProvider
+  }
+
+  function workspaceProviderState(name: string): WorkspaceProviderState {
+    const t = readTenantSelection()
+    if (!t.workspaceUUID) return 'unbound'
+    if (!t.orgUUID || !loaded.value || catalogOrgUUID.value !== t.orgUUID) return 'checking'
+    const visible = byName(name)
+    if (!visible) return 'missing'
+    if (visible.scope !== 'org' && (visible.builtin || visible.serving?.ui?.builtinRoute)) return 'ready'
+    if (!bindingProjectionIsCurrent()) return 'checking'
+    const binding = bindingsByProvider.value[name]
+    if (!binding) return 'unbound'
+    if (!binding.selfHosted && visible.scope === 'org' && !platformCatalogLoaded.value) {
+      return platformCatalogLoading.value || !platformCatalogError.value ? 'checking' : 'missing'
+    }
+    return resolveWorkspaceProvider(name) ? 'ready' : 'missing'
+  }
+
+  function workspaceProvider(name: string): ProviderDTO | undefined {
+    return workspaceProviderState(name) === 'ready' ? resolveWorkspaceProvider(name) : undefined
+  }
+
+  const workspaceProviders = computed<ProviderDTO[]>(() => {
+    const names = new Set(items.value.map(p => p.name))
+    return [...names]
+      .map(workspaceProvider)
+      .filter((p): p is ProviderDTO => !!p && p.ready && !!p.serving?.ui)
+  })
+
+  // Navigation may retain the last confirmed provider metadata while a
+  // same-workspace binding refresh is pending or failed. This is strictly a
+  // display projection: workspaceProvider() remains authoritative and all UI
+  // execution gates continue to fail closed until the refresh succeeds.
+  const navigationProviders = computed<ProviderDTO[]>(() => {
+    const names = new Set(items.value.map(p => p.name))
+    return [...names]
+      .map(name => workspaceProvider(name) ?? (
+        retainedBindingProjectionMatchesCurrentScope() ? resolveWorkspaceProvider(name, true) : undefined
+      ))
+      .filter((p): p is ProviderDTO => !!p && p.ready && !!p.serving?.ui)
+  })
+
   // enabledNavItems is the list of providers that should show up in the
   // side nav. Two paths to inclusion:
   //  - Built-in providers (serving.ui.builtinRoute set) always appear — they
@@ -465,19 +574,7 @@ export const useProvidersStore = defineStore('providers', () => {
   // The `to` distinguishes them: builtins route to /{builtinRoute},
   // third-party to /providers/{name}.
   const enabledNavItems = computed<ProviderNavItem[]>(() =>
-    items.value
-      .filter((p) => {
-        // Provider destinations need a workspace. Organization-only settings
-        // must not turn every provider link into the same active fallback.
-        if (!useTenantStore().workspaceUUID) return false
-        // serving.ui present IS "this provider has a portal UI".
-        if (!p.ready || !p.serving?.ui) return false
-        // Legacy in-tree route OR new-style first-party provider:
-        // always shown, no binding required.
-        if (p.scope !== 'org' && (p.serving.ui.builtinRoute || p.builtin)) return true
-        return !!bindingNamesByProvider.value[p.name]
-      })
-      .map((p) => {
+    navigationProviders.value.map((p) => {
         // builtinRoute → in-tree SPA route (legacy).
         // builtin (no route) → ProviderFrame at /providers/{name}.
         // third-party → ProviderFrame at /providers/{name}.
@@ -725,6 +822,47 @@ export const useProvidersStore = defineStore('providers', () => {
     clearBindings()
   }
 
+  async function loadPlatformCatalog(force = false): Promise<void> {
+    if (platformCatalogRequest) return platformCatalogRequest
+    if (platformCatalogLoaded.value && !force) return
+    const sequence = ++platformCatalogSequence
+    platformCatalogLoading.value = true
+    platformCatalogError.value = null
+    const request = (async () => {
+      try {
+        // No org header is intentional: the hub returns only platform-global
+        // entries, independent of which tenant copy currently shadows them.
+        const res = await authFetch('/api/providers', {
+          tenant: false,
+          cache: 'no-store',
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000),
+        })
+        if (!res.ok) throw new Error(`platform provider list failed: ${res.status} ${res.statusText}`)
+        const body = await res.json() as ProvidersResponse
+        if (sequence !== platformCatalogSequence) return
+        platformItems.value = (body.items ?? []).filter(p => p.scope === 'global' && !p.ownerOrg)
+        platformCatalogLoaded.value = true
+      } catch (e) {
+        if (sequence !== platformCatalogSequence) return
+        // A failed explicit refresh makes the previous shadow source
+        // non-authoritative. Keep the bytes for diagnostics, but stop exposing
+        // them as the workspace's effective provider until a fresh snapshot
+        // succeeds.
+        platformCatalogLoaded.value = false
+        platformCatalogError.value = e instanceof Error ? e.message : String(e)
+      } finally {
+        if (sequence === platformCatalogSequence) platformCatalogLoading.value = false
+      }
+    })()
+    platformCatalogRequest = request
+    try {
+      await request
+    } finally {
+      if (platformCatalogRequest === request) platformCatalogRequest = null
+    }
+  }
+
   async function load(requestedOrgUUID?: string | null) {
     // App.vue passes the reactive tenant selection when an org switch is
     // already in flight. Reading the tab-local store keeps other callers
@@ -759,6 +897,9 @@ export const useProvidersStore = defineStore('providers', () => {
       categories.value = body.categories ?? []
       catalogOrgUUID.value = targetOrgUUID
       loaded.value = true
+      if (items.value.some(p => p.scope === 'org' && p.shadowsPlatform)) {
+        void loadPlatformCatalog(true)
+      }
       // Best-effort: also refresh the user's enabled set. Failure here
       // doesn't block the catalog from rendering.
       // During an org switch, a catalog read can finish after the active
@@ -1055,19 +1196,26 @@ export const useProvidersStore = defineStore('providers', () => {
   async function refreshMainJSIntegrity(name: string): Promise<string | null> {
     const targetOrgUUID = readTenantSelection().orgUUID
     const requestSequence = catalogRequestSequence
-    const res = await authFetch('/api/providers', {
-      headers: targetOrgUUID ? { 'X-Railgrid-Org': targetOrgUUID } : undefined,
-    })
+    const source = workspaceProvider(name)
+    if (!source) return null
+    const platformBound = source.scope !== 'org'
+    const res = await authFetch('/api/providers', { headers: targetOrgUUID && !platformBound ? { 'X-Railgrid-Org': targetOrgUUID } : undefined })
     if (!res.ok) {
       throw new Error(`provider list failed: ${res.status} ${res.statusText}`)
     }
     const body = (await res.json()) as ProvidersResponse
     const fresh = body.items ?? []
     if (requestSequence === catalogRequestSequence && catalogOrgUUID.value === targetOrgUUID) {
-      items.value = fresh
-      categories.value = body.categories ?? []
+      if (platformBound) {
+        platformItems.value = fresh.filter(p => p.scope === 'global' && !p.ownerOrg)
+        platformCatalogLoaded.value = true
+      } else {
+        items.value = fresh
+        categories.value = body.categories ?? []
+      }
     }
-    return fresh.find((p) => p.name === name)?.serving?.ui?.mainJSIntegrity ?? null
+    return fresh.find(p => p.name === name && p.scope === source.scope && p.ownerOrg === source.ownerOrg &&
+      p.export?.path === source.export?.path && (!source.export?.name || p.export?.name === source.export.name))?.serving?.ui?.mainJSIntegrity ?? null
   }
 
   return {
@@ -1077,6 +1225,11 @@ export const useProvidersStore = defineStore('providers', () => {
     loading,
     error,
     catalogOrgUUID,
+    platformItems,
+    platformCatalogLoaded,
+    platformCatalogLoading,
+    platformCatalogError,
+    loadPlatformCatalog,
     bindingNamesByProvider,
     bindingsWorkspace,
     bindingsLoadState,
@@ -1086,6 +1239,9 @@ export const useProvidersStore = defineStore('providers', () => {
     bindingsRequestWorkspaceUUID,
     bindingsStale,
     enabledNavItems,
+    workspaceProviders,
+    workspaceProvider,
+    workspaceProviderState,
     categorizedNavItems,
     enableable,
     selfManaged,

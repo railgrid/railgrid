@@ -83,12 +83,11 @@ export function tenantHeaders(opts: { token?: string | null; json?: boolean } = 
   return h
 }
 
-// ProviderFetch is the fetch-compatible transport the host portal hands every
-// provider bundle as railgridContext.fetch. It resolves relative URLs against the
-// portal origin, injects Authorization and the X-Railgrid-* tenant headers from
-// the host's own state, and refuses same-origin paths outside the provider's
-// allow list (its own /services/providers/<name>/ and /ui/providers/<name>/,
-// /clusters/, /api/orgs/<org>/, and GET /api/providers).
+// ProviderFetch is the fetch-compatible transport exposed as railgridContext.fetch.
+// Trusted platform hosts inject caller Authorization and tenant headers. An org
+// provider instead receives a same-origin session fetch: the server gateway pins
+// its org, workspace and caller and never gives the bundle a general hub token.
+// Both preserve canonical KCP URLs and the provider's own UI/service paths.
 export type ProviderFetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
 // ProviderFetchContext is the slice of railgridContext providerFetch reads.

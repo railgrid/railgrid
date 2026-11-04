@@ -46,7 +46,7 @@ func hubAccessTestManager(t *testing.T) (*Manager, *fakeOps) {
 	reg := hubproviders.NewRegistry()
 	reg.Upsert(hubproviders.Provider{
 		Name:          "app-studio",
-		APIExportPath: "root:providers:app-studio",
+		APIExportPath: "root:railgrid:providers:app-studio",
 		APIExportName: "app-studio",
 		HubAccess:     appStudioHubAccess,
 	})

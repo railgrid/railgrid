@@ -32,12 +32,13 @@ import (
 func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testing.T) {
 	reg := NewRegistry()
 	reg.Upsert(Provider{
-		Name:           "actions",
-		DisplayName:    "Actions",
-		EndpointsValid: true,
-		BackendURL:     mustProviderURL(t, "https://provider.example/backend"),
-		APIExportName:  "actions.providers.railgrid.ai",
-		APIExportPath:  "root:railgrid:providers:actions",
+		Name:             "actions",
+		DisplayName:      "Actions",
+		WorkspaceCluster: "provider-cluster-actions",
+		EndpointsValid:   true,
+		BackendURL:       mustProviderURL(t, "https://provider.example/backend"),
+		APIExportName:    "actions.providers.railgrid.ai",
+		APIExportPath:    "root:railgrid:providers:actions",
 		Export: &providersv1alpha1.ProviderExport{
 			Name: "actions.providers.railgrid.ai",
 			Resources: []providersv1alpha1.ProviderExportResource{{
@@ -108,6 +109,9 @@ func TestListHandlerIncludesActionDiscoveryMetadataWithoutTransportURLs(t *testi
 	item, ok := items[0].(map[string]any)
 	if !ok {
 		t.Fatalf("provider item = %#v, want object", items[0])
+	}
+	if item["sourceCluster"] != "provider-cluster-actions" {
+		t.Errorf("sourceCluster = %#v, want provider-cluster-actions", item["sourceCluster"])
 	}
 	export, ok := item["export"].(map[string]any)
 	if !ok {

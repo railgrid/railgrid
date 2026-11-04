@@ -54,6 +54,14 @@ const bootstrap = new Script(entrySource, { filename: 'dist/main.js' })
 const classicScriptContext = createContext({
   HTMLElement: class {},
   customElements: { get: () => true, define: () => undefined },
+  URL,
+  document: {
+    currentScript: {
+      src: 'https://console.example/ui/providers/app-studio/_grant/fpui_build/main.js',
+      dataset: { railgridProviderBootstrapGeneration: 'test' },
+    },
+    createElement: () => ({ relList: { supports: () => false } }),
+  },
 })
 // A classic provider script can be encountered more than once across host
 // surfaces. Replaying it in one global context proves it does not leak lexical

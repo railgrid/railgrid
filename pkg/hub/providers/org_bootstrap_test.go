@@ -36,6 +36,11 @@ import (
 
 func quickstartBootstrap(t *testing.T) sdkinstall.OrganizationBootstrap {
 	t.Helper()
+	return providerBootstrap(t, "quickstart")
+}
+
+func providerBootstrap(t *testing.T, provider string) sdkinstall.OrganizationBootstrap {
+	t.Helper()
 	read := func(path string) *unstructured.Unstructured {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -47,7 +52,7 @@ func quickstartBootstrap(t *testing.T) sdkinstall.OrganizationBootstrap {
 		}
 		return out
 	}
-	root := "../../../providers/quickstart"
+	root := filepath.Join("../../../providers", provider)
 	request := sdkinstall.OrganizationBootstrap{
 		CatalogEntry: read(filepath.Join(root, "manifest.yaml")),
 		APIExport:    read(filepath.Join(root, "deploy/chart/files/apiexport.yaml")),
@@ -286,4 +291,28 @@ func privateBootstrapCRD(group, resource string) *unstructured.Unstructured {
 		"metadata": map[string]any{"name": resource + "." + group},
 		"spec":     map[string]any{"group": group, "names": map[string]any{"plural": resource, "kind": "Record"}, "scope": "Namespaced", "versions": []any{map[string]any{"name": "v1", "served": true, "storage": true, "schema": map[string]any{"openAPIV3Schema": map[string]any{"type": "object"}}}}},
 	}}
+}
+
+func TestOrgBootstrapAdmitsAppStudioSchemaSet(t *testing.T) {
+	request := providerBootstrap(t, "app-studio")
+	registry := NewRegistry()
+	registry.Upsert(Provider{Name: "infrastructure", APIGroups: []string{"infrastructure.railgrid.ai"}})
+	registry.Upsert(Provider{Name: "code", APIGroups: []string{"code.railgrid.ai"}})
+	admitted, err := validateOrgBootstrap("app-studio", "org", registry, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(admitted.Schemas) != len(request.Schemas) || len(admitted.Schemas) <= 64 {
+		t.Fatalf("real App Studio schema set was not admitted: got %d, supplied %d", len(admitted.Schemas), len(request.Schemas))
+	}
+}
+
+func TestOrgBootstrapSchemaCountRemainsBounded(t *testing.T) {
+	for _, count := range []int{0, orgProviderBootstrapSchemaLimit + 1} {
+		request := quickstartBootstrap(t)
+		request.Schemas = make([]*unstructured.Unstructured, count)
+		if _, err := validateOrgBootstrap("quickstart", "org", NewRegistry(), request); err == nil || !strings.Contains(err.Error(), "schema count must be between") {
+			t.Fatalf("schema count %d: expected bounded count rejection, got %v", count, err)
+		}
+	}
 }

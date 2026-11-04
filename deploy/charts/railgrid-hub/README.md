@@ -46,18 +46,18 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 ### Provider hardening
 
 Every key is unset by default, which leaves the binary's own default for this
-release (the staged, soft posture) and renders nothing into the hub args. The
-next release flips the defaults to `enforce` / `platform` / `false`; set them
-here to move early. See the [docs](https://railgrid.github.io/railgrid/helm.html#turning-on-the-hardened-defaults-early)
+release and renders nothing into the hub args. The
+binary defaults are `enforce` / `platform` / `false`; use explicit
+compatibility overrides when needed. See the [docs](https://railgrid.github.io/railgrid/helm.html#hardened-provider-defaults)
 for the recommended production settings.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `hub.security.providerHeartbeatAuth` | `""` (binary: `warn`) | What the hub does with a provider heartbeat whose bearer token does not verify as that provider's own service account: `warn` logs and accepts it, `enforce` rejects it. Next release defaults to `enforce`. |
-| `hub.security.providerDelegatedTokens` | `""` (binary: `off`) | Which platform providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on `/services/providers/*`: `off`, `platform` (all except `providerDelegatedTokensExclude`), or `all`. Org-owned providers are always delegated. Next release defaults to `platform`. |
-| `hub.security.providerHubAccessPlatformDefault` | `null` (binary: `true`) | Whether platform providers may use the hub capabilities they declare (`spec.hubAccess`) in workspaces where nobody has accepted or declined them yet. Org-owned providers always need acceptance in the Enable dialog. `false` requires acceptance for every provider. |
+| `hub.security.providerHeartbeatAuth` | `""` (binary: `enforce`) | What the hub does with a provider heartbeat whose bearer token does not verify as that provider's own service account: `warn` logs and accepts it, `enforce` rejects it. |
+| `hub.security.providerDelegatedTokens` | `""` (binary: `platform`) | Which platform providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on `/services/providers/*`: `off`, `platform` (all except `providerDelegatedTokensExclude`), or `all`. Org-owned providers are always delegated. |
+| `hub.security.providerHubAccessPlatformDefault` | `null` (binary: `false`) | Whether platform providers may use the hub capabilities they declare (`spec.hub.access`) in workspaces where nobody has accepted or declined them yet. Org-owned providers always need acceptance in the Enable dialog. `false` requires acceptance for every provider. |
 | `hub.security.providerDelegatedTokensExclude` | `[]` (binary: `[edges]`) | Platform providers that keep receiving the caller's bearer under `platform`. Setting it replaces the built-in list, so include `edges` if you still need it (its SSH data plane resolves the caller with a TokenReview on the bearer). |
-| `hub.security.providerWorkspaceClusterAdmin` | `null` (binary: `true`) | Role bound to each provider's ServiceAccount inside its own provider workspace: `true` keeps cluster-admin, `false` binds the narrower generated `railgrid:provider` ClusterRole. Opt-in this release: the infrastructure provider serves its own CRDs from its provider workspace, which the narrow role does not grant, so confirm your providers first. Next release defaults to `false`. Flipping replaces the existing binding. |
+| `hub.security.providerWorkspaceClusterAdmin` | `null` (binary: `false`) | Role bound to each provider's ServiceAccount inside its own provider workspace: `true` keeps cluster-admin, `false` binds the narrower generated `railgrid:provider` ClusterRole. Compatibility caveat: the infrastructure provider serves its own CRDs from its provider workspace, which the narrow role does not grant, so confirm your providers first. Flipping replaces the existing binding. |
 
 ### TLS (Hub)
 
@@ -194,3 +194,7 @@ helm upgrade railgrid oci://ghcr.io/railgrid/charts/railgrid-hub \
   --reuse-values \
   --set image.hub.tag=v0.0.40
 ```
+
+### Organization provider application origins
+
+Organization provider UIs use the portal's trusted custom-element loader and its existing origin. No additional provider DNS suffix, wildcard certificate or browser session gateway is required. Installed UI code has the user's portal authority; the org-bound backend relay remains a separate server boundary. `hub.organizationLimits.maxStreamRequestBytes` optionally raises the custom-subresource upload ceiling without enlarging stored-object writes. See [the BYO trust guide](../../../docs/byo-providers.md#trusted-provider-ui-and-org-bound-backends).

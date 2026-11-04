@@ -61,12 +61,14 @@ const auth = useAuthStore()
 const theme = useThemeStore()
 const tenant = useTenantStore()
 const router = useRouter()
+const selectedProvider = computed(() => providers.workspaceProvider(props.provider.name))
+const provider = computed(() => selectedProvider.value ?? props.provider)
 
 const mountRef = ref<HTMLDivElement | null>(null)
 const elementRef = ref<HTMLElement | null>(null)
 const loadState = ref<'idle' | 'loading' | 'ready' | 'no-tile' | 'error'>('idle')
 const loadGeneration = createProviderLoadGeneration()
-const canRetryInDocument = computed(() => canReloadProviderScriptInDocument(props.provider.name))
+const canRetryInDocument = computed(() => canReloadProviderScriptInDocument(provider.value.name))
 
 const tagFor = (name: string) => `railgrid-dashboard-tile-${name}`
 
@@ -76,19 +78,19 @@ const tagFor = (name: string) => `railgrid-dashboard-tile-${name}`
 // everything else to /providers/{name}, with children hung off that. Used by
 // the fallback body so a provider without its own tile element is still a
 // useful launcher rather than a blank card.
-const builtinRoute = computed(() => isOrgOwnedProvider(props.provider) ? '' : props.provider.serving?.ui?.builtinRoute ?? '')
+const builtinRoute = computed(() => isOrgOwnedProvider(provider.value) ? '' : provider.value.serving?.ui?.builtinRoute ?? '')
 const parentTo = computed(() =>
-  scopePath(builtinRoute.value ? `/${builtinRoute.value}` : `/providers/${props.provider.name}`),
+  scopePath(builtinRoute.value ? `/${builtinRoute.value}` : `/providers/${provider.value.name}`),
 )
 const quickLinks = computed(() =>
-  (isOrgOwnedProvider(props.provider) ? [] : props.provider.serving?.ui?.children ?? []).map((c) => ({
+  (provider.value.serving?.ui?.children ?? []).map((c) => ({
     label: c.displayName,
     to: builtinRoute.value ? scopePath(`/${c.builtinRoute}`) : `${parentTo.value}/${c.builtinRoute}`,
   })),
 )
 
 const arrangementItems = computed<ActionMenuItem[]>(() => {
-  const label = props.provider.displayName
+  const label = provider.value.displayName
   return [
     { id: 'remove', label: `Remove ${label} tile`, tone: 'danger' },
   ]
@@ -96,21 +98,21 @@ const arrangementItems = computed<ActionMenuItem[]>(() => {
 
 function onArrangementAction(action: string): void {
   if (action === 'remove') {
-    emit('remove', props.provider.name)
+    emit('remove', provider.value.name)
     return
   }
 }
 
 watch(
-  () => [props.provider.name, props.provider.version, props.provider.ready] as const,
-  async ([name, version, ready]) => {
+  () => selectedProvider.value,
+  async (selected) => {
     const generation = loadGeneration.begin()
     clearMountedTile()
-    if (!ready) {
+    if (!selected?.ready) {
       loadState.value = 'idle'
       return
     }
-    await loadAndMount(name, version, generation)
+    await loadAndMount(selected, generation)
   },
   { immediate: true },
 )
@@ -120,11 +122,12 @@ watch(
   () => pushContext(),
 )
 
-function isCurrentLoad(generation: number, name: string, version: string | undefined): boolean {
+function isCurrentLoad(generation: number, provider: ProviderDTO): boolean {
+  const active = selectedProvider.value
   return loadGeneration.isCurrent(generation) &&
-    props.provider.name === name &&
-    props.provider.version === version &&
-    props.provider.ready
+    active?.name === provider.name && active.version === provider.version && active.ready &&
+    active.scope === provider.scope && active.ownerOrg === provider.ownerOrg &&
+    active.export?.name === provider.export?.name && active.export?.path === provider.export?.path
 }
 
 function clearMountedTile() {
@@ -132,14 +135,9 @@ function clearMountedTile() {
   elementRef.value = null
 }
 
-async function loadAndMount(name: string, version: string | undefined, generation: number) {
-  if (!isCurrentLoad(generation, name, version)) return
-  if (isOrgOwnedProvider(props.provider)) {
-    // The tile bundle would execute in the authenticated portal. Keep BYO
-    // code confined to ProviderFrame's sandbox and make the launcher explicit.
-    loadState.value = 'no-tile'
-    return
-  }
+async function loadAndMount(provider: ProviderDTO, generation: number) {
+  const { name, version } = provider
+  if (!isCurrentLoad(generation, provider)) return
   loadState.value = 'loading'
 
   const tag = tagFor(name)
@@ -149,18 +147,18 @@ async function loadAndMount(name: string, version: string | undefined, generatio
     // page and dashboard callers coalesce through the shared loader.
     // Org-owned providers load through a hub-issued grant over their edge;
     // platform providers use the loader's fixed URL (providerBundle.ts).
-    const bundle = await resolveProviderBundle(props.provider, authFetch)
-    if (!isCurrentLoad(generation, name, version)) return
+    const bundle = await resolveProviderBundle(provider, authFetch, tenant.orgUUID)
+    if (!isCurrentLoad(generation, provider)) return
     // See ProviderFrame.vue: one pinned retry against the hub's corrected pin.
     await loadProviderScript(name, version, document, undefined, {
       ...bundle,
-      refreshIntegrity: () => providers.refreshMainJSIntegrity(name),
+      ...(!isOrgOwnedProvider(provider) ? { refreshIntegrity: () => providers.refreshMainJSIntegrity(name) } : {}),
     })
   } catch {
-    if (isCurrentLoad(generation, name, version)) loadState.value = 'error'
+    if (isCurrentLoad(generation, provider)) loadState.value = 'error'
     return
   }
-  if (!isCurrentLoad(generation, name, version)) return
+  if (!isCurrentLoad(generation, provider)) return
 
   // Registration is synchronous inside the bootstrap, so a missing tag after
   // the shared load resolves means this provider intentionally ships no tile.
@@ -177,7 +175,7 @@ async function loadAndMount(name: string, version: string | undefined, generatio
   }
 
   await nextTick()
-  if (!isCurrentLoad(generation, name, version) || !mountRef.value) return
+  if (!isCurrentLoad(generation, provider) || !mountRef.value) return
   mountRef.value.replaceChildren()
   const el = document.createElement(tag) as HTMLElement
   mountRef.value.appendChild(el)
@@ -193,14 +191,15 @@ function retryLoad() {
   }
   const generation = loadGeneration.begin()
   clearMountedTile()
-  void loadAndMount(props.provider.name, props.provider.version, generation)
+  const selected = selectedProvider.value
+  if (selected) void loadAndMount(selected, generation)
 }
 
 function onProviderBootstrapRetry(event: Event) {
   const providerName = (event as CustomEvent<{ providerName?: unknown }>).detail?.providerName
-  if (providerName !== props.provider.name || !props.provider.ready) return
+  if (providerName !== provider.value.name || !provider.value.ready) return
   event.preventDefault()
-  invalidateProviderScript(props.provider.name, props.provider.version)
+  invalidateProviderScript(provider.value.name, provider.value.version)
   retryLoad()
 }
 
@@ -208,7 +207,8 @@ function pushContext() {
   const contextGeneration = routeContext.generation
   const el = elementRef.value as HTMLElement & { railgridContext?: unknown } | null
   if (!el) return
-  const providerName = props.provider.name
+  const providerName = selectedProvider.value?.name
+  if (!providerName) return
   // Same shape and same host-owned fetch as ProviderFrame.pushContext; the
   // tile is just a second element from the same bundle.
   el.railgridContext = createProviderContext(
@@ -241,7 +241,7 @@ function onNavigate(e: Event) {
   const p = ce.detail?.path
   if (typeof p !== 'string') return
   e.preventDefault()
-  const target = scopePath(`/providers/${props.provider.name}/${p.replace(/^\//, '')}`)
+  const target = scopePath(`/providers/${provider.value.name}/${p.replace(/^\//, '')}`)
   if (ce.detail.replace === true) void router.replace(target)
   else void router.push(target)
 }
@@ -356,7 +356,7 @@ onBeforeUnmount(() => {
         >{{ l.label }}</router-link>
       </div>
       <p v-else :class="tileClass.empty">
-        {{ isOrgOwnedProvider(provider) ? 'Dashboard previews for organization providers are available on the isolated provider page.' : `No dashboard summary yet — open ${provider.displayName} to manage its resources.` }}
+        {{ `No dashboard summary yet — open ${provider.displayName} to manage its resources.` }}
       </p>
 
       <router-link

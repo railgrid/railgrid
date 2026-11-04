@@ -19,7 +19,7 @@ test('dashboard tile action menu only emits the removal action', () => {
   const handlerEnd = tile.indexOf('\n}\n\nwatch(', handlerStart)
   assert.ok(handlerStart >= 0 && handlerEnd > handlerStart)
   const handler = tile.slice(handlerStart, handlerEnd)
-  assert.match(handler, /if \(action === 'remove'\) \{[\s\S]*emit\('remove', props\.provider\.name\)/)
+  assert.match(handler, /if \(action === 'remove'\) \{[\s\S]*emit\('remove', provider\.value\.name\)/)
   assert.doesNotMatch(tile, /layout-action|TileLayoutAction/)
   assert.match(tile, /:label="`\$\{provider\.displayName\} tile options`"/)
 })
@@ -27,21 +27,24 @@ test('dashboard tile action menu only emits the removal action', () => {
 test('dashboard tile load failures offer recovery without leaking raw transport details', () => {
   assert.match(tile, /createProviderLoadGeneration/)
   assert.match(tile, /canReloadProviderScriptInDocument,[\s\S]*invalidateProviderScript,[\s\S]*loadProviderScript,[\s\S]*from '@\/providers\/providerScriptLoader'/)
-  assert.match(tile, /props\.provider\.name, props\.provider\.version, props\.provider\.ready/)
+  assert.match(tile, /const selectedProvider = computed\(\(\) => providers\.workspaceProvider\(props\.provider\.name\)\)/)
+  assert.match(tile, /\(\) => selectedProvider\.value/)
   assert.match(tile, /const generation = loadGeneration\.begin\(\)/)
-  // The bundle (URL + SRI pin) is resolved first — an org-owned provider's
-  // comes from a hub-issued grant — and the generation is re-checked after
-  // that await before the shared loader runs.
+  // The bundle (URL + SRI pin) is resolved first. Org-owned providers use the
+  // same approved portal loader with the selected org passed to the grant
+  // request; they are not skipped from dashboard tiles.
   assert.match(tile, /import \{ isOrgOwnedProvider, resolveProviderBundle \} from '@\/providers\/providerBundle'/)
-  assert.match(tile, /if \(isOrgOwnedProvider\(props\.provider\)\)[\s\S]*?loadState\.value = 'no-tile'[\s\S]*?return/)
+  assert.match(tile, /const bundle = await resolveProviderBundle\(provider, authFetch, tenant\.orgUUID\)/)
+  assert.doesNotMatch(tile, /if \(isOrgOwnedProvider\(props\.provider\)\)[\s\S]*?loadState\.value = 'no-tile'[\s\S]*?return/)
   // The loader also gets refreshIntegrity, so a bundle rebuilt at an unchanged
   // version — which leaves this page holding a pin the browser refuses — can be
   // retried once against the pin the hub corrected from what it served.
-  assert.match(tile, /const bundle = await resolveProviderBundle\(props\.provider, authFetch\)\s*if \(!isCurrentLoad\(generation, name, version\)\) return\s*(?:\/\/[^\n]*\n\s*)*await loadProviderScript\(name, version, document, undefined, \{\s*\.\.\.bundle,\s*refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\),\s*\}\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\)\) return/)
-  assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, name, version\) \|\| !mountRef\.value\) return/)
+  assert.match(tile, /const bundle = await resolveProviderBundle\(provider, authFetch, tenant\.orgUUID\)\s*if \(!isCurrentLoad\(generation, provider\)\) return\s*\/\/ See ProviderFrame\.vue:[\s\S]*?await loadProviderScript\(name, version, document, undefined, \{[\s\S]*?\.\.\.bundle,[\s\S]*?refreshIntegrity: \(\) => providers\.refreshMainJSIntegrity\(name\)/)
+  assert.match(tile, /!isOrgOwnedProvider\(provider\) \? \{ refreshIntegrity:/)
+  assert.match(tile, /await nextTick\(\)[\s\S]*if \(!isCurrentLoad\(generation, provider\) \|\| !mountRef\.value\) return/)
   assert.match(tile, /function retryLoad\(\)[\s\S]*if \(!canRetryInDocument\.value\)[\s\S]*window\.location\.reload\(\)/)
   assert.match(tile, /addEventListener\('railgrid-provider-bootstrap-retry', onProviderBootstrapRetry\)/)
-  assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*event\.preventDefault\(\)[\s\S]*invalidateProviderScript\(props\.provider\.name, props\.provider\.version\)[\s\S]*retryLoad\(\)/)
+  assert.match(tile, /function onProviderBootstrapRetry\(event: Event\)[\s\S]*event\.preventDefault\(\)[\s\S]*invalidateProviderScript\(provider\.value\.name, provider\.value\.version\)[\s\S]*retryLoad\(\)/)
   assert.match(tile, /role="alert"/)
   assert.match(tile, />Summary unavailable<\/p>/)
   assert.match(tile, /@click="retryLoad"/)

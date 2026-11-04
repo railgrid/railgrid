@@ -58,6 +58,7 @@ type OrgBackendClaims struct {
 	ExportPath      string `json:"exportPath"`
 	ExportName      string `json:"exportName"`
 	BindingUID      string `json:"bindingUID"`
+	TrustRevision   string `json:"trustRevision,omitempty"`
 	IssuedAt        int64  `json:"iat"`
 	ExpiresAt       int64  `json:"exp"`
 }
@@ -184,6 +185,16 @@ func validateOrgBackendClaims(c OrgBackendClaims, now time.Time) error {
 		for _, char := range value {
 			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
 				return fmt.Errorf("organization provider identity has invalid %s", field)
+			}
+		}
+	}
+	if c.TrustRevision != "" {
+		if len(c.TrustRevision) > 128 {
+			return fmt.Errorf("organization provider identity has invalid trust revision")
+		}
+		for _, char := range c.TrustRevision {
+			if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') && (char < '0' || char > '9') && char != '-' {
+				return fmt.Errorf("organization provider identity has invalid trust revision")
 			}
 		}
 	}

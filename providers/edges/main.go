@@ -313,12 +313,12 @@ func runServe(opts serveOptions) error {
 		default:
 			tsrv.EnableReplicaRouting(reg, kcpConfig.BearerToken)
 			internalSrv := &http.Server{
-				Addr:              ":" + internalPort,
+				Addr:              serve.ListenAddress(internalPort),
 				Handler:           tsrv.InternalHandler(),
 				ReadHeaderTimeout: 10 * time.Second,
 			}
 			go func() {
-				log.Info("edges internal listener (relay + forwarded pickups)", "port", internalPort, "replica", replicaID)
+				log.Info("edges internal listener (relay + forwarded pickups)", "address", serve.ListenAddress(internalPort), "replica", replicaID)
 				if lerr := internalSrv.ListenAndServe(); lerr != nil && !errors.Is(lerr, http.ErrServerClosed) {
 					log.Error(lerr, "internal listener failed; peer replicas cannot relay to this one")
 				}
@@ -410,7 +410,7 @@ func runServe(opts serveOptions) error {
 	// consumer streams are long-lived (revdial pings every 18s, 60s read
 	// deadline). ReadHeaderTimeout only bounds the header phase.
 	srv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              serve.ListenAddress(port),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}

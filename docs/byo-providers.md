@@ -1,5 +1,66 @@
 # Bring your own provider
 
+## Trusted provider UI and org-bound backends
+
+Organization provider JavaScript uses the same trusted custom-element loader as
+platform provider JavaScript, inside the portal document. The Hub authenticates
+bundle grants, pins the executable with SRI and preserves the selected source.
+There is no dedicated provider hostname, iframe, browser lease, renewal loop,
+bootstrap exchange, MessagePort request bridge or additional wildcard DNS/TLS.
+The portal works through its configured endpoint, including Tilt's Tailscale URL.
+
+**Installing a provider UI is a decision to trust that code with the signed-in
+user's portal authority.** It can access portal DOM/storage and the user's token,
+and can act in other organizations the user can access, including platform
+administration when that user has it. The host-owned `railgridContext.fetch`
+remains the supported SDK transport; hiding its token field is not a security
+boundary against code executing in the same document. This design intentionally
+does not contain a hostile provider UI. Only install UI code trusted for every
+user who will open it. Revocation cannot unload already executed JavaScript;
+close or reload the portal to discard that document.
+
+Explicit org-admin `organization-v1` approval remains source-bound and is checked
+before loading an org UI and issuing opaque backend credentials. Use
+`POST /api/orgs/{org}/providers/{name}/trust` with
+`{"trustModel":"organization-v1"}`; GET reports and DELETE revokes approval.
+Approval revisions invalidate backend credentials on their next authorization.
+The persisted model name is retained for API compatibility; it no longer implies
+browser isolation. Existing approvals are preserved under the explicitly chosen
+trusted-UI deployment policy.
+
+The bootstrap URL carries an encrypted, asset-only grant in its `_grant/`
+directory. It expires after eight hours so lazy JavaScript, CSS, fonts and images
+continue loading during a workday. Each asset request independently checks the
+current org provider source, selected APIBinding, membership and approval before
+the edge hop. The grant cannot call MCP, OAuth, cluster, webhook or backend
+routes. It is also pinned to the exact APIExport path, export name, issuer
+cluster and source version used at issuance, so a recreated or retargeted
+same-name provider cannot redeem an old asset directory. After eight hours,
+reload the portal to obtain a fresh grant. Legacy
+`?grant=` URLs remain accepted with their existing five-minute lifetime. This
+asset lifetime is not a backend or terminal session, and it cannot revoke code
+already executing in the portal document.
+
+The provider **backend** still receives a short-lived opaque credential bound to
+its owning org, selected consumer workspace, caller, provider source and exact
+APIBinding. The relay rechecks live membership, approval and native caller RBAC.
+Changing paths, headers or bodies cannot expand that backend credential into
+another org or platform authority. Provider controllers and native verbs retain
+their separate org-scoped service identity and explicitly accepted APIExport
+claims. Native quotas, admission, request limits and private backend transport
+remain enforced independently. Ordinary portal requests use the ordinary user's
+RBAC and are not confined to the provider's owning org.
+
+The MVP supports org-owned APIs, backend calls and basic provider pages. Existing
+**Providers → Self-Hosting** catalog, hosting-cluster selection and installation
+instructions remain available for self-hosting catalog providers. Deployment uses
+the displayed commands on the selected cluster. The net-new standalone authored-
+provider registration page, provider-specific preview sign-in, generic OAuth
+completion relay, terminal integration and an App Studio compatibility promise
+are outside this MVP. Ordinary browser mechanisms may work on the separate
+origin without an extra bridge; that is not acceptance evidence for an advanced
+application workflow. Trusted platform-provider integrations remain unchanged.
+
 An organization administrator can register an authored provider, deploy it on
 one of the organization's connected Kubernetes Edges, and enable it in selected
 workspaces. A provider need not exist in the platform catalog. Self-hosting a
@@ -20,17 +81,55 @@ ownership, and consent checks remain active. This does not establish hosted
 release readiness. See
 [KCP upstream requirements](upstream-kcp-requirements.md).
 
+## Catalog entries and the workspace's selected copy
+
+The org-visible catalog offers installation/Enable choices and may show an org
+copy in place of a same-named platform provider. Runtime selection is separate:
+the selected workspace's current APIBinding chooses the provider by export path,
+export name and issuer logical cluster. Provider pages, navigation, dashboard
+tiles, SRI retries, authenticated backend requests, action proofs, composition
+permissions and MCP federation follow that bound source. Missing, invalid or
+unregistered sources do not fall back to another copy with the same name.
+
+The enabled-provider projection includes optional `exportName` and `exportCluster`;
+provider metadata includes optional `sourceCluster`. These identify a source
+instance even when an export path/name is reused. The trusted script loader keys
+its cache by source identity and version. A different copy of a direct-registering
+provider needs a full portal reload because the browser cannot replace an already
+registered custom-element class. App Studio's retained wrapper can switch its
+loader under a new host generation. Expiring grant URLs do not change source
+identity or force duplicate loads.
+
+Anonymous OAuth popup/callback routes retain the existing platform-only behavior;
+org-owned browser OAuth navigation needs additional source-correlation integration
+and is outside this MVP. Authenticated workspace-scoped OAuth requests do follow
+the selected binding. No general OAuth completion helper was reintroduced.
+
+## Self-host an existing catalog provider
+
+Open **Providers → Self-Hosting**, choose a connected cluster belonging to the
+organization, then choose **Self-host** on an available provider. Follow the
+returned installation instructions using that cluster's credentials. Existing
+registrations retain their installation details, credential management and
+upgrade instructions. Org administration and enrollment availability checks still
+apply; self-hosting does not waive the separate approval and workspace Enable
+consent described above.
+
 ## Author and install
 
 1. Build a provider using `provider-sdk/serve`, `dataplane`, and `install`.
-   Supply a CatalogEntry manifest and the generated APIExport and schemas.
+   Supply a CatalogEntry manifest and the generated APIExport and schemas. Bootstrap accepts up to 128 public APIResourceSchemas within its 8 MiB declaration limit; request kinds for custom subresources count as schemas too.
    Declare foreign requirements in `spec.requires`; name the provider which
    owns each foreign API group. Core Secret requirements need a selector.
-2. As an organization admin, open **Providers → Self-Hosting → Register your
-   own provider**. Choose the name from the manifest and the connected cluster
-   that will host the deployment.
+2. As an authenticated organization admin, register through
+   `POST /api/orgs/{org}/providers` with the provider's manifest name and an
+   explicit Edge reference, for example:
+   `{"name":"custom-notes","edge":{"workspace":"<edge-workspace-uuid>","name":"<connected-cluster>"}}`.
+   The Edge must belong to this org and be visible to the caller. The Hub verifies
+   it before issuing credentials, then records the route as Hub-owned state.
+   There is no arbitrary backend-URL fallback and no default hosting cluster.
 3. Store the returned provider kubeconfig as a Secret in that hosting cluster,
-   using the hosting cluster's kubeconfig to run the install commands. The
+   using the hosting cluster's kubeconfig to deploy the provider manually. The
    provider kubeconfig is a credential for Railgrid's control plane; it is not
    a credential for installing Helm charts on the hosting cluster.
 4. Deploy your chart with that Secret mounted as
@@ -53,45 +152,23 @@ selected Edge. Custom subresources use the authenticated
 [organization provider relay](org-provider-relay.md); the shard never dials an
 arbitrary URL supplied by the provider.
 
-The UI must register the provider custom element and use
-`railgridContext.fetch` through the SDK's PortalKit helpers. Organization UIs
-run in an opaque-origin sandbox and cannot depend on console globals, shared
-DOM, browser storage, or a raw login token. The bridge permits the active
-workspace's own provider APIs and explicitly accepted, applied dependency
-claims. An expanded requirement needs renewed consent; declaring it does not
-make it available to the bridge. Platform-only dashboard and agent-overlay
-mounts offer an organization provider link instead of executing its code in the
-console document.
-
-Browser Kubernetes requests from a BYO frame go through the hub-owned route
-`/api/orgs/{org}/workspaces/{ws}/providers/{name}/sandbox/{rest}`. The hub
-requires the request's org and workspace to match the authenticated tenant
-context, accepts only canonical paths for that workspace's cluster, and
-dispatches through the ordinary user-authenticated KCP API handler. The
-caller's native KCP RBAC still applies. Before dispatch, the hub reads the
-current provider binding and effective accepted/applied claims; a foreign
-provider dependency also requires its exact current binding and an uncached
-composition Grant decision. It repeats authorization before response writes
-and stream flushes. If authorization state cannot be read, the request fails
-closed. Core Secret reads are buffered as identity-encoded JSON and released
-only after the latest selector and returned labels match. A revoke cannot
-retract bytes already delivered, and an authorized mutation is not rolled back
-if consent changes after the mutation has run.
+The UI registers its custom element and uses `railgridContext.fetch` through
+PortalKit, in the trusted portal document. Native browser APIs use the portal's
+existing CSP and browser permissions. No additional browser transport is provided
+or required. This preserves the normal provider interfaces without claiming a
+full App Studio workflow acceptance run.
 
 Org-backed API, MCP/backend, UI-asset, and custom-subresource relay responses
 use an allowlist for data and protocol headers. The hub drops provider cookies,
 site-data clearing, reporting and origin-policy headers, trailers, and 1xx
-responses; direct HTML/SVG navigation stays sandboxed, while validated
-non-sandbox protocol upgrades retain only their sanitized handshake headers.
+responses; validated protocol upgrades retain only sanitized handshake headers.
 Trusted platform-provider response handling is unchanged.
 
 An authenticated request to an org-owned backend receives a short-lived opaque
 Railgrid identity token bound to the user, organization, workspace, provider,
 export, and current APIBinding. It is not a KCP credential and cannot be replayed
 directly against the KCP API. Backend KCP requests must return through the hub's
-broker, which rechecks current membership, provider binding, accepted/applied
-claims, and composition consent, then dispatches as the live user's RBAC
-identity. The browser bridge applies the same provider permission boundary.
+gateway policy, which rechecks current membership, source, binding and approval revision, then dispatches as the live user's RBAC identity. Opaque backend requests use this policy; trusted browser UI uses the ordinary caller path, and revoked or superseded backend credentials cannot fall back to a legacy policy.
 Hub REST calls also pass the provider's declared hub-access capabilities and
 the workspace's current Grant. Tokens expire after ten minutes; each mediated
 request checks live authority, while bytes already delivered cannot be
@@ -113,8 +190,9 @@ external-shard enrollment.
 
 ## Hosted operator boundary
 
-Treat both the provider author and the organization's administrator as
-untrusted with respect to Railgrid and other organizations. Admin-only
+Treat the native provider runtime and the organization's administrator as
+untrusted at server credential/bootstrap/relay boundaries. Browser UI code is
+explicitly trusted as portal code and is outside this containment boundary. Admin-only
 registration controls authority within the organization; it is not a security
 review of the submitted code.
 
@@ -134,12 +212,11 @@ alone does not provide the availability enforcement required for new enrollment.
 The supported limit topology in this implementation is one embedded kcp process;
 new organization-provider authority is refused with external kcp.
 
-Organization UI code executes with `sandbox="allow-scripts"`, without
-`allow-same-origin`. Its context contains no login token. Host-side requests
-are scoped to the mounted organization and workspace, bounded, and cancelled
-when authority changes. The provider can read or disclose data which its own
-organization has authorized; isolation does not make malicious provider code
-safe for that organization's data.
+Provider UI code executes directly in the portal document with its full browser
+authority. API authorization cannot stop code holding a user's general token from
+using that user's valid access in another organization. The server isolation
+claims in this section apply to restricted native runtime and opaque backend
+credentials, not that trusted UI code.
 
 Team workspace administrators receive a tenant administration role, rather
 than Kubernetes `cluster-admin`. It covers enabled provider API groups and
@@ -237,6 +314,24 @@ there is no automatic garbage collector that makes that decision. This bounds
 new BYO consumer allocations, not every pre-existing ordinary organization
 workspace or all baseline platform storage.
 
+## Backend network boundary
+
+Shared platform-provider backends trust identity headers supplied by the KCP shard.
+They must not be reachable directly by tenant-managed workloads: a valid Hub relay
+is not protection if a caller can dial the backend around it. Tilt binds host-run
+first-party public and replica listeners to `127.0.0.1` using
+`RAILGRID_LISTEN_HOST`. The Hub and embedded shard reach those listeners locally.
+Etcd stays loopback-only. The authenticated native KCP endpoint remains reachable
+for provider export clients and independently enforces native identity/org controls.
+
+Container deployments retain their existing listener when that variable is unset.
+Operators must supply equivalent private transport/network isolation for shared
+backends, especially with external shards. Do not place mutually hostile orgs'
+providers in a shared hosting network without enforced isolation, or let tenant
+workloads access the Hub host, its runtime sockets, private databases or trusted
+backend network. This MVP does not provision that infrastructure. Providers owned
+by the same org are not sandboxed from each other's org data.
+
 ## Operator policy
 
 New organization-provider authority is unavailable by default. Both native
@@ -304,18 +399,17 @@ created additional roles/bindings, APIExports, or conversion webhooks. Audit
 and revoke those pre-existing privileges and unsafe definitions before
 advertising the new boundary. The code does not silently delete tenant-authored
 objects or certify a legacy deployment as safe. This migration requires
-operator access and is separate from the local implementation tests. The
-[historical credential audit runbook](historical-credential-audit.md) provides
-a bounded, read-only inventory for one explicitly selected team or org-provider
-workspace, coverage limits, and reviewed UID-specific remediation steps. It
-does not infer the issuer of arbitrary credentials or certify a deployment.
+operator access and is separate from the local implementation tests. Audit existing team and provider workspaces explicitly; no local test can certify the safety of unknown legacy credentials or grants.
 
 ## Verification
 
+The [MVP acceptance record](reviews/byo-mvp.md)
+separates live application checks, transport fixtures, measurements and remaining
+limitations for the local Tilt deployment.
+
 `make test-byo-providers` covers registration authorization, restricted
 credentials, bootstrap admission, quota behavior, claim consent, the SDK/Edge
-relay, and portal bridge contracts. The real browser sandbox smoke is a
-separate check of browser-enforced isolation. The real
+relay, revision-bound backend trust, trusted UI loading and bundle pin contracts. Dedicated-origin browser tests are retired; their historical results do not establish isolation of the current trusted UI model. The real
 kind integration fixture and its topology limitations are described in the
 relay guide. Passing local tests does not establish an external shard's TLS,
 network policy, or operational capacity; validate those in the deployment
@@ -336,583 +430,3 @@ The diagnostic intentionally fails on the affected pin; do not weaken the quota
 or report full enrollment readiness from tests using a modified dependency.
 Railgrid-owned admission and request guards use existing KCP extension points;
 they do not modify KCP source or establish that the upstream quota defect is fixed.
-
-## This local E2E session
-
-Tilt explicitly sets `RAILGRID_LOCAL_E2E_BYO_QUOTA_BYPASS=1` for the hub.
-This disables KCP `ResourceQuota` and `KCPKubeResourceQuota` admission, quota
-admission probes, consumer quota inventory preparation, and consumer quota
-coverage proofs. Railgrid's object-size admission and request guards remain
-active, as do authentication, organization isolation, source ownership, and
-consent checks. The hub rejects the switch outside dev mode with embedded KCP.
-It is a user-approved local test bypass, not a fix or security acceptance
-result. Remove the environment assignment to restore native quota admission
-after testing. The local organization's metering workspace allowance was
-separately overridden to 10 to accommodate provider workspaces.
-
-The bypass is process-wide, not scoped to BYO. While the variable is set, every
-organization and consumer quota path in this hub process skips its checks; it
-is not safe to expose this hub, reuse its kubeconfig, or enroll another tenant
-during the test. Follow-up: keep the bypass in a dedicated test process or
-cluster, and eventually replace the environment switch with a test-only shim
-scoped to one organization/provider (or, at minimum, fail closed when the hub
-serves more than the designated test organization).
-
-The adversarial review in this checkout was a code, focused-test, and live
-boundary pass; it did not rerun the full live Tilt E2E. The last live pass
-found Planner and Databricks `Running` and ready; Factory's init container was
-still retrying `503 organization provider lifecycle unavailable`. Nothing in
-this review should be read as a green end-to-end run.
-
-### Live boundary probes
-
-After restarting the local Tilt hub, the planner provider's Edge-mounted
-`provider.kubeconfig` was used directly as a boundary probe. The credential is
-a KCP ServiceAccount token for the planner provider workspace, not a user or
-cluster-admin credential. It reported only its own workspace permissions
-(secrets, configmaps, leases, its private receipts, discovery/SAR APIs, and
-`apiexports/content`). Direct requests with that credential to the Databricks
-provider workspace and to the owning organization workspace were rejected with
-`Forbidden`. The same token was rejected by the hub's `/api/orgs`, organization
-provider, and admin REST surfaces; only `/healthz` was accessible without user
-authentication. A disposable second organization was then created as a canary;
-the planner credential was denied read, server-side dry-run write, and
-APIExport enumeration against its workspace. These are denial checks, not proof
-that every relay, UI, or in-flight authorization path is safe. This pass did
-not exercise provider-issued requests or relay-token replay.
-
-After the restart, the Planner and Databricks provider pods reached `2/2
-Running` with readiness `200`; the Factory provider remained stopped with its
-init container reporting `503 organization provider lifecycle unavailable`.
-That is a live-control failure, not evidence that the Factory boundary passed.
-
-### Self-hosted platform-provider probes
-
-The live self-hosted platform-provider path was exercised separately from
-arbitrary BYO registration. The organization-owned Planner, Databricks and
-Factory copies resolved as `scope: org` with bindings marked
-`selfHosted: true` and organization export paths. A second organization's
-catalog request for the owning organization returned `403`, and direct KCP
-reads of the owning organization and provider workspaces were denied. The
-self-hosted Planner credential could not read the platform Planner workspace,
-the platform Planner credential could not read the self-hosted workspace, and
-a server-side dry-run write from the platform identity into the self-hosted
-workspace was denied.
-
-A valid Planner UI grant loaded the self-hosted `main.js`, while replaying the
-same grant against the Databricks asset path returned `401`. No cross-tenant
-break was obtained on this path. The same-name organization copy intentionally
-shadows the platform copy inside that organization; platform copies remain
-visible to organizations without their own copy. The platform-heartbeat
-`warn` weakness described below remains separate and unresolved.
-
-The aggregate MCP endpoint was also probed. The owning organization user
-completed `initialize` against the self-hosted workspace; a user from a second
-organization and the same user using a substituted cluster ID both received
-`403`. A cross-organization `/api/providers` request carrying the owning
-organization header returned only global entries, not the organization's
-self-hosted provider records. These are positive isolation checks, not a
-general proof that every MCP tool or provider route is safe.
-
-## Adversarial findings: local E2E compromises
-
-The items below are known weaknesses of this branch or of the local Tilt
-cluster. None is a hosted acceptance result. Each is deliberately recorded so it
-can be fixed or retested rather than disappearing into a green local run.
-
-### Host vs self-hosted: what the BYO boundary gets right
-
-Platform providers are operator-installed code and have historically been
-trusted with host capabilities. An organization-owned provider is tenant code
-and is treated more like an untrusted extension. That asymmetry is deliberate,
-and on several boundaries the self-hosted BYO path is materially stronger:
-
-| Boundary | Platform provider | Organization BYO provider |
-| --- | --- | --- |
-| Caller credential at the backend | Receives a workspace-scoped delegated token by default (`--provider-delegated-tokens=platform`), with explicit exclusions such as Edges SSH | Never receives the hub bearer or a KCP ServiceAccount token; receives a short-lived, live-checked opaque relay credential |
-| UI execution | Trusted custom element in the portal document; the platform bundle path still has an unpinned fallback | Opaque-origin iframe with `sandbox="allow-scripts"`, a token-free MessageChannel context, and a host-verified `/main.js` pin |
-| Heartbeat identity | `enforce` is the default; `warn` is an explicit legacy compatibility opt-in | Authentication is always required, even when the hub is in `warn` mode |
-| Provider authorization | Registry and binding policy, with platform-only compatibility defaults | Rechecks the live provider source, exact target workspace, exact APIBinding, applied/accepted claims and uncached composition Grant on each identity request |
-| Provider workspace role | Narrow `railgrid:provider` role by default; cluster-admin is an explicit compatibility override | Restricted bootstrap policy; no direct declaration or RBAC write access |
-| Declared hub capabilities | Require an explicit tenant decision by default | Require an explicit tenant decision |
-
-The honest conclusion is narrower than "BYO is safer". BYO is stronger at the
-caller-credential, browser, heartbeat and workspace-privilege boundaries. Its
-backend and UI are still attacker-controlled code with a path to the APIs the
-tenant enabled, and the replay and in-flight revocation gaps below still apply.
-The platform path remains weaker because operator trust substitutes for those
-technical boundaries; a BYO hardening pass does not prove the platform provider
-path is safe.
-
-### Ownership and API-group collisions
-
-An organization provider may self-host a platform provider under the same name;
-that is the intended override. A differently named organization provider may
-not take over a group already served by a visible provider. Bootstrap validates
-every place a group is declared: `spec.export.resources[].apiVersion`, every
-supplied `APIResourceSchema.spec.group`, every generated
-`APIExport.spec.resources[].group`, and the private CRD groups. The registry
-guard deliberately ignores a provider with the same name, so an organization
-`edges` copy may serve `edges.railgrid.ai` while an organization `quickstart`
-copy may not. The bootstrap test now rewrites the entire quickstart export to
-`edges.railgrid.ai` under the name `edges`, so it proves that path for the whole
-group rather than only renaming the catalog card.
-
-That override is a group-level replacement, not a per-resource merge. In the
-organization's visible catalog the same-name copy becomes the provider for the
-group, and an identity it mints can reach every resource its own export serves
-in that group, including objects created while the platform copy was in use.
-This is the intended shape of a self-hosted commercial replacement, but it is
-also why same-name self-hosting must be treated as taking over that API for the
-organization rather than as adding a second implementation beside it.
-
-The cutover is not atomic. An APIBinding's export reference is not rewritten in
-place, and Enable uses the provider name as the binding name. If the platform
-copy is already enabled, Enable on the same-name organization copy now returns
-`409 Conflict` instead of updating claims on the platform binding and claiming
-success. The operator must Disable the platform provider, wait for its binding
-and dependent content to finish deleting, and then Enable the organization
-copy. That necessarily creates a service gap and may require dependent workloads
-to be disabled first. A future atomic rebind would need an explicit kcp
-reference-migration path or distinct binding names; the current safe behaviour
-is refusal, not a transparent switch.
-
-Because the organization copy has a different export path, moving a dependency
-from the platform to a self-hosted copy also changes the exact source a
-dependent's identity policy requires. Re-Enabling only the dependent is not
-enough: the dependency's own binding must be Disabled and Enabled again so it
-references the organization export, or an operator must reconcile that binding.
-Until then, the dependent's foreign reads and verbs are refused with
-`provider_not_bound`. The dependent's composition Grant is keyed by the
-dependency's group/resource rather than its export path, so it can remain valid;
-re-Enable the dependent only if its claims were also lost or rejected. Bootstrap
-refuses a requirement whose provider is not yet registered, so an
-all-self-hosted commercial stack must be installed in dependency order, with
-the replacement gap planned rather than hidden.
-
-**Residual: ownership is checked when a declaration is admitted and when an
-identity is minted, not continuously over the installed APIExport.** If an
-organization provider is admitted while the competing provider is not yet
-visible in the registry (catalog startup, `APIGroups` not read yet, or a
-platform provider installed later), its export, schemas, CRDs and eventual
-binding remain installed. The identity policy rechecks ownership and refuses a
-foreign own-group rule, so this is not a direct grant of the foreign group's
-data. It is still an installed export that can collide with the real provider's
-group: a tenant can bind it, and kcp can report a resource conflict or expose a
-schema from the wrong provider. Follow-up: reconcile ownership over existing
-organization declarations whenever the registry changes, mark a conflicting
-provider not-ready and refuse Enable, and reject a platform registration that
-collides with a differently named organization provider in any organization.
-Do not treat the admission check as a permanent ownership claim.
-
-### What a malicious BYO provider still controls
-
-Self-hosting does not make vendor code safe. Once a tenant enables the provider,
-the provider author controls the backend and the sandboxed UI, and both can
-exercise every API claim the tenant accepted, including dependency reads and
-selected Secrets. It can exfiltrate those bytes, retain scoped identities until
-the sweep or token expiry, consume the tenant's quota (native quota admission is
-bypassed in this local cluster), replay a captured relay or UI grant, and race a
-consent change for data already in flight. The isolation claims here describe
-what it cannot reach without consent; they do not make the vendor trustworthy.
-
-Conversely, the self-hosted path does not give the provider the caller's hub
-bearer or a KCP ServiceAccount token at the backend, write access to its own
-CatalogEntry, APIExport, CRDs, RBAC or bindings, identity issuance outside its
-own organization and exact target workspace, a core Secret capability beyond a
-name-scoped GET selected by an accepted label selector, or an unauthenticated
-heartbeat. Platform providers are still operator-reviewed code; a self-hosted
-copy is not. The tenant administrator's Enable and claim consent are the
-data-access decision in both cases.
-
-### Sandbox request grammar
-
-- **The sandbox parser treats any leading `namespaces` segment as namespace
-  scope.** `parseProviderSandboxRoute` decides the resource/name split from the
-  path shape alone, without API discovery. A core cluster-scoped request such
-  as `GET /api/v1/namespaces/default` is therefore rejected as an incomplete
-  namespace-qualified path. A custom cluster-scoped resource named
-  `namespaces` is similarly ambiguous, and a cluster-scoped subresource under a
-  resource called `namespaces` can be interpreted as a namespace-qualified
-  resource. No privilege escalation was demonstrated; native KCP authorization
-  and the sandbox claim checks still apply. Follow-up: resolve the selected
-  API group/version/resource through discovery before classifying the path, and
-  add regression cases for core `namespaces`, custom cluster-scoped
-  `namespaces`, and ordinary namespaced resources.
-
-### Provider UI execution
-
-- **Grant issuance never returns an unpinned organization bundle.** With no pin
-  for the running provider version, the grant request fails closed with `503`.
-  With an upstream ETag, every grant revalidates conditionally: `304` keeps the
-  pin, `200` re-pins. A transient revalidation failure keeps the cached pin for
-  the same version; if the upstream bytes changed, the browser's SRI check
-  refuses them, which is a safe denial. Without an ETag the pin is reused for at
-  most ten minutes. Retaining a cached pin is not the same as issuing an
-  unverified grant; it is a refusal to downgrade to an unpinned load.
-- **SRI covers only `/main.js`.** Dynamic imports, chunks, stylesheets and
-  other assets are not individually pinned. A provider can change another asset
-  after `main.js` is pinned and still have the browser execute that asset inside
-  the opaque-origin frame. The frame limits direct access to the portal document
-  and host storage, but the asset runs with the bridge capabilities the frame
-  already has. A stale or malicious ETag can cause a safe denial (the pin no
-  longer matches), not execution of unverified bytes. Without an upstream ETag,
-  the cached pin is reused for up to ten minutes before revalidation. Follow-up:
-  ship an explicit asset manifest with per-file SRI pins, or serve one
-  integrity-pinned bundle that imports no sibling code from the provider origin.
-- **The UI asset grammar is heuristic.** `isAssetPath` only asks whether the
-  final path segment contains a dot. Reserved hub-only prefixes are now rejected
-  before a grant is redeemed, but any other dotted route on the provider UI
-  origin remains grant-reachable. A provider that exposes a state-changing
-  dotted endpoint on its UI listener could therefore be invoked through what
-  looks like an asset request. Follow-up: replace the heuristic with an explicit
-  asset manifest or a strict extension allowlist and path grammar.
-- **UI grants are replayable.** Grants are sealed with AES-GCM, HKDF-derived,
-  short-lived (five minutes), and bound to user, organization, workspace and
-  provider, but they are not single-use and there is no redemption cache. Anyone
-  who obtains the URL can redeem it for the same named provider, organization,
-  workspace and user until expiry. Multiple asset fetches intentionally reuse
-  one grant. The URL also appears in browser history and hub access logs.
-  Follow-up: redact the grant from access logs and add a bounded, single-use
-  redemption record keyed by the sealed grant id if the asset protocol can be
-  made one request per grant.
-
-### Backend relay
-
-- **Relay tokens are replayable and not retractable.** `rgbyo1` tokens are
-  HMAC-signed, scoped, and expire after ten minutes, but a captured token can be
-  replayed through the hub broker within that window. The broker does not bind
-  the token to one request body, method or channel. Live user, membership,
-  provider, source, export, binding and cluster checks run on every use, and a
-  later consent change blocks the next call; bytes already returned to an
-  authorized caller cannot be retracted. Follow-up: add a request-bound nonce or
-  one-time token channel and keep the short TTL.
-- **Consent and capability checks have a time-of-check/time-of-use gap.** A
-  request that was authorized before consent, membership or a composition Grant
-  changed can finish and deliver its response. Streaming rechecks authorization
-  before later flushes, but data already sent stays valid. Follow-up: define
-  whether revocation must terminate in-flight streams, and implement cancellation
-  and audit markers if it must.
-- **Core Secret access is deliberately narrower than the general claim
-  grammar.** The organization UI bridge permits only
-  `GET /clusters/<tenant>/api/v1/namespaces/default/secrets/<name>`: no list,
-  watch, `status`/`scale`, subresource, mutation or non-`default` namespace.
-  The accepted requirement must carry a non-empty selector, and the response is
-  fully buffered (32 MiB cap) and released only after its labels match the
-  current selector. The provider-declared selector breadth is a tenant consent
-  decision, not a hub-enforced sensitivity bound: a broad label selector can
-  cover many Secrets. The scoped-identity service is stricter and never mints
-  the core group at all. Follow-up: bound selector keys and values, show the
-  matching Secret count at Enable, and consider making Secret access an
-  explicit per-resource grant rather than a label selector.
-
-### Sandbox request path grammar
-
-- **A leading `namespaces` segment is always interpreted as namespace scope.**
-  The sandbox parser treats `namespaces/<value>` as the namespace qualifier for
-  every API group and version. It therefore rejects core cluster-scoped
-  operations on the `namespaces` resource itself, such as
-  `/api/v1/namespaces/<name>`, and makes a custom cluster-scoped resource named
-  `namespaces` ambiguous with a namespace-qualified path. The request fails
-  closed or is classified as a different resource path; no privilege escalation
-  was demonstrated, because the original kube path still reaches KCP and the
-  caller's native RBAC remains authoritative. Follow-up: use the selected API
-  group, version and resource metadata to distinguish a cluster-scoped
-  `namespaces` resource from namespace-qualified paths, and add parser
-  regression tests before changing the grammar.
-
-### Dependency freshness and diagnostics
-
-An organization identity request re-resolves the requester's live CatalogEntry
-`export` and `requires` (exact deep equality with the registry record), the
-owning organization workspace and bootstrap policy, the target team workspace,
-LogicalCluster annotations, the exact export binding path and name, accepted and
-applied claims, and an uncached composition Grant. Own-group resources are
-checked against the live APIExport surface, not only its group list. Each
-dependency must be visible in the organization, serve the claimed group, have
-the requested resource in its live APIExport, be exactly bound, have an
-accepted/applied claim, and have current Grant consent.
-
-- **A platform dependency is not deep-compared to its CatalogEntry.** For a
-  platform dependency, `verifyLiveExport` compares the live APIExport's groups
-  to the registry's `APIGroups` and checks that the requested resource is
-  present; it does not compare every resource, verb and action to that
-  provider's current `CatalogEntry.spec.export`. Clause C's declared verbs come
-  from the registry CatalogEntry. The consequences are fail-closed or
-  dead-grant, not a foreign write: a verb the CatalogEntry still declares but
-  the live export no longer serves produces a capability that cannot be
-  exercised; a resource the CatalogEntry removed but the live export still
-  serves can still be read by name when the requester still declares it and the
-  tenant accepted the claim; and if the live export later re-adds a verb the
-  CatalogEntry never removed, a long-lived identity can use it without a new
-  Enable. Follow-up: compare the platform provider's CatalogEntry resources to
-  its live APIExport and refuse the dependency on drift, rather than proving
-  only group and resource presence.
-- **A transient dependency read is indistinguishable from a policy denial.** A
-  failure reading a dependency's source, export, binding or consent is
-  `continue`d in the dependency loop. The caller receives the same generic
-  "current declaration and accepted dependency grant do not authorize this
-  resource" refusal as a real policy decision. That is fail-closed, but it hides
-  an availability failure and gives the provider no retry signal. Follow-up:
-  return a distinct retryable `dependency_authority_unavailable` error while
-  keeping the policy refusal for an actual denial, and log which dependency read
-  failed without exposing tenant object contents.
-
-### Identity lifecycle
-
-- **Disable is not revocation.** Disabling or deleting a provider stops new
-  identity issuance, but the existing `ScopedIdentity` record, ServiceAccount
-  and RBAC stay until the owner object disappears, the sweep collects it, or the
-  provider still has a valid credential to call the now-scoped `DELETE`. A
-  provider deleted before it revokes its identities may have no way to
-  authenticate that final call. Follow-up: add an operator-driven identity
-  cleanup keyed by organization provider name that does not require the
-  provider's credential, and document the maximum token lifetime after disable.
-- **Disable and consent loss are not immediate, and legacy organization records
-  remain outside organization list/delete semantics.** For a labelled
-  organization record the two-minute sweep re-resolves the live provider
-  source, exact target workspace and binding, dependency declarations and
-  uncached composition consent before the owner/token fast path, and revokes on
-  a definitive policy loss. The cleanup window is still bounded by the sweep
-  interval, and an already-issued token can remain usable for its remaining
-  lifetime until the provider calls the scoped `DELETE`. A provider deleted
-  before it revokes its identities may have no way to authenticate that final
-  call. Records written before the organization label and owner UID existed are
-  invisible to organization list/delete and can only be collected when the
-  owner probe finds the owner gone; if the same owner object survives, they
-  remain materialized. Follow-up: add a migration that labels or refuses legacy
-  organization records, expose an operator cleanup keyed by organization
-  provider name, and document the maximum credential lifetime after disable or
-  consent loss.
-
-### Host-side defaults and remaining asymmetries
-
-- **Platform heartbeat authentication is now enforced by default.** `warn` is
-  retained only as an explicit migration opt-in. Organization-owned beats were
-  always rejected on a failed TokenReview. A live post-change probe returned
-  `401` for an invalid bearer and `200` for the valid organization providers;
-  the legacy `agents` and `infrastructure` platform providers became stale
-  because their runtime credentials are not the provider ServiceAccount. Those
-  legacy charts must be updated or use an explicit `warn` migration window.
-- **Platform backends use delegated tokens by default.** The default is now
-  `--provider-delegated-tokens=platform`; only explicit exclusions such as
-  Edges SSH retain the caller bearer. Organization BYO backends receive neither
-  the user bearer nor a KCP ServiceAccount token. Deployments that still need
-  bearer forwarding must opt into `off`.
-- **Platform provider workspaces use the narrow role by default.** The default
-  is now `--provider-workspace-cluster-admin=false`; cluster-admin is an
-  explicit compatibility override. The infrastructure provider is the known
-  migration case because it seeds its own CRDs, and must be validated before
-  the default is treated as complete.
-- **Platform hub capabilities require explicit acceptance by default.** A
-  platform provider's declared `spec.hub.access` is no longer usable before a
-  tenant records a decision; the platform-default compatibility path is now an
-  explicit opt-in.
-
-### Quota and claim authority
-
-- **Native quota admission is off in this cluster.** The local switch disables
-  KCP `ResourceQuota` and `KCPKubeResourceQuota` admission, quota probes, and
-  consumer inventory and coverage checks. `MaxLiveBytes` remains an admitted
-  object-size bound, not an etcd capacity guarantee. Object-size and request
-  guards, authorization, isolation and consent stay active. The source-controlled
-  hosted gate remains closed; do not treat this cluster's behavior as evidence
-  that quota accounting is safe.
-- **RELEASE BLOCKER: the permission-claim policy admits installation-wide and
-  ambiguous subjects.** The local policy includes the highly privileged
-  `kcp-admin` User in `spec.providers` for bootstrap convenience. That User is
-  not provider-specific: anything that can authenticate as `kcp-admin` can
-  export a reserved group. The plain
-  `system:serviceaccount:default:provider` subject is also
-  logical-cluster-scoped in kcp, so it can match a tenant-created
-  ServiceAccount with the same name in another workspace. kcp's current CRD
-  accepts only static User/Group names and cannot express the runtime-qualified
-  `system:kcp:serviceaccount:{cluster}:...` form. Narrowing this needs an
-  upstream exact-subject or claim-audience mechanism. Until that exists, the
-  generated policy is not tenant-safe and hosted BYO enrollment must remain
-  disabled even if every other local E2E check passes. This is a hosted release
-  blocker, not merely a limitation of this Tilt cluster. A controlled canary
-  confirmed the policy gap: an operator-granted same-named `default/provider`
-  ServiceAccount created an APIExport in the reserved planner group. The same
-  test also bounded reachability: an ordinary organization admin could create
-  ClusterRole objects, but KCP refused to let them grant APIExport or
-  APIResourceSchema create, and a direct reserved-group create as that admin was
-  denied. The flaw therefore requires an existing over-broad RBAC grant or a
-  compromised trusted identity; it is not, by itself, an ordinary-tenant
-  escalation in this build. The hosted gate stays closed because a future
-  provider grant or operator mistake would make the ambiguous subject
-  exploitable.
-
-### Local environment
-
-- **Stale platform CatalogEntries can shadow the catalog health surface.** An
-  older deployment recreates platform entries such as
-  `root:railgrid:providers/{planner,factory,databricks}`. Organization records
-  are separate and are not shadowed, but platform catalog health, pins and UI
-  can fail while those entries linger. Cleanup is manual:
-  `.kcp/byo-commercial/cleanup-platform.py` is dry-run by default and
-  `--apply` removes the legacy entries. Follow-up: add a registry guard that
-  refuses to recreate a platform entry over an existing organization-owned
-  provider name. A residual heartbeat ambiguity remains: when a platform and an
-  organization entry of the same name share one catalog workspace, heartbeat
-  selection can choose either record from the untrusted JWT cluster hint. The
-  same fallback selects the platform record when the token's cluster matches no
-  observed entry, which is the transient stale-catalog state. The selected
-  organization record is forced through TokenReview even in `warn` mode, so a
-  platform token cannot move it. A selected platform record is not: in `warn`
-  mode a failed TokenReview is logged and the beat is recorded, so an
-  organization provider's token can refresh the platform record's liveness
-  (not its identity or data). The reverse is blocked. This is a low-severity
-  availability/integrity residual, not cross-tenant access. Follow-up: remove
-  stale platform entries, make selection deterministic from the verified token
-  workspace and platform identity cluster instead of a name-plus-cluster map
-  scan, and make `enforce` the default.
-  A live probe confirmed this in the current Tilt configuration: an invalid
-  `Authorization: Bearer not-a-valid-token` received `200` for the global
-  Databricks and Factory heartbeats, and the planner provider token received
-  `200` for planner, Databricks and Factory. The catalog listed those targets
-  as `scope: global`; no organization heartbeat record was moved. Treat a
-  publicly reachable hub with `warn` mode as accepting unauthenticated
-  platform liveness and reported-version updates.
-- **Factory has an API-version skew.** Planner and databricks reached `READY`;
-  Factory uses `github.com/kcp-dev/apimachinery/v2 v2.33.0` while this embedded
-  KCP and the other providers use the newer mjudeikis fork. Its logs show 404s
-  on `apibindings.apis.kcp.io` and leases. Factory should be treated as blocked
-  on dependency alignment, not as a passing third provider. Align its `go.mod`
-  in a separate change and repeat the E2E.
-- **Platform bundles can still load unpinned.** The organization bundle path
-  now fails closed, but the platform bundle path retains its legacy unpinned
-  fallback for compatibility. That is a platform-host trust decision, not an
-  organization boundary, but it should not be mistaken for uniform SRI coverage.
-
-### Resolved in this pass
-
-- **Security defaults now fail closed.** Provider heartbeat authentication
-  defaults to `enforce`; invalid bearers return `401`. Platform backend
-  delegation defaults to `platform`, platform hub capabilities require an
-  explicit tenant decision, and platform provider workspaces use the narrow
-  `railgrid:provider` role unless cluster-admin is explicitly requested.
-- **Delegated hub-access routes are bound to the proof's tenant.** A
-  `rgbyo1` token proved `org-a/team-a`, but the hub-access gate evaluated the
-  provider grant without comparing that proof to the REST path. The tenant
-  middleware then authorized the target path from `X-Railgrid-Org` /
-  `X-Railgrid-Workspace`. A provider could therefore call
-  `/api/orgs/org-b/memberships` with a token minted for `org-a/team-a`; if the
-  represented user was also a member (or admin) of `org-b`, the provider could
-  read that roster or invite into it using the user's authority. The same was
-  possible for a different workspace in the same organization. `routeBindsCaller`
-  now requires the path organization and, for workspace-scoped routes, the
-  exact workspace to equal the signed proof. The regression test
-  `TestOrgBackendTokenCannotCrossTenantPath` failed before the fix and now
-  covers both mismatches.
-- **Organization identity deletion is scoped and available again.** Org
-  `DELETE /api/identities/{name}` now looks up the record by its
-  hub-written organization label and provider, then deletes the ServiceAccount,
-  ClusterRole, binding and record. It does not fall back to the platform release
-  path, does not require the provider source to remain live, and does not let one
-  organization or provider probe another's records. Tests cover wrong provider,
-  wrong organization, platform-vs-org separation, account teardown and the
-  service-missing fail-closed case.
-- **Organization owner release is scoped instead of silently succeeding.**
-  `ReleaseForOrg` deletes every identity for one owner in exactly one
-  organization, target workspace, provider and UID. The platform `Release` path
-  now refuses an organization-scoped owner with `CodeInvalidRequest` rather
-  than listing only platform records and returning success without deleting
-  anything. Tests cover the scoped release and the refusal.
-- **Organization identities now bind to an owner UID.** `owner.uid` is required
-  for organization-scoped issuance. The sweep can therefore distinguish a
-  deleted organization owner from a later same-name platform object even when
-  both providers export the same GVR. Platform identities retain their legacy
-  optional-UID behavior.
-- **Organization identity authorization is bounded by the live APIExport
-  surface.** Clause A no longer treats "the provider exports this group" as
-  sufficient. The organization catalog requires every requested resource to be
-  present in the provider's current APIExport, synthesizes the ordinary
-  `<resource>/status` subresource, and refuses anything else with
-  `resource_not_exported`. Dependency requirements are also checked against the
-  live dependency export surface before applied claims and composition consent
-  are considered. A long-lived identity therefore cannot silently acquire a
-  resource added to the same group after issuance.
-- **The identity sweep rechecks live organization authority before the
-  owner/token fast path.** Labelled organization records re-resolve the current
-  provider source, exact target workspace and binding, dependency surface and
-  uncached composition Grant on every sweep. A definitive policy refusal
-  deletes the record and its RBAC; a transient read failure leaves the record
-  alone rather than revoking on a kcp hiccup. Tests cover revocation after
-  source, binding and consent loss.
-- **Heartbeat authentication resolves the exact organization identity
-  workspace.** When a platform and organization provider share a catalog
-  workspace, the authenticator now uses the selected organization record's
-  runtime workspace instead of a same-name platform record's workspace. A
-  platform provider token can no longer move an organization record's liveness
-  state. An unresolved organization runtime workspace is a retryable `503`; it
-  never falls back to the catalog workspace or a same-name platform provider.
-  The remaining overlap is availability ambiguity during catalog cleanup.
-- **Hub-only backend routes were reachable through the UI front door.** The UI
-  proxy did not reserve `workload-identities`, so an asset-shaped path such as
-  `/ui/providers/<name>/workload-identities/review.json` could reach a
-  provider's hub-only endpoint. `NewUIProxy` now denies hub-only prefixes, the
-  joined path is checked during grant redemption, and grant issuance refuses a
-  provider whose UI URL itself resolves under a reserved prefix. Tests cover
-  direct, cleaned, case-varied, and encoded dot-segment variants.
-- **A UI URL with its own path prefix cannot be used to escape back to a
-  hub-only backend route.** The reservation check runs on the request-relative
-  path before the proxy joins `spec.serving.ui.url`'s prefix. A regression test
-  serves a provider whose UI URL ends in `/ui` and requests
-  `/ui/providers/<name>/../workload-identities/review.json`; it must return
-  `404` without an upstream call.
-- **Same-name self-hosting is tested for full API-group ownership, not just a
-  renamed catalog card.** The bootstrap test now rewrites the CatalogEntry
-  export, the supplied schemas, the APIExport resources and a private CRD to
-  `edges.railgrid.ai` under the provider name `edges`. It is admitted even
-  though a platform `edges` provider already serves that group; a differently
-  named provider is still refused in each of those four places.
-- **A same-name self-hosted Enable can no longer report success against the
-  platform binding.** Existing bindings are verified by export path and name
-  before their permission claims are updated. A mismatch returns `409` and
-  leaves the old binding's claims untouched; the operator must Disable and
-  re-Enable. A regression test covers the refusal and verifies the old claims
-  were not mutated.
-- **The binding-source conflict is now tested at the REST boundary.** A
-  socket-free handler test injects a wrapped
-  `kcp.ErrProviderBindingSourceConflict` and verifies `409 Conflict` rather
-  than `500`, plus an ordinary bootstrapper error mapping to `500`. This closes
-  the gap between the bootstrap regression test and the HTTP contract the
-  portal consumes.
-
-### Prioritized follow-ups
-
-| Priority | Finding | Next step |
-| --- | --- | --- |
-| P0 | Permission-claim policy admits `kcp-admin` and the ambiguous plain provider ServiceAccount | Add an exact-subject or claim-audience mechanism upstream; keep hosted BYO enrollment closed until then |
-| P1 | Ownership is not rechecked over installed organization exports | Reconcile ownership when the registry changes; mark conflicts not-ready and refuse Enable |
-| P1 | Platform dependency export is not deep-compared to its CatalogEntry | Compare resources, verbs and actions; refuse the dependency on drift |
-| P1 | Legacy organization identities stay outside org list/delete semantics | Add a label/migration and an operator cleanup keyed by organization provider |
-| P1 | Consent loss does not terminate in-flight responses | Define the revocation contract; cancel streams and emit audit markers if required |
-| P2 | Mixed-catalog heartbeat selection is ambiguous | Select from the verified token workspace and platform identity cluster; remove stale platform entries |
-| P1 | Legacy platform providers `agents` and `infrastructure` use non-provider heartbeat credentials | Mount the hub-minted provider kubeconfig or set the provider token for heartbeat use, then revalidate under `enforce` |
-| P2 | UI assets other than `/main.js` are unpinned and the asset grammar is heuristic | Ship a per-file asset manifest or one integrity-pinned bundle |
-| P2 | UI grants and relay tokens are replayable | Add single-use or request-bound redemption while keeping the short TTL |
-| P2 | Secret selectors have no breadth bound | Limit selector keys/values and show the matched Secret count at Enable |
-| P2 | Transient dependency reads look like policy denials | Return a distinct retryable authority-unavailable error |
-| P2 | Same-name platform-to-self-hosted cutover is not atomic | Add a reference-migration path or distinct binding naming; plan a maintenance gap until then |
-| P2 | The local quota bypass is process-wide, not BYO-scoped | Isolate it to a disposable test process/cluster or one explicit test organization, and never reuse this hub for normal traffic |
-| P2 | Native quota admission is bypassed in this cluster | Pass the upstream quota diagnostic against an unmodified dependency before hosted enrollment |
-| P3 | Sandbox paths treat every leading `namespaces` segment as namespace scope | Resolve resource scope from API metadata and add core-namespace plus custom-cluster-resource regression tests |
-
-### Bottom line
-
-The self-hosted BYO path is materially stronger than the platform path at
-caller credentials, browser isolation, heartbeat verification, provider
-workspace privilege and live identity authorization. That is a genuine
-improvement in those boundaries, not a claim that arbitrary provider code is
-safe. A self-hosted backend and UI are still attacker-controlled code able to
-exercise every API the tenant enabled, and the replay, TOCTOU, UI-asset, quota
-and claim-policy findings above remain open. Ownership is also only an
-admission-time and mint-time check, not a guarantee that a conflicting export
-was never installed, and platform dependency declarations can drift from the
-live export. The mixed-catalog heartbeat ambiguity is one-directional and
-low-severity, but it should not be mistaken for exact provider identity. Most
-importantly, the ambiguous permission-claim subjects remain a hosted release
-blocker. A passing local Tilt E2E would prove the organization-scoped plumbing
-and isolation checks, not hosted readiness and not platform-provider safety.

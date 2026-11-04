@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { portalHref } from './portalkit/navigation'
+import { hasProviderTransport, providerTransportFields } from './authContext'
 import MarkdownIt from 'markdown-it'
 import { computed, defineAsyncComponent, h, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue'
 import {
@@ -420,21 +421,23 @@ interface LLMModelMutationGuard {
 }
 
 function appContextFingerprint(ctx: RailgridContext | null): string {
+  // Host-managed credentials are held by fetch and stay out of provider state.
+  // The helper still fingerprints a legacy bearer for older portal hosts.
+  const user = ctx?.user
   return JSON.stringify([
-    // Host-managed credential renewal preserves project and conversation
-    // snapshots. Legacy hosts still identify authority through their bearer.
-    ctx?.fetch ? '' : ctx?.token ?? '',
+    Boolean(ctx && (typeof ctx.fetch === 'function' || ctx.token?.trim())),
     ctx?.tenant ?? '',
     ctx?.orgUUID ?? '',
     ctx?.workspaceUUID ?? '',
-    ctx?.user?.userId ?? '',
-    ctx?.user?.sub ?? '',
-    ctx?.user?.email ?? '',
+    user?.userId ?? '',
+    user?.sub ?? '',
+    user?.email ?? '',
+    typeof ctx?.fetch === 'function' ? '' : ctx?.token?.trim() ?? '',
   ])
 }
 
 function hasProjectRequestTransport(ctx: RailgridContext | null): boolean {
-  return Boolean(ctx?.fetch || ctx?.token)
+  return hasProviderTransport(ctx)
 }
 
 function projectContextFingerprint(ctx: RailgridContext | null): string {
@@ -1565,7 +1568,7 @@ function llmModelMutationIsCurrent(guard: LLMModelMutationGuard): boolean {
 function invalidateProjectContextState() {
   invalidateAssistantReasoningPreferenceState(true)
   projectCreationSubmit.invalidate()
-  const hasToken = Boolean(props.ctx?.token)
+  const hasTransport = hasProviderTransport(props.ctx)
   projectLoadSerial += 1
   assistantSkillsLoadSerial += 1
   promotionLoadSerial += 1
@@ -1632,9 +1635,9 @@ function invalidateProjectContextState() {
   clearSelectedTurnAttachments()
   clearPreProjectAttachments()
   closeLandingImportPopover()
-  projectOpenLoading.value = hasToken && Boolean(selectedNameFromPath.value)
-  threadHistoryLoading.value = hasToken && Boolean(selectedNameFromPath.value)
-  loading.value = hasToken
+  projectOpenLoading.value = hasTransport && Boolean(selectedNameFromPath.value)
+  threadHistoryLoading.value = hasTransport && Boolean(selectedNameFromPath.value)
+  loading.value = hasTransport
   projectsLoaded.value = false
   initializing.value = false
   error.value = null
@@ -1757,7 +1760,7 @@ function applyAssistantSkillsCatalogResponse(response: ProjectAssistantSkillsRes
 }
 
 async function loadAssistantSkills(projectName: string) {
-  if (!projectName || !props.ctx?.token || isCreateRoute.value || isCreateModelRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
+  if (!projectName || !hasProviderTransport(props.ctx) || isCreateRoute.value || isCreateModelRoute.value || selected.value?.name !== projectName || selected.value.phase === 'Creating') return
   const serial = ++assistantSkillsLoadSerial
   assistantSkillsLoading.value = true
   assistantSkillsError.value = null
@@ -2460,13 +2463,13 @@ const conversationWorkingLabel = computed(() => {
   return 'Running'
 })
 const gitConnectionCreateReady = computed(() => gitConnectionReady(createReadiness.value))
-const createReadinessChecking = computed(() => createReadinessLoading.value || (!!props.ctx?.token && createReadiness.value === null && !createReadinessError.value))
+const createReadinessChecking = computed(() => createReadinessLoading.value || (hasProviderTransport(props.ctx) && createReadiness.value === null && !createReadinessError.value))
 const createSetupItemsForPrompt = computed(() => createSetupItems({
   readiness: createReadiness.value,
   llmConfigured: llmConfigured.value,
   checkingGit: createReadinessChecking.value,
 }))
-const llmSettingsChecking = computed(() => llmSettingsLoading.value || (!!props.ctx?.token && llmSettings.value === null && !llmSettingsError.value))
+const llmSettingsChecking = computed(() => llmSettingsLoading.value || (hasProviderTransport(props.ctx) && llmSettings.value === null && !llmSettingsError.value))
 const createSetupLoading = computed(() => llmSettingsChecking.value)
 const createPromptSubmitTitle = computed(() => {
   if (createSetupLoading.value) return 'Checking workspace setup'
@@ -2747,13 +2750,13 @@ function clearProjectDeletionPollTimer() {
 
 function scheduleProjectDeletionPoll() {
   clearProjectDeletionPollTimer()
-  if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
+  if (!appComponentMounted || !hasProviderTransport(props.ctx) || !isProjectIndexRoute.value) return
   const contextFingerprint = appContextFingerprint(props.ctx)
   if (!projectDeletion.hasPending(contextFingerprint) &&
       !projects.value.some((project) => projectDeletion.isDeleting(contextFingerprint, project))) return
   projectDeletionPollTimer = window.setTimeout(() => {
     projectDeletionPollTimer = undefined
-    if (!appComponentMounted || !props.ctx?.token || !isProjectIndexRoute.value) return
+    if (!appComponentMounted || !hasProviderTransport(props.ctx) || !isProjectIndexRoute.value) return
     void load()
   }, PROJECT_DELETION_POLL_MS)
 }
@@ -3481,8 +3484,8 @@ watch(
 )
 
 watch(
-  () => [selected.value?.name ?? '', props.ctx?.token ?? '', isCreateRoute.value, isCreateModelRoute.value] as const,
-  ([projectName, _token, createRoute, createModelRoute]) => {
+  () => [selected.value?.name ?? '', appContextFingerprint(props.ctx), isCreateRoute.value, isCreateModelRoute.value] as const,
+  ([projectName, _context, createRoute, createModelRoute]) => {
     resetAssistantSkillsState()
     if (projectName && !createRoute && !createModelRoute && selected.value?.phase !== 'Creating') {
       void loadAssistantSkills(projectName)
@@ -3512,7 +3515,7 @@ watch(
     selected.value?.name,
     developmentBinding.value?.provider,
     developmentPreviewRawURL.value,
-    props.ctx?.token,
+    appContextFingerprint(props.ctx),
     props.ctx?.tenant,
     props.ctx?.subPath,
   ],
@@ -3552,7 +3555,7 @@ watch(
 watch(
   () => [
     activeProviderToolRef.value?.path,
-    props.ctx?.token,
+    appContextFingerprint(props.ctx),
     props.ctx?.user,
     props.ctx?.tenant,
     props.ctx?.theme,
@@ -3834,7 +3837,7 @@ function resetDevelopmentPreviewDocumentState() {
 
 async function loadProviders() {
   const serial = ++providerCatalogLoadSerial
-  const requestContextKey = props.ctx?.token
+  const requestContextKey = hasProviderTransport(props.ctx)
     ? workbenchCatalogContextFingerprint(workbenchPersistenceContext())
     : null
   const hasCurrentCatalog = Boolean(
@@ -3848,7 +3851,7 @@ async function loadProviders() {
     providers.value = []
   }
   providerCatalogError.value = null
-  if (!props.ctx?.token) {
+  if (!hasProviderTransport(props.ctx)) {
     // Invalidate the prior catalog even when logout means there is no request
     // to start. An older in-flight response must fail the serial check above.
     providers.value = []
@@ -3875,7 +3878,7 @@ async function loadProviders() {
 
 async function loadCreateReadiness() {
   const serial = ++createReadinessLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProviderTransport(props.ctx)) {
     createReadinessLoading.value = false
     createReadiness.value = null
     createReadinessError.value = null
@@ -3898,7 +3901,7 @@ async function loadCreateReadiness() {
 
 async function loadLLMSettings() {
   const serial = ++llmSettingsLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProviderTransport(props.ctx)) {
     llmSettingsLoading.value = false
     llmSettings.value = null
     llmSettingsError.value = null
@@ -3923,7 +3926,7 @@ async function loadLLMSettings() {
 
 async function loadImportRepositories() {
   const serial = ++importRepositoriesLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProviderTransport(props.ctx)) {
     importRepositoriesLoading.value = false
     importRepositories.value = []
     importRepositoriesError.value = null
@@ -3945,7 +3948,7 @@ async function loadImportRepositories() {
 
 async function loadDevelopmentTemplates() {
   const serial = ++developmentTemplatesLoadSerial
-  if (!props.ctx?.token) {
+  if (!hasProviderTransport(props.ctx)) {
     developmentTemplatesLoading.value = false
     developmentTemplates.value = []
     developmentTemplatesError.value = null
@@ -7546,7 +7549,7 @@ function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: 
 }
 
 function developmentPreviewKey(projectName: string, rawURL: string): string {
-  return [projectName, rawURL, props.ctx?.tenant ?? '', props.ctx?.subPath ?? '', props.ctx?.token ? 'token' : ''].join('\u001f')
+  return [projectName, rawURL, appContextFingerprint(props.ctx), props.ctx?.subPath ?? ''].join('\u001f')
 }
 
 function projectDevelopmentPreviewURL(result: unknown): string {
@@ -9776,7 +9779,7 @@ function pushToolContext() {
   if (!el || !tool) return
   el.railgridContext = {
     subPath: tool.path,
-    token: props.ctx?.token,
+    ...providerTransportFields(props.ctx),
     user: props.ctx?.user,
     tenant: props.ctx?.tenant,
     theme: props.ctx?.theme,

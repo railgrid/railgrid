@@ -78,7 +78,6 @@ func TestNativeDelegationRetirement(t *testing.T) {
 		t.Fatalf("virtual workspace replacement identity returned %d, want native authorization 403 after successful authentication: %s", virtualPlatform.StatusCode, virtualPlatform.Body)
 	}
 	f.verifyHistoricalChildContainment(t, cluster)
-	f.verifyHistoricalInventory(t)
 	f.verifyHubIssuedAudience(t, cluster)
 	opaque := f.request(t, http.MethodGet, resourceURL, validOrgBackendToken(t), "")
 	if opaque.StatusCode != http.StatusUnauthorized {

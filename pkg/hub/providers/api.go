@@ -55,6 +55,10 @@ type providerDTO struct {
 	Scope string `json:"scope"`
 	// OwnerOrg is the owning Org's UUID for Scope=="org", empty for global.
 	OwnerOrg string `json:"ownerOrg,omitempty"`
+	// SourceCluster is the current logical-cluster identity of the provider
+	// workspace hosting its CatalogEntry and APIExport. It distinguishes a
+	// deleted-and-recreated source at the same path and export name.
+	SourceCluster string `json:"sourceCluster,omitempty"`
 	// ShadowsPlatform is true for an org-owned provider whose name matches a
 	// platform provider: the Org's copy is what its users reach, and the
 	// platform one is hidden from this catalog. The portal badges it so the
@@ -383,6 +387,7 @@ func listHandlerFunc(reg *Registry) http.Handler {
 				Name:             p.Name,
 				Scope:            scope,
 				OwnerOrg:         p.OrgUUID,
+				SourceCluster:    p.WorkspaceCluster,
 				ShadowsPlatform:  p.ShadowsPlatform,
 				DisplayName:      displayName,
 				Description:      p.Description,

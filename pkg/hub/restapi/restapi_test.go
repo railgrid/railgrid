@@ -238,6 +238,7 @@ func (f *fakeOps) ListProviderAPIBindings(_ context.Context, orgUUID, wsUUID str
 		out[providerName] = kcp.ProviderBinding{
 			Name:       bindingName,
 			ExportPath: kcppaths.ProviderPath(providerName),
+			ExportName: providerName,
 		}
 	}
 	return out, nil

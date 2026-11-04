@@ -168,7 +168,7 @@ func runServe() {
 	}
 
 	httpSrv := &http.Server{
-		Addr:              ":" + port,
+		Addr:              serve.ListenAddress(port),
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
