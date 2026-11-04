@@ -205,7 +205,9 @@ test('account popover actions leave focus on a connected control', () => {
   assert.match(accountMenu.slice(actionStart, actionEnd), /emit\('cli'\)[\s\S]*closeMenu\(true\)/)
 
   const panel = accountMenu.slice(accountMenu.indexOf('<Teleport'))
-  assert.equal((panel.match(/@click="closeMenu\(true\)"/g) ?? []).length, 5)
+  const navigationLinks = [...panel.matchAll(/<router-link\b[\s\S]*?<\/router-link>/g)]
+  assert.ok(navigationLinks.length > 0)
+  for (const [link] of navigationLinks) assert.match(link, /@click="closeMenu\(true\)"/)
   assert.match(panel, /query: \{ panel: 'billing' \}/)
 })
 

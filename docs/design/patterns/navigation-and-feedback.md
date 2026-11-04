@@ -72,6 +72,13 @@ offer creation when allowed, otherwise explain how to get access. New organizati
 creation enters this flow with a preparation hint while bootstrap runs.
 Workspace settings show the active workspace directly, including its access and
 lifecycle controls. The profile menu's Settings action opens those settings.
+When the active organization is verified to be on Free, the account flyout
+also offers a full-width primary **Upgrade plan** link in a separate section
+directly above Logout. It opens the existing organization plan-selection
+screen, preserving the active workspace context. Verify the plan whenever the
+active organization/account becomes available, retain the verified result while
+refreshing on flyout open, and clear eligibility on organization/account changes; paid,
+unknown, unavailable, and unconfigured plan states do not show an upgrade CTA.
 Organization settings contain the cross-workspace inventory in a card after the
 organization overview, using the shared queryable ResourceTable for search,
 lifecycle filtering, pagination, and read states. It includes provisioning and
