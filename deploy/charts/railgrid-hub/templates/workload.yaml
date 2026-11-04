@@ -151,6 +151,9 @@ spec:
             {{- end }}
             - --free-orgs-per-user={{ $freeOrgs }}
             {{- end }}
+            {{- if .Values.hub.providerCASecretName }}
+            - --provider-ca-file=/provider-ca/ca.crt
+            {{- end }}
             {{- if .Values.hub.devMode }}
             - --dev-mode
             {{- end }}
@@ -205,7 +208,7 @@ spec:
             refuse those so the modelled value stays the single source of
             truth. Keep this list in step with the flags rendered above.
             */}}
-            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-hub-access-platform-default" "data-dir" }}
+            {{- $modelled := list "listen-addr" "external-kcp-kubeconfig" "embedded-kcp" "kcp-root-dir" "kcp-secure-port" "kcp-bind-address" "kcp-batteries-include" "kcp-shard-external-url" "kcp-shard-virtual-workspace-url" "kcp-tls-cert-file" "kcp-tls-key-file" "serving-cert-file" "serving-key-file" "hub-external-url" "hub-internal-url" "published-apps-domain" "idp-issuer-url" "idp-browser-auth-url" "idp-client-id" "idp-ca-file" "provider-ca-file" "static-auth-token" "disable-token-login" "admin-users" "portal-frame-source" "trusted-proxy-cidrs" "soft-delete-grace-period" "default-orgs-per-user" "free-orgs-per-user" "dev-mode" "provider-heartbeat-auth" "provider-delegated-tokens" "provider-delegated-tokens-exclude" "provider-workspace-cluster-admin" "provider-relay-url" "provider-relay-listen-addr" "provider-relay-cert-file" "provider-relay-key-file" "provider-relay-client-ca-file" "provider-relay-allowed-names" "provider-hub-access-platform-default" "data-dir" }}
             {{- range .Values.hub.extraArgs }}
             {{- $flag := regexReplaceAll "^--([A-Za-z0-9-]+).*$" (toString .) "${1}" }}
             {{- if has $flag $modelled }}
@@ -214,12 +217,37 @@ spec:
             - {{ . | quote }}
             {{- end }}
             - --data-dir=/data/hub
+            {{- if .Values.hub.providerRelay.enabled }}
+            {{- if not .Values.kcp.external.enabled }}
+            {{- fail "hub.providerRelay.enabled is for external kcp; embedded kcp uses in-process relay" }}
+            {{- end }}
+            {{- if not .Values.hub.providerRelay.allowedShardNames }}
+            {{- fail "hub.providerRelay.allowedShardNames is required" }}
+            {{- end }}
+            {{- $relayPort := toString .Values.hub.providerRelay.port }}
+            {{- if or (not (regexMatch "^[1-9][0-9]{0,4}$" $relayPort)) (gt (int $relayPort) 65535) }}
+            {{- fail (printf "hub.providerRelay.port must be in 1..65535, got %q" $relayPort) }}
+            {{- end }}
+            - --provider-relay-url={{ required "hub.providerRelay.url is required" .Values.hub.providerRelay.url }}
+            - --provider-relay-listen-addr=:{{ $relayPort }}
+            - --provider-relay-cert-file=/provider-relay/tls.crt
+            - --provider-relay-key-file=/provider-relay/tls.key
+            - --provider-relay-client-ca-file=/provider-relay/client-ca.crt
+            {{- range .Values.hub.providerRelay.allowedShardNames }}
+            - --provider-relay-allowed-names={{ . | quote }}
+            {{- end }}
+            {{- end }}
           securityContext:
             {{- toYaml .Values.securityContext | nindent 12 }}
           ports:
             - name: https
               containerPort: 9443
               protocol: TCP
+            {{- if .Values.hub.providerRelay.enabled }}
+            - name: provider-relay
+              containerPort: {{ .Values.hub.providerRelay.port }}
+              protocol: TCP
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
@@ -244,6 +272,16 @@ spec:
           resources:
             {{- toYaml .Values.hub.resources | nindent 12 }}
           volumeMounts:
+            {{- if .Values.hub.providerCASecretName }}
+            - name: provider-ca
+              mountPath: /provider-ca
+              readOnly: true
+            {{- end }}
+            {{- if .Values.hub.providerRelay.enabled }}
+            - name: provider-relay
+              mountPath: /provider-relay
+              readOnly: true
+            {{- end }}
             - name: kcp-data
               mountPath: /data
             {{- if include "railgrid-hub.tlsEnabled" . }}
@@ -268,6 +306,16 @@ spec:
             {{- end }}
 
       volumes:
+        {{- if .Values.hub.providerCASecretName }}
+        - name: provider-ca
+          secret:
+            secretName: {{ .Values.hub.providerCASecretName }}
+        {{- end }}
+        {{- if .Values.hub.providerRelay.enabled }}
+        - name: provider-relay
+          secret:
+            secretName: {{ required "hub.providerRelay.secretName is required" .Values.hub.providerRelay.secretName }}
+        {{- end }}
         {{- if .Values.kcp.external.enabled }}
         # External kcp mode is stateless; /data is scratch only (the hub keeps
         # no persistent state here), so an emptyDir replaces the PVC.

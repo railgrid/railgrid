@@ -1,339 +1,90 @@
-# Edge-fronted BYO providers
+# Edge transport for organization providers
 
-**Status:** Design + phase 1 (fail-fast gating) + phase 2 (transport) implemented.
-**Superseded in part (2026-09-25):** data-plane verbs no longer go through the
-hub's backend proxy at all — they are kcp custom subresources on
-`/clusters/{id}/apis/…`, and the org-owned provider hop is made by the hub
-through kcp at the edges `services/{name}/proxy` verb with the delegated token
-in `X-Railgrid-Upstream-Authorization` (`pkg/hub/providers/proxy_edge.go`).
-The `/services/providers/{name}/dataplane/…` paths and the "caller's bearer"
-authorization model below describe the transport as it was designed; see
-[provider-connectivity-contract.md](./provider-connectivity-contract.md)
-§"Pillar 2 route classes" for the current one. What remains on the backend
-proxy for an org-owned provider is MCP, browser OAuth, webhooks and health.
-**Reads as a delta on:** [byo-providers.md](./byo-providers.md), [edges-marketplace.md](./edges-marketplace.md), [platform-internal-networking.md](./platform-internal-networking.md), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
+The organization registers a connected Kubernetes Edge before any provider
+credential is issued. The Hub records the selection on its own Workspace object.
+A provider's backend address must identify a Kubernetes Service on that Edge;
+it cannot select a host in Railgrid's private network.
 
-[byo-providers.md](./byo-providers.md) gets an org-owned provider *registered*:
-a workspace, an APIExport, a CatalogEntry, and tenant Workspaces that can Enable
-it. What it does not get is a **backend the hub can reach**. This doc closes
-that, by making the edge tunnel the transport for org-owned provider backends
-and by refusing the install up front when no edge is there to carry it.
+## Custom subresources
 
-## The problem
+1. The caller invokes the normal kcp path:
+   `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`.
+2. kcp authenticates the caller and authorizes the custom subresource.
+3. A Hub-owned DataPlaneEndpointSlice routes the request to the provider relay.
+   The Hub verifies the organization, current binding/export identity and verb.
+4. The relay signs the caller identity and exact destination, method, path and
+   query. The platform Edges provider verifies that envelope, then sends the
+   request through the selected Edge's tunnel to the customer Service.
+5. The customer backend receives the original identity, never the Hub transport
+   bearer or relay proof. SDK handlers retain their normal interface.
 
-A provider has two halves. The control half — the provider watching tenant
-objects through its APIExport virtual workspace — is **outbound**: the provider
-dials the hub. A self-hosted provider behind NAT does that fine.
+Embedded kcp dispatches the relay over an in-process HTTP transport at the reserved
+origin `http://railgrid-provider-relay.internal`. That origin has no network
+listener and is not mounted on the public Hub router. Streams and upgrades use
+the same authenticated route.
 
-The data half is not. `/services/providers/{name}/**` is the hub reverse-proxying
-to `CatalogEntry.spec.serving.backend.url`, and the hub **dials out** to that URL
-([pkg/hub/providers/proxy.go](../pkg/hub/providers/proxy.go)). Every provider in
-the tree registers a `.svc.cluster.local` name, which resolves only inside the
-platform cluster. [platform-internal-networking.md](./platform-internal-networking.md)
-states the asymmetry plainly: *provider→hub is configurable; hub→provider is
-not.*
+## External kcp
 
-So a tenant self-hosting the infrastructure provider gets a provider that
-reconciles Instances correctly and cannot serve a single data-plane call. App
-Studio's file sync, log streaming, and exec all ride
-`/services/providers/infrastructure/dataplane/…`
-([providers/app-studio/api/dataplane_client.go](../providers/app-studio/api/dataplane_client.go)),
-and all of them dead-end.
+Deploy the compatible Railgrid kcp serving binary with the organization boundary
+hooks. Stock external kcp does not acquire those hooks merely by upgrading the
+Hub. Upstream kcp quota-accounting changes are not part of this implementation.
 
-Two non-answers, for the record:
+Build it with `make build-railgrid-kcp` (or `make docker-build-kcp`). Run
+`railgrid-kcp start` with the shard's normal storage, authentication and TLS
+configuration. The command accepts the existing kcp serving flags and installs
+the same organization guard as embedded mode before the server starts.
+For a standalone root deployment, keep the shard name `root`; the relay client
+certificate name is independent of that flag. Mount writable state and set
+`--root-directory` to that location.
+Give the Hub an admin kubeconfig scoped to the root logical cluster, for example
+`https://kcp.example.internal:6443/clusters/root`, rather than a bare shard URL.
+Use the normal `kcp-admin` identity (`system:kcp:admin`), rather than a shard's
+`system:masters` identity: the latter intentionally skips workspace ownership
+metadata required by lifecycle initialization.
 
-- **Public ingress on the tenant's side.** The self-hoster exposes the provider
-  backend and registers a public URL. This makes the hub dial a
-  tenant-controlled host *with the calling user's bearer token attached* — a
-  confused deputy pointed at an address the tenant chooses. `ParseURL`
-  ([registry.go](../pkg/hub/providers/registry.go)) enforces only scheme+host,
-  so there is no allowlist standing between that URL and the hub's egress.
-- **The virtual-workspace relay.** `5e5db7c3` added
-  [pkg/server/proxy/virtualworkspace.go](../pkg/server/proxy/virtualworkspace.go)
-  and `c496f4f8` established there is no way to advertise it. Either way it is
-  the *control* half. It does nothing for backend reachability.
+Use a dedicated Hub mTLS relay listener reachable by the shards:
 
-## Why the edge is the right transport
-
-Two things make this much smaller than it sounds.
-
-**Only one hop needs the tunnel.** A self-hosted infrastructure provider runs in
-the same cluster as the workloads it manages, so provider→workload
-(`services/proxy` against its own runtime kubeconfig) is already local and
-unchanged. The tunnel is needed for hub→provider-backend and nothing else.
-
-**The mechanism already exists and is in production.** `edges.railgrid.ai/Service`
-with `spec.edgeRef.kind: KubernetesCluster` and a `spec.targetRef` is exactly
-"reverse-proxy HTTP to a Kubernetes Service inside a tenant cluster over the
-agent's tunnel." The type comment on `KubeServiceRef`
-([types_service.go](../providers/edges/apis/v1alpha1/types_service.go)) says it:
-
-> The agent dials it over cluster DNS (`{name}.{namespace}.svc`); **the
-> Kubernetes API server is not in the data path**, so the provider-injected
-> Authorization header reaches the service untouched.
-
-The agent side ([pkg/agent/tunnel/svc.go](../pkg/agent/tunnel/svc.go)) already
-permits cluster-DNS targets in kubernetes mode. Multi-replica ownership,
-lease-based dialer registry, and peer relay are solved
-([connman.go](../providers/edges/internal/tunnel/connman.go),
-[registry.go](../providers/edges/internal/tunnel/registry.go)). WebSocket
-upgrade is handled.
-
-## Decisions
-
-### E-1 — An org-owned provider backend is reached over an edge, never over a URL
-
-`CatalogEntry.spec.serving.backend.url` stays what it is for platform providers. For an
-org-owned provider the hub **ignores** it: whatever the chart wrote there is a
-name in the tenant's cluster, meaningful to the tenant and not to the hub.
-Routing comes from the edge binding the hub recorded at registration, not from
-anything the provider self-declares. This preserves the rule the registry
-already enforces for discovery — ownership is never read from a field the
-provider controls ([controller.go](../pkg/hub/providers/controller.go)).
-
-### E-2 — Self-hosting requires a connected KubernetesCluster edge, checked before anything is created
-
-Registration takes an explicit target:
-
-```json
-{
-  "name": "infrastructure",
-  "sourceProvider": "infrastructure",
-  "edge": { "workspace": "<wsUUID>", "name": "prod-eu" }
-}
+```text
+--provider-relay-url=https://hub-relay.example.internal:9444
+--provider-relay-listen-addr=:9444
+--provider-relay-cert-file=/provider-relay/tls.crt
+--provider-relay-key-file=/provider-relay/tls.key
+--provider-relay-client-ca-file=/provider-relay/client-ca.crt
+--provider-relay-allowed-names=kcp-shard
 ```
 
-and the hub refuses with `409 Conflict` unless, at that moment:
+The relay URL is an HTTPS origin. Its serving certificate must cover that host;
+shard certificates must chain to the configured client CA and have an explicitly
+allowed certificate common name. Configure the kcp shard's client certificate,
+key and virtual-workspace trust CA accordingly. Do not terminate shard client
+TLS at an ordinary ingress before it reaches this listener.
 
-1. the `edges` provider is enabled in that Workspace (an APIBinding exists), and
-2. the named `KubernetesCluster` exists there with `status.connected: true`.
+On the shard, configure `--shard-client-cert-file`, `--shard-client-key-file`
+and `--shard-virtual-workspace-ca-file`. The trust bundle must cover both the
+advertised kcp virtual-workspace endpoints and the Hub relay certificate. Keep
+`--shard-external-url` and `--shard-virtual-workspace-url` pointed at the shard's
+own reachable HTTPS origin. The Hub relay origin belongs only in the Hub's
+`--provider-relay-url`; the bootstrap endpoint uses it for org-provider custom
+subresource destinations. It does not serve APIExport virtual workspaces.
 
-This is a **precondition, not a reconcile**. Registration mints a long-lived
-cluster-admin credential and creates a workspace; doing that for an install that
-cannot possibly work leaves the Org holding a live credential and a half-built
-tree it has to clean up by hand. The same argument the Enable path already makes
-for its `edgeProxyAccess` precheck ("refuse up front — before
-`EnsureProviderAPIBinding` — so a raced Enable is a clean no-op the client can
-retry, instead of leaving the APIBinding created but the edge-proxy grant
-missing") applies with more force here, because here the partial state contains
-a credential.
+The Hub chart's `hub.providerRelay` section configures the dedicated listener and
+Secret mount. Ordinary browser credentials and caller-supplied `X-Remote-*`
+headers do not authenticate a shard. Both embedded and external transports must
+pass the same organization/binding authorization checks.
 
-Fail-fast is also the only honest UX. The alternative is a registration that
-succeeds, hands over Helm commands, and produces a provider stuck at
-`Registered: true, Ready: false` with no indication that the missing piece is an
-agent in a cluster the user never installed.
+## Other backend traffic
 
-### E-3 — The UI never offers self-hosting it knows will fail
+MCP, OAuth, UI assets, health and supported non-kube route classes keep the
+existing Hub-to-Edge routing. Scoped delegated credentials replace interactive
+user bearers before the Edge delivers requests to customer backends. UI asset
+grants are for assets only and do not grant arbitrary backend or kcp access.
 
-`GET /api/orgs/{org}/providers/install-targets` returns the org's connected
-edges and, when there are none, *why*. The Self-Hosting tab renders from that:
-no eligible edge → the self-host actions are disabled with the reason inline and
-a link to the edges onboarding, rather than enabled and 409ing on click.
+The workspace's actual APIBinding selects a provider copy; catalog shadowing
+alone cannot switch an existing workspace from a platform to an organization
+provider. Keep shared platform-provider listeners private from tenant workloads:
+those listeners trust identity headers sent by the shard.
 
-The endpoint is the same check `registerOrgProvider` runs, so the button state
-and the server's answer cannot drift. The server check stays regardless — the
-UI gate is ergonomics, not enforcement.
-
-### E-3a — Edge discovery respects the workspace membership boundary
-
-Edges live in team workspaces, and team workspaces have members. Both the
-listing and the registration preflight project the Org's edges through the same
-rule `listWorkspaces` already uses — org admins see every child workspace,
-members see their UMI entries — so a member cannot read the Org's cluster
-inventory out of workspaces they do not belong to, nor install a provider into
-one.
-
-Naming an invisible workspace is refused with the **same** message as naming a
-nonexistent edge. A distinct 403 would turn the endpoint into an oracle for
-which workspaces hold which clusters.
-
-### E-4 — The hub owns the `Service` object, the tenant does not
-
-At registration the hub creates
-`edges.railgrid.ai/Service` named `provider-<name>` in the target Workspace,
-pointing at `{name}.railgrid-provider-<name>.svc:<port>`, and marks it hub-owned.
-The tenant does not hand-write it and cannot repoint it at something else
-without the hub noticing — `spec.host` on a `Service` is otherwise free-form,
-and [svc.go](../pkg/agent/tunnel/svc.go)'s `isAllowedSvcHost` currently returns
-`true` unconditionally (its own `TODO(security)`). Tenant-authored `spec.host`
-aimed at the tenant's own LAN is self-harm; the same field on the path that
-carries platform traffic and platform-injected headers is not.
-
-### E-5 — Authorization is passed through, not substituted
-
-`serviceHTTPProxy` today replaces the caller's `Authorization` with the
-Service's own token from `spec.authSecretRef`, or deletes it
-([service_proxy.go](../providers/edges/internal/tunnel/service_proxy.go)). That
-is right for a Home Assistant box with one long-lived token. It is wrong for a
-provider backend: the infrastructure data plane's entire authorization model is
-the *caller's* bearer — it 401s without one and gates every request on a
-tenant-scoped `GET` of the Instance as that caller
-([dataplane/handler.go](../providers/infrastructure/dataplane/handler.go)).
-Substituting one shared token would collapse per-user RBAC into "anyone who can
-reach the tunnel."
-
-So `Service` gains `spec.auth`:
-
-| value | behaviour |
-|---|---|
-| `secret` (default) | today's behaviour — replace with `authSecretRef`'s token |
-| `passthrough` | forward the caller's `Authorization` untouched |
-| `none` | strip it |
-
-`passthrough` requires no `authSecretRef` and is what hub-owned provider
-Services use. Keeping the default as `secret` means no existing Service changes
-meaning.
-
-Proven over a real tunnel in
-[test/e2e/suites/edgesconn/byo_provider_test.go](../test/e2e/suites/edgesconn/byo_provider_test.go):
-an `auth: passthrough` Service points at the suite's probe backend, which echoes
-the first 12 hex characters of SHA-256 over the `Authorization` header it
-received. The test recomputes that from the token it sent, so a substituted
-token — even one of the same length — fails the assertion.
-
-### E-6 — The caller's kcp identity must survive the hop
-
-The hub backend proxy strips inbound `X-Railgrid-User` / `X-Railgrid-Tenant` /
-`X-Railgrid-Cluster` and re-injects them from its own resolvers
-([proxy.go](../pkg/hub/providers/proxy.go)) — that is the identity the provider
-trusts. The agent's `/svc` handler deletes only `X-Railgrid-Svc-Target`, so those
-headers already survive. This is a property to test, not code to write; it is
-listed because breaking it silently downgrades the provider's notion of who is
-calling.
-
-The test is the same one as E-5: the probe backend's identity route reports the
-three headers exactly as they arrived after the revdial hop, and the suite
-requires the user and tenant to be non-empty.
-
-### E-7 — Streaming is not optional on this path
-
-The dataplane `log` verb is `stream: true` and the hub sets `FlushInterval: -1`
-precisely so tailing works. The edges Service proxy builds a plain
-`httputil.ReverseProxy` with no flush interval, so responses buffer. Log tailing
-through an edge would appear to hang. Same for SSE and for the
-`aggregatingcrdversiondiscovery`-style long polls.
-
-The probe backend's stream route writes numbered chunks 150ms apart with an
-explicit flush between each, and the test records when each one arrives: a hop
-that buffered delivers them together at the end, which is invisible to any
-assertion that only compares the final body.
-
-> **The far end in E-5/E-6/E-7 is a fixture the suite owns**, not a provider:
-> [probe_backend_test.go](../test/e2e/suites/edgesconn/probe_backend_test.go),
-> an in-process HTTP server on `127.0.0.1` that the host-run agent dials. It was
-> the quickstart provider's `/api/hello` and `/api/stream` until those routes
-> were removed — they existed only for this test, and a provider backend serves
-> verbs rather than echo endpoints
-> ([providers/quickstart/README.md](../providers/quickstart/README.md), pillar
-> 2). What these three decisions measure is the transport, so the far end only
-> has to report what it received; keeping that as a route on the reference
-> provider made the contract the test's hostage.
-
-## The request path
-
-```
-browser (user token)
-  → hub /services/providers/app-studio/api/…            (injects X-Railgrid-{User,Tenant,Cluster})
-  → app-studio                                          (holds no runtime credential)
-  → hub /services/providers/{org-infra}/dataplane/…
-      │ registry resolves org-owned → edge-fronted transport
-      ▼
-    edges provider /dataplane/clusters/{ws}/
-                   services/provider-{name}/proxy/dataplane/…
-      │ SAR: proxy on services/provider-{name}; Service is hub-owned; auth=passthrough
-      ▼
-    revdial WebSocket ──▶ agent in tenant cluster
-      │ X-Railgrid-Svc-Target: http://{name}.railgrid-provider-{name}.svc:8081
-      ▼
-    infrastructure provider (tenant cluster)
-      │ RBAC gate = GET the Instance as the caller
-      ▼
-    runtime kube-apiserver services/proxy   ← local, unchanged
-      ▼
-    railgrid-dev-agent in the workload pod
-```
-
-Compared to a platform provider the added hops are hub→edges-provider (in
-cluster) and one revdial stream. Everything from the infrastructure provider
-rightward is byte-identical to today.
-
-## What changes where
-
-| # | Change | Location |
-|---|---|---|
-| 1 | `Service.spec.auth` (`secret`/`passthrough`/`none`) | `providers/edges/apis/v1alpha1/types_service.go` |
-| 2 | Honour `auth` in the proxy; `FlushInterval: -1`; close the tunnel conn | `providers/edges/internal/tunnel/service_proxy.go` |
-| 3 | Edge install-target discovery (`edges` bound + `status.connected`) | `pkg/hub/kcp/edgetargets.go` |
-| 4 | `GET .../providers/install-targets`; `edge` on the register body; preflight | `pkg/hub/restapi/org_providers.go` |
-| 5 | Gate the Self-Hosting UI on target availability | `portal/src/stores/orgProviders.ts`, `portal/src/pages/ProvidersPage.vue` |
-| 6 | Hub-owned `Service` creation at registration | `pkg/hub/kcp/edgetargets.go` |
-| 7 | Edge-fronted transport in the backend proxy | `pkg/hub/providers/{registry,proxy,controller}.go` |
-| 8 | Org-scoped resolution on the backend-proxy path | `pkg/hub/providers/proxy.go` |
-| 9 | Binding-driven provider selection (drop the hardcoded `infrastructure`) | `providers/app-studio/api/dataplane_client.go` |
-
-Items 1–5 were phase 1: the transport contract and the fail-fast behaviour.
-6–8 are phase 2 and are now implemented; the data plane of an org-owned
-provider routes over its edge.
-
-Item 9 turned out to be subsumed by 8 for the flow the product actually
-offers. App Studio addresses `/services/providers/infrastructure/...`, and the
-backend proxy now resolves that name in the CALLER's Org — so an Org running
-its own copy is reached without App Studio knowing anything about bindings.
-The hardcoded name only matters if an Org registers a provider under a name
-other than the platform provider's, which the Self-Hosting UI never does
-(`register(p.name, p.name, edge)`). Binding-driven selection is still the
-right answer for that case and remains open.
-
-Two deviations from the design as written, both forced by what the hub can
-actually know:
-
-- **The Service target is read from the provider's own CatalogEntry, not
-  derived.** E-4 assumed `{name}.railgrid-provider-{name}.svc`, but the address
-  is the chart's to choose — an operator-mode install lands on
-  `<release>-<chart>.<serve-ns>.svc`, which the hub cannot predict. The hub
-  therefore reads `spec.backend.url` but does not trust it: it must parse as
-  `<service>.<namespace>.svc[.cluster.local]`, so the worst a tenant can aim
-  it at is something inside the cluster the tunnel already terminates in. An
-  IP, an external host, or a bare name is refused.
-- **The Service is reconciled by the catalog controller, not created at
-  registration.** It cannot exist earlier: the address only appears once the
-  chart has run and published its CatalogEntry. Registration records the edge
-  binding; the controller reconciles the Service when the provider first
-  reports itself.
-
-## Consequences worth accepting deliberately
-
-**The edges provider becomes a hard dependency of self-hosting.** "Bring a
-cluster, we reach it" is a coherent product line, and it is strictly better than
-asking self-hosters to expose a backend publicly. But an Org that wants a
-self-hosted provider must now onboard an edge first, and the edges provider
-becomes a availability dependency for every self-hosted provider's data plane.
-
-**Traffic concentrates on edges-provider replicas.** Every byte of file sync and
-every log stream for every self-hosted tenant transits them. The lease/relay
-design scales horizontally, but this should be sized before phase 2, not after.
-
-**A new RBAC coupling.** Today an App Studio user needs no edges permission. On
-this path every workload call SARs `proxy` on `services/provider-<name>` in the
-tenant Workspace. Defensible — arguably correct, since it makes "who may reach
-the tenant's cluster" one auditable grant — but it is new, and a user removed
-from that grant loses their sandbox rather than losing edge access.
-
-## Known gaps
-
-- **`isAllowedSvcHost` returns `true` unconditionally**
-  ([svc.go](../pkg/agent/tunnel/svc.go)). E-4 keeps the platform-owned Service
-  out of tenant hands, which bounds the new exposure, but the underlying SSRF
-  boundary is still open for tenant-authored Services and should be closed with
-  a per-agent allowlist.
-- **One tunnel dial per request.** `edgeDeviceConnTransport` writes one request
-  and reads one response over a fresh `net.Conn`; there is no keep-alive or
-  pooling. Fine for SSH and Home Assistant, visible under App Studio file sync.
-- **No re-validation after registration.** E-2 checks the edge at registration
-  time only. An edge deleted afterwards leaves an org provider whose backend is
-  unroutable, reported as not-Ready with no explanation naming the edge.
-- **Single target edge.** No failover across two edges, and no way to move a
-  provider to a different edge without deregistering.
-- **`bind` is still not org-scoped.** Unchanged from
-  [byo-providers.md](./byo-providers.md), and still the most important gap in
-  this area.
+Provider outbound control traffic uses kcp's advertised virtual-workspace URLs.
+Every advertised shard endpoint must be reachable from the customer Pods with
+working DNS and TLS. Cluster-internal DNS names cannot serve external consumers.
+See [BYO providers](byo-providers.md) for installation and accepted MVP gaps.

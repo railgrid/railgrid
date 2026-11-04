@@ -1,842 +1,189 @@
-# Bring-your-own providers (org-owned providers)
-
-**Status:** Implemented (phase 1)
-**Reads as a delta on:** [providers.md](./providers.md), [provider-scoping.md](./provider-scoping.md), [organizations.md](./organizations.md)
-
-An organization can register a provider it runs itself — typically inside its
-own Kubernetes cluster, reached over an edge — and have it appear in that
-organization's provider catalog alongside the platform ones. Its Workspaces
-enable it through the ordinary Catalog Enable flow after the provider is Ready.
-Installation does not create or retarget workspace APIBindings. After Ready,
-Continue returns to the Self-Hosting list; an authorized organization member can
-explicitly open Installation details on the provider row to retrieve generated
-commands and its scoped credential.
-
-> **How the hub reaches an org-owned provider's backend** is a separate design:
-> [byo-provider-edge-transport.md](./byo-provider-edge-transport.md). It makes
-> the edge tunnel the transport (the hub cannot dial into a tenant cluster) and
-> makes a connected edge a **precondition of registration**, so an install that
-> could not work is refused before a credential is minted.
-
-## Console installation through an Edge
-
-Providers → Self-Hosting lets an authorized organization member choose a connected
-Kubernetes Edge and install a platform provider's published Helm chart. The caller
-must also have Kubernetes API access to that exact Edge. Installation creates the
-provider workspace and credential on the server; the browser receives only progress.
-
-The hub records the selected Edge and pinned chart plan on the sealed provider
-Workspace and submits a Helm Job on the target cluster. Closing the console does
-not stop the Job. Its real Kubernetes status drives progress; successful Helm
-completion is followed by a separate provider health check through the Edge.
-A failed attempt can be retried with the same chart version and values. Concurrent
-starts reuse the active attempt. For user-supplied Secret references, the installer
-first prepares its owned namespace and pauses before creating a runner or Helm Job.
-Create the named Secrets in that namespace, then choose **Continue installation**.
-Do not pre-create an unowned namespace for a Console installation.
-A disconnected Edge leaves status unavailable,
-not successful; reconnect it before retrying.
-
-The runner has no local Kubernetes ServiceAccount token or cluster role. Its
-execution kubeconfig holds a 15-minute kcp token restricted to the selected
-Edge's Kubernetes proxy. The Job has a 10-minute deadline and uses Helm's bounded
-wait and atomic rollback. Observing completion revokes the runner identity and
-removes its execution Secret; the token expires even if nobody returns to the
-console. The provider's own scoped credential stays in its runtime Secret.
-
-Installing does not create, disable, or retarget any workspace APIBinding.
-Workspace enablement and migration remain explicit actions after Ready.
-The secondary **Install manually** action opens generated commands for operators
-who manage Helm themselves. Once those steps are open, continue the manual path;
-the console cannot adopt a partially completed manual installation.
-Console installation refuses incomplete recipes and
-unowned installation namespaces rather than overwriting an existing deployment.
-
-Removing a registration drains its APIExports and their cached resources before
-deleting the provider workspace. This keeps API discovery available to kcp's
-cache cleanup controller. Teardown is bounded and retryable; it does not force
-finalizers or uninstall the Helm release on the Edge. Retaining that Helm release
-does not preserve the API identity: a new registration has a new identity, so
-reinstallation does not restore access to resources under the deleted export.
-Export resources before removal and recreate them under the new copy.
-
-## Relationship to provider-scoping.md
-
-[provider-scoping.md](./provider-scoping.md) pinned decisions for org-scoped
-providers as **bring-your-own-URL**: a `CatalogEntry` in the Org workspace
-pointing at a backend the Org hosts, explicitly with "no managed
-ServiceAccount, no kcp provider workspace bootstrap."
-
-This delta goes further, and supersedes that shape for the org scope. An
-org-owned provider here gets a **real provider workspace and a real APIExport**,
-so it can contribute CRDs to the workspaces that enable it — not just a UI and a
-backend URL. Two consequences worth stating plainly:
-
-- The `CatalogEntry` does **not** live in the Org workspace. It lives in the
-  provider's own workspace, written by the provider's `init` exactly as a
-  platform provider writes its own.
-- P-1's UUID-identity and slug scheme is **not** implemented. Providers are
-  still named, and names are unique within an Org. A name that matches a platform
-  provider is allowed and means "we run our own copy of that one" (see
-  *Name collisions* below).
-
-Still unimplemented from that doc, and still relevant here: the per-Org `bind`
-ClusterRole (P-3) and `MaximalPermissionPolicy`. In a workspace where an org
-entry shadows a platform provider, the Catalog distinguishes which copy the
-current APIBinding actually uses. Disabling the platform copy requires a
-confirmation explaining that the current Delete policy deletes provider resources.
-There is no automatic data migration: export what is needed and recreate it under
-the org copy after Disable completes and that copy is enabled.
-
-## Workspace layout
-
-The org-owned layout mirrors the platform one exactly, one level down:
-
-```
-root:railgrid
-  providers:<name>                        platform provider workspace
-  tenants:<orgUUID>                       Org workspace          (type: organization)
-    <wsUUID>                              team workspace         (type: workspace)
-    providers                             well-known container   (type: universal)
-      <name>                              org provider workspace (type: provider)
-```
-
-`root:railgrid:tenants:<orgUUID>:providers` is a plain `universal` workspace, just
-like `root:railgrid:providers`. That is the load-bearing detail: the `provider`
-WorkspaceType's `limitAllowedParents` requires a universal parent, so making the
-container universal lets each org provider reuse **the same `provider`
-WorkspaceType** platform providers use. No new WorkspaceType ships with this
-feature.
-
-Reusing that type is what makes the rest fall out for free:
-
-- It carries `defaultAPIBindings: providers.railgrid.ai`, so the workspace binds the
-  CatalogEntry API on creation. The hub's catalog manager watches every cluster
-  that binds `providers.railgrid.ai`, so an org provider joins the catalog watch
-  **with no change to the manager** and no second watch.
-- It has no `extend: universal`, so a provider holding cluster-admin over its own
-  workspace still cannot spawn workspaces.
-- `provider-sdk/install` (schemas → APIExport → endpoint slice → CatalogEntry)
-  runs unmodified.
-
-The container is created lazily on first registration — most Orgs never register
-a provider, and an empty workspace each would be pure overhead.
-
-`providers` is a reserved child name. It cannot collide with a team workspace,
-which is always UUID-named.
-
-## Registration flow
-
-Everything below is hub-mediated. Per decision O-10 tenants hold no credential
-that reaches an Org workspace, so an Org admin cannot build any of this by hand;
-the REST surface is where the membership and role checks live.
-
-1. `POST /api/orgs/{org}/providers` with `{"name": "vault"}`.
-   The hub creates the `providers` container if needed, creates the provider
-   workspace, mints a `provider` ServiceAccount that is cluster-admin **in that
-   workspace only**, and returns a kubeconfig scoped to it.
-2. The Org installs the provider's Helm chart against that kubeconfig. The
-   chart's `init` container creates the APIExport, APIResourceSchemas, the
-   `APIExportEndpointSlice`, and the `CatalogEntry` — all inside the provider's
-   own workspace.
-3. The hub's catalog reconciler observes the new `CatalogEntry`, resolves the
-   workspace path from the cluster's `LogicalCluster` (`kcp.io/path`), attributes
-   it to the Org, and upserts it into the registry under that Org's scope.
-4. `GET /api/providers` now returns it for members of that Org, with
-   `scope: "org"`. The portal renders it under **Self-hosted**.
-5. A Workspace enables it with the ordinary
-   `POST /api/orgs/{org}/workspaces/{ws}/providers/{name}/enable`, including the
-   same permission-claim consent dialog a platform provider gets.
-
-Registration is idempotent: re-posting the same name returns the same workspace
-and the same token, so the portal can retry safely.
-
-## Platform prerequisite: a publicly dialable virtual-workspace URL
-
-**A platform whose shard advertises a cluster-internal virtual-workspace URL
-cannot host BYO providers at all.** This is a deployment prerequisite, not
-something the hub can paper over, and it is invisible until an org actually
-self-hosts something.
-
-kcp copies `Shard.spec.virtualWorkspaceURL` verbatim into
-`APIExportEndpointSlice.status.endpoints[].url`. That is the address every
-consumer dials, and there is exactly one of them per shard. Point it at a
-service DNS name and only consumers inside the shard's own cluster can reach it
-— which is every in-platform provider, and no self-hosted one:
-
-```
-https://alpha-shard-kcp.kcp-system.svc.cluster.local:6443/services/apiexport/…
-                        ^ resolves only inside the hub's cluster
-```
-
-A provider in an org's own cluster gets `no such host` from its own cluster DNS
-and its multicluster manager never starts. The failure is quiet and badly
-localized: the provider comes up healthy, serves its API, wins its leader
-election, and reconciles **Templates** — those live in the provider's own
-workspace and are reached over the provider kubeconfig, which is a different
-URL and works fine. Only **Instances** break, because those live in tenant
-workspaces and are watched through the virtual workspace. So the provider looks
-fine and simply never acts on anything a tenant creates.
-
-The fix is to make that URL reachable, and the right way to do it depends on how
-many shards the platform runs.
-
-### One shard, or embedded kcp — the hub can relay, but cannot yet advertise it
-
-The hub relays `/services/apiexport/…` to kcp
-([pkg/server/proxy/virtualworkspace.go](../pkg/server/proxy/virtualworkspace.go))
-so that a single-shard platform could keep exactly one public address — one
-HTTPRoute, one certificate, rather than a second entrypoint existing solely for
-virtual workspaces.
-
-**What is missing is a way to advertise it.** `Shard.spec.virtualWorkspaceURL`
-is a single global value feeding every `APIExportEndpointSlice`, and the hub's
-own multicluster managers are among its consumers: they dial those endpoints
-in-process using kcp's CA and kcp's admin token. Point the field at the hub and
-they fail the TLS handshake against the hub's own serving certificate —
-
-```
-http: TLS handshake error from 127.0.0.1:58754: remote error: tls: unknown certificate
-```
-
-— which silently freezes the provider registry. The catalog informer never
-syncs, so the portal keeps serving whatever recipe it last saw while everything
-else looks healthy. Setting the field by hand has exactly the same effect;
-this is a property of the field, not of any default.
-
-Closing this needs the hub's own controllers kept on a kcp-direct URL while
-external consumers get the public one — an endpoint override on the multicluster
-provider, or a per-consumer view of the slice. Until then the relay is unused,
-and single-shard platforms are in the same position as multi-shard ones below.
-
-Relayed requests are authorized structurally, without a lookup: the workspace
-the caller's ServiceAccount token was minted in must be the workspace holding
-the APIExport. A virtual workspace exists for its export's *owner* to observe
-every consumer, and a provider's ServiceAccount lives in the same workspace as
-the APIExport its `init` created — so owner-only is both the correct rule and a
-single string comparison. Note this deliberately does not reuse the membership
-authorizer: that answers "may this user read this workspace", and no amount of
-consumer membership implies the right to read *every* consumer at once. kcp then
-applies its own RBAC to the relayed request, so the hub narrows rather than
-replaces it.
-
-`--kcp-shard-virtual-workspace-url` sets the field directly for an embedded kcp
-and wants `--kcp-shard-external-url` alongside it, which covers a different slot
-in `Shard.spec`. It is subject to the same caveat: any value the hub itself
-cannot dial with kcp's CA will freeze the registry.
-
-### More than one shard — per-shard URLs
-
-**The hub cannot front this, and the relay above must not be used for it.** A
-multi-shard `APIExportEndpointSlice` publishes one endpoint *per shard*, each
-derived from that shard's own `virtualWorkspaceURL`, and consumers watch all of
-them. Nothing in the request distinguishes which shard is meant — the cluster
-segment names the APIExport's workspace, not the shard serving it — so a single
-hub hostname has no way to route them apart.
-
-A SaaS deployment therefore gives each shard its own externally reachable
-address and points that shard's `virtualWorkspaceURL` at it. kcp's front proxy
-already serves `/services/…` and enforces APIExport ownership through its own
-RBAC, so this needs no railgrid-side routing at all.
-
-In either topology `virtualWorkspaceURL` is one global value per shard, so
-in-platform providers dial the public address too and hairpin back in. A small
-inefficiency, not a correctness problem.
-
-To check a platform before promising an org it can self-host:
-
-```sh
-kubectl get apiexportendpointslices -A \
-  -o jsonpath='{range .items[*]}{.status.endpoints[*].url}{"\n"}{end}'
-```
-
-If the host is a `.svc`/`.svc.cluster.local` name, a loopback, or a private
-address, self-hosted providers will install and then sit idle.
-
-## Self-hosting a platform provider
-
-The flow above covers a provider an org wrote itself. The more common case is an
-org wanting to run **the platform's own provider** in its cluster — its own
-edges, its own Application Templates. A provider declares how it is deployed in
-`CatalogEntry.spec.serving.selfHosting`, and the hub renders per-organization install
-instructions from it:
-
-```yaml
-selfHosting:
-  supported: true
-  chart:
-    repository: "oci://ghcr.io/railgrid/charts"
-    name: "railgrid-edges-provider"
-    version: "0.1.4"          # stamped from .Chart.Version at release
-  namespace: "railgrid-provider-edges"
-  releaseName: "edges"
-  requiredValues:
-    - name: hub.externalURL
-      value: "{{hubURL}}"          # substituted by the hub
-      description: Address agents reach kcp through.
-```
-
-Required values ending in `SecretRef.name` declare Kubernetes Secret names,
-never connection strings or credentials. Console prepares the installation's
-owned namespace, then pauses before Helm until those Secrets exist there. A
-sibling `SecretRef.key` declares the nonempty data key the chart will consume;
-include it explicitly in the recipe even when the chart has the same default:
-
-```yaml
-requiredValues:
-  - name: store.databaseURLSecretRef.name
-    description: Name of the Secret containing your Postgres connection URL.
-  - name: store.databaseURLSecretRef.key
-    value: database-url
-    description: Data key containing the Postgres connection URL.
-```
-
-The installer checks the declared key before continuing, without returning
-Secret contents to Console. It does not infer a key from the provider name or
-fetch chart defaults. Older recipes and saved plans without a sibling key keep
-their name-only existence check. For manual installation, create the Secret
-with the declared key in the chart's namespace before running Helm.
-
-A `requiredValue` with no `value` is one the installer must type. Prefer a
-placeholder wherever the hub already knows the answer — every value a person has
-to look up and paste is a chance to get it wrong.
-
-As a safety net, a value with no declared `value` is still filled in when the
-hub knows it authoritatively: `hub.url` / `hub.externalURL` / `hub.internalURL`,
-and the kubeconfig Secret name and key. That covers recipes published before a
-placeholder existed, which travel with the provider's chart and so can lag the
-hub. Provider-specific values the hub cannot know are still asked for.
-
-### Where the values documentation comes from
-
-The install panel lists only the values the hub could *not* resolve — the ones
-the user has to act on. Everything else is already correct in the command, so
-restating it would be a second copy to drift.
-
-For the full reference, the chart **embeds its own README**:
-
-```yaml
-valuesDoc: |{{ .Files.Get "README.md" | nindent 10 }}
-```
-
-which lands in `spec.serving.selfHosting.valuesDoc` and renders inline in the portal.
-Embedding rather than linking buys three things:
-
-- it works in an air-gapped or private-repo install;
-- it documents the chart version **actually deployed**, not whatever is on the
-  default branch;
-- the portal shows it without a round trip to an external host.
-
-`.Files.Get` returns the file verbatim (Helm does not template it), so a README
-containing `{{ … }}` is safe to embed.
-
-The field is capped at 64 KiB because CatalogEntries are watched objects — every
-edit fans out through the catalog watch to every hub replica — so this must stay
-a values reference, not a manual. Today's charts land at 4–13 KiB.
-
-`docsURL` remains as the fallback for providers that would rather link out; the
-portal renders the embedded doc when present and the link otherwise.
-
-Markdown is rendered with raw HTML disabled. For an org-owned provider the
-CatalogEntry is written by whoever runs it, so this is tenant-authored content
-displayed in another tenant admin's browser.
-
-The split is deliberate: the provider is the only party that knows its chart,
-and the hub is the only party that knows the org's workspace, credential, and
-address. Neither can produce the instructions alone.
-
-Registering with `sourceProvider` set to a platform provider name renders that
-provider's recipe:
-
-```
-POST /api/orgs/{org}/providers  {"name": "edges", "sourceProvider": "edges"}
-```
-
-The response carries the credential plus ordered steps: create the namespace,
-store the credential as a Secret, `helm upgrade --install`. The portal renders
-these under **Providers → Self-Hosting** with per-step copy buttons.
-
-### The name is the platform provider's name
-
-Self-hosting `edges` registers it as `edges`. The chart writes its CatalogEntry
-under its own name, so anything else leaves the workspace and the registered
-provider mismatched. The org's copy then **shadows** the platform's for that org
-only — which is the intended meaning of "we run this ourselves".
-
-One consequence to keep in view: a workspace that enabled the platform copy
-before the switch is still bound to the platform export. Switching is a Disable
-then Enable, not an in-place retarget, so
-`GET .../providers/enabled` reports `selfHosted` per binding and the portal can
-tell the two apart rather than showing both as plain "Enabled".
-
-### Values the hub fills in
-
-| Value | Source |
-|---|---|
-| `providerKubeconfig.secretName` | fixed — the charts hardcode data key `kubeconfig` |
-| `catalogEntry.enabled=true` | so the copy self-registers into the org's workspace |
-| `hub.url` | the hub's external URL; must be reachable from the org's cluster |
-| `{{workspacePath}}`, `{{namespace}}`, `{{releaseName}}`, `{{kubeconfigSecret}}`, `{{kubeconfigSecretKey}}`, `{{hubURL}}` | substituted into a recipe's literal values |
-
-There are no identity hashes to fill in: every claim is identity-agnostic and
-kcp resolves it against the copy of the dependency each workspace binds. A
-value the hub cannot fill is emitted as a visible placeholder with a warning
-rather than as a command that looks correct.
-
-Rendering never fails. A provider with incomplete metadata still produces steps,
-with placeholders and warnings for the gaps: the alternative leaves the user
-holding a live credential and a fresh workspace with nothing telling them what
-to do next.
-
-### Providers that ship a recipe today
-
-All nine, each embedding its own chart values reference:
-
-| Provider | Values it still asks you for |
-|---|---|
-| `quickstart` | none |
-| `edges` | none — `hub.externalURL` is derived from `{{hubURL}}` |
-| `infrastructure` | none — self-bootstrap values use `{{workspacePath}}` / `{{kubeconfigSecret}}` |
-| `code` | none |
-| `databricks` | none |
-| `kuery` | none — its edges claim is identity-agnostic and resolves to whichever edges copy each workspace bound |
-| `app-studio` | `store.databaseURLSecretRef.name` — Postgres stores persistent chat messages; the recipe declares data key `database-url` |
-| `agents` | `store.databaseURLSecretRef.name` — Postgres is its only hard dependency; the recipe declares data key `database-url` |
-
-A recipe value is a literal or a `{{placeholder}}` the hub substitutes; there
-is nothing per-organization for the hub to resolve beyond those.
-
-Adding one to another provider means editing **both** `manifest.yaml` and
-`deploy/chart/templates/catalogentry.yaml` — the chart copy is the one that
-reaches production, and they drift silently (`AGENTS.md` §5.1).
-
-### The workspace-path fix this depended on
-
-Provider `init` used to hardcode `root:railgrid:providers:<name>` and write it into
-`APIExportEndpointSlice.spec.export.path`, so a chart installed against an org
-workspace published endpoints for an export that does not exist at that path.
-
-`WorkspacePath` is now optional in `provider-sdk/install`, and an empty value
-omits `spec.export.path` entirely — kcp then resolves the export in the slice's
-own logical cluster, which is always where it is. The path was duplicating
-information the kubeconfig already carries. Every provider's default is now
-empty, which is what makes one published chart work in both a platform and an
-org workspace with no values to set.
-
-Already-deployed slices carrying an explicit path are left alone rather than
-recreated: `spec.export` is immutable, so recreate is the only way to change it,
-and that would briefly drop virtual-workspace endpoints out from under the hub's
-multicluster managers for no behavioral gain.
-
-## Endpoints
-
-```
-POST   /api/orgs/{org}/providers                              register; returns the install kubeconfig
-GET    /api/orgs/{org}/providers                              list this Org's providers + registration state
-DELETE /api/orgs/{org}/providers/{name}                       delete the provider workspace (cascades)
-GET    /api/orgs/{org}/providers/{name}/kubeconfig            re-fetch the install kubeconfig
-POST   /api/orgs/{org}/providers/{name}/credentials/rotate    issue a NEW credential (org admin only)
-```
-
-Mutating calls honour `Organization.spec.catalogEntryCreation` (decision O-7):
-`admin` (the default) restricts registration to Org admins, `members` opens it
-to any Org member. An unset or unrecognized policy value is treated as the
-restrictive setting rather than silently widening access. The default is
-stricter than `workspaceCreation`'s on purpose: registration mints a
-cluster-admin credential and, under a platform provider's name, redirects every
-org user's traffic for that provider into the registrant's cluster. That is an
-admin's call. Organizations created before the default flipped were stamped
-with an explicit `members` by a one-time backfill in the organization
-controller (recorded in the `tenants.railgrid.ai/catalog-entry-creation-migrated`
-annotation), so their behaviour did not change; an admin can tighten them with
-`PATCH /api/orgs/{org}`.
-
-The kubeconfig endpoint counts as mutating — it hands out a credential.
-It re-mints from the ServiceAccount's existing token Secret, so it returns the
-*same* credential rather than minting a second one; "I lost the kubeconfig" must
-not silently multiply live credentials for one provider.
-
-`GET /api/orgs/{org}/providers` merges two sources that legitimately disagree:
-the kcp workspace (created at registration) and the catalog registry (populated
-only once the chart has actually run). The gap between them is the
-`registered: false` state — workspace exists, provider not installed yet — which
-is the state an operator is most likely to be debugging.
-
-## Credentials and rotation
-
-Registration mints one long-lived credential: a
-`kubernetes.io/service-account-token` Secret for the `provider` ServiceAccount
-in the provider's own workspace, wrapped in the kubeconfig the Org installs the
-chart with. It does not expire on its own — it is valid until the Secret or the
-ServiceAccount is deleted — which is exactly why there has to be a way to
-replace it.
-
-**Rotating.** An **Org admin** (always, regardless of
-`spec.catalogEntryCreation` — see the Endpoints note above) posts:
-
-```
-POST /api/orgs/{org}/providers/{name}/credentials/rotate
-```
-
-The response carries a `kubeconfig` in the same shape registration returns, a
-`rotatedAt`, and a `previousValidUntil`. Reinstall the chart with the new
-kubeconfig before `previousValidUntil`; that is the whole procedure.
-
-**What the hub does.** It issues a *second* token Secret for the same
-ServiceAccount, records which one is current on the ServiceAccount
-(`providers.railgrid.ai/active-token-secret`), and stamps the previous Secret with
-`providers.railgrid.ai/delete-after` — 24 hours out by default. The catalog
-controller deletes retired Secrets once that time passes.
-
-**Why both work in the meantime.** Both Secrets are tokens for the *same*
-ServiceAccount, so kcp authenticates either as
-`system:serviceaccount:default:provider`. Every hub-side check keys on that
-identity, not on which Secret a token came from — including the heartbeat's
-TokenReview — so a provider still running on the old kubeconfig keeps working,
-and keeps reporting alive, for the whole grace period. Rotation is a rolling
-change, not an outage.
-
-**What it does not do.** It does not revoke anything early: if a credential has
-leaked, delete the retired Secret in the provider workspace by hand, or delete
-and re-register the provider. It also does not restart anything — the hub has no
-write access into the Org's cluster.
-
-`status.credentialsRotatedAt` on the provider's `CatalogEntry` records the last
-rotation, because the credential itself is shown once and stored nowhere the
-hub can read back.
-
-Platform providers have the same endpoint behind the platform-admin gate:
-`POST /api/admin/providers/{name}/credentials/rotate`, which additionally
-rewrites the kubeconfig Secret in `root:railgrid:system:providers` so in-cluster
-readers move with it. There is no `railgrid` CLI subcommand for either; use curl:
-
-```bash
-curl -sS -X POST -H "Authorization: Bearer $RAILGRID_TOKEN" \
-  "$RAILGRID_HUB_URL/api/orgs/$ORG/providers/$NAME/credentials/rotate" \
-  | jq -r .kubeconfig > provider-kubeconfig.yaml
-```
-
-## Isolation
-
-What an Org gets is deliberately narrow.
-
-- **The minted ServiceAccount holds rights only inside its own provider
-  workspace** — cluster-admin there today, and the narrower generated
-  `railgrid:provider` role on a hub started with
-  `--provider-workspace-cluster-admin=false` (see
-  [providers.md](./providers.md#credentials-and-rotation)). Either way it cannot
-  read the Org workspace above it or any team workspace beside it.
-- **Cross-workspace reach only ever comes from the APIExport's permission
-  claims**, which each consuming Workspace accepts individually at Enable time —
-  the same consent gate platform providers pass.
-- **Enable is hub-mediated**, so it resolves through `GetForOrg` and an Org can
-  only ever enable its own providers or platform ones.
-- **An org-owned provider never receives a user's hub token.** The backend
-  proxy strips the caller's `Authorization` before the request enters the edge
-  tunnel and replaces it with a *delegated user token*: a ServiceAccount token
-  minted in the caller's current team workspace (`railgrid-du-<hash>` in the
-  `default` namespace, one deterministic account per workspace, user, and
-  provider), audience-bound, valid for ten minutes, cached hub-side for five,
-  and annotated with the user it stands in for
-  (`railgrid.ai/delegated-user`, `-org`, `-workspace`, `-provider`). kcp scopes
-  it to that one workspace, so the worst a tenant-run provider can do with it
-  is what the user could already do in that workspace with `kubectl`. The
-  account is bound to the same ClusterRole workspace members hold today
-  (`cluster-admin` in the workspace, granted by the bootstrap); narrowing that
-  is the workspace RBAC's job, not the proxy's. `X-Railgrid-User` still names
-  the human and `X-Railgrid-Tenant` / `X-Railgrid-Cluster` still carry the
-  workspace's cluster ID. When the provider calls back into the
-  hub with the token — `/clusters/{id}` or another provider's backend, with
-  `X-Railgrid-Org`/`X-Railgrid-Workspace` naming its workspace — the tenant resolver
-  verifies it online and resolves it to the human user again. A request the
-  hub cannot mint a token for (no resolvable caller, no workspace selection,
-  issuer unavailable) is refused; it never falls back to forwarding the bearer.
-  Anonymous probes carry no credential at all. Platform providers receive the
-  caller's own bearer unless the hub runs with
-  `--provider-delegated-tokens=platform|all`. The aggregate MCP endpoint
-  follows the same rule through the same code — see *Aggregate MCP endpoint*
-  below.
-- **Hub REST access needs explicit consent.** The delegated token reaches no
-  hub REST route except the capabilities the provider declares in
-  `spec.hub.access` (today: reading member lists, adding members) and an org
-  admin accepted in the Enable dialog for that workspace. Unlike platform
-  providers, an org-owned provider never gets these by default. The grant is
-  keyed by the provider's owner org as well as its name, so a self-hosted copy
-  never inherits the platform provider's grant. See `docs/providers.md`,
-  *Hub access*.
-
-What is **not** yet isolated is the raw kcp `bind` verb — see *Known gaps*.
-
-### Aggregate MCP endpoint
-
-An org-owned provider that serves `/mcp` is federated into its own Org's
-aggregate MCP endpoint (`/services/mcpserver/{cluster}/…/mcp`) alongside the
-platform providers, as `<name>__<tool>`. Details in
-[mcp-architecture.md](./mcp-architecture.md#org-owned-bring-your-own-providers);
-the rules that make it safe:
-
-- **Scoped by the verified tenant.** The aggregate verifies the bearer against
-  the cluster in the URL (Membership for a user, TokenReview + `use` check for
-  a ServiceAccount) and resolves that cluster's Org from its `kcp.io/path`.
-  Enumeration is `ListForOrg(thatOrg)`, so another Org's providers are never
-  listed, never contacted, and cannot collide on the `<name>__` prefix. Nothing
-  in request headers influences the Org.
-- **Shadowing matches the backend proxy.** An Org's copy of a platform provider
-  replaces it in that Org's aggregate. If the Org's copy cannot be reached for a
-  request, the platform copy is **not** substituted.
-- **Same boundary as the backend proxy, same code.** The aggregate reaches the
-  provider through `ProviderProxy.OrgProviderRoute`: the edge hop
-  `serveOverEdge` uses and a delegated user token from the same
-  `issueDelegatedToken` decision `delegatedAuthorization` uses. The caller's
-  bearer is never attached (the federation client drops it for such targets and
-  the transport overwrites `Authorization` regardless), the provider's
-  self-declared `BackendURL` is never dialled, and the transport refuses to send
-  the delegated token anywhere but that provider's edge route.
-- **Skipped, never downgraded.** Where no delegated token can be minted the
-  provider is left out of that request: a **ServiceAccount** bearer (the
-  MCPServer token from the portal's connect snippet, App Studio project
-  identities) has no human to delegate for, and an **org-scope** cluster has no
-  team workspace to mint in. Neither falls back to forwarding the bearer. The
-  MCPServer status controller enumerates as the server's ServiceAccount, so
-  `status.federatedProviders` reflects the Org's shadowing but lists no
-  org-owned providers.
-
-Registry scoping enforces the rest:
-
-| Lookup | Scope | Why |
-|---|---|---|
-| `Get(name)` | platform only | Backs the bare-name request paths (UI/backend proxy, heartbeat) that carry no tenant context. If org records were reachable, an Org could name a provider after a platform one and capture its route. |
-| `GetForOrg(org, name)` | Org's own, else platform | The tenant-scoped Enable path, where the Org is known and verified. |
-| `ListForOrg(org)` | Org's own + platform | The catalog. An empty org means platform-only, never everything. |
-
-The registry is keyed by `(orgUUID, name)`, so two Orgs can each register a
-`vault` with no collision.
-
-`GET /api/providers` runs behind `tenant.OptionalMiddleware`, which populates
-the Org **only after verifying membership**. A supplied-but-unverifiable Org
-degrades to the platform catalog rather than 403: the portal fetches this to
-build its shell before any Org is selected, and dropping the context can only
-ever show *less* than the caller asked for. Handlers behind that middleware must
-treat an empty OrgUUID as "global scope only", never as "trusted".
-
-### Ownership is derived from the workspace path, never from the object
-
-The `CatalogEntry` is written by the provider's own `init`, so nothing on it can
-be trusted to attribute ownership — a self-declared `ownerOrg` field would let
-any provider claim another Org's scope. The reconciler instead reads the
-`kcp.io/path` annotation from the cluster's `LogicalCluster` and derives the Org
-from the path.
-
-Two details are load-bearing:
-
-- **The read uses the hub's kcp-admin config addressed at `/clusters/<id>`, not
-  the reconcile request's multicluster client.** That client is scoped to the
-  `providers.railgrid.ai` APIExport virtual workspace, and a VW serves only the
-  resources its APIExport declares. `providers.railgrid.ai` declares nothing but
-  `catalogentries`, so `core.kcp.io/LogicalCluster` is not reachable there at
-  all — a read through it fails for every cluster.
-- **A failed resolution fails the reconcile; it does not default the scope.**
-  The default would be `""`, the platform-global scope, which is the *widest*
-  one in the registry — so guessing it on failure would publish an Org's
-  provider to every tenant and make it routable by bare name. Requeueing only
-  delays the entry appearing. A *successful* read with no path annotation is
-  different, and is treated as platform: every workspace the hub creates goes
-  through the Workspace API, which always stamps the annotation, so an
-  unannotated cluster cannot be an org provider workspace.
-
-Successful lookups are cached per cluster (a workspace cannot be renamed or
-re-parented); failures are not cached, so a transient error cannot pin a scope
-for the process's lifetime.
-
-## Name collisions
-
-Registering a name that matches a platform provider is **allowed**, and is how
-self-hosting works: an org running its own `edges` registers it as `edges`,
-because the chart writes its CatalogEntry under its own name.
-
-Resolution prefers the Org's own provider, so the copy shadows the platform one
-**for that Org and no one else**. `Registry.Get` stays platform-only, so an org
-copy can never capture a platform provider's proxy or heartbeat route by name;
-only the tenant-scoped lookups (`GetForOrg`, `ListForOrg`) see it. Tests pin both
-halves. `ListForOrg` flags such a copy with `shadowsPlatform: true` on the
-catalog DTO, and the portal shows an **Overrides platform provider** tag next
-to **Self-hosted**. That tag describes the catalog entries; it does not claim
-existing bindings use the org copy. A separate status uses the current,
-workspace-scoped binding projection to say **Enabled · platform copy** or
-**Enabled · org copy**, and reports the copy as unknown while that projection is
-stale or unavailable. Navigation and **Open** use the exact provider copy selected
-by that binding, including a platform copy enabled before the org started
-self-hosting. The existing enabled-provider response includes the bound copy's
-UI metadata and integrity pin; the merged catalog still offers the org copy for
-new Enable operations. Authenticated workspace backend requests use the same
-binding coordinates. An unavailable or removed copy stays visible but cannot
-silently load a same-named replacement. Registering an org copy therefore does
-not require disabling a working platform binding to keep using its Console UI.
-
-Names must be RFC1123 labels: the name becomes a kcp workspace name and appears
-in URL paths.
-
-## Known gaps
-
-### Native control-plane dependencies
-
-Self-hosting currently retains the existing kcp and Kubernetes dependency
-versions. The following native control-plane limitations are accepted for now:
-
-| Area | Known limitation | Operational effect |
-| --- | --- | --- |
-| Quota admission | A cluster-scoped request can select the same quota twice; failed or duplicate creates can also reserve usage before storage rejects the request. | Provider registration can fail or report exhausted capacity even when capacity appears available. |
-| Quota reclamation | Resource replenishment events can lose their kcp logical-cluster scope. | Deleting a provider may not reclaim quota immediately. Native full recalculation runs every five minutes, but that does not correct the separate admission defect or guarantee a retry succeeds. |
-| Provider removal | Native garbage collection can PATCH an APIExport through its legacy v1alpha1 owner reference, which cannot represent v1alpha2 label-scoped Secret claims. | Cleanup can fail validation and leave a registration in Removing. Completion may require an upstream correction or a separately verified integration fix. |
-
-Keep permission-claim selectors and ownership/deletion checks intact while
-investigating these failures. Artificial quota-status edits, broader Secret
-permissions, and forced finalizer removal are not supported recovery procedures.
-Correcting these native defects is separate from the smaller Railgrid install,
-UI, routing, and authorization fixes; this document does not claim they are fixed.
-
-### Other gaps
-
-- **The agent holds cluster-admin in the tenant's cluster, and its ClusterRole
-  now says so.** It used to be an allowlist of API groups, which read like a
-  containment boundary and was not one: it granted
-  `rbac.authorization.k8s.io/*` with `verbs: ["*"]`, and `*` covers `escalate`
-  and `bind`, so the agent could always mint a ClusterRole with any permission
-  and bind itself to it. Verified by doing exactly that with the old rules — the
-  ServiceAccount self-granted `cluster-admin`, after which
-  `auth can-i '*' '*'` returned `yes`.
-
-  What the list did buy was a confusing failure. Installing a provider through
-  an edge kubeconfig got far enough to create the CRD (`apiextensions.k8s.io`
-  was on the list) and then died on the provider's own custom resource:
-
-  ```
-  infrastructureproviders.infrastructure.railgrid.ai "…" is forbidden:
-  User "system:serviceaccount:railgrid-agent:railgrid-agent" cannot get …
-  ```
-
-  Bounding the agent for real means removing that escalate/bind path, which
-  needs its own design — the agent legitimately creates RBAC for the workloads
-  it deploys. Until then the grant is stated honestly rather than implying a
-  limit that does not hold.
-
-- **Nothing checks the virtual-workspace URL before handing out a credential.**
-  On a multi-shard platform whose shards advertise unreachable virtual-workspace
-  URLs (see [Platform prerequisite](#platform-prerequisite-a-publicly-dialable-virtual-workspace-url)),
-  the hub will still register an org provider and render install instructions.
-  The org installs successfully, sees a healthy provider with Templates
-  reconciling, and discovers only later that Instances never move. The hub could
-  read any existing `APIExportEndpointSlice` and warn at render time — it
-  already has a `Warnings` channel the portal renders under *Needs your
-  attention* — which would turn a multi-hour debug into a line of text.
-  Single-shard and embedded platforms are not exposed to this: the hub fronts
-  their virtual workspaces itself.
-- **No heartbeat.** The heartbeat endpoint addresses providers by bare name with
-  no tenant context, so it is platform-only — an org provider cannot beat, and
-  cannot keep a platform provider of the same name looking alive. Org providers
-  therefore never set `HeartbeatRequired`, leaving readiness resting on endpoint
-  validity. An org-scoped heartbeat path is future work.
-- **The provider UI is portable, through a grant.** `/services/providers/{name}`
-  (MCP, OAuth, webhooks, health — a verb is a kcp custom subresource on
-  `/clusters/{id}/apis/…`, reached through kcp's own routing) resolves in the
-  caller's Org and routes an org-owned provider over its edge tunnel.
-  `/ui/providers/{name}` cannot do the same by itself: the bundle is
-  loaded with a plain `<script src>`
-  ([ProviderFrame.vue](../portal/src/pages/ProviderFrame.vue)), which carries
-  no `Authorization` header, so there is no identity on an asset GET to scope
-  by — and the platform edges provider refuses tunnel requests with no bearer,
-  so the hub cannot fetch the bundle anonymously either. Before this was
-  closed, an Org self-hosting a provider that ships a micro-frontend got the
-  PLATFORM's bundle (or its 503, when that copy was stale) while its own copy
-  served the API.
-
-  The portal now asks first: `POST /api/providers/{name}/ui-grant`, as the
-  user under the selected org/workspace (the same `TenantResolver` membership
-  check the backend proxy makes). The hub confirms the Org owns a copy of
-  `{name}` with a UI served by the same authority as its backend (the edge
-  route fronts that Service), hashes the bundle through the caller's own
-  delegated route for Subresource Integrity, and answers with
-  `/ui/providers/{name}/_grant/{sealed}/main.js?v=…` plus the pin. The grant is an
-  asset-only, one-hour token naming `(user, org, workspace, provider registration)`.
-  Every asset redemption rechecks workspace membership and rejects a replaced
-  registration. Relative lazy modules, CSS and fonts keep that scoped directory;
-  App Studio captures its bootstrap directory for Vite preload URLs. Query grants
-  remain accepted for older single-file bundles. No cookie or ambient org scope
-  is installed. The grant is stripped from the upstream path/query and Referer;
-  responses use no-store and no-referrer. After the bounded asset session expires,
-  reloading the provider obtains a new grant.
-  When the script tag fetches that URL, the UI proxy opens the grant, resolves
-  the ORG's copy, mints the delegated token for the tuple it names, and
-  forwards over the edge hop — the same hop and token swap as
-  `serveOverEdge`, so an asset fetch and an API call look identical at the
-  far end. A URL without a grant stays platform-scoped. See
-  [pkg/hub/providers/ui_grant.go](../pkg/hub/providers/ui_grant.go) and
-  [portal/src/providers/providerBundle.ts](../portal/src/providers/providerBundle.ts).
-
-  The bundle keeps its `/ui/providers/{name}/` shape on purpose: the
-  provider's vendored portalkit derives `/services/providers/{name}` from the
-  `basePath` the host passes, and the host's provider-fetch allow list is
-  unchanged, so a bundle built before this change loads as-is.
-
-- **No edge-driven install.** The Org installs the chart itself with the returned
-  kubeconfig. One-click install onto a chosen edge needs credential projection
-  into the edge cluster (the agent's `Placement` plane ships no kcp credential
-  today) and is the natural next increment. Registration does now *require* a
-  named, connected edge — see
-  [byo-provider-edge-transport.md](./byo-provider-edge-transport.md) E-2 — so
-  the target is known; only the credential projection is missing.
-- **`bind` is no longer granted for org-owned providers, and P-3 is not what
-  closes it.** The provider's `init` used to grant `bind` on its APIExport to
-  `system:authenticated` in every provider workspace. For a platform provider
-  that is defensible — an admin vets it at onboard time. For an org-owned one
-  nobody vets anything, so it meant a member of ANY organization who learned
-  another Org's UUID could hand-craft an `APIBinding` and consume a provider
-  they were never offered.
-
-  `ApplyBindGrant` now resolves its own workspace from the `LogicalCluster` and,
-  under `root:railgrid:tenants:`, creates no grant and removes one an earlier
-  install left. Nothing supported breaks: every APIBinding railgrid creates comes
-  from the hub's Enable path, which runs as kcp-admin and needs no grant. What
-  stops working is writing an APIBinding by hand with kubectl, already outside
-  the hub-mediated model (O-10).
-
-  Note this is *not* provider-scoping.md's P-3, a per-Org `bind` ClusterRole.
-  That decision assumes a subject to bind — and there is none: the hub grants
-  workspace access per `User` (`ensureWorkspaceAdmin`), so kcp has no group
-  meaning "members of org X". Granting per member would need a reconciler
-  tracking membership across every org provider workspace. Refusing outright is
-  both simpler and tighter; P-3 should be revisited rather than implemented as
-  written.
-
-- **No `MaximalPermissionPolicy`.** An org provider's permission claims are
-  capped only by what each consuming Workspace accepts at Enable. Same posture
-  platform providers have today, but it is the thing to fix before any cross-org
-  provider sharing.
-- **ServiceAccount bearers get no org-owned MCP tools.** The aggregate federates
-  org-owned providers only for a human bearer in a team workspace (see
-  *Aggregate MCP endpoint*). A client configured with an MCPServer's
-  ServiceAccount token — the portal's connect snippet — or an App Studio
-  project identity sees the Org's shadowing (the platform copy is hidden) but
-  not the Org's own tools. Closing this needs a delegated credential for a
-  workload that carries the workload's own RBAC rather than the member
-  `cluster-admin` binding delegated user tokens get; forwarding the long-lived
-  ServiceAccount token itself to a tenant-run backend is not acceptable.
-- **Deleting a provider leaves tenant APIBindings behind.** They go NotReady per
-  kcp's semantics. Disable in each Workspace first for a clean teardown.
-
-## Where the code lives
-
-| Concern | File |
-|---|---|
-| Path constants + `SplitOrgProviderPath` | [pkg/kcppaths/paths.go](../pkg/kcppaths/paths.go) |
-| Workspace lifecycle | [pkg/hub/kcp/orgproviders.go](../pkg/hub/kcp/orgproviders.go) |
-| REST surface | [pkg/hub/restapi/org_providers.go](../pkg/hub/restapi/org_providers.go) |
-| SA + kubeconfig mint (`…AtPath` variants) | [pkg/hub/providers/provision.go](../pkg/hub/providers/provision.go) |
-| Registry scoping | [pkg/hub/providers/registry.go](../pkg/hub/providers/registry.go) |
-| Scope resolution from cluster path | [pkg/hub/providers/controller.go](../pkg/hub/providers/controller.go) |
-| Catalog DTO (`scope`, `ownerOrg`) | [pkg/hub/providers/api.go](../pkg/hub/providers/api.go) |
-| Edge hop + delegated token (backend proxy and MCP aggregate) | [pkg/hub/providers/proxy_edge.go](../pkg/hub/providers/proxy_edge.go), [pkg/hub/providers/org_provider_route.go](../pkg/hub/providers/org_provider_route.go) |
-| Aggregate MCP enumeration | [pkg/hub/mcpaggregate/enumerator.go](../pkg/hub/mcpaggregate/enumerator.go) |
-| Optional tenant context | [pkg/hub/tenant/middleware.go](../pkg/hub/tenant/middleware.go) |
-| Enabled-binding filter | [pkg/hub/kcp/bootstrap.go](../pkg/hub/kcp/bootstrap.go) |
-| Portal catalog section | [portal/src/pages/ProvidersPage.vue](../portal/src/pages/ProvidersPage.vue) |
+# Bring your own provider
+
+An organization can run a customer-authored Railgrid provider on its own connected
+Kubernetes Edge. It does not need a platform catalog entry or Railgrid approval.
+Register it through the Hub API, deploy its Helm chart using the hosting cluster's
+credentials, and enable it in selected workspaces through the ordinary console.
+Existing platform-provider self-hosting remains available.
+
+Open implementation findings are tracked in the
+[BYO provider review issue inventory](./byo-provider-review-issues.md).
+Their remediation is currently deferred.
+
+## Trust boundary
+
+The organization accepts the provider's behavior within its own organization.
+Railgrid must prevent its native credentials, API declarations, backend routing,
+and scoped identities from acquiring another organization's or platform authority.
+Provider SDK checks help well-behaved implementations; server-side enforcement
+must not depend on customer code calling those checks.
+
+**Browser limitation accepted for MVP:** provider JavaScript runs as trusted code
+in the console document, just like platform-provider JavaScript. It can access
+the signed-in user's portal authority, including other organizations and platform
+administration if the user has those permissions. The supported
+`railgridContext.fetch` helper and SRI do not isolate malicious code executing in
+that document. Browser isolation and organization-specific console origins are
+post-MVP work; the existing organization/workspace URL paths remain the console
+experience. Revoking a registration cannot
+unload already executed JavaScript; close or reload its console document.
+
+**Storage quota gap accepted for MVP:** the pinned kcp dependency has a reported
+cluster-scoped ResourceQuota accounting defect. This implementation does not fix
+upstream kcp, introduce a fork, change dependency pins, or require that defect to
+be fixed before enrollment. Reliable containment of persistent storage exhaustion
+is not claimed. Request/body/concurrency controls are separate from storage
+quotas and do not close that gap. Operators must account for shared availability
+risk when permitting customer-authored providers.
+
+## Manual installation
+
+Registration follows the existing organization `catalogEntryCreation` policy:
+organization admins by default, or organization members where an administrator
+explicitly enabled that existing setting. Installing on an Edge also requires
+access to the selected hosting Edge. A workspace-admin role alone does not grant
+organization-admin privileges.
+
+1. Author a provider using the existing SDK, CatalogEntry manifest, generated
+   APIExport and APIResourceSchemas. Declare foreign access under `spec.requires`.
+   Start with `providers/quickstart` for APIs, controllers, custom subresources,
+   readiness, heartbeat, and a portal custom element.
+   Build the image with the SDK version containing organization bootstrap support;
+   upgrading the Hub cannot change an older image that publishes APIs directly.
+2. List eligible hosting targets using
+   `GET /api/orgs/{org}/providers/install-targets`.
+3. Register through `POST /api/orgs/{org}/providers` with this body:
+
+   ```json
+   {"name":"my-provider","edge":{"workspace":"hosting-workspace-uuid","name":"my-cluster"}}
+   ```
+
+   Authenticate with the caller's normal Hub bearer and organization selection.
+   The name must match the CatalogEntry. `sourceProvider` is optional and only
+   selects an existing platform provider's installation instructions; an authored
+   provider does not need it or any platform counterpart.
+4. Save the response's `kubeconfig` string to a private file. It is already YAML,
+   not base64. This is a restricted Railgrid provider credential, not a credential
+   for the hosting Kubernetes cluster. Do not log or commit the response.
+5. Using the hosting cluster's kubeconfig, create a namespace and a Secret with
+   that file under the key `kubeconfig`. Mount it in the provider init and runtime
+   containers as `RAILGRID_PROVIDER_KUBECONFIG`. For example:
+
+   ```sh
+   kubectl --kubeconfig "$EDGE_KUBECONFIG" -n "$PROVIDER_NAMESPACE" \
+     create secret generic railgrid-provider-kubeconfig \
+     --from-file=kubeconfig="$PROVIDER_KUBECONFIG"
+   helm --kubeconfig "$EDGE_KUBECONFIG" upgrade --install my-provider "$CHART" \
+     --namespace "$PROVIDER_NAMESPACE" --version "$CHART_VERSION" \
+     --set providerKubeconfig.secretName=railgrid-provider-kubeconfig \
+     --set-string hub.url="$HUB_URL"
+   ```
+
+   The sample values match Railgrid's reference chart; an authored chart owns its
+   value names. Configure its hub URL, provider name, CatalogEntry file and generated
+   kcp directory. Keep production TLS verification enabled.
+6. Run the ordinary SDK `install.Bootstrap` in init. In an organization workspace
+   it submits the declaration to the authenticated Hub bootstrap endpoint. The Hub
+   validates and publishes it, including its own shard relay destination. The
+   runtime credential cannot publish arbitrary APIExports, RBAC, conversion
+   webhooks, or shard destinations directly. Provider-private CRDs are submitted
+   as bootstrap declarations, not installed with an unrestricted runtime identity.
+7. Wait for readiness and authenticated heartbeat. The provider appears in the
+   organization's catalog. Enable it separately in each intended workspace and
+   review the declared dependencies using the existing Enable flow.
+
+Registration and bootstrap are retryable. Registration alone creates no tenant
+APIBinding. The console installer for new customer-authored charts and a new CLI
+convenience command are deferred; the documented Hub API is the MVP interface.
+
+## Requests and API ownership
+
+The Hub creates a provider workspace at
+`root:railgrid:tenants:<org>:providers:<name>`. Restricted provider credentials
+read their own runtime state and access enabled consumers through their APIExport
+virtual workspace. Hub-owned enrollment metadata lives outside their authority.
+No generic authenticated-user bind grant is published for organization exports.
+
+Custom subresource requests follow kcp authorization, then the authenticated
+shard-to-Hub relay, then the Hub-selected Edge tunnel and Kubernetes Service.
+The relay verifies the owning organization, actual APIBinding and declared verb.
+The registration fixes the owning Edge and tunnel credential. The provider
+selects the Service and namespace inside that Edge; the MVP does not isolate
+mutually untrusted organizations sharing one Kubernetes cluster. The customer
+backend receives the original caller identity without the Hub transport credential.
+
+MCP and browser OAuth retain the ordinary backend contract and scoped delegated
+credentials. The user's general Hub bearer is not forwarded to a customer backend.
+This backend property does not remove the accepted trusted-browser limitation.
+
+Runtime selection follows the workspace's current APIBinding and export identity.
+A same-named organization catalog entry must not silently replace an existing
+platform binding. Disabling a provider retains the current explicit deletion
+policy; export data before removal when it must be preserved. No automatic
+platform-to-organization resource migration is promised.
+
+## Deployment requirements and lifecycle
+
+Both embedded kcp and separately deployed kcp must run the Railgrid organization
+boundary hooks. External deployments require the compatible Railgrid kcp serving
+binary and authenticated shard relay configuration; upgrading the Hub alone cannot
+protect clients that call a shard directly. Use mTLS for the external relay and
+keep trusted platform backend listeners private from tenant workloads.
+
+Set `--provider-heartbeat-auth=enforce` (Helm:
+`hub.security.providerHeartbeatAuth: enforce`) before registering organization
+providers. Legacy `warn` mode allows unauthenticated writes to platform-provider
+liveness and version status, so enrollment and credential issuance refuse that
+configuration. Platform providers must send their own service-account bearer;
+remove legacy `RAILGRID_HUB_TOKEN` user-token overrides so the SDK uses the
+provider kubeconfig. This prerequisite applies to embedded and external kcp.
+
+Every shard's advertised virtual-workspace endpoint must be reachable from the
+customer provider Pods with valid DNS and TLS. An internal service DNS name does
+not work outside the platform cluster. Multiple shards need distinct reachable
+endpoints; one Hub relay address cannot identify all shards.
+
+Use the existing credential retrieval and rotation APIs. Upgrade Helm in place to
+preserve provider workspace and APIExport identity. Existing broad provider
+credentials require an operator audit and explicit retirement before relying on
+this boundary; an unmarked legacy registration is not silently certified safe.
+The Hub removes conventional legacy `railgrid:providers:bind:<export>` grants
+when ensuring the org identity and before bootstrap publication. Audit and
+explicitly disable any previously created foreign APIBindings as well; deleting
+a bind grant prevents new binds but does not remove existing consumer data.
+Removing a registration does not uninstall its Helm release from the Edge.
+Re-registration is a new identity and must not adopt old bindings or credentials.
+
+## Provider TLS and credential recovery
+
+Minted provider kubeconfigs verify the Hub certificate using system trust by
+default. For a private Hub CA, set `--provider-ca-file` (Helm
+`hub.providerCASecretName`, Secret key `ca.crt`); the bundle is embedded in the
+kubeconfig. This must trust the provider-facing Hub origin, which can use a
+different CA from KCP. The certificate must cover that origin's DNS name,
+including `hub.internalURL` if used. Also install private roots in the provider
+container trust store for its other Hub HTTP clients, such as heartbeat and
+identity issuance. Each advertised shard virtual-workspace endpoint must likewise
+have reachable DNS and trusted TLS. Explicit Hub `--dev-mode` retains insecure
+kubeconfigs for local development only.
+
+Credential rotation normally overlaps the old and new tokens for 24 hours to
+allow a Helm rollout. `previousValidUntil` is the scheduled deletion time of the
+retired Secret, not a JWT expiry; the Hub's sweeper must be running. For a
+compromised credential, an operator must rotate and immediately delete the
+compromised retired token Secret in the provider workspace, then deploy the new
+kubeconfig. This can interrupt the provider until its Helm rollout completes.
+Use the ServiceAccount's `providers.railgrid.ai/active-token-secret` annotation
+to identify the replacement token; retired Secrets carry
+`providers.railgrid.ai/delete-after`. Verify each Secret belongs to the provider
+ServiceAccount before deleting it. Audit all token Secrets for earlier rotations
+too; revoke every compromised or obsolete Secret while preserving the active
+token needed by the replacement deployment. Deleting the old token Secret
+revokes that legacy credential. A short-lived refresh system and an org-admin
+emergency-revoke convenience API remain follow-up work.
+
+External-shard enforcement detection and automatic deployment upgrades remain
+deferred. Operators must satisfy the compatible-binary requirement themselves;
+the Hub currently checks relay configuration, not the running shard binary.
+Cross-shard credential ownership lookup remains a known limitation, so this MVP
+has been validated with a single KCP shard.

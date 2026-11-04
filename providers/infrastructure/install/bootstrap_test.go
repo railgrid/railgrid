@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -167,5 +168,66 @@ func TestBootstrapWorkspaceFreshAndUpgrade(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestBootstrapWorkspaceOrganizationPublishesBeforeWaiting(t *testing.T) {
+	var declaration sdkinstall.OrganizationBootstrap
+	published := false
+	waits := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/logicalclusters/cluster"):
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "core.kcp.io/v1alpha1", "kind": "LogicalCluster",
+				"metadata": map[string]any{"name": "cluster", "annotations": map[string]any{"kcp.io/path": "root:railgrid:tenants:org:providers:infrastructure"}},
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/providers/infrastructure/bootstrap":
+			if err := json.NewDecoder(r.Body).Decode(&declaration); err != nil {
+				t.Error(err)
+				http.Error(w, "invalid", 400)
+				return
+			}
+			published = true
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/clustercachedresources/"+CachedResourceTemplatesName):
+			waits++
+			if !published {
+				t.Error("waited before publishing")
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"apiVersion": "cache.kcp.io/v1alpha1", "kind": "ClusterCachedResource",
+				"metadata": map[string]any{"name": CachedResourceTemplatesName}, "status": map[string]any{"identityHash": "test-identity"},
+			})
+		default:
+			t.Errorf("unexpected direct request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected privileged write", http.StatusForbidden)
+		}
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	opts := sdkinstall.Options{Config: &rest.Config{Host: server.URL + "/clusters/provider-id"}, ExportName: APIExportName, KCPDir: "../deploy/chart/files", CatalogEntryFile: "../manifest.yaml"}
+	if err := BootstrapWorkspace(ctx, opts); err != nil {
+		t.Fatal(err)
+	}
+	if !published || waits != 1 || declaration.APIExport == nil || len(declaration.Schemas) == 0 || len(declaration.PrivateCRDs) == 0 {
+		t.Fatalf("incomplete org bootstrap: %+v waits=%d", declaration, waits)
+	}
+	if len(declaration.APIExportEndpointSliceAliases) != 1 || declaration.APIExportEndpointSliceAliases[0] != APIExportEndpointSliceName {
+		t.Fatal("missing legacy endpoint alias")
+	}
+	if len(declaration.VirtualStorage) != 1 || declaration.VirtualStorage[0].Resource != "templates" || declaration.VirtualStorage[0].Name != EndpointSliceTemplatesName {
+		t.Fatalf("wrong projection: %+v", declaration.VirtualStorage)
+	}
+	templates := false
+	for _, crd := range declaration.PrivateCRDs {
+		if crd.GetName() == "templates.infrastructure.railgrid.ai" {
+			templates = true
+		}
+	}
+	if !templates {
+		t.Fatal("Templates private storage missing")
 	}
 }

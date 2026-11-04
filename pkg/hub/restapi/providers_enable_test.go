@@ -17,17 +17,23 @@ limitations under the License.
 package restapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/go-logr/logr"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
+	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
@@ -292,6 +298,7 @@ func TestEnabledProviderPresentationUsesExactBoundCopy(t *testing.T) {
 	org.APIExportPath = "root:railgrid:tenants:org-a:providers:edges"
 	org.WorkspaceCluster = "org-export-cluster"
 	org.MainJSIntegrity = ""
+	org.IconURL = "/ui/providers/edges/brand.svg"
 	binding := kcp.ProviderBinding{Name: "edges", Ready: true, ExportPath: platform.APIExportPath, ExportName: platform.APIExportName, ExportCluster: platform.WorkspaceCluster}
 	tests := []struct {
 		name               string
@@ -359,10 +366,78 @@ func TestEnabledProviderPresentationUsesExactBoundCopy(t *testing.T) {
 				if dto.Version != platform.Version || dto.OwnerOrg != "" || dto.Serving == nil || dto.Serving.UI == nil || dto.Serving.UI.MainJSIntegrity != "sha384-platform" {
 					t.Fatalf("platform identity/pin replaced: %+v", dto)
 				}
-			} else if dto.Version != org.Version || dto.OwnerOrg != "org-a" {
-				t.Fatalf("organization identity replaced: %+v", dto)
+				if dto.IconURL != "/ui/providers/edges/icon.svg" {
+					t.Fatalf("platform icon was replaced by same-name org metadata: %q", dto.IconURL)
+				}
+			} else {
+				if dto.Version != org.Version || dto.OwnerOrg != "org-a" {
+					t.Fatalf("organization identity replaced: %+v", dto)
+				}
+				if dto.IconURL != "" {
+					t.Fatalf("org icon escaped without a workspace-scoped asset grant: %q", dto.IconURL)
+				}
 			}
 		})
+	}
+}
+
+func TestEnabledOrgProviderIconUsesScopedGrantForBoundCopy(t *testing.T) {
+	orgURL, err := url.Parse("http://provider.org.svc.cluster.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	org := hubproviders.Provider{
+		Name: "edges", OrgUUID: "org-a", CatalogEntryCluster: "org-provider-registration",
+		APIExportPath: "root:railgrid:tenants:org-a:providers:edges", APIExportName: "edges.providers.railgrid.ai",
+		WorkspaceCluster: "org-export-cluster", EndpointsValid: true, UIURL: orgURL, BackendURL: orgURL,
+		IconURL:   "/ui/providers/edges/brand.svg",
+		EdgeRoute: &hubproviders.EdgeRoute{WorkspaceUUID: "ws-1", Cluster: "tenant-cluster", EdgeName: "edge-1", ServiceName: "provider-edges"},
+	}
+	platformURL, _ := url.Parse("http://platform.provider.svc.cluster.local")
+	platform := hubproviders.Provider{
+		Name: "edges", APIExportPath: "root:railgrid:providers:edges", APIExportName: org.APIExportName,
+		WorkspaceCluster: "platform-export-cluster", EndpointsValid: true, UIURL: platformURL, BackendURL: platformURL,
+	}
+	mgr, ops, _ := newTestManager(t)
+	reg := hubproviders.NewRegistry()
+	reg.Upsert(platform)
+	reg.Upsert(org)
+	mgr.WithProviderRegistry(reg)
+	mgr.bootstrapper = &boundPresentationOps{
+		fakeOps: ops,
+		bindings: map[string]kcp.ProviderBinding{
+			"edges": {Name: "edges", Ready: true, ExportPath: org.APIExportPath, ExportName: org.APIExportName, ExportCluster: org.WorkspaceCluster},
+		},
+	}
+
+	uiProxy := hubproviders.NewUIProxy(reg, logr.Discard())
+	uiProxy.SetUIGrantKeys(serviceaccounts.StaticProofKeySource(bytes.Repeat([]byte{7}, 32)))
+	uiProxy.SetDelegatedTokenIssuer(hubproviders.DelegatedTokenIssuerFunc(func(context.Context, string, string, serviceaccounts.Identity, serviceaccounts.DelegatedProvider) (string, time.Time, error) {
+		return "delegated", time.Now().Add(time.Minute), nil
+	}))
+	uiProxy.SetUIGrantAuthorizer(func(context.Context, string, string, string) bool { return true })
+	grants := hubproviders.NewUIGrantHandler(reg, uiProxy, logr.Discard())
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", "ws-1"), grants)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/api/orgs/org-a/workspaces/ws-1/providers/enabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.Header.Get("Cache-Control") != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store", resp.Header.Get("Cache-Control"))
+	}
+	var listing ListEnabledProvidersResponse
+	if err := json.NewDecoder(resp.Body).Decode(&listing); err != nil {
+		t.Fatal(err)
+	}
+	dto := listing.BindingsByProvider["edges"].BoundProvider
+	if dto == nil || dto.Scope != hubproviders.ScopeOrg || dto.OwnerOrg != "org-a" {
+		t.Fatalf("enabled presentation = %+v, want exact org-owned bound copy", dto)
+	}
+	if !strings.HasPrefix(dto.IconURL, "/ui/providers/edges/_grant/") || !strings.HasSuffix(dto.IconURL, "/brand.svg") {
+		t.Fatalf("bound-copy icon URL = %q, want the org icon behind a scoped grant", dto.IconURL)
 	}
 }
 

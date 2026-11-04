@@ -75,7 +75,7 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-railgrid build-hub
+build: build-railgrid build-hub build-railgrid-kcp
 
 build-railgrid:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid ./cmd/railgrid/
@@ -98,6 +98,23 @@ build-release: ## Build the release-tagging helper (release <component|all>)
 
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-hub ./cmd/railgrid-hub/
+
+.PHONY: build-railgrid-kcp
+build-railgrid-kcp: ## Build external kcp with the same organization boundary as embedded kcp
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-kcp ./cmd/railgrid-kcp/
+
+.PHONY: test-byo-providers test-byo-provider-sdk
+test-byo-providers: test-byo-provider-sdk test-byo-provider-compat ## Verify organization provider bootstrap, identity and routing
+	go test $(GOFLAGS) -count=1 ./pkg/hub/... ./cmd/railgrid-kcp/...
+	cd providers/edges && go test $(GOFLAGS) -count=1 ./internal/tunnel/...
+
+test-byo-provider-sdk: ## Verify SDK organization bootstrap and signed Edge relay
+	cd provider-sdk && go test $(GOFLAGS) -count=1 ./install/... ./providerrelay/...
+
+.PHONY: test-byo-provider-compat
+test-byo-provider-compat: ## Verify existing provider installation remains compatible
+	cd providers/infrastructure && go test $(GOFLAGS) -count=1 ./install/...
+	cd providers/quickstart && go test $(GOFLAGS) -count=1 ./...
 
 test-runner: ## Run focused generic runner and harness tests
 	go test -count=1 ./pkg/runner/... ./cmd/railgrid-runner/...
@@ -2945,6 +2962,11 @@ docker-build-hub: ## Build railgrid-hub container image
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t ghcr.io/railgrid/railgrid-hub:$(VERSION) .
 
+.PHONY: docker-build-kcp
+docker-build-kcp: ## Build external kcp with Railgrid organization enforcement
+	docker build -f deploy/Dockerfile.kcp --platform $(DOCKER_PLATFORM) \
+		-t ghcr.io/railgrid/railgrid-kcp:$(VERSION) .
+
 docker-build-agent: ## Build railgrid-agent container image
 	docker build -f deploy/Dockerfile.agent \
 		--platform $(DOCKER_PLATFORM) \
@@ -3299,9 +3321,10 @@ test-provider-issuer-boundary: ## Verify native SA issuers cannot cross provider
 
 .PHONY: test-provider-action-routing
 test-provider-action-routing: ## Test binding-scoped provider actions and agent ingress
-	go test -count=1 ./pkg/hub/kcp ./pkg/hub/providers ./pkg/hub -run 'TestShard|TestForwardShard|TestProviderAgentIngress|TestAgentIngress'
-	cd provider-sdk && go test -count=1 ./dataplane
-	cd providers/edges && go test -count=1 ./internal/tunnel
+	go test $(GOFLAGS) -count=1 ./pkg/hub/providers ./pkg/hub -run 'TestProviderRelay|TestEmbeddedRelay|TestShard|TestProviderAgentIngress|TestAgentIngress'
+	go test $(GOFLAGS) -count=1 ./pkg/hub/kcp/orgboundary
+	cd provider-sdk && go test $(GOFLAGS) -count=1 ./dataplane ./providerrelay
+	cd providers/edges && go test $(GOFLAGS) -count=1 ./internal/tunnel
 
 .PHONY: test-provider-agent-ingress
 test-provider-agent-ingress: ## Test binding-scoped agent routing and credential isolation

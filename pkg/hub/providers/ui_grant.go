@@ -74,6 +74,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -82,6 +83,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 const (
@@ -411,6 +413,66 @@ func (h *UIGrantHandler) SetTenantResolver(r TenantResolver) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.resolver = r
+}
+
+// catalogIconURL issues the same sealed, membership-rechecked asset grant used
+// by provider bundles, but without fetching or pinning main.js. The catalog
+// middleware supplies a verified user/org/workspace tuple; the provider must
+// be that exact Org's current registration. No APIBinding is required because
+// the icon is catalog presentation, not provider API access.
+func (h *UIGrantHandler) catalogIconURL(ctx context.Context, caller tenant.TenantContext, prov Provider, asset string, query url.Values) (string, bool) {
+	if h == nil || h.proxy == nil || caller.User == "" || caller.OrgUUID == "" || caller.WorkspaceUUID == "" || caller.OrgUUID != prov.OrgUUID || prov.OrgUUID == "" {
+		return "", false
+	}
+	if asset == "" || path.Clean("/"+asset) != "/"+asset || strings.Contains(asset, "..") || strings.Contains(asset, "\\") || !isAssetPath("/"+asset) {
+		return "", false
+	}
+	if h.proxy.uiGrantKeys == nil || h.proxy.delegatedIssuer == nil || h.proxy.uiGrantAuthorize == nil {
+		return "", false
+	}
+	current, found := h.reg.GetForOrg(caller.OrgUUID, prov.Name)
+	if !found || current.OrgUUID != caller.OrgUUID || current.CatalogEntryCluster == "" ||
+		current.CatalogEntryCluster != prov.CatalogEntryCluster || current.IconURL != prov.IconURL ||
+		!orgUIOverEdge(current) || !current.Ready() {
+		return "", false
+	}
+
+	secret, err := h.proxy.uiGrantKeys.DelegatedProofKey(ctx)
+	if err != nil {
+		return "", false
+	}
+	now := time.Now()
+	if h.now != nil {
+		now = h.now()
+	}
+	claims := uiGrantClaims{
+		OrgUUID:         caller.OrgUUID,
+		WorkspaceUUID:   caller.WorkspaceUUID,
+		User:            caller.User,
+		Provider:        current.Name,
+		ProviderCluster: current.CatalogEntryCluster,
+		IssuedAt:        now.Unix(),
+		ExpiresAt:       now.Add(uiGrantTTL).Unix(),
+	}
+	random := h.rand
+	if random == nil {
+		random = rand.Reader
+	}
+	grant, err := sealUIGrant(secret, random, claims)
+	if err != nil {
+		return "", false
+	}
+	queryCopy := make(url.Values, len(query))
+	for key, values := range query {
+		queryCopy[key] = append([]string(nil), values...)
+	}
+	query = queryCopy
+	query.Del(UIGrantQueryParam)
+	assetURL := url.URL{
+		Path:     apiurl.PathPrefixProvidersUI + "/" + current.Name + "/_grant/" + grant + "/" + asset,
+		RawQuery: query.Encode(),
+	}
+	return assetURL.String(), true
 }
 
 // uiGrantResponse is the wire shape of a minted grant.

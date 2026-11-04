@@ -24,10 +24,13 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/railgrid/provider-sdk/dataplane"
 
+	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
+	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
 const orgBundleBody = "customElements.define('railgrid-provider-infrastructure', class extends HTMLElement {})"
@@ -203,6 +206,109 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	}
 	if !strings.HasPrefix(got.Header().Get("Content-Type"), "application/javascript") {
 		t.Errorf("Content-Type = %q, want the provider's", got.Header().Get("Content-Type"))
+	}
+}
+
+func TestCatalogProjectsScopedOrgIconGrantForExactShadowedProvider(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	orgProvider, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+	orgProvider.IconURL = "/ui/providers/infrastructure/icon.svg"
+	f.reg.Upsert(orgProvider)
+
+	list := NewListHandler(f.reg)
+	list.SetUIGrantHandler(f.grants)
+	req := httptest.NewRequest(http.MethodGet, PathListProviders, nil)
+	req = req.WithContext(tenant.WithContext(req.Context(), tenant.TenantContext{
+		User: "alice", OrgUUID: testOrg, WorkspaceUUID: testWS,
+	}))
+	response := httptest.NewRecorder()
+	list.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("catalog status = %d: %s", response.Code, response.Body.String())
+	}
+	if got := response.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private, no-store for grant-bearing catalog", got)
+	}
+	var body listResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	var iconURL string
+	count := 0
+	for _, item := range body.Items {
+		if item.Name != "infrastructure" {
+			continue
+		}
+		count++
+		if item.Scope != ScopeOrg || item.OwnerOrg != testOrg || !item.ShadowsPlatform {
+			t.Fatalf("same-name item = {scope:%q owner:%q shadows:%t}, want exact org copy", item.Scope, item.OwnerOrg, item.ShadowsPlatform)
+		}
+		iconURL = item.IconURL
+	}
+	if count != 1 {
+		t.Fatalf("infrastructure catalog entries = %d, want only the shadowing org copy", count)
+	}
+	if !strings.HasPrefix(iconURL, "/ui/providers/infrastructure/_grant/") || !strings.HasSuffix(iconURL, "/icon.svg") {
+		t.Fatalf("iconURL = %q, want a sealed asset-grant URL for the org icon", iconURL)
+	}
+
+	// This registry fixture has no APIBinding: catalog icons work before Enable.
+	*f.edge = edgeUpstream{}
+	f.issuer.calls = 0
+	asset := f.fetchBundle(iconURL)
+	if asset.Code != http.StatusOK {
+		t.Fatalf("granted org icon status = %d: %s", asset.Code, asset.Body.String())
+	}
+	wantPath := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy/icon.svg"
+	if f.edge.path != wantPath {
+		t.Fatalf("edge path = %q, want exact org icon path %q", f.edge.path, wantPath)
+	}
+	if f.issuer.calls != 1 || f.issuer.org != testOrg || f.issuer.ws != testWS || f.issuer.user != "alice" || f.issuer.provider != "infrastructure" {
+		t.Fatalf("icon grant delegated identity = (%s,%s,%s,%s) x%d, want exact org/workspace/user/provider once", f.issuer.org, f.issuer.ws, f.issuer.user, f.issuer.provider, f.issuer.calls)
+	}
+	if f.edge.authorization != "" || f.edge.upstreamAuth != "Bearer "+delegatedToken {
+		t.Fatalf("icon redemption auth: Authorization=%q upstream=%q", f.edge.authorization, f.edge.upstreamAuth)
+	}
+}
+
+func TestCatalogDoesNotIssueOrgIconGrantAcrossOrganizations(t *testing.T) {
+	f := newUIGrantFixture(t, testOrg, testWS)
+	orgProvider, _ := f.reg.GetForOrg(testOrg, "infrastructure")
+	orgProvider.IconURL = "/ui/providers/infrastructure/icon.svg"
+	f.reg.Upsert(orgProvider)
+
+	list := NewListHandler(f.reg)
+	list.SetUIGrantHandler(f.grants)
+	list.SetMiddleware(tenant.OptionalOrgMiddleware(
+		tenant.UserResolverFunc(func(*http.Request) (string, error) { return "mallory", nil }),
+		tenant.MembershipLookupFunc(func(_ context.Context, user string) (*tenancyv1alpha1.UserMembershipIndex, error) {
+			return &tenancyv1alpha1.UserMembershipIndex{
+				ObjectMeta: metav1.ObjectMeta{Name: user},
+				Spec:       tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{{OrgUUID: "other-org", Role: tenancyv1alpha1.MembershipRoleAdmin}}},
+			}, nil
+		}),
+	))
+	req := httptest.NewRequest(http.MethodGet, PathListProviders, nil)
+	req.Header.Set(tenant.HeaderRailgridOrg, testOrg)
+	req.Header.Set(tenant.HeaderRailgridWorkspace, testWS)
+	response := httptest.NewRecorder()
+	list.ServeHTTP(response, req)
+	if response.Code != http.StatusOK {
+		t.Fatalf("catalog status = %d: %s", response.Code, response.Body.String())
+	}
+	var body listResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	for _, item := range body.Items {
+		if item.Name == "infrastructure" {
+			if item.Scope != ScopeGlobal || item.OwnerOrg != "" || strings.Contains(item.IconURL, "/_grant/") {
+				t.Fatalf("cross-org catalog item = {scope:%q owner:%q icon:%q}; wanted platform fallback without an org grant", item.Scope, item.OwnerOrg, item.IconURL)
+			}
+		}
+	}
+	if f.edge.hit || f.issuer.calls != 0 {
+		t.Fatalf("cross-org catalog request minted or redeemed an org grant: edge=%t issuer calls=%d", f.edge.hit, f.issuer.calls)
 	}
 }
 
