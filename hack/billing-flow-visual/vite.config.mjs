@@ -17,7 +17,7 @@ export default defineConfig({
   root: resolve(repo, 'portal'),
   // The fixture and Tilt portal run concurrently with different configs.
   // Sharing optimized dependencies invalidates the live portal's module URLs.
-  cacheDir: resolve(modules, '.vite-billing-flow'),
+  cacheDir: resolve(repo, 'portal/.vite-cache/billing-flow'),
   base: '/ui/',
   plugins: [{
     name: 'billing-design-fixture',

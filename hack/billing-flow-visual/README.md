@@ -33,4 +33,6 @@ selects the capture directory. `make test-billing` runs hub and portal unit test
 
 The plan chooser reuses the marketing pricing hierarchy and descriptions. Its
 amounts, currencies and effective allowances come from API responses. The
-preview has its own Vite cache so it can run alongside the Tilt portal.
+preview has its own Vite cache so it can run alongside the Tilt portal. Both
+caches live under `portal/.vite-cache/`, outside `node_modules`, so a production
+build’s dependency reinstall does not remove modules still served by Tilt.
