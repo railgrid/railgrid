@@ -93,9 +93,7 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 			"No LLM models are configured in this workspace yet.")}
 	}
 
-	if reason, message := validateLLMRegistry(registry); reason != "" {
-		return llmRegistryResult{condition: condition(metav1.ConditionFalse, reason, message)}
-	}
+	validationReason, validationMessage := validateLLMRegistry(registry)
 
 	// Structure is sound; now ask whether each active model can actually run.
 	models := make([]aiv1alpha1.StudioLLMModelStatus, 0, len(registry.Models))
@@ -110,7 +108,12 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 		}
 		seen[model.ID] = struct{}{}
 
-		if err := modelcatalog.ValidateReasoningEffort(model.Provider, model.BaseURL, model.Model, model.ReasoningEffort); err != nil {
+		provider, baseURL := model.Provider, model.BaseURL
+		if model.ConnectionSnapshot != nil {
+			provider = model.ConnectionSnapshot.Provider
+			baseURL = model.ConnectionSnapshot.BaseURL
+		}
+		if err := modelcatalog.ValidateReasoningEffort(provider, baseURL, model.Model, model.ReasoningEffort); err != nil {
 			invalidReasoning = append(invalidReasoning, model.ID)
 		}
 
@@ -127,6 +130,8 @@ func (r *Reconciler) checkLLMRegistry(ctx context.Context, c client.Client, st *
 	sort.Strings(invalidReasoning)
 
 	switch {
+	case validationReason != "":
+		return llmRegistryResult{models: models, condition: condition(metav1.ConditionFalse, validationReason, validationMessage)}
 	case len(invalidReasoning) > 0:
 		return llmRegistryResult{models: models, condition: condition(metav1.ConditionFalse, "ReasoningEffortInvalid",
 			fmt.Sprintf("These models have an invalid reasoning-effort default: %s.", strings.Join(invalidReasoning, ", ")))}
@@ -155,11 +160,26 @@ const (
 // half-finished configuration, not a dangling pointer, and saying so would
 // turn an in-progress edit into a workspace-level fault.
 func (r *Reconciler) credentialState(ctx context.Context, c client.Client, namespace string, model aiv1alpha1.StudioLLMModel) (bool, credentialState) {
-	if model.SecretRef == nil || strings.TrimSpace(model.SecretRef.Name) == "" {
+	secretRef := model.SecretRef
+	secretKey := LLMCredentialSecretKey
+	var secretUID, secretResourceVersion, generatedID string
+	if model.ConnectionRef != "" {
+		if model.ConnectionSnapshot == nil || model.ConnectionSnapshot.SecretRef == nil {
+			return false, credentialUnreferenced
+		}
+		secretRef = model.ConnectionSnapshot.SecretRef
+		secretUID = model.ConnectionSnapshot.SecretUID
+		secretResourceVersion = model.ConnectionSnapshot.SecretResourceVersion
+		generatedID = model.ConnectionSnapshot.GeneratedSecretID
+		if strings.TrimSpace(model.ConnectionSnapshot.SecretKey) != "" {
+			secretKey = model.ConnectionSnapshot.SecretKey
+		}
+	}
+	if secretRef == nil || strings.TrimSpace(secretRef.Name) == "" {
 		return false, credentialUnreferenced
 	}
 	var secret corev1.Secret
-	key := types.NamespacedName{Namespace: namespace, Name: model.SecretRef.Name}
+	key := types.NamespacedName{Namespace: namespace, Name: secretRef.Name}
 	if key.Namespace == "" {
 		key.Namespace = "default"
 	}
@@ -172,7 +192,18 @@ func (r *Reconciler) credentialState(ctx context.Context, c client.Client, names
 		// is already there.
 		return false, credentialUnreferenced
 	}
-	if len(strings.TrimSpace(string(secret.Data[LLMCredentialSecretKey]))) == 0 {
+	if secretUID != "" && string(secret.UID) != secretUID {
+		return false, credentialMissing
+	}
+	if generatedID != "" {
+		if secret.Labels[aiv1alpha1.ModelProviderConnectionSecretOwnerLabel] != aiv1alpha1.ModelProviderConnectionSecretOwner ||
+			secret.Annotations[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != generatedID || secret.Immutable == nil || !*secret.Immutable {
+			return false, credentialMissing
+		}
+	} else if secretResourceVersion != "" && secret.ResourceVersion != secretResourceVersion {
+		return false, credentialMissing
+	}
+	if len(strings.TrimSpace(string(secret.Data[secretKey]))) == 0 {
 		return false, credentialEmpty
 	}
 	return true, credentialPresent

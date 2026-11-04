@@ -185,6 +185,10 @@ type assistantThreadTurnCreateRequest struct {
 	// interrupted-turn continuation endpoint so ordinary turns cannot forge a
 	// predecessor relationship.
 	continuationOfTurnID string
+	// predecessorRun is server-owned provenance for an interrupted
+	// continuation. Its audit snapshot preserves the admitted endpoint/key
+	// across a connection edit and controller rollover.
+	predecessorRun *store.AssistantRun
 }
 
 type assistantThreadTurnContinueRequest struct {
@@ -882,6 +886,7 @@ func (s *Server) continueProjectAssistantThreadTurn(w http.ResponseWriter, r *ht
 		ContentParts:            append([]projectAssistantContentPart(nil), continueRequest.ContentParts...),
 		contextResourceReceipts: contextResourceReceipts,
 		continuationOfTurnID:    predecessor.ID,
+		predecessorRun:          &predecessorRun,
 	}
 	s.startProjectAssistantThreadExecution(w, r, c, id, project, thread, request)
 }
@@ -955,6 +960,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		s.writeAssistantThreadError(w, replayErr)
 		return
 	}
+	var selectedConnectionSnapshot *aiv1alpha1.StudioLLMConnectionSnapshot
 	if !replay {
 		modelStarted := time.Now()
 		var restore func(*projectLLMSettings)
@@ -963,7 +969,24 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				restoreProjectAssistantReasoning(settings, request.reasoningSnapshot)
 			}
 		}
-		selected, modelErr := readProjectLLMModelWithSettings(r.Context(), c, request.ModelID, request.modelRevisionID, restore)
+		var selected projectLLMModelSettings
+		var modelErr error
+		if request.continuationOfTurnID != "" {
+			if request.predecessorRun == nil {
+				modelErr = newValidationError("interrupted continuation is missing its server-owned predecessor run")
+			} else {
+				selected, modelErr = s.readProjectLLMModelForContinuation(r.Context(), id, c, *request.predecessorRun)
+				// Legacy interrupted runs may predate model audit pinning. In
+				// that case the empty reference resolves to the current default;
+				// enforce equality only for fields the predecessor actually pinned.
+				if modelErr == nil && ((request.ModelID != "" && selected.ID != request.ModelID) ||
+					(request.modelRevisionID != "" && selected.RevisionID != request.modelRevisionID)) {
+					modelErr = store.ErrAssistantRunConflict
+				}
+			}
+		} else {
+			selected, modelErr = s.readProjectLLMModelForIdentity(r.Context(), id, c, request.ModelID, request.modelRevisionID, restore)
+		}
 		klog.FromContext(r.Context()).Info("App Studio turn preparation", "stage", "model", "project", project.Name, "cluster", id.clusterID, "duration", time.Since(modelStarted))
 		if modelErr != nil {
 			writeProjectError(w, modelErr)
@@ -975,6 +998,14 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 		}
 		request.ModelID = selected.ID
 		request.modelRevisionID = selected.RevisionID
+		if selected.ConnectionSnapshot != nil {
+			copy := *selected.ConnectionSnapshot
+			if selected.ConnectionSnapshot.SecretRef != nil {
+				secretRef := *selected.ConnectionSnapshot.SecretRef
+				copy.SecretRef = &secretRef
+			}
+			selectedConnectionSnapshot = &copy
+		}
 		if request.continuationOfTurnID != "" {
 			// The interrupted continuation carries the predecessor's immutable
 			// choice, including an absent legacy snapshot.
@@ -1055,10 +1086,11 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 	}
 	var canonicalTurn store.AssistantTurn
 	started, err := s.startProjectAssistantRunDurablyForThread(r.Context(), scope, thread.ID, id.user, request.Content, request.ClientUserMessageID, request.CollaborationMode, projectAssistantDurableSkillSelection{
-		ModelID:         request.ModelID,
-		ModelRevisionID: request.modelRevisionID,
-		Reasoning:       cloneProjectAssistantAuditReasoning(request.reasoningSnapshot),
-		IDs:             skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills,
+		ModelID:            request.ModelID,
+		ModelRevisionID:    request.modelRevisionID,
+		ConnectionSnapshot: selectedConnectionSnapshot,
+		Reasoning:          cloneProjectAssistantAuditReasoning(request.reasoningSnapshot),
+		IDs:                skillIDs, CatalogDigest: skillSnapshot.CatalogDigest, Receipts: selectedSkills,
 		ContextResources: contextResources, ContextResourceReceipts: selectedContextResources,
 		ContentParts: request.ContentParts,
 	},

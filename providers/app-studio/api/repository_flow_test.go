@@ -1991,6 +1991,13 @@ func (r projectSettingsDynamicResource) Namespace(namespace string) dynamic.Reso
 	return r
 }
 
+func (r projectSettingsDynamicResource) List(_ context.Context, _ metav1.ListOptions) (*unstructured.UnstructuredList, error) {
+	if r.gvr == modelProviderConnectionsGVR {
+		return &unstructured.UnstructuredList{}, nil
+	}
+	return nil, fmt.Errorf("unexpected resource list: %s", r.gvr)
+}
+
 // Get serves the two objects the registry is now assembled from: the Studio
 // holding spec.llm, and the named model's own credential Secret.
 func (r projectSettingsDynamicResource) Get(_ context.Context, name string, _ metav1.GetOptions, _ ...string) (*unstructured.Unstructured, error) {

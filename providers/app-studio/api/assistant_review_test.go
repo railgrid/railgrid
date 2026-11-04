@@ -88,6 +88,7 @@ func newAssistantReviewHTTPTest(t *testing.T) (*mux.Router, *store.MemoryStore, 
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	proxy.Register(modelProviderConnectionsGVR)
 	if credential := projectLLMCredential(settings); credential != nil {
 		proxy.Add(secretGVR, credential)
 	}

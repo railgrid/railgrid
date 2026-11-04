@@ -35,7 +35,7 @@ import (
 )
 
 const (
-	projectAssistantAuditVersion        = 3
+	projectAssistantAuditVersion        = 4
 	projectAssistantAuditMaxTools       = 128
 	projectAssistantAuditMaxModelCalls  = 32
 	projectAssistantAuditMaxCompactions = 16

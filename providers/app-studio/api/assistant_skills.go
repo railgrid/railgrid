@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strings"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	appskills "github.com/railgrid/provider-app-studio/skills"
 	"github.com/railgrid/provider-app-studio/store"
 	"github.com/railgrid/provider-app-studio/workspace"
@@ -70,6 +71,7 @@ type projectAssistantSkillsResponse struct {
 type projectAssistantDurableSkillSelection struct {
 	ModelID                 string
 	ModelRevisionID         string
+	ConnectionSnapshot      *aiv1alpha1.StudioLLMConnectionSnapshot
 	Reasoning               *projectAssistantAuditReasoning
 	IDs                     []string
 	CatalogDigest           string

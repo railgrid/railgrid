@@ -40,6 +40,7 @@ import (
 	"log"
 	"slices"
 
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -48,10 +49,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
+	"sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -105,6 +111,8 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	c, err := mcbuilder.ControllerManagedBy(mgr).
 		Named("app-studio-studio").
 		For(&aiv1alpha1.Studio{}).
+		Watches(&aiv1alpha1.ModelProviderConnection{}, studioForConnection).
+		Watches(&corev1.Secret{}, studioForSecret).
 		Build(r)
 	if err != nil {
 		return err
@@ -113,6 +121,41 @@ func (r *Reconciler) SetupWithManager(mgr mcmanager.Manager) error {
 		return c.MultiClusterWatch(r.Watches.Source(mapInstanceEvent, tenantwatch.InstancesGVR))
 	}
 	return nil
+}
+
+func studioForConnection(name multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(context.Context, client.Object) []reconcile.Request {
+		return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: aiv1alpha1.StudioName}}}
+	}))(name, cl)
+}
+
+func studioForSecret(name multicluster.ClusterName, cl cluster.Cluster) mchandler.EventHandler {
+	return mchandler.Lift(handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, obj client.Object) []reconcile.Request {
+		if obj.GetNamespace() != "default" {
+			return nil
+		}
+		var studio aiv1alpha1.Studio
+		if err := cl.GetClient().Get(ctx, types.NamespacedName{Name: aiv1alpha1.StudioName}, &studio); err != nil || studio.Spec.LLM == nil {
+			return nil
+		}
+		for _, model := range studio.Spec.LLM.Models {
+			if model.SecretRef != nil && model.SecretRef.Name == obj.GetName() {
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: aiv1alpha1.StudioName}}}
+			}
+			if model.ConnectionSnapshot != nil && model.ConnectionSnapshot.SecretRef != nil && model.ConnectionSnapshot.SecretRef.Name == obj.GetName() {
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: aiv1alpha1.StudioName}}}
+			}
+		}
+		var connections aiv1alpha1.ModelProviderConnectionList
+		if err := cl.GetClient().List(ctx, &connections); err == nil {
+			for i := range connections.Items {
+				if connections.Items[i].Spec.SecretRef.Name == obj.GetName() || connections.Items[i].Annotations[aiv1alpha1.ModelProviderConnectionPendingKeySecretAnnotation] == obj.GetName() {
+					return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: aiv1alpha1.StudioName}}}
+				}
+			}
+		}
+		return nil
+	}))(name, cl)
 }
 
 // mapInstanceEvent names the Studio a shared instance belongs to, from the
@@ -167,7 +210,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	next := aiv1alpha1.StudioStatus{Search: search, Browser: browser}
+	next := aiv1alpha1.StudioStatus{Search: search, Browser: browser, LegacyModelMigrations: st.Status.LegacyModelMigrations, ProtectedModelCredentials: st.Status.ProtectedModelCredentials, RetiredModelCredentials: st.Status.RetiredModelCredentials}
 	next.Phase = aiv1alpha1.StudioServiceReady
 	for _, svc := range []*aiv1alpha1.StudioServiceStatus{search, browser} {
 		if svc != nil && svc.Phase == aiv1alpha1.StudioServicePending {

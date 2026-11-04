@@ -108,7 +108,7 @@ func (s *Server) startAssistantThreadTitleGeneration(c *asclient.Client, scope s
 		if !s.assistantThreadTitleNeedsGeneration(ctx, scope, thread, currentUserMessageID) {
 			return
 		}
-		title, err := s.generateAssistantThreadTitle(ctx, c, prompt)
+		title, err := s.generateAssistantThreadTitle(ctx, c, id, prompt)
 		if err != nil {
 			return
 		}
@@ -130,7 +130,7 @@ func (s *Server) startAssistantThreadTitleGeneration(c *asclient.Client, scope s
 	}()
 }
 
-func (s *Server) generateAssistantThreadTitle(ctx context.Context, c *asclient.Client, prompt string) (string, error) {
+func (s *Server) generateAssistantThreadTitle(ctx context.Context, c *asclient.Client, id identity, prompt string) (string, error) {
 	prompt = truncateAssistantThreadTitlePrompt(prompt)
 	if prompt == "" {
 		return "", errors.New("assistant thread title prompt is empty")
@@ -141,10 +141,11 @@ func (s *Server) generateAssistantThreadTitle(ctx context.Context, c *asclient.C
 	if c == nil {
 		return "", errors.New("project client is not configured")
 	}
-	settings, err := readProjectLLMSettings(ctx, c)
+	selected, err := s.readDefaultProjectLLMModelForIdentity(ctx, id, c)
 	if err != nil {
 		return "", err
 	}
+	settings := selected.Settings
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return "", err
 	}

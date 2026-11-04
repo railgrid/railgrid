@@ -63,9 +63,10 @@ import (
 // have to stay collection routes, which is exactly the shape the contract has
 // no class for.
 var (
-	projectsGVR = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "projects"}
-	sessionsGVR = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "sessions"}
-	studiosGVR  = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "studios"}
+	projectsGVR                 = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "projects"}
+	sessionsGVR                 = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "sessions"}
+	studiosGVR                  = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "studios"}
+	modelProviderConnectionsGVR = schema.GroupVersionResource{Group: aiv1alpha1.GroupName, Version: aiv1alpha1.Version, Resource: "modelproviderconnections"}
 )
 
 func gvrForResource(resource string) (schema.GroupVersionResource, bool) {
@@ -76,6 +77,8 @@ func gvrForResource(resource string) (schema.GroupVersionResource, bool) {
 		return sessionsGVR, true
 	case studiosGVR.Resource:
 		return studiosGVR, true
+	case modelProviderConnectionsGVR.Resource:
+		return modelProviderConnectionsGVR, true
 	default:
 		return schema.GroupVersionResource{}, false
 	}
@@ -220,6 +223,8 @@ func (s *Server) serveDataPlane(w http.ResponseWriter, r *http.Request) {
 		vars["project"], vars["thread"] = project, thread
 	case studiosGVR.Resource:
 		vars["studio"] = req.Name
+	case modelProviderConnectionsGVR.Resource:
+		vars["name"] = req.Name
 	}
 	// The cluster every handler acts in is the one in the PATH, which the
 	// gate just ran against — not an addressing header. The header survives
