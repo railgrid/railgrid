@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -73,10 +74,14 @@ func IsPlanArchived(plan *unstructured.Unstructured) bool {
 // Billing holds what the seam needs: discovery for the deployment's URL and
 // token, and the kcp-admin client into the metering workspace for reads.
 type Billing struct {
-	discovery Installed
-	store     dynamic.Interface
-	client    *http.Client
-	logger    klog.Logger
+	discovery    Installed
+	store        dynamic.Interface
+	client       *http.Client
+	logger       klog.Logger
+	pricingMu    sync.Mutex
+	pricingKey   string
+	pricingUntil time.Time
+	pricing      map[string]SubscriptionPrice
 }
 
 // NewBilling builds the seam over discovery (the hub's Discovery; tests
@@ -150,11 +155,12 @@ type OrgSubscription struct {
 // PlanOffer is one plan: its limits, whether the deployment sells it, and
 // whether the organization is on it.
 type PlanOffer struct {
-	Name        string  `json:"name"`
-	DisplayName string  `json:"displayName,omitempty"`
-	Sellable    bool    `json:"sellable"`
-	Current     bool    `json:"current"`
-	Limits      []Limit `json:"limits"`
+	Name        string             `json:"name"`
+	DisplayName string             `json:"displayName,omitempty"`
+	Sellable    bool               `json:"sellable"`
+	Current     bool               `json:"current"`
+	Limits      []Limit            `json:"limits"`
+	Price       *SubscriptionPrice `json:"price,omitempty"`
 }
 
 type billingStatus struct {
@@ -183,6 +189,7 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		return out, fmt.Errorf("listing plans: %w", err)
 	}
 	display := map[string]string{}
+	priceIDs := map[string]string{}
 	archived := map[string]bool{}
 	for i := range plans.Items {
 		p := &plans.Items[i]
@@ -191,6 +198,7 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		offer.DisplayName, _, _ = unstructured.NestedString(p.Object, "spec", "displayName")
 		price, _, _ := unstructured.NestedString(p.Object, "spec", "subscription", "priceID")
 		offer.Sellable = price != "" && !isArchived
+		priceIDs[offer.Name] = price
 		display[offer.Name] = offer.DisplayName
 		archived[offer.Name] = isArchived
 		out.Plans = append(out.Plans, offer)
@@ -248,6 +256,14 @@ func (b *Billing) Summary(ctx context.Context, org string) (OrgBilling, error) {
 		filteredOffers = append(filteredOffers, out.Plans[i])
 	}
 	out.Plans = filteredOffers
+	if out.Enabled {
+		prices := b.subscriptionPrices(ctx, e)
+		for i := range out.Plans {
+			if price, found := prices[priceIDs[out.Plans[i].Name]]; found {
+				out.Plans[i].Price = &price
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -273,12 +289,27 @@ func limitsOf(obj map[string]any, fields ...string) []Limit {
 // subscription integration must preserve that plan until the administrator
 // releases it.
 func (b *Billing) Checkout(ctx context.Context, org, plan, successURL, cancelURL string) (string, error) {
+	return b.CheckoutQuoted(ctx, org, plan, "", successURL, cancelURL)
+}
+
+// CheckoutQuoted preserves the price the member reviewed, including across a
+// concurrent catalog update. The deployment also verifies this mapping.
+func (b *Billing) CheckoutQuoted(ctx context.Context, org, plan, expectedPrice, successURL, cancelURL string) (string, error) {
 	planObject, planErr := b.store.Resource(gvrPlans).Get(ctx, plan, metav1.GetOptions{})
 	if planErr == nil && IsPlanArchived(planObject) {
 		return "", &BillingError{Status: http.StatusConflict, Message: fmt.Sprintf("plan %q is archived and unavailable for checkout", plan)}
 	}
 	if planErr != nil && !apierrors.IsNotFound(planErr) {
 		return "", fmt.Errorf("reading checkout plan %q: %w", plan, planErr)
+	}
+	if expectedPrice != "" {
+		priceID := ""
+		if planObject != nil {
+			priceID, _, _ = unstructured.NestedString(planObject.Object, "spec", "subscription", "priceID")
+		}
+		if expectedPrice != priceID {
+			return "", &BillingError{Status: http.StatusConflict, Message: "the plan price changed; reload pricing and review the plan again"}
+		}
 	}
 	ent, err := b.store.Resource(gvrEntitlements).Get(ctx, org, metav1.GetOptions{})
 	switch {
@@ -290,7 +321,7 @@ func (b *Billing) Checkout(ctx context.Context, org, plan, successURL, cancelURL
 	var out struct {
 		URL string `json:"url"`
 	}
-	if err := b.post(ctx, "/billing/checkout", map[string]string{"account": org, "plan": plan, "successURL": successURL, "cancelURL": cancelURL}, &out); err != nil {
+	if err := b.post(ctx, "/billing/checkout", map[string]string{"account": org, "plan": plan, "priceID": expectedPrice, "successURL": successURL, "cancelURL": cancelURL}, &out); err != nil {
 		return "", err
 	}
 	if out.URL == "" {

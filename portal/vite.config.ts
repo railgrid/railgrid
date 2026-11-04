@@ -9,6 +9,10 @@ export default defineConfig(() => ({
   //  - proxied by the hub from the Vite dev server (--portal-dev-url),
   //  - or accessed directly on the Vite port (http://localhost:3000/ui/).
   base: '/ui/',
+  // Production builds run npm ci while Tilt can still be serving this tree.
+  // Keep optimized modules outside node_modules so reinstalling dependencies
+  // cannot delete the JavaScript URLs held by an existing browser tab.
+  cacheDir: resolve(__dirname, '.vite-cache/dev'),
   plugins: [vue(), tailwindcss()],
   resolve: {
     alias: {

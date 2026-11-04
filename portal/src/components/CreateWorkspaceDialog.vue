@@ -5,7 +5,9 @@ import { Loader2 } from 'lucide-vue-next'
 import { authFetch } from '@/auth/session'
 import { useAuthStore } from '@/stores/auth'
 import { isWorkspaceUsable, useTenantStore, type WorkspaceRow } from '@/stores/tenant'
+import { billingSettingsLocation, clearBillingState, saveWorkspaceBillingDraft, workspaceLimitError } from '@/lib/billing-flow'
 
+const props = defineProps<{ initialName?: string }>()
 const emit = defineEmits<{ close: [] }>()
 const tenant = useTenantStore()
 const auth = useAuthStore()
@@ -15,11 +17,12 @@ const openingPath = router.currentRoute.value.fullPath
 const orgID = tenant.orgUUID
 const orgName = tenant.activeOrg?.displayName || 'this organization'
 const dialogRef = ref<HTMLDialogElement | null>(null)
-const name = ref('')
+const name = ref(props.initialName || '')
 const busy = ref(false)
 const created = ref<WorkspaceRow | null>(null)
 const error = ref('')
 const timedOut = ref(false)
+const limitReached = ref(false)
 const id = useId()
 const canCreate = computed(() => tenant.orgUUID === orgID && !!tenant.activeOrg &&
   tenant.orgLoadState === 'ready' && !tenant.orgError && !tenant.activeOrg.deletionRequestedAt &&
@@ -101,6 +104,7 @@ async function submit() {
   const revision = generation
   busy.value = true
   error.value = ''
+  limitReached.value = false
   try {
     // This dialog owns creation errors and loading state. Refreshing the
     // shared list here would suspend the workspace the user is still in.
@@ -111,6 +115,8 @@ async function submit() {
     })
     if (!response.ok) {
       const status = await response.json().catch(() => null) as { message?: string } | null
+      if (!current(revision)) return
+      limitReached.value = workspaceLimitError(status?.message || '')
       throw new Error(status?.message || `Unable to create the workspace (HTTP ${response.status}). Try again.`)
     }
     const result = await response.json() as WorkspaceRow
@@ -122,6 +128,7 @@ async function submit() {
       tenant.workspacesByOrg[orgID] = [...rows.filter(row => row.uuid !== result.uuid), result]
     }
     if (!current(revision)) return
+    clearBillingState('draft', orgID, auth.user?.userId || '')
     created.value = result
     started = Date.now()
     await checkReady(revision)
@@ -130,6 +137,15 @@ async function submit() {
     error.value = e instanceof Error ? e.message : 'Unable to create the workspace. Try again.'
     busy.value = false
   }
+}
+
+async function reviewPlans() {
+  if (!orgID || !canCreate.value || busy.value) return
+  if (!saveWorkspaceBillingDraft(orgID, auth.user?.userId || '', name.value)) {
+    error.value = 'Your draft could not be saved. Keep a copy of the Workspace name before opening Organization settings.'
+    return
+  }
+  await router.push(billingSettingsLocation(orgID))
 }
 
 watch([() => tenant.orgUUID, () => router.currentRoute.value.fullPath, () => auth.token], () => {
@@ -172,6 +188,10 @@ onBeforeUnmount(() => {
           :aria-describedby="error ? `${id}-error` : undefined"
         />
         <p v-if="error" :id="`${id}-error`" role="alert" class="mt-4 text-sm text-danger">{{ error }}</p>
+        <div v-if="limitReached" class="mt-3 space-y-2">
+          <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="reviewPlans">Review plans</button>
+          <p class="text-xs text-text-secondary">Your Workspace name will be saved while you review allowances.</p>
+        </div>
         <div v-if="busy || created" role="status" aria-live="polite" class="mt-4 text-sm text-text-secondary">
           <p v-if="!error" class="flex items-center gap-2">
             <Loader2 v-if="busy" class="h-4 w-4 shrink-0 animate-spin" aria-hidden="true" />

@@ -69,6 +69,17 @@ export interface OrgBillingPlan {
   sellable: boolean
   current: boolean
   limits: OrgBillingLimit[]
+  /** Authoritative recurring price supplied by the billing provider. */
+  price?: OrgBillingPrice
+}
+export interface OrgBillingPrice {
+  id: string
+  /** Decimal amount in major currency units, preserving the provider's precision. */
+  amount: string
+  currency: string
+  interval: 'day' | 'week' | 'month' | 'year'
+  intervalCount: number
+  taxBehavior?: 'inclusive' | 'exclusive' | 'unspecified'
 }
 export interface OrgBillingSubscription {
   entitledPlan?: string
@@ -924,11 +935,12 @@ export const useTenantStore = defineStore('tenant', () => {
       body: JSON.stringify({ displayName }),
     })
     if (!resp.ok) {
+      const message = await hubMessage(resp, `Failed to create workspace (HTTP ${resp.status}).`)
       // The POST may resolve after the caller switched organizations. Do not
       // publish an old target's failure through the shared store error, where
       // the newly active organization would render it as its own problem.
       if (isCurrentWorkspaceCreate(targetOrgUUID, creationSequence, selectionRevisionAtStart)) {
-        error.value = `failed to create workspace: ${resp.status}`
+        error.value = message
       }
       return null
     }
@@ -1063,8 +1075,9 @@ export const useTenantStore = defineStore('tenant', () => {
     return body.message || body.error || `${fallback}: ${resp.status}`
   }
 
-  async function fetchOrgBilling(targetOrgUUID: string): Promise<OrgBilling> {
+  async function fetchOrgBilling(targetOrgUUID: string, signal?: AbortSignal): Promise<OrgBilling> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing`, {
+      signal,
       headers: { 'X-Railgrid-Org': targetOrgUUID },
     })
     if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to load billing'))
@@ -1073,11 +1086,11 @@ export const useTenantStore = defineStore('tenant', () => {
 
   // startOrgCheckout and openOrgBillingPortal return the hosted page's URL
   // the caller redirects to; the hub supplies the return addresses.
-  async function startOrgCheckout(targetOrgUUID: string, plan: string): Promise<string> {
+  async function startOrgCheckout(targetOrgUUID: string, plan: string, priceID?: string): Promise<string> {
     const resp = await authFetch(`/api/orgs/${targetOrgUUID}/billing/checkout`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': targetOrgUUID },
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, priceID }),
     })
     if (!resp.ok) throw new Error(await hubMessage(resp, 'failed to start checkout'))
     return ((await resp.json()) as { url: string }).url

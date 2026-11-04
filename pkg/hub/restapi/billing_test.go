@@ -33,11 +33,17 @@ import (
 
 // fakeBilling is the BillingOps the routes see; it records what it was asked.
 type fakeBilling struct {
-	summary  metering.OrgBilling
-	err      error
-	checkout func(org, plan, successURL, cancelURL string) (string, error)
-	portal   func(org, returnURL string) (string, error)
-	calls    []string
+	summary       metering.OrgBilling
+	err           error
+	checkout      func(org, plan, successURL, cancelURL string) (string, error)
+	portal        func(org, returnURL string) (string, error)
+	calls         []string
+	reviewedPrice string
+}
+
+func (f *fakeBilling) CheckoutQuoted(ctx context.Context, org, plan, price, successURL, cancelURL string) (string, error) {
+	f.reviewedPrice = price
+	return f.Checkout(ctx, org, plan, successURL, cancelURL)
 }
 
 func (f *fakeBilling) Summary(_ context.Context, org string) (metering.OrgBilling, error) {
@@ -134,15 +140,24 @@ func TestOrgBilling_MembersReadAdminsManage(t *testing.T) {
 
 	admin := billingServer(t, fake, adminTC("alice", "org-a", ""))
 	code, body := billingCall(t, admin, http.MethodPost, "/api/orgs/org-a/billing/checkout", `{"plan":"large"}`)
-	if want := "https://checkout.example/large?return=https://hub.example/ui/org-a/settings/organizations?billing=success"; code != http.StatusOK || body["url"] != want {
+	if want := "https://checkout.example/large?return=https://hub.example/ui/org-a/settings/organizations?billing=success&panel=billing"; code != http.StatusOK || body["url"] != want {
 		t.Fatalf("admin checkout: %d %s", code, bodyString(body, "_raw"))
 	}
 	if code, _ := billingCall(t, admin, http.MethodPost, "/api/orgs/org-a/billing/checkout", `{"plan":""}`); code != http.StatusBadRequest {
 		t.Fatalf("checkout without a plan: status %d, want 400", code)
 	}
 	code, body = billingCall(t, admin, http.MethodPost, "/api/orgs/org-a/billing/portal", `{}`)
-	if want := "https://portal.example/?return=https://hub.example/ui/org-a/settings/organizations?billing=portal"; code != http.StatusOK || body["url"] != want {
+	if want := "https://portal.example/?return=https://hub.example/ui/org-a/settings/organizations?billing=portal&panel=billing"; code != http.StatusOK || body["url"] != want {
 		t.Fatalf("admin portal: %d %s", code, bodyString(body, "_raw"))
+	}
+}
+
+func TestOrgBilling_ForwardsReviewedPriceAndKeepsBillingReturnContext(t *testing.T) {
+	fake := &fakeBilling{}
+	server := billingServer(t, fake, adminTC("alice", "org-a", ""))
+	code, body := billingCall(t, server, http.MethodPost, "/api/orgs/org-a/billing/checkout", `{"plan":"team","priceID":"price_team"}`)
+	if code != http.StatusOK || fake.reviewedPrice != "price_team" || !strings.Contains(bodyString(body, "url"), "panel=billing&billingPlan=team") {
+		t.Fatalf("reviewed checkout: %d %v price=%q", code, body, fake.reviewedPrice)
 	}
 }
 
