@@ -87,6 +87,19 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 			msg:    approvalDisclosureUnavailableMessage,
 		}
 	}
+	// A change request is applied by approving it, before the item is marked
+	// approved: a change that can no longer be made stays pending with the
+	// reason, rather than reading as done.
+	if item.Kind == store.InboxKindChange {
+		if item.State != store.InboxStatePending {
+			return store.InboxItem{}, &requestError{code: http.StatusConflict, reason: "AlreadyResolved", msg: "this change request was already resolved"}
+		}
+		result, err := s.applyChangeRequest(ctx, scope, item)
+		if err != nil {
+			return store.InboxItem{}, &requestError{code: http.StatusConflict, reason: "ChangeNotApplied", msg: "the change was not applied: " + err.Error()}
+		}
+		response = strings.TrimSpace(strings.TrimSpace(response) + "\n" + result)
+	}
 	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
 }
 

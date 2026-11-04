@@ -239,7 +239,7 @@ async function dismissAll(): Promise<void> {
   if (bulkDismiss.value) return
   const items = pending.value.filter(item => !resolvingInbox.value.has(item.id))
   if (!items.length) return
-  const approvals = items.filter(item => item.kind === 'approval').length
+  const approvals = items.filter(item => item.kind === 'approval' || item.kind === 'change').length
   const questions = items.length - approvals
   const ok = await confirmDialog({
     title: `Dismiss all ${items.length} pending items?`,
@@ -276,7 +276,7 @@ async function dismissAll(): Promise<void> {
 }
 
 function resolutionToast(item: InboxItem, decision: InboxDecision): string {
-  if (decision === 'approve') return 'Approved — the run is resuming.'
+  if (decision === 'approve') return item.kind === 'change' ? 'Approved — the change is applied.' : 'Approved — the run is resuming.'
   if (decision === 'answer') return 'Answered — the run is resuming.'
   if (item.kind === 'question') {
     return item.runID ? 'Dismissed. The run stays paused until you answer or cancel it from its page.' : 'Dismissed.'
@@ -385,7 +385,7 @@ onBeforeUnmount(() => {
         <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
           <div class="agents-approval-body">
             <div class="agents-approval-prompt">{{ item.prompt }}</div>
-            <ApprovalDisclosure v-if="item.kind === 'approval'" :tool="item.payload?.tool" :args="item.payload?.args" />
+            <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
             <div class="agents-approval-meta">
               <span class="k-badge agents-badge">{{ item.agentName }}</span>
               <span class="muted">{{ fmtTime(item.createdAt) }}</span>
@@ -393,7 +393,15 @@ onBeforeUnmount(() => {
             </div>
           </div>
           <div class="agents-approval-actions">
-            <template v-if="item.kind === 'approval'">
+            <!--
+              A change is a self-configuration edit a harness session asked
+              for. It parks no run: approving it is what applies it.
+            -->
+            <template v-if="item.kind === 'change'">
+              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Applying…' : 'Apply change' }}</button>
+              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
+            </template>
+            <template v-else-if="item.kind === 'approval'">
               <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
               <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
             </template>

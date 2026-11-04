@@ -28,6 +28,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -36,6 +37,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
@@ -181,6 +183,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, gitResultCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, clarificationCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, permissionPromptCapability)
+	verificationCapabilities = appendUnique(verificationCapabilities, RemoteMCPCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, "warm-environments-v1")
 	// The runner fetches for itself now: it either refreshes the enrolled
@@ -1668,7 +1671,11 @@ func harnessCredentialOf(value *HarnessCredential) (harness.Credential, error) {
 	if err != nil {
 		return harness.Credential{}, err
 	}
-	return harness.Credential{Kind: kind, Value: raw, Environment: environment}, nil
+	servers, err := credentialMCPServersOf(value.MCPServers)
+	if err != nil {
+		return harness.Credential{}, err
+	}
+	return harness.Credential{Kind: kind, Value: raw, Environment: environment, MCPServers: servers}, nil
 }
 
 // maxCredentialEnvironment bounds how many variables an identity may bring.
@@ -1725,6 +1732,109 @@ func credentialEnvironmentOf(variables []EnvironmentVariable) ([]harness.Environ
 		out = append(out, harness.EnvironmentVariable{Name: name, Value: variable.Value})
 	}
 	return out, nil
+}
+
+// maxCredentialMCPServers bounds how many remote MCP servers an identity may
+// attach. The case they exist for is one server, the agent's own config
+// endpoint; the bound leaves room without letting a caller fan a turn out.
+const maxCredentialMCPServers = 4
+
+// maxMCPServerTokenBytes bounds a server's bearer. It is sent as a header on
+// every request, where an oversized value would be refused by the server
+// anyway; failing here says which field was wrong.
+const maxMCPServerTokenBytes = 4096
+
+// mcpServerNamePattern is the shape of a server key. The name becomes part of
+// every tool name the harness exposes (mcp__<name>__<tool>), a TOML key in a
+// Codex override and part of an environment variable name, so it stays to the
+// characters all three accept without quoting.
+var mcpServerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+
+// reservedMCPServerName is the key the Claude adapter gives the runner's own
+// permission server. A caller's server under that name would replace it in
+// the one config document a launch writes, and with it the permission gate.
+const reservedMCPServerName = "railgrid"
+
+// credentialMCPServersOf validates the remote MCP servers an identity brings.
+//
+// The URL is held to https because the bearer travels on every request; plain
+// http is accepted only to a loopback host, where nothing leaves the machine,
+// which is what a test or a local hub needs. Userinfo and fragments are
+// refused because neither has a meaning to an MCP client, and a credential
+// hidden in userinfo would be one nobody redacts.
+func credentialMCPServersOf(servers []MCPServer) ([]harness.MCPServer, error) {
+	if len(servers) == 0 {
+		return nil, nil
+	}
+	if len(servers) > maxCredentialMCPServers {
+		return nil, fmt.Errorf("harnessCredential mcpServers has %d servers, more than %d", len(servers), maxCredentialMCPServers)
+	}
+	out := make([]harness.MCPServer, 0, len(servers))
+	seen := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		name := server.Name
+		if !mcpServerNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("harnessCredential mcpServers name %q is not a lower-case server name", server.Name)
+		}
+		if name == reservedMCPServerName {
+			return nil, fmt.Errorf("harnessCredential mcpServers name %q is reserved for the runner", name)
+		}
+		if _, dup := seen[name]; dup {
+			return nil, fmt.Errorf("harnessCredential mcpServers names %q twice", name)
+		}
+		seen[name] = struct{}{}
+		if err := validateMCPServerURL(server.URL); err != nil {
+			return nil, fmt.Errorf("harnessCredential mcpServers %s url: %w", name, err)
+		}
+		if server.Token == "" {
+			return nil, fmt.Errorf("harnessCredential mcpServers %s token is empty", name)
+		}
+		if len(server.Token) > maxMCPServerTokenBytes {
+			return nil, fmt.Errorf("harnessCredential mcpServers %s token is oversized", name)
+		}
+		for _, r := range server.Token {
+			if unicode.IsSpace(r) || unicode.IsControl(r) {
+				return nil, fmt.Errorf("harnessCredential mcpServers %s token contains invalid whitespace", name)
+			}
+		}
+		out = append(out, harness.MCPServer{Name: name, URL: server.URL, Token: server.Token})
+	}
+	return out, nil
+}
+
+func validateMCPServerURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return errors.New("does not parse")
+	}
+	if parsed.Host == "" || parsed.Hostname() == "" {
+		return errors.New("has no host")
+	}
+	if parsed.User != nil {
+		return errors.New("carries userinfo")
+	}
+	if parsed.Fragment != "" || strings.Contains(raw, "#") {
+		return errors.New("carries a fragment")
+	}
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		if isLoopbackHost(parsed.Hostname()) {
+			return nil
+		}
+		return errors.New("must be https unless the host is loopback")
+	default:
+		return fmt.Errorf("scheme %q is not https", parsed.Scheme)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func nonEmptyJSON(raw json.RawMessage) bool {

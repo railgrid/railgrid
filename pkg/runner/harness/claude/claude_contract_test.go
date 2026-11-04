@@ -163,6 +163,12 @@ func TestFakeClaudeProcess(t *testing.T) {
 		time.Sleep(5 * time.Minute)
 	case "sleep":
 		time.Sleep(5 * time.Minute)
+	case "mcp-config-copy":
+		// Keep what the child was given, so a test can read the document after
+		// the adapter has removed it, and its mode while it still existed.
+		emit(`{"type":"system","subtype":"init","session_id":%q}`, session)
+		copyMCPConfig(os.Getenv(fakeArgvEnv))
+		emit(`{"type":"result","subtype":"success","is_error":false,"session_id":%q,"result":"done"}`, session)
 	case "permission-ask":
 		// Stand in for the real Claude Code's permission prompt: read the
 		// --mcp-config the adapter wrote, speak the exact wire shape the 2.1.281
@@ -680,7 +686,7 @@ func indexOf(values []string, want string) int {
 // reach the command line unchanged; an unknown mode is refused before launch.
 func TestPermissionModeAndAllowedToolsReachArgv(t *testing.T) {
 	a := &Adapter{cfg: Config{PermissionMode: PermissionBypass, AllowedTools: []string{"Bash(git *)", " Bash(npm test) ", ""}}}
-	argv := a.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil)
+	argv := a.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil, "")
 	if !contains(argv, "bypassPermissions") || contains(argv, "acceptEdits") {
 		t.Fatalf("argv = %v, want the configured bypassPermissions mode", argv)
 	}
@@ -694,7 +700,7 @@ func TestPermissionModeAndAllowedToolsReachArgv(t *testing.T) {
 	if _, err := bad.permissionMode(); err == nil {
 		t.Fatal("unsupported permission mode accepted")
 	}
-	if args := bad.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil); contains(args, "plan") {
+	if args := bad.args(harness.Launch{AttemptID: "a-1", Workdir: "/w", Instructions: "x"}, nil, ""); contains(args, "plan") {
 		t.Fatalf("argv = %v, an unsupported mode must not reach the command line", args)
 	}
 }

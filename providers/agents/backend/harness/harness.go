@@ -119,6 +119,11 @@ type Config struct {
 	// exported under the names given — the agent's GitHub connection token as
 	// GH_TOKEN, for one. Dispatch data like the credential, never persisted.
 	Environment []runner.EnvironmentVariable
+	// MCPServers are remote MCP servers every dispatch of this turn attaches
+	// to the harness: the agent's own configuration endpoint, with a bearer
+	// minted for this launch. Dispatch data like the credential; nil when the
+	// runner does not advertise runner.RemoteMCPCapability.
+	MCPServers []runner.MCPServer
 	// Provenance is what the run is, for the approvedInput envelope the runner
 	// requires on every dispatch.
 	Provenance map[string]any
@@ -747,6 +752,7 @@ func (b *Backend) credential() runner.HarnessCredential {
 	return runner.HarnessCredential{
 		Kind: b.cfg.Credential.Kind, Value: b.cfg.Credential.Value,
 		Environment: append([]runner.EnvironmentVariable(nil), b.cfg.Environment...),
+		MCPServers:  append([]runner.MCPServer(nil), b.cfg.MCPServers...),
 	}
 }
 

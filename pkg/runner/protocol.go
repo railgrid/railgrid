@@ -182,12 +182,34 @@ type HarnessCredential struct {
 	// names on its allow-list (GH_TOKEN, GITHUB_TOKEN): a caller may bring a
 	// credential, never configure the child's environment.
 	Environment []EnvironmentVariable `json:"environment,omitempty"`
+	// MCPServers are remote MCP servers the identity may reach during the
+	// turn, attached to the harness alongside the runner's own permission
+	// server. The case this exists for is the agent's own configuration
+	// endpoint, which lets the turn edit the agent it runs as. Each carries a
+	// bearer valid for this attempt only, so like Value it is dispatch data:
+	// stripped, held in memory, sent again on every resume, never written
+	// down. Only a runner advertising the remote-mcp-v1 capability accepts the
+	// field; an older one refuses the request as an unknown field.
+	MCPServers []MCPServer `json:"mcpServers,omitempty"`
 }
 
 // EnvironmentVariable is one name=value an identity brings to a launch.
 type EnvironmentVariable struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+// MCPServer is one remote streamable-HTTP MCP server a launch may reach.
+type MCPServer struct {
+	// Name is how the harness addresses the server: its tools appear as
+	// mcp__<name>__<tool> to Claude Code. Lowercase letters, digits and
+	// dashes; "railgrid" is the runner's own permission server and is refused.
+	Name string `json:"name"`
+	// URL is the server's https endpoint.
+	URL string `json:"url"`
+	// Token is the bearer sent as Authorization on every request. Never
+	// logged and never placed on a command line.
+	Token string `json:"token"`
 }
 
 // StartRequest is the approved execution envelope accepted by Start.

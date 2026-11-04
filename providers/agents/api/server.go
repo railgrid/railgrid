@@ -54,6 +54,11 @@ type Config struct {
 	HubURL string
 	// HubInsecure skips TLS verification against the hub (dev self-signed certs).
 	HubInsecure bool
+	// HubPublicURL is the hub's address as a remote machine reaches it, unlike
+	// HubURL, which is usually in-cluster. A harness-backed agent with
+	// self-configuration enabled is given <HubPublicURL>/services/providers/agents/mcp
+	// to configure itself through; empty leaves harness agents without it.
+	HubPublicURL string
 	// DatabaseURL is the Postgres DSN for the durable store. Empty selects the
 	// in-memory store.
 	DatabaseURL string

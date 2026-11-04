@@ -184,7 +184,9 @@ and tools are edited inside the agent, next to a live chat playground.
     policy, autonomy, budget, limits, backend, delegates and the block itself
     are never self-configurable. Changes are stamped with
     `agents.railgrid.ai/self-configured-by-run` and apply from the next run.
-    Spawned workers never get the family; a harness-backed agent rejects it.
+    Spawned workers never get the family. A harness-backed agent reaches the
+    same tools, plus the schedule tools, as a per-launch MCP server (see
+    `docs/edge-harness.md`, "The agent's own MCP server").
   - `web`: `web_fetch` (SSRF-guarded at dial time — blocks private/loopback,
     defeats DNS rebinding) and `web_search`, backed by a `websearch`
     Connection speaking either a **self-hosted SearXNG instance** (no API key —

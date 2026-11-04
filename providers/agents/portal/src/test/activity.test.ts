@@ -436,6 +436,32 @@ describe('Activity.vue', () => {
     expect(full.endsWith(' · github-reviewer')).toBe(true)
   })
 
+  it('applies a queued self-configuration change from the feed', async () => {
+    // A change parks no run: approving it is what applies it, so it is not
+    // offered as "approve & resume" and has no answer box.
+    const resolveInbox = vi.fn().mockResolvedValue({})
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const store = makeStore(api)
+    const item: InboxItem = {
+      id: 'i4', agentName: 'bob', runID: 'r12', kind: 'change', state: 'pending',
+      prompt: 'Allow bob to change its own configuration with self_prompt_update?',
+      payload: { tool: 'self_prompt_update', args: '{"append":"Sign commits."}' }, createdAt: new Date().toISOString(),
+    }
+    store.inbox.data = [item]
+    store.inbox.loaded = true
+    store.inbox.hasSnapshot = true
+    const view = await mount(Activity, { store, api })
+
+    expect(text(view.element)).toContain('self_prompt_update')
+    expect(text(view.element)).not.toContain('Approve & resume')
+    const actions = view.element.querySelector('.agents-approval-actions')!
+    expect(actions.querySelector('input.agents-approval-answer')).toBeNull()
+    buttonWithText(actions, 'Apply change').click()
+    await settleVue(2)
+    expect(resolveInbox).toHaveBeenCalledWith('i4', 'approve')
+    expect(text(document.querySelector('.k-toast--ok'))).toContain('the change is applied')
+  })
+
   it('lets a pending question be answered from the feed', async () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })

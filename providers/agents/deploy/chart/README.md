@@ -62,6 +62,7 @@ helm upgrade --install agents oci://ghcr.io/railgrid/charts/railgrid-agents-prov
 | `mcpApps.approvedDigests` | `{}` | Operator-reviewed map from Hub provider name to exact lowercase SHA-256 HTML digests, rendered as `RAILGRID_MCP_APP_APPROVED_DIGESTS`. Empty denies all hosted MCP Apps. |
 | `hub` |  |  |
 | `hub.url` | `"http://railgrid-hub.railgrid.svc.cluster.local:8080"` |  |
+| `hub.publicURL` | `""` | The hub's public address. Harness-backed agents with self-configuration enabled reach their configuration endpoint through it; empty leaves them without it. |
 | `hub.insecure` | `false` |  |
 | `hub.tokenSecretRef.name` | `""` |  |
 | `hub.tokenSecretRef.key` | `token` |  |

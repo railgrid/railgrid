@@ -540,6 +540,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		return s.repositoryHarnessTurn(run, runID, sessionID, cont, repositoryTurnDeps{
 			dispatcher: dispatcher, backendKey: backendKey, service: service, advertised: advertised,
 			model: settings.Model, reasoningEffort: settings.ReasoningEffort, identity: identity, environment: environment,
+			mcpServers: s.harnessSelfMCPServers(ctx, run, runID, dispatcher),
 		})
 	}
 
@@ -575,6 +576,7 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		ReasoningEffort: settings.ReasoningEffort,
 		Credential:      identity,
 		Environment:     environment,
+		MCPServers:      s.harnessSelfMCPServers(ctx, run, runID, dispatcher),
 		Provenance: map[string]any{
 			"workspace": run.Scope.WorkspaceUUID,
 			"org":       run.Scope.OrgUUID,
@@ -596,6 +598,7 @@ type repositoryTurnDeps struct {
 	reasoningEffort string
 	identity        llm.HarnessIdentity
 	environment     []runner.EnvironmentVariable
+	mcpServers      []runner.MCPServer
 }
 
 // harnessEnvironment is what the harness child runs with beyond its model
@@ -695,6 +698,7 @@ func (s *Server) repositoryHarnessTurn(run taskRun, runID, sessionID string, con
 		ReasoningEffort: deps.reasoningEffort,
 		Credential:      deps.identity,
 		Environment:     deps.environment,
+		MCPServers:      deps.mcpServers,
 		Provenance: map[string]any{
 			"workspace": run.Scope.WorkspaceUUID,
 			"org":       run.Scope.OrgUUID,

@@ -62,15 +62,13 @@ func TestWorkersNeverSelfConfigure(t *testing.T) {
 	}
 }
 
-func TestHarnessRejectsSelfConfiguration(t *testing.T) {
+// A harness-backed agent configures itself over its MCP session (see
+// harness_mcp.go), so the field means something there too.
+func TestHarnessAcceptsSelfConfiguration(t *testing.T) {
 	agent := &agentsv1alpha1.Agent{Spec: agentsv1alpha1.AgentSpec{
 		SelfConfiguration: &agentsv1alpha1.AgentSelfConfiguration{Enabled: true},
 	}}
-	if reason, _ := harnesspolicy.UnsupportedFields(agent); reason != agentsv1alpha1.ReasonMeaninglessForHarness {
-		t.Fatalf("harness agent with selfConfiguration: reason = %q, want %q", reason, agentsv1alpha1.ReasonMeaninglessForHarness)
-	}
-	agent.Spec.SelfConfiguration.Enabled = false
-	if reason, _ := harnesspolicy.UnsupportedFields(agent); reason != "" {
-		t.Fatalf("disabled selfConfiguration rejected: %q", reason)
+	if reason, msg := harnesspolicy.UnsupportedFields(agent); reason != "" {
+		t.Fatalf("harness agent with selfConfiguration rejected: %s: %s", reason, msg)
 	}
 }
