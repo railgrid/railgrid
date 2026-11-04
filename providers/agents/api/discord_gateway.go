@@ -37,6 +37,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/channels"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/executor"
 )
@@ -185,6 +186,25 @@ func (m *DiscordGateway) makeHandler(cluster, connName string) func(*discordgo.S
 			_, _ = sess.ChannelMessageSend(mc.ChannelID, "No agent is bound to this Discord connection yet — set it as an agent's notify channel in the portal.")
 			return
 		}
+
+		// Inbox and run commands (/inbox, /answer, /approve, /cancel, …) are
+		// answered here, the way the Slack and Telegram webhooks answer them —
+		// never handed to the agent as a chat message.
+		session := "discord:" + connName + ":" + mc.ChannelID
+		scope := m.bg.scopeFor(ctx, cluster, agent.Name)
+		if reply, handled := m.bg.server.channelCommand(ctx, scope, dyn, agent, session, text); handled {
+			for _, part := range channels.Split(agentsv1alpha1.ConnectionTypeDiscord, reply) {
+				if strings.TrimSpace(part) == "" {
+					continue
+				}
+				if _, err := sess.ChannelMessageSend(mc.ChannelID, part); err != nil {
+					log.Printf("discord: %s/%s: command reply: %v", cluster, connName, err)
+					break
+				}
+			}
+			return
+		}
+
 		_ = sess.ChannelTyping(mc.ChannelID) // "thinking…" while the run executes
 
 		// Same door as an inbound webhook: a Pending Run is written and the Run
@@ -199,7 +219,7 @@ func (m *DiscordGateway) makeHandler(cluster, connName string) func(*discordgo.S
 			Task:        text,
 			ReplyTarget: mc.ChannelID,
 			Trigger:     agentsv1alpha1.RunTriggerChannel,
-			SessionID:   "discord:" + connName + ":" + mc.ChannelID,
+			SessionID:   session,
 		}); err != nil {
 			m.bg.seen.release(key)
 			log.Printf("discord: %s/%s: %v", cluster, connName, err)

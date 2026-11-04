@@ -12,12 +12,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -313,34 +315,59 @@ func (s *Server) cancelRun(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 		return
 	}
-	switch run.Phase {
-	case store.RunPhaseRunning, store.RunPhasePending, store.RunPhasePendingApproval:
-	default:
+	if !runCancellable(run.Phase) {
 		writeStatus(w, http.StatusConflict, "Conflict", "run is already "+string(run.Phase))
 		return
 	}
-	now := time.Now().UTC()
-	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-	if err := s.store.RequestCancel(r.Context(), scope, runID, now); err != nil {
-		log.Printf("runs: recording cancel for run %s failed", runID)
-		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "could not record the cancellation request; retry the cancel")
+	live, err := s.cancelStoredRun(r.Context(), c, id, run)
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", err.Error())
 		return
 	}
-	live := s.liveRuns.cancel(runID)
-	if !live {
-		if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
-			if err := s.stopParkedHarness(r.Context(), c, id, run); err != nil {
-				// Errors can originate in an authenticated request. Keep the
-				// diagnostic generic so an upstream response cannot expose a
-				// credential or secret-bearing body.
-				log.Printf("runs: stopping parked harness attempt for run %s failed", runID)
-				writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "remote harness cancellation failed; retry the cancel")
-				return
-			}
-		}
-		s.closeRunNow(r.Context(), scope, run, store.RunPhaseAborted, "cancelled by user")
-	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"id": runID, "cancelling": live})
+}
+
+// runCancellable reports whether a run in this phase can still be cancelled.
+func runCancellable(phase store.RunPhase) bool {
+	switch phase {
+	case store.RunPhaseRunning, store.RunPhasePending, store.RunPhasePendingApproval:
+		return true
+	default:
+		return false
+	}
+}
+
+// The two ways a cancel can fail. Both are safe to retry, and both are fixed
+// text: errors can originate in an authenticated request, so an upstream
+// response must not reach the caller and expose a credential or
+// secret-bearing body.
+var (
+	errCancelNotRecorded = errors.New("could not record the cancellation request; retry the cancel")
+	errHarnessStopFailed = errors.New("remote harness cancellation failed; retry the cancel")
+)
+
+// cancelStoredRun cancels one run: the cancel verb and the channel /cancel
+// command both end here. It records the durable cancel request, interrupts the
+// run if it is executing on this replica, and otherwise stops a parked harness
+// attempt and stamps the run Aborted. live reports whether the run was
+// executing here (and so finishes on its own once it observes the cancel).
+func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) (live bool, err error) {
+	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
+	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC()); err != nil {
+		log.Printf("runs: recording cancel for run %s failed", run.ID)
+		return false, errCancelNotRecorded
+	}
+	if s.liveRuns.cancel(run.ID) {
+		return true, nil
+	}
+	if run.Backend == agentsv1alpha1.AgentBackendHarness && len(run.Checkpoint) > 0 {
+		if err := s.stopParkedHarness(ctx, c, id, run); err != nil {
+			log.Printf("runs: stopping parked harness attempt for run %s failed", run.ID)
+			return false, errHarnessStopFailed
+		}
+	}
+	s.closeRunNow(ctx, scope, run, store.RunPhaseAborted, "cancelled by user")
+	return false, nil
 }
 
 // closeRunNow stamps a terminal phase on a run that is not executing on this
