@@ -2834,7 +2834,7 @@ function fmtDate(s?: string | null): string {
            is absent from the refreshed org list, keeping Restore reachable. -->
       <template v-else-if="activeSection === 'organizations'">
         <div class="space-y-5">
-          <Tabs v-if="!billingPlanFocused" :tabs="[{ id: 'general', label: 'General' }, { id: 'billing', label: 'Plan & billing' }]"
+          <Tabs v-if="!billingPlanFocused" class="k-tabs--compact" :tabs="[{ id: 'general', label: 'General' }, { id: 'billing', label: 'Plan & billing' }]"
             :active="organizationPanel" aria-label="Organization settings sections" @select="navigateOrganizationPanel" />
           <OrgBillingCard
             v-if="organizationPanel === 'billing' && organizationSettingsOrg.uuid === tenant.orgUUID && !organizationSettingsOrg.deletionRequestedAt"
