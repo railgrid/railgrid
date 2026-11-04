@@ -3120,8 +3120,22 @@ test-model-connections: ## Verify the shared Models UX and provider adapters
 
 test-model-connections-api: ## Verify model connection APIs and catalog behavior
 	cd providers/agents && go test -count=1 ./api ./llm
-	cd providers/app-studio && go test -count=1 ./api
+	cd providers/app-studio && go test -count=1 ./api ./controller/studio ./controller/modelproviderconnection
 	cd provider-sdk && go test -count=1 ./modelcatalog
+
+.PHONY: test-app-studio-model-connections fix-lint-app-studio-model-connections lint-app-studio-model-connections
+test-app-studio-model-connections: ## Verify App Studio provider connections, model bindings, and run revisions
+	go test -count=1 ./pkg/hub/controllers/mcpserver
+	cd providers/app-studio && go test -count=1 ./api ./controller/studio ./controller/modelproviderconnection ./apis/ai/v1alpha1
+	cd providers/app-studio/portal && npm run typecheck && npm test
+
+fix-lint-app-studio-model-connections: $(GOLANGCI_LINT) ## Format App Studio model connection sources
+	$(abspath $(GOLANGCI_LINT)) fmt pkg/hub/controllers/mcpserver/rbac.go pkg/hub/controllers/mcpserver/controller_test.go
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) fmt controller_manager.go api controller/studio controller/modelproviderconnection apis/ai/v1alpha1 client
+
+lint-app-studio-model-connections: $(GOLANGCI_LINT) ## Lint App Studio model connection packages
+	$(abspath $(GOLANGCI_LINT)) run ./pkg/hub/controllers/mcpserver/...
+	cd providers/app-studio && $(abspath $(GOLANGCI_LINT)) run ./ ./api/... ./controller/studio/... ./controller/modelproviderconnection/... ./apis/ai/v1alpha1/... ./client/...
 
 lint-model-connections: $(GOLANGCI_LINT) ## Lint the model connection implementation in its owning modules
 	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run $(ARGS) ./api/... ./llm/...
