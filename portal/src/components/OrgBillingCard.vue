@@ -45,9 +45,7 @@ let pollTimer: ReturnType<typeof setTimeout> | undefined
 let pollStarted = 0
 const busy = ref<string | null>(null)
 const reviewOpen = ref(false)
-const selectedPlan = ref('')
 const focusedMeter = ref<string | null>(null)
-const requestDraft = ref('')
 const reviewHeading = ref<{ focusHeading: () => void } | null>(null)
 const exploreButton = ref<HTMLButtonElement | null>(null)
 let reviewTrigger: HTMLElement | null = null
@@ -67,7 +65,6 @@ async function load(timeoutMs = 10000): Promise<void> {
     if (disposed || generation !== loadGeneration || props.orgUuid !== org || session !== authSessionRevision()) return
     billing.value = result
     loaded.value = true
-    if (reviewOpen.value && !selectedPlan.value) selectedPlan.value = (focusedMeter.value ? suggestion(focusedMeter.value) : suggested.value)?.name || offers.value[0]?.name || ''
     if (checkoutPlan.value && subscriptionActivated(result, checkoutPlan.value, allowancesPending(result))) {
       activation.value = 'active'
       clearTimeout(pollTimer)
@@ -96,8 +93,7 @@ function handleReturn(): void {
     activation.value = checkoutPlan.value ? 'checking' : 'delayed'
     returnNotice.value = 'Checkout returned. We will confirm the subscription and effective allowances before showing it as active.'
   } else if (outcome === 'canceled') {
-    returnNotice.value = 'Checkout canceled. Review the current plan below; your selection and Workspace draft are saved.'
-    selectedPlan.value = checkoutPlan.value
+    returnNotice.value = 'Checkout canceled. Your current plan is unchanged.'
     checkoutPlan.value = ''
     activation.value = 'idle'
     reviewOpen.value = true
@@ -128,7 +124,6 @@ watch([() => props.orgUuid, () => auth.user?.userId], () => {
   billing.value = null
   loaded.value = false
   reviewOpen.value = false
-  requestDraft.value = ''
   focusedMeter.value = null
   clearTimeout(pollTimer)
   loadAbort?.abort()
@@ -258,7 +253,6 @@ function suggestion(meter: string): OrgBillingPlan | null {
 
 const constraint = computed(() => billing.value?.limits.find((limit) => suggestion(limit.meter)) ?? null)
 const suggested = computed(() => constraint.value ? suggestion(constraint.value.meter) : null)
-const reviewPlan = computed(() => offers.value.find((plan) => plan.name === selectedPlan.value) ?? null)
 // Compare what applies to this organization, including persistent overrides.
 function proposedLimits(plan: OrgBillingPlan, overrides?: OrgBillingLimit[]): OrgBillingLimit[] {
   const limits = new Map(plan.limits.map((limit) => [limit.meter, limit]))
@@ -276,20 +270,13 @@ function allowancesPending(value: OrgBilling): boolean {
   return signature(proposedLimits(plan, value.overrides)) !== signature(value.limits)
 }
 const limitsPending = computed(() => billing.value ? allowancesPending(billing.value) : false)
-const reviewLimits = computed(() => reviewPlan.value ? proposedLimits(reviewPlan.value, billing.value?.overrides) : [])
 const overridesKnown = computed(() => billing.value?.overrides !== undefined)
 const comparisonPlans = computed(() => [
   ...(current.value ? [{ ...current.value, limits: billing.value?.limits ?? [] }] : []),
   ...offers.value.map(plan => ({ ...plan, limits: proposedLimits(plan, billing.value?.overrides) })),
 ])
-const reviewMeters = computed(() => [...new Set([...(focusedMeter.value ? [focusedMeter.value] : []), ...(billing.value?.limits.map((limit) => limit.meter) ?? []), ...reviewLimits.value.map((limit) => limit.meter)])])
 function canCompareCheckout(plan: OrgBillingPlan): boolean {
   return !!billing.value?.enabled && plan.sellable && !plan.current && props.canManage && !managedByOperator.value && !hasSubscription.value && priceAvailable(plan.price) && !awaitingActivation.value && (!focusedMeter.value || suggestionForPlan(focusedMeter.value, plan))
-}
-
-function requestPlan(plan: string): void {
-  selectedPlan.value = plan
-  prepareRequest()
 }
 
 function suggestionForPlan(meter: string, plan: OrgBillingPlan): boolean {
@@ -301,11 +288,9 @@ function allowance(limits: OrgBillingLimit[], meter: string): string {
   return limit ? quantity(limit.max) : 'Not specified'
 }
 
-async function openReview(meter: string | null = null, planName = ''): Promise<void> {
+async function openReview(meter: string | null = null): Promise<void> {
   reviewTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null
   focusedMeter.value = meter
-  selectedPlan.value = planName || (meter ? suggestion(meter) : suggested.value)?.name || offers.value[0]?.name || ''
-  requestDraft.value = ''
   reviewOpen.value = true
   await nextTick()
   await router.push({ query: { ...route.query, panel: 'billing', review: '1', ...(meter ? { meter } : { meter: undefined }) } })
@@ -315,7 +300,6 @@ async function openReview(meter: string | null = null, planName = ''): Promise<v
 async function closeReview(): Promise<void> {
   hostedPageGeneration++
   reviewOpen.value = false
-  requestDraft.value = ''
   const query = { ...route.query }
   delete query.review
   delete query.meter
@@ -324,20 +308,6 @@ async function closeReview(): Promise<void> {
   if (reviewTrigger?.isConnected) reviewTrigger.focus()
   else if (exploreButton.value) exploreButton.value.focus()
 }
-
-
-function prepareRequest(): void {
-  if (!reviewPlan.value || !billing.value) return
-  const value = billing.value
-  requestDraft.value = `Please review changing organization ${props.orgUuid} from ${planLabel.value} to ${reviewPlan.value.displayName || reviewPlan.value.name}.\n\n` +
-    (focusedMeter.value ? `Reason: review capacity for ${meterLabel(focusedMeter.value)} (${focusedMeter.value}).\n\n` : '') +
-    reviewMeters.value.map((meter) => `${meterLabel(meter)} (${meter}): ${value.usage[meter] === undefined ? 'usage unavailable' : quantity(value.usage[meter]) + ' measured'}; current allowance ${allowance(value.limits, meter)}; proposed allowance ${allowance(reviewLimits.value, meter)}.`).join('\n') +
-    (overridesKnown.value ? (value.overrides?.length ? '\n\nExisting organization overrides remain in effect.' : '') : '\n\nThis hub does not report organization overrides. Proposed catalog allowances are not confirmed effective limits.') +
-    (limitsPending.value ? '\n\nAllowances are updating. Refresh to confirm the current limits before changing plans.' : '') +
-    '\nPlease confirm pricing, measurement periods, and all applicable allowances before assigning a plan.'
-}
-
-watch(selectedPlan, () => { requestDraft.value = '' })
 
 
 // A hosted page is requested for one organization from one place. The request
@@ -466,8 +436,8 @@ function retryHostedAction(): void {
           :billing="billing" :plans="comparisonPlans" :org-name="orgName || orgUuid"
           :can-manage="canManage" :busy="busy" :awaiting-activation="awaitingActivation"
           :can-checkout="canCompareCheckout" :focused-meter="focusedMeter" :suggestion-for-plan="suggestionForPlan"
-          :request-draft="requestDraft" :overrides-known="overridesKnown"
-          @back="closeReview" @checkout="upgrade" @manage="manage" @request="requestPlan" @reload="load"
+          :overrides-known="overridesKnown"
+          @back="closeReview" @checkout="upgrade" @manage="manage" @reload="load"
         />
         <template v-else>
         <div class="section-heading"><h3>Usage &amp; allowances</h3></div>

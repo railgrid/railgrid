@@ -933,6 +933,15 @@ missing-price recovery, existing-subscription management, quota context, saved
 workspace drafts and verified activation. Compare plans and Pricing FAQ links open the relevant
 marketing sections in separate tabs without leaving the organization's billing flow.
 
+Paid subscribers see **Downgrade to Free** on the Free card. Organization admins
+use this action or **Manage billing** to open Stripe's billing portal and cancel
+the paid subscription, reviewing the effective date there. Cancellation must be
+enabled in the Stripe Customer Portal configuration. The provider reconciles a
+canceled subscription back to its configured default plan; scheduled cancellation
+retains the paid allowances until it takes effect. No second Checkout is opened.
+Members see disabled billing actions, and manually assigned plans remain under
+platform-administrator control. There is no admin-request drafting flow.
+
 The contrib-metering Tilt seed (`hack/tilt/plans.json`) uses Free, Team and
 Enterprise. The seed preserves configured subscription Price IDs and archives
 Small/Large placeholders without deleting existing assignments. Development

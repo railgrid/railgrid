@@ -305,22 +305,6 @@ test('an archived current plan remains readable but is not offered as a plan cha
   assert.deepEqual(evaluate('offers').value.map(plan => plan.name), ['team'], 'only noncurrent plans are eligible choices')
 })
 
-test('admin request drafts distinguish empty, populated, and unknown overrides', () => {
-  for (const overrides of [[], [planLimit('1')], undefined]) {
-    const context = {
-      billing: { value: { limits: [planLimit('1')], usage: { workspaces: '1' }, overrides } },
-      reviewPlan: { value: planOffer('small', '10') }, reviewLimits: { value: [planLimit('10')] },
-      reviewMeters: { value: ['workspaces'] }, focusedMeter: { value: null },
-      planLabel: { value: 'Free' }, props: { orgUuid: 'org-a' }, requestDraft: { value: '' },
-      overridesKnown: { value: overrides !== undefined }, limitsPending: { value: false },
-      quantity: (value) => value, meterLabel: (meter) => meter,
-      allowance: (limits, meter) => limits.find(limit => limit.meter === meter)?.max,
-    }
-    loadFunction('prepareRequest', context)()
-    assert.equal(context.requestDraft.value.includes('Existing organization overrides remain in effect.'), !!overrides?.length)
-    assert.equal(context.requestDraft.value.includes('This hub does not report organization overrides.'), overrides === undefined)
-  }
-})
 
 test('pending allowance changes suppress upgrade hints until the applied snapshot catches up', () => {
   const proposedLimits = loadFunction('proposedLimits', { Map })
@@ -390,4 +374,37 @@ test('first-workspace creation clears only the successful creator’s saved bill
     await pending
     assert.deepEqual(cleared, success ? [['draft', 'org-a', 'alice']] : [])
   }
+})
+
+test('paid subscribers downgrade through the existing billing portal, without checkout or request drafts', () => {
+  const source = fs.readFileSync(new URL('./BillingPlanComparison.vue', import.meta.url), 'utf8')
+  const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
+  const comparison = ts.createSourceFile('BillingPlanComparison.ts', script, ts.ScriptTarget.Latest, true)
+  const events = []
+  const context = {
+    props: { canManage: true, billing: { enabled: true, defaultPlan: 'free' }, busy: null, awaitingActivation: false, canCheckout: () => true },
+    hasSubscription: { value: true }, managed: { value: false },
+    emit: (...args) => events.push(args), priceAvailable: () => false,
+  }
+  for (const name of ['checkoutPlan', 'action', 'choose', 'disabled']) context[name] = loadFunction(name, context, comparison)
+  const free = { name: 'free', current: false, sellable: false }
+  assert.equal(context.action(free), 'Downgrade to Free')
+  assert.equal(context.disabled(free), false)
+  context.choose(free)
+  assert.deepEqual(events, [['manage']])
+  // A manual plan assignment cannot prevent cancellation of an existing bill.
+  context.managed.value = true
+  assert.equal(context.action(free), 'Manage subscription')
+  assert.equal(context.disabled(free), false)
+  context.choose(free)
+  assert.deepEqual(events, [['manage'], ['manage']])
+  context.props.canManage = false
+  assert.equal(context.disabled(free), true)
+  context.choose(free)
+  assert.equal(events.length, 2, 'members cannot invoke subscription changes')
+  context.props.canManage = true
+  context.hasSubscription.value = false
+  assert.equal(context.disabled(free), true)
+  context.choose(free)
+  assert.equal(events.length, 2, 'an assigned plan is not a self-service subscription')
 })

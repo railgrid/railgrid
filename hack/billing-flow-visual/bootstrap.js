@@ -18,7 +18,7 @@ function tools() {
   picker.className = 'k-input'
   picker.style.cssText = 'width:auto;font-size:11px;max-width:150px;padding:4px 8px'
   picker.setAttribute('aria-label', 'Billing fixture scenario')
-  for (const [value, text] of [['plans', 'Discovery'], ['review', 'Review'], ['failed', 'Checkout failure'], ['active', 'Active subscription'], ['unavailable', 'Price unavailable'], ['operator', 'Admin managed'], ['override', 'Custom allowance'], ['member', 'Member request']]) {
+  for (const [value, text] of [['plans', 'Discovery'], ['review', 'Review'], ['failed', 'Checkout failure'], ['active', 'Active subscription'], ['unavailable', 'Price unavailable'], ['operator', 'Admin managed'], ['override', 'Custom allowance'], ['member', 'Member access']]) {
     picker.add(new Option(text, value, false, query.get('preview') === value))
   }
   picker.addEventListener('change', () => {

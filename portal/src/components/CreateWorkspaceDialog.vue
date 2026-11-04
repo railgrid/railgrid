@@ -189,7 +189,7 @@ onBeforeUnmount(() => {
         />
         <p v-if="error" :id="`${id}-error`" role="alert" class="mt-4 text-sm text-danger">{{ error }}</p>
         <div v-if="limitReached" class="mt-3 space-y-2">
-          <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="reviewPlans">{{ tenant.activeOrg?.role === 'admin' ? 'Review plans' : 'Review plans and request an upgrade' }}</button>
+          <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="reviewPlans">Review plans</button>
           <p class="text-xs text-text-secondary">Your Workspace name will be saved while you review allowances.</p>
         </div>
         <div v-if="busy || created" role="status" aria-live="polite" class="mt-4 text-sm text-text-secondary">
