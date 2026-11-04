@@ -194,6 +194,8 @@ export interface Agent {
     autonomy?: string
     backend?: AgentBackend
     channels?: AgentChannel[]
+    notifications?: AgentNotifications
+    selfConfiguration?: AgentSelfConfiguration
     delegates?: string[]
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
     // 0 on any limit means "use the provider default".
@@ -1058,6 +1060,24 @@ export interface AgentCreate {
 // AgentPatch is the pointer-patch DTO of PUT /api/agents/{name}: every key is
 // optional and only the present ones are written, so a section save never
 // clobbers a field another section owns.
+// What an agent posts to its channels unprompted. Mirrors
+// spec.notifications; an unset runOutput means Always.
+export type AgentRunOutput = 'Always' | 'OnFailure' | 'Never'
+export interface AgentNotifications {
+  runOutput?: AgentRunOutput
+}
+
+// What an agent may change about its own configuration. Mirrors
+// spec.selfConfiguration: empty scopes means every scope, an unset approval
+// means Unattended.
+export type SelfConfigScope = 'Prompt' | 'Triggers' | 'Memory'
+export type SelfConfigApproval = 'Always' | 'Unattended' | 'Never'
+export interface AgentSelfConfiguration {
+  enabled?: boolean
+  scopes?: { name: SelfConfigScope }[]
+  approval?: SelfConfigApproval
+}
+
 export interface AgentPatch {
   /**
    * backendType switches which backend the agent uses. Because the two blocks
@@ -1078,6 +1098,10 @@ export interface AgentPatch {
   maxToolTurns?: number
   timeoutSeconds?: number
   channels?: AgentChannel[]
+  /** Which unattended runs post their output; 'Always' clears the setting. */
+  runOutput?: AgentRunOutput
+  /** Written whole; a disabled block keeps its scopes and approval for next time. */
+  selfConfiguration?: AgentSelfConfiguration
   delegates?: string[]
   displayName?: string
   interactiveFamilies?: string[]

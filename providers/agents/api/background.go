@@ -531,7 +531,9 @@ func (b *background) notifyStrandedRun(ctx context.Context, sr store.ScopedRun, 
 	if err != nil {
 		return err
 	}
-	b.notify(ctx, dyn, agent, d.NotifyChannel, text)
+	if agent.Spec.PostsRunOutput(true) {
+		b.notify(ctx, dyn, agent, d.NotifyChannel, text)
+	}
 	return nil
 }
 
@@ -981,13 +983,19 @@ func (b *background) handle(ctx context.Context, job executor.Job) error {
 		return nil
 	}
 
-	// Notify: schedule/wakeup output always; heartbeat only when actionable.
-	// The destination is the schedule/trigger's channel (job.NotifyChannel),
-	// else the agent's primary channel.
+	// Notify: schedule/wakeup output always; heartbeat only when actionable —
+	// unless the agent's spec.notifications.runOutput narrows it. The
+	// destination is the schedule/trigger's channel (job.NotifyChannel), else
+	// the agent's primary channel.
 	if runErr != nil {
-		b.notify(ctx, dyn, agent, job.NotifyChannel,
-			fmt.Sprintf("%s %q: %s", job.Kind, job.SourceName, channelErrorText(runErr)))
+		if agent.Spec.PostsRunOutput(true) {
+			b.notify(ctx, dyn, agent, job.NotifyChannel,
+				fmt.Sprintf("%s %q: %s", job.Kind, job.SourceName, channelErrorText(runErr)))
+		}
 		return runErr
+	}
+	if !agent.Spec.PostsRunOutput(false) {
+		return nil
 	}
 	out := strings.TrimSpace(res.Content)
 	if job.Trigger == agentsv1alpha1.RunTriggerHeartbeat && (out == "" || strings.EqualFold(out, "OK") || strings.EqualFold(out, "OK.")) {
