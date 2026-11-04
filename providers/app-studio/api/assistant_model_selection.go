@@ -21,6 +21,7 @@ import (
 	"reflect"
 	"strings"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/store"
 )
 
@@ -53,6 +54,50 @@ func bindProjectAssistantStartModelAudit(run *store.AssistantRun, modelID, model
 	}
 	run.Audit = raw
 	return nil
+}
+
+func bindProjectAssistantStartConnectionAudit(run *store.AssistantRun, snapshot *aiv1alpha1.StudioLLMConnectionSnapshot) error {
+	if run == nil {
+		return errors.New("bind assistant connection snapshot: run is required")
+	}
+	var audit projectAssistantRunAudit
+	if len(run.Audit) > 0 {
+		if err := json.Unmarshal(run.Audit, &audit); err != nil {
+			return fmt.Errorf("decode assistant connection run audit: %w", err)
+		}
+	}
+	if snapshot == nil {
+		audit.ConnectionSnapshot = nil
+	} else {
+		copy := *snapshot
+		if snapshot.SecretRef != nil {
+			secretRef := *snapshot.SecretRef
+			copy.SecretRef = &secretRef
+		}
+		if audit.ConnectionSnapshot != nil && !reflect.DeepEqual(audit.ConnectionSnapshot, &copy) {
+			return fmt.Errorf("%w: client request ID was already used with a different provider connection snapshot", store.ErrAssistantRunConflict)
+		}
+		audit.ConnectionSnapshot = &copy
+	}
+	raw, err := json.Marshal(audit)
+	if err != nil {
+		return fmt.Errorf("encode assistant connection run audit: %w", err)
+	}
+	run.Audit = raw
+	return nil
+}
+
+func projectAssistantConnectionSnapshotFromRunAudit(run store.AssistantRun) *aiv1alpha1.StudioLLMConnectionSnapshot {
+	var audit projectAssistantRunAudit
+	if len(run.Audit) == 0 || json.Unmarshal(run.Audit, &audit) != nil || audit.ConnectionSnapshot == nil {
+		return nil
+	}
+	copy := *audit.ConnectionSnapshot
+	if audit.ConnectionSnapshot.SecretRef != nil {
+		secretRef := *audit.ConnectionSnapshot.SecretRef
+		copy.SecretRef = &secretRef
+	}
+	return &copy
 }
 
 func projectAssistantModelReferenceFromRunAudit(run store.AssistantRun) (string, string) {

@@ -188,10 +188,11 @@ func projectLLMEffectiveReasoningEffort(settings projectLLMSettings) string {
 
 func newProjectEinoAnthropicChatModel(ctx context.Context, settings projectLLMSettings) (einomodel.BaseChatModel, error) {
 	model, err := anthropicmodel.New(ctx, anthropicmodel.Config{
-		APIKey:  strings.TrimSpace(settings.APIKey),
-		BaseURL: strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
-		Model:   strings.TrimSpace(settings.Model),
-		Effort:  projectLLMEffectiveReasoningEffort(settings),
+		APIKey:      strings.TrimSpace(settings.APIKey),
+		BaseURL:     strings.TrimRight(strings.TrimSpace(settings.BaseURL), "/"),
+		Model:       strings.TrimSpace(settings.Model),
+		WorkspaceID: strings.TrimSpace(settings.AnthropicWorkspaceID),
+		Effort:      projectLLMEffectiveReasoningEffort(settings),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create native Eino Anthropic Messages model: %w", err)

@@ -13,6 +13,7 @@ package api
 import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
 	"github.com/railgrid/provider-app-studio/tenant"
 )
 
@@ -20,11 +21,13 @@ import (
 // through asclient.Client.Resource. GVR drives the REST path; Kind/Plural
 // must match the CRD's kind and its pluralization.
 var (
-	secretResource               = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
-	codeConnectionResource       = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
-	codeRepositoryResource       = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
-	codeRepositoryCommitResource = tenant.Resource{GVR: codeRepositoryCommitsGVR, Kind: "RepositoryCommit", Plural: "RepositoryCommits"}
-	codePackageResource          = tenant.Resource{GVR: codePackagesGVR, Kind: "Package", Plural: "Packages"}
+	secretResource                  = tenant.Resource{GVR: secretGVR, Kind: "Secret", Plural: "Secrets", Namespaced: true}
+	modelProviderConnectionGVR      = aiv1alpha1.SchemeGroupVersion.WithResource("modelproviderconnections")
+	modelProviderConnectionResource = tenant.Resource{GVR: modelProviderConnectionGVR, Kind: "ModelProviderConnection", Plural: "ModelProviderConnections"}
+	codeConnectionResource          = tenant.Resource{GVR: codeConnectionsGVR, Kind: "Connection", Plural: "Connections"}
+	codeRepositoryResource          = tenant.Resource{GVR: codeRepositoriesGVR, Kind: "Repository", Plural: "Repositories"}
+	codeRepositoryCommitResource    = tenant.Resource{GVR: codeRepositoryCommitsGVR, Kind: "RepositoryCommit", Plural: "RepositoryCommits"}
+	codePackageResource             = tenant.Resource{GVR: codePackagesGVR, Kind: "Package", Plural: "Packages"}
 )
 
 // codeResourceFor maps a code-provider GVR to its descriptor, for the

@@ -241,6 +241,9 @@ func (s *Server) startProjectAssistantRunDurablyForThread(ctx context.Context, s
 	if err := bindProjectAssistantStartModelAudit(&run, selection.ModelID, selection.ModelRevisionID); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}
+	if err := bindProjectAssistantStartConnectionAudit(&run, selection.ConnectionSnapshot); err != nil {
+		return projectAssistantDurableStartResult{}, err
+	}
 	if err := bindProjectAssistantStartReasoningAudit(&run, selection.Reasoning); err != nil {
 		return projectAssistantDurableStartResult{}, err
 	}

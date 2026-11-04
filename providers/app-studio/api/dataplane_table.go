@@ -198,14 +198,22 @@ var studioVerbs = []verbRoute{
 	{verb: "test-model", handlers: post(func(s *Server) http.HandlerFunc { return s.testProjectLLMConnection })},
 }
 
+// modelProviderConnectionVerbs invoke saved credentials. The handlers check
+// the caller's name-scoped `use` grant before reading a key Secret.
+var modelProviderConnectionVerbs = []verbRoute{
+	{verb: "test", handlers: post(func(s *Server) http.HandlerFunc { return s.testModelProviderConnection })},
+	{verb: "discover", handlers: post(func(s *Server) http.HandlerFunc { return s.discoverModelProviderConnection })},
+}
+
 // verbIndex is the (resource, verb) lookup the dispatcher uses.
 var verbIndex = buildVerbIndex()
 
 func buildVerbIndex() map[string]map[string]verbRoute {
 	index := map[string]map[string]verbRoute{
-		projectsGVR.Resource: {},
-		sessionsGVR.Resource: {},
-		studiosGVR.Resource:  {},
+		projectsGVR.Resource:                 {},
+		sessionsGVR.Resource:                 {},
+		studiosGVR.Resource:                  {},
+		modelProviderConnectionsGVR.Resource: {},
 	}
 	for _, route := range projectVerbs {
 		index[projectsGVR.Resource][route.verb] = route
@@ -215,6 +223,9 @@ func buildVerbIndex() map[string]map[string]verbRoute {
 	}
 	for _, route := range studioVerbs {
 		index[studiosGVR.Resource][route.verb] = route
+	}
+	for _, route := range modelProviderConnectionVerbs {
+		index[modelProviderConnectionsGVR.Resource][route.verb] = route
 	}
 	return index
 }

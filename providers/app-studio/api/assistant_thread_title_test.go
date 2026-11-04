@@ -78,7 +78,7 @@ func TestAssistantThreadTitleGeneratorUsesServerSeam(t *testing.T) {
 	}}
 	// The seam is intentionally exercised through the sanitizer boundary; the
 	// concrete client is nil because tests do not need a tenant connection.
-	got, err := server.generateAssistantThreadTitle(context.Background(), nil, "three")
+	got, err := server.generateAssistantThreadTitle(context.Background(), nil, identity{}, "three")
 	if err != nil {
 		t.Fatal(err)
 	}

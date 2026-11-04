@@ -233,7 +233,7 @@ const projectMessagePersistTimeout = 5 * time.Second
 var errProjectAssistantMessageNotFound = errors.New("project assistant message not found")
 
 type projectCreationStatusFunc func(string) error
-type projectCreatePreflightGenerator func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error)
+type projectCreatePreflightGenerator func(context.Context, *asclient.Client, identity, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error)
 
 func writeProjectError(w http.ResponseWriter, err error) {
 	if errors.Is(err, errProjectRuntimeOperationTargetChanged) {
@@ -398,7 +398,7 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 		if s.projectCreatePreflight != nil {
 			generatePreflight = s.projectCreatePreflight
 		}
-		generated, err := generatePreflight(ctx, c, req.Prompt, templates)
+		generated, err := generatePreflight(ctx, c, id, req.Prompt, templates)
 		if err != nil {
 			return nil, err
 		}

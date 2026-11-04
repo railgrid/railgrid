@@ -160,7 +160,7 @@ func TestProjectAnthropicPreflightAndThreadTitleOmitTemperature(t *testing.T) {
 			response: `{"displayName":"Customer Portal","repositoryName":"customer-portal","templateName":""}`,
 			generate: func(t *testing.T, server *Server, client *asclient.Client) {
 				t.Helper()
-				got, err := server.generateProjectCreatePreflight(context.Background(), client, "Build a customer portal", nil)
+				got, err := server.generateProjectCreatePreflight(context.Background(), client, identity{}, "Build a customer portal", nil)
 				if err != nil {
 					t.Fatalf("generate project-create preflight: %v", err)
 				}
@@ -174,7 +174,7 @@ func TestProjectAnthropicPreflightAndThreadTitleOmitTemperature(t *testing.T) {
 			response: "Build Compact Thread Pane",
 			generate: func(t *testing.T, server *Server, client *asclient.Client) {
 				t.Helper()
-				got, err := server.generateAssistantThreadTitle(context.Background(), client, "build a compact thread pane")
+				got, err := server.generateAssistantThreadTitle(context.Background(), client, identity{}, "build a compact thread pane")
 				if err != nil {
 					t.Fatalf("generate assistant thread title: %v", err)
 				}

@@ -1636,6 +1636,7 @@ func TestProjectAssistantThreadStartConsumesServerOwnedInitialBootstrap(t *testi
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, projectYAML))
 	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	proxy.Register(modelProviderConnectionsGVR)
 	if credential := projectLLMCredential(settings); credential != nil {
 		proxy.Add(secretGVR, credential)
 	}
@@ -1963,6 +1964,7 @@ func TestProjectAssistantSupervisorWorkerPersistsPlanSnapshots(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	proxy.Register(modelProviderConnectionsGVR)
 	if credential := projectLLMCredential(settings); credential != nil {
 		proxy.Add(secretGVR, credential)
 	}
@@ -2055,6 +2057,7 @@ func TestProjectAssistantWorkerPersistsCodexTerminalContract(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	proxy.Register(modelProviderConnectionsGVR)
 	if credential := projectLLMCredential(settings); credential != nil {
 		proxy.Add(secretGVR, credential)
 	}
@@ -2120,6 +2123,7 @@ func TestProjectAssistantSupervisorResumesFreeTextAndPersistsLatestPlanSnapshot(
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, "apiVersion: ai.railgrid.ai/v1alpha1\nkind: Project\nmetadata:\n  name: demo\n  uid: test-project-uid-demo\nspec: {}\n"))
 	proxy.Add(studioResource.GVR, projectLLMStudio(settings))
+	proxy.Register(modelProviderConnectionsGVR)
 	if credential := projectLLMCredential(settings); credential != nil {
 		proxy.Add(secretGVR, credential)
 	}

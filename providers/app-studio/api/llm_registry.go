@@ -19,15 +19,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
@@ -46,42 +49,44 @@ var errProjectLLMModelNotFound = newValidationError("selected model configuratio
 var projectLLMModelIDInvalid = regexp.MustCompile(`[^a-z0-9]+`)
 
 type ProjectLLMModelView struct {
-	Catalog         *modelcatalog.ModelInfo `json:"catalog,omitempty"`
-	ID              string                  `json:"id"`
-	Name            string                  `json:"name"`
-	Provider        string                  `json:"provider"`
-	BaseURL         string                  `json:"baseURL"`
-	Model           string                  `json:"model"`
-	ReasoningEffort string                  `json:"reasoningEffort,omitempty"`
-	Configured      bool                    `json:"configured"`
-	Default         bool                    `json:"default,omitempty"`
+	Catalog              *modelcatalog.ModelInfo `json:"catalog,omitempty"`
+	ID                   string                  `json:"id"`
+	Name                 string                  `json:"name"`
+	ConnectionRef        string                  `json:"connectionRef,omitempty"`
+	Provider             string                  `json:"provider"`
+	BaseURL              string                  `json:"baseURL"`
+	AnthropicWorkspaceID string                  `json:"anthropicWorkspaceID,omitempty"`
+	Model                string                  `json:"model"`
+	ReasoningEffort      string                  `json:"reasoningEffort,omitempty"`
+	Configured           bool                    `json:"configured"`
+	Default              bool                    `json:"default,omitempty"`
 }
 
 type CreateProjectLLMModelRequest struct {
 	Name            string `json:"name"`
-	Provider        string `json:"provider,omitempty"`
-	BaseURL         string `json:"baseURL,omitempty"`
+	ConnectionRef   string `json:"connectionRef"`
 	Model           string `json:"model"`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
-	APIKey          string `json:"apiKey"`
 }
 
 type TestProjectLLMConnectionRequest struct {
-	ExistingModelID string  `json:"existingModelID,omitempty"`
-	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
-	Provider        string  `json:"provider,omitempty"`
-	BaseURL         string  `json:"baseURL,omitempty"`
-	Model           string  `json:"model"`
-	APIKey          string  `json:"apiKey"`
+	ExistingModelID       string  `json:"existingModelID,omitempty"`
+	ExistingConnectionID  string  `json:"existingConnectionID,omitempty"`
+	ConnectionFingerprint string  `json:"connectionFingerprint,omitempty"`
+	CredentialMode        string  `json:"credentialMode,omitempty"`
+	ReasoningEffort       *string `json:"reasoningEffort,omitempty"`
+	Provider              string  `json:"provider,omitempty"`
+	BaseURL               string  `json:"baseURL,omitempty"`
+	AnthropicWorkspaceID  string  `json:"anthropicWorkspaceID,omitempty"`
+	Model                 string  `json:"model"`
+	APIKey                string  `json:"apiKey,omitempty"`
 }
 
 type PatchProjectLLMModelRequest struct {
 	Name            *string `json:"name,omitempty"`
-	Provider        *string `json:"provider,omitempty"`
-	BaseURL         *string `json:"baseURL,omitempty"`
+	ConnectionRef   *string `json:"connectionRef,omitempty"`
 	Model           *string `json:"model,omitempty"`
 	ReasoningEffort *string `json:"reasoningEffort,omitempty"`
-	APIKey          *string `json:"apiKey,omitempty"`
 }
 
 type SetDefaultProjectLLMModelRequest struct {
@@ -89,11 +94,19 @@ type SetDefaultProjectLLMModelRequest struct {
 }
 
 type projectLLMModelSettings struct {
-	ID         string
-	RevisionID string
-	Archived   bool
-	Name       string
-	Settings   projectLLMSettings
+	ID                    string
+	RevisionID            string
+	Archived              bool
+	Name                  string
+	Configured            bool
+	ConnectionRef         string
+	ConnectionSnapshot    *aiv1alpha1.StudioLLMConnectionSnapshot
+	ConnectionFingerprint string
+	SecretName            string
+	SecretUID             string
+	SecretResourceVersion string
+	GeneratedSecretID     string
+	Settings              projectLLMSettings
 }
 
 type projectLLMRegistry struct {
@@ -165,7 +178,7 @@ func (r projectLLMRegistry) selectedModel(requested string) (projectLLMModelSett
 	if !ok {
 		return projectLLMModelSettings{}, newValidationError("selected model configuration was not found")
 	}
-	if strings.TrimSpace(model.Settings.APIKey) == "" {
+	if !model.Configured && strings.TrimSpace(model.Settings.APIKey) == "" {
 		return projectLLMModelSettings{}, newValidationError("selected model configuration does not have a credential")
 	}
 	return model, nil
@@ -182,15 +195,17 @@ func (r projectLLMRegistry) view() ProjectLLMSettingsView {
 			catalog = &entry
 		}
 		views = append(views, ProjectLLMModelView{
-			Catalog:         catalog,
-			ID:              model.ID,
-			Name:            model.Name,
-			Provider:        model.Settings.Provider,
-			BaseURL:         model.Settings.BaseURL,
-			Model:           model.Settings.Model,
-			ReasoningEffort: model.Settings.ReasoningEffort,
-			Configured:      strings.TrimSpace(model.Settings.APIKey) != "",
-			Default:         model.ID == r.DefaultModelID,
+			Catalog:              catalog,
+			ID:                   model.ID,
+			Name:                 model.Name,
+			ConnectionRef:        model.ConnectionRef,
+			Provider:             model.Settings.Provider,
+			BaseURL:              model.Settings.BaseURL,
+			AnthropicWorkspaceID: model.Settings.AnthropicWorkspaceID,
+			Model:                model.Settings.Model,
+			ReasoningEffort:      model.Settings.ReasoningEffort,
+			Configured:           model.Configured || strings.TrimSpace(model.Settings.APIKey) != "",
+			Default:              model.ID == r.DefaultModelID,
 		})
 	}
 	sort.SliceStable(views, func(i, j int) bool {
@@ -204,7 +219,7 @@ func (r projectLLMRegistry) view() ProjectLLMSettingsView {
 		view.Provider = selected.Settings.Provider
 		view.BaseURL = selected.Settings.BaseURL
 		view.Model = selected.Settings.Model
-		view.Configured = strings.TrimSpace(selected.Settings.APIKey) != ""
+		view.Configured = selected.Configured || strings.TrimSpace(selected.Settings.APIKey) != ""
 	} else {
 		view.Provider = r.Runtime.Provider
 		view.BaseURL = r.Runtime.BaseURL
@@ -275,7 +290,7 @@ func validateProjectLLMModelCredential(model projectLLMModelSettings) error {
 func firstConfiguredProjectLLMModelID(models []projectLLMModelSettings) string {
 	var selected *projectLLMModelSettings
 	for _, model := range models {
-		if model.Archived || strings.TrimSpace(model.Settings.APIKey) == "" {
+		if model.Archived || (!model.Configured && strings.TrimSpace(model.Settings.APIKey) == "") {
 			continue
 		}
 		if selected == nil || strings.ToLower(model.Name) < strings.ToLower(selected.Name) {
@@ -290,22 +305,15 @@ func firstConfiguredProjectLLMModelID(models []projectLLMModelSettings) string {
 }
 
 func configuredProjectLLMDefaultModelID(registry projectLLMRegistry) string {
-	if model, found := registry.model(registry.DefaultModelID); found && strings.TrimSpace(model.Settings.APIKey) != "" {
+	if model, found := registry.model(registry.DefaultModelID); found && (model.Configured || strings.TrimSpace(model.Settings.APIKey) != "") {
 		return model.ID
 	}
 	return firstConfiguredProjectLLMModelID(registry.Models)
 }
 
-// readProjectLLMRegistry assembles the workspace's model registry from the
-// Studio's spec.llm plus, for each model that names one, its own credential
-// Secret.
-//
-// The registry used to be a single Opaque Secret holding every model AND every
-// key, which meant any read of the model list was a read of all credentials.
-// Now the list is typed spec on an object anyone in the workspace may read,
-// and a key is fetched only for the model about to be used. Callers get the
-// same projectLLMRegistry they always did — the split is in where the parts
-// come from, not in what the assistant runtime sees.
+// readProjectLLMRegistry reads the public model bindings and status projection.
+// Listing bindings never reads a key Secret; a key is loaded only for the
+// model selected for an authorized inference or probe.
 func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLMRegistry, error) {
 	registry := defaultProjectLLMRegistry()
 	st, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
@@ -326,35 +334,23 @@ func readProjectLLMRegistry(ctx context.Context, c *asclient.Client) (projectLLM
 	}
 
 	applyProjectLLMRuntimeSpec(&registry.Runtime, spec.Runtime)
-	// One Secret read per distinct model, not per revision: revisions of a
-	// model share its credential, and a registry with deep history would
-	// otherwise re-read the same Secret dozens of times per request.
-	keys := map[string]string{}
-	for _, item := range spec.Models {
-		name := ""
-		if item.SecretRef != nil {
-			name = strings.TrimSpace(item.SecretRef.Name)
-		}
-		if name == "" {
-			continue
-		}
-		if _, done := keys[name]; done {
-			continue
-		}
-		key, err := readProjectLLMCredential(ctx, c, name)
-		if err != nil {
-			return registry, err
-		}
-		keys[name] = key
+	configured := map[string]bool{}
+	for _, item := range studio.Status.Models {
+		configured[item.ID] = item.Configured
 	}
 
 	for _, item := range spec.Models {
 		model := projectLLMModelSettings{
 			ID: item.ID, RevisionID: item.RevisionID, Archived: item.Archived, Name: item.Name,
-			Settings: projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model, ReasoningEffort: item.ReasoningEffort},
+			Configured: configured[item.ID], ConnectionRef: strings.TrimSpace(item.ConnectionRef),
+			ConnectionSnapshot: item.ConnectionSnapshot,
+			Settings:           projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, AnthropicWorkspaceID: item.AnthropicWorkspaceID, Model: item.Model, ReasoningEffort: item.ReasoningEffort},
 		}
-		if item.SecretRef != nil {
-			model.Settings.APIKey = keys[strings.TrimSpace(item.SecretRef.Name)]
+		if item.ConnectionSnapshot != nil {
+			model.ConnectionFingerprint = item.ConnectionSnapshot.ConnectionFingerprint
+			model.Settings.Provider = item.ConnectionSnapshot.Provider
+			model.Settings.BaseURL = item.ConnectionSnapshot.BaseURL
+			model.Settings.AnthropicWorkspaceID = item.ConnectionSnapshot.AnthropicWorkspaceID
 		}
 		if err := normalizeProjectLLMModel(&model, registry.Runtime); err != nil {
 			return registry, err
@@ -393,16 +389,127 @@ func readProjectLLMModelForTurn(ctx context.Context, c *asclient.Client, modelID
 // suppressed while normalizing the connection so an invalid or stale default
 // can be replaced without making unrelated registry entries block the read.
 func readProjectLLMModelForCredentialReuse(ctx context.Context, c *asclient.Client, modelID string) (projectLLMModelSettings, error) {
-	var savedReasoningEffort string
-	model, err := readProjectLLMModelWithSettings(ctx, c, modelID, "", func(settings *projectLLMSettings) {
-		savedReasoningEffort = settings.ReasoningEffort
-		settings.ReasoningEffort = ""
-	})
+	config, err := readProjectLLMModelConfig(ctx, c, modelID)
 	if err != nil {
 		return projectLLMModelSettings{}, err
 	}
+	if config.ConnectionRef != "" || config.ConnectionSnapshot != nil {
+		return projectLLMModelSettings{}, newValidationError("reuse this saved key through existingConnectionID and its connection fingerprint")
+	}
+	if err := validateLegacyCredentialReference(ctx, c, config.SecretName); err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	// Use the exact configuration checked above; re-reading the Studio here
+	// would let a concurrent spec change replace the guarded key reference.
+	model := config
+	savedReasoningEffort := model.Settings.ReasoningEffort
+	model.Settings.ReasoningEffort = ""
+	model.Settings.APIKey, err = readProjectLLMCredential(ctx, c, model.SecretName)
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if err := normalizeProjectLLMModel(&model, defaultProjectLLMSettings()); err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if strings.TrimSpace(model.Settings.APIKey) == "" {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration does not have a credential")
+	}
 	model.Settings.ReasoningEffort = savedReasoningEffort
 	return model, nil
+}
+
+// readProjectLLMModelForIdentity checks name-scoped use permission before it
+// reads the connection's Secret. The returned connection values come from the
+// model revision snapshot, not from a mutable connection object.
+func (s *Server) readProjectLLMModelForIdentity(ctx context.Context, id identity, c *asclient.Client, modelID, revisionID string, restore func(*projectLLMSettings)) (projectLLMModelSettings, error) {
+	config, err := readProjectLLMModelWithOptions(ctx, c, modelID, revisionID, nil, false, false)
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if revisionID == "" && config.ConnectionRef != "" && config.ConnectionSnapshot != nil {
+		// Studio and connection status have separate CAS boundaries. If a
+		// rollover was written but its admission status lost a concurrent spec
+		// race, keep selecting the last controller-admitted archived revision.
+		connection, readErr := readModelProviderConnection(ctx, c, config.ConnectionRef)
+		if readErr != nil {
+			return projectLLMModelSettings{}, readErr
+		}
+		if active := connection.Status.ActiveSnapshot; active != nil && !reflect.DeepEqual(active, config.ConnectionSnapshot) {
+			obj, readErr := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+			if readErr != nil {
+				return projectLLMModelSettings{}, readErr
+			}
+			var studio aiv1alpha1.Studio
+			if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &studio); err != nil {
+				return projectLLMModelSettings{}, err
+			}
+			if studio.Spec.LLM != nil {
+				for _, prior := range studio.Spec.LLM.Models {
+					if prior.ID == config.ID && prior.ConnectionRef == config.ConnectionRef && prior.Model == config.Settings.Model && prior.ReasoningEffort == config.Settings.ReasoningEffort && reflect.DeepEqual(prior.ConnectionSnapshot, active) {
+						config, err = readProjectLLMModelWithOptions(ctx, c, prior.ID, prior.RevisionID, nil, false, false)
+						if err != nil {
+							return projectLLMModelSettings{}, err
+						}
+						break
+					}
+				}
+			}
+		}
+	}
+	if config.ConnectionRef != "" {
+		if config.ConnectionSnapshot == nil {
+			return projectLLMModelSettings{}, newValidationError("model binding is waiting for its immutable provider connection snapshot")
+		}
+	}
+	selected, err := readProjectLLMModelWithOptions(ctx, c, config.ID, config.RevisionID, nil, false, false)
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if config.ConnectionRef != selected.ConnectionRef || config.ConnectionFingerprint != selected.ConnectionFingerprint ||
+		!reflect.DeepEqual(config.ConnectionSnapshot, selected.ConnectionSnapshot) || config.SecretName != selected.SecretName ||
+		config.Settings.Provider != selected.Settings.Provider || config.Settings.BaseURL != selected.Settings.BaseURL ||
+		config.Settings.AnthropicWorkspaceID != selected.Settings.AnthropicWorkspaceID || config.Settings.Model != selected.Settings.Model ||
+		config.Settings.ReasoningEffort != selected.Settings.ReasoningEffort {
+		return projectLLMModelSettings{}, apierrors.NewConflict(studiosGVR.GroupResource(), aiv1alpha1.StudioName, errors.New("model binding changed during selection; retry the request"))
+	}
+	if selected.ConnectionSnapshot != nil {
+		if selected.ConnectionRef == "" {
+			return projectLLMModelSettings{}, newValidationError("model connection snapshot has no authorized connection reference")
+		}
+		selected.Settings.APIKey, err = s.readAuthorizedConnectionSnapshotCredential(ctx, id, c, selected.ConnectionRef, selected.ConnectionSnapshot)
+	} else if selected.ConnectionRef != "" {
+		return projectLLMModelSettings{}, newValidationError("model binding is waiting for its immutable provider connection snapshot")
+	} else if selected.SecretName != "" {
+		if err = validateLegacyCredentialReference(ctx, c, selected.SecretName); err == nil {
+			selected.Settings.APIKey, err = readProjectLLMCredential(ctx, c, selected.SecretName)
+		}
+	}
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if restore != nil {
+		restore(&selected.Settings)
+	}
+	if err := normalizeProjectLLMModel(&selected, selected.Settings); err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if strings.TrimSpace(selected.Settings.APIKey) == "" {
+		return projectLLMModelSettings{}, newValidationError("selected model configuration does not have a credential")
+	}
+	selected.Configured = true
+	return selected, nil
+}
+
+func (s *Server) readDefaultProjectLLMModelForIdentity(ctx context.Context, id identity, c *asclient.Client) (projectLLMModelSettings, error) {
+	registry, err := readProjectLLMRegistry(ctx, c)
+	if err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	modelID := strings.TrimSpace(registry.DefaultModelID)
+	if modelID == "" {
+		return projectLLMModelSettings{}, errProjectLLMModelNotFound
+	}
+	return s.readProjectLLMModelForIdentity(ctx, id, c, modelID, "", nil)
 }
 
 // readProjectLLMModelConfig reads the active model's saved configuration
@@ -417,9 +524,250 @@ func readProjectLLMModelConfig(ctx context.Context, c *asclient.Client, modelID 
 // model default, or an unrelated model, before restoring its own snapshot.
 func readProjectLLMModelForRun(ctx context.Context, c *asclient.Client, run store.AssistantRun) (projectLLMModelSettings, error) {
 	modelID, revisionID := projectAssistantModelReferenceFromRunAudit(run)
+	if snapshot := projectAssistantConnectionSnapshotFromRunAudit(run); snapshot != nil {
+		selected, err := readProjectLLMModelWithOptions(ctx, c, modelID, revisionID, nil, false, false)
+		if err != nil {
+			return projectLLMModelSettings{}, err
+		}
+		selected.ConnectionRef = strings.TrimSpace(snapshot.ConnectionRef)
+		selected.ConnectionSnapshot = snapshot
+		selected.ConnectionFingerprint = snapshot.ConnectionFingerprint
+		selected.Settings.Provider = snapshot.Provider
+		selected.Settings.BaseURL = snapshot.BaseURL
+		selected.Settings.AnthropicWorkspaceID = snapshot.AnthropicWorkspaceID
+		selected.SecretName = ""
+		if snapshot.SecretRef != nil {
+			selected.SecretName = strings.TrimSpace(snapshot.SecretRef.Name)
+		}
+		selected.SecretUID = snapshot.SecretUID
+		selected.SecretResourceVersion = snapshot.SecretResourceVersion
+		selected.GeneratedSecretID = snapshot.GeneratedSecretID
+		selected.Settings.APIKey, err = readConnectionSnapshotCredential(ctx, c, snapshot)
+		if err != nil {
+			return projectLLMModelSettings{}, err
+		}
+		applyProjectAssistantReasoningSnapshot(&selected.Settings, run)
+		if err := normalizeProjectLLMModel(&selected, selected.Settings); err != nil {
+			return projectLLMModelSettings{}, err
+		}
+		selected.Configured = true
+		return selected, nil
+	}
+	if legacy, found, err := readLegacyProjectLLMRunFromPlan(ctx, c, run); found || err != nil {
+		return legacy, err
+	}
 	return readProjectLLMModelWithSettings(ctx, c, modelID, revisionID, func(settings *projectLLMSettings) {
 		applyProjectAssistantReasoningSnapshot(settings, run)
 	})
+}
+
+// The source plan survives capacity-limited in-place migration and prevents a
+// caller from rewriting the old revision's transport before a legacy resume.
+func legacyProjectLLMRunSource(ctx context.Context, c *asclient.Client, run store.AssistantRun) (*aiv1alpha1.StudioLegacyModelMigration, error) {
+	modelID, revisionID := projectAssistantModelReferenceFromRunAudit(run)
+	if modelID == "" || revisionID == "" {
+		return nil, nil
+	}
+	if c == nil {
+		return nil, errors.New("project client is required for legacy model resolution")
+	}
+	obj, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if err != nil {
+		return nil, err
+	}
+	var studio aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &studio); err != nil {
+		return nil, err
+	}
+	for _, entry := range studio.Status.LegacyModelMigrations {
+		if entry.Model.ID == modelID && entry.Model.RevisionID == revisionID && entry.Model.SecretRef != nil && entry.SecretUID != "" {
+			return &entry, nil
+		}
+	}
+	return nil, nil
+}
+
+func readLegacyProjectLLMRunFromPlan(ctx context.Context, c *asclient.Client, run store.AssistantRun) (projectLLMModelSettings, bool, error) {
+	entry, err := legacyProjectLLMRunSource(ctx, c, run)
+	if err != nil {
+		return projectLLMModelSettings{}, false, err
+	}
+	if entry == nil {
+		return projectLLMModelSettings{}, false, nil
+	}
+	model := entry.Model
+	key, err := readProjectLLMCredential(ctx, c, model.SecretRef.Name, entry.SecretUID)
+	if err != nil {
+		return projectLLMModelSettings{}, true, err
+	}
+	selected := projectLLMModelSettings{ID: model.ID, RevisionID: model.RevisionID, Name: model.Name, Settings: projectLLMSettings{Provider: model.Provider, BaseURL: model.BaseURL, AnthropicWorkspaceID: model.AnthropicWorkspaceID, Model: model.Model, ReasoningEffort: model.ReasoningEffort, APIKey: key}}
+	applyProjectAssistantReasoningSnapshot(&selected.Settings, run)
+	studio, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if err != nil {
+		return projectLLMModelSettings{}, true, err
+	}
+	var typed aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(studio.Object, &typed); err != nil {
+		return projectLLMModelSettings{}, true, err
+	}
+	runtimeSettings := defaultProjectLLMSettings()
+	if typed.Spec.LLM != nil {
+		applyProjectLLMRuntimeSpec(&runtimeSettings, typed.Spec.LLM.Runtime)
+	}
+	if err := normalizeProjectLLMModel(&selected, runtimeSettings); err != nil {
+		return projectLLMModelSettings{}, true, err
+	}
+	if key == "" {
+		return projectLLMModelSettings{}, true, newValidationError("legacy run credential is no longer available")
+	}
+	selected.Configured = true
+	return selected, true, nil
+}
+
+// readProjectLLMModelForContinuation starts a new run that continues an
+// interrupted predecessor. Unlike an ordinary model selection, this uses the
+// predecessor's server-written audit snapshot so a connection rotation cannot
+// change the interrupted conversation's model. It still checks the caller's
+// current name-scoped `use` permission before reading that pinned Secret.
+// authorizeProjectAssistantRunModelUse runs before claiming a paused run and
+// again before reading its key. Legacy audits resolve authority through the
+// migrated connection, including its original source revision after rotation.
+func (s *Server) authorizeProjectAssistantRunModelUse(ctx context.Context, id identity, c *asclient.Client, run store.AssistantRun) error {
+	if snapshot := projectAssistantConnectionSnapshotFromRunAudit(run); snapshot != nil {
+		if strings.TrimSpace(snapshot.ConnectionRef) == "" {
+			return newValidationError("run connection snapshot is incomplete")
+		}
+		return s.authorizeModelProviderConnectionUse(ctx, id, snapshot.ConnectionRef)
+	}
+	// Resolve legacy authority from controller-owned provenance before reading
+	// the caller-writable current row; its connectionRef may have been edited.
+	if source, err := legacyProjectLLMRunSource(ctx, c, run); err != nil {
+		return err
+	} else if source != nil {
+		return s.authorizeModelProviderConnectionUse(ctx, id, source.Model.ID)
+	}
+	if c == nil {
+		return errors.New("project client is required for model authorization")
+	}
+	modelID, revisionID := projectAssistantModelReferenceFromRunAudit(run)
+	model, err := readProjectLLMModelWithOptions(ctx, c, modelID, revisionID, nil, false, false)
+	if err != nil {
+		return err
+	}
+	if model.ConnectionRef != "" {
+		return s.authorizeModelProviderConnectionUse(ctx, id, model.ConnectionRef)
+	}
+	connections, err := c.Resource(modelProviderConnectionResource, "").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	// A migration destination has the original logical model name. Prefer
+	// that authority over other legitimate bindings sharing the same key.
+	for _, connection := range connections.Items {
+		if connection.GetName() == model.ID && connection.GetAnnotations()["ai.railgrid.ai/migrated-from-studio-revision"] == model.RevisionID {
+			if err := s.authorizeModelProviderConnectionUse(ctx, id, connection.GetName()); err != nil {
+				return err
+			}
+			return validateLegacyResumeTransport(ctx, c, model, &connection)
+		}
+	}
+	found := false
+	for _, connection := range connections.Items {
+		secretName, _, _ := unstructured.NestedString(connection.Object, "spec", "secretRef", "name")
+		activeSecret, _, _ := unstructured.NestedString(connection.Object, "status", "activeSnapshot", "secretRef", "name")
+		sourceRevision := connection.GetAnnotations()["ai.railgrid.ai/migrated-from-studio-revision"]
+		if (model.SecretName != "" && (strings.TrimSpace(secretName) == model.SecretName || strings.TrimSpace(activeSecret) == model.SecretName)) || (connection.GetName() == model.ID && sourceRevision == model.RevisionID) {
+			found = true
+			if err := s.authorizeModelProviderConnectionUse(ctx, id, connection.GetName()); err != nil {
+				return err
+			}
+			if err := validateLegacyResumeTransport(ctx, c, model, &connection); err != nil {
+				return err
+			}
+		}
+	}
+	if model.Archived && !found {
+		// A deleted migration destination must not erase its name-scoped gate.
+		return s.authorizeModelProviderConnectionUse(ctx, id, model.ID)
+	}
+	return nil
+}
+
+// Legacy audits pinned a revision ID but not its endpoint. Compare that
+// caller-writable row with controller-owned provenance before sending a key.
+func validateLegacyResumeTransport(ctx context.Context, c *asclient.Client, model projectLLMModelSettings, connection *unstructured.Unstructured) error {
+	matches := func(provider, baseURL, workspace, secret string) bool {
+		if strings.TrimSpace(secret) != model.SecretName || canonicalModelProvider(provider) != canonicalModelProvider(model.Settings.Provider) || strings.TrimSpace(workspace) != strings.TrimSpace(model.Settings.AnthropicWorkspaceID) {
+			return false
+		}
+		base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+		target := strings.TrimRight(strings.TrimSpace(model.Settings.BaseURL), "/")
+		if base == "" {
+			if canonicalModelProvider(provider) == projectLLMProviderGoogle {
+				base = defaultProjectLLMGoogleBaseURL
+			} else {
+				base = defaultProjectLLMBaseURL
+			}
+		}
+		if target == "" {
+			if canonicalModelProvider(model.Settings.Provider) == projectLLMProviderGoogle {
+				target = defaultProjectLLMGoogleBaseURL
+			} else {
+				target = defaultProjectLLMBaseURL
+			}
+		}
+		return base == target
+	}
+	var typed aiv1alpha1.ModelProviderConnection
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(connection.Object, &typed); err != nil {
+		return err
+	}
+	if matches(typed.Spec.Provider, typed.Spec.BaseURL, typed.Spec.AnthropicWorkspaceID, typed.Spec.SecretRef.Name) {
+		return nil
+	}
+	if active := typed.Status.ActiveSnapshot; active != nil && active.SecretRef != nil && matches(active.Provider, active.BaseURL, active.AnthropicWorkspaceID, active.SecretRef.Name) {
+		return nil
+	}
+	obj, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	var studio aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(obj.Object, &studio); err != nil {
+		return err
+	}
+	for _, entry := range studio.Status.LegacyModelMigrations {
+		prior := entry.Model
+		if prior.ID == model.ID && prior.RevisionID == model.RevisionID && prior.SecretRef != nil && matches(prior.Provider, prior.BaseURL, prior.AnthropicWorkspaceID, prior.SecretRef.Name) {
+			return nil
+		}
+	}
+	return newValidationError("the legacy run configuration no longer matches its admitted provider; start a new turn with the current model")
+}
+
+func (s *Server) readProjectLLMModelForRunForIdentity(ctx context.Context, id identity, c *asclient.Client, run store.AssistantRun) (projectLLMModelSettings, error) {
+	if err := s.authorizeProjectAssistantRunModelUse(ctx, id, c, run); err != nil {
+		return projectLLMModelSettings{}, err
+	}
+	if projectAssistantConnectionSnapshotFromRunAudit(run) == nil {
+		if legacy, found, err := readLegacyProjectLLMRunFromPlan(ctx, c, run); found || err != nil {
+			return legacy, err
+		}
+
+		modelID, revisionID := projectAssistantModelReferenceFromRunAudit(run)
+		model, err := readProjectLLMModelWithOptions(ctx, c, modelID, revisionID, nil, false, false)
+		if err != nil {
+			return projectLLMModelSettings{}, err
+		}
+		if model.ConnectionRef != "" || model.ConnectionSnapshot != nil {
+			return s.readProjectLLMModelForIdentity(ctx, id, c, modelID, revisionID, func(settings *projectLLMSettings) { applyProjectAssistantReasoningSnapshot(settings, run) })
+		}
+	}
+	return readProjectLLMModelForRun(ctx, c, run)
+}
+
+func (s *Server) readProjectLLMModelForContinuation(ctx context.Context, id identity, c *asclient.Client, predecessor store.AssistantRun) (projectLLMModelSettings, error) {
+	return s.readProjectLLMModelForRunForIdentity(ctx, id, c, predecessor)
 }
 
 func readProjectLLMModelWithSettings(ctx context.Context, c *asclient.Client, modelID, revisionID string, restore func(*projectLLMSettings)) (projectLLMModelSettings, error) {
@@ -440,6 +788,10 @@ func readProjectLLMModelWithOptions(ctx context.Context, c *asclient.Client, mod
 	}
 	if studio.Spec.LLM == nil {
 		return projectLLMModelSettings{}, errProjectLLMModelNotFound
+	}
+	configured := map[string]bool{}
+	for _, status := range studio.Status.Models {
+		configured[status.ID] = status.Configured
 	}
 
 	runtimeSettings := defaultProjectLLMSettings()
@@ -495,12 +847,40 @@ func readProjectLLMModelWithOptions(ctx context.Context, c *asclient.Client, mod
 	}
 	item := studio.Spec.LLM.Models[selectedIndex]
 	selected.Name = item.Name
-	selected.Settings = projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, Model: item.Model, ReasoningEffort: item.ReasoningEffort}
-	if name := secretRefs[selectedIndex]; name != "" && loadCredential {
-		selected.Settings.APIKey, err = readProjectLLMCredential(ctx, c, name)
+	selected.Configured = configured[selected.ID]
+	selected.ConnectionRef = strings.TrimSpace(item.ConnectionRef)
+	selected.ConnectionSnapshot = item.ConnectionSnapshot
+	if selected.ConnectionRef != "" && item.ConnectionSnapshot != nil && strings.TrimSpace(item.ConnectionSnapshot.ConnectionRef) != selected.ConnectionRef {
+		return projectLLMModelSettings{}, newValidationError("model connection snapshot does not match its connectionRef")
+	}
+	selected.Settings = projectLLMSettings{Provider: item.Provider, BaseURL: item.BaseURL, AnthropicWorkspaceID: item.AnthropicWorkspaceID, Model: item.Model, ReasoningEffort: item.ReasoningEffort,
+		MaxRetries: runtimeSettings.MaxRetries, MaxRetriesConfigured: runtimeSettings.MaxRetriesConfigured, RetryBackoff: runtimeSettings.RetryBackoff, StreamIdleTimeout: runtimeSettings.StreamIdleTimeout}
+	secretName := secretRefs[selectedIndex]
+	if item.ConnectionSnapshot != nil {
+		selected.Settings.Provider = item.ConnectionSnapshot.Provider
+		selected.Settings.BaseURL = item.ConnectionSnapshot.BaseURL
+		selected.Settings.AnthropicWorkspaceID = item.ConnectionSnapshot.AnthropicWorkspaceID
+		selected.ConnectionFingerprint = item.ConnectionSnapshot.ConnectionFingerprint
+		if item.ConnectionSnapshot.SecretRef != nil {
+			secretName = strings.TrimSpace(item.ConnectionSnapshot.SecretRef.Name)
+		}
+		selected.SecretName = secretName
+		selected.SecretUID = item.ConnectionSnapshot.SecretUID
+		selected.SecretResourceVersion = item.ConnectionSnapshot.SecretResourceVersion
+		selected.GeneratedSecretID = item.ConnectionSnapshot.GeneratedSecretID
+	} else if item.SecretRef != nil {
+		selected.SecretName = strings.TrimSpace(item.SecretRef.Name)
+	}
+	if loadCredential {
+		if selected.ConnectionRef != "" || item.ConnectionSnapshot != nil {
+			return projectLLMModelSettings{}, newValidationError("connected model credentials require caller authorization against the live provider connection")
+		} else if secretName != "" {
+			selected.Settings.APIKey, err = readProjectLLMCredential(ctx, c, secretName)
+		}
 		if err != nil {
 			return projectLLMModelSettings{}, err
 		}
+		selected.Configured = strings.TrimSpace(selected.Settings.APIKey) != ""
 	}
 	if restore != nil {
 		restore(&selected.Settings)
@@ -516,17 +896,71 @@ func readProjectLLMModelWithOptions(ctx context.Context, c *asclient.Client, mod
 	return selected, nil
 }
 
-// readProjectLLMCredential reads one model's key. A Secret that is absent or
-// has no apiKey yields "", which reads downstream as "not configured" — the
-// same state a model has before anyone enters a key, and the state the
-// reconciler reports as SecretMissing/SecretIncomplete.
-func readProjectLLMCredential(ctx context.Context, c *asclient.Client, name string) (string, error) {
+// validateLegacyCredentialReference keeps caller-writable direct entries from
+// bypassing the use check on a saved connection. Generated keys are never
+// legacy credentials, including after their owning connection is deleted.
+func validateLegacyCredentialReference(ctx context.Context, c *asclient.Client, name string) error {
+	if name == "" {
+		return newValidationError("selected model configuration does not have a credential")
+	}
+	if strings.HasPrefix(name, aiv1alpha1.ModelProviderConnectionSecretPrefix) {
+		return newValidationError("saved provider keys require a provider connection binding")
+	}
+	studio, err := c.Resource(studioResource, "").Get(ctx, aiv1alpha1.StudioName, metav1.GetOptions{})
+	if err != nil {
+		return err
+	}
+	var typed aiv1alpha1.Studio
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(studio.Object, &typed); err != nil {
+		return err
+	}
+	for _, entry := range typed.Status.ProtectedModelCredentials {
+		if entry.SecretName == name {
+			return newValidationError("retained provider keys require a provider connection binding")
+		}
+	}
+	for _, entry := range typed.Status.LegacyModelMigrations {
+		if entry.Model.SecretRef != nil && strings.TrimSpace(entry.Model.SecretRef.Name) == name {
+			return newValidationError("migrated provider keys require a provider connection binding")
+		}
+	}
+	connections, err := c.Resource(modelProviderConnectionResource, "").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return err
+	}
+	for _, connection := range connections.Items {
+		secretName, _, _ := unstructured.NestedString(connection.Object, "spec", "secretRef", "name")
+		activeSecretName, _, _ := unstructured.NestedString(connection.Object, "status", "activeSnapshot", "secretRef", "name")
+		if strings.TrimSpace(secretName) == name || strings.TrimSpace(activeSecretName) == name {
+			return newValidationError("this legacy model key belongs to a saved provider connection; refresh and select its connection binding")
+		}
+	}
+	return nil
+}
+
+// readProjectLLMCredential preserves genuinely legacy credentials for runs
+// admitted before migration, but never resolves a connection-owned key.
+func readProjectLLMCredential(ctx context.Context, c *asclient.Client, name string, expectedUID ...string) (string, error) {
+	if strings.HasPrefix(name, aiv1alpha1.ModelProviderConnectionSecretPrefix) {
+		return "", newValidationError("saved provider keys require a provider connection binding")
+	}
 	secret, err := c.Resource(secretResource, projectLLMSecretNamespace).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return "", nil
 	}
 	if err != nil {
 		return "", err
+	}
+	if len(expectedUID) > 0 && string(secret.GetUID()) != expectedUID[0] {
+		return "", newValidationError("the legacy run credential Secret was replaced")
+	}
+	if secret.GetAnnotations()[aiv1alpha1.ModelProviderConnectionGeneratedSecretIDAnnotation] != "" {
+		return "", newValidationError("saved provider keys cannot be used by a legacy direct model")
+	}
+	for _, owner := range secret.GetOwnerReferences() {
+		if owner.APIVersion == aiv1alpha1.SchemeGroupVersion.String() && owner.Kind == "ModelProviderConnection" {
+			return "", newValidationError("saved provider keys cannot be used by a legacy direct model")
+		}
 	}
 	return secretDataValue(secret, projectLLMCredentialKey), nil
 }
@@ -545,7 +979,7 @@ func applyProjectLLMRuntimeSpec(settings *projectLLMSettings, runtime aiv1alpha1
 }
 
 func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -553,7 +987,34 @@ func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request
 	if !decodeStrictJSON(w, r, &request) {
 		return
 	}
-	if strings.TrimSpace(request.APIKey) == "" && request.ExistingModelID != "" {
+	var savedConnectionProbe *modelProviderConnectionProbeTarget
+	if strings.TrimSpace(request.APIKey) == "" && strings.TrimSpace(request.ExistingConnectionID) != "" {
+		provider := strings.TrimSpace(request.Provider)
+		baseURL := strings.TrimSpace(request.BaseURL)
+		if baseURL == "" {
+			if strings.EqualFold(provider, projectLLMProviderGoogle) {
+				baseURL = defaultProjectLLMGoogleBaseURL
+			} else {
+				baseURL = defaultProjectLLMBaseURL
+			}
+		}
+		stored, target, err := s.resolveSavedConnectionCredentialForProbe(r.Context(), id, c, request.ExistingConnectionID, request.ConnectionFingerprint, provider, baseURL, request.AnthropicWorkspaceID)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		savedConnectionProbe = target
+		request.Provider = stored.Provider
+		request.BaseURL = stored.BaseURL
+		request.AnthropicWorkspaceID = stored.AnthropicWorkspaceID
+		request.APIKey = stored.APIKey
+		if request.ReasoningEffort == nil {
+			if model, modelErr := readProjectLLMModelConfig(r.Context(), c, request.ExistingModelID); modelErr == nil {
+				effort := model.Settings.ReasoningEffort
+				request.ReasoningEffort = &effort
+			}
+		}
+	} else if strings.TrimSpace(request.APIKey) == "" && request.ExistingModelID != "" {
 		stored, err := readProjectLLMModelForCredentialReuse(r.Context(), c, request.ExistingModelID)
 		if err != nil {
 			if errors.Is(err, errProjectLLMModelNotFound) {
@@ -595,20 +1056,49 @@ func (s *Server) testProjectLLMConnection(w http.ResponseWriter, r *http.Request
 		effort := stored.Settings.ReasoningEffort
 		request.ReasoningEffort = &effort
 	}
+	if err := validateProjectLLMCredentialMode(request.CredentialMode, request.Provider, request.APIKey); err != nil {
+		writeProjectError(w, err)
+		return
+	}
+	if strings.TrimSpace(request.AnthropicWorkspaceID) != "" && (!anthropicmodel.UsesEndpoint(request.BaseURL) || !validProjectLLMAnthropicWorkspaceID(request.AnthropicWorkspaceID)) {
+		writeProjectError(w, newValidationError("anthropicWorkspaceID requires a valid workspace ID and the official Anthropic Messages endpoint"))
+		return
+	}
 	reasoningEffort := ""
 	if request.ReasoningEffort != nil {
 		reasoningEffort = *request.ReasoningEffort
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	if err := verifyProjectLLMConnection(ctx, projectLLMSettings{
-		Provider:        request.Provider,
-		BaseURL:         request.BaseURL,
-		Model:           request.Model,
-		ReasoningEffort: reasoningEffort,
-		APIKey:          request.APIKey,
-	}); err != nil {
-		writeProjectLLMConnectionTestError(w, err)
+	testErr := verifyProjectLLMConnection(ctx, projectLLMSettings{
+		Provider:             request.Provider,
+		BaseURL:              request.BaseURL,
+		AnthropicWorkspaceID: request.AnthropicWorkspaceID,
+		Model:                request.Model,
+		ReasoningEffort:      reasoningEffort,
+		APIKey:               request.APIKey,
+	})
+	if savedConnectionProbe != nil {
+		outcome := modelProviderConnectionProbeOutcome{
+			reachable: metav1.ConditionTrue,
+			reason:    "Reachable",
+			message:   "The provider accepted the model connection check.",
+		}
+		if testErr != nil {
+			outcome = modelProviderConnectionProbeOutcome{
+				reachable: metav1.ConditionFalse,
+				reason:    "ProbeFailed",
+				message:   "Provider model testing failed; check the model ID, endpoint, and credential.",
+				lastError: "Provider model testing failed; check the model ID, endpoint, and credential.",
+			}
+		}
+		if _, publishErr := publishModelProviderConnectionProbe(r.Context(), c, savedConnectionProbe, outcome, time.Now()); publishErr != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The model check ran, but its verification status could not be saved. Retry the check.")
+			return
+		}
+	}
+	if testErr != nil {
+		writeProjectLLMConnectionTestError(w, testErr)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

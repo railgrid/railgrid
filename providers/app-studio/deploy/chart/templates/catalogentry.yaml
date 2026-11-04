@@ -198,9 +198,17 @@ spec:
             description: "List repositories this workspace may import a project from."
             readOnly: true
           - name: discover-models
-            description: "Discover the models a configured LLM provider offers."
+            description: "Discover models for an unsaved provider-connection draft."
           - name: test-model
-            description: "Test a configured LLM connection."
+            description: "Test a model against an unsaved provider-connection draft."
+      - name: modelproviderconnections
+        apiVersion: ai.railgrid.ai/v1alpha1
+        kind: ModelProviderConnection
+        verbs:
+          - name: discover
+            description: "Discover models for this saved provider connection; requires use permission."
+          - name: test
+            description: "Test a candidate model for this saved provider connection; requires use permission."
 
   # Everything App Studio needs that it does not own — ONE list, keyed by API
   # group, and the only place the generated permission claims come from.

@@ -28,6 +28,7 @@ import (
 
 	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 const (
@@ -38,10 +39,14 @@ const (
 )
 
 type DiscoverProjectLLMModelsRequest struct {
-	Provider        string `json:"provider,omitempty"`
-	BaseURL         string `json:"baseURL,omitempty"`
-	APIKey          string `json:"apiKey,omitempty"`
-	ExistingModelID string `json:"existingModelID,omitempty"`
+	Provider              string `json:"provider,omitempty"`
+	BaseURL               string `json:"baseURL,omitempty"`
+	AnthropicWorkspaceID  string `json:"anthropicWorkspaceID,omitempty"`
+	APIKey                string `json:"apiKey,omitempty"`
+	CredentialMode        string `json:"credentialMode,omitempty"`
+	ExistingModelID       string `json:"existingModelID,omitempty"`
+	ExistingConnectionID  string `json:"existingConnectionID,omitempty"`
+	ConnectionFingerprint string `json:"connectionFingerprint,omitempty"`
 }
 
 type ProjectLLMDiscoveredModelView struct {
@@ -76,7 +81,7 @@ func newProjectLLMDiscoveryHTTPClient() *http.Client {
 }
 
 func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -86,13 +91,15 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 	}
 
 	settings := projectLLMSettings{
-		Provider: strings.TrimSpace(request.Provider),
-		BaseURL:  strings.TrimSpace(request.BaseURL),
-		APIKey:   strings.TrimSpace(request.APIKey),
+		Provider:             strings.TrimSpace(request.Provider),
+		BaseURL:              strings.TrimSpace(request.BaseURL),
+		AnthropicWorkspaceID: strings.TrimSpace(request.AnthropicWorkspaceID),
+		APIKey:               strings.TrimSpace(request.APIKey),
 	}
 	if settings.Provider == "" {
 		settings.Provider = defaultProjectLLMProvider
 	}
+	var savedConnectionProbe *modelProviderConnectionProbeTarget
 	if settings.BaseURL == "" {
 		if strings.EqualFold(settings.Provider, projectLLMProviderGoogle) {
 			settings.BaseURL = defaultProjectLLMGoogleBaseURL
@@ -111,7 +118,19 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 		writeProjectError(w, err)
 		return
 	}
-	if settings.APIKey == "" && strings.TrimSpace(request.ExistingModelID) != "" {
+	if settings.AnthropicWorkspaceID != "" && (!anthropicmodel.UsesEndpoint(settings.BaseURL) || !validProjectLLMAnthropicWorkspaceID(settings.AnthropicWorkspaceID)) {
+		writeProjectError(w, newValidationError("anthropicWorkspaceID requires a valid workspace ID and the official Anthropic Messages endpoint"))
+		return
+	}
+	if settings.APIKey == "" && strings.TrimSpace(request.ExistingConnectionID) != "" {
+		stored, target, err := s.resolveSavedConnectionCredentialForProbe(r.Context(), id, c, request.ExistingConnectionID, request.ConnectionFingerprint, settings.Provider, settings.BaseURL, settings.AnthropicWorkspaceID)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		settings.APIKey = stored.APIKey
+		savedConnectionProbe = target
+	} else if settings.APIKey == "" && strings.TrimSpace(request.ExistingModelID) != "" {
 		stored, err := readProjectLLMModelForCredentialReuse(r.Context(), c, request.ExistingModelID)
 		if err != nil {
 			if errors.Is(err, errProjectLLMModelNotFound) {
@@ -126,11 +145,15 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 			writeProjectError(w, err)
 			return
 		}
-		if !strings.EqualFold(strings.TrimSpace(settings.Provider), strings.TrimSpace(stored.Settings.Provider)) || settings.BaseURL != storedBaseURL {
+		if !strings.EqualFold(strings.TrimSpace(settings.Provider), strings.TrimSpace(stored.Settings.Provider)) || settings.BaseURL != storedBaseURL || settings.AnthropicWorkspaceID != strings.TrimSpace(stored.Settings.AnthropicWorkspaceID) {
 			writeProjectError(w, newValidationError("enter a credential before finding models from a changed provider or endpoint"))
 			return
 		}
 		settings.APIKey = strings.TrimSpace(stored.Settings.APIKey)
+	}
+	if err := validateProjectLLMCredentialMode(request.CredentialMode, settings.Provider, settings.APIKey); err != nil {
+		writeProjectError(w, err)
+		return
 	}
 	if settings.APIKey == "" {
 		writeProjectError(w, newValidationError("enter a credential before finding models"))
@@ -145,6 +168,19 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 			writeProjectError(w, err)
 			return
 		} else if serviceAccount {
+			if savedConnectionProbe != nil {
+				outcome := modelProviderConnectionProbeOutcome{
+					reachable:     metav1.ConditionUnknown,
+					reason:        "DiscoveryUnavailable",
+					message:       "Automatic model discovery is unavailable for Vertex service-account credentials; enter the model ID and test it.",
+					lastError:     "Automatic model discovery is unavailable for Vertex service-account credentials; enter the model ID and test it.",
+					replaceModels: true,
+				}
+				if _, publishErr := publishModelProviderConnectionProbe(r.Context(), c, savedConnectionProbe, outcome, time.Now()); publishErr != nil {
+					writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "The saved-key discovery check ran, but its verification status could not be saved. Retry discovery.")
+					return
+				}
+			}
 			writeProjectError(w, newValidationError("automatic model discovery is not available for Vertex AI service accounts yet; enter the model ID manually"))
 			return
 		}
@@ -156,15 +192,44 @@ func (s *Server) discoverProjectLLMModels(w http.ResponseWriter, r *http.Request
 	}
 	response, err := discoverProjectLLMModels(r.Context(), client, settings)
 	if err != nil {
-		var upstream *projectLLMDiscoveryUpstreamError
-		if errors.As(err, &upstream) {
-			writeStatus(w, http.StatusBadGateway, "BadGateway", upstream.Message)
-			return
+		if savedConnectionProbe != nil {
+			outcome := failedModelProviderDiscoveryOutcome(nil, settings.APIKey, err)
+			if _, publishErr := publishModelProviderConnectionProbe(r.Context(), c, savedConnectionProbe, outcome, time.Now()); publishErr != nil {
+				writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "Model discovery ran, but its verification status could not be saved. Retry discovery.")
+				return
+			}
 		}
-		writeStatus(w, http.StatusBadGateway, "BadGateway", "model discovery failed: "+err.Error())
+		writeProjectLLMDiscoveryError(w, err)
 		return
 	}
+	if savedConnectionProbe != nil {
+		outcome := modelProviderConnectionProbeOutcome{
+			reachable:     metav1.ConditionTrue,
+			reason:        "Reachable",
+			message:       "The provider endpoint answered model discovery.",
+			models:        discoveredModelIDs(response.Models),
+			replaceModels: true,
+		}
+		if _, publishErr := publishModelProviderConnectionProbe(r.Context(), c, savedConnectionProbe, outcome, time.Now()); publishErr != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", "Model discovery succeeded, but its verification status could not be saved. Retry discovery.")
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, response)
+}
+
+func writeProjectLLMDiscoveryError(w http.ResponseWriter, err error) {
+	var upstream *projectLLMDiscoveryUpstreamError
+	if errors.As(err, &upstream) {
+		switch upstream.StatusCode {
+		case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+			writeStatus(w, http.StatusBadGateway, "DiscoveryUnsupported", "This provider does not support model discovery. Enter an exact model ID to verify access.")
+		default:
+			writeStatus(w, http.StatusBadGateway, "BadGateway", upstream.Message)
+		}
+		return
+	}
+	writeStatus(w, http.StatusBadGateway, "BadGateway", "model discovery failed: "+err.Error())
 }
 
 func discoverProjectLLMModels(ctx context.Context, client *http.Client, settings projectLLMSettings) (ProjectLLMModelDiscoveryResponse, error) {
@@ -200,6 +265,9 @@ func discoverProjectAnthropicModels(ctx context.Context, client *http.Client, se
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Authorization", "Bearer "+strings.TrimSpace(settings.APIKey))
 		request.Header.Set("anthropic-version", "2023-06-01")
+		if strings.TrimSpace(settings.AnthropicWorkspaceID) != "" {
+			request.Header.Set("anthropic-workspace-id", strings.TrimSpace(settings.AnthropicWorkspaceID))
+		}
 		var payload struct {
 			Data *[]struct {
 				ID   string `json:"id"`

@@ -59,7 +59,7 @@ type ProjectPlan struct {
 
 // planProject is POST /api/projects/plan.
 func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
-	c, _, ok := s.requireProjectClient(w, r)
+	c, id, ok := s.requireProjectClient(w, r)
 	if !ok {
 		return
 	}
@@ -91,7 +91,7 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 		if s.projectCreatePreflight != nil {
 			generate = s.projectCreatePreflight
 		}
-		preflight, err := generate(r.Context(), c, req.Prompt, templates)
+		preflight, err := generate(r.Context(), c, id, req.Prompt, templates)
 		if err != nil {
 			writeProjectError(w, err)
 			return

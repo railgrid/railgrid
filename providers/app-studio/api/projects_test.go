@@ -164,7 +164,7 @@ func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		actionsExternalURL: "https://actions.example.test",
 		store:              store.NewMemoryStore(),
-		projectCreatePreflight: func(_ context.Context, _ *asclient.Client, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+		projectCreatePreflight: func(_ context.Context, _ *asclient.Client, _ identity, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 			calls++
 			if prompt != "Build a frontend and backend customer portal." {
 				t.Fatalf("preflight prompt = %q", prompt)
@@ -233,7 +233,7 @@ func TestCreateProjectLivePathSurfacesCatalogListErrorBeforePreflight(t *testing
 	calls := 0
 	server := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		projectCreatePreflight: func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+		projectCreatePreflight: func(context.Context, *asclient.Client, identity, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 			calls++
 			return projectCreatePreflight{}, nil
 		},
@@ -827,7 +827,7 @@ func TestCreateProjectKeepsCallerDisplayNameOverPreflight(t *testing.T) {
 				tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 				actionsExternalURL: "https://actions.example.test",
 				store:              store.NewMemoryStore(),
-				projectCreatePreflight: func(context.Context, *asclient.Client, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+				projectCreatePreflight: func(context.Context, *asclient.Client, identity, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 					return projectCreatePreflight{Naming: naming, TemplateName: "application"}, nil
 				},
 			}

@@ -43,6 +43,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/railgrid/provider-sdk/anthropicmodel"
 	"github.com/railgrid/provider-sdk/modelcatalog"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -271,6 +272,7 @@ type PatchProjectLLMSettingsRequest struct {
 type projectLLMSettings struct {
 	Provider                 string
 	BaseURL                  string
+	AnthropicWorkspaceID     string
 	Model                    string
 	ReasoningEffort          string  `json:"reasoningEffort,omitempty"`
 	ReasoningTransport       string  `json:"-"`
@@ -585,16 +587,17 @@ type projectCreatePreflight struct {
 	TemplateName string
 }
 
-func (s *Server) generateProjectCreatePreflight(ctx context.Context, c *asclient.Client, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+func (s *Server) generateProjectCreatePreflight(ctx context.Context, c *asclient.Client, id identity, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
 	prompt = strings.TrimSpace(prompt)
 	if prompt == "" {
 		return projectCreatePreflight{}, newValidationError("prompt is required")
 	}
 	templates = boundedProjectCreatePreflightTemplates(templates)
-	settings, err := readProjectLLMSettings(ctx, c)
+	selected, err := s.readDefaultProjectLLMModelForIdentity(ctx, id, c)
 	if err != nil {
 		return projectCreatePreflight{}, err
 	}
+	settings := selected.Settings
 	if err := normalizeProjectLLMSettings(&settings); err != nil {
 		return projectCreatePreflight{}, err
 	}
@@ -2111,14 +2114,6 @@ func firstSSELine(body []byte) (json.RawMessage, bool) {
 	return nil, false
 }
 
-func readProjectLLMSettings(ctx context.Context, c *asclient.Client) (projectLLMSettings, error) {
-	registry, err := readProjectLLMRegistry(ctx, c)
-	if err != nil {
-		return projectLLMSettings{}, err
-	}
-	return registry.selectedSettings("", "")
-}
-
 func defaultProjectLLMSettings() projectLLMSettings {
 	return projectLLMSettings{
 		Provider:             defaultProjectLLMProvider,
@@ -2138,6 +2133,7 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 	}
 	settings.APIKey = strings.TrimSpace(settings.APIKey)
 	settings.BaseURL = strings.TrimSpace(settings.BaseURL)
+	settings.AnthropicWorkspaceID = strings.TrimSpace(settings.AnthropicWorkspaceID)
 	if settings.BaseURL == "" {
 		settings.BaseURL = defaultProjectLLMBaseURL
 	}
@@ -2161,6 +2157,14 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 	if err := validateProjectLLMBaseURL(settings.Provider, settings.BaseURL); err != nil {
 		return err
 	}
+	if settings.AnthropicWorkspaceID != "" {
+		if !anthropicmodel.UsesEndpoint(settings.BaseURL) {
+			return newValidationError("anthropicWorkspaceID is supported only with the official Anthropic Messages endpoint")
+		}
+		if !validProjectLLMAnthropicWorkspaceID(settings.AnthropicWorkspaceID) {
+			return newValidationError("anthropicWorkspaceID must start with wrkspc_ and contain only letters and digits after the prefix")
+		}
+	}
 	if err := validateProjectLLMAPIKey(settings.Provider, settings.APIKey); err != nil {
 		return err
 	}
@@ -2174,6 +2178,20 @@ func normalizeProjectLLMSettings(settings *projectLLMSettings) error {
 		settings.StreamIdleTimeout = projectEinoAssistantDefaultModelStreamIdleTimeout
 	}
 	return nil
+}
+
+func validProjectLLMAnthropicWorkspaceID(value string) bool {
+	const prefix = "wrkspc_"
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, prefix) || len(value) == len(prefix) {
+		return false
+	}
+	for _, r := range value[len(prefix):] {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+			return false
+		}
+	}
+	return true
 }
 
 func verifyProjectLLMConnection(ctx context.Context, settings projectLLMSettings) error {

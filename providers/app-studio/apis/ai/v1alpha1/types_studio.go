@@ -62,19 +62,14 @@ type StudioSpec struct {
 	// +optional
 	Browser StudioBrowser `json:"browser,omitempty"`
 
-	// LLM is the workspace's model registry: which models the assistant may
-	// use, and where each one's credential lives. It belongs on the Studio
-	// for the same reason Search and Browser do — there is exactly one per
-	// workspace and every project addresses it.
-	//
-	// Credentials are NOT here. Each model names a Secret holding only its
-	// own apiKey, so editing one model never requires reading another's key,
-	// and listing models touches no Secret at all.
+	// LLM is the workspace's model registry: the models the assistant may use,
+	// their provider-connection references, and shared request settings. It
+	// belongs on the Studio because there is exactly one per workspace.
 	// +optional
 	LLM *StudioLLM `json:"llm,omitempty"`
 }
 
-// StudioLLM is the non-secret half of the model registry.
+// StudioLLM is the model-binding registry and its shared runtime settings.
 type StudioLLM struct {
 	// DefaultModel is the id of the model the assistant uses when a request
 	// names none. It must be an active (non-archived) entry; the reconciler
@@ -83,9 +78,9 @@ type StudioLLM struct {
 	// +kubebuilder:validation:MaxLength=63
 	DefaultModel string `json:"defaultModel,omitempty"`
 
-	// Models holds every configuration, active and archived. Archived entries
-	// are revision history: a model can be rolled back to one, and a run
-	// pinned to a revisionID keeps resolving after the model is edited.
+	// Models holds every binding revision, active and archived. Archived
+	// entries retain direct connection data for compatibility and for runs
+	// pinned before a binding was promoted to a provider connection.
 	// +optional
 	// +kubebuilder:validation:MaxItems=200
 	// +listType=map
@@ -126,10 +121,27 @@ type StudioLLMModel struct {
 	// +kubebuilder:validation:MaxLength=80
 	Name string `json:"name"`
 
-	// Provider selects the wire protocol (openai, anthropic, google, ...).
+	// ConnectionRef names a ModelProviderConnection in this workspace. New
+	// model bindings inherit provider, endpoint, Anthropic workspace and key
+	// from this connection. Empty is accepted only for legacy direct models
+	// during automatic migration.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$`
+	ConnectionRef string `json:"connectionRef,omitempty"`
+
+	// Provider is the legacy direct-model provider setting. New bindings leave
+	// it empty and inherit provider from connectionRef.
 	// +optional
 	// +kubebuilder:validation:MaxLength=63
 	Provider string `json:"provider,omitempty"`
+
+	// AnthropicWorkspaceID is the optional legacy direct-model Anthropic
+	// workspace header. New bindings inherit it from connectionRef.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^(wrkspc_[A-Za-z0-9]+)?$`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
 
 	// BaseURL overrides the provider's default endpoint.
 	// +optional
@@ -150,12 +162,61 @@ type StudioLLMModel struct {
 	// +kubebuilder:validation:Pattern=`^$|^[a-z][a-z0-9_-]*$`
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 
-	// SecretRef names the Secret holding this model's credential, in the
-	// Studio's own namespace, under the key "apiKey". Revisions of one model
-	// normally share it. A model without one is configured but unusable, and
-	// the reconciler says so.
+	// SecretRef is the legacy direct-model key reference. New bindings leave it
+	// empty and inherit the key Secret from connectionRef.
 	// +optional
 	SecretRef *StudioLLMSecretRef `json:"secretRef,omitempty"`
+
+	// ConnectionSnapshot freezes the connection settings and credential Secret
+	// identity this model revision uses. It carries no credential data. Active
+	// and archived revisions both keep snapshots, so connection edits cannot
+	// change a resumable run before the controller rolls the binding forward.
+	// +optional
+	ConnectionSnapshot *StudioLLMConnectionSnapshot `json:"connectionSnapshot,omitempty"`
+}
+
+// StudioLLMConnectionSnapshot is the non-secret provider connection state
+// resolved for one archived model binding revision.
+type StudioLLMConnectionSnapshot struct {
+	// ConnectionRef names the source connection.
+	// +optional
+	ConnectionRef string `json:"connectionRef,omitempty"`
+	// ConnectionUID fences snapshots against a deleted and recreated object
+	// with the same name.
+	// +optional
+	ConnectionUID string `json:"connectionUID,omitempty"`
+	// Provider and BaseURL identify the transport used by the revision.
+	// +kubebuilder:validation:MaxLength=63
+	Provider string `json:"provider,omitempty"`
+	// +kubebuilder:validation:MaxLength=2048
+	BaseURL string `json:"baseURL,omitempty"`
+	// AnthropicWorkspaceID is sent only to the official Anthropic endpoint.
+	// +optional
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^(wrkspc_[A-Za-z0-9]+)?$`
+	AnthropicWorkspaceID string `json:"anthropicWorkspaceID,omitempty"`
+	// SecretRef preserves the exact key version needed by the revision.
+	// +optional
+	SecretRef *StudioLLMSecretRef `json:"secretRef,omitempty"`
+	// SecretKey names the fixed apiKey credential entry in SecretRef.
+	// +optional
+	// +kubebuilder:validation:Enum=apiKey
+	SecretKey string `json:"secretKey,omitempty"`
+	// SecretUID and SecretResourceVersion ensure a pinned revision never reads
+	// a replacement or subsequently edited Secret under the same name.
+	// +optional
+	SecretUID string `json:"secretUID,omitempty"`
+	// +optional
+	SecretResourceVersion string `json:"secretResourceVersion,omitempty"`
+	// ConnectionFingerprint is the source connection's version token.
+	// +optional
+	// +kubebuilder:validation:MaxLength=64
+	ConnectionFingerprint string `json:"connectionFingerprint,omitempty"`
+	// GeneratedSecretID identifies a provider-generated immutable Secret
+	// version when the connection owns the key.
+	// +optional
+	// +kubebuilder:validation:MaxLength=32
+	GeneratedSecretID string `json:"generatedSecretID,omitempty"`
 }
 
 // StudioLLMSecretRef points at a credential Secret.
@@ -231,6 +292,29 @@ type StudioBrowser struct {
 }
 
 type StudioStatus struct {
+	// RetiredModelCredentials fences generated key identities selected for
+	// collection. A status CAS publishes retirement before deleting the key;
+	// caller-written model rows cannot reactivate those identities afterward.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1000
+	RetiredModelCredentials []StudioModelCredentialIdentity `json:"retiredModelCredentials,omitempty"`
+
+	// ProtectedModelCredentials records external keys admitted to provider
+	// connections. It survives rotations and connection deletion, preventing
+	// caller-written legacy models from bypassing connection use permission.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=1000
+	ProtectedModelCredentials []StudioModelCredentialIdentity `json:"protectedModelCredentials,omitempty"`
+
+	// LegacyModelMigrations records controller-observed direct models before
+	// their shared keys become connection references. Callers cannot forge this
+	// provenance by adding another direct model to spec after migration starts.
+	// +optional
+	// +listType=atomic
+	// +kubebuilder:validation:MaxItems=200
+	LegacyModelMigrations []StudioLegacyModelMigration `json:"legacyModelMigrations,omitempty"`
 	// Phase is Ready when every enabled service is Ready.
 	// +optional
 	Phase string `json:"phase,omitempty"`
@@ -269,6 +353,20 @@ type StudioStatus struct {
 	// +listType=map
 	// +listMapKey=id
 	Models []StudioLLMModelStatus `json:"models,omitempty"`
+}
+
+// StudioModelCredentialIdentity identifies a protected key without key material.
+type StudioModelCredentialIdentity struct {
+	// +kubebuilder:validation:MaxLength=253
+	SecretName string `json:"secretName"`
+	// +kubebuilder:validation:MaxLength=128
+	SecretUID string `json:"secretUID"`
+}
+
+// StudioLegacyModelMigration pins a pre-migration binding and key identity.
+type StudioLegacyModelMigration struct {
+	Model     StudioLLMModel `json:"model"`
+	SecretUID string         `json:"secretUID"`
 }
 
 // StudioLLMModelStatus is the observed usability of one active model.

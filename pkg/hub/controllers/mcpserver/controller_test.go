@@ -77,7 +77,9 @@ func testExportIdentity(group string) (string, string) {
 	case "edges.railgrid.ai":
 		provider = "edges"
 	case "agents.railgrid.ai":
-		provider = "agents"
+		return "root:railgrid:providers:agents", "agents.railgrid.ai"
+	case "ai.railgrid.ai":
+		return "root:railgrid:providers:app-studio", "ai.railgrid.ai"
 	case "infrastructure.railgrid.ai":
 		provider = "infrastructure"
 	case "code.railgrid.ai":
@@ -393,6 +395,50 @@ func TestBuildRules_EmptyBindingsStillYieldsRole(t *testing.T) {
 				t.Fatalf("no provider rule expected without bindings: %+v", r)
 			}
 		}
+	}
+}
+
+func TestBuildRules_ModelProviderConnectionUseIsBoundAndFirstParty(t *testing.T) {
+	agents := bound("agents.railgrid.ai", "modelproviderconnections")
+	appStudio := bound("ai.railgrid.ai", "modelproviderconnections")
+	foreignAgents := agents
+	foreignAgents.APIExportPath = "root:railgrid:providers:other-agents"
+	foreignStudio := appStudio
+	foreignStudio.APIExportPath = "root:railgrid:providers:other-app-studio"
+
+	tests := []struct {
+		name                         string
+		bound                        []BoundResource
+		readOnly                     bool
+		wantAgentsUse, wantStudioUse int
+	}{
+		{name: "Agents binding", bound: []BoundResource{agents, agents}, wantAgentsUse: 1},
+		{name: "App Studio binding", bound: []BoundResource{appStudio}, wantStudioUse: 1},
+		{name: "both bindings and duplicates", bound: []BoundResource{agents, agents, appStudio, appStudio}, wantAgentsUse: 1, wantStudioUse: 1},
+		{name: "read-only server", bound: []BoundResource{agents, appStudio}, readOnly: true},
+		{name: "foreign exports", bound: []BoundResource{foreignAgents, foreignStudio}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rules := buildTestRules(tt.bound, nil, tt.readOnly)
+			countUse := func(group string) int {
+				count := 0
+				for _, rule := range rules {
+					if slices.Contains(rule.APIGroups, group) &&
+						slices.Contains(rule.Resources, "modelproviderconnections") &&
+						slices.Contains(rule.Verbs, "use") {
+						count++
+					}
+				}
+				return count
+			}
+			if got := countUse("agents.railgrid.ai"); got != tt.wantAgentsUse {
+				t.Errorf("Agents connection use rule count = %d, want %d; rules=%+v", got, tt.wantAgentsUse, rules)
+			}
+			if got := countUse("ai.railgrid.ai"); got != tt.wantStudioUse {
+				t.Errorf("App Studio connection use rule count = %d, want %d; rules=%+v", got, tt.wantStudioUse, rules)
+			}
+		})
 	}
 }
 

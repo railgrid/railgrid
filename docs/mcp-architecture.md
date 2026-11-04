@@ -468,16 +468,19 @@ Two consequences:
   delegation requires separate explicit authorization and guaranteed narrowing;
   it is not inferred from a provider declaration or a writable MCPServer.
 
-  Writable MCPServers also receive `use` on **all** first-party Agents
-  `ModelProviderConnection` resources in their workspace. This permits model
-  requests against every connected provider account; it does not expose the
-  underlying Secret. The grant has no `resourceNames` restriction, including
-  for connections added later. Kubernetes RBAC is additive, so a separate
-  per-connection Role cannot narrow this writable MCPServer grant. Creating a
-  writable MCPServer therefore delegates workspace-wide provider-account use.
-  Read-only MCPServers receive no such `use` grant. Keep restricted provider
-  accounts in a separate workspace rather than relying on a per-name Role to
-  constrain a writable MCPServer.
+  Writable MCPServers also receive `use` on all `ModelProviderConnection`
+  resources from the exact first-party Agents and App Studio APIExports when
+  those resources are bound in their workspace (`agents.railgrid.ai` from
+  `root:railgrid:providers:agents`, and `ai.railgrid.ai` from
+  `root:railgrid:providers:app-studio`). This permits model requests against
+  every connected provider account; it does not expose the underlying Secret.
+  The grant has no `resourceNames` restriction, including for connections
+  added later. Kubernetes RBAC is additive, so a separate per-connection Role
+  cannot narrow this writable MCPServer grant. Creating a writable MCPServer
+  therefore delegates workspace-wide provider-account use. Read-only
+  MCPServers and resources bound from foreign exports receive no such `use`
+  grant. Keep restricted provider accounts in a separate workspace rather than
+  relying on a per-name Role to constrain a writable MCPServer.
 
   The role also includes read-only `core.kcp.io/logicalclusters` and permission
   to create `selfsubjectaccessreviews`, which providers use to check the token's
