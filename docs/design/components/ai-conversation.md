@@ -116,6 +116,10 @@ overlay and restores focus to the opener. Capability flags control which
 lifecycle events can be emitted; the provider still owns confirmation and
 mutation results.
 
+Anchoring or collapsing the rail changes its reserved width immediately. Only
+the panel's transform and opacity animate, so opening and closing do not
+interpolate layout width on every frame. Pointer resizing remains immediate.
+
 `AITimestamp` preserves the provider value in a semantic `<time>` element's
 `datetime` attribute while showing a relative label. Hover and focus expose the
 full locale value in the tooltip; clicking toggles the visible label to that full

@@ -303,7 +303,7 @@ defineExpose({ cancel, locked })
             <select id="model-provider" aria-labelledby="agents-model-provider-label" v-model="preset" class="k-input" :disabled="locked"><option v-for="item in providers" :key="item.id" :value="item.id">{{ item.id === 'anthropic' ? 'Anthropic' : item.label }}</option></select>
           </label>
           <label v-if="preset === 'custom'" class="k-model-form-field">API endpoint
-            <input id="model-base-url" v-model="baseURL" class="k-input" name="baseURL" type="url" placeholder="https://your-provider.example/v1" :disabled="locked" :aria-invalid="Boolean(fieldError && fieldError.includes('endpoint'))" :aria-describedby="fieldError ? 'provider-url-help provider-connection-error' : 'provider-url-help'">
+            <input id="model-base-url" v-model="baseURL" class="k-input" name="baseURL" type="url" required aria-required="true" placeholder="https://your-provider.example/v1" :disabled="locked" :aria-invalid="Boolean(fieldError && fieldError.includes('endpoint'))" :aria-describedby="fieldError ? 'provider-url-help provider-connection-error' : 'provider-url-help'">
             <span id="provider-url-help" class="k-model-form-hint">Use an OpenAI-compatible API endpoint. You can enter a model ID if this provider does not list models.</span>
           </label>
           <details v-else class="agents-provider-connect__details"><summary>Connection details</summary><p class="k-model-form-hint">API endpoint: <span class="font-mono">{{ baseURL }}</span></p></details>

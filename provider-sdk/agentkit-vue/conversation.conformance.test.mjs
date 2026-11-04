@@ -203,6 +203,15 @@ test('conversation rail actions use readable semantic foregrounds', () => {
   assert.match(agentStyles, /\.k-ai-conversation-rail__item-action\s*\{[^}]*color: var\(--color-text-secondary/)
 })
 
+test('conversation rail reserves width without animating layout and keeps panel motion', () => {
+  const rail = agentStyles.match(/\.k-ai-conversation-rail\s*\{([^}]*)\}/)?.[1]
+  assert(rail)
+  assert.match(rail, /transition:\s*none;/)
+  assert.match(agentStyles, /\.k-ai-conversation-rail--collapsed\s*\{\s*width: 0;\s*\}/)
+  assert.match(agentStyles, /\.k-ai-conversation-rail__panel\s*\{[^}]*transition: transform /)
+  assert.match(agentStyles, /\.k-ai-conversation-rail__panel--expanded\s*\{[^}]*transform: translateX\(0\)/)
+})
+
 test('AgentKit conversation recipes use semantic tokens and reduced-motion affordances', () => {
   assert.match(styles, /\.k-ai-turn-progress\s*\{/)
   assert.match(styles, /\.k-ai-plan-disclosure\s*\{/)
