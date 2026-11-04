@@ -141,10 +141,18 @@ External key identities are recorded in `Studio.status.protectedModelCredentials
 before controller discovery or admission. This bounded controller-owned history
 survives rotations and connection deletion, so a caller cannot reuse an old key
 through a direct legacy model or a new migration. Migration provenance also
-protects keys admitted before this history was introduced. External Secret data,
-metadata, and ownership are unchanged. Generated-key ownership checks derive from
+protects keys admitted before this history was introduced. External Secrets must carry `railgrid.ai/owner: app-studio`, set by a Secret
+writer, and expose credentials only through their `apiKey` entry. Connection
+writers cannot opt in unrelated Secrets by changing a reference or key name.
+External Secret data, metadata, and ownership are unchanged. Generated-key ownership checks derive from
 the Secret itself as well as the connection annotation; omitting that annotation
 cannot turn another connection's generated key into an external key.
+
+For mutable external Secrets, every resource-version change is a credential
+version boundary, including metadata-only changes. The fingerprint and pinned
+revision retain that version fence. Rotate by creating a new Secret and retaining
+the old one when historical runs must remain resumable; editing an existing
+mutable Secret makes its older pinned version unavailable.
 
 New runs and resumed runs retain the workspace's `spec.llm.runtime` retry,
 backoff, and stream idle timeout settings when resolving their model snapshots.
