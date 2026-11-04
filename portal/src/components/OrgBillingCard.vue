@@ -82,13 +82,18 @@ async function load(timeoutMs = 10000): Promise<void> {
 function handleReturn(): void {
   savedDraft.value = workspaceBillingDraft(props.orgUuid, auth.user?.userId || '')
   const pending = pendingCheckout(props.orgUuid, auth.user?.userId || '')
-  checkoutPlan.value = pending?.plan || (typeof route.query.billingPlan === 'string' ? route.query.billingPlan : '')
-  if (checkoutPlan.value) activation.value = 'checking'
+  const outcome = route.query.billing
+  // A saved intent also survives closing Stripe or using browser Back. Only
+  // a successful hosted return should block another checkout while we poll.
+  checkoutPlan.value = outcome === 'success'
+    ? pending?.plan || (typeof route.query.billingPlan === 'string' ? route.query.billingPlan : '')
+    : ''
+  activation.value = 'idle'
+  if (!checkoutPlan.value && pending) clearBillingState('checkout', props.orgUuid, auth.user?.userId || '')
   if (route.query.review === '1') {
     reviewOpen.value = true
     focusedMeter.value = typeof route.query.meter === 'string' ? route.query.meter : null
   }
-  const outcome = route.query.billing
   if (outcome === 'success') {
     activation.value = checkoutPlan.value ? 'checking' : 'delayed'
     returnNotice.value = 'Checkout returned. We will confirm the subscription and effective allowances before showing it as active.'
@@ -97,7 +102,6 @@ function handleReturn(): void {
     checkoutPlan.value = ''
     activation.value = 'idle'
     reviewOpen.value = true
-    clearBillingState('checkout', props.orgUuid, auth.user?.userId || '')
   } else if (outcome === 'portal') {
     returnNotice.value = 'Returned from billing. Refreshing the subscription and effective allowances.'
   }

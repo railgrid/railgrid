@@ -106,10 +106,6 @@ function navigateSettings(section: string): void {
 const activeOrg = computed(() => tenant.activeOrg)
 const billingWorkspaceDraft = ref<string | null>(null)
 const organizationPanel = computed(() => route.query.panel === 'billing' || typeof route.query.billing === 'string' ? 'billing' : 'general')
-const billingPlanFocused = computed(() => activeSection.value === 'organizations' && organizationPanel.value === 'billing' && route.query.review === '1')
-// Reuse onboarding's presentation-only takeover. Navigation preferences and
-// running terminal/assistant sessions survive the focused plan selection.
-useFocusedTask(billingPlanFocused)
 function navigateOrganizationPanel(panel: string): void {
   void router.replace({ query: { ...route.query, panel } })
 }
@@ -137,6 +133,13 @@ const organizationSettingsOrg = computed(() => {
   }
   return activeOrg.value
 })
+
+// Only take over the shell when the chooser and its Back action can render.
+const billingPlanFocused = computed(() => activeSection.value === 'organizations' && organizationPanel.value === 'billing' && route.query.review === '1' &&
+  !!organizationSettingsOrg.value && organizationSettingsOrg.value.uuid === tenant.orgUUID && !organizationSettingsOrg.value.deletionRequestedAt)
+// Reuse onboarding's presentation-only takeover. Navigation preferences and
+// running terminal/assistant sessions survive the focused plan selection.
+useFocusedTask(billingPlanFocused)
 
 const organizationTargetUUID = computed(() => organizationSettingsOrg.value?.uuid ?? null)
 

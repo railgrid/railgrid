@@ -70,6 +70,56 @@ func TestMissingPriceEndpointPreservesPlanAndUsage(t *testing.T) {
 	}
 }
 
+func TestUnavailablePricesAreCachedAndRetriedAfterExpiry(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusServiceUnavailable, http.StatusOK} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			b, _ := newBillingFixture(t, true, planObj("team", "Team", "price_team"))
+			reads := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reads++
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("not JSON"))
+			}))
+			defer srv.Close()
+			endpoint := Endpoints{PortalURL: srv.URL, token: "operator"}
+			for i := 0; i < 3; i++ {
+				if prices := b.subscriptionPrices(context.Background(), endpoint); prices != nil {
+					t.Fatalf("unavailable prices: %+v", prices)
+				}
+			}
+			if reads != 1 {
+				t.Fatalf("failed endpoint read %d times within TTL", reads)
+			}
+			b.pricingUntil = time.Time{}
+			b.subscriptionPrices(context.Background(), endpoint)
+			if reads != 2 {
+				t.Fatalf("expired negative cache did not retry: %d reads", reads)
+			}
+		})
+	}
+}
+
+func TestPriceLookupDoesNotHoldCacheMutexDuringUpstreamRequest(t *testing.T) {
+	b, _ := newBillingFixture(t, true, planObj("team", "Team", "price_team"))
+	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	defer func() { close(release); <-done }()
+	go func() {
+		defer close(done)
+		b.subscriptionPrices(context.Background(), Endpoints{PortalURL: srv.URL, token: "operator"})
+	}()
+	<-entered
+	if !b.pricingMu.TryLock() {
+		t.Fatal("cache mutex held while waiting for the upstream price endpoint")
+	}
+	b.pricingMu.Unlock()
+}
+
 func TestCheckoutRejectsChangedReviewedPriceBeforeCreatingSession(t *testing.T) {
 	b, dep := newBillingFixture(t, true, planObj("team", "Team", "price_new"))
 	_, err := b.CheckoutQuoted(context.Background(), "org-1", "team", "price_old", "https://hub/ok", "https://hub/cancel")

@@ -55,11 +55,24 @@ func (b *Billing) subscriptionPrices(ctx context.Context, endpoint Endpoints) ma
 	// activation does not repeatedly query the payment provider. Never reuse
 	// prices after the discovered deployment or its credential changes.
 	b.pricingMu.Lock()
-	defer b.pricingMu.Unlock()
 	key := endpoint.PortalURL + "\x00" + endpoint.token
 	if key == b.pricingKey && time.Now().Before(b.pricingUntil) {
-		return b.pricing
+		prices := b.pricing
+		b.pricingMu.Unlock()
+		return prices
 	}
+	b.pricingMu.Unlock()
+
+	// Upstream I/O must not serialize callers behind a slow optional endpoint.
+	// Cache failures too, so older deployments without this route stay readable.
+	prices := b.fetchPrices(ctx, endpoint)
+	b.pricingMu.Lock()
+	b.pricing, b.pricingKey, b.pricingUntil = prices, key, time.Now().Add(time.Minute)
+	b.pricingMu.Unlock()
+	return prices
+}
+
+func (b *Billing) fetchPrices(ctx context.Context, endpoint Endpoints) map[string]SubscriptionPrice {
 	if endpoint.token == "" {
 		return nil
 	}
@@ -92,6 +105,5 @@ func (b *Billing) subscriptionPrices(ctx context.Context, endpoint Endpoints) ma
 			prices[id] = price
 		}
 	}
-	b.pricing, b.pricingKey, b.pricingUntil = prices, key, time.Now().Add(time.Minute)
 	return prices
 }

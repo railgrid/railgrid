@@ -28,6 +28,24 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+test('billing focus keeps navigation available unless the chooser can render', () => {
+  const expression = tenantSettingsPage.match(/const billingPlanFocused = computed\(\(\) => ([\s\S]*?)\)\n/)[1]
+  const context = {
+    activeSection: { value: 'organizations' }, organizationPanel: { value: 'billing' },
+    route: { query: { review: '1' } }, tenant: { orgUUID: 'org-a' },
+    organizationSettingsOrg: { value: { uuid: 'org-a' } },
+  }
+  const focused = () => runInNewContext(expression, context)
+  assert.equal(focused(), true)
+  for (const org of [null, { uuid: 'org-b' }, { uuid: 'org-a', deletionRequestedAt: '2026-11-04' }]) {
+    context.organizationSettingsOrg.value = org
+    assert.equal(focused(), false)
+  }
+  context.organizationSettingsOrg.value = { uuid: 'org-a' }
+  context.organizationPanel.value = 'general'
+  assert.equal(focused(), false)
+})
+
 test('settings tabs preserve a Workspace-first scope hierarchy', () => {
   assert.match(tenantSettingsPage, /activeSection === 'workspaces' \? 'Workspace settings' : 'Organization settings'/)
   assert.match(tenantSettingsPage, /import Tabs from ['"]@\/portalkit\/Tabs\.vue['"]/)

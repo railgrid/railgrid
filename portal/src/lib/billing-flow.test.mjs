@@ -62,3 +62,13 @@ test('Workspace limits get an upgrade route; ordinary permission errors do not',
   assert.equal(api.workspaceLimitError('Forbidden: you cannot create workspaces'), false)
   assert.equal(api.billingSettingsLocation('org-a').query.panel, 'billing')
 })
+
+test('quota recovery recognizes the metering admission contract and Kubernetes wrapper', () => {
+  const { api } = fixture()
+  // contrib-metering/pkg/webhook/handler.go, Create hard-limit denial:
+  // fmt.Sprintf("metering: %s limit exceeded for account %s (limit %g)", s.Meter, ref.ID, l.max)
+  const denial = 'metering: workspaces limit exceeded for account org-a (limit 3)'
+  assert.equal(api.workspaceLimitError(denial), true)
+  assert.equal(api.workspaceLimitError(`admission webhook "metering.railgrid.ai" denied the request: ${denial}`), true)
+  assert.equal(api.workspaceLimitError('metering: agents limit exceeded for account org-a (limit 5)'), false)
+})

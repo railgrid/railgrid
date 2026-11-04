@@ -30,6 +30,27 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+test('a stored checkout intent only starts activation after a successful Stripe return', () => {
+  for (const outcome of [undefined, 'portal', 'canceled', 'success']) {
+    const cleared = []
+    const context = {
+      props: { orgUuid: 'org-a' }, auth: { user: { userId: 'alice' } },
+      route: { query: { panel: 'billing', review: '1', billing: outcome, billingPlan: 'team' } },
+      router: { replace: () => {} },
+      savedDraft: { value: null }, workspaceBillingDraft: () => null,
+      pendingCheckout: () => ({ plan: 'team' }),
+      checkoutPlan: { value: '' }, activation: { value: 'idle' },
+      reviewOpen: { value: false }, focusedMeter: { value: null }, returnNotice: { value: '' },
+      clearBillingState: (...args) => cleared.push(args),
+    }
+    loadFunction('handleReturn', context)()
+    assert.equal(context.activation.value, outcome === 'success' ? 'checking' : 'idle')
+    assert.equal(context.checkoutPlan.value, outcome === 'success' ? 'team' : '')
+    assert.equal(context.reviewOpen.value, true)
+    assert.deepEqual(cleared, outcome === 'success' ? [] : [['checkout', 'org-a', 'alice']])
+  }
+})
+
 function cardFixture() {
   const checkout = deferred()
   const portal = deferred()
