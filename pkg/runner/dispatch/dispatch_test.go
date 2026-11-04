@@ -233,6 +233,30 @@ func TestFollowReadsTextToolsAndCostOffTheStream(t *testing.T) {
 	}
 }
 
+func TestFollowDropsClaudeSessionLifecycleFromText(t *testing.T) {
+	f := &fakeRunner{
+		receipt: receipt(runner.PhaseCompleted),
+		events: []runner.Event{
+			event(1, runner.EventStarted, "", ""),
+			event(2, runner.EventProgress, "Claude Code session ready", `{"type":"system","subtype":"init","session_id":"sess-1"}`),
+			event(3, runner.EventProgress, "I took no action.", ""),
+			event(4, runner.EventProgress, "", `{"type":"result","result":"I took no action."}`),
+			event(5, runner.EventCompleted, "", ""),
+		},
+	}
+	rec := &recorder{}
+	out, err := Follow(ctxWithTimeout(t), f, receipt(runner.PhaseCompleted), Position{AttemptID: "attempt-1"}, rec)
+	if err != nil {
+		t.Fatalf("Follow: %v", err)
+	}
+	if got := strings.Join(rec.text, "|"); got != "I took no action." {
+		t.Errorf("streamed text = %q, want only assistant content", got)
+	}
+	if out.Summary.Text != "I took no action." || out.Summary.Final != "I took no action." {
+		t.Errorf("summary = %+v, want the session banner left out", out.Summary)
+	}
+}
+
 func TestFollowNormalizesCodexAppServerEvents(t *testing.T) {
 	const answer = "Here is the result.\n"
 	f := &fakeRunner{
