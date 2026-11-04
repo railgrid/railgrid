@@ -157,3 +157,38 @@ test('provider-connection status reads stay on the tenant cluster path', async (
   assert.equal(calls.length, 1)
   assert.equal(calls[0].init.method, 'GET')
 })
+
+
+test('snapshot fallback reports unexpected metadata failures but tolerates missing or forbidden connections', async t => {
+  const warning = t.mock.method(console, 'warn', () => {})
+  for (const failure of [403, 404, 500, 'network']) {
+    warning.mock.resetCalls()
+    const { ctx } = contextWithFetch(url => {
+      if (url.endsWith('/studios/studio')) return jsonResponse({
+        metadata: { name: 'studio' },
+        spec: { llm: { models: [
+          { id: 'fallback', name: 'Fallback', model: 'fixture-model', connectionRef: 'unreadable', connectionSnapshot: { provider: 'openai', baseURL: 'https://snapshot.example/v1' } },
+          { id: 'healthy', name: 'Healthy', model: 'fixture-model', connectionRef: 'readable' },
+        ] } },
+      })
+      if (url.endsWith('/modelproviderconnections/readable')) return jsonResponse({
+        metadata: { name: 'readable', annotations: { 'ai.railgrid.ai/display-name': 'Readable provider' } },
+        spec: { provider: 'openai', baseURL: 'https://api.openai.com/v1' },
+      })
+      assert.ok(url.endsWith('/modelproviderconnections/unreadable'))
+      if (failure === 'network') throw new TypeError('Network unavailable')
+      return new Response(JSON.stringify({ kind: 'Status', message: 'Metadata unavailable' }), {
+        status: failure, headers: { 'Content-Type': 'application/json' },
+      })
+    })
+    const settings = await api.getLLMSettings(ctx)
+    assert.equal(settings.models.length, 2)
+    assert.equal(settings.models.find(model => model.id === 'fallback').baseURL, 'https://snapshot.example/v1')
+    assert.equal(settings.models.find(model => model.id === 'healthy').connectionName, 'Readable provider')
+    assert.equal(warning.mock.callCount(), failure === 500 || failure === 'network' ? 1 : 0)
+    if (warning.mock.callCount()) {
+      assert.equal(warning.mock.calls[0].arguments[0], 'Model provider connection metadata unavailable')
+      assert.equal(warning.mock.calls[0].arguments[1], 'unreadable')
+    }
+  }
+})

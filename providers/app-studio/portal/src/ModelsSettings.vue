@@ -324,8 +324,10 @@ function connectionDisplayNameForSave(
   const brand = preset === 'anthropic'
     ? 'Anthropic'
     : providerOptions.find(option => option.value === preset)?.label || 'OpenAI-compatible'
-  const count = connections.filter(connection => providerPresetFor(connection.provider, connection.baseURL) === preset).length
-  return brand + (count ? ` ${count + 1}` : '')
+  const taken = new Set(connections.map(connection => (connection.displayName || connection.name).trim().toLowerCase()))
+  let candidate = brand
+  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${brand} ${suffix}`
+  return candidate
 }
 
 function invalidateConnectionProbe() {
@@ -454,9 +456,6 @@ async function continueConnection() {
     if (serial !== connectionRequestSerial || fingerprint !== connectionDraftFingerprint.value) return
     connectionDiscoveredModels.value = result.models
     connectionDiscoverySucceeded.value = true
-    connectionNotice.value = result.models.length
-      ? `${result.models.length} model${result.models.length === 1 ? '' : 's'} found. Choose one for an optional verification request, or connect the provider now.`
-      : 'Provider access confirmed. No models were listed; you can enter an exact model ID to verify it.'
     if (!connectionOriginal.value) {
       const body: ProjectModelProviderConnectionWrite = {
         provider: connectionProvider.value,
@@ -471,6 +470,9 @@ async function continueConnection() {
       acceptSavedConnection({ ...connected, credentialMode: connectionCredentialMode.value }, fingerprint)
       return
     }
+    connectionNotice.value = result.models.length
+      ? `${result.models.length} model${result.models.length === 1 ? '' : 's'} found. Choose one to verify it, or save the changes.`
+      : 'Provider access confirmed. No models were listed; you can enter an exact model ID to verify it.'
     connectionStage.value = 'verify'
   } catch (error) {
     if (serial !== connectionRequestSerial || fingerprint !== connectionDraftFingerprint.value) return

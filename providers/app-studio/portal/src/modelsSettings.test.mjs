@@ -732,9 +732,15 @@ test('new provider connections get friendly preset labels while edits can clear 
   const anthropic = { name: 'anthropic', provider: 'openai-compatible', baseURL: 'https://api.anthropic.com/v1' }
 
   assert.equal(displayName('', false, 'anthropic', []), 'Anthropic')
-  assert.equal(displayName('', false, 'anthropic', [anthropic]), 'Anthropic 2')
-  assert.equal(displayName('', false, 'openai', [savedConnection]), 'OpenAI 2')
-  assert.equal(displayName('', false, 'custom', [{ ...savedConnection, name: 'custom', baseURL: 'https://api.example.test/v1' }]), 'Custom OpenAI-compatible 2')
+  assert.equal(displayName('', false, 'anthropic', [{ ...anthropic, displayName: 'Anthropic' }]), 'Anthropic 2')
+  assert.equal(displayName('', false, 'openai', [savedConnection]), 'OpenAI')
+  assert.equal(displayName('', false, 'openai', [{ ...savedConnection, displayName: 'OpenAI 2' }]), 'OpenAI')
+  assert.equal(displayName('', false, 'openai', [
+    { ...savedConnection, displayName: 'OPENAI' },
+    { ...savedConnection, displayName: 'openai 2' },
+    { ...anthropic, displayName: 'OpenAI 3' },
+  ]), 'OpenAI 4')
+  assert.equal(displayName('', false, 'custom', [{ ...savedConnection, displayName: 'Custom OpenAI-compatible', baseURL: 'https://api.example.test/v1' }]), 'Custom OpenAI-compatible 2')
   assert.equal(displayName('  Team key  ', false, 'openai', []), 'Team key')
   assert.equal(displayName('', true, 'anthropic', []), '')
 
@@ -1537,4 +1543,40 @@ test('deleting an acknowledged connection removes its row and saved-success acti
     await nextTick()
     assert.deepEqual(state.rows.value, [])
   } finally { state.stop() }
+})
+
+
+test('discovery guidance only appears in the existing-connection editor', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
+  const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
+  const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'continueConnection')
+  const { outputText } = ts.transpileModule(declaration.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  for (const editing of [false, true]) {
+    const state = {
+      connectionError: ref(''), connectionNotice: ref(''), connectionCanContinue: ref(true),
+      connectionCredentialMode: ref('api-key'), connectionStage: ref('details'),
+      connectionRequestSerial: 0, connectionDraftFingerprint: ref('draft'), connectionBusy: ref(false),
+      connectionDiscoverySucceeded: ref(false), connectionDiscoveredModels: ref([]),
+      connectionOriginal: ref(editing ? savedConnection : null), connectionProvider: ref('openai'),
+      connectionEndpoint: ref('https://api.openai.com/v1'), connectionWorkspaceID: ref(''),
+      connectionDisplayName: ref(''), connectionPreset: ref('openai'), connectionRows: ref([]),
+      connectionAPIKey: ref('typed-key'), props: { ctx: null }, draftProbeBody: () => ({}),
+      connectionDisplayNameForSave: () => 'OpenAI',
+    }
+    let saves = 0
+    const api = {
+      discoverLLMModels: async () => ({ models: [{ id: 'model' }] }),
+      saveModelProviderConnection: async () => { saves += 1; return savedConnection },
+    }
+    const acceptSavedConnection = () => {
+      assert.equal(state.connectionNotice.value, '', 'no inaccessible choice is set before closing the new-connection form')
+    }
+    const run = new Function('state', 'api', 'acceptSavedConnection', `with (state) { ${outputText}; return continueConnection }`)(state, api, acceptSavedConnection)
+    await run()
+    assert.equal(state.connectionError.value, '')
+    assert.equal(saves, editing ? 0 : 1)
+    assert.equal(state.connectionNotice.value, editing ? '1 model found. Choose one to verify it, or save the changes.' : '')
+    assert.equal(state.connectionStage.value, editing ? 'verify' : 'details')
+  }
 })

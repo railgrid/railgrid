@@ -1,5 +1,5 @@
 import snapshotSuffixPattern from './generated/model-snapshot-suffix.json'
-import { createKubeClient, isKubeNotFound, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { createKubeClient, isKubeForbidden, isKubeNotFound, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import { providerFetch } from './portalkit/tenant'
 import type {
   ProjectLLMDiscoveredModel,
@@ -238,6 +238,13 @@ export async function getLLMSettings(ctx: RailgridContext | null): Promise<Proje
   const connectionReads = await Promise.allSettled(connectionNames.map(name =>
     client.get<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name),
   ))
+  // Missing or forbidden metadata still permits snapshot-backed, label-only edits.
+  // Unexpected failures must remain observable without preventing model loading.
+  connectionReads.forEach((result, index) => {
+    if (result.status === 'rejected' && !isKubeNotFound(result.reason) && !isKubeForbidden(result.reason)) {
+      console.warn('Model provider connection metadata unavailable', connectionNames[index], result.reason)
+    }
+  })
   const connections = connectionReads.flatMap(result => result.status === 'fulfilled' ? [connectionView(result.value)] : [])
   return toSettings(studio, connections)
 }
