@@ -1,3 +1,4 @@
+import { realpathSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -45,6 +46,9 @@ export default defineConfig({
     host: '127.0.0.1',
     port: Number(process.env.MODEL_FORM_PORT || 5198),
     strictPort: true,
-    fs: { allow: [repo, fixtureRoot, fontRoot] },
+    // The root portal's node_modules may be a workspace symlink. Vite checks
+    // the resolved font asset path, so allow both the configured path and its
+    // real target.
+    fs: { allow: [repo, fixtureRoot, fontRoot, realpathSync(fontRoot)] },
   },
 })
