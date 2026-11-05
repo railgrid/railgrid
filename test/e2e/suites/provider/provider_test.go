@@ -1326,31 +1326,42 @@ func TestGTenantDisableRemovesCR(t *testing.T) {
 }
 
 func TestHHeartbeatEndpoint(t *testing.T) {
-	// Known name → 200.
-	req, _ := http.NewRequest(http.MethodPost, hubURL+"/api/providers/quickstart/heartbeat",
-		strings.NewReader(`{"version":"0.1.0","status":"healthy"}`))
-	req.Header.Set("Authorization", "Bearer "+staticToken)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("heartbeat POST: %v", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	post := func(name, token string) int {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodPost, hubURL+"/api/providers/"+name+"/heartbeat",
+			strings.NewReader(`{"version":"0.1.0","status":"healthy"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("heartbeat POST %s: %v", name, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
 	}
 
-	// Unknown name → 404.
-	req2, _ := http.NewRequest(http.MethodPost, hubURL+"/api/providers/nope/heartbeat", strings.NewReader("{}"))
-	req2.Header.Set("Authorization", "Bearer "+staticToken)
-	req2.Header.Set("Content-Type", "application/json")
-	resp2, err := http.DefaultClient.Do(req2)
+	// The provider's own service account — the token in the runtime
+	// kubeconfig the suite minted, which is what the provider process beats
+	// with — is the only identity a heartbeat is accepted from.
+	saToken, err := extractToken(runtimeKubeconfig)
 	if err != nil {
-		t.Fatalf("heartbeat unknown POST: %v", err)
+		t.Fatalf("read provider SA token: %v", err)
 	}
-	defer func() { _ = resp2.Body.Close() }()
-	if resp2.StatusCode != 404 {
-		t.Fatalf("expected 404 for unknown provider, got %d", resp2.StatusCode)
+	if got := post("quickstart", saToken); got != 200 {
+		t.Fatalf("heartbeat as provider SA: expected 200, got %d", got)
+	}
+
+	// A hub user token is not a kcp token: the TokenReview in the provider
+	// workspace does not authenticate it, so the beat is refused with 401
+	// rather than counted. There is no warn mode that lets it through.
+	if got := post("quickstart", staticToken); got != 401 {
+		t.Fatalf("heartbeat as hub user: expected 401, got %d", got)
+	}
+
+	// An unregistered name gets exactly the status a bad credential gets,
+	// so the endpoint cannot be used to enumerate provider names.
+	if got := post("nope", saToken); got != 401 {
+		t.Fatalf("heartbeat for unknown provider: expected 401, got %d", got)
 	}
 }
 

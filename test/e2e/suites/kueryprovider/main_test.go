@@ -242,7 +242,10 @@ func TestMain(m *testing.M) {
 	provCmd.Env = append(os.Environ(),
 		"PORT="+providerPort,
 		"RAILGRID_HUB_URL="+hubURL,
-		"RAILGRID_HUB_TOKEN="+staticToken,
+		// No RAILGRID_HUB_TOKEN: hubclient.ResolveHubToken prefers it over the
+		// kubeconfig, and the hub only accepts a heartbeat from the provider's
+		// own service account, so the bearer comes from the runtime kubeconfig
+		// below — the credential the chart actually mounts.
 		"RAILGRID_PROVIDER_NAME=kuery",
 		"RAILGRID_PROVIDER_KUBECONFIG="+runtimeKubeconfig,
 		// The CatalogEntry manifest is where serve reads the
