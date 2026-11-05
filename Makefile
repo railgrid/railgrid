@@ -3331,7 +3331,7 @@ test-agents-harness-routing: ## Verify harness service lookup, grants, and cance
 	cd providers/edges && go test -count=1 ./internal/servicectrl
 
 fix-lint-agents-harness-routing: $(GOLANGCI_LINT) ## Format harness routing sources
-	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt internal/edgeref api/agentidentity.go api/harness.go api/harness_start_checkpoint.go api/harness_identity_test.go api/harness_start_checkpoint_test.go controller/agent/backend.go controller/agent/backend_readiness_test.go
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt internal/edgeref api/agentidentity.go api/harness.go api/harness_start_checkpoint.go api/harness_identity_test.go api/harness_start_checkpoint_test.go api/run.go api/parked_cancel_test.go controller/agent/backend.go controller/agent/backend_readiness_test.go
 
 lint-agents-harness-routing: $(GOLANGCI_LINT) ## Lint harness routing packages
 	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./internal/edgeref ./api ./controller/agent

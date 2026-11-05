@@ -286,7 +286,6 @@ sudo systemctl restart railgrid-edge`,
 const upgradeMacOSSnippet = computed(
   () => `curl -fsSL "https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz" | tar xz &&
 sudo mv kubectl-railgrid /usr/local/bin/railgrid &&
-# Default system LaunchDaemon; custom/user installs need their own label and domain.
 sudo launchctl kickstart -k system/com.railgrid.agent.${props.name}`,
 )
 
@@ -626,6 +625,7 @@ onUnmounted(() => {
                           <component :is="copied === 'up-mac' ? Check : Copy" :size="12" :stroke-width="1.75" aria-hidden="true" />
                         </button>
                       </div>
+                      <p class="muted">The restart command assumes the default system LaunchDaemon; custom or user installs need their own label and domain.</p>
                       <pre>{{ upgradeMacOSSnippet }}</pre>
                     </div>
 

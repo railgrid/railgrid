@@ -110,11 +110,9 @@ func printKubernetesUpgradeInstructions(name string) {
 }
 
 func printServerUpgradeInstructions(name, _ string) {
-	fmt.Printf("To upgrade the binary on the remote server:\n\n")
+	fmt.Printf("To upgrade the binary and restart the agent on the remote server:\n\n")
 	fmt.Printf("  curl -fsSL \"https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz\" | tar xz &&\n")
-	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
-	fmt.Println()
-	fmt.Printf("Then restart the agent:\n\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid &&\n")
 	fmt.Printf("  sudo systemctl restart %s\n", linuxUnitName)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
@@ -122,12 +120,10 @@ func printServerUpgradeInstructions(name, _ string) {
 }
 
 func printMacOSUpgradeInstructions(name string) {
-	fmt.Printf("To upgrade the macOS agent binary on the worker host:\n\n")
+	fmt.Printf("To upgrade the macOS agent binary and restart it on the worker host:\n")
+	fmt.Printf("The restart command assumes the default system LaunchDaemon; custom or user installs need their own label and domain.\n\n")
 	fmt.Printf("  curl -fsSL \"https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz\" | tar xz &&\n")
-	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n")
-	fmt.Println()
-	fmt.Printf("Then restart the launchd service:\n\n")
-	fmt.Println("  # Default system LaunchDaemon; custom/user installs need their own label and domain.")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid &&\n")
 	fmt.Printf("  sudo launchctl kickstart -k system/com.railgrid.agent.%s\n", name)
 	fmt.Println()
 	fmt.Printf("After upgrading, verify with:\n")
