@@ -29,17 +29,16 @@ func (f relayAuthorizationRoundTripper) RoundTrip(r *http.Request) (*http.Respon
 
 func TestOrgProviderRuntimeRequiresAuthenticatedControlTraffic(t *testing.T) {
 	for _, test := range []struct {
-		name, heartbeat, relay string
-		embedded               bool
-		available              bool
+		name, relay string
+		embedded    bool
+		available   bool
 	}{
-		{name: "legacy warn", heartbeat: "warn", embedded: true},
-		{name: "embedded", heartbeat: "enforce", embedded: true, available: true},
-		{name: "external without relay", heartbeat: "enforce"},
-		{name: "external", heartbeat: "enforce", relay: "https://relay.example:9444", available: true},
+		{name: "embedded", embedded: true, available: true},
+		{name: "external without relay"},
+		{name: "external", relay: "https://relay.example:9444", available: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			s := &Server{opts: &Options{EmbeddedKCP: test.embedded, ProviderHeartbeatAuth: test.heartbeat, ProviderRelayURL: test.relay}}
+			s := &Server{opts: &Options{EmbeddedKCP: test.embedded, ProviderRelayURL: test.relay}}
 			if err := s.orgProviderRuntimeAvailable(context.Background()); (err == nil) != test.available {
 				t.Fatalf("runtime available=%t, error=%v", test.available, err)
 			}

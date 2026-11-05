@@ -144,13 +144,10 @@ foreign binding does not immediately cancel an already-open watch, so events may
 remain visible until that request expires. Cross-shard binding ownership
 enforcement remains deferred.
 
-Set `--provider-heartbeat-auth=enforce` (Helm:
-`hub.security.providerHeartbeatAuth: enforce`) before registering organization
-providers. Legacy `warn` mode allows unauthenticated writes to platform-provider
-liveness and version status, so enrollment and credential issuance refuse that
-configuration. Platform providers must send their own service-account bearer;
-remove legacy `RAILGRID_HUB_TOKEN` user-token overrides so the SDK uses the
-provider kubeconfig. This prerequisite applies to embedded and external kcp.
+The hub rejects every provider heartbeat that does not authenticate as that
+provider's own service account. Platform providers must send their own
+service-account bearer; remove legacy `RAILGRID_HUB_TOKEN` user-token overrides
+so the SDK uses the provider kubeconfig.
 
 Every shard's advertised virtual-workspace endpoint must be reachable from the
 customer provider Pods with valid DNS and TLS. An internal service DNS name does

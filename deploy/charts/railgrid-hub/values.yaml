@@ -152,12 +152,6 @@ hub:
   # and shake out any provider that needs it. See docs/helm.md "Turning on the
   # hardened defaults early".
   security:
-    # What the hub does with a provider heartbeat whose bearer token does not
-    # verify as that provider's own service account: "warn" logs and accepts
-    # it, "enforce" rejects it. Binary default this release: warn. Next
-    # release: enforce. Recommended for production: enforce (once every
-    # provider runs a chart that sends its own service-account token).
-    providerHeartbeatAuth: ""
     # Which platform providers receive a short-lived workspace-scoped
     # ServiceAccount token instead of the caller's own hub bearer on
     # /services/providers/*: "off" (caller's bearer, historical behaviour),
