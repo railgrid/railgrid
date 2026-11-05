@@ -21,8 +21,9 @@
 // spec.requires entries in providers/agents/manifest.yaml.
 //
 // It is ALSO the one place the two names of a harness meet the edges naming
-// convention. A discovered runner Service is named "<edge>-<type>", and for a
-// runner the type is the harness SELECTOR ("claude"), while what the runner
+// convention. A Linux runner Service is named "<edge>-<type>"; Mac Services
+// also carry a "macos-edge-" prefix. The type is the harness SELECTOR
+// ("claude"), while what the runner
 // advertises is the harness's own name ("claude-code"). Conflating those has
 // already cost two bugs, so the selector arrives here from
 // llm.HarnessSelector and nothing in this package invents either name.
@@ -97,15 +98,27 @@ func ServiceGVR() schema.GroupVersionResource {
 	return schema.GroupVersionResource{Group: GroupName, Version: Version, Resource: ResourceServices}
 }
 
-// RunnerServiceName is the discovered Service a harness is published as, and the
-// runner identity behind it.
-//
-// They are the same string on purpose: edges names a discovered Service
-// "<edge>-<type>" and the agent names the runner it supervises
-// "<edge>-<harness>" (pkg/agent/harnessplane child.runnerID). One function so
-// this provider cannot spell the two differently and then fail the client's
-// identity check against a runner that is exactly right.
-func RunnerServiceName(edge, selector string) string {
+// RunnerServiceName is the discovered Service a harness is published as.
+// Mac services are qualified by kind so same-named Linux and Mac edges do not
+// compete for the same Service (edges servicectrl.discoveredName).
+func RunnerServiceName(kind, edge, selector string) string {
+	name := RunnerID(edge, selector)
+	if name == "" {
+		return ""
+	}
+	switch strings.TrimSpace(kind) {
+	case KindLinuxServer:
+		return name
+	case KindMacOSServer:
+		return "macos-edge-" + name
+	default:
+		return ""
+	}
+}
+
+// RunnerID is the identity advertised by the supervised process, independent of
+// the Service's kind-qualified name (agent harnessplane.child.runnerID).
+func RunnerID(edge, selector string) string {
 	edge, selector = strings.TrimSpace(edge), strings.TrimSpace(selector)
 	if edge == "" || selector == "" {
 		return ""

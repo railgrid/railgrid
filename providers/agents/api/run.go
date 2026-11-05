@@ -31,10 +31,13 @@ import (
 	backendmodel "github.com/railgrid/provider-agents/backend/model"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/engine"
+	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/internal/harnesspolicy"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tools"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // ErrBudgetExceeded is returned when an agent has spent its budget for the
@@ -1038,7 +1041,8 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		if cfg := run.Agent.Spec.Harness(); cfg != nil {
 			ck.HarnessRunner = &harnessCancelTarget{
 				ClusterID: run.ClusterID, EdgeKind: cfg.EdgeRef.Kind,
-				EdgeName: cfg.EdgeRef.Name, Service: harnessT.Service, RunnerID: harnessT.Service,
+				EdgeName: cfg.EdgeRef.Name, Service: harnessT.Service,
+				RunnerID: edgeref.RunnerID(cfg.EdgeRef.Name, runnerharness.SelectorFor(harnessT.Harness)),
 			}
 		}
 	}

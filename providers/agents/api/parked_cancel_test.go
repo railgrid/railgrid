@@ -650,7 +650,7 @@ func TestParkRunPersistsHarnessCancelTargetWithoutCredentials(t *testing.T) {
 	_, err := f.server.parkRun(context.Background(), taskRun{
 		Scope: f.scope, Agent: agent, RunID: f.run.ID, SessionID: f.run.SessionID, ClusterID: "cluster-test",
 	}, f.run.SessionID, time.Now().UTC(), time.Now().UTC(), tracker,
-		&harnessTurn{Service: "edge-test-codex", backend: backendharness.New(backendharness.Config{})},
+		&harnessTurn{Service: "edge-test-codex", Harness: "codex", backend: backendharness.New(backendharness.Config{})},
 		backendOutcomeParked(stateJSON))
 	if err != nil {
 		t.Fatalf("parkRun: %v", err)
@@ -668,6 +668,67 @@ func TestParkRunPersistsHarnessCancelTargetWithoutCredentials(t *testing.T) {
 	}
 	if strings.Contains(string(stored.Checkpoint), parkedCancelAgentToken) {
 		t.Fatal("parked checkpoint contains an identity token")
+	}
+}
+
+func TestParkRunMacHarnessRemainsCancellable(t *testing.T) {
+	for _, question := range []bool{false, true} {
+		name := "approval"
+		if question {
+			name = "question"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			agent := harnessAgent("mac-mini")
+			agent.UID = "agent-uid"
+			agent.Spec.Backend.Harness.EdgeRef.Kind = edgeref.KindMacOSServer
+			f := newParkedCancelFixture(t, agent, nil)
+			state := backendharness.State{
+				TaskID:   harnessTaskIDFor(agent.Name, string(agent.UID), f.run.SessionID),
+				AgentUID: string(agent.UID), AttemptID: f.run.ID, Epoch: 1,
+				BackendKey: harnessBackendKey("cluster-test", edgeref.KindMacOSServer, "mac-mini", "codex"),
+			}
+			stateJSON, err := json.Marshal(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := backendOutcomeParked(stateJSON)
+			if question {
+				out.Parked.Tool, out.Parked.Args, out.Parked.Question = "", "", "Which repository?"
+			}
+			_, err = f.server.parkRun(ctx, taskRun{
+				Scope: f.scope, Agent: agent, RunID: f.run.ID, SessionID: f.run.SessionID, ClusterID: "cluster-test",
+			}, f.run.SessionID, time.Now().UTC(), time.Now().UTC(), newTurnProgressTracker(0),
+				&harnessTurn{Service: "macos-edge-mac-mini-codex", Harness: "codex", backend: backendharness.New(backendharness.Config{})}, out)
+			if err != nil {
+				t.Fatalf("parkRun: %v", err)
+			}
+			stored, err := f.server.store.GetRun(ctx, f.scope, f.run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var checkpoint runCheckpoint
+			if err := json.Unmarshal(stored.Checkpoint, &checkpoint); err != nil {
+				t.Fatal(err)
+			}
+			ref, _, ok := parkedHarnessRunner("cluster-test", agent, checkpoint.HarnessRunner, state.BackendKey)
+			if !ok || ref.Service != "macos-edge-mac-mini-codex" || ref.RunnerID != "mac-mini-codex" {
+				t.Fatalf("parked Mac target cannot be cancelled: %+v, ok=%t", checkpoint.HarnessRunner, ok)
+			}
+			f.dispatcher.once.Do(func() { close(f.dispatcher.release) })
+			client := agentsclient.NewFromScope(tenant.NewScopeFromDynamic("cluster-test", f.dynamic))
+			if err := f.server.cancelParkedHarness(ctx, client, f.identity, stored); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case call := <-f.dispatcher.calls:
+				if call.request.AttemptID != f.run.ID || call.request.AttemptEpoch != 1 {
+					t.Fatalf("wrong cancel request: %+v", call.request)
+				}
+			default:
+				t.Fatal("parked Mac attempt was never stopped")
+			}
+		})
 	}
 }
 

@@ -12,8 +12,8 @@ package api
 // runner protocol needs that the agent's spec only points at.
 //
 //	the RUNNER      spec.backend.harness.edgeRef + the credential's harness
-//	                selector name the discovered Service <edge>-<selector>, which
-//	                is also the runner identity the client must find answering.
+//	                selector name the discovered Service and the process identity;
+//	                Mac Service names carry an additional kind prefix.
 //	the IDENTITY    spec.backend.harness.credentialRef's Secret, read per turn
 //	                and never held: it is dispatch data, and the fewer places it
 //	                sits the better.
@@ -358,8 +358,8 @@ func (s *Server) cancelParkedHarness(ctx context.Context, c *agentsclient.Client
 		if state.BackendKey != "" && state.BackendKey != harnessBackendKey(id.clusterID, cfg.EdgeRef.Kind, cfg.EdgeRef.Name, advertised) {
 			return nil
 		}
-		service := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector)
-		ref = runnerclient.ServiceRef{Cluster: id.clusterID, Service: service, EdgeKind: cfg.EdgeRef.Kind, EdgeName: cfg.EdgeRef.Name, RunnerID: service}
+		service := edgeref.RunnerServiceName(cfg.EdgeRef.Kind, cfg.EdgeRef.Name, selector)
+		ref = runnerclient.ServiceRef{Cluster: id.clusterID, Service: service, EdgeKind: cfg.EdgeRef.Kind, EdgeName: cfg.EdgeRef.Name, RunnerID: edgeref.RunnerID(cfg.EdgeRef.Name, selector)}
 		grantAgent = agent
 	}
 	token, err := s.harnessIdentity(ctx, id.clusterID, grantAgent)
@@ -419,18 +419,23 @@ func (s *Server) verifyParkedHarnessOwner(ctx context.Context, id identity, run 
 // token; the owner UID comes from the current Agent object, while the grant is
 // rebuilt for the one edge that held the attempt even if its spec has changed.
 func parkedHarnessRunner(clusterID string, agent *agentsv1alpha1.Agent, target *harnessCancelTarget, backendKey string) (runnerclient.ServiceRef, *agentsv1alpha1.Agent, bool) {
-	if target == nil || agent == nil || target.ClusterID == "" || target.ClusterID != clusterID || target.EdgeKind == "" || target.EdgeName == "" || target.Service == "" || target.RunnerID != target.Service {
+	if target == nil || agent == nil || target.ClusterID == "" || target.ClusterID != clusterID || target.EdgeKind == "" || target.EdgeName == "" || target.Service == "" {
 		return runnerclient.ServiceRef{}, nil, false
 	}
-	claude := edgeref.RunnerServiceName(target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderClaudeCode))
-	codex := edgeref.RunnerServiceName(target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderCodex))
-	var advertised string
+	claude := edgeref.RunnerServiceName(target.EdgeKind, target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderClaudeCode))
+	codex := edgeref.RunnerServiceName(target.EdgeKind, target.EdgeName, llm.HarnessSelector(agentsv1alpha1.ModelProviderCodex))
+	var advertised, selector string
 	switch target.Service {
 	case claude:
+		selector = runnerharness.SelectorClaude
 		advertised = llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderClaudeCode)
 	case codex:
+		selector = runnerharness.SelectorCodex
 		advertised = llm.HarnessAdvertisedName(agentsv1alpha1.ModelProviderCodex)
 	default:
+		return runnerclient.ServiceRef{}, nil, false
+	}
+	if target.RunnerID != edgeref.RunnerID(target.EdgeName, selector) {
 		return runnerclient.ServiceRef{}, nil, false
 	}
 	if backendKey != "" && backendKey != harnessBackendKey(clusterID, target.EdgeKind, target.EdgeName, advertised) {
@@ -522,15 +527,14 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		return harnessTurn{}, err
 	}
 
-	service := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector)
+	service := edgeref.RunnerServiceName(cfg.EdgeRef.Kind, cfg.EdgeRef.Name, selector)
 	dispatcher, err := s.runners(ctx, runnerclient.ServiceRef{
 		Cluster:  run.ClusterID,
 		Service:  service,
 		EdgeKind: cfg.EdgeRef.Kind,
 		EdgeName: cfg.EdgeRef.Name,
-		// The runner identity and the Service name are the same string by
-		// construction on both sides (see internal/edgeref.RunnerServiceName).
-		RunnerID: service,
+		// The process identity does not carry the Mac Service prefix.
+		RunnerID: edgeref.RunnerID(cfg.EdgeRef.Name, selector),
 	}, token)
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("reaching the runner on edge %s/%s: %w", cfg.EdgeRef.Kind, cfg.EdgeRef.Name, err)

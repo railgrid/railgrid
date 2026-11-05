@@ -330,3 +330,13 @@ func TestRepositoryEnvironmentIdentityIsTenantAndAgentScoped(t *testing.T) {
 		t.Fatal("mutated persisted coordinator identity")
 	}
 }
+
+func TestMacHarnessIdentityGrantsOnlyKindQualifiedServices(t *testing.T) {
+	agent := harnessAgent("mac-mini")
+	agent.Spec.Backend.Harness.EdgeRef.Kind = edgeref.KindMacOSServer
+	got := harnessServiceNames(agent)
+	want := []string{"macos-edge-mac-mini-claude", "macos-edge-mac-mini-codex"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Mac grants = %v, want %v", got, want)
+	}
+}

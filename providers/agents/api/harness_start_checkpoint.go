@@ -15,8 +15,11 @@ import (
 	"strings"
 
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	backendharness "github.com/railgrid/provider-agents/backend/harness"
@@ -74,7 +77,7 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 		EdgeKind:  config.EdgeRef.Kind,
 		EdgeName:  config.EdgeRef.Name,
 		Service:   turn.Service,
-		RunnerID:  turn.Service,
+		RunnerID:  edgeref.RunnerID(config.EdgeRef.Name, runnerharness.SelectorFor(turn.Harness)),
 	}
 	if _, _, ok := parkedHarnessRunner(run.ClusterID, run.Agent, target, state.BackendKey); !ok {
 		return nil, errors.New("harness start state does not match its resolved runner target")
