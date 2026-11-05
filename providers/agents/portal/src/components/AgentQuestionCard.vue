@@ -64,7 +64,6 @@ function send(): void {
   gap: 12px;
   min-width: 0;
   padding: 14px 16px;
-  border-radius: 16px;
   background: var(--color-surface-overlay);
 }
 .agents-question-card__heading { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 13px; }
@@ -86,7 +85,7 @@ function send(): void {
 .agents-question-card__custom:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .agents-question-card__input, .agents-question-card__input:focus { width: 100%; min-width: 0; padding-inline: 0; border-color: transparent; background: transparent; box-shadow: none; outline: none; font-size: 14px; }
 .agents-question-card__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.agents-question-card__action { min-height: 34px; padding-inline: 12px; border-radius: 999px; }
+.agents-question-card__action { min-height: 34px; padding-inline: 12px; }
 .agents-question-card__send { min-width: 60px; }
 .agents-question-card__send:disabled {
   border-color: transparent;
