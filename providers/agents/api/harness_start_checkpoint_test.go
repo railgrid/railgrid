@@ -377,3 +377,40 @@ func (d *startCountingDispatcher) Start(_ context.Context, req runner.StartReque
 }
 
 var _ backend.Backend = (*backendharness.Backend)(nil)
+
+func TestMacHarnessCheckpointSeparatesServiceAndRunnerIdentity(t *testing.T) {
+	agent := harnessAgent("edge-test")
+	agent.UID = "agent-uid"
+	agent.Spec.Backend.Harness.EdgeRef.Kind = edgeref.KindMacOSServer
+	run := taskRun{Agent: agent, RunID: "run-mac", SessionID: "chat", ClusterID: "cluster-test", Trigger: "chat"}
+	turn := startCheckpointHarnessTurn(run, 1, "")
+	turn.Service = "macos-edge-edge-test-codex"
+	raw, err := initialHarnessCheckpoint(run, turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(raw, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	target := checkpoint.HarnessRunner
+	if target == nil || target.Service != "macos-edge-edge-test-codex" || target.RunnerID != "edge-test-codex" {
+		t.Fatalf("Mac target = %+v", target)
+	}
+	ref, grant, ok := parkedHarnessRunner(run.ClusterID, agent, target, turn.Session.BackendKey)
+	if !ok || ref.Service != target.Service || ref.RunnerID != target.RunnerID || grant.Spec.Harness().EdgeRef.Kind != edgeref.KindMacOSServer {
+		t.Fatalf("Mac cancel target refused: %+v, ok=%t", ref, ok)
+	}
+	for _, mutate := range []func(*harnessCancelTarget){
+		func(target *harnessCancelTarget) { target.RunnerID = target.Service },
+		func(target *harnessCancelTarget) { target.Service = target.RunnerID },
+		func(target *harnessCancelTarget) { target.EdgeKind = edgeref.KindLinuxServer },
+		func(target *harnessCancelTarget) { target.ClusterID = "another-cluster" },
+	} {
+		wrong := *target
+		mutate(&wrong)
+		if _, _, ok := parkedHarnessRunner(run.ClusterID, agent, &wrong, turn.Session.BackendKey); ok {
+			t.Fatalf("accepted mismatched Mac cancel coordinate: %+v", wrong)
+		}
+	}
+}

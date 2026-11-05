@@ -24,19 +24,22 @@ import (
 func TestHarnessReadinessRequiresConnectedEdgeAndReachableService(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
+		kind         string
+		service      string
 		connected    bool
 		serviceReady string
 		wantReady    bool
 	}{
-		{"connected", true, "True", true},
-		{"disconnected with cached harness", false, "True", false},
-		{"unreachable service with cached harness", true, "False", false},
-		{"unknown service readiness", true, "Unknown", false},
-		{"unprobed service", true, "", false},
+		{"connected", edgeref.KindLinuxServer, "devbox-codex", true, "True", true},
+		{"Mac connected", edgeref.KindMacOSServer, "macos-edge-devbox-codex", true, "True", true},
+		{"disconnected with cached harness", edgeref.KindLinuxServer, "devbox-codex", false, "True", false},
+		{"unreachable service with cached harness", edgeref.KindLinuxServer, "devbox-codex", true, "False", false},
+		{"unknown service readiness", edgeref.KindLinuxServer, "devbox-codex", true, "Unknown", false},
+		{"unprobed service", edgeref.KindLinuxServer, "devbox-codex", true, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			edge := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{"connected": tc.connected}}}
-			gvk, _ := edgeref.EdgeGVK(edgeref.KindLinuxServer)
+			gvk, _ := edgeref.EdgeGVK(tc.kind)
 			edge.SetGroupVersionKind(gvk)
 			edge.SetName("devbox")
 			service := &unstructured.Unstructured{Object: map[string]any{"status": map[string]any{
@@ -44,13 +47,13 @@ func TestHarnessReadinessRequiresConnectedEdgeAndReachableService(t *testing.T) 
 				"conditions": []any{map[string]any{"type": "Ready", "status": tc.serviceReady}},
 			}}}
 			service.SetGroupVersionKind(edgeref.ServiceGVK())
-			service.SetName("devbox-codex")
+			service.SetName(tc.service)
 			cred := &agentsv1alpha1.ModelCredential{ObjectMeta: metav1.ObjectMeta{Name: "codex"}}
 			cred.Spec.Provider = agentsv1alpha1.ModelProviderCodex
 			cred.Status.Conditions = []metav1.Condition{{Type: agentsv1alpha1.ConditionReady, Status: metav1.ConditionTrue, Reason: "Ready"}}
 			agent := &agentsv1alpha1.Agent{}
 			agent.Spec.Backend = agentsv1alpha1.AgentBackendSpec{Type: agentsv1alpha1.AgentBackendHarness, Harness: &agentsv1alpha1.AgentHarnessBackend{
-				CredentialRef: "codex", EdgeRef: agentsv1alpha1.AgentHarnessEdgeRef{Kind: edgeref.KindLinuxServer, Name: "devbox"},
+				CredentialRef: "codex", EdgeRef: agentsv1alpha1.AgentHarnessEdgeRef{Kind: tc.kind, Name: "devbox"},
 			}}
 			c := fake.NewClientBuilder().WithScheme(agentsscheme.NewScheme()).WithObjects(edge, service, cred).Build()
 			reason, message, status, err := (&Reconciler{}).validateBackend(t.Context(), c, agent, credentialVerdict{})

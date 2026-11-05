@@ -308,7 +308,7 @@ func (a *agentIdentities) rulesFor(ctx context.Context, dyn dynamic.Interface, a
 // or "" for a model-backed one.
 //
 // It derives the name the same way the dispatcher does — edgeref.RunnerServiceName
-// over the edge name and the credential's SELECTOR — but from the spec alone,
+// over the edge kind, name and the credential's SELECTOR — but from the spec alone,
 // without reading the credential: the identity has to be minted before the
 // dispatch, and a name-scoped grant for the wrong name is worse than none. The
 // selector cannot be read from the spec (it lives on the ModelCredential), so
@@ -324,7 +324,7 @@ func harnessServiceNames(agent *agentsv1alpha1.Agent) []string {
 	}
 	var names []string
 	for _, selector := range runnerharness.Selectors {
-		if name := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector); name != "" {
+		if name := edgeref.RunnerServiceName(cfg.EdgeRef.Kind, cfg.EdgeRef.Name, selector); name != "" {
 			names = append(names, name)
 		}
 	}
