@@ -150,7 +150,7 @@ func (r *Reconciler) validateBackend(ctx context.Context, c client.Client, agent
 
 	// The discovered runner Service on it, named after the edge and the harness
 	// SELECTOR — which is not the name the harness advertises.
-	serviceName := edgeref.RunnerServiceName(cfg.EdgeRef.Name, selector)
+	serviceName := edgeref.RunnerServiceName(cfg.EdgeRef.Kind, cfg.EdgeRef.Name, selector)
 	out.Service = serviceName
 	service := &unstructured.Unstructured{}
 	service.SetGroupVersionKind(edgeref.ServiceGVK())
