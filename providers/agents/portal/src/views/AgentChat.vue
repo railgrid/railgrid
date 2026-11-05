@@ -1984,16 +1984,28 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     Boolean(target) &&
     messages.value.some(message => message.id === target?.id && message.approval?.inboxID === inboxID)
   )
+  const showResolution = (resolved: 'approve' | 'deny' | 'answer', answer?: string, actorID?: string) => {
+    const approval = target?.approval
+    if (!target || !approval) return
+    const content = resolved === 'answer' && pendingIsQuestion(approval) ? answer?.trim() : undefined
+    const id = `mquestion-answer-${inboxID}`
+    patchMessage(target.id, { approval: { ...approval, resolved, ...(content ? { answerInThread: true } : {}) } })
+    if (!content || messages.value.some(message => message.id === id)) return
+    messages.value.push({
+      id, role: 'user', content, questionPrompt: approval.question ?? '',
+      runID: approval.runID, tools: [], actorID,
+    })
+  }
   try {
     // Only an answer carries a body. Passing an explicit undefined third
     // argument for approve/deny would change the call every existing caller and
     // test sees, for a value the API does not read.
-    await (response === undefined
+    const item = await (response === undefined
       ? api.resolveInbox(inboxID, decision)
       : api.resolveInbox(inboxID, decision, response))
     if (!requestIsCurrent()) return
     if (target?.approval) {
-      patchMessage(target.id, { approval: { ...target.approval, resolved: decision } })
+      showResolution(decision, item?.response ?? response, optimisticAIMessageActor(api.context()?.user))
       void refreshRunApproval(target.approval.runID)
     }
     toast('ok', decision === 'answer'
@@ -2015,7 +2027,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
         ? 'approve'
         : inboxItem?.state === 'denied' ? 'deny' : inboxItem?.state === 'answered' ? 'answer' : undefined
       if (confirmedDecision && target?.approval) {
-        patchMessage(target.id, { approval: { ...target.approval, resolved: confirmedDecision } })
+        showResolution(confirmedDecision, inboxItem?.response)
       }
       if (target?.approval?.runID) {
         await refreshRunApproval(target.approval.runID, false, true)

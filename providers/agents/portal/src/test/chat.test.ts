@@ -1301,7 +1301,21 @@ describe('chat streaming', () => {
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
     expect(el.querySelector('.agents-question-dock')).toBeNull()
-    expect(text(el.querySelector('.agents-log .agents-question-card__status'))).toBe('Answer sent')
+    expect(el.querySelector('.agents-log .agents-question-card')).toBeNull()
+    const reply = el.querySelector('.agents-answer-context')?.parentElement
+    expect(text(reply)).toContain('Which repository should I open the pull request against?')
+    expect(text(reply)).toContain('the acme/app one')
+  })
+
+  it('rebuilds question replies as user messages before the continued reply', () => {
+    const rows = rebuildTranscript([
+      { id: 'answer', role: 'user', content: 'Line guide', runID: 'r1', metadata: { questionPrompt: 'Where should it go?' } },
+      { id: 'continuation', role: 'assistant', content: 'I updated the guide.', runID: 'r1' },
+    ])
+    expect(rows.map(({ role, content, questionPrompt }) => ({ role, content, questionPrompt }))).toEqual([
+      { role: 'user', content: 'Line guide', questionPrompt: 'Where should it go?' },
+      { role: 'assistant', content: 'I updated the guide.' },
+    ])
   })
 
   // An older server sends no kind. A park with no tool is still a question, so

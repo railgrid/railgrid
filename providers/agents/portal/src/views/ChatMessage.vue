@@ -21,6 +21,7 @@ import { approvalDisclosureAvailable } from '../approval-disclosure'
 import { pendingIsQuestion } from '../types'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import { questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
@@ -458,6 +459,10 @@ onBeforeUnmount(() => { mounted = false })
       v-html="assistantHTML"
       @click="openToolCitation"
     ></div>
+    <div v-else-if="message.role === 'user' && message.questionPrompt !== undefined" class="agents-user-content">
+      <div class="agents-answer-context">{{ questionPresentation(message.questionPrompt).prompt }}</div>
+      <div class="agents-body">{{ message.content === skippedQuestionResponse ? 'Skipped this question' : message.content }}</div>
+    </div>
     <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-user-content">
       <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
       <details v-if="userMessage.reference" class="agents-page-reference">
@@ -512,7 +517,7 @@ onBeforeUnmount(() => { mounted = false })
 
     <template v-if="message.role === 'user' || message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <AgentQuestionCard
-        v-if="message.approval && !questionDocked && pendingIsQuestion(message.approval)"
+        v-if="message.approval && !message.approval.answerInThread && !questionDocked && pendingIsQuestion(message.approval)"
         :question-id="message.approval.inboxID"
         :prompt="message.approval.question"
         :busy="approvalBusy === 'answer'"
