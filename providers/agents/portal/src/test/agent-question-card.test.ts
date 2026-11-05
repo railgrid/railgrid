@@ -66,19 +66,38 @@ it('submits a choice, write-in, and explicit skip as one group', async () => {
   }))
   app.mount(host)
   try {
-    const [location, name, owner] = host.querySelectorAll('fieldset')
-    const send = host.querySelector<HTMLButtonElement>('button[type="submit"]')!
-    expect(send.disabled).toBe(true)
-    location.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
-    const input = name.querySelector<HTMLInputElement>('input[type="text"]')!
-    input.value = 'Operator guide'
-    input.dispatchEvent(new Event('input', { bubbles: true }))
+    const send = () => host.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    const previous = host.querySelector<HTMLButtonElement>('button[aria-label="Previous question"]')!
+    const next = host.querySelector<HTMLButtonElement>('button[aria-label="Next question"]')!
+    const skip = () => [...host.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Skip')!
+    const input = () => host.querySelector<HTMLInputElement>('input[type="text"]')!
+    const prompt = () => host.querySelector('legend')?.textContent
+    expect(host.querySelectorAll('fieldset')).toHaveLength(1)
+    expect(host.textContent).toContain('1 of 3')
+    expect(previous.disabled).toBe(true)
+    expect(send().disabled).toBe(true)
+    next.click()
     await nextTick()
-    expect(send.disabled).toBe(true)
-    owner.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
+    expect(prompt()).toBe('What should it be called?')
+    input().value = 'Operator guide'
+    input().dispatchEvent(new Event('input', { bubbles: true }))
+    previous.click()
+    await nextTick()
+    expect(prompt()).toBe('Where should it go?')
+    host.querySelector<HTMLInputElement>('input[type="radio"]')!.click()
+    await nextTick()
+    send().click()
+    await nextTick()
+    expect(input().value).toBe('Operator guide')
+    send().click()
+    await nextTick()
+    expect(prompt()).toBe('Who should own it?')
+    expect(next.disabled).toBe(true)
+    skip().click()
     await nextTick()
     expect(answers).toEqual([])
-    send.click()
+    expect(send().textContent).toContain('Send answers')
+    send().click()
     expect(answers).toEqual([{ location: 'README (Recommended)', name: 'Operator guide', owner: null }])
   } finally {
     app.unmount()
