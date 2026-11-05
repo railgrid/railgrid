@@ -126,7 +126,15 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: Standalone (embedded kcp + static token)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest became ubuntu-26.04 on 2026-11-05 and those
+    # runners are too slow on disk for three kind clusters. etcd on the
+    # second cluster logged apply requests taking seconds against a 100ms
+    # budget, that cluster took five minutes instead of thirty seconds to
+    # come up, and the third one's kubeadm init timed out; one of the
+    # three-cluster suites failed on every 26.04 run that day, while all were
+    # green on 24.04 for weeks. Revisit once the kind clusters get etcd
+    # tuning (unsafe-no-fsync) or the runners get faster.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -140,12 +148,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
@@ -195,7 +199,8 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: SSH Server-Mode (hub-only cluster)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04; see e2e-standalone.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -209,12 +214,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
@@ -261,7 +262,8 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: OIDC (Dex + auth-code flow)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04; see e2e-standalone.
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
@@ -275,12 +277,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
@@ -335,7 +333,8 @@ jobs:
     needs: [changes, build]
     if: needs.changes.outputs.mode == 'full'
     name: External KCP (kcp via Helm + static token)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04; see e2e-standalone.
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -349,12 +348,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
@@ -410,7 +405,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
     name: Edges connectivity (agent tunnel → kubectl + ssh + workload)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04; see e2e-standalone.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -424,12 +420,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
@@ -454,7 +446,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.mode == 'full'
     name: CLI (login, use, org/workspace members, edge, connect, ssh, …)
-    runs-on: ubuntu-latest
+    # Pinned to 24.04; see e2e-standalone.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -468,12 +461,8 @@ jobs:
         with:
           install_only: true
 
-      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
-      # inotify instances, 129k watches) are too low for the kind clusters a
-      # suite starts on one runner: external_kcp's third cluster failed in
-      # kubeadm init on every run since, while the 24.04 image met these
-      # values and never warned. Raise them to what `railgrid dev init`
-      # recommends.
+      # The limits `railgrid dev init` recommends for several kind clusters
+      # on one host; 24.04 already meets them, 26.04 ships 128 instances.
       - name: Raise inotify limits for kind
         run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
