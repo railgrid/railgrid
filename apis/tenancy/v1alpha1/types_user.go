@@ -90,14 +90,31 @@ type UserQuota struct {
 	FreeOrganizations *int32 `json:"freeOrganizations,omitempty"`
 }
 
-// OIDCProvider stores OIDC provider information for a user.
+// OIDCProvider stores OIDC provider information for a user. A User has one
+// entry per IdP identity bound to it: the one it was created with, plus any
+// linked later (see --idp-link-verified-email-issuers).
 type OIDCProvider struct {
-	Name         string       `json:"name"`
-	ProviderID   string       `json:"providerID"`
-	Email        string       `json:"email"`
-	AccessToken  string       `json:"accessToken"`
-	RefreshToken string       `json:"refreshToken"`
-	ExpiresAt    *metav1.Time `json:"expiresAt,omitempty"`
+	Name string `json:"name"`
+	// Issuer is the OIDC issuer URL of the identity. Empty on entries
+	// written before it was recorded.
+	//
+	// +optional
+	Issuer     string `json:"issuer,omitempty"`
+	ProviderID string `json:"providerID"`
+	Email      string `json:"email"`
+	// EmailVerified records whether the issuer asserted email_verified for
+	// Email when the identity was bound or when Email last changed; a later
+	// sign-in that verifies the same email sets it to true. Linking by email
+	// (--idp-link-verified-email-issuers) never targets a User whose matching
+	// entry is recorded as unverified, so an account seeded from an
+	// unverified claim cannot capture another person's identity. Unset on
+	// entries written before it was recorded; those are trusted as before.
+	//
+	// +optional
+	EmailVerified *bool        `json:"emailVerified,omitempty"`
+	AccessToken   string       `json:"accessToken"`
+	RefreshToken  string       `json:"refreshToken"`
+	ExpiresAt     *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 // UserStatus defines the observed state of a User.
