@@ -54,6 +54,40 @@ func orgProviderModifyResponse(resp *http.Response, requestHeaders http.Header) 
 	return nil
 }
 
+// orgProviderBackendModifyResponse applies the common org-owned response
+// policy to ordinary backend routes, then restores the OAuth and MCP headers
+// those routes need. The custom-subresource relay uses orgProviderModifyResponse
+// directly and keeps its stricter redirect/authentication policy.
+func orgProviderBackendModifyResponse(resp *http.Response, requestHeaders http.Header, routePath string) error {
+	protocolHeaders := resp.Header.Clone()
+	if err := orgProviderModifyResponse(resp, requestHeaders); err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		CopyOrgProviderBackendProtocolHeaders(resp.Header, protocolHeaders, routePath)
+	}
+	return nil
+}
+
+// orgProviderUIAssetModifyResponse applies the common org-owned response
+// policy to a granted UI asset. Assets do not need OAuth redirects or auth
+// challenges. A valid WebSocket upgrade still uses the same handshake checks
+// as the other org-owned routes.
+func orgProviderUIAssetModifyResponse(resp *http.Response, requestHeaders http.Header) error {
+	if resp.StatusCode == http.StatusSwitchingProtocols {
+		if err := orgProviderModifyResponse(resp, requestHeaders); err != nil {
+			return err
+		}
+		resp.Header.Set("Referrer-Policy", "no-referrer")
+		return nil
+	}
+	filtered := make(http.Header)
+	CopyOrgProviderUIAssetResponseHeaders(filtered, resp.Header)
+	resp.Header = filtered
+	resp.Trailer = nil
+	return nil
+}
+
 func headerHasToken(header http.Header, name, wanted string) bool {
 	for _, value := range header.Values(name) {
 		for _, token := range strings.Split(value, ",") {

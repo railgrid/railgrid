@@ -67,13 +67,24 @@ func newUIGrantFixture(t *testing.T, orgOfCaller, wsOfCaller string) *uiGrantFix
 		if r.URL.Query().Get(UIGrantQueryParam) != "" {
 			t.Errorf("the grant reached the tenant's cluster: query %q", r.URL.RawQuery)
 		}
+		w.Header().Set("Set-Cookie", "provider-session=secret; Path=/")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Security-Policy", "default-src https:")
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.Header().Set("X-Content-Type-Options", "unsafe")
+		w.Header().Set("ETag", `"bundle-v1"`)
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("Trailer", "X-Provider-Trailer")
+		w.Header().Set("Location", "https://provider.example/login")
+		w.Header().Set("WWW-Authenticate", `Basic realm="provider"`)
 		if f.edgeStatus != http.StatusOK {
 			http.Error(w, "edge says no", f.edgeStatus)
 			return
 		}
 		w.Header().Set("Content-Type", "application/javascript")
-		w.Header().Set("Cache-Control", "public, max-age=3600")
 		_, _ = w.Write([]byte(orgBundleBody))
+		w.Header().Set("X-Provider-Trailer", "upstream-trailer")
+		w.Header()[http.TrailerPrefix+"X-Provider-Late"] = []string{"late-trailer"}
 	}))
 	t.Cleanup(srv.Close)
 	edgesURL, err := url.Parse(srv.URL)
@@ -133,10 +144,14 @@ func (f *uiGrantFixture) requestGrant(t *testing.T, name string) (*httptest.Resp
 
 func (f *uiGrantFixture) fetchBundle(rawURL string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
+	f.fetchBundleTo(w, rawURL)
+	return w
+}
+
+func (f *uiGrantFixture) fetchBundleTo(w http.ResponseWriter, rawURL string) {
 	// A <script src> carries no Authorization; nothing else identifies it.
 	r := httptest.NewRequest(http.MethodGet, rawURL, nil)
 	f.ui.ServeHTTP(w, r)
-	return w
 }
 
 // The whole path, end to end: an org member obtains a grant, the URL it names
@@ -177,7 +192,9 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	*f.edge = edgeUpstream{}
 	f.issuer.calls = 0
 
-	got := f.fetchBundle(grant.URL)
+	got := httptest.NewRecorder()
+	got.Header().Add("Set-Cookie", "hub-session=trusted; HttpOnly; Path=/")
+	f.fetchBundleTo(got, grant.URL)
 	if got.Code != http.StatusOK {
 		t.Fatalf("bundle status = %d, want 200 (body %q)", got.Code, got.Body.String())
 	}
@@ -206,6 +223,22 @@ func TestUIGrantLoadsOrgBundleOverItsEdge(t *testing.T) {
 	}
 	if !strings.HasPrefix(got.Header().Get("Content-Type"), "application/javascript") {
 		t.Errorf("Content-Type = %q, want the provider's", got.Header().Get("Content-Type"))
+	}
+	if got.Header().Get("ETag") != `"bundle-v1"` || got.Header().Get("Accept-Ranges") != "bytes" {
+		t.Errorf("asset validators/ranges = (%q, %q), want ETag and range metadata preserved", got.Header().Get("ETag"), got.Header().Get("Accept-Ranges"))
+	}
+	if got.Header().Get("Content-Security-Policy") != orgProviderContentSecurityPolicy ||
+		got.Header().Get("X-Content-Type-Options") != "nosniff" || got.Header().Get("Referrer-Policy") != "no-referrer" {
+		t.Errorf("asset browser policy = CSP %q, X-Content-Type-Options %q, Referrer-Policy %q",
+			got.Header().Get("Content-Security-Policy"), got.Header().Get("X-Content-Type-Options"), got.Header().Get("Referrer-Policy"))
+	}
+	if cookies := got.Header().Values("Set-Cookie"); len(cookies) != 1 || cookies[0] != "hub-session=trusted; HttpOnly; Path=/" {
+		t.Errorf("asset Set-Cookie = %#v, want trusted Hub cookie only", cookies)
+	}
+	for _, name := range []string{"Access-Control-Allow-Origin", "Location", "WWW-Authenticate", "Trailer", "X-Provider-Trailer", "X-Provider-Late"} {
+		if got.Header().Get(name) != "" || got.Result().Trailer.Get(name) != "" {
+			t.Errorf("unsafe asset header %s leaked", name)
+		}
 	}
 }
 

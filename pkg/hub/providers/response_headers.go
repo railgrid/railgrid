@@ -24,12 +24,13 @@ import (
 
 const orgProviderContentSecurityPolicy = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
-// CopyOrgProviderResponseHeaders copies the small set of response headers the
-// hub preserves on the org-owned provider custom-subresource relay. src must be
-// a private upstream header map; dst may already contain headers installed by
-// trusted outer hub middleware, which are left in place unless one of the
-// explicitly copied or forced headers below replaces it. The ordinary provider
-// backend proxy carries OAuth and MCP protocol headers without this filter.
+// CopyOrgProviderResponseHeaders copies the common response headers the hub
+// preserves for organization-owned providers. src must be a private upstream
+// header map; dst may already contain headers installed by trusted outer hub
+// middleware, which are left in place unless one of the explicitly copied or
+// forced headers below replaces it. OAuth and MCP headers are added separately
+// by the ordinary backend proxy; the custom-subresource relay applies stricter
+// rules to them.
 //
 // In particular, upstream cookies, browser policy, CORS, reporting, transport,
 // and trailer headers are never copied. The forced policy also makes direct
@@ -56,11 +57,40 @@ func CopyOrgProviderResponseHeaders(dst, src http.Header) {
 		if !ok || len(values) == 0 {
 			continue
 		}
-		dst[canonical] = append([]string(nil), values...)
+		dst[http.CanonicalHeaderKey(canonical)] = append([]string(nil), values...)
 	}
 	dst.Set("Cache-Control", "private, no-store")
 	dst.Set("X-Content-Type-Options", "nosniff")
 	dst.Set("Content-Security-Policy", orgProviderContentSecurityPolicy)
+}
+
+// CopyOrgProviderBackendProtocolHeaders preserves OAuth redirects and MCP
+// authentication metadata on their ordinary backend routes. The custom-
+// subresource relay uses stricter rules for both headers.
+func CopyOrgProviderBackendProtocolHeaders(dst, src http.Header, routePath string) {
+	if dst == nil {
+		return
+	}
+	if strings.HasPrefix(routePath, "/oauth/") {
+		if values := src.Values("Location"); len(values) != 0 {
+			dst[http.CanonicalHeaderKey("Location")] = append([]string(nil), values...)
+		}
+	}
+	if routePath == "/mcp" || routePath == "/mcp/sse" {
+		if values := src.Values("WWW-Authenticate"); len(values) != 0 {
+			dst[http.CanonicalHeaderKey("WWW-Authenticate")] = append([]string(nil), values...)
+		}
+	}
+}
+
+// CopyOrgProviderUIAssetResponseHeaders applies the common provider response
+// policy to an org-owned UI asset. Asset responses keep content metadata for
+// SRI, caching, and range requests, and always suppress external referrers.
+func CopyOrgProviderUIAssetResponseHeaders(dst, src http.Header) {
+	CopyOrgProviderResponseHeaders(dst, src)
+	if dst != nil {
+		dst.Set("Referrer-Policy", "no-referrer")
+	}
 }
 
 // copyOrgProviderLocation retains only same-origin redirect references. OAuth

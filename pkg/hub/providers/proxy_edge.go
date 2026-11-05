@@ -414,6 +414,16 @@ func (p *ProviderProxy) serveOverEdge(w http.ResponseWriter, r *http.Request, pr
 			http.Error(w, "provider upstream error", http.StatusBadGateway)
 		},
 	}
+	if prov.OrgUUID != "" {
+		// Org-owned backend responses cross the Hub origin. Keep only the
+		// platform-controlled response policy, while preserving the OAuth and
+		// MCP headers their ordinary backend routes need. The provider relay
+		// path applies a stricter policy to custom subresources.
+		rp.ModifyResponse = func(resp *http.Response) error {
+			return orgProviderBackendModifyResponse(resp, r.Header, rest)
+		}
+		w = newOrgProviderResponseWriter(w)
+	}
 	p.log.V(4).Info("forwarding provider request over edge",
 		"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "path", dst.Path)
 	rp.ServeHTTP(w, r)

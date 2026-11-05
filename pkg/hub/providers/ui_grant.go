@@ -352,12 +352,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 			setDelegatedUpstreamAuthorization(req.Header, token)
 		},
 		ModifyResponse: func(resp *http.Response) error {
-			// The URL carries a grant, so a shared cache must never keep this
-			// response: after expiry the cached copy would answer a URL the
-			// hub no longer would.
-			resp.Header.Set("Cache-Control", "private, no-store")
-			resp.Header.Set("Referrer-Policy", "no-referrer")
-			return nil
+			return orgProviderUIAssetModifyResponse(resp, r.Header)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			p.log.Error(err, "edge upstream error serving provider UI asset",
@@ -367,7 +362,7 @@ func (p *ProviderProxy) serveOrgUIAsset(w http.ResponseWriter, r *http.Request, 
 	}
 	p.log.V(4).Info("forwarding provider UI asset over edge",
 		"provider", prov.Name, "org", prov.OrgUUID, "edge", hop.route.EdgeName, "path", dst.Path)
-	rp.ServeHTTP(w, r)
+	rp.ServeHTTP(newOrgProviderResponseWriter(w), r)
 }
 
 // UIGrantHandler serves POST /api/providers/{name}/ui-grant. It is built

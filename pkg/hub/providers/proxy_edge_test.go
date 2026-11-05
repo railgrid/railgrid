@@ -13,8 +13,12 @@ package providers
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
+	"net/textproto"
 	"net/url"
 	"strings"
 	"sync"
@@ -53,13 +57,17 @@ type edgeUpstream struct {
 	responseMu      sync.RWMutex
 	responseStatus  int
 	responseHeaders http.Header
+	responseBody    string
+	earlyHints      bool
 }
 
-func (u *edgeUpstream) setResponse(status int, headers http.Header) {
+func (u *edgeUpstream) setResponse(status int, headers http.Header, body string, earlyHints ...bool) {
 	u.responseMu.Lock()
 	defer u.responseMu.Unlock()
 	u.responseStatus = status
 	u.responseHeaders = headers.Clone()
+	u.responseBody = body
+	u.earlyHints = len(earlyHints) > 0 && earlyHints[0]
 }
 
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
@@ -106,7 +114,13 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		rec.responseMu.RLock()
 		responseStatus := rec.responseStatus
 		responseHeaders := rec.responseHeaders.Clone()
+		responseBody := rec.responseBody
+		earlyHints := rec.earlyHints
 		rec.responseMu.RUnlock()
+		if strings.EqualFold(r.Header.Get("Upgrade"), "relay-test") {
+			serveProviderTestUpgrade(w)
+			return
+		}
 		for key, values := range responseHeaders {
 			for _, value := range values {
 				w.Header().Add(key, value)
@@ -115,7 +129,19 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		if responseStatus == 0 {
 			responseStatus = http.StatusOK
 		}
+		if earlyHints {
+			w.Header().Set("Link", "</provider>; rel=preload")
+			w.WriteHeader(http.StatusEarlyHints)
+			w.Header().Del("Link")
+		}
 		w.WriteHeader(responseStatus)
+		if responseBody != "" {
+			_, _ = w.Write([]byte(responseBody))
+		}
+		if responseHeaders.Get("Trailer") != "" {
+			w.Header().Set("X-Provider-Trailer", "upstream-trailer")
+			w.Header()[http.TrailerPrefix+"X-Provider-Late"] = []string{"late-trailer"}
+		}
 	}))
 	t.Cleanup(srv.Close)
 	// The recording server stands in for kcp's front door: the hop lands on
@@ -160,6 +186,23 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 	return proxy, rec
 }
 
+func serveProviderTestUpgrade(w http.ResponseWriter) {
+	conn, rw, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+	_, _ = fmt.Fprint(rw, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: relay-test\r\nSec-WebSocket-Accept: test-accept\r\nSet-Cookie: provider-session=secret; Path=/\r\nAccess-Control-Allow-Origin: *\r\nContent-Security-Policy: default-src https:\r\n\r\n")
+	if err := rw.Flush(); err != nil {
+		return
+	}
+	data := make([]byte, 4)
+	if _, err := io.ReadFull(rw, data); err == nil {
+		_, _ = conn.Write(data)
+	}
+}
+
 // testClusterResolver stands in for the hub's LogicalCluster lookup: a
 // deterministic, recognisable ID per workspace path, so a test can tell the
 // ID apart from the path it was derived from.
@@ -177,10 +220,14 @@ func testClusterIDFor(tenantPath string) string {
 // serveProxy sends an authenticated request, the way the portal does.
 func serveProxy(p *ProviderProxy, path string) *httptest.ResponseRecorder {
 	w := httptest.NewRecorder()
+	serveProxyRequest(p, w, path)
+	return w
+}
+
+func serveProxyRequest(p *ProviderProxy, w http.ResponseWriter, path string) {
 	r := httptest.NewRequest(http.MethodGet, path, nil)
 	r.Header.Set("Authorization", "Bearer "+callerBearer)
 	p.ServeHTTP(w, r)
-	return w
 }
 
 // The behaviour this whole path exists for: a member of an Org that self-hosts
@@ -207,12 +254,23 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	}
 }
 
-func TestBackendProxyPreservesOAuthRedirectAndMCPMetadata(t *testing.T) {
+func TestBackendProxySanitizesOrgProviderResponsesAndPreservesOAuthMCP(t *testing.T) {
+	unsafeHeaders := func() http.Header {
+		return http.Header{
+			"Set-Cookie":                  {"provider-secret=bad; Path=/"},
+			"Access-Control-Allow-Origin": {"*"},
+			"Content-Security-Policy":     {"default-src https:"},
+			"Cache-Control":               {"public"},
+			"X-Content-Type-Options":      {"unsafe"},
+			"Content-Type":                {"application/json"},
+			"Trailer":                     {"X-Provider-Trailer"},
+		}
+	}
 	for _, test := range []struct {
 		name       string
 		path       string
 		status     int
-		headers    http.Header
+		protocol   http.Header
 		wantStatus int
 		wantLoc    string
 		wantAuth   string
@@ -221,7 +279,7 @@ func TestBackendProxyPreservesOAuthRedirectAndMCPMetadata(t *testing.T) {
 			name:       "OAuth external redirect",
 			path:       "/services/providers/infrastructure/oauth/authorize",
 			status:     http.StatusFound,
-			headers:    http.Header{"Location": {"https://login.example/authorize?client_id=railgrid"}},
+			protocol:   http.Header{"Location": {"https://login.example/authorize?client_id=railgrid"}},
 			wantStatus: http.StatusFound,
 			wantLoc:    "https://login.example/authorize?client_id=railgrid",
 		},
@@ -229,15 +287,21 @@ func TestBackendProxyPreservesOAuthRedirectAndMCPMetadata(t *testing.T) {
 			name:       "MCP protected resource metadata",
 			path:       "/services/providers/infrastructure/mcp",
 			status:     http.StatusUnauthorized,
-			headers:    http.Header{"WWW-Authenticate": {`Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`}},
+			protocol:   http.Header{"WWW-Authenticate": {`Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`}},
 			wantStatus: http.StatusUnauthorized,
 			wantAuth:   `Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			proxy, upstream := newEdgeBackedProxy(t, testOrg)
-			upstream.setResponse(test.status, test.headers)
-			response := serveProxy(proxy, test.path)
+			headers := unsafeHeaders()
+			for key, values := range test.protocol {
+				headers[key] = append([]string(nil), values...)
+			}
+			upstream.setResponse(test.status, headers, "org provider response")
+			response := httptest.NewRecorder()
+			response.Header().Add("Set-Cookie", "host-session=trusted; Path=/")
+			serveProxyRequest(proxy, response, test.path)
 			if response.Code != test.wantStatus {
 				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
 			}
@@ -247,7 +311,147 @@ func TestBackendProxyPreservesOAuthRedirectAndMCPMetadata(t *testing.T) {
 			if got := response.Header().Get("WWW-Authenticate"); got != test.wantAuth {
 				t.Errorf("WWW-Authenticate = %q, want %q", got, test.wantAuth)
 			}
+			if got, want := response.Header().Values("Set-Cookie"), []string{"host-session=trusted; Path=/"}; len(got) != 1 || got[0] != want[0] {
+				t.Errorf("Set-Cookie = %#v, want trusted outer cookie only", got)
+			}
+			for _, header := range []string{"Access-Control-Allow-Origin", "Trailer", "X-Provider-Trailer", "X-Provider-Late"} {
+				if response.Header().Get(header) != "" || response.Result().Trailer.Get(header) != "" {
+					t.Errorf("unsafe upstream header %s leaked", header)
+				}
+			}
+			for header, want := range map[string]string{
+				"Content-Security-Policy": orgProviderContentSecurityPolicy,
+				"Cache-Control":           "private, no-store",
+				"X-Content-Type-Options":  "nosniff",
+			} {
+				if got := response.Header().Get(header); got != want {
+					t.Errorf("%s = %q, want %q", header, got, want)
+				}
+			}
+			if got := response.Body.String(); got != "org provider response" {
+				t.Errorf("body = %q, want provider response", got)
+			}
 		})
+	}
+}
+
+func TestPlatformProviderResponseHeadersRemainUnchanged(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Set-Cookie", "platform-session=preserved; Path=/")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Content-Security-Policy", "default-src https:")
+		w.Header().Set("Location", "https://login.example/authorize")
+		w.Header().Set("WWW-Authenticate", `Basic realm="platform"`)
+		w.WriteHeader(http.StatusFound)
+	}))
+	t.Cleanup(upstream.Close)
+	target, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	registry.Upsert(Provider{Name: "infrastructure", BackendURL: target, EndpointsValid: true})
+	proxy := NewBackendProxy(registry, logr.Discard())
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/services/providers/infrastructure/oauth/authorize", nil)
+	proxy.ServeHTTP(response, request)
+	if response.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302", response.Code)
+	}
+	for header, want := range map[string]string{
+		"Set-Cookie":                  "platform-session=preserved; Path=/",
+		"Access-Control-Allow-Origin": "*",
+		"Content-Security-Policy":     "default-src https:",
+		"Location":                    "https://login.example/authorize",
+		"WWW-Authenticate":            `Basic realm="platform"`,
+	} {
+		if got := response.Header().Get(header); got != want {
+			t.Errorf("%s = %q, want %q", header, got, want)
+		}
+	}
+}
+
+func TestBackendProxyOrgUpgradeFiltersHeadersAndKeepsDuplexStream(t *testing.T) {
+	proxy, _ := newEdgeBackedProxy(t, testOrg)
+	frontend := httptest.NewServer(proxy)
+	t.Cleanup(frontend.Close)
+	request, err := http.NewRequest(http.MethodGet, frontend.URL+"/services/providers/infrastructure/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+callerBearer)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "relay-test")
+	transport := &http.Transport{ResponseHeaderTimeout: 3 * time.Second}
+	t.Cleanup(transport.CloseIdleConnections)
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", response.StatusCode)
+	}
+	if response.Header.Get("Set-Cookie") != "" || response.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unsafe upgrade headers escaped: %#v", response.Header)
+	}
+	if response.Header.Get("Content-Security-Policy") != orgProviderContentSecurityPolicy {
+		t.Errorf("CSP = %q, want forced policy", response.Header.Get("Content-Security-Policy"))
+	}
+	stream, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		t.Fatal("upgrade lost duplex stream")
+	}
+	if _, err := stream.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(stream, reply); err != nil || string(reply) != "ping" {
+		t.Fatalf("upgrade echo %q: %v", reply, err)
+	}
+}
+
+func TestBackendProxyOrgSuppressesInformationalAndTrailerHeadersOverSocket(t *testing.T) {
+	proxy, upstream := newEdgeBackedProxy(t, testOrg)
+	upstream.setResponse(http.StatusOK, http.Header{
+		"Set-Cookie":                  {"provider-session=secret; Path=/"},
+		"Content-Security-Policy":     {"default-src https:"},
+		"Cache-Control":               {"public"},
+		"X-Content-Type-Options":      {"unsafe"},
+		"Trailer":                     {"X-Provider-Trailer"},
+		"Content-Type":                {"text/plain"},
+		"Access-Control-Allow-Origin": {"*"},
+	}, "streamed response", true)
+	frontend := httptest.NewServer(proxy)
+	t.Cleanup(frontend.Close)
+	request, err := http.NewRequest(http.MethodGet, frontend.URL+"/services/providers/infrastructure/mcp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+callerBearer)
+	hints := 0
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		Got1xxResponse: func(int, textproto.MIMEHeader) error { hints++; return nil },
+	}))
+	response, err := (&http.Client{Timeout: 3 * time.Second}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusOK || string(body) != "streamed response" {
+		t.Fatalf("response %d %q: %v", response.StatusCode, body, readErr)
+	}
+	if hints != 0 {
+		t.Fatalf("forwarded %d informational responses", hints)
+	}
+	for _, name := range []string{"Set-Cookie", "Access-Control-Allow-Origin", "Link", "Trailer", "X-Provider-Trailer", "X-Provider-Late"} {
+		if response.Header.Get(name) != "" || response.Trailer.Get(name) != "" {
+			t.Errorf("unsafe upstream header %s leaked", name)
+		}
+	}
+	if response.Header.Get("Content-Security-Policy") != orgProviderContentSecurityPolicy || response.Header.Get("Cache-Control") != "private, no-store" || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("response policy was not forced: %#v", response.Header)
 	}
 }
 

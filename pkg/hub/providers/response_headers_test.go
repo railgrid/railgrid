@@ -30,6 +30,10 @@ func TestCopyOrgProviderResponseHeadersAllowlistAndForcedPolicy(t *testing.T) {
 	}
 	src := http.Header{
 		"cOnTeNt-TyPe":                        {"application/json"},
+		"Content-Encoding":                    {"gzip"},
+		"Content-Range":                       {"bytes 0-9/10"},
+		"Accept-Ranges":                       {"bytes"},
+		"ETag":                                {`"asset-v1"`},
 		"MCP-SESSION-ID":                      {"session-1"},
 		"mcp-protocol-version":                {"2025-06-18"},
 		"WWW-AUTHENTICATE":                    {"Basic realm=\"provider\""},
@@ -52,6 +56,10 @@ func TestCopyOrgProviderResponseHeadersAllowlistAndForcedPolicy(t *testing.T) {
 
 	for key, want := range map[string]string{
 		"Content-Type":                "application/json",
+		"Content-Encoding":            "gzip",
+		"Content-Range":               "bytes 0-9/10",
+		"Accept-Ranges":               "bytes",
+		"ETag":                        `"asset-v1"`,
 		"Mcp-Session-Id":              "session-1",
 		"Mcp-Protocol-Version":        "2025-06-18",
 		"Cache-Control":               "private, no-store",

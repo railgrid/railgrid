@@ -95,10 +95,18 @@ MCP, OAuth, UI assets, health and supported non-kube route classes keep the
 existing Hub-to-Edge routing. Scoped delegated credentials replace interactive
 user bearers before the Edge delivers requests to customer backends. UI asset
 grants are for assets only and do not grant arbitrary backend or kcp access.
-The response-header filter described for custom subresources does not apply to
-the ordinary `/services/providers/{name}/mcp` or
-`/services/providers/{name}/oauth/*` backend routes, so their MCP OAuth metadata
-challenges and external authorization redirects keep their existing behavior.
+Org-owned provider responses from ordinary backend routes, granted UI asset
+fetches, and Edge agent ingress use the Hub's response policy: upstream
+`Set-Cookie`, CORS, browser policy, interim 1xx responses, and trailers are not
+forwarded; the Hub forces its CSP and cache policy and sets `nosniff`. The
+ordinary `/services/providers/{name}/oauth/*` routes retain OAuth `Location`
+redirects, and `/services/providers/{name}/mcp` plus
+`/services/providers/{name}/mcp/sse` retain `WWW-Authenticate` metadata
+challenges. Granted UI assets also retain content
+metadata needed for SRI and range requests, with `Referrer-Policy: no-referrer`.
+Agent WebSocket upgrades keep their duplex stream. Custom subresources use a
+stricter policy that rejects external redirects and drops authentication
+challenges. Platform-owned providers keep their existing response behavior.
 
 The workspace's actual APIBinding selects a provider copy; catalog shadowing
 alone cannot switch an existing workspace from a platform to an organization
