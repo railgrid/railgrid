@@ -77,18 +77,41 @@ func approvalDisclosureAvailable(item store.InboxItem) bool {
 // remain available when the disclosure is unavailable so the user can stop the
 // requested action safely.
 func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id string, state store.InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (store.InboxItem, error) {
-	if state == store.InboxStateAnswered || len(answerPayload) > 0 {
-		if len(answerPayload) == 0 {
-			answerPayload = []map[string]any{{}}
-		}
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: answerPayload[0]})
-	}
-	if state != store.InboxStateApproved {
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
-	}
 	item, err := s.store.GetInboxItem(ctx, scope, id)
 	if err != nil {
 		return store.InboxItem{}, err
+	}
+	if item.Kind == store.InboxKindQuestion {
+		if state != store.InboxStateAnswered && state != store.InboxStateDenied {
+			return store.InboxItem{}, &requestError{code: http.StatusBadRequest, reason: "InvalidQuestionDecision", msg: "questions can only be answered or dismissed"}
+		}
+		payload := map[string]any{}
+		if len(answerPayload) > 0 {
+			payload = answerPayload[0]
+		}
+		resolved, err := s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: payload})
+		if state == store.InboxStateAnswered && errors.Is(err, store.ErrInboxAlreadyResolved) {
+			// The first request may have saved its reply without dispatching a
+			// resume. Use the saved reply if this exact question still parks
+			// the run. ClaimRun fences concurrent and delayed dispatches.
+			if saved, readErr := s.store.GetInboxItem(ctx, scope, id); readErr == nil && saved.State == store.InboxStateAnswered && saved.RunID != "" {
+				agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: saved.AgentName}
+				run, runErr := s.store.GetRun(ctx, agentScope, saved.RunID)
+				if runErr == nil && run.Phase == store.RunPhasePendingApproval && !run.CancelRequested {
+					var checkpoint runCheckpoint
+					if json.Unmarshal(run.Checkpoint, &checkpoint) == nil && checkpoint.InboxID == saved.ID {
+						return saved, nil
+					}
+				}
+			}
+		}
+		return resolved, err
+	}
+	if state == store.InboxStateAnswered {
+		return store.InboxItem{}, &requestError{code: http.StatusBadRequest, reason: "InvalidInboxDecision", msg: "only questions accept answers"}
+	}
+	if state != store.InboxStateApproved {
+		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
 	}
 	if item.Kind == store.InboxKindApproval && !approvalDisclosureAvailable(item) {
 		return store.InboxItem{}, &requestError{
@@ -166,9 +189,6 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var payload []map[string]any
-	if existing.Kind == store.InboxKindQuestion && state == store.InboxStateDenied {
-		payload = []map[string]any{{}}
-	}
 	if state == store.InboxStateAnswered && req.Answers == nil && strings.TrimSpace(req.Response) == "" {
 		writeStatus(w, http.StatusBadRequest, "BadRequest", "answer text is required")
 		return
@@ -209,7 +229,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
 		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
-		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, req.Response)
+		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, item.Response)
 	}
 	writeJSON(w, http.StatusOK, item)
 }

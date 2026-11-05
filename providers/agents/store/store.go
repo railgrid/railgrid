@@ -860,8 +860,9 @@ type Store interface {
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
 	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
-	// revive work after the cancel flag or terminal phase is recorded.
-	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
+	// revive work after the cancel flag or terminal phase is recorded. When
+	// supplied, inboxID must match the parked checkpoint atomically.
+	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
 	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
 	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)

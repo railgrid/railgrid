@@ -1063,7 +1063,7 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	return mutation.commit()
 }
 
-func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time) (Run, error) {
+func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time, inboxID ...string) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return Run{}, err
@@ -1073,11 +1073,15 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	if err := scope.validate(); err != nil {
 		return Run{}, err
 	}
-	res, err := mutation.executor.ExecContext(ctx, `
+	query := `
 		UPDATE agents_runs SET phase=$4, updated_at=$5, started_at=COALESCE(started_at, $5)
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`,
-		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(),
-		string(RunPhasePending), string(RunPhasePendingApproval))
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval)}
+	if len(inboxID) > 0 && inboxID[0] != "" {
+		query += " AND phase=$7 AND checkpoint->>'inboxID'=$8"
+		args = append(args, inboxID[0])
+	}
+	res, err := mutation.executor.ExecContext(ctx, query, args...)
 	if err != nil {
 		return Run{}, err
 	}

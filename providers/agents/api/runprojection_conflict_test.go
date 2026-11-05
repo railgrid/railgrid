@@ -364,12 +364,16 @@ func projectionConflict(id string) error {
 }
 
 func TestQuestionGroupResolution(t *testing.T) {
-	s, scope, _ := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
+	s, scope, run := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
 	item := store.InboxItem{
-		ID: "question-group", Kind: store.InboxKindQuestion, State: store.InboxStatePending,
+		ID: "question-group", AgentName: run.AgentName, RunID: run.ID, Kind: store.InboxKindQuestion, State: store.InboxStatePending,
 		Payload: map[string]any{"questions": []map[string]any{
 			{"id": "a", "prompt": "Where?"}, {"id": "b", "prompt": "Who?"}, {"id": "c", "prompt": "When?"},
 		}},
+	}
+	run.Checkpoint = []byte(`{"inboxID":"question-group"}`)
+	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
 	}
 	if err := s.store.AddInboxItem(t.Context(), scope, item); err != nil {
 		t.Fatal(err)
@@ -383,8 +387,22 @@ func TestQuestionGroupResolution(t *testing.T) {
 	if err != nil || resolved.Response != response || resolved.Payload["answers"] == nil {
 		t.Fatalf("resolved = %+v, err = %v", resolved, err)
 	}
-	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); err == nil {
-		t.Fatal("duplicate reply accepted")
+	retry, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now())
+	if err != nil || retry.Response != response {
+		t.Fatalf("retry did not return the original reply: %+v, %v", retry, err)
+	}
+	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateDenied, "via channel", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("late channel dismissal: %v", err)
+	}
+	run.Checkpoint = []byte(`{"inboxID":"next-question"}`)
+	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "retry", time.Now(), item.ID); err == nil {
+		t.Fatal("stale answer claimed a different checkpoint")
+	}
+	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("stale reply retry: %v", err)
 	}
 	delete(answers, "b")
 	answers["wrong"] = nil
@@ -401,7 +419,7 @@ type answerDuringCleanupStore struct {
 func (s answerDuringCleanupStore) GetInboxItem(ctx context.Context, scope store.Scope, id string) (store.InboxItem, error) {
 	item, err := s.Store.GetInboxItem(ctx, scope, id)
 	if err == nil {
-		_, answerErr := s.Store.ResolveInboxItem(ctx, scope, id, store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
+		_, answerErr := s.ResolveInboxItem(ctx, scope, id, store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
 			QuestionPayload: map[string]any{"answers": map[string]string{"a": "User reply"}},
 		})
 		if answerErr != nil {

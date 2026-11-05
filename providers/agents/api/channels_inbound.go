@@ -402,7 +402,7 @@ func (s *Server) channelCommand(ctx context.Context, scope store.Scope, dyn dyna
 		s.events.publish(wsScope, "inbox", map[string]any{
 			"id": resolved.ID, "state": string(resolved.State), "agent": resolved.AgentName, "runID": resolved.RunID,
 		})
-		return "💬 Answered: " + safeTruncate(item.Prompt, 300) + resume(resolved, store.InboxStateAnswered, answer), true
+		return "💬 Answered: " + safeTruncate(item.Prompt, 300) + resume(resolved, store.InboxStateAnswered, resolved.Response), true
 	}
 	return "", false
 }

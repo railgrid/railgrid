@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"sort"
@@ -1010,7 +1011,7 @@ func (m *MemoryStore) GetRun(_ context.Context, scope Scope, id string) (Run, er
 	return run, nil
 }
 
-func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time) (Run, error) {
+func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1025,6 +1026,14 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	}
 	if run.CancelRequested || (run.Phase != RunPhasePending && run.Phase != RunPhasePendingApproval) {
 		return Run{}, fmt.Errorf("run %q is no longer resumable", id)
+	}
+	if len(inboxID) > 0 && inboxID[0] != "" {
+		var checkpoint struct {
+			InboxID string `json:"inboxID"`
+		}
+		if run.Phase != RunPhasePendingApproval || json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != inboxID[0] {
+			return Run{}, fmt.Errorf("run %q is no longer parked on this inbox item", id)
+		}
 	}
 	run.Phase = RunPhaseRunning
 	run.UpdatedAt = now.UTC()

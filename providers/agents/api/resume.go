@@ -89,6 +89,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
 		return
 	}
+	if intent.InboxItem.ID != "" && intent.InboxItem.ID != ck.InboxID {
+		return
+	}
 	startedAt := run.CreatedAt
 	if run.StartedAt != nil {
 		startedAt = *run.StartedAt
@@ -106,7 +109,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		claimed = run
 	} else {
 		var claimErr error
-		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC())
+		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
 			return
