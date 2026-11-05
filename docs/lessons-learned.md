@@ -84,7 +84,8 @@ hundreds; awkward at tens of thousands. (`organizations.md` O-3,
 ### 6. When RBAC and admission can't express a rule, the rule moves to the network — and forks your API in two.
 
 "No APIBindings may exist in an org workspace" had no clean kcp expression,
-so org workspaces became hub-mediated only: the proxy refuses to serve them.
+so org workspaces became hub-mediated only: at first the hub proxy refused to
+serve them; today no tenant RBAC is written there, so kcp refuses them itself.
 The price is a parallel REST surface for membership/catalog/workspace CRUD
 and a permanently two-column capability table ("Hub-API" vs "Direct-kcp").
 (`organizations.md` O-10)

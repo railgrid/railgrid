@@ -31,7 +31,7 @@ import (
 // User lookup, which is exactly the brute-force path under test.
 func newTokenLoginProxy(t *testing.T) *KCPProxy {
 	t.Helper()
-	p, err := NewKCPProxy(&rest.Config{Host: "https://127.0.0.1:1"}, nil, nil, nil, []string{"the-real-token"}, "https://hub.example", false)
+	p, err := NewKCPProxy(&rest.Config{Host: "https://127.0.0.1:1"}, nil, nil, []string{"the-real-token"}, "https://hub.example", false)
 	if err != nil {
 		t.Fatal(err)
 	}
