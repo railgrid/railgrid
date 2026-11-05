@@ -319,6 +319,10 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 		}
 		if selector != nil {
 			claim["selector"] = selector
+		} else {
+			// KCP requires a selector on every accepted claim; matchAll here
+			// mirrors the export's selector-free requirements.
+			claim["selector"] = map[string]any{"matchAll": true}
 		}
 		return claim
 	}

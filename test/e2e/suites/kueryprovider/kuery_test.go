@@ -41,6 +41,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
 
+	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
@@ -568,6 +569,11 @@ func TestEDeletedRoutesAreGone(t *testing.T) {
 // shard never forwards one.
 func TestFQueryVerbGates(t *testing.T) {
 	cluster := loginStaticTokenAndGetCluster(t)
+	// Bind Kuery into the caller's workspace through the Hub first. Without
+	// that normal activation flow, kcp correctly rejects savedviews/run at the
+	// API boundary, so the missing-view assertion would never exercise the
+	// provider's Gate response.
+	enableKueryTenant(t, kcpDynamic(t, cluster, staticToken))
 	const body = `{"input":{}}`
 
 	t.Run("no bearer on the front door is refused", func(t *testing.T) {
@@ -578,9 +584,9 @@ func TestFQueryVerbGates(t *testing.T) {
 	})
 
 	t.Run("a view that does not exist is 404, not 403", func(t *testing.T) {
-		// kcp authorized the verb (the caller administers this workspace) and
-		// forwarded; the provider's gate finds no such view and says so with
-		// the contract's non-disclosing status.
+		// kcp authorized the verb because Kuery was enabled above and forwarded;
+		// the provider's gate finds no such view and says so with the contract's
+		// non-disclosing status.
 		status, out := hubPost(t, runPath(cluster, "no-such-view"), body, staticToken)
 		if status != http.StatusNotFound {
 			t.Errorf("missing view = %d, want 404; body=%s", status, truncate(out))
@@ -670,17 +676,40 @@ func TestGReadyzReportsVirtualWorkspaceReachability(t *testing.T) {
 	}
 }
 
-// TestGTenantEnableAndSavedViewUsable binds the kuery APIExport into the
-// tenant workspace and round-trips a SavedView, which is the whole point of
-// the export: a tenant can persist a query without the provider proxying it.
-func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
-	tenantWS := loginStaticTokenAndGetCluster(t)
-	t.Logf("tenant workspace = %s", tenantWS)
-	tenant := kcpDynamic(t, tenantWS, staticToken)
+// enableKueryTenant provisions the requirementless edges API-only stand-in
+// and enables kuery with its declared SubjectAccessReview claim accepted.
+func enableKueryTenant(t *testing.T, tenant dynamic.Interface) {
+	t.Helper()
+	// Several tests use the same static-token workspace. Reuse its already
+	// valid binding instead of cycling the APIBinding through deletion and
+	// creation between tests; kcp removes the exported API asynchronously.
+	expectedClaimStates := map[string]string{
+		"authorization.k8s.io/subjectaccessreviews": "Accepted",
+		"edges.railgrid.ai/kubernetesclusters":      "Rejected",
+		"edges.railgrid.ai/kubernetesclusters/k8s":  "Rejected",
+	}
+	if binding, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "kuery", metav1.GetOptions{}); err == nil {
+		claimStates := map[string]string{}
+		claims, _, _ := unstructured.NestedSlice(binding.Object, "spec", "permissionClaims")
+		for _, raw := range claims {
+			claim, _ := raw.(map[string]any)
+			group, _ := claim["group"].(string)
+			resource, _ := claim["resource"].(string)
+			state, _ := claim["state"].(string)
+			claimStates[group+"/"+resource] = state
+		}
+		if !reflect.DeepEqual(claimStates, expectedClaimStates) {
+			t.Fatalf("existing kuery binding claims = %v, want %v", claimStates, expectedClaimStates)
+		}
+		waitKueryBindingReady(t, tenant)
+		return
+	} else if !apierrors.IsNotFound(err) {
+		t.Fatalf("read existing kuery APIBinding: %v", err)
+	}
 
 	// Kuery declares edges as a dependency, so enable the API-only edges
-	// stand-in first. This test declines the edges compositions: its SavedView
-	// round-trip exercises kuery's own API and needs no edge access. The
+	// stand-in first. These tests decline the edges compositions: their SavedView
+	// coverage exercises kuery's own API and needs no edge access. The
 	// stand-in's APIExport has no permissionClaims, so its Enable accepts none.
 	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "kuery")
 	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
@@ -699,25 +728,31 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
 	}, nil)
 
-	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
+	waitKueryBindingReady(t, tenant)
+}
+
+func waitKueryBindingReady(t *testing.T, tenant dynamic.Interface) {
+	t.Helper()
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
 		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "kuery", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
-		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
-		claimsValid := false
-		for _, raw := range conditions {
-			condition, _ := raw.(map[string]any)
-			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
-				claimsValid = true
-			}
-		}
-		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
-	})
-	if !ok {
-		t.Fatal("APIBinding never reached Bound with valid permission claims")
+		return hubproviders.BindingReadiness(got)
+	}) {
+		t.Fatal("Kuery APIBinding never reached ready state with valid permission claims")
 	}
+}
+
+// TestGTenantEnableAndSavedViewUsable binds the kuery APIExport into the
+// tenant workspace and round-trips a SavedView, which is the whole point of
+// the export: a tenant can persist a query without the provider proxying it.
+func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
+	tenantWS := loginStaticTokenAndGetCluster(t)
+	t.Logf("tenant workspace = %s", tenantWS)
+	tenant := kcpDynamic(t, tenantWS, staticToken)
+	enableKueryTenant(t, tenant)
+
 	gotBinding, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "kuery", metav1.GetOptions{})
 	if err != nil {
 		t.Fatalf("read kuery APIBinding claims: %v", err)
@@ -809,25 +844,90 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 	}
 }
 
-// TestHTenantDisableRemovesSavedView asserts Hub Disable takes the tenant's
-// kuery API surface with it, so Disable really revokes access.
+// TestHTenantDisableRemovesSavedView asserts Hub Disable removes the binding
+// and API from the workspace and the tenant cannot read a SavedView afterward.
 func TestHTenantDisableRemovesSavedView(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
+	adminTenant := kcpDynamic(t, tenantWS, adminToken)
+	enableKueryTenant(t, tenant)
+
+	const savedViewName = "e2e-disable"
+	sv := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "kuery.providers.railgrid.ai/v1alpha1",
+		"kind":       "SavedView",
+		"metadata":   map[string]any{"name": savedViewName},
+		"spec": map[string]any{
+			"displayName": "disable contract",
+			"query": map[string]any{
+				"maxDepth": int64(1),
+				"filter":   map[string]any{},
+				"objects":  map[string]any{"cluster": true},
+			},
+		},
+	}}
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+		_, err := tenant.Resource(savedViewGVR).Create(ctxWithTimeout(t, 5*time.Second), sv, metav1.CreateOptions{})
+		if err == nil || apierrors.IsAlreadyExists(err) {
+			return true, "SavedView created"
+		}
+		return false, err.Error()
+	}) {
+		t.Fatal("could not create SavedView before Disable")
+	}
 
 	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "kuery")
 
-	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
-		_, err := tenant.Resource(savedViewGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
-		if err == nil {
-			return false, "savedviews still served"
+	// kcp removes the APIBinding asynchronously. Verify that independently with
+	// the suite's kcp-admin credential before probing what the tenant can read.
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "kuery", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return true, "APIBinding removed"
 		}
-		// Once the binding is gone the API disappears entirely.
-		return apierrors.IsNotFound(err) || meta.IsNoMatchError(err), err.Error()
-	})
-	if !ok {
-		t.Error("savedviews API still served after the APIBinding was deleted")
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "kuery APIBinding still exists"
+	}) {
+		t.Fatal("kuery APIBinding still exists after Disable")
 	}
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(savedViewGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return true, "SavedView API is no longer served"
+		}
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "SavedView API still served to kcp admin"
+	}) {
+		t.Fatal("SavedView API remained served after the kuery APIBinding was removed")
+	}
+
+	assertUnavailable := func(operation string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("tenant %s unexpectedly succeeded after Disable; SavedView data must not be readable", operation)
+		}
+		if !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			t.Fatalf("tenant %s returned unexpected error after Disable: %v", operation, err)
+		}
+	}
+	got, err := tenant.Resource(savedViewGVR).Get(ctxWithTimeout(t, 5*time.Second), savedViewName, metav1.GetOptions{})
+	if err == nil && got != nil {
+		t.Fatalf("tenant read SavedView after Disable returned data: %v", got.Object)
+	}
+	assertUnavailable("get SavedView", err)
+	list, err := tenant.Resource(savedViewGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
+	if err == nil && list != nil {
+		for _, item := range list.Items {
+			if item.GetName() == savedViewName {
+				t.Fatalf("tenant list returned SavedView %q after Disable: %v", savedViewName, item.Object)
+			}
+		}
+	}
+	assertUnavailable("list SavedViews", err)
 	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
 }
 
