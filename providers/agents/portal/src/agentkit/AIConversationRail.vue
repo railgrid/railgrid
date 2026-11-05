@@ -16,6 +16,7 @@ import {
   Mail,
   MailOpen,
   MessageSquare,
+  Pencil,
   Pin,
   PinOff,
   Plus,
@@ -65,6 +66,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   select: [threadID: string]
   create: []
+  rename: [threadID: string]
   archive: [threadID: string]
   togglePin: [threadID: string]
   setUnread: [threadID: string, unread: boolean]
@@ -118,6 +120,7 @@ const layoutWidth = computed(() => (
 const railStyle = computed(() => ({ '--k-ai-conversation-rail-width': `${effectiveWidth.value}px` }))
 const capabilities = computed(() => ({
   create: props.capabilities.create === true,
+  rename: props.capabilities.rename === true,
   pin: props.capabilities.pin === true,
   unread: props.capabilities.unread === true,
   archive: props.capabilities.archive === true,
@@ -450,6 +453,15 @@ function archiveThread(threadID: string): void {
   closeContextMenu(true)
 }
 
+function renameThread(threadID: string): void {
+  if (!capabilities.value.rename || props.disabled || props.busy || props.actioningThreadID) return
+  if (props.threads.find(thread => thread.id === threadID)?.renameDisabledReason) return
+  const returnFocus = contextMenuReturnFocus.value
+  closeContextMenu()
+  returnFocus?.focus()
+  emit('rename', threadID)
+}
+
 function deleteThread(threadID: string): void {
   if (!capabilities.value.delete || props.disabled || props.busy || props.actioningThreadID) return
   emit('delete', threadID)
@@ -486,7 +498,7 @@ function showContextMenu(threadID: string, left: number, top: number, returnFocu
 }
 
 function openContextMenu(event: MouseEvent, threadID: string): void {
-  if (!capabilities.value.pin && !capabilities.value.unread && !capabilities.value.archive && !capabilities.value.delete) return
+  if (!capabilities.value.rename && !capabilities.value.pin && !capabilities.value.unread && !capabilities.value.archive && !capabilities.value.delete) return
   const currentTarget = event.currentTarget
   const returnFocus = currentTarget instanceof HTMLButtonElement
     ? currentTarget
@@ -777,6 +789,10 @@ defineExpose({
       @keydown="handleContextMenuKeydown"
       @keydown.esc.stop.prevent="closeContextMenu(true)"
     >
+      <button v-if="capabilities.rename" type="button" role="menuitem" data-menu-index="4" class="k-menu-item k-ai-conversation-rail__menu-item" :tabindex="contextMenuActiveIndex === 4 ? 0 : -1" @focus="contextMenuActiveIndex = 4" :title="contextMenuThread.renameDisabledReason" :disabled="disabled || busy || Boolean(actioningThreadID) || Boolean(contextMenuThread.renameDisabledReason)" @click="renameThread(contextMenuThread.id)">
+        <Pencil :stroke-width="1.75" aria-hidden="true" />
+        Rename
+      </button>
       <button v-if="capabilities.pin" type="button" role="menuitem" data-menu-index="0" class="k-menu-item k-ai-conversation-rail__menu-item" :tabindex="contextMenuActiveIndex === 0 ? 0 : -1" @focus="contextMenuActiveIndex = 0" @click="togglePin(contextMenuThread.id)">
         <PinOff v-if="pinnedThreadIDSet.has(contextMenuThread.id)" :stroke-width="1.75" aria-hidden="true" />
         <Pin v-else :stroke-width="1.75" aria-hidden="true" />
@@ -792,7 +808,7 @@ defineExpose({
         <Archive :stroke-width="1.75" aria-hidden="true" />
         {{ labels.archiveMenu }}
       </button>
-      <div v-if="capabilities.delete && (capabilities.pin || capabilities.unread || capabilities.archive)" class="k-menu-sep k-ai-conversation-rail__menu-divider" role="separator" aria-hidden="true" />
+      <div v-if="capabilities.delete && (capabilities.rename || capabilities.pin || capabilities.unread || capabilities.archive)" class="k-menu-sep k-ai-conversation-rail__menu-divider" role="separator" aria-hidden="true" />
       <button v-if="capabilities.delete" type="button" role="menuitem" data-menu-index="3" class="k-menu-item k-ai-conversation-rail__menu-item k-ai-conversation-rail__menu-item--danger" :tabindex="contextMenuActiveIndex === 3 ? 0 : -1" @focus="contextMenuActiveIndex = 3" :disabled="disabled || busy || Boolean(actioningThreadID)" @click="deleteThread(contextMenuThread.id)">
         <Trash2 :stroke-width="1.75" aria-hidden="true" />
         {{ deleteLabel }}

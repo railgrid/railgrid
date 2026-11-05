@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import ChatTitleControl from '../components/ChatTitleControl.vue'
 import { computed, ref, watch } from 'vue'
 import { Bot, PanelRight, Trash2 } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
@@ -344,13 +345,13 @@ async function remove(): Promise<void> {
                   />
                   <span v-if="!overlay" class="k-ai-conversation-header__divider" aria-hidden="true" />
                 </template>
-                <template #heading="{ activeSessionLabel }">
+                <template #heading="{ titleControl }">
                   <AIConversationIdentity class="agents-agent-heading">
                     <template #icon>
                       <Bot :size="16" :stroke-width="1.75" aria-hidden="true" />
                     </template>
                     <template #title>
-                      <span :title="activeSessionLabel">{{ activeSessionLabel }}</span>
+                      <ChatTitleControl v-bind="titleControl" />
                     </template>
                     <template #context>
                       <h1 data-agent-workspace-title :title="title">{{ title }}</h1>
