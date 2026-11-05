@@ -3404,3 +3404,21 @@ it('shows the Railgrid user immediately while a no-email account waits for a cha
     await settle()
   }
 })
+
+it('renders saved user IDs and new pending messages with the same account email', async () => {
+  localStorage.setItem('railgrid:agents:session:org:ws:scout', 'sender-session')
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const { el } = await mountChat(scripted([], gate), {
+    context: () => ({ user: { email: 'alice@example.com', userId: 'user-alice' } }),
+    listMessagePage: () => Promise.resolve({ items: [{ id: 'saved', role: 'user', content: 'Earlier message', metadata: { actorID: 'user-alice' } }] }),
+  })
+  try {
+    expect(el.querySelector('.k-ai-message-author')?.textContent).toBe('alice@example.com')
+    await send(el, 'New message')
+    expect([...el.querySelectorAll('.k-ai-message-author')].map(node => node.textContent)).toEqual(['alice@example.com', 'alice@example.com'])
+  } finally {
+    release()
+    await settle()
+  }
+})

@@ -155,6 +155,7 @@ import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import { isValidTimestamp } from './agentkit/timestamp'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
+import { useUserLabels } from './portalkit/useUserLabels'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
@@ -651,6 +652,7 @@ let projectThumbnailLoadSerial = 0
 const providers = ref<ProviderItem[]>([])
 const selected = ref<Project | null>(null)
 const messages = ref<ProjectMessageView[]>([])
+const { userLabel } = useUserLabels(() => props.ctx)
 let suppressNextConversationAutoScroll = false
 const assistantThreads = ref<ProjectAssistantThread[]>([])
 const activeAssistantThreadID = ref('')
@@ -11440,7 +11442,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :turn-id="message.id"
               :role="message.role"
               :bubble="message.role === 'user' && userMessageHasVisibleContent(message)"
-              :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(message.actorID)}` : 'Assistant message'"
+              :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(userLabel(message.actorID))}` : 'Assistant message'"
             >
               <template v-if="message.role === 'user' && (assistantAttachmentsForMessage(message).length || assistantAnnotationsForMessage(message).length)" #before>
                 <AssistantMessageAttachments
@@ -11617,7 +11619,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <span class="max-w-24 truncate text-text-muted">{{ resource.resourceRef.kind }}</span>
                   </span>
                 </div>
-                <span class="k-ai-message-metadata k-ai-message-author">{{ formatAIMessageAuthor(message.actorID) }}</span>
+                <span class="k-ai-message-metadata k-ai-message-author">{{ formatAIMessageAuthor(userLabel(message.actorID)) }}</span>
                 <AITimestamp
                   v-if="isValidTimestamp(message.createdAt)"
                   :value="message.createdAt"

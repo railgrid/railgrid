@@ -5,6 +5,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch 
 import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type SessionModelPreferences } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
+import { useUserLabels } from '../portalkit/useUserLabels'
 import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
 import AIComposer from '../agentkit/AIComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
@@ -20,7 +21,7 @@ import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
 import { credentialUnavailable, agentHarnessBacked, agentModelCredential, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
-import { optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
+import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
 import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
@@ -72,6 +73,11 @@ const emit = defineEmits<{ navigate: [route: Route]; 'inspection-open': [open: b
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const runtime = useAgentsRuntime()
+const { userLabel } = useUserLabels(() => {
+  revision.value
+  runtime?.authorityEpoch.value
+  return props.api.context()
+})
 const inlineAppGeneration = ref(0)
 watch([() => props.store, () => props.api, () => props.name, () => runtime?.authorityEpoch.value], () => {
   clearArtifactState()
@@ -2426,6 +2432,7 @@ defineExpose({
               v-for="message in messages"
               :key="`${message.id}:${inlineAppGeneration}`"
               :message="message"
+              :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
               :session-i-d="sessionID"
               :load-inline-app="loadInlineApp"
               :inspected-artifact-receipt="inspectedArtifactReceipt"

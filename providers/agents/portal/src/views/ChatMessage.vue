@@ -36,6 +36,7 @@ import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presenta
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
+  authorLabel?: string
   sessionID?: string
   announce?: boolean
   approvalBusy?: 'approve' | 'deny' | 'answer'
@@ -55,6 +56,7 @@ const emit = defineEmits<{
   'open-saved-capture': [detail: { runID: string; sessionID: string; toolCallID: string; savedCapture: NonNullable<ToolCall['savedCapture']> }]
 }>()
 
+const messageAuthor = computed(() => props.authorLabel || formatAIMessageAuthor(props.message.actorID))
 const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
 const providerContextData = computed(() => {
   const data = userMessage.value.reference?.providerContext?.data
@@ -371,7 +373,7 @@ onBeforeUnmount(() => { mounted = false })
       :id="message.id"
       :role="message.role"
       :bubble="message.role === 'user'"
-      :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(message.actorID)}` : 'Assistant message'"
+      :aria-label="message.role === 'user' ? `Message from ${messageAuthor}` : 'Assistant message'"
     >
       <template v-if="failurePhase" #before>
         <RunFailureNotice
@@ -599,7 +601,7 @@ onBeforeUnmount(() => { mounted = false })
       <div v-if="message.usage" class="k-ai-message-metadata agents-turn-usage">
         {{ fmtTokens(message.usage.inputTokens) }} in · {{ fmtTokens(message.usage.outputTokens) }} out · {{ fmtUSD(message.usage.usdMicros) }}
       </div>
-      <span v-if="message.role === 'user'" class="k-ai-message-metadata k-ai-message-author">{{ formatAIMessageAuthor(message.actorID) }}</span>
+      <span v-if="message.role === 'user'" class="k-ai-message-metadata k-ai-message-author">{{ messageAuthor }}</span>
       <AITimestamp v-if="isValidTimestamp(messageCreatedAt)" :value="messageCreatedAt" />
     </template>
     </AIConversationTurn>
