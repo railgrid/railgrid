@@ -114,19 +114,26 @@ function focusIsInInboxDetail(active: Element | null): boolean {
 }
 
 watch([viewingInbox, pending], ([showing, items], [, previous]) => {
-  if (!showing || items.some(item => item.id === selectedInboxID.value)) return
-  const index = previous?.findIndex(item => item.id === selectedInboxID.value) ?? -1
+  if (!showing) return
+  const selectedID = selectedInboxID.value
+  const selectionRemoved = !items.some(item => item.id === selectedID)
+  const selectedIndex = previous?.findIndex(item => item.id === selectedID) ?? -1
+  if (selectionRemoved) {
+    selectedInboxID.value = items[Math.max(0, Math.min(selectedIndex, items.length - 1))]?.id ?? ''
+  }
+
   const active = document.activeElement
-  const focusedRow = inboxQueue.value?.querySelector('[aria-current="true"]')
-  const restoreFocus = index >= 0 && (focusIsInInboxDetail(active) || active === focusedRow)
-  const nextID = items[Math.max(0, Math.min(index, items.length - 1))]?.id ?? ''
-  selectedInboxID.value = nextID
-  if (!restoreFocus) return
+  const focusedID = active instanceof HTMLElement && inboxQueue.value?.contains(active) ? active.dataset.inboxId : undefined
+  const focusedIndex = focusedID ? previous?.findIndex(item => item.id === focusedID) ?? -1 : -1
+  const rowRemoved = focusedIndex >= 0 && !items.some(item => item.id === focusedID)
+  const detailRemoved = selectionRemoved && selectedIndex >= 0 && focusIsInInboxDetail(active)
+  if (!rowRemoved && !detailRemoved) return
+
   void nextTick(() => {
-    if (!viewingInbox.value || selectedInboxID.value !== nextID) return
-    if (document.activeElement !== active && document.activeElement !== document.body) return
-    const nextRow = inboxQueue.value?.querySelector<HTMLElement>('[aria-current="true"]')
-    const target = (active === focusedRow ? nextRow : inboxDetail.value) ?? inboxEmpty.value
+    if (!viewingInbox.value || (document.activeElement !== active && document.activeElement !== document.body)) return
+    const rows = inboxQueue.value?.querySelectorAll<HTMLButtonElement>('[data-inbox-id]')
+    const nextRow = rows?.[Math.min(focusedIndex, rows.length - 1)]
+    const target = (rowRemoved ? nextRow : inboxDetail.value) ?? inboxEmpty.value
     target?.focus()
   })
 }, { immediate: true })
@@ -276,6 +283,7 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: Ques
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
     if (!authorityIsCurrent(authority)) return
+    authority.store.acknowledgeInboxResolution(item.id)
     toast('ok', decision === 'answer' && answer === skippedQuestionResponse ? 'Question skipped.' : resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
@@ -459,6 +467,7 @@ onBeforeUnmount(() => {
                 <button
                   class="agents-inbox-row"
                   type="button"
+                  :data-inbox-id="item.id"
                   :aria-current="selectedInboxItem?.id === item.id ? 'true' : undefined"
                   @click="selectInboxItem(item.id)"
                 >

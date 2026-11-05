@@ -381,10 +381,11 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector<HTMLButtonElement>('button[aria-label="Refresh runs"]')?.disabled).toBe(false)
   })
 
-  it('selects the first approval in the detail pane and resolves it without leaving the inbox', async () => {
+  it('clears the last approval and moves focus even if the refresh fails or returns a stale row', async () => {
     const resolution = deferred<Record<string, never>>()
     const resolveInbox = vi.fn().mockImplementation(() => resolution.promise)
-    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const listInbox = vi.fn().mockRejectedValueOnce(new Error('Inbox unavailable'))
+    const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
     const store = makeStore(api)
     const item: InboxItem = {
       id: 'i1', agentName: 'scout', runID: 'r9', kind: 'approval', state: 'pending',
@@ -423,6 +424,47 @@ describe('Activity.vue', () => {
     await settleVue()
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
     expect(document.activeElement).toBe(view.element.querySelector('.agents-inbox-empty'))
+    expect(text(view.element.querySelector('.agents-state-error'))).toContain('Inbox unavailable')
+    listInbox.mockResolvedValueOnce([item])
+    await store.load('inbox')
+    await settleVue()
+    expect(view.element.querySelector('.agents-approval-actions')).toBeNull()
+    expect(view.element.querySelector('[data-k-tab-id="inbox"] .k-tab__count')?.textContent).toBe('0')
+    expect(resolveInbox).toHaveBeenCalledTimes(1)
+  })
+
+  it('restores focus when a nonselected mobile queue row disappears during a reply', async () => {
+    const decision = deferred<Record<string, never>>()
+    const resolveInbox = vi.fn(() => decision.promise)
+    const listInbox = vi.fn()
+    const api = stubApi({ listInbox, resolveInbox })
+    const store = makeStore(api)
+    const first: InboxItem = {
+      id: 'first', agentName: 'scout', kind: 'question', state: 'pending',
+      prompt: 'Which repository?', createdAt: new Date().toISOString(),
+    }
+    const second = { ...first, id: 'second', prompt: 'Which branch?' }
+    const third = { ...first, id: 'third', prompt: 'Which change?' }
+    Object.assign(store.inbox, { data: [first, second, third], loaded: true, hasSnapshot: true })
+    const view = await mount(Activity, { store, api })
+    await openInbox(view)
+    const skip = buttonWithText(view.element.querySelector('.agents-question-card')!, 'Skip')
+    skip.focus()
+    skip.click()
+    buttonWithText(view.element, 'All requests').click()
+    await settleVue()
+    const row = (id: string) => view.element.querySelector<HTMLButtonElement>(`[data-inbox-id="${id}"]`)!
+    row('second').focus()
+    listInbox.mockResolvedValueOnce([first, third]).mockResolvedValue([third])
+    await store.load('inbox')
+    await settleVue()
+    expect(document.activeElement).toBe(row('third'))
+    expect(row('first').getAttribute('aria-current')).toBe('true')
+
+    decision.resolve({})
+    await settleVue()
+    expect(document.activeElement).toBe(row('third'))
+    expect(row('third').getAttribute('aria-current')).toBe('true')
   })
 
   it('shows one bounded line of a long run input and discloses a longer cut on demand', async () => {
