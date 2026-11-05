@@ -1140,3 +1140,17 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
 
 .agents-model-recovery__review{padding:2px 0;min-height:28px;font-size:12px;line-height:16px;}
 @media(pointer:coarse),(any-pointer:coarse){.agents-model-recovery__review{min-height:44px;}}
+
+railgrid-provider-agents .agents-question-history summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+railgrid-provider-agents .agents-question-history dt {
+  font-weight: 600;
+  margin-block-start: 0.75rem;
+}
+railgrid-provider-agents .agents-question-history dd {
+  margin: 0.25rem 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

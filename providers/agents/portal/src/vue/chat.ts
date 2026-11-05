@@ -249,7 +249,7 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
     tools: [],
     runID: item.runID,
     ...(item.role === 'user' && typeof item.metadata?.actorID === 'string' ? { actorID: item.metadata.actorID } : {}),
-    ...(item.role === 'user' && typeof item.metadata?.questionPrompt === 'string' ? { questionPrompt: item.metadata.questionPrompt } : {}),
+    ...(item.role === 'user' && typeof item.metadata?.questionPrompt === 'string' ? { questionPrompt: item.metadata.questionPrompt, questions: item.metadata.questions, answers: item.metadata.answers } : {}),
     ...(item.createdAt ? { createdAt: item.createdAt } : {}),
     ...(progressFromMetadata(item.metadata) ? { progress: progressFromMetadata(item.metadata) } : {}),
   })

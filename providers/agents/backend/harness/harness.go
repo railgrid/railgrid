@@ -507,7 +507,7 @@ func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, 
 		// what resolves it is an answer rather than a verdict on a call.
 		return backend.Outcome{
 			Status: backend.StatusParked, Text: out.Summary.Text, Usage: usage,
-			Parked: &backend.Parked{Question: parked.Question.Text, State: raw},
+			Parked: &backend.Parked{Question: parked.Question.Text, Questions: parked.Question.Questions, State: raw},
 		}, nil
 	}
 	text := out.Summary.Text

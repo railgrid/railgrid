@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -49,7 +50,7 @@ interface RunStartedData { runID: string; sessionID?: string; status?: string; s
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
 interface ToolEndData extends ToolStartData { runID?: string; sessionID?: string; toolCallID?: string; result?: string; error?: string; durationMS?: number; sources?: unknown; savedCapture?: unknown; hasMcpApp?: boolean }
-interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
+interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; questions?: import('../types').AgentQuestion[]; content?: string; status?: string; startedAt?: string; durationMS?: number }
 interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
 interface DoneData {
   runID: string
@@ -1859,7 +1860,7 @@ async function send(): Promise<void> {
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
-            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question },
+            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question, questions: data.questions },
           })
           const hasClassifiedCommentary = Boolean(current?.progress?.trace.some(block => block.kind === 'commentary'))
           if (!hasClassifiedCommentary && data.content && !current?.content) {
@@ -1969,7 +1970,7 @@ async function stop(): Promise<void> {
   await cancelLiveRun(runID, session, name, api, controller)
 }
 
-async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<void> {
+async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: QuestionReply): Promise<void> {
   if (approvalBusy.value[inboxID]) return
   approvalBusy.value = { ...approvalBusy.value, [inboxID]: decision }
   const name = props.name
@@ -1984,7 +1985,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     Boolean(target) &&
     messages.value.some(message => message.id === target?.id && message.approval?.inboxID === inboxID)
   )
-  const showResolution = (resolved: 'approve' | 'deny' | 'answer', answer?: string, actorID?: string) => {
+  const showResolution = (resolved: 'approve' | 'deny' | 'answer', answer?: string, actorID?: string, answers?: import('../types').QuestionAnswers) => {
     const approval = target?.approval
     if (!target || !approval) return
     const content = resolved === 'answer' && pendingIsQuestion(approval) ? answer?.trim() : undefined
@@ -1993,7 +1994,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     if (!content || messages.value.some(message => message.id === id)) return
     messages.value.push({
       id, role: 'user', content, questionPrompt: approval.question ?? '',
-      runID: approval.runID, tools: [], actorID,
+      runID: approval.runID, tools: [], actorID, questions: approval.questions, answers,
     })
   }
   try {
@@ -2005,7 +2006,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       : api.resolveInbox(inboxID, decision, response))
     if (!requestIsCurrent()) return
     if (target?.approval) {
-      showResolution(decision, item?.response ?? response, optimisticAIMessageActor(api.context()?.user))
+      showResolution(decision, item?.response ?? (typeof response === 'string' ? response : undefined), optimisticAIMessageActor(api.context()?.user), item?.payload?.answers)
       void refreshRunApproval(target.approval.runID)
     }
     toast('ok', decision === 'answer'
@@ -2027,7 +2028,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
         ? 'approve'
         : inboxItem?.state === 'denied' ? 'deny' : inboxItem?.state === 'answered' ? 'answer' : undefined
       if (confirmedDecision && target?.approval) {
-        showResolution(confirmedDecision, inboxItem?.response)
+        showResolution(confirmedDecision, inboxItem?.response, undefined, inboxItem?.payload?.answers)
       }
       if (target?.approval?.runID) {
         await refreshRunApproval(target.approval.runID, false, true)
@@ -2248,6 +2249,10 @@ function onServerEvent(event: Event): void {
     const status = progressStatusForRunPhase(detail.data.phase)
     if (status === 'waiting') void refreshRunApproval(detail.data.id)
     else if (status === 'running') {
+      const answeredElsewhere = messages.value.some(message =>
+        message.runID === detail.data.id && message.approval?.questions?.length &&
+        !message.approval.resolved && !approvalBusy.value[message.approval.inboxID],
+      )
       invalidateApprovalRead(detail.data.id)
       if (watchedLive && !streaming.value && !stopRequested.value) {
         // This newer event supersedes a disconnected stream's status lookup.
@@ -2259,6 +2264,7 @@ function onServerEvent(event: Event): void {
       }
       messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
         ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
+      if (answeredElsewhere && !streaming.value) void loadMessages(sessionID.value)
     }
     return
   }
@@ -2672,6 +2678,7 @@ defineExpose({
           <AgentQuestionCard
             :question-id="dockedQuestion.inboxID"
             :prompt="dockedQuestion.question"
+            :questions="dockedQuestion.questions"
             :busy="approvalBusy[dockedQuestion.inboxID] === 'answer'"
             :disabled="!!approvalBusy[dockedQuestion.inboxID]"
             @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"

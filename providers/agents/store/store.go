@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -555,8 +556,11 @@ const (
 	InboxStateAnswered InboxItemState = "answered"
 )
 
-// InboxItem is one pending approval or question, resolvable from the portal or
-// a channel. Resolving it resumes the referenced run's checkpoint.
+// ErrQuestionAlreadyResolved indicates the question cannot accept this resolution.
+var ErrQuestionAlreadyResolved = errors.New("question is no longer pending")
+
+// InboxItem is one approval or question, resolvable from the portal or a channel.
+// A matching resolution resumes its run when RunID is set.
 type InboxItem struct {
 	ID        string         `json:"id"`
 	AgentName string         `json:"agentName"`
@@ -898,7 +902,7 @@ type Store interface {
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
-	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error)
+	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (InboxItem, error)
 
 	// Harness MCP sessions: the bearer a remote harness turn presents to the
 	// agent's own configuration endpoint. Only the token's SHA-256 is kept.

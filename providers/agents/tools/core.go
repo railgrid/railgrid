@@ -10,6 +10,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -22,6 +23,8 @@ import (
 	"github.com/railgrid/provider-agents/channels"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // Spawn returns the spawn family: fan-out to scoped workers (this same agent on
@@ -439,23 +442,44 @@ func coreTools(d Deps) []engine.Tool {
 		},
 		{
 			Name: "ask",
-			Desc: "Ask the user a question. It lands in their inbox (and channel); you will NOT get the answer in this run — finish what you can and mention you asked.",
-			Params: map[string]engine.Param{
-				"question": {Type: "string", Desc: "the question for the user", Required: true},
+			Desc: "Post one question or a group of up to three questions to the user's inbox and channel. The answer is recorded after this call; finish what you can in this run.",
+			JSONSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"question": map[string]any{"type": "string", "description": "A single free-text question"},
+					"questions": map[string]any{
+						"type": "array", "minItems": 1, "maxItems": 3,
+						"items": map[string]any{
+							"type": "object", "required": []string{"prompt"},
+							"properties": map[string]any{
+								"prompt": map[string]any{"type": "string"},
+								"options": map[string]any{
+									"type": "array", "maxItems": 8,
+									"items": map[string]any{
+										"type": "object", "required": []string{"label"},
+										"properties": map[string]any{
+											"label":       map[string]any{"type": "string"},
+											"description": map[string]any{"type": "string"},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
 			},
 			Exec: func(ctx context.Context, argsJSON string) (string, error) {
-				args, err := parseArgs(argsJSON)
+				q, questions, err := parseAskQuestions(argsJSON)
 				if err != nil {
 					return "", err
-				}
-				q := argString(args, "question")
-				if q == "" {
-					return "", fmt.Errorf("question is required")
 				}
 				now := time.Now().UTC()
 				item := store.InboxItem{
 					ID: uuid.NewString(), AgentName: d.Agent.Name, Kind: store.InboxKindQuestion,
 					State: store.InboxStatePending, Prompt: clip(q, 2000), CreatedAt: now, UpdatedAt: now,
+				}
+				if len(questions) > 0 {
+					item.Payload = map[string]any{"questions": questions}
 				}
 				if err := d.Store.AddInboxItem(ctx, d.Scope, item); err != nil {
 					return "", err
@@ -475,4 +499,42 @@ func coreTools(d Deps) []engine.Tool {
 			},
 		},
 	}
+}
+
+func parseAskQuestions(raw string) (string, []harness.Question, error) {
+	var input struct {
+		Question  string             `json:"question"`
+		Questions []harness.Question `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(raw), &input); err != nil {
+		return "", nil, err
+	}
+	input.Question = strings.TrimSpace(input.Question)
+	if len(input.Questions) == 0 && input.Question != "" {
+		return input.Question, nil, nil
+	}
+	if input.Question != "" || len(input.Questions) == 0 || len(input.Questions) > 3 {
+		return "", nil, fmt.Errorf("provide question or one to three questions")
+	}
+	var text strings.Builder
+	for i := range input.Questions {
+		question := &input.Questions[i]
+		question.ID = fmt.Sprintf("question-%d", i+1)
+		question.Prompt = strings.TrimSpace(question.Prompt)
+		if question.Prompt == "" || len(question.Prompt) > 512 || len(question.Options) > 8 {
+			return "", nil, fmt.Errorf("invalid prompt or option count for question %d", i+1)
+		}
+		fmt.Fprintf(&text, "%d. %s\n", i+1, question.Prompt)
+		labels := make(map[string]bool)
+		for j := range question.Options {
+			option := &question.Options[j]
+			option.Label = strings.TrimSpace(option.Label)
+			if option.Label == "" || len(option.Label) > 128 || len(option.Description) > 512 || labels[option.Label] {
+				return "", nil, fmt.Errorf("invalid or duplicate option for question %d", i+1)
+			}
+			labels[option.Label] = true
+			fmt.Fprintf(&text, "   - %s\n", option.Label)
+		}
+	}
+	return strings.TrimSpace(text.String()), input.Questions, nil
 }

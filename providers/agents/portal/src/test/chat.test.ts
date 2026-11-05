@@ -1318,6 +1318,30 @@ describe('chat streaming', () => {
     ])
   })
 
+  it('expands the persisted question group into its original prompt and reply pairs', async () => {
+    const [message] = rebuildTranscript([{
+      id: 'group-reply', role: 'user', content: 'formatted reply', metadata: {
+        questionPrompt: 'Where? Who? When?',
+        questions: [
+          { id: 'where', prompt: 'Where?' },
+          { id: 'who', prompt: 'Who?' },
+          { id: 'when', prompt: 'When?' },
+        ],
+        answers: { where: 'README', who: null, when: 'Tomorrow' },
+      },
+    }])
+    const view = await mountVue(ChatMessageView, { message })
+    mounted.push(view)
+    const details = view.element.querySelector<HTMLDetailsElement>('details.agents-question-history')!
+    expect(details.open).toBe(false)
+    expect(details.querySelector('summary')?.textContent).toBe('Asked 3 questions · 2 answered, 1 skipped')
+    details.querySelector('summary')!.click()
+    expect(details.open).toBe(true)
+    expect(Array.from(details.querySelectorAll('dt, dd'), node => node.textContent)).toEqual([
+      'Where?', 'README', 'Who?', 'Skipped', 'When?', 'Tomorrow',
+    ])
+  })
+
   // An older server sends no kind. A park with no tool is still a question, so
   // the absent field must not fall back to the approval card.
   it('treats a park with no tool as a question even without a kind', async () => {

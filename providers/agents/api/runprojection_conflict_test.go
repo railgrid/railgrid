@@ -13,6 +13,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -296,6 +297,10 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 	item := store.InboxItem{
 		ID: "inbox-question", AgentName: run.AgentName, RunID: run.ID,
 		Kind: store.InboxKindQuestion, Prompt: "Where should the note go?",
+		Payload: map[string]any{
+			"questions": []map[string]any{{"id": "location", "prompt": "Where should the note go?"}},
+			"answers":   map[string]*string{"location": new("Line guide")},
+		},
 	}
 	checked := false
 	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{check: func() {
@@ -309,7 +314,8 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 		}
 		reply := page.Items[0]
 		if reply.Role != "user" || reply.Content != "Line guide" || reply.RunID != run.ID ||
-			reply.Metadata["questionPrompt"] != item.Prompt || reply.Metadata["actorID"] != "reviewer" {
+			reply.Metadata["questionPrompt"] != item.Prompt || reply.Metadata["actorID"] != "reviewer" ||
+			reply.Metadata["questions"] == nil || reply.Metadata["answers"] == nil {
 			t.Fatalf("unexpected question reply: %+v", reply)
 		}
 	}}}
@@ -355,4 +361,34 @@ func projectedObject(t *testing.T, dyn dynamic.Interface, id string) *unstructur
 
 func projectionConflict(id string) error {
 	return apierrors.NewConflict(schema.GroupResource{Group: agentsclient.RunGVR.Group, Resource: agentsclient.RunGVR.Resource}, id, errors.New("concurrent Run write"))
+}
+
+func TestQuestionGroupResolution(t *testing.T) {
+	s, scope, _ := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
+	item := store.InboxItem{
+		ID: "question-group", Kind: store.InboxKindQuestion, State: store.InboxStatePending,
+		Payload: map[string]any{"questions": []map[string]any{
+			{"id": "a", "prompt": "Where?"}, {"id": "b", "prompt": "Who?"}, {"id": "c", "prompt": "When?"},
+		}},
+	}
+	if err := s.store.AddInboxItem(t.Context(), scope, item); err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]*string{"a": new("README"), "b": nil, "c": new("Monday")}
+	response, err := formatQuestionAnswers(item, answers)
+	if err != nil || response != "Where?\nREADME\n\nWho?\n(skipped by the user)\n\nWhen?\nMonday" {
+		t.Fatalf("formatted response = %q, err = %v", response, err)
+	}
+	resolved, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, response, time.Now(), map[string]any{"answers": answers})
+	if err != nil || resolved.Response != response || resolved.Payload["answers"] == nil {
+		t.Fatalf("resolved = %+v, err = %v", resolved, err)
+	}
+	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); err == nil {
+		t.Fatal("duplicate reply accepted")
+	}
+	delete(answers, "b")
+	answers["wrong"] = nil
+	if _, err := formatQuestionAnswers(item, answers); err == nil {
+		t.Fatal("unknown question ID accepted")
+	}
 }

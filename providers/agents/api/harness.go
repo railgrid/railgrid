@@ -961,7 +961,7 @@ func shortDigest(raw string) string {
 // something nobody can see is a run nobody can finish. The item is a QUESTION,
 // not an approval — what resolves it is an answer, and answering it is what
 // resumes the run (see resolveInboxItem).
-func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question string) (string, error) {
+func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question string, questions []runnerharness.Question) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
 		question = "the harness is waiting for input"
@@ -974,7 +974,7 @@ func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question 
 		State:  store.InboxStatePending,
 		Prompt: safeTruncate(question, maxHarnessQuestion),
 		Payload: map[string]any{
-			"harness": true, "trigger": run.Trigger,
+			"harness": true, "trigger": run.Trigger, "questions": questions,
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

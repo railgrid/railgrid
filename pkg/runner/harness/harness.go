@@ -128,8 +128,21 @@ type Event struct {
 // Clarification is a bounded product question that can be answered by a
 // caller before resuming the existing harness session.
 type Clarification struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
+	ID        string     `json:"id"`
+	Text      string     `json:"text"`
+	Questions []Question `json:"questions,omitempty"`
+}
+
+// Question is one prompt in a clarification group.
+type Question struct {
+	ID      string           `json:"id"`
+	Prompt  string           `json:"prompt"`
+	Options []QuestionOption `json:"options,omitempty"`
+}
+
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
 }
 
 // Result is the terminal state of one adapter launch.

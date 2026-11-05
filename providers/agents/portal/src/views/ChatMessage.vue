@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { QuestionReply } from '../types'
 import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
@@ -21,7 +22,7 @@ import { approvalDisclosureAvailable } from '../approval-disclosure'
 import { pendingIsQuestion } from '../types'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
-import { questionPresentation, skippedQuestionResponse } from '../question-presentation'
+import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
@@ -51,7 +52,7 @@ const props = withDefaults(defineProps<{
   inspectionOpen?: boolean
 }>(), { announce: false, approvalBusy: undefined, showRunLink: true })
 const emit = defineEmits<{
-  approval: [detail: { inboxID: string; decision: 'approve' | 'deny' | 'answer'; response?: string }]
+  approval: [detail: { inboxID: string; decision: 'approve' | 'deny' | 'answer'; response?: QuestionReply }]
   'view-run': [runID: string]
   recovery: [target: FailureRecoveryTarget]
   'inline-layout': []
@@ -460,8 +461,19 @@ onBeforeUnmount(() => { mounted = false })
       @click="openToolCitation"
     ></div>
     <div v-else-if="message.role === 'user' && message.questionPrompt !== undefined" class="agents-user-content">
-      <div class="agents-answer-context">{{ questionPresentation(message.questionPrompt).prompt }}</div>
-      <div class="agents-body">{{ message.content === skippedQuestionResponse ? 'Skipped this question' : message.content }}</div>
+      <details v-if="message.questions?.length && message.answers" class="agents-question-history">
+        <summary>Asked {{ message.questions.length }} {{ message.questions.length === 1 ? 'question' : 'questions' }} · {{ answeredQuestionCount(message.answers) }} answered<span v-if="answeredQuestionCount(message.answers) < message.questions.length">, {{ message.questions.length - answeredQuestionCount(message.answers) }} skipped</span></summary>
+        <dl>
+          <template v-for="question in message.questions" :key="question.id">
+            <dt>{{ question.prompt }}</dt>
+            <dd>{{ message.answers[question.id] ?? 'Skipped' }}</dd>
+          </template>
+        </dl>
+      </details>
+      <template v-else>
+        <div class="agents-answer-context">{{ questionPresentation(message.questionPrompt).prompt }}</div>
+        <div class="agents-body">{{ message.content === skippedQuestionResponse ? 'Skipped this question' : message.content }}</div>
+      </template>
     </div>
     <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-user-content">
       <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
@@ -520,6 +532,7 @@ onBeforeUnmount(() => { mounted = false })
         v-if="message.approval && !message.approval.answerInThread && !questionDocked && pendingIsQuestion(message.approval)"
         :question-id="message.approval.inboxID"
         :prompt="message.approval.question"
+        :questions="message.approval.questions"
         :busy="approvalBusy === 'answer'"
         :disabled="!!approvalBusy"
         :resolved="message.approval.resolved === 'answer' ? 'answered' : message.approval.resolved ? 'dismissed' : undefined"

@@ -700,8 +700,8 @@ func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event stri
 			"runID": runID, "inboxID": res.Pending.InboxID,
 			"kind": res.Pending.Kind,
 			"tool": res.Pending.Tool, "args": redactArgs(res.Pending.Args),
-			"question": res.Pending.Question,
-			"content":  res.Content, "status": "waiting", "startedAt": res.StartedAt,
+			"question": res.Pending.Question, "questions": res.Pending.Questions,
+			"content": res.Content, "status": "waiting", "startedAt": res.StartedAt,
 			"durationMS": res.DurationMS,
 		}}
 	}

@@ -38,6 +38,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/resulttypes"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // Role constants for the conversation a turn runs over.
@@ -351,7 +353,8 @@ type Parked struct {
 	// Question is what the turn is asking, when it parked on a question rather
 	// than on a gate. The provider posts it to the user's inbox and the answer
 	// comes back as Answer.Note.
-	Question string
+	Question  string
+	Questions []harness.Question
 	// RequestID references the approval request (inbox item) awaiting the user.
 	// A backend that parks on a gate it wrapped already has one; a backend that
 	// parks on a Question leaves it empty and the provider files the inbox item,

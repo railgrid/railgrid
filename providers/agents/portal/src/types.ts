@@ -630,6 +630,15 @@ export interface Toolset {
   status?: { usedBy?: number }
 }
 
+export interface AgentQuestion {
+  id: string
+  prompt: string
+  options?: { label: string; description?: string }[]
+}
+
+export type QuestionAnswers = Record<string, string | null>
+export type QuestionReply = string | QuestionAnswers
+
 export interface InboxItem {
   id: string
   agentName: string
@@ -637,7 +646,7 @@ export interface InboxItem {
   kind: string
   state: string
   prompt: string
-  payload?: { tool?: string; args?: string; [k: string]: unknown }
+  payload?: { tool?: string; args?: string; questions?: AgentQuestion[]; answers?: QuestionAnswers; [k: string]: unknown }
   response?: string
   createdAt: string
   updatedAt?: string
@@ -761,7 +770,7 @@ export interface RunDetail extends RunSummary {
    * takes a verdict; kind "question" carries the question and takes an answer.
    * Rows written before the distinction have no kind and are approvals.
    */
-  pending?: { inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string }
+  pending?: { inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; questions?: AgentQuestion[] }
   steps: RunStep[]
   children?: RunSummary[]
   /** Present only for a harness-backed run that has reported coordinates. */
@@ -839,6 +848,7 @@ export interface PendingApproval {
   args: string
   /** The text to put to the person, for a question. */
   question?: string
+  questions?: AgentQuestion[]
   // resolved is set once the user approves/denies/answers so the card stops
   // offering controls without needing a full reload.
   resolved?: 'approve' | 'deny' | 'answer'
@@ -855,6 +865,8 @@ export function pendingIsQuestion(pending: PendingApproval | null | undefined): 
 export interface ChatMessage {
   actorID?: string
   questionPrompt?: string
+  questions?: AgentQuestion[]
+  answers?: QuestionAnswers
   // id is stable across Vue's keyed re-renders so DOM nodes (and browser text
   // selection) survive while a reply streams in.
   id: string
@@ -883,6 +895,8 @@ export interface TranscriptMessage {
   metadata?: {
     actorID?: string
     questionPrompt?: string
+    questions?: AgentQuestion[]
+    answers?: QuestionAnswers
     tool?: string
     args?: string
     error?: string | boolean

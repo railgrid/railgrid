@@ -117,11 +117,16 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	item := intent.InboxItem
 	if intent.Approve && item.Kind == store.InboxKindQuestion && item.ID != "" && item.ID == ck.InboxID {
 		if answer := strings.TrimSpace(intent.Note); answer != "" {
+			metadata := map[string]any{"actorID": strings.TrimSpace(access.CallerUser), "questionPrompt": item.Prompt}
+			if item.Payload["answers"] != nil {
+				metadata["questions"] = item.Payload["questions"]
+				metadata["answers"] = item.Payload["answers"]
+			}
 			_ = s.appendProgressMessage(ctx, agentScope, store.Message{
 				ID: "question-answer-" + item.ID, AgentName: run.AgentName,
 				SessionID: effectiveSessionID(run.SessionID, run.Trigger), RunID: run.ID,
 				Role: "user", Content: answer, CreatedAt: time.Now().UTC(),
-				Metadata: map[string]any{"actorID": strings.TrimSpace(access.CallerUser), "questionPrompt": item.Prompt},
+				Metadata: metadata,
 			})
 		}
 	}

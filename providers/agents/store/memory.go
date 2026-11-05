@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -1311,7 +1312,7 @@ func (m *MemoryStore) ListInbox(_ context.Context, scope Scope, state InboxItemS
 	return out, nil
 }
 
-func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error) {
+func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (InboxItem, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return InboxItem{}, err
@@ -1323,6 +1324,16 @@ func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string
 	it, ok := m.inbox[k]
 	if !ok {
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
+	}
+	if len(answerPayload) > 0 {
+		canAnswerDismissedRun := state == InboxStateAnswered && it.State == InboxStateDenied && it.RunID != ""
+		if it.Kind != InboxKindQuestion || (it.State != InboxStatePending && !canAnswerDismissedRun) {
+			return InboxItem{}, ErrQuestionAlreadyResolved
+		}
+		payload := make(map[string]any, len(it.Payload)+len(answerPayload[0]))
+		maps.Copy(payload, it.Payload)
+		maps.Copy(payload, answerPayload[0])
+		it.Payload = payload
 	}
 	it.State = state
 	it.Response = response

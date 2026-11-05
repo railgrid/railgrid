@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { QuestionReply } from '../types'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
@@ -195,9 +196,9 @@ async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise
 // verdict; a question takes an answer in words, which resumes the run, or a
 // dismissal (`deny`), which closes the item without resuming — the run, if it
 // is still paused, is ended from its own page.
-async function resolve(item: InboxItem, decision: InboxDecision, response?: string): Promise<void> {
+async function resolve(item: InboxItem, decision: InboxDecision, response?: QuestionReply): Promise<void> {
   if (locked(item.id)) return
-  const answer = (response ?? '').trim()
+  const answer = typeof response === 'string' ? response.trim() : response
   if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
@@ -275,7 +276,7 @@ async function dismissAll(): Promise<void> {
 
 function resolutionToast(item: InboxItem, decision: InboxDecision): string {
   if (decision === 'approve') return item.kind === 'change' ? 'Approved — the change is applied.' : 'Approved — the run is resuming.'
-  if (decision === 'answer') return 'Answered — the run is resuming.'
+  if (decision === 'answer') return item.runID ? 'Answered — the run is resuming.' : 'Answer recorded.'
   if (item.kind === 'question') {
     return item.runID ? 'Dismissed. The run stays paused until you answer or cancel it from its page.' : 'Dismissed.'
   }
@@ -408,6 +409,8 @@ onBeforeUnmount(() => {
             v-else
             :question-id="item.id"
             :prompt="item.prompt"
+            :questions="item.payload?.questions"
+            :blocking="!!item.runID"
             :busy="resolvingInbox.get(item.id) === 'answer'"
             :disabled="locked(item.id)"
             @answer="response => resolve(item, 'answer', response)"
