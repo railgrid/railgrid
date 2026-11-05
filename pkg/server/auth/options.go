@@ -25,6 +25,12 @@ type OIDCConfig struct {
 	ClientID       string
 	RedirectURL    string
 	Scopes         []string
+
+	// LinkVerifiedEmailIssuers lists the issuers whose identities may be
+	// linked to an existing User by verified email on first sign-in (see
+	// Handler.linkByVerifiedEmail). Empty disables linking: an unknown
+	// issuer/subject always gets a new User, as before linking existed.
+	LinkVerifiedEmailIssuers []string
 }
 
 // DefaultOIDCConfig returns default OIDC configuration.

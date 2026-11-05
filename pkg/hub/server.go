@@ -480,6 +480,7 @@ func (s *Server) Run(ctx context.Context) error {
 		oidcConfig.IssuerURL = s.opts.IDPIssuerURL
 		oidcConfig.BrowserAuthURL = s.opts.IDPBrowserAuthURL
 		oidcConfig.ClientID = s.opts.IDPClientID
+		oidcConfig.LinkVerifiedEmailIssuers = s.opts.IDPLinkVerifiedEmailIssuers
 		oidcConfig.RedirectURL = s.opts.HubExternalURL + apiurl.PathAuthCallback
 
 		authHandler, err = auth.NewHandler(ctx, oidcConfig, userClient, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)

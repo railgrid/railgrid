@@ -66,6 +66,7 @@ func main() {
 	_ = cmd.Flags().MarkDeprecated("published-apps-domain", "redirects are validated against each instance's own published host; the flag is ignored")
 	cmd.Flags().BoolVar(&opts.DisableTokenLogin, "disable-token-login", false, "Disable the interactive static-token login (endpoint + portal form); static bearer tokens still authenticate API calls")
 	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "railgrid", "OIDC identity provider client ID")
+	cmd.Flags().StringSliceVar(&opts.IDPLinkVerifiedEmailIssuers, "idp-link-verified-email-issuers", nil, "OIDC issuers (comma-separated or repeated) whose not-yet-known identities are linked onto the single existing User with the same email on first sign-in, provided the ID token has email_verified=true. Keeps accounts across an IdP or Dex-connector change. Listing an issuer trusts it to verify email ownership for every connector it fronts. Empty (default): an unknown identity always gets a new User.")
 	cmd.Flags().StringVar(&opts.IDPCAFile, "idp-ca-file", "", "PEM-encoded CA bundle for verifying the IdP's TLS cert (required for self-signed/private CAs)")
 	cmd.Flags().StringVar(&opts.ProviderCAFile, "provider-ca-file", "", "PEM CA bundle embedded in provider kubeconfigs for the Hub origin (empty uses system trust)")
 	cmd.Flags().StringVar(&opts.ServingCertFile, "serving-cert-file", "", "TLS certificate file for HTTPS serving")

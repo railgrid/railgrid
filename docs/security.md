@@ -262,6 +262,11 @@ This opens a browser for the OIDC flow. After authenticating with your identity 
 
 Dex supports many identity providers. Here are common configurations.
 
+Dex derives each user's `sub` from the connector they signed in with, so adding
+a connector (or later replacing Dex) would give returning users a new, empty
+account. Set `idp.linkVerifiedEmailIssuers` while you do it; see
+[OIDC identity linking]({% link oidc-identity-linking.md %}).
+
 ### GitHub
 
 1. Create an OAuth App: **GitHub > Settings > Developer settings > OAuth Apps > New OAuth App**
