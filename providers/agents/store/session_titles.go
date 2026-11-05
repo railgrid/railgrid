@@ -11,6 +11,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -89,6 +90,36 @@ func (m *MemoryStore) SetSessionTitleIfEmpty(_ context.Context, scope Scope, ses
 	}
 	claim.Title = title
 	m.sessionTitles[key] = claim
+	return true, nil
+}
+
+// SetSessionTitle updates the title for the session's current first persisted
+// user message. The shared store lock serializes this with title generation and
+// transcript appends, so a later generated title cannot overwrite this value.
+func (m *MemoryStore) SetSessionTitle(_ context.Context, scope Scope, sessionID, title string) (bool, error) {
+	scope = m.normalizeScope(scope)
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return false, fmt.Errorf("session ID is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false, fmt.Errorf("session title is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	scope = m.normalizeScopeLocked(scope)
+	key := sessionKey(scope, sessionID)
+	first, ok := firstPersistedUserMessage(m.messages[key])
+	if !ok {
+		return false, ErrSessionNotFound
+	}
+	if current, exists := m.sessionTitles[key]; exists && current.FirstMessageID == first.ID && current.Title == title {
+		return false, nil
+	}
+	m.sessionTitles[key] = sessionTitle{FirstMessageID: first.ID, Title: title}
 	return true, nil
 }
 
@@ -198,6 +229,69 @@ func (p *PostgresStore) SetSessionTitleIfEmpty(ctx context.Context, scope Scope,
 		return false, err
 	}
 	return written == 1, nil
+}
+
+// SetSessionTitle updates the title for the session's current first persisted
+// user message. Its transcript lock serializes this with generation and
+// message appends, so a later generated title cannot overwrite this value.
+func (p *PostgresStore) SetSessionTitle(ctx context.Context, scope Scope, sessionID, title string) (bool, error) {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return false, err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.withAgent(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(sessionID) == "" {
+		return false, fmt.Errorf("session ID is required")
+	}
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return false, fmt.Errorf("session title is required")
+	}
+	if mutation.tx == nil {
+		mutation.tx, err = p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return false, fmt.Errorf("begin session title mutation: %w", err)
+		}
+		mutation.executor = mutation.tx
+	}
+	if err := lockTranscriptSession(ctx, mutation.executor, scope, sessionID); err != nil {
+		return false, err
+	}
+	var firstMessageID string
+	err = mutation.executor.QueryRowContext(ctx, `
+		SELECT id FROM agents_messages
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4 AND role='user'
+		ORDER BY append_sequence ASC LIMIT 1 FOR SHARE`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID).Scan(&firstMessageID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrSessionNotFound
+	}
+	if err != nil {
+		return false, err
+	}
+	result, err := mutation.executor.ExecContext(ctx, `
+		INSERT INTO agents_session_titles
+			(org_uuid,workspace_uuid,agent_name,session_id,first_message_id,title)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (org_uuid,workspace_uuid,agent_name,session_id) DO UPDATE SET
+			first_message_id=EXCLUDED.first_message_id, title=EXCLUDED.title
+		WHERE agents_session_titles.first_message_id<>EXCLUDED.first_message_id
+			OR agents_session_titles.title<>EXCLUDED.title`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID, firstMessageID, title)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := mutation.commit(); err != nil {
+		return false, err
+	}
+	return changed == 1, nil
 }
 
 func lockTranscriptSession(ctx context.Context, executor scopedExecutor, scope Scope, sessionID string) error {

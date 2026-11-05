@@ -81,6 +81,8 @@ export interface AIWorkbenchLauncherItemView {
 export interface AIConversationItem {
   id: string
   title?: string
+  /** A caller-supplied reason makes Rename unavailable for this item. */
+  renameDisabledReason?: string
   status?: string
   createdAt?: string
   updatedAt?: string
@@ -88,6 +90,7 @@ export interface AIConversationItem {
 
 export interface AIConversationRailCapabilities {
   create?: boolean
+  rename?: boolean
   pin?: boolean
   unread?: boolean
   archive?: boolean

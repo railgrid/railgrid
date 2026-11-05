@@ -441,6 +441,8 @@ export class ApiClient {
         ? { reasoningEffortByModel: preferences.reasoningEffortByModel }
         : {}),
     })
+  renameSession = (agent: string, session: string, title: string): Promise<{ title: string }> =>
+    this.sendVerb('PATCH', this.verbTail(this.verb(AGENTS, agent, 'session'), session), { title })
   deleteSession = (agent: string, session: string): Promise<void> =>
     this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))
   listMessagePage = async (agent: string, session: string, cursor = '', limit = 200): Promise<MessagePage> => {

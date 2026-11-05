@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
 	"strings"
@@ -25,9 +26,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// sessionModelSettings uses the existing per-agent session subresource. It
-// changes conversation preferences only; the Agent and credential CRs are never
-// patched. The active run pins its own immutable copy when it is admitted.
+const maxSessionTitleBytes = 253
+
+// sessionModelSettings uses the existing per-agent session subresource to edit
+// one session's title or model preferences. The Agent and credential CRs are
+// never patched. The active run pins its own immutable model copy when admitted.
 func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodDelete {
 		s.deleteSession(w, r)
@@ -47,6 +50,60 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 		writeResourceError(w, err)
 		return
 	}
+	var patch struct {
+		ModelCredential        *string           `json:"modelCredential"`
+		ReasoningEffortByModel map[string]string `json:"reasoningEffortByModel"`
+	}
+	if r.Method == http.MethodPatch {
+		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 16384))
+		if err != nil {
+			writeStatus(w, 400, "BadRequest", "invalid session patch")
+			return
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			writeStatus(w, 400, "BadRequest", "invalid session patch")
+			return
+		}
+		if rawTitle, hasTitle := fields["title"]; hasTitle {
+			if len(fields) != 1 {
+				writeStatus(w, 400, "BadRequest", "title must be patched by itself")
+				return
+			}
+			var title string
+			if err := json.Unmarshal(rawTitle, &title); err != nil {
+				writeStatus(w, 400, "BadRequest", "title must be a string")
+				return
+			}
+			title = strings.TrimSpace(title)
+			if title == "" || len(title) > maxSessionTitleBytes {
+				writeStatus(w, 400, "BadRequest", "title must be nonempty and at most 253 UTF-8 bytes")
+				return
+			}
+			changed, err := s.store.SetSessionTitle(r.Context(), id.scope(name), session, title)
+			if errors.Is(err, store.ErrSessionNotFound) {
+				writeStatus(w, http.StatusNotFound, "NotFound", "session not found")
+				return
+			}
+			if err != nil {
+				writeStatus(w, http.StatusInternalServerError, "InternalError", "Could not save session title")
+				return
+			}
+			if changed {
+				s.events.publish(id.scope(name), "session_title", map[string]any{
+					"agent": name, "sessionID": session, "title": title,
+				})
+			}
+			writeJSON(w, http.StatusOK, struct {
+				Title string `json:"title"`
+			}{Title: title})
+			return
+		}
+		if err := json.Unmarshal(body, &patch); err != nil {
+			writeStatus(w, 400, "BadRequest", "invalid model preferences")
+			return
+		}
+	}
 	if agent.Spec.HarnessBacked() {
 		writeStatus(w, 400, "BadRequest", "Chat model preferences require a model-backed agent")
 		return
@@ -58,18 +115,10 @@ func (s *Server) sessionModelSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	previousSelected := strings.TrimSpace(settings.ModelCredential)
 	previousEfforts := maps.Clone(settings.ReasoningEffortByModel)
-	var patch struct {
-		ModelCredential        *string           `json:"modelCredential"`
-		ReasoningEffortByModel map[string]string `json:"reasoningEffortByModel"`
-	}
 	if r.Method == http.MethodPatch {
 		// Keep the submitted delta separate from the stored map. Callers may
 		// update only the selected credential's effort; non-selected values are
 		// retained from storage and never accepted from request payloads.
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&patch); err != nil {
-			writeStatus(w, 400, "BadRequest", "invalid model preferences")
-			return
-		}
 		if patch.ModelCredential != nil {
 			settings.ModelCredential = *patch.ModelCredential
 		}

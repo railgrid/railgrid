@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 37;
+  --railgrid-agent-ui-version: 40;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -445,6 +445,61 @@ button.k-workbench-tab {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Plain editable title, matching the Studio conversation heading. */
+.k-ai-conversation-title {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--color-text-primary, #e9e9f2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+.k-ai-conversation-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-ai-conversation-title-input {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary, #e9e9f2);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+.k-ai-conversation-title-input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent);
+  outline-offset: 0;
+}
+.k-ai-conversation-title-input:disabled { cursor: wait; opacity: .6; }
+.k-ai-conversation-title:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--color-accent, #8b6bff); }
+.k-ai-conversation-title:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent, #8b6bff) 40%, transparent);
+  outline-offset: 2px;
+}
+.k-ai-conversation-title:disabled,
+.k-ai-conversation-title[aria-disabled="true"] { cursor: not-allowed; opacity: .6; }
+@media (pointer: coarse) {
+  .k-ai-conversation-title, .k-ai-conversation-title-input { min-height: 44px; }
+}
+
 .k-ai-conversation-identity__context {
   display: flex;
   min-width: 0;
