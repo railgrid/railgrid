@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { resizeSidePanel } from '@/lib/overlayResize'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronUp, EyeOff, GripVertical, Hexagon, Minus, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
+import { ArrowLeft, SquarePen, ChevronUp, EyeOff, GripVertical, Hexagon, Minus, PanelRightClose, RefreshCw, ScanEye } from 'lucide-vue-next'
 import ActionMenu from '@/portalkit/ActionMenu.vue'
 import { usePageResourceStore } from '@/stores/pageResource'
 import { useAgentOverlayStore } from '@/stores/agentOverlay'
@@ -48,6 +48,10 @@ const error = ref('')
 const loading = ref(false)
 const retry = ref(0)
 const expanded = ref(false)
+const chatsVisible = ref(false)
+const conversationTitle = ref('')
+function showChats(): void { element?.dispatchEvent(new Event('railgrid-overlay-show-chats')) }
+function newChat(): void { element?.dispatchEvent(new Event('railgrid-overlay-new-chat')) }
 const recoveryPending = ref(false)
 const closing = ref(false)
 let closingAnimation: Animation | null = null
@@ -138,6 +142,8 @@ const chatMenuItems = [
 function clear(): void {
   cancelClosingAnimation()
   contextPreviewOpen.value = false
+  chatsVisible.value = false
+  conversationTitle.value = ''
   generation++
   // Revoke in the same stack, before Vue unmounts or a pending confirmation resolves.
   if (element) element.railgridContext = null
@@ -192,6 +198,12 @@ async function mountAgent(): Promise<void> {
     if (!('overlayState' in candidate)) throw new Error('This Agents version does not support overlay chat. Update the Agents provider and reload the page.')
     element = candidate
     pushContext()
+    candidate.addEventListener('railgrid-overlay-view', event => {
+      if (!current()) return
+      const detail = (event as CustomEvent<{ chats: boolean; title: string }>).detail
+      chatsVisible.value = detail.chats === true
+      conversationTitle.value = typeof detail.title === 'string' ? detail.title : ''
+    })
     candidate.addEventListener('railgrid-overlay-engage', () => { if (current()) engage() })
     candidate.addEventListener('railgrid-overlay-expand', () => { if (current()) openDedicated() })
     candidate.addEventListener('railgrid-overlay-navigate', event => {
@@ -361,13 +373,15 @@ onBeforeUnmount(() => {
       </section>
       <button v-show="expanded" class="k-ai-pane-divider agent-overlay__resize" :class="{ 'k-ai-pane-divider--resizing': resizing }" aria-label="Resize chat panel. Use left and right arrow keys or drag." title="Resize chat panel" aria-controls="railgrid-agent-overlay" @pointerdown.prevent="resize" @keydown="resizeWithKeys"><GripVertical :stroke-width="1.75" aria-hidden="true" /></button>
       <header v-show="expanded" class="agent-overlay__header">
-        <Hexagon :size="16" aria-hidden="true" /><strong>{{ overlay.selectedAgent }}</strong>
-        <button class="k-btn k-btn--text agent-overlay__context-toggle" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext"
+        <button v-if="!chatsVisible" class="k-btn k-btn--text" type="button" aria-label="Back to chats" title="Back to chats" @click="showChats"><ArrowLeft :size="18" aria-hidden="true" /></button>
+        <div class="agent-overlay__identity"><strong>{{ chatsVisible ? 'Chats' : overlay.selectedAgent }}</strong><span v-if="!chatsVisible && conversationTitle">{{ conversationTitle }}</span></div>
+        <button v-if="chatsVisible" class="k-btn k-btn--text agent-overlay__new-chat" type="button" @click="newChat"><SquarePen :size="16" aria-hidden="true" />New chat</button>
+        <button v-show="!chatsVisible" class="k-btn k-btn--text agent-overlay__context-toggle" :class="{ 'agent-overlay__context-toggle--on': overlay.followContext }" type="button" aria-label="Include page context" :aria-pressed="overlay.followContext"
           :title="overlay.followContext ? `Page context on: ${contextLabel}. ${contextDescription} Click to pause.` : `Page context paused. Click to include. ${contextDescription}`"
           @click="overlay.setFollowContext(!overlay.followContext)">
           <ScanEye v-if="overlay.followContext" :size="16" aria-hidden="true" /><EyeOff v-else :size="16" aria-hidden="true" />
         </button>
-        <ActionMenu label="Chat options" :items="chatMenuItems" @select="assistantAction" />
+        <ActionMenu v-if="!chatsVisible" label="Chat options" :items="chatMenuItems" @select="assistantAction" />
         <button class="k-btn k-btn--text" type="button" title="Close chat panel" aria-label="Close chat panel" @click="collapse"><PanelRightClose :size="16" aria-hidden="true" /></button>
       </header>
       <div v-if="loading" class="agent-overlay__state" role="status">Loading agent chat…</div>
@@ -399,6 +413,9 @@ onBeforeUnmount(() => {
 .agent-overlay__context-preview { position: absolute; top: 8px; right: 8px; z-index: 2; pointer-events: auto; width: min(520px, calc(100% - 16px)); max-height: min(60dvh, 34rem, calc(100% - 16px)); overflow: auto; padding: 12px; }
 .agent-overlay__context-preview--compact { top: auto; bottom: calc(100% + 8px); max-height: min(60dvh, 34rem, max(0px, calc(100dvh - var(--overlay-safe-bottom) - 88px))); }
 .agent-overlay__header { display: flex; align-items: center; gap: 4px; padding: 4px 8px; border-bottom: 1px solid var(--color-border-default); flex-shrink: 0; }
+.agent-overlay__identity { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.agent-overlay__identity span { font-size: 11px; color: var(--color-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-overlay__header > .agent-overlay__new-chat { width: auto; height: 32px; min-height: 32px; padding: 0 10px; gap: 6px; white-space: nowrap; color: var(--color-accent); font-size: 12px; font-weight: 500; }
 .agent-overlay__header strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 13px; }
 .agent-overlay__header > button, .agent-overlay__bar-actions > button { width: 28px; height: 28px; min-height: 28px; padding: 0; }
 .agent-overlay__context-toggle { color: var(--color-text-secondary); }
