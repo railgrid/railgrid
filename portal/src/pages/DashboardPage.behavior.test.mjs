@@ -14,9 +14,18 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
 } }).outputText
 const { reactive, ref, h, createRenderer, nextTick } = Vue
 
-function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null } = {}) {
+function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null, deferContent = false, contentWidth = 1280 } = {}) {
   let focused
-  const previous = { window: globalThis.window, document: globalThis.document, localStorage: globalThis.localStorage }
+  const previous = { window: globalThis.window, document: globalThis.document, localStorage: globalThis.localStorage, ResizeObserver: globalThis.ResizeObserver }
+  const observations = []
+  globalThis.ResizeObserver = class {
+    constructor(callback) { this.callback = callback; observations.push(this) }
+    observe(target) { this.target = target }
+    disconnect() { this.disconnected = true }
+  }
+  const shellVisible = ref(!deferContent)
+  const shellKey = ref(0)
+  let measuredWidth = contentWidth
   globalThis.window = { addEventListener() {}, removeEventListener() {} }
   globalThis.document = { body: {}, get activeElement() { return focused ?? this.body } }
   globalThis.localStorage = { getItem: () => JSON.stringify(dismissed ? ['ws'] : []), setItem() {} }
@@ -27,6 +36,7 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   let completeLoad
   const loads = []
   const candidates = []
+  const syncColumns = []
   providers.load = (org) => {
     loads.push(org)
     providers.loading = true
@@ -39,6 +49,7 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
     } })
   }
   const shell = { setup: (_, { slots }) => () => h('section', slots.default?.()) }
+  const appShell = { setup: (_, { slots }) => () => shellVisible.value ? h('section', { key: shellKey.value }, slots.default?.()) : h('aside') }
   const wizard = { setup: () => { const step = ref(1); return () => h('article', { id: 'wizard' }, [
     h('span', `Step ${step.value}`), h('button', { onClick: () => {
       step.value = 2
@@ -55,15 +66,17 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
     '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => p }) },
     '@/stores/providers': { useProvidersStore: () => providers },
     '@/stores/tenant': { useTenantStore: () => tenant },
-    '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: bound ? [{ i: bound.name, x: 0, y: 0, w: 1, h: 2 }] : [], addable: [], sync(org, ws, names) { candidates.push(names) } }) },
+    '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: bound ? [{ i: bound.name, x: 0, y: 0, w: 1, h: 2 }] : [], addable: [], columns: 3, sync(org, ws, names, cols) { candidates.push(names); syncColumns.push(cols); this.columns = cols } }) },
+    '@/components/AppLayout.vue': { default: appShell },
     '@/lib/gettingStarted': { gettingStartedReadState },
     '@/components/WelcomeWizard.vue': { default: wizard },
     '@/components/DashboardTile.vue': { default: { props: ['provider'], setup: props => () => h('article', { id: 'provider-tile', copy: props.provider.scope }, props.provider.displayName) } },
+    '@/components/DashboardUsageTile.vue': { default: { setup: () => () => h('section', { id: 'usage-tile' }, 'Plan usage') } },
   }
   const exports = {}
   new Function('require', 'exports', code)(id => modules[id] ?? new Proxy({ default: shell }, { get: (o, k) => o[k] ?? shell }), exports)
   const renderer = createRenderer({
-    createElement: type => Vue.markRaw({ type, props: {}, style: {}, children: [], clientWidth: 1280,
+    createElement: type => Vue.markRaw({ type, props: {}, style: {}, children: [], clientWidth: measuredWidth,
       focus() { focused = this }, addEventListener() {}, removeEventListener() {} }),
     createText: text => ({ type: '#text', text }), createComment: () => ({ type: '#comment' }),
     setText: (n, text) => { n.text = text }, setElementText: (n, text) => { n.text = text },
@@ -76,12 +89,56 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   const app = renderer.createApp(exports.default)
   app.component('router-link', shell)
   app.mount(root)
-  return { root, providers, tenant, loads, candidates, finishLoad: () => completeLoad(), focused: () => focused,
+  return { root, providers, tenant, loads, candidates, observations, syncColumns, shellVisible,
+    remountContent(width) { measuredWidth = width; shellKey.value++ },
+    finishLoad: () => completeLoad(), focused: () => focused,
     cleanup() { app.unmount(); for (const [k,v] of Object.entries(previous)) { if (v === undefined) delete globalThis[k]; else globalThis[k] = v } } }
 }
 const nodes = n => [n, ...(n.children ?? []).flatMap(nodes)]
 const text = n => (n.text ?? '') + (n.children ?? []).map(text).join('')
 const button = (s, label) => nodes(s.root).find(n => n.type === 'button' && text(n) === label)
+
+test('content width is observed when the shell mounts late and when its content is replaced', async () => {
+  const s = scenario({ dismissed: true, deferContent: true, contentWidth: 640 })
+  try {
+    await nextTick()
+    assert.equal(s.observations.length, 0)
+    s.shellVisible.value = true
+    await nextTick()
+    await nextTick()
+    assert.equal(s.observations.length, 1)
+    assert.equal(s.syncColumns.at(-1), 1)
+    const first = s.observations[0]
+    s.remountContent(1100)
+    await nextTick()
+    await nextTick()
+    assert.equal(first.disconnected, true)
+    assert.equal(s.observations.length, 2)
+    assert.equal(s.syncColumns.at(-1), 3)
+    const current = s.observations.at(-1)
+    current.target.clientWidth = 0
+    current.callback()
+    await nextTick()
+    assert.equal(s.syncColumns.at(-1), 3, 'a temporarily detached element cannot switch the grid to one column')
+  } finally { s.cleanup() }
+})
+
+test('usage is a default tile even without providers and stays outside the resizable grid', async () => {
+  const s = scenario({ dismissed: true })
+  try {
+    await nextTick()
+    assert.ok(nodes(s.root).some(node => node.props?.id === 'usage-tile'))
+    assert.match(text(s.root), /No providers enabled/)
+    s.tenant.workspaceUUID = 'another-workspace'
+    await nextTick()
+    assert.ok(nodes(s.root).some(node => node.props?.id === 'usage-tile'))
+    s.tenant.workspaceUUID = null
+    await nextTick()
+    assert.ok(!nodes(s.root).some(node => node.props?.id === 'usage-tile'))
+  } finally { s.cleanup() }
+  const template = descriptor.template.content
+  assert.ok(template.indexOf('<DashboardUsageTile') > template.indexOf('</GridLayout>'))
+})
 
 test('Enable keeps the mounted guide visible through refresh and failure, but not a scope switch', async () => {
   const s = scenario()

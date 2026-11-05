@@ -218,6 +218,9 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // Column count actually in effect (responsive default handed by the
   // page, overridden by the user's saved `cols`). Drives reconcile.
   const effectiveCols = ref<number>(GRID_COLS)
+  // Use this same count in the grid and reconciliation. Cap a saved column
+  // preference by available width without changing its remembered value.
+  const columns = computed(() => Math.min(cols.value || effectiveCols.value, effectiveCols.value))
   // Last candidate names handed to sync(), retained so hide/unhide/reset
   // can recompute without the caller re-passing them.
   const lastNames = ref<string[]>([])
@@ -243,15 +246,14 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // the authoritative `geometry` baseline and the live candidate set. It
   // never writes back into `geometry` — so a transient render (providers
   // still loading, or a narrow viewport clamping tile widths) can't corrupt
-  // or blank the remembered arrangement. Geometry only changes on real
-  // events: a drag (persist), a hide/unhide (commit), or adopting the
-  // cache/hub (sync/fetchRemote).
+  // or blank the remembered arrangement. Geometry changes on a drag/resize,
+  // reset, or adopting the cache/hub; hiding a tile keeps its geometry.
   function applyLayout() {
     const { layout: next } = reconcile(
       geometry.value,
       hidden.value,
       candidates(),
-      cols.value || effectiveCols.value,
+      columns.value,
     )
     layout.value = next
   }
@@ -271,6 +273,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   }
 
   let pushTimer: ReturnType<typeof setTimeout> | null = null
+  let writePending = false
   // pushRemote writes the current snapshot to the hub, debounced so a
   // drag gesture (many layout-updated events) collapses into one PUT.
   function pushRemote() {
@@ -278,14 +281,18 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
     const o = org.value
     const w = ws.value
     const body = toDTO(snapshot())
+    const revision = editRevision
+    writePending = true
     if (pushTimer) clearTimeout(pushTimer)
     pushTimer = setTimeout(() => {
       const url = `/api/orgs/${encodeURIComponent(o)}/workspaces/${encodeURIComponent(w)}/dashboard/layout`
       void authFetch(url, {
         method: 'PUT',
         tenant: true,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Railgrid-Org': o, 'X-Railgrid-Workspace': w },
         body: JSON.stringify(body),
+      }).then((res) => {
+        if (res.ok && revision === editRevision && org.value === o && ws.value === w) writePending = false
       }).catch(() => {
         /* best-effort; localStorage keeps the layout until next sync */
       })
@@ -301,7 +308,14 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // save. If we already hold a non-empty local geometry, we DON'T let an
   // empty server response wipe it — instead we push our local copy up, so a
   // browser that customised offline seeds the hub rather than losing work.
+  let readGeneration = 0
+  let editRevision = 0
   async function fetchRemote(o: string, w: string) {
+    // A resize can trigger another sync while the debounce/save is pending.
+    // Until that save succeeds, the server can only return the older layout.
+    if (writePending) return
+    const generation = ++readGeneration
+    const revision = editRevision
     const url = `/api/orgs/${encodeURIComponent(o)}/workspaces/${encodeURIComponent(w)}/dashboard/layout`
     let dto: DashboardLayoutDTO
     try {
@@ -311,8 +325,9 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
     } catch {
       return
     }
-    // A workspace switch may have happened while the request was in flight.
-    if (ws.value !== w) return
+    // Responsive/provider updates can overlap reads. Only the newest may
+    // restore preferences, and never over a newer user edit or scope switch.
+    if (generation !== readGeneration || revision !== editRevision || org.value !== o || ws.value !== w) return
 
     const remoteTiles = (Array.isArray(dto.tiles) ? dto.tiles : []).map((t) => ({
       i: t.name,
@@ -338,13 +353,12 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
 
   // ---- store actions ----
 
-  // commit re-derives the layout from the current state and writes it to
-  // the cache + hub. Used by the hidden mutations. When there are
-  // live candidates it captures the rendered positions as the new baseline
-  // so a hide/unhide remembers where the remaining tiles sit.
+  // Visibility changes keep remembered geometry. Capturing the rendered
+  // layout here would replace desktop widths with phone-clamped widths and
+  // discard the placement of the tile being hidden.
   function commit() {
+    ++editRevision
     applyLayout()
-    if (candidates().length > 0) geometry.value = layout.value.map(strip)
     saveCache()
     pushRemote()
   }
@@ -363,8 +377,10 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   ) {
     const key = workspaceUUID || '_'
     effectiveCols.value = defaultCols > 0 ? defaultCols : GRID_COLS
-    const switched = key !== ws.value
+    const switched = key !== ws.value || orgUUID !== org.value
     if (switched) {
+      ++readGeneration
+      writePending = false
       ws.value = key
       const cached = loadPersisted(key)
       geometry.value = cached.tiles
@@ -387,6 +403,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
   // persist saves the current geometry after a drag/resize, where the grid
   // already mutated `layout` in place. Adopt that as the new baseline.
   function persist() {
+    ++editRevision
     geometry.value = layout.value.map(strip)
     saveCache()
     pushRemote()
@@ -404,6 +421,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
 
   // reset clears the whole customisation for the active workspace.
   function reset() {
+    ++editRevision
     geometry.value = []
     hidden.value = []
     cols.value = 0
@@ -416,6 +434,7 @@ export const useDashboardLayoutStore = defineStore('dashboardLayout', () => {
 
   return {
     layout,
+    columns,
     hidden,
     addable,
     sync,
