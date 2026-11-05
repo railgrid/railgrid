@@ -202,8 +202,8 @@ func waitForAgentVersion(ctx context.Context, edgeName, expectedVersion string, 
 func agentUpgradeServer(edgeName string) error {
 	fmt.Printf("Server-type agents must be upgraded by replacing the binary on the host.\n\n")
 	fmt.Printf("  # Download the latest binary:\n")
-	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
+	fmt.Printf("  curl -fsSL \"https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz\" | tar xz &&\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid &&\n\n")
 	fmt.Printf("  # Restart the systemd service:\n")
 	fmt.Printf("  sudo systemctl restart %s\n\n", linuxUnitName)
 	fmt.Printf("After upgrading, verify with:\n")
@@ -216,8 +216,9 @@ func agentUpgradeServer(edgeName string) error {
 // /usr/local/bin binary and the system LaunchDaemon control operation.
 func agentUpgradeMacOS(edgeName string) error {
 	fmt.Printf("macOS agents are upgraded by replacing the binary on the worker host.\n\n")
-	fmt.Printf("  curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz\n")
-	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid\n\n")
+	fmt.Printf("  curl -fsSL \"https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz\" | tar xz &&\n")
+	fmt.Printf("  sudo mv kubectl-railgrid /usr/local/bin/railgrid &&\n\n")
+	fmt.Println("  # Default system LaunchDaemon; custom/user installs need their own label and domain.")
 	fmt.Printf("  sudo launchctl kickstart -k system/com.railgrid.agent.%s\n\n", edgeName)
 	fmt.Printf("After upgrading, verify with:\n")
 	fmt.Printf("  railgrid edge list\n")

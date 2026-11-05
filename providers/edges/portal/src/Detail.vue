@@ -279,13 +279,14 @@ const upgradeHelmSnippet = computed(
 // always railgrid-edge.service and the launchd label carries the edge name
 // (pkg/cli/cmd/agent.go, launchd.go).
 const upgradeServerSnippet = computed(
-  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
-sudo mv kubectl-railgrid /usr/local/bin/railgrid
+  () => `curl -fsSL "https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz" | tar xz &&
+sudo mv kubectl-railgrid /usr/local/bin/railgrid &&
 sudo systemctl restart railgrid-edge`,
 )
 const upgradeMacOSSnippet = computed(
-  () => `curl -fsSL https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz | tar xz
-sudo mv kubectl-railgrid /usr/local/bin/railgrid
+  () => `curl -fsSL "https://github.com/railgrid/railgrid/releases/latest/download/kubectl-railgrid_$(uname -s)_$(uname -m).tar.gz" | tar xz &&
+sudo mv kubectl-railgrid /usr/local/bin/railgrid &&
+# Default system LaunchDaemon; custom/user installs need their own label and domain.
 sudo launchctl kickstart -k system/com.railgrid.agent.${props.name}`,
 )
 
