@@ -154,7 +154,7 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 		info.Reasons = append(info.Reasons, fmt.Sprintf("expected Codex %s, found %s", a.cfg.ExpectedVersion, version))
 	}
 
-	proc, err := a.startServer(ctx, "")
+	proc, err := a.startServer(ctx, "", nil, nil)
 	if err != nil {
 		return info, err
 	}
@@ -206,6 +206,16 @@ func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
 // before it returns. A resumed session is never silently replaced with a new
 // thread, and a launch without a usable Codex credential starts no process.
 func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.Emit) (result harness.Result, err error) {
+	// Registered first so it runs last, after every other deferred step has
+	// had its chance to set result or err.
+	if secrets := mcpSecrets(launch.Credential.MCPServers); len(secrets) > 0 {
+		emit = redactingEmit(emit, secrets)
+		defer func() { result, err = redactResult(result, err, secrets) }()
+	}
+	mcpArgs, mcpEnv, err := mcpOverrides(launch.Credential.MCPServers)
+	if err != nil {
+		return result, err
+	}
 	if err := a.ensureHome(); err != nil {
 		return result, err
 	}
@@ -264,7 +274,7 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 			err = errors.Join(err, removeErr)
 		}
 	}()
-	proc, err := a.startServer(ctx, launch.Workdir)
+	proc, err := a.startServer(ctx, launch.Workdir, mcpArgs, mcpEnv)
 	if err != nil {
 		return result, err
 	}
@@ -582,6 +592,12 @@ func blockedEnvKey(key string) bool {
 	if key == "GIT_SSH" || key == "GIT_SSH_COMMAND" || key == "GIT_ASKPASS" || key == "SSH_AUTH_SOCK" || key == "SSH_AGENT_PID" {
 		return true
 	}
+	// A bearer variable is set only from the launch's own servers; one
+	// inherited from the runner's environment would attach a server nobody
+	// asked this launch to reach.
+	if strings.HasPrefix(key, mcpTokenEnvPrefix) {
+		return true
+	}
 	return key == "OPENAI_API_KEY" || key == "CODEX_API_KEY" || key == "CHATGPT_API_KEY"
 }
 
@@ -594,13 +610,19 @@ type serverProcess struct {
 	stopped bool
 }
 
-func (a *Adapter) startServer(ctx context.Context, workdir string) (*serverProcess, error) {
-	// Keep extension execution policy independent of whether Codex has created
-	// its cache directories. Apply it to probes, new sessions, and resumed ones.
-	cmd := exec.Command(a.cfg.Binary, "app-server", "--listen", "stdio://",
+// startServer starts one app-server. mcpArgs and mcpEnv attach the launch's
+// remote MCP servers (see mcp.go); Probe passes neither.
+func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv []string) (*serverProcess, error) {
+	// The -c overrides are root-level options of the codex CLI, so they come
+	// before the subcommand.
+	args := append(append([]string(nil), mcpArgs...), "app-server", "--listen", "stdio://",
+		// Keep extension execution policy independent of whether Codex has
+		// created its cache directories. Apply it to probes, new sessions, and
+		// resumed ones.
 		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
-	cmd.Env = a.launchEnv()
+	cmd := exec.Command(a.cfg.Binary, args...)
+	cmd.Env = append(a.launchEnv(), mcpEnv...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}

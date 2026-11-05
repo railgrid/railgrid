@@ -859,7 +859,6 @@ export class Resources {
       if (body.backendType === AGENT_BACKEND_HARNESS) {
         spec.tools = null
         spec.delegates = null
-        spec.selfConfiguration = null
       }
       if (body.systemPrompt !== undefined) spec.systemPrompt = body.systemPrompt
       if (body.description !== undefined) spec.description = body.description.trim()

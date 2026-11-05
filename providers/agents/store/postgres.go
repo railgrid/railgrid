@@ -391,6 +391,24 @@ var agentsSchema = []string{
 		created_at TIMESTAMPTZ NOT NULL,
 		PRIMARY KEY (org_uuid, workspace_uuid, run_id, name)
 	)`,
+	// Harness MCP sessions: the SHA-256 of the bearer one harness launch
+	// presents to the agent's configuration endpoint. Expired rows are pruned
+	// whenever a session is written, so the table holds roughly one row per
+	// harness launch still inside its lifetime.
+	`CREATE TABLE IF NOT EXISTS agents_harness_mcp_sessions (
+		token_hash TEXT PRIMARY KEY,
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		cluster_id TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		agent_uid TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		interactive BOOLEAN NOT NULL DEFAULT FALSE,
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS agents_harness_mcp_sessions_expiry_idx
+		ON agents_harness_mcp_sessions (expires_at)`,
 }
 
 func (p *PostgresStore) EnsureSchema(ctx context.Context) error {
@@ -1389,6 +1407,49 @@ func (p *PostgresStore) DeleteMemory(ctx context.Context, scope Scope, id string
 }
 
 // ---- inbox ----------------------------------------------------------------------
+
+func (p *PostgresStore) PutHarnessMCPSession(ctx context.Context, scope Scope, s HarnessMCPSession) error {
+	mutation, err := p.beginScopedMutation(ctx, scope)
+	if err != nil {
+		return err
+	}
+	defer mutation.rollback()
+	scope = mutation.scope
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if s.TokenHash == "" || s.RunID == "" {
+		return fmt.Errorf("harness MCP session needs a token hash and a run ID")
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
+		DELETE FROM agents_harness_mcp_sessions WHERE expires_at <= $1`, s.CreatedAt.UTC()); err != nil {
+		return err
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
+		INSERT INTO agents_harness_mcp_sessions (token_hash, org_uuid, workspace_uuid, cluster_id, agent_name, agent_uid, run_id, interactive, expires_at, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		s.TokenHash, scope.OrgUUID, scope.WorkspaceUUID, s.ClusterID, s.AgentName, s.AgentUID, s.RunID, s.Interactive,
+		s.ExpiresAt.UTC(), s.CreatedAt.UTC()); err != nil {
+		return err
+	}
+	return mutation.commit()
+}
+
+func (p *PostgresStore) GetHarnessMCPSession(ctx context.Context, tokenHash string, now time.Time) (HarnessMCPSession, bool, error) {
+	var s HarnessMCPSession
+	err := p.db.QueryRowContext(ctx, `
+		SELECT token_hash, org_uuid, workspace_uuid, cluster_id, agent_name, agent_uid, run_id, interactive, expires_at, created_at
+		FROM agents_harness_mcp_sessions WHERE token_hash = $1 AND expires_at > $2`,
+		tokenHash, now.UTC()).Scan(&s.TokenHash, &s.Scope.OrgUUID, &s.Scope.WorkspaceUUID, &s.ClusterID, &s.AgentName,
+		&s.AgentUID, &s.RunID, &s.Interactive, &s.ExpiresAt, &s.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return HarnessMCPSession{}, false, nil
+	}
+	if err != nil {
+		return HarnessMCPSession{}, false, err
+	}
+	return s, true, nil
+}
 
 func (p *PostgresStore) AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error {
 	mutation, err := p.beginScopedMutation(ctx, scope)

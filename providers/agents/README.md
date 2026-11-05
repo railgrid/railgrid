@@ -280,6 +280,13 @@ cannot create one, and it can never change its tools, autonomy, budget,
 limits, backend, delegates or `selfConfiguration` itself. Changes apply from
 its next run.
 
+A **harness-backed** agent gets the same tools, plus its schedule tools, as an
+MCP server named `agent` that every launch attaches (see
+[docs/edge-harness.md](../../docs/edge-harness.md#the-agents-own-mcp-server)).
+It needs `hub.publicURL` set on the chart and a runner that advertises
+`remote-mcp-v1`. A change held back for approval is a `change` item in the
+inbox; approving it applies it.
+
 ## Dependencies
 
 The only hard dependencies are the **hub** and **Postgres**. That is deliberate:

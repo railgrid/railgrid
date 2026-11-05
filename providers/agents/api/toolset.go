@@ -437,21 +437,30 @@ func (s *Server) postApprovalRequest(ctx context.Context, deps tools.Deps, trigg
 	})
 	// Push the request to the user's channel so it can be answered where they
 	// live: reply /inbox to list, /approve N to allow (which resumes the run).
-	if connName, ok := deps.Agent.Spec.ResolveChannelConnection(""); ok {
-		if conn, err := deps.CR.GetConnection(ctx, connName); err == nil {
-			token := ""
-			if sec, serr := deps.Secrets.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
-				if v, ok := sec.Data["token"]; ok {
-					token = string(v)
-				}
-			}
-			_ = channels.Send(ctx, channels.Message{
-				Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config,
-				Text: fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve to allow — the run resumes automatically.", deps.Agent.Name, toolName),
-			})
+	pushInboxNotice(ctx, deps, fmt.Sprintf("⏳ %s wants to run %s. Reply /inbox to review, /approve to allow — the run resumes automatically.", deps.Agent.Name, toolName))
+	return id
+}
+
+// pushInboxNotice tells the agent's primary channel that something waits in
+// the inbox. Best effort: the inbox item is the record, the message a nudge.
+func pushInboxNotice(ctx context.Context, deps tools.Deps, text string) {
+	connName, ok := deps.Agent.Spec.ResolveChannelConnection("")
+	if !ok || deps.Secrets == nil {
+		return
+	}
+	conn, err := deps.CR.GetConnection(ctx, connName)
+	if err != nil {
+		return
+	}
+	token := ""
+	if sec, serr := deps.Secrets.GetSecret(ctx, llm.SecretNamespace, connectionSecretName(connName)); serr == nil {
+		if v, ok := sec.Data["token"]; ok {
+			token = string(v)
 		}
 	}
-	return id
+	_ = channels.Send(ctx, channels.Message{
+		Type: conn.Spec.Type, Token: token, Target: conn.Spec.Channel, Config: conn.Spec.Config, Text: text,
+	})
 }
 
 // selfConfigGated reports whether this run's self-configuration changes wait

@@ -2263,11 +2263,15 @@ describe('agent config — self configuration', () => {
     expect(checkbox(el, 'triggers').disabled).toBe(true)
   })
 
-  it('is not offered on a harness-backed agent', async () => {
-    const { el } = await mountConfig(
+  it('is offered on a harness-backed agent, over its MCP session', async () => {
+    const { el, patchAgent } = await mountConfig(
       { backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'my-claude' } } },
       [{ name: 'my-claude', provider: 'anthropic' }],
     )
-    expect(el.querySelector('[data-self-config-disabled]')).not.toBeNull()
+    expect(el.querySelector('[data-self-config-harness]')).not.toBeNull()
+    await toggle(checkbox(el, 'Let this agent configure itself'), true)
+    expect(patchAgent).toHaveBeenLastCalledWith('scout', { selfConfiguration: {
+      enabled: true, scopes: [{ name: 'Prompt' }, { name: 'Triggers' }, { name: 'Memory' }], approval: 'Unattended',
+    } })
   })
 })

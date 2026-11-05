@@ -441,7 +441,6 @@ describe('agents', () => {
         },
         tools: null,
         delegates: null,
-        selfConfiguration: null,
       },
     })
 
