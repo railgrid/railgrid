@@ -30,16 +30,40 @@ which does not depend on issuer or `sub`.
    labels (identities linked later) matches the identity hash. Found: done.
 2. **Linking** (only for issuers in `--idp-link-verified-email-issuers`): if
    the ID token carries `email_verified: true` and exactly one existing,
-   IdP-bound `User` has the same email (case-insensitive), the identity is
-   linked to it: it gets a `identities.tenants.railgrid.ai/<hash>: "true"`
-   label and a `spec.oidcProviders` entry recording issuer and subject.
+   IdP-bound `User` has the same email (case-insensitive), presented by one
+   of its own identities and not recorded there as unverified, the identity
+   is linked to it: it gets a `identities.tenants.railgrid.ai/<hash>: "true"`
+   label and a `spec.oidcProviders` entry recording issuer, subject, email
+   and whether the issuer verified it.
 3. **Invite adoption**: a pending invited `User` with that email and no IdP
    identity yet is bound to the identity.
 4. Otherwise a new `User` is created.
 
 Linking refuses, and falls through to steps 3–4, when the email is not
-verified, when the issuer is not listed, or when several accounts share the
-email. Static-token users are never linked.
+verified, when the issuer is not listed, when several accounts share the
+email, or when the account's own identity recorded that email as unverified.
+Static-token users are never linked. Two sign-ins racing to bind the same new
+identity land on the same account: the one that loses the write looks the
+identity up again.
+
+## What an identity records
+
+Every `spec.oidcProviders` entry holds the email its identity presented and
+`emailVerified`, the issuer's `email_verified` claim when the identity was
+bound or when its email last changed; a later sign-in that verifies the same
+email sets it to `true`. An account whose matching entry says
+`emailVerified: false` is not a linking target, so an account seeded through a
+connector that does not verify emails cannot capture the identity of whoever
+owns that email. Entries written before the field existed carry no verdict and
+are trusted as they always were, which keeps accounts from before this hub
+version linkable during an IdP move even if they never sign in again on the
+old IdP.
+
+The stored spelling of an email is kept when a sign-in differs only in case:
+kcp RBAC is bound to `railgrid:<email>` as stored, and rewriting it on every
+sign-in would flip it between two identities that spell the email
+differently. kcp itself sees the spelling in the token, so identities that
+should share workspace RBAC must present the email with the same case.
 
 ## Configuration
 

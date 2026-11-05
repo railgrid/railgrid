@@ -89,3 +89,42 @@ func FindUserByOIDCSubject(ctx context.Context, client *railgridclient.Client, s
 	}
 	return nil, nil
 }
+
+// IdentityEntry returns the User's spec.oidcProviders entry for the identity
+// with the given issuer and subject, or nil. An entry written before the
+// issuer was recorded has none and matches on the subject alone, but only
+// when no entry names the issuer: a Dex that moved hostname keeps its
+// connectors' subjects, so the same subject can be bound under two issuers.
+func IdentityEntry(user *tenancyv1alpha1.User, issuer, sub string) *tenancyv1alpha1.OIDCProvider {
+	var legacy *tenancyv1alpha1.OIDCProvider
+	for i := range user.Spec.OIDCProviders {
+		entry := &user.Spec.OIDCProviders[i]
+		if entry.ProviderID != sub {
+			continue
+		}
+		if entry.Issuer == issuer {
+			return entry
+		}
+		if entry.Issuer == "" && legacy == nil {
+			legacy = entry
+		}
+	}
+	return legacy
+}
+
+// EmailLinkable reports whether a new identity presenting email may be linked
+// onto the User: one of the User's own identities presents that email
+// (case-insensitively) and is not recorded as having it unverified. An entry
+// written before EmailVerified was recorded carries no verdict and is trusted
+// as it always was.
+func EmailLinkable(user *tenancyv1alpha1.User, email string) bool {
+	for _, entry := range user.Spec.OIDCProviders {
+		if !strings.EqualFold(entry.Email, email) {
+			continue
+		}
+		if entry.EmailVerified == nil || *entry.EmailVerified {
+			return true
+		}
+	}
+	return false
+}
