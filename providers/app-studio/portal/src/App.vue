@@ -155,7 +155,7 @@ import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import { isValidTimestamp } from './agentkit/timestamp'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
-import { formatAIMessageAuthor, type AITurnProgressStatus } from './agentkit/conversation'
+import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
@@ -5932,7 +5932,7 @@ async function createProjectAndStartConversation(
     prompt.value = ''
     resetWorkbench()
     selected.value = { name: draftName, displayName: 'New project', description, phase: 'Creating', createdAt: now }
-    messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', actorID: props.ctx?.user?.email, content, createdAt: now }]
+    messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', actorID: optimisticAIMessageActor(props.ctx?.user), content, createdAt: now }]
   }
 
   const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && (
@@ -8916,7 +8916,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     id: optimisticID,
     projectID: projectName,
     role: 'user',
-    actorID: props.ctx?.user?.email,
+    actorID: optimisticAIMessageActor(props.ctx?.user),
     content,
     metadata: {
       ...(turnSkills.length ? { assistantSkills: turnSkills } : {}),

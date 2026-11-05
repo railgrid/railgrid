@@ -975,3 +975,10 @@ test('preserves per-message senders across thread replay without guessing legacy
   ], 'demo')
   assert.deepEqual(messages.map(message => formatAIMessageAuthor(message.actorID)), ['alice@example.com', 'bob@example.com', 'Unknown sender'])
 })
+
+test('attributes optimistic user messages immediately when an account has no email', async () => {
+  const { optimisticAIMessageActor } = await vite.ssrLoadModule('/src/agentkit/conversation.ts')
+  assert.equal(optimisticAIMessageActor({ email: '', userId: 'static-user-alice' }), 'static-user-alice')
+  assert.equal(optimisticAIMessageActor({ email: 'alice@example.com', userId: 'user-alice' }), 'alice@example.com')
+  assert.equal(optimisticAIMessageActor(null), 'You')
+})

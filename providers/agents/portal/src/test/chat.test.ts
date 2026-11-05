@@ -5,7 +5,7 @@ import { ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
 import ChatMessageView from '../views/ChatMessage.vue'
-import { formatAIMessageAuthor } from '../agentkit/conversation'
+import { formatAIMessageAuthor, optimisticAIMessageActor } from '../agentkit/conversation'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
@@ -3376,4 +3376,15 @@ it('keeps each stored sender beside its timestamp after rebuilding a shared tran
     expect(footer?.textContent).toContain(formatAIMessageAuthor(message.actorID))
     expect(view.element.querySelector('article')?.getAttribute('aria-label')).toBe(`Message from ${formatAIMessageAuthor(message.actorID)}`)
   }
+})
+
+it('attributes optimistic messages for accounts without an email before the server responds', async () => {
+  const user = { email: '', userId: 'static-user-47b9dce0e91570a1' }
+  const message = { id: 'pending', role: 'user', content: 'Hello', tools: [], actorID: optimisticAIMessageActor(user) }
+  const view = await mountVue(ChatMessageView, { message })
+  mounted.push(view)
+  expect(view.element.querySelector('.k-ai-message-author')?.textContent).toBe(user.userId)
+  expect(view.element.textContent).not.toContain('Unknown sender')
+  expect(optimisticAIMessageActor(null)).toBe('You')
+  expect(formatAIMessageAuthor(undefined)).toBe('Unknown sender')
 })

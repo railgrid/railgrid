@@ -20,7 +20,7 @@ import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
 import { credentialUnavailable, agentHarnessBacked, agentModelCredential, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
-import type { AITurnProgressStatus } from '../agentkit/conversation'
+import { optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
 import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
@@ -1528,7 +1528,7 @@ async function send(): Promise<void> {
   streamingID = assistantID
   messages.value = [
     ...messages.value,
-    { id: userID, role: 'user', content: text, tools: [], actorID: props.api.context()?.user?.email },
+    { id: userID, role: 'user', content: text, tools: [], actorID: optimisticAIMessageActor(props.api.context()?.user) },
     {
       id: assistantID,
       role: 'assistant',
