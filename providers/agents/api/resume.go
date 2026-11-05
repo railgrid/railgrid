@@ -42,9 +42,9 @@ import (
 // resumeApprovedRun continues a checkpointed run after the user's decision.
 // Detached from the resolving request: runs on its own context with the run's
 // own timeout. Errors are recorded on the run, not returned to the resolver.
-func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, access runAccess, approve bool, note string) {
+func (s *Server) resumeApprovedRun(ctx context.Context, scope store.Scope, item store.InboxItem, access runAccess, approve bool, note string) {
 	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
-	s.resumeRun(context.Background(), agentScope, item.RunID, access, resumeIntent{
+	s.resumeRun(ctx, agentScope, item.RunID, access, resumeIntent{
 		Approval: true, Approve: approve, Note: note,
 		FromPhase: store.RunPhasePendingApproval,
 		InboxItem: item,

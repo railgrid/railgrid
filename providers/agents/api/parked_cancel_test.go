@@ -374,7 +374,7 @@ func TestCancelParkedHarnessStopsRemoteAttemptAndLateApprovalCannotRevive(t *tes
 	if err != nil {
 		t.Fatalf("resolve late approval: %v", err)
 	}
-	f.server.resumeApprovedRun(workspaceScope, item, runAccess{}, true, "")
+	f.server.resumeApprovedRun(t.Context(), workspaceScope, item, runAccess{}, true, "")
 	stored, err = f.server.store.GetRun(context.Background(), f.scope, run.ID)
 	if err != nil || stored.Phase != store.RunPhaseAborted {
 		t.Fatalf("run after late approval = %+v, %v; want it to stay Aborted", stored, err)

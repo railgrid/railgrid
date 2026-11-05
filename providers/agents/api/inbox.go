@@ -225,7 +225,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
 		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
-		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, item.Response)
+		go s.resumeApprovedRun(r.Context(), wsScope, item, access, state != store.InboxStateDenied, item.Response)
 	}
 	writeJSON(w, http.StatusOK, item)
 }

@@ -27,6 +27,8 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func TestRunProjectionRetriesTheCreateFinalizerConflict(t *testing.T) {
@@ -303,7 +305,12 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 		},
 	}
 	checked := false
-	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{check: func() {
+	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{checkContext: func(ctx context.Context) {
+		identity, ok := dataplane.ProxiedIdentityFrom(ctx)
+		if !ok || identity.User != "reviewer" || ctx.Err() != nil {
+			t.Fatalf("resume lost caller identity or inherited request cancellation: %v, %v", identity, ctx.Err())
+		}
+	}, check: func() {
 		checked = true
 		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 20, "")
 		if err != nil {
@@ -319,7 +326,9 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 			t.Fatalf("unexpected question reply: %+v", reply)
 		}
 	}}}
-	s.resumeApprovedRun(scope, item, access, true, "Line guide")
+	ctx, cancel := context.WithCancel(dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "reviewer"}))
+	cancel()
+	s.resumeApprovedRun(ctx, scope, item, access, true, "Line guide")
 	if !checked {
 		t.Fatal("question resume did not reach its continuation boundary")
 	}
@@ -327,10 +336,14 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 
 type projectionResumeCR struct {
 	fakeCR
-	check func()
+	check        func()
+	checkContext func(context.Context)
 }
 
-func (c projectionResumeCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) {
+func (c projectionResumeCR) GetAgent(ctx context.Context, _ string) (*agentsv1alpha1.Agent, error) {
+	if c.checkContext != nil {
+		c.checkContext(ctx)
+	}
 	c.check()
 	return nil, errors.New("stop test after the projection boundary")
 }
