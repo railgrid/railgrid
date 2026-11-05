@@ -3388,3 +3388,19 @@ it('attributes optimistic messages for accounts without an email before the serv
   expect(optimisticAIMessageActor(null)).toBe('You')
   expect(formatAIMessageAuthor(undefined)).toBe('Unknown sender')
 })
+
+it('shows the Railgrid user immediately while a no-email account waits for a chat response', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const { el } = await mountChat(scripted([], gate), {
+    context: () => ({ user: { email: '', userId: 'static-user-alice' } }),
+  })
+  try {
+    await send(el, 'Please review this thread.')
+    expect(el.querySelector('.k-ai-message-author')?.textContent).toBe('static-user-alice')
+    expect(text(el)).not.toContain('Unknown sender')
+  } finally {
+    release()
+    await settle()
+  }
+})
