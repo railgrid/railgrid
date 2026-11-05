@@ -153,3 +153,9 @@ function sanitizeIDPart(value?: string): string {
     .replace(/[^a-zA-Z0-9_-]+/g, '-')
     .replace(/^-+|-+$/g, '')
 }
+
+/** Display the authenticated Railgrid principal without its RBAC prefix. */
+export function formatAIMessageAuthor(actorID: unknown): string {
+  const actor = typeof actorID === 'string' ? actorID.trim() : ''
+  return actor.replace(/^railgrid:(?=.)/, '') || 'Unknown sender'
+}

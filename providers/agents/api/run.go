@@ -297,6 +297,7 @@ type runAccess struct {
 func (a runAccess) applyTo(tr *taskRun) {
 	tr.Creds, tr.CR = a.Creds, a.CR
 	tr.ClusterID, tr.HubToken = a.ClusterID, a.HubToken
+	tr.CallerUser = a.CallerUser
 	tr.EdgesEndpoint, tr.EdgesInsecure = a.EdgesEndpoint, a.EdgesInsecure
 }
 
@@ -384,10 +385,12 @@ func resumeArtifactReferences(checkpoint runCheckpoint, callerUser string) (stri
 // runAccess), what to run, where the answer goes, and the callbacks a live
 // caller wants. ParentRunID links sub-agent (delegation) runs.
 type taskRun struct {
-	Creds llm.CredentialResolver
-	CR    tools.CRAccess
-	Scope store.Scope
-	Agent *agentsv1alpha1.Agent
+	// CallerUser attributes only this attended task, never inherited child tasks.
+	CallerUser string
+	Creds      llm.CredentialResolver
+	CR         tools.CRAccess
+	Scope      store.Scope
+	Agent      *agentsv1alpha1.Agent
 
 	// RunID pre-assigns the run's ID (async run-now, chat's SSE start event,
 	// resume). Empty → generated.
@@ -798,6 +801,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		if aerr := s.store.AppendMessage(ctx, scope, store.Message{
 			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
 			Role: "user", Content: run.Task, CreatedAt: startedAt,
+			Metadata: map[string]any{"actorID": strings.TrimSpace(run.CallerUser)},
 		}); aerr != nil {
 			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persist agent task message: %w", aerr))
 		}

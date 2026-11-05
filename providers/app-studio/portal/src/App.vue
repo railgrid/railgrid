@@ -155,7 +155,7 @@ import AssistantPlanPopover from './AssistantPlanPopover.vue'
 import AssistantPlanDisclosure from './AssistantPlanDisclosure.vue'
 import { isValidTimestamp } from './agentkit/timestamp'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
-import type { AITurnProgressStatus } from './agentkit/conversation'
+import { formatAIMessageAuthor, type AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
@@ -5932,7 +5932,7 @@ async function createProjectAndStartConversation(
     prompt.value = ''
     resetWorkbench()
     selected.value = { name: draftName, displayName: 'New project', description, phase: 'Creating', createdAt: now }
-    messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', content, createdAt: now }]
+    messages.value = [{ id: `temp-${Date.now()}-user`, projectID: draftName, role: 'user', actorID: props.ctx?.user?.email, content, createdAt: now }]
   }
 
   const current = () => appComponentMounted && pendingFirstProjectSubmission === submission && (
@@ -8916,6 +8916,7 @@ async function sendMessage(activeRunIntent: 'queue' | 'steer' = 'queue'): Promis
     id: optimisticID,
     projectID: projectName,
     role: 'user',
+    actorID: props.ctx?.user?.email,
     content,
     metadata: {
       ...(turnSkills.length ? { assistantSkills: turnSkills } : {}),
@@ -9742,6 +9743,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const projected = toProjectMessageView({
         id: messageID,
         projectID: projectName,
+        actorID: role === 'user' ? rawItem.actorID : undefined,
         role,
         content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
         metadata,
@@ -11438,7 +11440,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :turn-id="message.id"
               :role="message.role"
               :bubble="message.role === 'user' && userMessageHasVisibleContent(message)"
-              :aria-label="message.role === 'user' ? 'Your message' : 'Assistant message'"
+              :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(message.actorID)}` : 'Assistant message'"
             >
               <template v-if="message.role === 'user' && (assistantAttachmentsForMessage(message).length || assistantAnnotationsForMessage(message).length)" #before>
                 <AssistantMessageAttachments
@@ -11580,7 +11582,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 </div>
               </template>
               <template
-                v-if="message.role === 'user' && (assistantSkillsForMessage(message).length || assistantContextResourcesForMessage(message).length || isValidTimestamp(message.createdAt))"
+                v-if="message.role === 'user'"
                 #after
               >
                 <div
@@ -11615,6 +11617,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     <span class="max-w-24 truncate text-text-muted">{{ resource.resourceRef.kind }}</span>
                   </span>
                 </div>
+                <span class="k-ai-message-metadata k-ai-message-author">{{ formatAIMessageAuthor(message.actorID) }}</span>
                 <AITimestamp
                   v-if="isValidTimestamp(message.createdAt)"
                   :value="message.createdAt"

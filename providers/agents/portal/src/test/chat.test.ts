@@ -4,6 +4,8 @@
 import { ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
+import ChatMessageView from '../views/ChatMessage.vue'
+import { formatAIMessageAuthor } from '../agentkit/conversation'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
@@ -3357,4 +3359,21 @@ describe('authoritative recovery state', () => {
     expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Retain my draft')
     expect(store.takePendingPrompt('scout')).toBe('Queued assisted setup')
   })
+})
+
+it('keeps each stored sender beside its timestamp after rebuilding a shared transcript', async () => {
+  const rows = rebuildTranscript([
+    { id: 'alice', role: 'user', content: 'First', metadata: { actorID: 'railgrid:alice@example.com' }, createdAt: '2026-11-05T00:00:00Z' },
+    { id: 'bob', role: 'user', content: 'Second', metadata: { actorID: 'railgrid:bob@example.com' }, createdAt: '2026-11-05T00:01:00Z' },
+    { id: 'legacy', role: 'user', content: 'Older message' },
+  ])
+  expect(rows.map(row => formatAIMessageAuthor(row.actorID))).toEqual(['alice@example.com', 'bob@example.com', 'Unknown sender'])
+  for (const message of rows) {
+    const view = await mountVue(ChatMessageView, { message, showRunLink: false })
+    mounted.push(view)
+    await settle()
+    const footer = view.element.querySelector('.k-ai-message__after')
+    expect(footer?.textContent).toContain(formatAIMessageAuthor(message.actorID))
+    expect(view.element.querySelector('article')?.getAttribute('aria-label')).toBe(`Message from ${formatAIMessageAuthor(message.actorID)}`)
+  }
 })

@@ -248,6 +248,7 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
     content,
     tools: [],
     runID: item.runID,
+    ...(item.role === 'user' && typeof item.metadata?.actorID === 'string' ? { actorID: item.metadata.actorID } : {}),
     ...(item.createdAt ? { createdAt: item.createdAt } : {}),
     ...(progressFromMetadata(item.metadata) ? { progress: progressFromMetadata(item.metadata) } : {}),
   })

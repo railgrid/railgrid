@@ -852,6 +852,7 @@ export function pendingIsQuestion(pending: PendingApproval | null | undefined): 
 }
 
 export interface ChatMessage {
+  actorID?: string
   // id is stable across Vue's keyed re-renders so DOM nodes (and browser text
   // selection) survive while a reply streams in.
   id: string
@@ -878,6 +879,7 @@ export interface TranscriptMessage {
   content: string
   runID?: string
   metadata?: {
+    actorID?: string
     tool?: string
     args?: string
     error?: string | boolean

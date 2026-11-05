@@ -1528,7 +1528,7 @@ async function send(): Promise<void> {
   streamingID = assistantID
   messages.value = [
     ...messages.value,
-    { id: userID, role: 'user', content: text, tools: [] },
+    { id: userID, role: 'user', content: text, tools: [], actorID: props.api.context()?.user?.email },
     {
       id: assistantID,
       role: 'assistant',

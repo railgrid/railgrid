@@ -30,7 +30,7 @@ import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
-import { formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
+import { formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
 import { isValidTimestamp } from '../agentkit/timestamp'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 
@@ -371,7 +371,7 @@ onBeforeUnmount(() => { mounted = false })
       :id="message.id"
       :role="message.role"
       :bubble="message.role === 'user'"
-      :aria-label="message.role === 'user' ? 'Your message' : 'Assistant message'"
+      :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(message.actorID)}` : 'Assistant message'"
     >
       <template v-if="failurePhase" #before>
         <RunFailureNotice
@@ -516,7 +516,7 @@ onBeforeUnmount(() => { mounted = false })
 
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
-    <template v-if="message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
+    <template v-if="message.role === 'user' || message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <!--
         A question is not an approval. It names no tool, and what resolves it is
         an answer — so it gets the question and a reply box rather than an
@@ -599,6 +599,7 @@ onBeforeUnmount(() => { mounted = false })
       <div v-if="message.usage" class="k-ai-message-metadata agents-turn-usage">
         {{ fmtTokens(message.usage.inputTokens) }} in · {{ fmtTokens(message.usage.outputTokens) }} out · {{ fmtUSD(message.usage.usdMicros) }}
       </div>
+      <span v-if="message.role === 'user'" class="k-ai-message-metadata k-ai-message-author">{{ formatAIMessageAuthor(message.actorID) }}</span>
       <AITimestamp v-if="isValidTimestamp(messageCreatedAt)" :value="messageCreatedAt" />
     </template>
     </AIConversationTurn>
