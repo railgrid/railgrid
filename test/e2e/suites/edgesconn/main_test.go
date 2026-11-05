@@ -131,7 +131,6 @@ func TestMain(m *testing.M) {
 		"--serving-key-file", filepath.Join(repoRoot, "certs", "apiserver.key"),
 		"--hub-external-url", hubURL,
 		"--dev-mode", "-v", "4",
-		"--provider-heartbeat-auth", "enforce",
 		"--static-auth-token", staticToken,
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",

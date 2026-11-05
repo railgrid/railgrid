@@ -183,14 +183,6 @@ type Options struct {
 	// softdelete.DefaultGracePeriod (30 days).
 	SoftDeleteGracePeriod time.Duration
 
-	// ProviderHeartbeatAuth is what the hub does with a provider heartbeat
-	// whose bearer token does not verify as that provider's own service
-	// account: "warn" logs and records the beat, "enforce" rejects it. The
-	// default is "warn" for this release so providers installed from charts
-	// that predate the authenticated heartbeat keep reporting alive while
-	// they are rolled forward; the next release flips the default to
-	// "enforce". See providers.HeartbeatAuthMode.
-	ProviderHeartbeatAuth string
 	// ProviderWorkspaceClusterAdmin selects the role the provider ServiceAccount
 	// is bound to inside its own provider workspace: true (the default this
 	// release) keeps cluster-admin, false binds the generated, narrower
@@ -283,7 +275,6 @@ func NewOptions() *Options {
 		DefaultOrgsPerUser:    quota.DefaultOrgsPerUser,
 		FreeOrgsPerUser:       quota.DefaultFreeOrgsPerUser,
 
-		ProviderHeartbeatAuth: string(providers.HeartbeatAuthWarn),
 		// Wide for this release; the next one defaults to false. See the field.
 		ProviderWorkspaceClusterAdmin:  true,
 		ProviderDelegatedTokens:        string(providers.DelegationOff),

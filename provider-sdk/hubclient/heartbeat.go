@@ -72,8 +72,7 @@ type HeartbeatConfig struct {
 	// CatalogEntry.status.reportedVersion.
 	Version string
 	// Token is the bearer presented to the hub (see ResolveHubToken). Empty
-	// sends unauthenticated beats, which the hub logs (warn) or rejects
-	// (enforce).
+	// sends unauthenticated beats, which the hub rejects.
 	Token string
 	// Interval between beats; DefaultHeartbeatInterval when zero.
 	Interval time.Duration

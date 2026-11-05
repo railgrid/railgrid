@@ -503,10 +503,24 @@ func TestBAPIProvidersDTO(t *testing.T) {
 
 // TestCBackendProxy asserts the hub reverse-proxies to kuery's backend, so a
 // tenant reaches the provider without addressing it directly.
+//
+// The proxy answers 503 until the catalog reconciler has probed the backend's
+// healthPath and found it healthy. The entry was reconciled before the
+// provider process existed, so that probe failed and the next one waits on
+// either the SweepInterval requeue or the status write of the provider's
+// first accepted heartbeat — which itself waits on the provider's readiness
+// gate and a TokenReview. Poll rather than assert once, as the quickstart
+// suite does.
 func TestCBackendProxy(t *testing.T) {
-	status, body := hubGet(t, "/services/providers/kuery/healthz")
-	if status != http.StatusOK {
-		t.Fatalf("backend proxy /services/providers/kuery/healthz = %d, body=%s", status, truncate(body))
+	const path = "/services/providers/kuery/healthz"
+	var status int
+	var body []byte
+	ok := waitForCondition(t, 90*time.Second, func() (bool, string) {
+		status, body = hubGet(t, path)
+		return status == http.StatusOK, fmt.Sprintf("status %d body=%s", status, truncate(body))
+	})
+	if !ok {
+		t.Fatalf("backend proxy %s never answered 200; last status %d, body=%s", path, status, truncate(body))
 	}
 	if !bytes.Contains(body, []byte("ok")) {
 		t.Errorf("healthz body = %s, want it to contain \"ok\"", truncate(body))

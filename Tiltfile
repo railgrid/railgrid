@@ -1134,11 +1134,11 @@ make run-provider-infrastructure \
         # The same root .env domain is used by preview-gateway-up. Reload this
         # provider when it changes so emitted Application hosts stay aligned.
         '.env',
-        # Restart whenever init writes/updates the runtime kubeconfig:
-        # serve refuses to start until RAILGRID_PROVIDER_KUBECONFIG resolves
-        # to a real file (see the Makefile target), so the provider must be
-        # restarted once `infrastructure-init` has written it.
-        '.kcp/infrastructure-runtime.kubeconfig',
+        # Restart whenever the hub re-mints the provider kubeconfig: serve
+        # refuses to start until RAILGRID_PROVIDER_KUBECONFIG resolves to a
+        # real file (see the Makefile target), and the hub only accepts a
+        # heartbeat signed by this identity, the same one the chart mounts.
+        '.kcp/infrastructure-provider.kubeconfig',
     ] + access_proxy_image_deps,
     # hub for CatalogEntry registration target, kro-mgmt-up for the
     # backend cluster the catalog reads from. Both must be green
