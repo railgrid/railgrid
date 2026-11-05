@@ -3,6 +3,7 @@ import {
   activeMenu,
   hashFor,
   parseHash,
+  questionRunForSubPath,
   syncHash,
   writeHash,
   type Route,
@@ -10,6 +11,13 @@ import {
 
 beforeEach(() => {
   history.replaceState(null, '', '#/agents')
+})
+
+it('resolves a question deep link independently of the last viewed chat', () => {
+  history.replaceState(null, '', '#/agents/another-agent/chat')
+  expect(questionRunForSubPath('/activity/run-42/question')).toEqual({ kind: 'run', id: 'run-42' })
+  expect(questionRunForSubPath('/activity/run-42')).toBeNull()
+  expect(questionRunForSubPath('/activity/foreign%2Frun/question')).toBeNull()
 })
 
 describe('create routes', () => {

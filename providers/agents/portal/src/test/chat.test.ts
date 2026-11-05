@@ -1284,21 +1284,21 @@ describe('chat streaming', () => {
     )
     await send(el, 'open a PR')
 
-    const card = el.querySelector('.agents-approval')!
+    const card = el.querySelector('.agents-question-card')!
     expect(text(card)).toContain('Which repository should I open the pull request against?')
     expect(text(card)).not.toContain('tool unavailable')
     expect(text(card)).not.toContain('Approval required')
     // No verdict buttons: a question is answered, not approved.
     expect(text(card)).not.toContain('Deny')
 
-    const input = card.querySelector<HTMLInputElement>('.agents-approval-answer')!
+    const input = card.querySelector<HTMLInputElement>('input[type="text"]')!
     input.value = 'the acme/app one'
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await settle(2)
-    card.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    expect(text(el.querySelector('.agents-question-card__status'))).toBe('Answer sent')
   })
 
   // An older server sends no kind. A park with no tool is still a question, so
@@ -1312,7 +1312,7 @@ describe('chat streaming', () => {
       {},
     )
     await send(el, 'go')
-    const card = el.querySelector('.agents-approval')!
+    const card = el.querySelector('.agents-question-card')!
     expect(text(card)).toContain('Which one?')
     expect(text(card)).not.toContain('tool unavailable')
   })

@@ -475,16 +475,16 @@ describe('Activity.vue', () => {
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
 
-    expect(text(view.element.querySelector('.agents-approval-prompt'))).toBe('Which pull request should I review?')
+    expect(text(view.element.querySelector('.agents-question-card__prompt'))).toBe('Which pull request should I review?')
     expect(text(view.element)).not.toContain('Approve & resume')
     expect(text(view.element)).not.toContain("Answer from the agent's channel")
-    const actions = view.element.querySelector('.agents-approval-actions')!
+    const actions = view.element.querySelector('.agents-question-card')!
     const send = buttonWithText(actions, 'Send answer')
     expect(send.disabled).toBe(true)
     send.click()
     expect(resolveInbox).not.toHaveBeenCalled()
 
-    const answer = actions.querySelector<HTMLInputElement>('input.agents-approval-answer')!
+    const answer = actions.querySelector<HTMLInputElement>('input[type="text"]')!
     setValue(answer, ' railgrid/railgrid#839 ')
     await settleVue()
     expect(send.disabled).toBe(false)
@@ -509,7 +509,7 @@ describe('Activity.vue', () => {
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
 
-    const actions = view.element.querySelector('.agents-approval-actions')!
+    const actions = view.element.querySelector('.agents-question-card')!
     const dismiss = buttonWithText(actions, 'Dismiss')
     dismiss.click()
     await settleVue(3)
@@ -1249,14 +1249,14 @@ describe('RunDetail.vue', () => {
     })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
 
-    expect(text(view.element)).toContain('The agent has a question')
-    expect(text(view.element.querySelector('.agents-approval-question'))).toBe('Which pull request should I review?')
+    expect(view.element.querySelector('.agents-question-card')).not.toBeNull()
+    expect(text(view.element.querySelector('.agents-question-card__prompt'))).toBe('Which pull request should I review?')
     expect(text(view.element)).not.toContain('tool unavailable')
     expect(text(view.element)).not.toContain('Approve & resume')
     const send = buttonWithText(view.element, 'Send answer')
     expect(send.disabled).toBe(true)
 
-    const answer = view.element.querySelector<HTMLInputElement>('input.agents-approval-answer')!
+    const answer = view.element.querySelector<HTMLInputElement>('.agents-question-card input[type="text"]')!
     setValue(answer, ' #835 ')
     await settleVue()
     expect(send.disabled).toBe(false)

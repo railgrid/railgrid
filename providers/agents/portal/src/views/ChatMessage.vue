@@ -20,6 +20,7 @@ import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import { pendingIsQuestion } from '../types'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
@@ -92,16 +93,6 @@ const inlineAppTools = computed(() => {
   })
 })
 
-// The answer lives with the card that asks for it: one question is on screen at
-// a time, and lifting it into the page would make the page own a field only this
-// card uses.
-const answerDraft = ref('')
-function sendAnswer(): void {
-  const response = answerDraft.value.trim()
-  if (!response || !props.message.approval) return
-  emit('approval', { inboxID: props.message.approval.inboxID, decision: 'answer', response })
-  answerDraft.value = ''
-}
 const root = ref<HTMLElement | null>(null)
 const expanded = ref(new Set<string>())
 const assistantHTML = computed(() => {
@@ -519,44 +510,15 @@ onBeforeUnmount(() => { mounted = false })
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
     <template v-if="message.role === 'user' || message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
-      <!--
-        A question is not an approval. It names no tool, and what resolves it is
-        an answer — so it gets the question and a reply box rather than an
-        approval card reading "tool unavailable" over buttons that cannot mean
-        anything, which is what a harness's own question rendered as.
-      -->
-      <AIInterrupt
+      <AgentQuestionCard
         v-if="message.approval && pendingIsQuestion(message.approval)"
-        class="agents-approval"
-        :status="message.approval.resolved ? 'resolved' : approvalBusy ? 'busy' : 'pending'"
-        :busy="!!approvalBusy"
-        title="The agent has a question"
-        aria-label="The agent is waiting for an answer"
-      >
-        <p class="agents-approval-question">{{ message.approval.question || 'The agent is waiting for an answer.' }}</p>
-        <div v-if="message.approval.resolved" class="agents-approval-done">Answered — the run is resuming.</div>
-        <template v-if="!message.approval.resolved" #actions>
-          <input
-            v-model="answerDraft"
-            class="k-input agents-approval-answer"
-            type="text"
-            :disabled="!!approvalBusy"
-            placeholder="Your answer…"
-            :aria-label="message.approval.question || 'Your answer'"
-            @keydown.enter.prevent="sendAnswer"
-          />
-          <button
-            class="k-btn k-btn--primary"
-            type="button"
-            :disabled="!!approvalBusy || !answerDraft.trim()"
-            :aria-busy="approvalBusy ? 'true' : undefined"
-            @click="sendAnswer"
-          >
-            <LoaderCircle v-if="approvalBusy" class="agents-spinner k-spin" aria-hidden="true" />
-            <Check v-else aria-hidden="true" /> {{ approvalBusy ? 'Sending…' : 'Send answer' }}
-          </button>
-        </template>
-      </AIInterrupt>
+        :question-id="message.approval.inboxID"
+        :prompt="message.approval.question"
+        :busy="approvalBusy === 'answer'"
+        :disabled="!!approvalBusy"
+        :resolved="message.approval.resolved === 'answer' ? 'answered' : message.approval.resolved ? 'dismissed' : undefined"
+        @answer="response => emit('approval', { inboxID: message.approval!.inboxID, decision: 'answer', response })"
+      />
 
       <AIInterrupt
         v-else-if="message.approval"

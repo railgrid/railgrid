@@ -41,6 +41,7 @@ import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
@@ -72,7 +73,6 @@ const requestPreview = computed(() => technicalDiagnosticExcerpt(run.value?.inpu
 const inspectorOpen = ref(true)
 const resolvingInboxID = ref('')
 const resolvingDecision = ref<'approve' | 'deny' | 'answer' | ''>('')
-const answerDraft = ref('')
 // A pending question is resolved with words, not a verdict. The server stamps
 // kind on every pending block; a legacy block without one is an approval, so
 // a malformed approval still gets the disclosure guard rather than a reply box.
@@ -266,7 +266,6 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer',
       ? authority.api.resolveInbox(inboxID, 'answer', response!.trim())
       : authority.api.resolveInbox(inboxID, decision))
     if (!authorityIsCurrent(authority) || id !== props.runId) return
-    if (decision === 'answer') answerDraft.value = ''
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? 'Answered — the run is resuming.' : 'Denied.')
     await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
@@ -526,7 +525,7 @@ onBeforeUnmount(() => {
               <template v-if="run && !runAgentMismatch">
                 <span class="k-resource-page__separator" aria-hidden="true">·</span>
                 <span class="k-resource-page__status">
-                  <StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[run.phase].cls}`" :status="phaseMeta[run.phase].label" :tone="phaseMeta[run.phase].tone" />
+                  <StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[run.phase].cls}`" :status="pendingQuestion ? 'Needs input' : phaseMeta[run.phase].label" :tone="phaseMeta[run.phase].tone" />
                 </span>
               </template>
             </div>
@@ -538,7 +537,7 @@ onBeforeUnmount(() => {
               <template v-if="run">
                 <span class="k-resource-page__separator" aria-hidden="true">·</span>
                 <span class="k-resource-page__status">
-                  <StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[run.phase].cls}`" :status="phaseMeta[run.phase].label" :tone="phaseMeta[run.phase].tone" />
+                  <StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta[run.phase].cls}`" :status="pendingQuestion ? 'Needs input' : phaseMeta[run.phase].label" :tone="phaseMeta[run.phase].tone" />
                 </span>
               </template>
             </div>
@@ -580,34 +579,14 @@ onBeforeUnmount(() => {
                 over a button that could never be enabled. It gets the
                 question and a reply box instead, as in chat.
               -->
-              <AIInterrupt
+              <AgentQuestionCard
                 v-else-if="pendingQuestion && run.pending"
-                class="agents-approval"
-                kind="follow-up"
-                :status="resolvingInboxID ? 'busy' : 'pending'"
-                :busy="!!resolvingInboxID"
-                title="The agent has a question"
-                aria-label="The agent is waiting for an answer"
-              >
-                <p class="agents-approval-question">{{ run.pending.question || 'The agent is waiting for an answer.' }}</p>
-                <template #actions>
-                  <div class="agents-approval-actions">
-                    <input
-                      v-model="answerDraft"
-                      class="k-input agents-approval-answer"
-                      type="text"
-                      :disabled="!!resolvingInboxID"
-                      placeholder="Your answer…"
-                      :aria-label="run.pending.question || 'Your answer'"
-                      @keydown.enter.prevent="resolve(run.pending!.inboxID, 'answer', answerDraft)"
-                    />
-                    <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !answerDraft.trim()" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' || undefined" @click="resolve(run.pending!.inboxID, 'answer', answerDraft)">
-                      <LoaderCircle v-if="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'" class="agents-spinner k-spin" aria-hidden="true" />
-                      <Check v-else :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer' ? 'Sending…' : 'Send answer' }}
-                    </button>
-                  </div>
-                </template>
-              </AIInterrupt>
+                :question-id="run.pending.inboxID"
+                :prompt="run.pending.question"
+                :busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'"
+                :disabled="!!resolvingInboxID"
+                @answer="response => resolve(run!.pending!.inboxID, 'answer', response)"
+              />
               <AIInterrupt
                 v-else-if="run.phase === 'PendingApproval' && run.pending"
                 class="agents-approval"

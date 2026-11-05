@@ -192,6 +192,13 @@ result first and start execution collapsed. Empty results and missing partial
 output are explicit. Pending approvals and questions retain their existing
 authority checks and actions above the evidence.
 
+Chat, the inbox, and run detail use the same question card. A single question
+with a runner-supplied choices block offers numbered choices and a custom
+response; other prompts remain text questions. Choosing a response does not
+send it. The answer stays editable after an unsuccessful send. A link to
+`/activity/{runID}/question` opens the run directly so the last viewed chat
+cannot determine which question the user sees.
+
 The full original request is a single collapsed disclosure below the result and
 execution sections. Its summary includes a bounded, redacted preview; truncation
 preserves Unicode code points. The diagnostic excerpt yields to the full
