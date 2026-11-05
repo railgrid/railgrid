@@ -85,8 +85,8 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 
 	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)
 	name := DelegatedUserServiceAccountName(tenantPath, delegatedTestUser, delegatedTestProvider)
-	if !strings.HasPrefix(name, delegatedUserNamePrefix) || len(name) > 63 {
-		t.Fatalf("service account name %q is not a short railgrid-du-* label", name)
+	if !strings.HasPrefix(name, platformDelegatedUserNamePrefix) || len(name) > 63 {
+		t.Fatalf("service account name %q is not a short railgrid-pdu-* label", name)
 	}
 	sa, err := cs.CoreV1().ServiceAccounts(Namespace).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
@@ -114,8 +114,8 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	if err != nil {
 		t.Fatalf("get delegated ClusterRoleBinding: %v", err)
 	}
-	if binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != DelegatedUserClusterRole {
-		t.Errorf("binding role = %+v, want ClusterRole %s (what workspace members hold today)", binding.RoleRef, DelegatedUserClusterRole)
+	if binding.RoleRef.Kind != "ClusterRole" || binding.RoleRef.Name != DelegatedUserClusterRole || binding.RoleRef.Name == "cluster-admin" {
+		t.Errorf("binding role = %+v, want bounded ClusterRole %s", binding.RoleRef, DelegatedUserClusterRole)
 	}
 	if len(binding.Subjects) != 1 || binding.Subjects[0].Kind != "ServiceAccount" || binding.Subjects[0].Name != name || binding.Subjects[0].Namespace != Namespace {
 		t.Errorf("binding subjects = %+v, want only the delegated ServiceAccount", binding.Subjects)
@@ -133,6 +133,35 @@ func TestIssueDelegatedUserTokenCreatesOneAccountBoundToMemberRole(t *testing.T)
 	}
 	if len(list.Items) != 1 {
 		t.Fatalf("ServiceAccounts after two issuances = %d, want 1", len(list.Items))
+	}
+}
+
+func TestDelegatedServiceAccountNamesUseScopedPrefixes(t *testing.T) {
+	tenantPath := tenantPathFor(delegatedTestOrg, delegatedTestWS)
+	platformName := delegatedServiceAccountName(tenantPath, delegatedTestUser, PlatformProvider(delegatedTestProvider))
+	orgName := delegatedServiceAccountName(tenantPath, delegatedTestUser, DelegatedProvider{Name: delegatedTestProvider, OrgUUID: "provider-org"})
+	if !strings.HasPrefix(platformName, platformDelegatedUserNamePrefix) {
+		t.Fatalf("platform delegated identity %q lacks %q prefix", platformName, platformDelegatedUserNamePrefix)
+	}
+	if !strings.HasPrefix(orgName, orgDelegatedUserNamePrefix) {
+		t.Fatalf("Org delegated identity %q lacks %q prefix", orgName, orgDelegatedUserNamePrefix)
+	}
+	if platformName == orgName || len(platformName) > 63 || len(orgName) > 63 {
+		t.Fatalf("delegated names are not distinct DNS-safe names: platform=%q org=%q", platformName, orgName)
+	}
+	if !IsDelegatedServiceAccountName(platformName) || !IsDelegatedServiceAccountName(orgName) {
+		t.Fatalf("current delegated names were not recognized: platform=%q org=%q", platformName, orgName)
+	}
+	if !IsRetiredDelegationUsername("system:serviceaccount:default:railgrid-du-old") {
+		t.Fatal("legacy railgrid-du identity was not marked retired")
+	}
+	for _, username := range []string{
+		"system:serviceaccount:default:" + platformName,
+		"system:serviceaccount:default:" + orgName,
+	} {
+		if IsRetiredDelegationUsername(username) {
+			t.Errorf("current delegated identity %q was marked retired", username)
+		}
 	}
 }
 
@@ -311,7 +340,7 @@ func TestVerifyDelegatedUserAnnotationsAcceptsHubMintedAndRejectsTampered(t *tes
 //
 // A delegated ServiceAccount lives in namespace "default" of the tenant's own
 // team workspace, and the bootstrap binds every workspace member to
-// cluster-admin there. An ordinary member can therefore create exactly the
+// ServiceAccount write access there. An ordinary member can therefore create exactly the
 // object the hub would have created — right name (it is a hash of the tenant
 // path, the user, and the provider, all public), right label, all four
 // identity annotations naming whoever they choose — mint a token for it with

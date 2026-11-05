@@ -35,17 +35,30 @@ type credential struct {
 	// extra is what else the identity brought (harness.Credential.Environment):
 	// exported beside the model credential and redacted exactly like it.
 	extra []harness.EnvironmentVariable
+	// mcpTokens are the bearers of the remote MCP servers the identity
+	// brought. They reach the child only through the 0600 --mcp-config
+	// document, but the child can still print one back, so they are redacted
+	// exactly like the model credential.
+	mcpTokens []string
 }
 
 // values lists every secret the credential carries, for redaction.
 func (c credential) values() []string {
-	out := make([]string, 0, 1+len(c.extra))
+	out := make([]string, 0, 1+len(c.extra)+2*len(c.mcpTokens))
 	if c.value != "" {
 		out = append(out, c.value)
 	}
 	for _, variable := range c.extra {
 		if variable.Value != "" {
 			out = append(out, variable.Value)
+		}
+	}
+	// The whole header value first, so "Bearer <token>" becomes one
+	// "[redacted]" rather than "Bearer [redacted]"; the bare token after it
+	// catches every other rendering.
+	for _, token := range c.mcpTokens {
+		if token != "" {
+			out = append(out, "Bearer "+token, token)
 		}
 	}
 	return out
@@ -93,7 +106,11 @@ func credentialFor(launch harness.Launch) (credential, error) {
 			return credential{}, fmt.Errorf("the identity brings %s, which is not a credential this adapter exports", variable.Name)
 		}
 	}
-	return credential{env: env, value: value, extra: append([]harness.EnvironmentVariable(nil), cred.Environment...)}, nil
+	tokens := make([]string, 0, len(cred.MCPServers))
+	for _, server := range cred.MCPServers {
+		tokens = append(tokens, server.Token)
+	}
+	return credential{env: env, value: value, extra: append([]harness.EnvironmentVariable(nil), cred.Environment...), mcpTokens: tokens}, nil
 }
 
 // allowedBroughtEnvironment mirrors the runner's allow-list for the variables

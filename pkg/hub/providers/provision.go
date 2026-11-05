@@ -18,8 +18,11 @@ package providers
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
+	"net/url"
+	"os"
 	"sort"
 	"time"
 
@@ -34,6 +37,9 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/clientcmd"
+	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
@@ -46,7 +52,9 @@ import (
 // (provider_controller.go); the provider's own APIExport/schemas come from its
 // `init`.
 type Provisioner struct {
-	kcpConfig *rest.Config
+	kcpConfig           *rest.Config
+	providerCAFile      string
+	providerTLSInsecure bool
 
 	// workspaceClusterAdmin binds the provider ServiceAccount to cluster-admin
 	// in its own workspace instead of the generated railgrid:provider role. See
@@ -332,6 +340,12 @@ func (p *Provisioner) EnsureProviderSA(ctx context.Context, providerName string)
 // same missing `default` namespace and the same workspace-scoped cluster-admin
 // grant apply.
 func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath string) error {
+	orgUUID, orgProviderName, orgOwned := kcppaths.SplitOrgProviderPath(workspacePath)
+	if orgOwned {
+		if _, err := p.orgProviderWorkspace(ctx, orgUUID, orgProviderName); err != nil {
+			return err
+		}
+	}
 	cl, err := p.clientFor(workspacePath)
 	if err != nil {
 		return err
@@ -345,6 +359,9 @@ func (p *Provisioner) EnsureProviderSAAtPath(ctx context.Context, workspacePath 
 	}}
 	if _, err := cl.Resource(namespaceGVR).Create(ctx, ns, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("ensuring namespace %s in provider workspace: %w", ProviderSANamespace, err)
+	}
+	if orgOwned {
+		return ensureOrgProviderSA(ctx, cl, orgProviderName)
 	}
 	sa := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "v1",
@@ -386,6 +403,12 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 		}
 	}
 
+	return ensureProviderRoleBindingTo(ctx, cl, roleName)
+}
+
+// ensureProviderRoleBindingTo binds the provider ServiceAccount to a specific
+// role, replacing the old binding when its immutable roleRef changes.
+func ensureProviderRoleBindingTo(ctx context.Context, cl dynamic.Interface, roleName string) error {
 	crb := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "rbac.authorization.k8s.io/v1",
 		"kind":       "ClusterRoleBinding",
@@ -410,8 +433,10 @@ func (p *Provisioner) ensureProviderRoleBinding(ctx context.Context, cl dynamic.
 	case err != nil:
 		return fmt.Errorf("getting %s: %w", providerSABindingName, err)
 	default:
+		currentAPIGroup, _, _ := unstructured.NestedString(existing.Object, "roleRef", "apiGroup")
+		currentKind, _, _ := unstructured.NestedString(existing.Object, "roleRef", "kind")
 		current, _, _ := unstructured.NestedString(existing.Object, "roleRef", "name")
-		if current == roleName {
+		if currentAPIGroup == "rbac.authorization.k8s.io" && currentKind == "ClusterRole" && current == roleName {
 			// Keep kcp-managed metadata (including replication annotations) when
 			// repairing subjects on an existing binding.
 			existing.Object["subjects"] = crb.Object["subjects"]
@@ -447,13 +472,18 @@ func (p *Provisioner) MintProviderKubeconfig(ctx context.Context, providerName, 
 // root:railgrid:tenants/{org}/providers/{name}.
 //
 // The resulting kubeconfig is what an Org admin installs their provider's Helm
-// chart with. It is scoped to that one workspace: the SA is cluster-admin
-// there and nowhere else, so it can create the provider's APIExport, schemas,
-// endpoint slice, and CatalogEntry, but cannot read the Org workspace above it
-// or any team workspace beside it. Cross-workspace reach only ever comes from
-// the APIExport's permission claims, which each consuming workspace accepts
-// individually at Enable time.
+// chart with. An organization provider gets the restricted runtime role and
+// submits its declaration through the authenticated Hub bootstrap endpoint;
+// it cannot mutate APIExports, schemas, endpoint slices, CRDs, or RBAC directly.
+// Platform provider permissions remain controlled by the existing operator
+// setting. Cross-workspace reach still comes from the APIExport's accepted
+// permission claims.
 func (p *Provisioner) MintProviderKubeconfigAtPath(ctx context.Context, workspacePath, hubExternalURL string) ([]byte, error) {
+	if orgUUID, name, ok := kcppaths.SplitOrgProviderPath(workspacePath); ok {
+		if _, err := p.orgProviderWorkspace(ctx, orgUUID, name); err != nil {
+			return nil, err
+		}
+	}
 	cfg := rest.CopyConfig(p.kcpConfig)
 	cfg.Host = apiurl.KCPClusterURL(cfg.Host, workspacePath)
 	typed, err := kubernetes.NewForConfig(cfg)
@@ -499,27 +529,37 @@ func (p *Provisioner) renderKubeconfig(ctx context.Context, cfg *rest.Config, hu
 		server = apiurl.KCPClusterURL(server, clusterID)
 	}
 
-	// Minimal kubeconfig; the provider pod uses controller-runtime which
-	// is happy with token auth + insecure-skip-tls-verify in dev.
-	kc := fmt.Sprintf(`apiVersion: v1
-kind: Config
-clusters:
-- name: railgrid
-  cluster:
-    server: %s
-    insecure-skip-tls-verify: true
-contexts:
-- name: railgrid
-  context:
-    cluster: railgrid
-    user: railgrid
-current-context: railgrid
-users:
-- name: railgrid
-  user:
-    token: %s
-`, server, token)
-	return []byte(kc), nil
+	return p.providerKubeconfig(server, token)
+}
+
+// WithProviderKubeconfigTLS configures the provider-facing Hub trust, never the
+// KCP admin client's trust. Insecure is reserved for the Hub's explicit dev mode.
+func WithProviderKubeconfigTLS(caFile string, insecure bool) ProvisionerOption {
+	return func(p *Provisioner) { p.providerCAFile = caFile; p.providerTLSInsecure = insecure }
+}
+
+func (p *Provisioner) providerKubeconfig(server, token string) ([]byte, error) {
+	endpoint, err := url.Parse(server)
+	if err != nil || endpoint.Host == "" || endpoint.User != nil || (endpoint.Scheme != "https" && (!p.providerTLSInsecure || endpoint.Scheme != "http")) {
+		return nil, fmt.Errorf("provider kubeconfigs require an HTTPS Hub URL outside dev mode")
+	}
+	cluster := &clientcmdapi.Cluster{Server: server, InsecureSkipTLSVerify: p.providerTLSInsecure}
+	if p.providerCAFile != "" && !p.providerTLSInsecure {
+		pem, err := os.ReadFile(p.providerCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("reading provider Hub CA bundle: %w", err)
+		}
+		if !x509.NewCertPool().AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("provider Hub CA bundle contains no certificates")
+		}
+		cluster.CertificateAuthorityData = pem
+	}
+	cfg := clientcmdapi.NewConfig()
+	cfg.Clusters["railgrid"] = cluster
+	cfg.Contexts["railgrid"] = &clientcmdapi.Context{Cluster: "railgrid", AuthInfo: "railgrid"}
+	cfg.AuthInfos["railgrid"] = &clientcmdapi.AuthInfo{Token: token}
+	cfg.CurrentContext = "railgrid"
+	return clientcmd.Write(*cfg)
 }
 
 // resolveLogicalClusterID returns the kcp logical cluster ID for the workspace
@@ -1111,20 +1151,85 @@ func (p *Provisioner) DeleteProviderWorkspace(ctx context.Context, name string) 
 	return nil
 }
 
-// applyUnstructured is a create-or-update helper for cluster-scoped resources.
-// Preserves resourceVersion on update.
+// applyUnstructured is a create-or-update helper for Hub-owned resources.
+// It retries conflicts and retains metadata KCP adds to the object while
+// replacing its declarative fields. In particular, KCP marks replicated
+// RBAC resources with internal.kcp.io/replicate and rejects updates that
+// remove that server-owned annotation.
 func applyUnstructured(ctx context.Context, cl dynamic.Interface, gvr schema.GroupVersionResource, desired *unstructured.Unstructured) error {
-	existing, err := cl.Resource(gvr).Get(ctx, desired.GetName(), metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		_, err = cl.Resource(gvr).Create(ctx, desired, metav1.CreateOptions{})
+	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+		existing, err := cl.Resource(gvr).Get(ctx, desired.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			created := desired.DeepCopy()
+			_, err = cl.Resource(gvr).Create(ctx, created, metav1.CreateOptions{})
+			if apierrors.IsAlreadyExists(err) {
+				return apierrors.NewConflict(gvr.GroupResource(), desired.GetName(), err)
+			}
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		next := desired.DeepCopy()
+		if err := preserveExistingObjectMetadata(existing, next); err != nil {
+			return err
+		}
+		if _, desiredStatus := next.Object["status"]; !desiredStatus {
+			if existingStatus, exists := existing.Object["status"]; exists {
+				next.Object["status"] = existingStatus
+			}
+		}
+		_, err = cl.Resource(gvr).Update(ctx, next, metav1.UpdateOptions{})
 		return err
-	}
+	})
+}
+
+// preserveExistingObjectMetadata keeps kcp and API-server metadata when a Hub
+// apply replaces a resource's spec. Desired metadata wins for fields the Hub
+// explicitly sets. Server-controlled identity fields always come from the
+// stored object. Authorization-bearing declarative fields such as RBAC rules
+// remain wholly from desired and therefore can be revoked by a later apply.
+func preserveExistingObjectMetadata(existing, desired *unstructured.Unstructured) error {
+	existingMetadata, _, err := unstructured.NestedMap(existing.Object, "metadata")
 	if err != nil {
-		return err
+		return fmt.Errorf("reading existing %s metadata: %w", existing.GetKind(), err)
 	}
-	desired.SetResourceVersion(existing.GetResourceVersion())
-	_, err = cl.Resource(gvr).Update(ctx, desired, metav1.UpdateOptions{})
-	return err
+	desiredMetadata, _, err := unstructured.NestedMap(desired.Object, "metadata")
+	if err != nil {
+		return fmt.Errorf("reading desired %s metadata: %w", desired.GetKind(), err)
+	}
+	for key, value := range existingMetadata {
+		switch key {
+		case "annotations", "labels":
+			continue
+		case "resourceVersion", "uid", "generation", "creationTimestamp", "managedFields", "deletionTimestamp", "deletionGracePeriodSeconds":
+			desiredMetadata[key] = value
+		default:
+			if _, set := desiredMetadata[key]; !set {
+				desiredMetadata[key] = value
+			}
+		}
+	}
+	if err := unstructured.SetNestedMap(desired.Object, desiredMetadata, "metadata"); err != nil {
+		return fmt.Errorf("preserving existing %s metadata: %w", existing.GetKind(), err)
+	}
+	desired.SetAnnotations(mergeStringMetadata(existing.GetAnnotations(), desired.GetAnnotations()))
+	desired.SetLabels(mergeStringMetadata(existing.GetLabels(), desired.GetLabels()))
+	return nil
+}
+
+func mergeStringMetadata(existing, desired map[string]string) map[string]string {
+	if len(existing) == 0 && len(desired) == 0 {
+		return nil
+	}
+	merged := make(map[string]string, len(existing)+len(desired))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range desired {
+		merged[key] = value
+	}
+	return merged
 }
 
 func (p *Provisioner) clientFor(clusterPath string) (dynamic.Interface, error) {

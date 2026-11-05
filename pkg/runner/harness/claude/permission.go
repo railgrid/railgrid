@@ -28,7 +28,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -88,10 +87,10 @@ import (
 //
 // Measured against 2.1.281: --safe-mode turns off MCP servers, INCLUDING ones
 // passed with --mcp-config ("Available MCP tools: none"), so a permission
-// prompt tool and --safe-mode cannot both exist. A launch that can ask
-// therefore drops --safe-mode and keeps the narrower flags that cover most of
-// what it did; see the comment on Adapter.args for exactly what is and is not
-// still enforced.
+// prompt tool and --safe-mode cannot both exist. A launch that can ask — or
+// that carries a remote server, which hits the same wall — therefore drops
+// --safe-mode and keeps the narrower flags that cover most of what it did; see
+// the comment on Adapter.args for exactly what is and is not still enforced.
 const (
 	// permissionServerName is the --mcp-config key, and permissionToolName the
 	// tool on it. Together they are the --permission-prompt-tool argument.
@@ -122,17 +121,15 @@ type permissionServer struct {
 	secret   string
 	url      string
 
-	configPath string
-
 	// seq disambiguates two calls the harness did not give distinct ids to.
 	mu  sync.Mutex
 	seq uint64
 }
 
-// startPermissionServer brings up the loopback MCP server and writes the
-// --mcp-config file the child is pointed at. The returned server must be closed
-// by the caller, which also removes the config file.
-func startPermissionServer(asker harness.PermissionAsker, scope, home string) (*permissionServer, error) {
+// startPermissionServer brings up the loopback MCP server. Its --mcp-config
+// entry is written by writeMCPConfig together with the launch's remote
+// servers. The returned server must be closed by the caller.
+func startPermissionServer(asker harness.PermissionAsker, scope string) (*permissionServer, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("opening the permission prompt listener: %w", err)
@@ -165,58 +162,25 @@ func startPermissionServer(asker harness.PermissionAsker, scope, home string) (*
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() { _ = p.server.Serve(listener) }()
-	if err := p.writeConfig(home); err != nil {
-		_ = p.Close()
-		return nil, err
-	}
 	return p, nil
 }
 
-// writeConfig writes the --mcp-config document. It goes in a 0600 file in the
-// runner-owned home rather than on the command line, because the secret in it
-// would otherwise be readable by every process on the machine.
-func (p *permissionServer) writeConfig(home string) error {
-	document := map[string]any{
-		"mcpServers": map[string]any{
-			permissionServerName: map[string]any{
-				"type":    "http",
-				"url":     p.url,
-				"headers": map[string]string{permissionSecretHeader: p.secret},
-			},
-		},
+// mcpServerEntry is this server's entry in the launch's --mcp-config
+// document. The secret travels in that document, which writeMCPConfig puts in
+// a 0600 file rather than on the command line, because argv is readable by
+// every process on the machine.
+func (p *permissionServer) mcpServerEntry() map[string]any {
+	return map[string]any{
+		"type":    "http",
+		"url":     p.url,
+		"headers": map[string]string{permissionSecretHeader: p.secret},
 	}
-	encoded, err := json.Marshal(document)
-	if err != nil {
-		return fmt.Errorf("encoding the permission prompt configuration: %w", err)
-	}
-	file, err := os.CreateTemp(home, "permission-prompt-*.json")
-	if err != nil {
-		return fmt.Errorf("creating the permission prompt configuration: %w", err)
-	}
-	p.configPath = file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("protecting the permission prompt configuration: %w", err)
-	}
-	if _, err := file.Write(encoded); err != nil {
-		_ = file.Close()
-		return fmt.Errorf("writing the permission prompt configuration: %w", err)
-	}
-	return file.Close()
 }
 
-// ConfigPath is the --mcp-config argument for this launch.
-func (p *permissionServer) ConfigPath() string { return p.configPath }
-
-// Close stops serving and removes the configuration file. Requests still in
-// flight are ended, which is correct: the launch is over, so nobody is left to
-// answer them.
+// Close stops serving. Requests still in flight are ended, which is correct:
+// the launch is over, so nobody is left to answer them.
 func (p *permissionServer) Close() error {
-	err := p.server.Close()
-	if p.configPath != "" {
-		_ = os.Remove(p.configPath)
-	}
-	return err
+	return p.server.Close()
 }
 
 // ---- MCP over loopback HTTP --------------------------------------------------

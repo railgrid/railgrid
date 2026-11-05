@@ -54,6 +54,9 @@ type BindingOps interface {
 	ReconcileProviderBindingClaims(ctx context.Context, clusterName, bindingName string, claims []kcp.ProviderClaim) (bool, error)
 	// ResolveClusterPath returns a logical cluster's workspace path.
 	ResolveClusterPath(ctx context.Context, clusterName string) (string, error)
+	// RefreshTenantAdminAccess recomputes bounded member permissions after an
+	// APIBinding changes, including when the binding has been deleted.
+	RefreshTenantAdminAccess(ctx context.Context, clusterName string) error
 }
 
 // ProviderLookup is the registry view the reconciler needs: resolve the
@@ -145,9 +148,15 @@ func (r *Reconciler) Reconcile(ctx context.Context, req mcreconcile.Request) (ct
 	var binding apisv1alpha2.APIBinding
 	if err := cl.GetClient().Get(ctx, req.NamespacedName, &binding); err != nil {
 		if apierrors.IsNotFound(err) {
+			if refreshErr := r.ops.RefreshTenantAdminAccess(ctx, string(req.ClusterName)); refreshErr != nil {
+				return ctrl.Result{}, fmt.Errorf("refreshing tenant-admin permissions after APIBinding deletion: %w", refreshErr)
+			}
 			return ctrl.Result{}, nil
 		}
 		return ctrl.Result{}, err
+	}
+	if err := r.ops.RefreshTenantAdminAccess(ctx, string(req.ClusterName)); err != nil {
+		return ctrl.Result{}, fmt.Errorf("refreshing tenant-admin permissions after APIBinding change: %w", err)
 	}
 	return r.reconcileBinding(ctx, string(req.ClusterName), &binding)
 }
@@ -205,6 +214,14 @@ func (r *Reconciler) reconcileBinding(ctx context.Context, clusterName string, b
 		// (a provider's own workspace, a system workspace) is not the hub's
 		// Enable flow's and is not managed here.
 		logger.V(4).Info("Binding is not in a tenant workspace; leaving it alone", "path", path)
+		return ctrl.Result{}, nil
+	}
+	if prov.OrgUUID != "" && prov.OrgUUID != orgUUID {
+		// An Org-owned APIExport may be referenced from another workspace, but
+		// the Hub must not accept its permission claims there. Otherwise its
+		// provider SA can exercise APIExport content access across Org boundaries.
+		logger.V(3).Info("Org-owned provider binding is outside the provider's organization; leaving its claims alone",
+			"provider", prov.Name, "providerOrg", prov.OrgUUID, "workspaceOrg", orgUUID)
 		return ctrl.Result{}, nil
 	}
 

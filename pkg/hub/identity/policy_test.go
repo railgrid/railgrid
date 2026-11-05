@@ -620,3 +620,25 @@ func TestPlatformAllowlistIsNotWidenedByOwningTheGroup(t *testing.T) {
 		t.Fatalf("a platform group was widened through clause A: %v", err)
 	}
 }
+
+type unavailableWorkspaceCatalog struct {
+	fakeCatalog
+	err error
+}
+
+func (c unavailableWorkspaceCatalog) ForWorkspace(string) (ProviderCatalog, error) { return nil, c.err }
+
+func TestCatalogOperationalFailureIsNotPolicyRefusal(t *testing.T) {
+	outage := errors.New("temporary catalog outage")
+	policy := NewPolicy(unavailableWorkspaceCatalog{err: outage}, nil)
+	_, err := policy.Authorize("agents", "workspace", nil)
+	var refusal Refusal
+	if !errors.Is(err, outage) || errors.As(err, &refusal) {
+		t.Fatalf("operational error became a permanent refusal: %v", err)
+	}
+	// A healthy catalog with an unknown provider still fails as a policy refusal.
+	_, err = NewPolicy(fakeCatalog{}, nil).Authorize("unknown", "workspace", []rbacv1.PolicyRule{{APIGroups: []string{"agents.railgrid.ai"}, Resources: []string{"agents"}, Verbs: []string{"get"}}})
+	if !errors.As(err, &refusal) {
+		t.Fatalf("unknown provider lost permanent refusal: %v", err)
+	}
+}

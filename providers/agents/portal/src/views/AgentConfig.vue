@@ -1440,10 +1440,9 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
     </ResourceSectionCard>
 
     <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-self-config-heading')" title="Self configuration" description="Let this agent change its own setup as it learns what you need. It can never change its tools, autonomy, budget, limits, backend, or these settings.">
-      <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-self-config-disabled role="status">
-        <Circle :stroke-width="1.75" aria-hidden="true" /> A coding-harness agent cannot configure itself: the self-configuration tools are agent tools, and the harness uses its own. Switch to <strong>Model</strong> above to allow it.
+      <p v-if="harnessStored" class="agents-hint" data-self-config-harness>
+        The coding harness reaches these tools as an MCP server named <code>agent</code>, through the hub, with a token minted for each turn. It can also manage its schedules.
       </p>
-      <template v-else>
         <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).enabled" :disabled="saveState.selfConfiguration.status === 'pending'" @change="setSelfConfig(agent, { enabled: ($event.target as HTMLInputElement).checked })" /> Let this agent configure itself</label>
         <template v-if="selfConfigOf(agent).enabled">
           <fieldset class="agents-wire-fs">
@@ -1456,7 +1455,6 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             <label><span :id="domID('agent-self-config-approval-label')">Ask me to approve</span><FormSelect :model-value="selfConfigOf(agent).approval" :options="selfConfigApprovalOptions" :disabled="saveState.selfConfiguration.status === 'pending'" :labelledby="domID('agent-self-config-approval-label')" :describedby="domID('agent-self-config-approval-hint')" @update:model-value="setSelfConfigApproval(agent, $event)" /><span :id="domID('agent-self-config-approval-hint')" class="agents-hint">Schedules and triggers run with nobody watching, and a trigger’s task may carry text from outside. Changes take effect from the agent’s next run.</span></label>
           </div>
         </template>
-      </template>
       <ConfigSaveFeedback :id="domID('agent-self-config-save-feedback')" action="self configuration" :status="feedbackStatus('selfConfiguration')" :error="feedbackError('selfConfiguration')" />
     </ResourceSectionCard>
 

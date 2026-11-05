@@ -149,6 +149,12 @@ type Server struct {
 	// access review with, and anonymous is not a fallback.
 	callers dataplane.ProviderCallerFactory
 
+	// providerRelayVerifier verifies hub-signed identity proofs on provider
+	// data-plane requests relayed through an org-owned Service. It is nil when
+	// the provider has no configured hub origin, in which case such requests
+	// fail closed.
+	providerRelayVerifier ProviderRelayVerifier
+
 	// registry/replicaID/relayToken enable multi-replica tunnel routing (see
 	// EnableReplicaRouting). All nil/empty in single-replica mode.
 	registry   *Registry

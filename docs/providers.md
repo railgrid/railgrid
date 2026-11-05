@@ -825,25 +825,18 @@ Content-Type: application/json
 { "version": "1.2.0", "buildTime": "...", "status": "healthy" }
 ```
 
-- **Platform providers only.** The endpoint addresses providers by bare name
-  with no org context, so it resolves `{name}` to the *platform* workspace
-  `root:railgrid:providers:{name}`. An org-owned (BYO) provider lives at
-  `root:railgrid:tenants:{orgUUID}:providers:{name}` and cannot beat here; that
-  is deliberate, since otherwise one org could keep a platform provider of the
-  same name looking alive. Org-owned providers never set `HeartbeatRequired`
-  and their readiness rests on endpoint validity alone
-  (`Registry.Heartbeat`). In `enforce` they receive the same generic 401 as
-  any unregistered name, so do not read that 401 as a credential problem.
-- Authenticates the bearer token as the provider's own service account
-  (`system:serviceaccount:default:provider`) by TokenReview in the provider's
-  platform workspace `root:railgrid:providers:{name}` — the same SA and token the
-  hub minted into the provider kubeconfig. Any other identity is rejected with
-  403, a missing or unrecognised token with 401. The endpoint has no auth
-  middleware in front of it; this check is the whole of its authentication.
-  `--provider-heartbeat-auth=warn` (this release's default) logs failures
-  and still records the beat so providers on older charts keep reporting
-  alive while they are rolled forward; `enforce` (next release's default)
-  rejects them, and such a provider goes stale after the TTL.
+- Platform and organization providers use this endpoint. Platform providers
+  resolve to `root:railgrid:providers:{name}`. An org provider's token supplies
+  a routing hint; TokenReview and live registration checks authenticate its
+  exact organization/provider workspace before status is updated. A same-named
+  org provider cannot update a platform provider or another org's status.
+- Authenticates the provider's own service account
+  (`system:serviceaccount:default:provider`) in the resolved workspace, using
+  the token from its Hub-issued kubeconfig. Organization providers require
+  `--provider-heartbeat-auth=enforce`; warn mode retains legacy platform-only
+  behavior and is not sufficient for BYO enrollment. In enforce mode missing
+  or invalid credentials are rejected. Authenticated beats and valid endpoints
+  determine readiness; a started heartbeat becomes stale after its TTL.
 - A rejection body says only which class of failure it was (`heartbeat not
   authenticated` / `forbidden` / `heartbeat verification unavailable`); the
   reason — logical cluster, expected service account, TokenReview error —
@@ -1589,7 +1582,7 @@ A provider's backend (if it declares one) MUST:
   (`provider-sdk/vwhealth`). This — not `/healthz` — is what
   `spec.serving.backend.healthPath` should point at: `/healthz` only says the process
   is up, which stays true while nothing reconciles.
-- Heartbeat, **platform providers only**: `POST /api/providers/{name}/heartbeat`
+- Heartbeat, for platform and organization providers: `POST /api/providers/{name}/heartbeat`
   to the hub every 30s via the shared `provider-sdk/hubclient.RunHeartbeat`
   (not a local copy), authenticated as the provider's own service account
   (token from `hubclient.ResolveHubToken`: `RAILGRID_HUB_TOKEN`, else the
@@ -1597,10 +1590,9 @@ A provider's backend (if it declares one) MUST:
   it is consulted before every beat, so a provider whose watches are dead
   stops reporting alive. Wire it to the provider's readiness
   (`vwhealth.Readiness.Check`, the same gate as `/readyz`); `RunHeartbeat`
-  refuses to start without it. An org-owned (BYO) provider MUST NOT beat:
-  the endpoint is keyed by bare name and resolves only platform providers, so
-  the beat is rejected and would in any case never mark it Ready. Its readiness
-  comes from endpoint validity instead — see the heartbeat endpoint section.
+  refuses to start without it. Organization providers use their own restricted
+  provider credential and require the Hub's heartbeat enforcement mode; see
+  the heartbeat endpoint section.
 - `GET /healthz` → 200 when the process is serving (liveness).
 
 A provider's controller (the kcp-talking part) MUST:

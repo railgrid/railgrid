@@ -372,6 +372,7 @@ test('spec.providers stays in lockstep with the ServiceAccount the hub provision
   const namespace = provision.match(/const ProviderSANamespace = "([^"]+)"/)
   assert.ok(name && namespace, 'ProviderSAName/ProviderSANamespace not found in pkg/hub/providers/provision.go')
   assert.deepEqual(PROVIDER_SUBJECTS.map((subject) => ({ ...subject })), [
+    { kind: 'User', name: 'kcp-admin' },
     { kind: 'User', name: `system:serviceaccount:${namespace[1]}:${name[1]}` },
   ])
 })

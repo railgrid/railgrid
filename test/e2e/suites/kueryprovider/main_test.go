@@ -24,7 +24,7 @@ limitations under the License.
 //
 // Coverage is the provider-plumbing half of kuery: provisioning, init
 // bootstrap, the /api/providers DTO, the hub's backend + UI proxies, tenant
-// Enable via APIBinding with SavedView CRUD plus the reconciler's Ready
+// Enable through the Hub with SavedView CRUD plus the reconciler's Ready
 // verdict, Disable, the readiness surface, and the query verb's GATES —
 // driven against the provider pod directly, because the proxy is not what
 // authorizes.
@@ -54,8 +54,12 @@ import (
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic"
+	"sigs.k8s.io/yaml"
 )
 
 // Suite-shared state populated by TestMain.
@@ -73,9 +77,11 @@ var (
 // them, this suite shares the embedded-kcp etcd port 2380 and must not run
 // concurrently with the others.
 const (
-	hubPort      = "19493"
-	kcpPort      = "16493"
-	defaultPPort = "18118"
+	hubPort                = "19493"
+	kcpPort                = "16493"
+	defaultPPort           = "18118"
+	edgesStandInPath       = "root:railgrid:providers:edges"
+	edgesStandInExportName = "edges.providers.railgrid.ai"
 )
 
 func TestMain(m *testing.M) {
@@ -85,9 +91,17 @@ func TestMain(m *testing.M) {
 	providerPort = defaultPPort
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
+	etcdClientPort := os.Getenv("RAILGRID_E2E_ETCD_CLIENT_PORT")
+	if etcdClientPort == "" {
+		etcdClientPort = "2379"
+	}
+	etcdPeerPort := os.Getenv("RAILGRID_E2E_ETCD_PEER_PORT")
+	if etcdPeerPort == "" {
+		etcdPeerPort = "2380"
+	}
 
 	// Fail fast if a previous run left ports bound.
-	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
+	for _, p := range []string{hubPort, kcpPort, providerPort, etcdClientPort, etcdPeerPort} {
 		if portInUse(p) {
 			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill railgrid-hub; pkill kuery-provider` and retry\n", p)
 			os.Exit(2)
@@ -110,8 +124,12 @@ func TestMain(m *testing.M) {
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
+		"--dev-mode",
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
+		"--kcp-root-dir", filepath.Join(dataDir, "kcp"),
+		"--kcp-etcd-client-port", etcdClientPort,
+		"--kcp-etcd-peer-port", etcdPeerPort,
 		"--kcp-secure-port", kcpPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
@@ -152,6 +170,15 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	adminToken = tok
+
+	// Kuery depends on edges. Register an API-only edges copy so this suite can
+	// exercise the Hub's normal dependency-checked Enable flow without starting
+	// an additional provider process or a kind cluster.
+	if err := registerEdgesStandIn(); err != nil {
+		cleanup()
+		fmt.Fprintln(os.Stderr, "register edges stand-in:", err)
+		os.Exit(1)
+	}
 
 	// Provisioning: Provider + CatalogEntry into root:railgrid:system:providers
 	// (mirrors `make install-provider-kuery`); the hub's Provider controller
@@ -244,6 +271,208 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 	cleanup()
 	os.Exit(code)
+}
+
+func registerEdgesStandIn() error {
+	system, err := kcpDynamicRaw("root:railgrid:system:providers", adminToken)
+	if err != nil {
+		return fmt.Errorf("system providers client: %w", err)
+	}
+	providerGVR := schema.GroupVersionResource{Group: "admin.railgrid.ai", Version: "v1alpha1", Resource: "providers"}
+	catalogEntryGVR := schema.GroupVersionResource{Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries"}
+	provider := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "admin.railgrid.ai/v1alpha1",
+		"kind":       "Provider",
+		"metadata":   map[string]any{"name": "edges"},
+		"spec":       map[string]any{"displayName": "Edges (kuery e2e stand-in)"},
+	}}
+	if err := createKueryObjectWithRetry(system, providerGVR, provider, 90*time.Second); err != nil {
+		return fmt.Errorf("create edges Provider: %w", err)
+	}
+
+	adminSub, err := waitForWorkspaceClient(edgesStandInPath, adminToken, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	providerToken, err := waitForProviderToken(adminSub, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	providerSub, err := kcpDynamicRaw(edgesStandInPath, providerToken)
+	if err != nil {
+		return fmt.Errorf("edges provider client: %w", err)
+	}
+
+	filesDir := filepath.Join(repoRoot, "providers", "edges", "deploy", "chart", "files")
+	rawExport, err := os.ReadFile(filepath.Join(filesDir, "apiexport.yaml"))
+	if err != nil {
+		return fmt.Errorf("read edges APIExport: %w", err)
+	}
+	export := &unstructured.Unstructured{}
+	if err := yaml.Unmarshal(rawExport, &export.Object); err != nil {
+		return fmt.Errorf("parse edges APIExport: %w", err)
+	}
+	if export.GetName() != edgesStandInExportName {
+		return fmt.Errorf("edges APIExport is named %q, want %q", export.GetName(), edgesStandInExportName)
+	}
+	resources, _, _ := unstructured.NestedSlice(export.Object, "spec", "resources")
+	var kept []any
+	wantSchemas := map[string]bool{}
+	for _, raw := range resources {
+		resource, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, virtual, _ := unstructured.NestedMap(resource, "storage", "virtual"); virtual {
+			continue
+		}
+		kept = append(kept, resource)
+		if name, _ := resource["schema"].(string); name != "" {
+			wantSchemas[name] = true
+		}
+	}
+	if len(kept) == 0 {
+		return fmt.Errorf("edges APIExport has no CRD-stored resources")
+	}
+	if err := unstructured.SetNestedSlice(export.Object, kept, "spec", "resources"); err != nil {
+		return err
+	}
+	unstructured.RemoveNestedField(export.Object, "spec", "permissionClaims")
+
+	schemaFiles, err := filepath.Glob(filepath.Join(filesDir, "schemas", "*.yaml"))
+	if err != nil {
+		return err
+	}
+	for _, filename := range schemaFiles {
+		raw, err := os.ReadFile(filename)
+		if err != nil {
+			return fmt.Errorf("read edges schema %s: %w", filename, err)
+		}
+		resourceSchema := &unstructured.Unstructured{}
+		if err := yaml.Unmarshal(raw, &resourceSchema.Object); err != nil {
+			return fmt.Errorf("parse edges schema %s: %w", filename, err)
+		}
+		if !wantSchemas[resourceSchema.GetName()] {
+			continue
+		}
+		delete(wantSchemas, resourceSchema.GetName())
+		if err := createKueryObjectWithRetry(providerSub, schemaGVR, resourceSchema, 60*time.Second); err != nil {
+			return fmt.Errorf("create edges APIResourceSchema %s: %w", resourceSchema.GetName(), err)
+		}
+	}
+	if len(wantSchemas) != 0 {
+		return fmt.Errorf("edges APIExport names schemas that are not in chart files: %v", wantSchemas)
+	}
+	exportGVR := schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports"}
+	if err := createKueryObjectWithRetry(providerSub, exportGVR, export, 60*time.Second); err != nil {
+		return fmt.Errorf("create edges APIExport: %w", err)
+	}
+
+	clusterRoleGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"}
+	clusterRoleBindingGVR := schema.GroupVersionResource{Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"}
+	bindRoleName := "railgrid:providers:bind:" + edgesStandInExportName
+	bindRole := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata":   map[string]any{"name": bindRoleName},
+		"rules": []any{map[string]any{
+			"apiGroups": []any{"apis.kcp.io"}, "resources": []any{"apiexports"},
+			"verbs": []any{"bind"}, "resourceNames": []any{edgesStandInExportName},
+		}},
+	}}
+	if err := createKueryObjectWithRetry(providerSub, clusterRoleGVR, bindRole, 60*time.Second); err != nil {
+		return fmt.Errorf("create edges bind ClusterRole: %w", err)
+	}
+	bindGrant := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRoleBinding",
+		"metadata":   map[string]any{"name": bindRoleName},
+		"roleRef": map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": bindRoleName,
+		},
+		"subjects": []any{map[string]any{
+			"apiGroup": "rbac.authorization.k8s.io", "kind": "Group", "name": "system:authenticated",
+		}},
+	}}
+	if err := createKueryObjectWithRetry(providerSub, clusterRoleBindingGVR, bindGrant, 60*time.Second); err != nil {
+		return fmt.Errorf("create edges bind ClusterRoleBinding: %w", err)
+	}
+
+	catalogEntry := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "providers.railgrid.ai/v1alpha1",
+		"kind":       "CatalogEntry",
+		"metadata":   map[string]any{"name": "edges"},
+		"spec": map[string]any{
+			"displayName": "Edges (kuery e2e stand-in)",
+			"description": "API-only stand-in for kuery's declared dependency.",
+			"vendor":      "railgrid", "version": "0.0.1",
+			"export": map[string]any{"name": edgesStandInExportName},
+		},
+	}}
+	if err := createKueryObjectWithRetry(system, catalogEntryGVR, catalogEntry, 90*time.Second); err != nil {
+		return fmt.Errorf("create edges CatalogEntry: %w", err)
+	}
+	return nil
+}
+
+func waitForWorkspaceClient(path, token string, timeout time.Duration) (dynamic.Interface, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		client, err := kcpDynamicRaw(path, token)
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_, err = client.Resource(schemaGVR).List(ctx, metav1.ListOptions{})
+			cancel()
+			if err == nil {
+				return client, nil
+			}
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	return nil, fmt.Errorf("workspace %s never became usable: %w", path, lastErr)
+}
+
+func waitForProviderToken(client dynamic.Interface, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		secret, err := client.Resource(secretGVR).Namespace("default").Get(ctx, "provider-token", metav1.GetOptions{})
+		cancel()
+		if err == nil {
+			encoded, _, _ := unstructured.NestedString(secret.Object, "data", "token")
+			if encoded != "" {
+				token, err := base64.StdEncoding.DecodeString(encoded)
+				if err != nil {
+					return "", fmt.Errorf("decode edges provider-token: %w", err)
+				}
+				return string(token), nil
+			}
+			lastErr = fmt.Errorf("provider-token exists but is not populated")
+		} else {
+			lastErr = err
+		}
+		time.Sleep(time.Second)
+	}
+	return "", fmt.Errorf("edges provider-token never populated: %w", lastErr)
+}
+
+func createKueryObjectWithRetry(client dynamic.Interface, resource schema.GroupVersionResource, object *unstructured.Unstructured, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := client.Resource(resource).Create(ctx, object, metav1.CreateOptions{})
+		cancel()
+		if err == nil || apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		lastErr = err
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("create %s/%s: %w", resource.Resource, object.GetName(), lastErr)
 }
 
 // mintRuntimeKubeconfig waits for the Provider controller to populate the

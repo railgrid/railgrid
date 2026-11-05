@@ -12,35 +12,25 @@ package restapi
 
 // Org-owned ("bring your own") provider registration.
 //
-// An Org registers a provider it runs itself — typically in its own Kubernetes
-// cluster, reached over an edge — and the hub gives back a kubeconfig scoped to
-// a fresh provider workspace at root:railgrid:tenants:{org}:providers:{name}. The
-// Org then installs the provider's chart against that kubeconfig; the provider's
-// own `init` creates its APIExport, schemas, endpoint slice, and CatalogEntry,
-// exactly as a platform provider does. From there the entry flows into the
-// catalog registry through the existing CatalogEntry watch, scoped to the Org,
-// and its Workspaces can Enable it like any other provider.
+// The Hub creates a provider workspace at
+// root:railgrid:tenants:{org}:providers:{name}, records its selected Edge, and
+// returns a kubeconfig for the provider's restricted runtime identity. The
+// provider chart's `init` submits its CatalogEntry, APIExport, schemas, and
+// storage declarations to the Hub's authenticated bootstrap endpoint. The Hub
+// validates and applies those declarations with its own kcp-admin client; the
+// provider runtime cannot write APIExports, bind grants, or tenant APIBindings.
+// The catalog registry exposes the Org's provider only within that Org, and the
+// Hub creates bindings only in workspaces belonging to the same Org.
 //
 // This lives server-side for the reason every Org-workspace operation does
 // (decision O-10, and P-2 in docs/provider-scoping.md): tenants hold no
 // credential that reaches an Org workspace, so the tree under it can only be
-// built with the hub's kcp-admin client.
+// built with the Hub's kcp-admin client.
 //
-// What the Org gets is deliberately narrow. The minted ServiceAccount is
-// cluster-admin in its own provider workspace and nowhere else. It cannot read
-// the Org workspace above it or any team workspace beside it. The provider
-// reaches tenant data only through its APIExport's permission claims, which
-// each consuming Workspace accepts individually at Enable time — the same
-// consent gate platform providers pass through.
-//
-// Known gap: this endpoint scopes DISCOVERY (the catalog lists an Org's
-// providers only to that Org) and the hub-mediated Enable path, but it does not
-// yet scope the kcp `bind` verb. provider-sdk/install's ApplyBindGrant grants
-// bind on the APIExport to system:authenticated, so a user who learns another
-// Org's UUID could hand-craft an APIBinding in their own workspace against that
-// Org's export. Closing it needs the per-Org bind ClusterRole from
-// docs/provider-scoping.md P-3, which is unimplemented for platform providers
-// too. See docs/byo-providers.md §Known gaps.
+// The runtime ServiceAccount has a bounded role in its own provider workspace
+// and cannot read the Org workspace above it or any team workspace beside it.
+// The provider reaches tenant data through permission claims on its APIExport;
+// the Hub accepts those claims only on bindings in the provider's own Org.
 
 import (
 	"context"
@@ -120,7 +110,7 @@ type RegisterOrgProviderRequest struct {
 	// Edge names the cluster the provider will be installed into. Required:
 	// the hub reaches an org-owned provider's backend over that edge's tunnel
 	// and has no other route into a tenant cluster
-	// (docs/byo-provider-edge-transport.md E-2).
+	// See docs/byo-provider-edge-transport.md.
 	Edge *EdgeTargetRef `json:"edge,omitempty"`
 }
 
@@ -232,11 +222,11 @@ type RegisterOrgProviderResponse struct {
 }
 
 // requireOrgProviderAccess resolves the caller's tenant context and enforces the
-// Org's catalogEntryCreation policy (decision O-7): "admin" (the default)
+// Org's catalogEntryCreation policy: "admin" (the default)
 // restricts registration to Org admins, "members" opens it to any Org member.
 //
 // The default is admin because registration is not a catalog edit: it mints a
-// long-lived cluster-admin credential for a workspace the hub then routes
+// long-lived restricted provider credential for a workspace the hub then routes
 // every org user's provider traffic to, under a name that may shadow a
 // platform provider. That is an admin decision. Organizations created before
 // the default flipped were stamped with an explicit "members" by the
@@ -301,6 +291,10 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireOrgProviderRuntime(w, r) {
+		return
+	}
+
 	orgUUID := tc.OrgUUID
 	var req RegisterOrgProviderRequest
 	if !decodeJSON(w, r, &req) {
@@ -313,10 +307,10 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Preflight BEFORE anything is created. Registration mints a long-lived
-	// cluster-admin credential and builds a workspace tree; doing that for an
+	// restricted provider credential and builds a workspace tree; doing that for an
 	// install that cannot work leaves the Org holding a live token and a
-	// half-built tree to clean up by hand. See docs/byo-provider-edge-transport.md
-	// E-2 — a failed precondition here is a clean no-op the client can retry.
+	// half-built tree to clean up by hand. A failed precondition here is a clean
+	// no-op the client can retry. See docs/byo-provider-edge-transport.md.
 	if !h.requireEdgeInstallTarget(w, r, tc, req.Edge) {
 		return
 	}
@@ -331,7 +325,7 @@ func (h *Handler) registerOrgProvider(w http.ResponseWriter, r *http.Request) {
 	// only the hub writes. The backend proxy reads it later to route this
 	// provider's data plane over the tunnel; reading it from the CatalogEntry
 	// instead would let the tenant's own chart decide where platform traffic
-	// goes (docs/byo-provider-edge-transport.md E-1).
+	// goes (see docs/byo-provider-edge-transport.md).
 	if err := h.mgr.orgProviders.RecordProviderEdgeBinding(r.Context(), orgUUID, name, req.Edge.Workspace, req.Edge.Name); err != nil {
 		if apierrors.IsConflict(err) {
 			writeError(w, err)
@@ -750,6 +744,10 @@ func (h *Handler) getOrgProviderKubeconfig(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
+	if !h.requireOrgProviderRuntime(w, r) {
+		return
+	}
+
 	orgUUID := tc.OrgUUID
 	name := mux.Vars(r)["name"]
 	if name == "" {
@@ -824,6 +822,10 @@ func (h *Handler) rotateOrgProviderCredential(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return
 	}
+	if !h.requireOrgProviderRuntime(w, r) {
+		return
+	}
+
 	if !h.requireOrgAdminMembership(w, r, tc, "rotating a provider credential requires organization admin") {
 		return
 	}
@@ -951,4 +953,15 @@ func (h *Handler) deleteOrgProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Runtime prerequisites never block inspecting or removing a registration.
+func (h *Handler) requireOrgProviderRuntime(w http.ResponseWriter, r *http.Request) bool {
+	if h.mgr.orgProviderAvailability != nil {
+		if err := h.mgr.orgProviderAvailability(r.Context()); err != nil {
+			writeStatus(w, http.StatusServiceUnavailable, "ServiceUnavailable", err.Error())
+			return false
+		}
+	}
+	return true
 }

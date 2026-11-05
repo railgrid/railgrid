@@ -562,9 +562,12 @@ func seedObject(t *testing.T, client *railgridclient.Client, obj runtime.Object)
 	}
 }
 
-func newTestServer(t *testing.T, mgr *Manager, tc tenant.TenantContext) *httptest.Server {
+func newTestServer(t *testing.T, mgr *Manager, tc tenant.TenantContext, providerUIGrants ...*hubproviders.UIGrantHandler) *httptest.Server {
 	t.Helper()
 	h := NewHandler(mgr)
+	if len(providerUIGrants) > 0 {
+		h.SetProviderUIGrantHandler(providerUIGrants[0])
+	}
 	r := mux.NewRouter()
 
 	userOnly := r.PathPrefix("/api").Subrouter()

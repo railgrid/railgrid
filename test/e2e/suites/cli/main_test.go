@@ -106,7 +106,15 @@ func TestMain(m *testing.M) {
 	hubURL = "https://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
 
-	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
+	etcdClientPort := os.Getenv("RAILGRID_E2E_ETCD_CLIENT_PORT")
+	if etcdClientPort == "" {
+		etcdClientPort = "2379"
+	}
+	etcdPeerPort := os.Getenv("RAILGRID_E2E_ETCD_PEER_PORT")
+	if etcdPeerPort == "" {
+		etcdPeerPort = "2380"
+	}
+	for _, p := range []string{hubPort, kcpPort, providerPort, etcdClientPort, etcdPeerPort} {
 		if portInUse(p) {
 			fmt.Fprintf(os.Stderr, "port :%s already in use; stop stray railgrid-hub/edges-provider and retry\n", p)
 			os.Exit(2)
@@ -140,6 +148,8 @@ func TestMain(m *testing.M) {
 		"--kcp-bind-address", "127.0.0.1",
 		"--kcp-root-dir", filepath.Join(dataDir, "kcp"),
 		"--kcp-secure-port", kcpPort,
+		"--kcp-etcd-client-port", etcdClientPort,
+		"--kcp-etcd-peer-port", etcdPeerPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,
 	)

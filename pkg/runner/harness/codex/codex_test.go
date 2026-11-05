@@ -480,7 +480,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 	requestsFile := os.Getenv("RAILGRID_FAKE_CODEX_REQUESTS")
 	if envFile := os.Getenv("RAILGRID_FAKE_CODEX_ENV_FILE"); envFile != "" {
 		env := map[string]string{}
-		for _, name := range []string{"PATH", "PLAYWRIGHT_BROWSERS_PATH", "GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR"} {
+		for _, name := range []string{"PATH", "PLAYWRIGHT_BROWSERS_PATH", "GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR", "RAILGRID_MCP_TOKEN_AGENT_CONFIG"} {
 			env[name] = os.Getenv(name)
 		}
 		writeJSONFile(envFile, env)
@@ -568,6 +568,14 @@ func TestFakeAppServerProcess(t *testing.T) {
 						},
 					}},
 				})
+			case "leak-mcp-token":
+				// The bearer read back from the app-server's own environment,
+				// which is where the adapter put it, then echoed the way a
+				// failing MCP client might.
+				token := os.Getenv("RAILGRID_MCP_TOKEN_AGENT_CONFIG")
+				writeNotification("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": "turn-1", "itemId": "item-1", "delta": "my token is " + token})
+				writeNotification("mcpServer/startupStatus", map[string]any{"threadId": threadID, "error": "401 for Authorization: Bearer " + token})
+				writeNotification("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": "turn-1", "status": "failed", "error": map[string]any{"message": "mcp " + token}}})
 			case "auth-request":
 				writeRequest("account/chatgptAuthTokens/refresh", "auth-1", map[string]any{"reason": "expired"})
 			case "cancel":

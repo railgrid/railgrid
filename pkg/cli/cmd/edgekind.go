@@ -191,6 +191,13 @@ func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Un
 			if apierrors.IsNotFound(err) {
 				continue
 			}
+			// Bounded workspace roles have no permission for an unbound API,
+			// so KCP can return Forbidden before checking whether it exists.
+			// Only replace that error when readable binding state confirms
+			// that this workspace has no bound edges API.
+			if apierrors.IsForbidden(err) && edgesAPIUnbound(ctx, dyn) {
+				return nil, errEdgesNotEnabled
+			}
 			return nil, fmt.Errorf("listing %s: %w", gvr.Resource, err)
 		}
 		served++
@@ -211,6 +218,29 @@ func listAllEdges(ctx context.Context, dyn dynamic.Interface) ([]unstructured.Un
 		return nil, errEdgesNotEnabled
 	}
 	return items, nil
+}
+
+func edgesAPIUnbound(ctx context.Context, dyn dynamic.Interface) bool {
+	bindings, err := dyn.Resource(schema.GroupVersionResource{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return false
+	}
+	for _, binding := range bindings.Items {
+		resources, _, err := unstructured.NestedSlice(binding.Object, "status", "boundResources")
+		if err != nil {
+			return false
+		}
+		for _, resource := range resources {
+			object, ok := resource.(map[string]interface{})
+			if !ok {
+				return false
+			}
+			if object["group"] == "edges.railgrid.ai" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // duplicateEdgeNames returns the names that more than one of the listed edges

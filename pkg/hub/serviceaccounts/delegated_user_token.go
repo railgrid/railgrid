@@ -34,7 +34,8 @@ package serviceaccounts
 //
 // The account is deterministic per (tenant, user, provider), so repeated
 // requests reuse one ServiceAccount rather than accumulating. Nothing deletes
-// them yet: a member leaving the workspace keeps an idle railgrid-du-* account
+// them yet: a member leaving the workspace keeps an idle railgrid-pdu-* or
+// railgrid-odu-* account
 // bound to a role they no longer hold, though any token minted for it is dead
 // within ten minutes. Garbage collection on Membership removal is a follow-up.
 
@@ -87,14 +88,9 @@ const (
 	// owner does, and it is covered by the proof.
 	AnnotationDelegatedProviderOrg = "railgrid.ai/delegated-provider-org"
 
-	// DelegatedUserClusterRole is what the delegated account is bound to. It is
-	// the role every workspace member holds today: the bootstrap grants members
-	// and admins alike cluster-admin in their team workspace
-	// (pkg/hub/kcp/bootstrap.go ensureWorkspaceAdmin), so binding anything
-	// narrower here would make the delegated call weaker than the user's own
-	// kubectl. Narrowing is the workspace RBAC's job; when members get a
-	// bounded ClusterRole this constant follows it.
-	DelegatedUserClusterRole = "cluster-admin"
+	// DelegatedUserClusterRole mirrors the bounded data-administration role
+	// granted to tenant members. Provider tokens never receive cluster-admin.
+	DelegatedUserClusterRole = WorkspaceMemberClusterRole
 
 	// DelegatedUserTokenCacheTTL bounds how long an issued token is reused
 	// before a fresh one is minted, independently of the token's own expiry.
@@ -106,8 +102,10 @@ const (
 	// a provider moments before it expires mid-request.
 	delegatedUserTokenExpirySlack = time.Minute
 
-	delegatedUserNamePrefix   = "railgrid-du-"
-	delegatedUserBindingInfix = "-"
+	delegatedUserNamePrefix         = "railgrid-du-" // retired; used only to recognize old identities
+	platformDelegatedUserNamePrefix = "railgrid-pdu-"
+	orgDelegatedUserNamePrefix      = "railgrid-odu-"
+	delegatedUserBindingInfix       = "-cluster-admin" // kept to replace immutable legacy RoleRefs in place
 )
 
 // Identity is the caller a delegated token stands in for.
@@ -147,26 +145,46 @@ func DelegatedUserServiceAccountName(tenantPath string, user Identity, providerN
 	return delegatedServiceAccountName(tenantPath, user, PlatformProvider(providerName))
 }
 
+// IsRetiredDelegationUsername reports whether an authenticated identity uses
+// the retired shared delegated-user prefix. Those credentials must be rejected
+// and reminted under the platform or Org-specific prefixes.
+func IsRetiredDelegationUsername(username string) bool {
+	return strings.HasPrefix(username, "system:serviceaccount:"+Namespace+":"+delegatedUserNamePrefix)
+}
+
+// IsDelegatedServiceAccountName recognizes current delegated identities and
+// the retired prefix so migration can narrow an old managed binding before the
+// guard removes the retired account.
+func IsDelegatedServiceAccountName(name string) bool {
+	return strings.HasPrefix(name, platformDelegatedUserNamePrefix) ||
+		strings.HasPrefix(name, orgDelegatedUserNamePrefix) ||
+		strings.HasPrefix(name, delegatedUserNamePrefix)
+}
+
 // delegatedServiceAccountName returns the stable, DNS-safe ServiceAccount
 // name for one (tenant, user, provider) tuple. Hash-only for the same reason
 // WorkloadServiceAccountName is: user names are email-shaped and provider
 // names are tenant-chosen, and neither belongs in an RBAC object name. The
-// owner org joins the hash only for org-owned providers, so a platform
-// provider's account keeps the name it had before owners were recorded and
-// is upgraded in place.
+// owner org joins the hash for org-owned providers. Separate prefixes make
+// platform and Org identities recognizable without reading tenant-writable
+// annotations.
 func delegatedServiceAccountName(tenantPath string, user Identity, provider DelegatedProvider) string {
 	parts := []string{tenantPath, user.User, provider.Name}
+	prefix := platformDelegatedUserNamePrefix
 	if provider.OrgUUID != "" {
 		parts = append(parts, "org="+provider.OrgUUID)
+		prefix = orgDelegatedUserNamePrefix
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
-	return delegatedUserNamePrefix + hex.EncodeToString(sum[:20])
+	return prefix + hex.EncodeToString(sum[:20])
 }
 
 // DelegatedUserBindingName returns the ClusterRoleBinding name paired with a
 // delegated ServiceAccount.
 func DelegatedUserBindingName(serviceAccountName string) string {
-	return serviceAccountName + delegatedUserBindingInfix + DelegatedUserClusterRole
+	// Keep the historical suffix so reconciliation replaces its immutable
+	// cluster-admin RoleRef instead of leaving the old binding active.
+	return serviceAccountName + delegatedUserBindingInfix
 }
 
 type delegatedTokenKey struct {
@@ -311,12 +329,13 @@ func IsDelegatedUserServiceAccount(sa *corev1.ServiceAccount) bool {
 // SECURITY: everything on this object is tenant-writable except the proof.
 // The account lives in namespace "default" of the tenant's own team
 // workspace, where the bootstrap binds every member — not only admins — to
-// cluster-admin (pkg/hub/kcp/bootstrap.go ensureWorkspaceAdmin). An ordinary
-// member can create a ServiceAccount there, apply LabelDelegatedUser, fill in
-// all four identity annotations naming anyone they like, give it the name the
-// hub would have derived (the name is a hash of public inputs), and mint a
-// token for it with TokenRequest. Every consistency check over those fields
-// compares inputs that same member wrote, so none of them prove anything.
+// the bounded tenant-admin role (pkg/hub/kcp/bootstrap.go ensureWorkspaceAdmin).
+// An ordinary member can create a ServiceAccount there, apply
+// LabelDelegatedUser, and fill in the identity annotations naming anyone they
+// like. Those fields and the deterministic name are not proof. The bounded
+// role does not grant serviceaccounts/token, so the member cannot mint a
+// bearer for the forged account. The keyed proof remains required as defense
+// in depth and protects identities issued by the hub.
 // AnnotationDelegatedProof is the sole field they cannot produce — a MAC over
 // the identity tuple and the ServiceAccount UID, keyed by a secret held in a
 // workspace no tenant identity can reach. Do not add an identity path here

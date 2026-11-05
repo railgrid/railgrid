@@ -65,7 +65,7 @@ func ParseDelegationMode(s string) (DelegationMode, error) {
 // and, for an edge with spec.sshUserMapping=identity, uses the resulting
 // username as the Linux user to log in as
 // (providers/edges/internal/tunnel/edges_proxy_builder.go fetchSSHCredentials).
-// A delegated token resolves to system:serviceaccount:default:railgrid-du-<hash>,
+// A delegated platform token resolves to system:serviceaccount:default:railgrid-pdu-<hash>,
 // which is not the human's account and is not a login name on any host, so the
 // session would be refused or land on the wrong user. Everything else in edges
 // — the tunnel, the k8s subresource, the Service proxy — works with a

@@ -34,6 +34,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/railgrid/provider-sdk/apiexportprovider"
 	"github.com/railgrid/provider-sdk/metrics"
+	"github.com/railgrid/provider-sdk/providerrelay"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
@@ -156,6 +157,8 @@ func (s *Server) Run(ctx context.Context) error {
 	// (leader-only) metering organization reconciler to pick up.
 	var workspaceNotifier *metering.WorkspaceNotifier
 	var embeddedKCP *kcp.EmbeddedKCP
+	providerRelayDelegate := &delegatingHandler{}
+	var providerRelayErrCh <-chan error
 	// meteringDiscovery is set once kcp is up and --metering-workspace is
 	// configured; the admin proxy and the organization reconciler share it.
 	var meteringDiscovery *metering.Discovery
@@ -192,6 +195,9 @@ func (s *Server) Run(ctx context.Context) error {
 		// controllers on a kcp-direct URL, which this field cannot express.
 		// See docs/byo-providers.md.
 		embeddedKCP = kcp.NewEmbeddedKCP(kcp.EmbeddedKCPOptions{
+			ProviderRelayTransport: func(next http.RoundTripper) http.RoundTripper {
+				return providers.EmbeddedRelayTransport(next, providerRelayDelegate)
+			},
 			RootDir:                  kcpRootDir,
 			SecurePort:               s.opts.KCPSecurePort,
 			EtcdClientPort:           s.opts.KCPEtcdClientPort,
@@ -531,7 +537,15 @@ func (s *Server) Run(ctx context.Context) error {
 	// PathPrefix route below, which would otherwise claim every POST under
 	// /api/providers/. Configured with the auth stack further down.
 	providerUIGrantHandler := providers.NewUIGrantHandler(providerRegistry, uiProxy, logger)
+	providerListHandler.SetUIGrantHandler(providerUIGrantHandler)
 	router.Handle(providers.PathProviderUIGrant, providerUIGrantHandler).Methods("POST")
+	if kcpConfig != nil {
+		providerBootstrap, err := providers.NewOrgProviderBootstrapHandler(kcpConfig, providerRegistry, s.ProviderRelayBaseURL())
+		if err != nil {
+			return fmt.Errorf("organization provider bootstrap: %w", err)
+		}
+		router.Handle("/api/providers/{name}/bootstrap", providerBootstrap).Methods("POST")
+	}
 	// Heartbeat endpoint matches /api/providers/{name}/heartbeat. The
 	// parsing happens inside the handler; gorilla/mux just needs the prefix.
 	// A heartbeat lands on exactly one replica but every replica routes provider
@@ -910,6 +924,13 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("creating delegated-identity proof key source: %w", err)
 			}
 			catalogWorkloads := &kcpTenantResolver{workloadConfig: bootstrapper, proofKeys: delegatedProofKeys}
+			providerRelay := &providers.ProviderRelay{Registry: providerRegistry, Proxy: backendProxy, Keys: delegatedProofKeys, Authorize: providerRelayAuthorization(kcpConfig), Discovery: providerRelayDiscovery(kcpConfig)}
+			providerRelayDelegate.set(providerRelay)
+			router.HandleFunc(providerrelay.PublicKeyPath, providerRelay.PublicKey).Methods("GET")
+			providerRelayErrCh, err = s.startProviderRelay(ctx, providerRelay)
+			if err != nil {
+				return fmt.Errorf("start organization provider relay: %w", err)
+			}
 			catalogOwners, err := identity.NewDynamicOwnerProbe(kcpConfig)
 			if err != nil {
 				return fmt.Errorf("creating Project catalog owner probe: %w", err)
@@ -980,9 +1001,6 @@ func (s *Server) Run(ctx context.Context) error {
 				return fmt.Errorf("building the kcp transport for the provider edge hop: %w", err)
 			} else {
 				backendProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
-				if embeddedKCP != nil {
-					embeddedKCP.SetProviderActionTransport(backendProxy.ForwardShardAction)
-				}
 				// An org-owned provider's UI bundle is fetched over the same
 				// hop (pkg/hub/providers/ui_grant.go).
 				uiProxy.SetKCPFrontDoor(kcpFrontDoor, kcpTransport)
@@ -1020,6 +1038,7 @@ func (s *Server) Run(ctx context.Context) error {
 			// workspace-scoped install credential. Both need kcp, so this is
 			// inside the same kcp-gated branch as the rest of the REST surface.
 			apiMgr.WithOrgProviders(bootstrapper, providers.NewProvisioner(kcpConfig, s.providerProvisionerOptions()...))
+			apiMgr.WithOrgProviderAvailability(s.orgProviderRuntimeAvailable)
 			providerInstaller = providerinstall.New(kcpConfig, bootstrapper, s.opts.HubExternalURL, s.opts.DevMode)
 			apiMgr.WithProviderInstaller(providerInstaller)
 			// Per-workspace kubeconfig download — OIDC mode emits an exec
@@ -1036,6 +1055,7 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			apiMgr.WithKubeconfig(kcCfg)
 			apiHandler := restapi.NewHandler(apiMgr)
+			apiHandler.SetProviderUIGrantHandler(providerUIGrantHandler)
 
 			// User-only routes (no Org context required)
 			userOnlySub := router.PathPrefix("/api").Subrouter()
@@ -1089,7 +1109,7 @@ func (s *Server) Run(ctx context.Context) error {
 			identityService := identity.New(identity.Options{
 				Records: userClient.ScopedIdentities(),
 				Clients: identityClients,
-				Policy:  identity.NewPolicy(identity.NewRegistryCatalog(providerRegistry), identityBindings),
+				Policy:  identity.NewPolicy(identity.NewWorkspaceRegistryCatalog(providerRegistry, identityBindings), identityBindings),
 				Owners:  identityOwners,
 			})
 			projectScopeResolver := workloadidentity.NewKCPProjectScopeResolver(bootstrapper)
@@ -1620,6 +1640,10 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	case err := <-kcpErrCh:
 		return fmt.Errorf("embedded kcp server failed: %w", err)
+	case err := <-providerRelayErrCh:
+		if err != nil {
+			return fmt.Errorf("provider relay failed: %w", err)
+		}
 	case <-ctx.Done():
 		// Wait for HTTP server to finish shutting down.
 		<-httpErrCh
@@ -1636,6 +1660,7 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) providerProvisionerOptions() []providers.ProvisionerOption {
 	return []providers.ProvisionerOption{
 		providers.WithWorkspaceClusterAdmin(s.opts.ProviderWorkspaceClusterAdmin),
+		providers.WithProviderKubeconfigTLS(s.opts.ProviderCAFile, s.opts.DevMode),
 	}
 }
 

@@ -117,6 +117,7 @@ func runServe() {
 	srv, err := api.New(ctx, api.Config{
 		HubURL:                os.Getenv("RAILGRID_HUB_URL"),
 		HubInsecure:           os.Getenv("RAILGRID_HUB_INSECURE") == "true",
+		HubPublicURL:          os.Getenv("RAILGRID_HUB_PUBLIC_URL"),
 		DatabaseURL:           os.Getenv("AGENTS_DATABASE_URL"),
 		InMemoryStore:         os.Getenv("AGENTS_IN_MEMORY_STORE") == "true",
 		ProviderKubeconfig:    os.Getenv("RAILGRID_PROVIDER_KUBECONFIG"),

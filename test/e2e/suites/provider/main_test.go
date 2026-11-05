@@ -22,8 +22,8 @@ limitations under the License.
 // the sub-workspace + SA + provider-token), then `quickstart-provider init`
 // with the minted SA kubeconfig (APIExport + schemas + bind grant), then
 // serve. The tests exercise the full lifecycle: catalog provisioning, the
-// /api/providers and /ui|services/providers proxies, tenant Enable via direct
-// APIBinding, the reconciler stamping status in two independent tenant
+// /api/providers and /ui|services/providers proxies, tenant Enable through
+// the Hub endpoint, the reconciler stamping status in two independent tenant
 // workspaces, the data-plane greet verb as a kcp custom subresource — through
 // the hub's front door, straight at kcp, and across a provider claim — with its
 // cross-workspace denial, and heartbeat freshness.
@@ -97,13 +97,20 @@ func TestMain(m *testing.M) {
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
 	providerURL = "http://127.0.0.1:" + providerPort
+	kcpImage := strings.TrimSpace(os.Getenv("RAILGRID_E2E_KCP_IMAGE"))
+	etcdClientPort := os.Getenv("RAILGRID_E2E_ETCD_CLIENT_PORT")
+	if etcdClientPort == "" {
+		etcdClientPort = "2379"
+	}
+	etcdPeerPort := os.Getenv("RAILGRID_E2E_ETCD_PEER_PORT")
+	if etcdPeerPort == "" {
+		etcdPeerPort = "2380"
+	}
 
 	// Fail fast if a previous run left ports bound.
-	// 2380 is the embedded server's etcd peer port; a kcp run from an image
-	// keeps its etcd inside the container.
 	ports := []string{hubPort, kcpPort, providerPort}
-	if strings.TrimSpace(os.Getenv("RAILGRID_E2E_KCP_IMAGE")) == "" {
-		ports = append(ports, "2380")
+	if kcpImage == "" {
+		ports = append(ports, etcdClientPort, etcdPeerPort)
 	}
 	for _, p := range ports {
 		if portInUse(p) {
@@ -133,9 +140,9 @@ func TestMain(m *testing.M) {
 	// embedded server would have written into its token-auth-file are written
 	// here first, so every test that talks to kcp directly as a tenant works
 	// the same either way.
-	kcpImage := strings.TrimSpace(os.Getenv("RAILGRID_E2E_KCP_IMAGE"))
 	var kcpCmd *exec.Cmd
 	hubArgs := []string{
+		"--dev-mode",
 		"--listen-addr", ":" + hubPort,
 		"--data-dir", dataDir,
 		"--static-auth-token", staticToken,
@@ -143,7 +150,13 @@ func TestMain(m *testing.M) {
 	}
 	adminKubeconfig := filepath.Join(dataDir, "kcp", "admin.kubeconfig")
 	if kcpImage == "" {
-		hubArgs = append(hubArgs, "--embedded-kcp", "--kcp-bind-address", "127.0.0.1", "--kcp-secure-port", kcpPort)
+		hubArgs = append(hubArgs,
+			"--embedded-kcp", "--kcp-bind-address", "127.0.0.1",
+			"--kcp-root-dir", filepath.Join(dataDir, "kcp"),
+			"--kcp-etcd-client-port", etcdClientPort,
+			"--kcp-etcd-peer-port", etcdPeerPort,
+			"--kcp-secure-port", kcpPort,
+		)
 	} else {
 		kcpRoot := filepath.Join(dataDir, "kcp-external")
 		if err := os.MkdirAll(kcpRoot, 0o700); err != nil {

@@ -95,6 +95,10 @@ spec:
               value: "8087"
             - name: RAILGRID_HUB_URL
               value: {{ .Values.hub.url | quote }}
+            {{- with .Values.hub.publicURL }}
+            - name: RAILGRID_HUB_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: RAILGRID_PROVIDER_NAME
               value: "agents"
             # Provider kubeconfig — used for the kcp front-proxy host + TLS

@@ -133,8 +133,8 @@ func TestCreate_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get CRB: %v", err)
 	}
-	if crb.RoleRef.Name != "cluster-admin" {
-		t.Errorf("CRB roleRef: got %q, want cluster-admin", crb.RoleRef.Name)
+	if crb.RoleRef.Name != WorkspaceMemberClusterRole {
+		t.Errorf("CRB roleRef: got %q, want %s", crb.RoleRef.Name, WorkspaceMemberClusterRole)
 	}
 }
 
@@ -379,3 +379,25 @@ func errorContains(err error, substr string) bool {
 }
 
 var _ = errorContains // appease the linter for now; keep helper around
+
+func TestManagedServiceAccountRoleChangeRetainsBoundedRole(t *testing.T) {
+	manager, client := managerFor(t)
+	defer resetTestClientset()
+	ctx := context.Background()
+	account, err := manager.Create(ctx, "org", "ws", "ci", RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, role := range []string{RoleMember, RoleAdmin} {
+		if _, err := manager.PatchRoleAndDisplayName(ctx, "org", "ws", account.UUID, role, ""); err != nil {
+			t.Fatal(err)
+		}
+		binding, err := client.RbacV1().ClusterRoleBindings().Get(ctx, crbName(account.UUID), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if binding.RoleRef.Name != WorkspaceMemberClusterRole {
+			t.Fatalf("role change restored %s", binding.RoleRef.Name)
+		}
+	}
+}

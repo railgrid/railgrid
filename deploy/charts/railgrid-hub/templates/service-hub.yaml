@@ -7,6 +7,12 @@ metadata:
 spec:
   type: {{ .Values.service.type }}
   ports:
+    {{- if .Values.hub.providerRelay.enabled }}
+    - name: provider-relay
+      port: {{ .Values.hub.providerRelay.port }}
+      targetPort: provider-relay
+      protocol: TCP
+    {{- end }}
     - name: https
       port: {{ .Values.service.hub.port }}
       targetPort: https
