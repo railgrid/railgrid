@@ -181,7 +181,7 @@ function openAgentRow(row: Record<string, unknown>): void {
 </script>
 
 <template>
-  <ResourcePage title="Agents">
+  <ResourcePage title="Agents" variant="collection">
     <template #actions>
       <button v-if="!showFirstRun" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent

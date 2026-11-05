@@ -352,7 +352,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
     </ResourcePage>
   </div>
   <div v-else class="agents-menu">
-    <ResourcePage :title="COLLECTION_TITLE" :aria-label="COLLECTION_TITLE">
+    <ResourcePage :title="COLLECTION_TITLE" variant="collection" :aria-label="COLLECTION_TITLE">
       <template #header>
         <div class="k-resource-page__heading">
           <h1 class="k-resource-page__title" tabindex="-1" data-connections-heading>{{ COLLECTION_TITLE }}</h1>

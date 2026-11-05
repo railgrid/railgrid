@@ -476,7 +476,7 @@ defineExpose({ loadCatalog, loadUsage })
 </script>
 
 <template>
-  <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'k-resource-page agents-panel agents-route-panel agents-models-page'">
+  <div :class="createRoute || creating || editingCredential ? 'k-create-page' : 'k-resource-page k-resource-page--collection agents-panel agents-route-panel agents-models-page'">
     <template v-if="createRoute || creating || editingCredential">
       <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="editor?.locked" @click="editor?.cancel()"><ArrowLeft :stroke-width="1.75" aria-hidden="true" /> {{ returnLabel }}</button>
       <header class="k-create-header"><h1 class="k-create-title">{{ editorTitle }}</h1><p class="k-create-description">{{ editorDescription }}</p></header>

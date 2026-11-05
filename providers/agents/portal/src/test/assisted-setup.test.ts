@@ -78,7 +78,7 @@ describe('connections route layout', () => {
     const toolsets = el.querySelector('[data-toolsets-heading]')!
     expect(connections.tagName).toBe('H1')
     expect(toolsets.tagName).toBe('H2')
-    expect(connections.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(false)
+    expect(connections.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
     expect(toolsets.closest('.k-resource-page')?.classList.contains('k-resource-page--collection')).toBe(true)
     const actions = [...el.querySelectorAll<HTMLButtonElement>('.k-resource-page__actions button')]
     expect(actions.map(button => text(button))).toEqual(['New connection', 'New toolset'])
