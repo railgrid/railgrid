@@ -32,7 +32,8 @@ func TestCopyOrgProviderResponseHeadersAllowlistAndForcedPolicy(t *testing.T) {
 		"cOnTeNt-TyPe":                        {"application/json"},
 		"MCP-SESSION-ID":                      {"session-1"},
 		"mcp-protocol-version":                {"2025-06-18"},
-		"WWW-AUTHENTICATE":                    {"Bearer realm=\"provider\""},
+		"WWW-AUTHENTICATE":                    {"Basic realm=\"provider\""},
+		"Location":                            {"https://provider.example/login"},
 		"Set-Cookie":                          {"sid=evil; Path=/"},
 		"Set-Cookie2":                         {"sid2=evil"},
 		"Clear-Site-Data":                     {"\"cookies\", \"storage\""},
@@ -53,7 +54,6 @@ func TestCopyOrgProviderResponseHeadersAllowlistAndForcedPolicy(t *testing.T) {
 		"Content-Type":                "application/json",
 		"Mcp-Session-Id":              "session-1",
 		"Mcp-Protocol-Version":        "2025-06-18",
-		"Www-Authenticate":            "Bearer realm=\"provider\"",
 		"Cache-Control":               "private, no-store",
 		"X-Content-Type-Options":      "nosniff",
 		"Content-Security-Policy":     orgProviderContentSecurityPolicy,
@@ -67,10 +67,37 @@ func TestCopyOrgProviderResponseHeadersAllowlistAndForcedPolicy(t *testing.T) {
 	for _, key := range []string{
 		"Set-Cookie", "Set-Cookie2", "Clear-Site-Data", "Strict-Transport-Security",
 		"Alt-Svc", "NEL", "Report-To", "Reporting-Endpoints", "Content-Security-Policy-Report-Only",
-		"Trailer", "X-Untrusted-Policy",
+		"Trailer", "X-Untrusted-Policy", "Www-Authenticate", "Location",
 	} {
 		if got := dst.Get(key); got != "" {
 			t.Errorf("unsafe upstream header %s leaked as %q", key, got)
 		}
+	}
+}
+
+func TestCopyOrgProviderRedirectSafely(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		status   int
+		location string
+		wantLoc  string
+	}{
+		{name: "relative proxy path", status: http.StatusMovedPermanently, location: "proxy/?tab=1", wantLoc: "proxy/?tab=1"},
+		{name: "same-origin absolute path", status: http.StatusFound, location: "/clusters/consumer/login", wantLoc: "/clusters/consumer/login"},
+		{name: "external absolute URL", status: http.StatusFound, location: "https://other.example/login"},
+		{name: "script scheme URL", status: http.StatusFound, location: "javascript:alert(1)"},
+		{name: "network-path reference", status: http.StatusFound, location: "//other.example/login"},
+		{name: "backslash path", status: http.StatusFound, location: `\\other.example/login`},
+		{name: "encoded backslash path", status: http.StatusFound, location: "/%5C%5Cother.example/login"},
+		{name: "non-redirect status", status: http.StatusOK, location: "proxy/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dst := make(http.Header)
+			src := http.Header{"Location": {test.location}}
+			copyOrgProviderLocation(dst, src, test.status)
+			if got := dst.Get("Location"); got != test.wantLoc {
+				t.Fatalf("Location = %q, want %q", got, test.wantLoc)
+			}
+		})
 	}
 }

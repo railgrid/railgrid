@@ -40,6 +40,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
+
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // workspacePath is the provider sub-workspace the hub's Provider controller
@@ -676,38 +678,26 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	// Clean any stale binding from a previous run.
-	_ = tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), "kuery", metav1.DeleteOptions{})
-	for i := 0; i < 5; i++ {
-		_, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "kuery", metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			break
+	// Kuery declares edges as a dependency, so enable the API-only edges
+	// stand-in first. This test declines the edges compositions: its SavedView
+	// round-trip exercises kuery's own API and needs no edge access. The
+	// stand-in's APIExport has no permissionClaims, so its Enable accepts none.
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "kuery")
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "edges", nil, nil)
+	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
+		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "edges", metav1.GetOptions{})
+		if err != nil {
+			return false, err.Error()
 		}
-		time.Sleep(time.Second)
+		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
+		return phase == "Bound", "phase=" + phase
+	}) {
+		t.Fatal("edges APIBinding never reached Bound")
 	}
-
-	// The binding accepts NOTHING, deliberately: this test only round-trips a
-	// SavedView, which is kuery's own kind and needs no claim at all. The
-	// claims the export declares (spec.requires) stay undecided here — what
-	// kuery's engagement controller needs on an edge reaches a workspace only
-	// once someone accepted it in the Enable dialog, which is the hub's flow
-	// and not this test's.
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "kuery"},
-		"spec": map[string]any{
-			"reference": map[string]any{
-				"export": map[string]any{
-					"path": workspacePath,
-					"name": apiExportName,
-				},
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "kuery", []framework.ProviderPermissionClaim{
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
+	}, nil)
 
 	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
 		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "kuery", metav1.GetOptions{})
@@ -715,10 +705,40 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	})
 	if !ok {
-		t.Fatal("APIBinding never reached Bound")
+		t.Fatal("APIBinding never reached Bound with valid permission claims")
+	}
+	gotBinding, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "kuery", metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("read kuery APIBinding claims: %v", err)
+	}
+	claimStates := map[string]string{}
+	claims, _, _ := unstructured.NestedSlice(gotBinding.Object, "spec", "permissionClaims")
+	for _, raw := range claims {
+		claim, _ := raw.(map[string]any)
+		group, _ := claim["group"].(string)
+		resource, _ := claim["resource"].(string)
+		state, _ := claim["state"].(string)
+		claimStates[group+"/"+resource] = state
+	}
+	for coordinate, want := range map[string]string{
+		"authorization.k8s.io/subjectaccessreviews": "Accepted",
+		"edges.railgrid.ai/kubernetesclusters":      "Rejected",
+		"edges.railgrid.ai/kubernetesclusters/k8s":  "Rejected",
+	} {
+		if got := claimStates[coordinate]; got != want {
+			t.Errorf("kuery binding claim %s state = %q, want %q (all claims %v)", coordinate, got, want, claimStates)
+		}
 	}
 
 	sv := &unstructured.Unstructured{Object: map[string]any{
@@ -789,15 +809,13 @@ func TestGTenantEnableAndSavedViewUsable(t *testing.T) {
 	}
 }
 
-// TestHTenantDisableRemovesSavedView asserts deleting the APIBinding takes the
-// tenant's kuery API surface with it, so Disable really revokes access.
+// TestHTenantDisableRemovesSavedView asserts Hub Disable takes the tenant's
+// kuery API surface with it, so Disable really revokes access.
 func TestHTenantDisableRemovesSavedView(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	if err := tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 10*time.Second), "kuery", metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		t.Fatalf("delete APIBinding: %v", err)
-	}
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "kuery")
 
 	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
 		_, err := tenant.Resource(savedViewGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
@@ -810,6 +828,7 @@ func TestHTenantDisableRemovesSavedView(t *testing.T) {
 	if !ok {
 		t.Error("savedviews API still served after the APIBinding was deleted")
 	}
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
 }
 
 // truncate keeps failure output readable when a handler returns a large body.

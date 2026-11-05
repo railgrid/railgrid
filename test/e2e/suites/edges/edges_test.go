@@ -35,6 +35,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/util/identity"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var (
@@ -202,40 +203,17 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	// Clean any stale binding from a previous run.
-	_ = tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), "edges", metav1.DeleteOptions{})
-
-	claim := func(group, resource string) map[string]any {
-		return map[string]any{
-			"group":    group,
-			"resource": resource,
-			"verbs":    []any{"get", "list", "watch", "create", "update", "patch", "delete"},
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
-		}
-	}
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "edges"},
-		"spec": map[string]any{
-			"reference": map[string]any{
-				"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName},
-			},
-			"permissionClaims": []any{
-				claim("", "namespaces"),
-				claim("", "serviceaccounts"),
-				claim("", "secrets"),
-				claim("rbac.authorization.k8s.io", "clusterroles"),
-				claim("rbac.authorization.k8s.io", "clusterrolebindings"),
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	// The Hub owns tenant APIBinding creation and copies the exact declared
+	// claims, including the selector on Secrets, after checking this workspace.
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "edges", []framework.ProviderPermissionClaim{
+		{Resource: "namespaces"},
+		{Resource: "secrets"},
+		{Group: "authentication.k8s.io", Resource: "tokenreviews"},
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
+	}, nil)
 	t.Cleanup(func() {
-		_ = tenant.Resource(apiBindingGVR).Delete(context.Background(), "edges", metav1.DeleteOptions{})
+		framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "edges")
 	})
 
 	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
@@ -244,9 +222,17 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	}) {
-		t.Fatal("edges APIBinding never reached Bound")
+		t.Fatal("edges APIBinding never reached Bound with valid permission claims")
 	}
 
 	for _, tc := range []struct {
@@ -322,16 +308,19 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 	}
 	tenant := kcpDynamic(t, tenantWS, adminToken)
 
-	// Enable edges: bind the APIExport accepting every claim (including the
-	// tokenreviews + subjectaccessreviews review APIs the provider needs to run
-	// delegated auth against this workspace through the VW).
-	acceptClaim := func(group, resource string) map[string]any {
-		return map[string]any{
+	// This admin-owned synthetic workspace can create its binding directly.
+	// Keep the accepted claims identical to edges' declared requirements, in
+	// particular the Secret selector, so this fixture does not broaden access.
+	acceptClaim := func(group, resource string, verbs []any, selector map[string]any) map[string]any {
+		claim := map[string]any{
 			"group": group, "resource": resource,
-			"verbs":    []any{"get", "list", "watch", "create", "update", "patch", "delete"},
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
+			"verbs": verbs,
+			"state": "Accepted",
 		}
+		if selector != nil {
+			claim["selector"] = selector
+		}
+		return claim
 	}
 	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "apis.kcp.io/v1alpha2",
@@ -345,8 +334,12 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 			// but stamps PermissionClaimsValid=False on the APIBinding, so the
 			// suite would be asserting "Bound" over a broken binding.
 			"permissionClaims": []any{
-				acceptClaim("", "namespaces"), acceptClaim("", "secrets"),
-				acceptClaim("authentication.k8s.io", "tokenreviews"), acceptClaim("authorization.k8s.io", "subjectaccessreviews"),
+				acceptClaim("", "namespaces", []any{"get", "list", "watch", "create"}, nil),
+				acceptClaim("", "secrets", []any{"get", "list", "watch", "create", "update"}, map[string]any{
+					"matchLabels": map[string]any{"railgrid.ai/owner": "edges"},
+				}),
+				acceptClaim("authentication.k8s.io", "tokenreviews", []any{"create"}, nil),
+				acceptClaim("authorization.k8s.io", "subjectaccessreviews", []any{"create"}, nil),
 			},
 		},
 	}}, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
@@ -358,9 +351,17 @@ func TestDEdgeProxyAuthBoundary(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	}) {
-		t.Fatal("edges APIBinding never reached Bound")
+		t.Fatal("edges APIBinding never reached Bound with valid permission claims")
 	}
 	// A real edge makes the provider's multicluster manager engage this cluster
 	// (so tenantConfigFor can resolve it), and the probe below targets THIS

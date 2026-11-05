@@ -18,6 +18,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -30,6 +31,47 @@ import (
 
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 )
+
+func TestListAllEdgesDistinguishesUnboundAPIFromDeniedAccess(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bound      bool
+		bindingErr bool
+		wantAbsent bool
+	}{
+		{name: "unbound", wantAbsent: true},
+		{name: "bound but forbidden", bound: true},
+		{name: "binding state forbidden", bindingErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
+				railgridclient.KubernetesClusterGVR:                                  "KubernetesClusterList",
+				{Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apibindings"}: "APIBindingList",
+			})
+			dyn.PrependReactor("list", "*", func(action clienttesting.Action) (bool, runtime.Object, error) {
+				gvr := action.GetResource()
+				if gvr.Resource != "apibindings" || tc.bindingErr {
+					return true, nil, apierrors.NewForbidden(gvr.GroupResource(), "", errors.New("denied"))
+				}
+				list := &unstructured.UnstructuredList{}
+				if tc.bound {
+					list.Items = []unstructured.Unstructured{{Object: map[string]interface{}{
+						"status": map[string]interface{}{"boundResources": []interface{}{map[string]interface{}{"group": "edges.railgrid.ai"}}},
+					}}}
+				}
+				return true, list, nil
+			})
+			_, err := listAllEdges(context.Background(), dyn)
+			if tc.wantAbsent {
+				if !errors.Is(err, errEdgesNotEnabled) {
+					t.Fatalf("error = %v, want disabled-provider guidance", err)
+				}
+			} else if !apierrors.IsForbidden(err) {
+				t.Fatalf("error = %v, want original Forbidden", err)
+			}
+		})
+	}
+}
 
 func TestGetEdgeByNameFindsMacOSServer(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())

@@ -18,16 +18,18 @@ package providers
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 )
 
 const orgProviderContentSecurityPolicy = "sandbox; default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 
 // CopyOrgProviderResponseHeaders copies the small set of response headers the
-// hub needs to preserve for an org-owned provider API or MCP response. src must
-// be a private upstream header map; dst may already contain headers installed
-// by trusted outer hub middleware, which are left in place unless one of the
-// explicitly copied or forced headers below replaces it.
+// hub preserves on the org-owned provider custom-subresource relay. src must be
+// a private upstream header map; dst may already contain headers installed by
+// trusted outer hub middleware, which are left in place unless one of the
+// explicitly copied or forced headers below replaces it. The ordinary provider
+// backend proxy carries OAuth and MCP protocol headers without this filter.
 //
 // In particular, upstream cookies, browser policy, CORS, reporting, transport,
 // and trailer headers are never copied. The forced policy also makes direct
@@ -45,11 +47,9 @@ func CopyOrgProviderResponseHeaders(dst, src http.Header) {
 		"content-type":         "Content-Type",
 		"etag":                 "ETag",
 		"last-modified":        "Last-Modified",
-		"location":             "Location",
 		"mcp-protocol-version": "Mcp-Protocol-Version",
 		"mcp-session-id":       "Mcp-Session-Id",
 		"retry-after":          "Retry-After",
-		"www-authenticate":     "Www-Authenticate",
 	}
 	for key, values := range src {
 		canonical, ok := allowed[strings.ToLower(key)]
@@ -61,4 +61,35 @@ func CopyOrgProviderResponseHeaders(dst, src http.Header) {
 	dst.Set("Cache-Control", "private, no-store")
 	dst.Set("X-Content-Type-Options", "nosniff")
 	dst.Set("Content-Security-Policy", orgProviderContentSecurityPolicy)
+}
+
+// copyOrgProviderLocation retains only same-origin redirect references. OAuth
+// authorization routes use the ordinary provider backend proxy, so external
+// redirects there are unaffected by this custom-subresource relay policy.
+func copyOrgProviderLocation(dst, src http.Header, status int) {
+	if dst == nil || !isOrgProviderRedirect(status) {
+		return
+	}
+	values := src.Values("Location")
+	if len(values) != 1 {
+		return
+	}
+	location := strings.TrimSpace(values[0])
+	if location == "" || strings.ContainsAny(location, "\\\r\n\x00") || strings.HasPrefix(location, "//") {
+		return
+	}
+	u, err := url.Parse(location)
+	if err != nil || u.Scheme != "" || u.Host != "" || u.User != nil || u.Opaque != "" || strings.HasPrefix(u.Path, "//") || strings.ContainsAny(u.Path, "\\\r\n\x00") {
+		return
+	}
+	dst.Set("Location", location)
+}
+
+func isOrgProviderRedirect(status int) bool {
+	switch status {
+	case http.StatusMultipleChoices, http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }

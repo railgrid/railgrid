@@ -31,6 +31,7 @@ import (
 func orgProviderModifyResponse(resp *http.Response, requestHeaders http.Header) error {
 	filtered := make(http.Header)
 	CopyOrgProviderResponseHeaders(filtered, resp.Header)
+	copyOrgProviderLocation(filtered, resp.Header, resp.StatusCode)
 	if resp.StatusCode == http.StatusSwitchingProtocols {
 		requestUpgrade := strings.TrimSpace(requestHeaders.Get("Upgrade"))
 		responseUpgrade := strings.TrimSpace(resp.Header.Get("Upgrade"))

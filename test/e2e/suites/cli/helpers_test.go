@@ -35,6 +35,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/railgrid/railgrid/pkg/util/identity"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // cliSession is one logged-in user: an isolated kubeconfig the railgrid binary
@@ -212,51 +213,33 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() (bool, string)) bo
 
 // --- edges provider enablement (ported from suites/edgesconn) ---
 
-// enableEdges binds the edges APIExport into the tenant workspace with the
-// claim set the hub's enable flow accepts, and waits for Bound.
-func enableEdges(t *testing.T, tenant dynamic.Interface) {
+// enableEdges drives the Hub's tenant Enable endpoint with the four claims
+// the edges provider declares, then waits for a valid Bound APIBinding.
+func enableEdges(t *testing.T, tenant dynamic.Interface, token string) {
 	t.Helper()
-	claimVerbs := func(group, resource string, verbs ...string) map[string]any {
-		vs := make([]any, 0, len(verbs))
-		for _, v := range verbs {
-			vs = append(vs, v)
-		}
-		return map[string]any{
-			"group": group, "resource": resource,
-			"verbs":    vs,
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
-		}
-	}
-	claim := func(group, resource string) map[string]any {
-		return claimVerbs(group, resource, "get", "list", "watch", "create", "update", "patch", "delete")
-	}
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "edges"},
-		"spec": map[string]any{
-			"reference": map[string]any{"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName}},
-			"permissionClaims": []any{
-				claim("", "namespaces"), claim("", "serviceaccounts"), claim("", "secrets"),
-				claim("rbac.authorization.k8s.io", "clusterroles"), claim("rbac.authorization.k8s.io", "clusterrolebindings"),
-				claimVerbs("authentication.k8s.io", "tokenreviews", "create"),
-				claimVerbs("authorization.k8s.io", "subjectaccessreviews", "create"),
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	framework.EnableTenantProvider(t, hubURL, tenant, token, "edges", []framework.ProviderPermissionClaim{
+		{Resource: "namespaces"},
+		{Resource: "secrets"},
+		{Group: "authentication.k8s.io", Resource: "tokenreviews"},
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
+	}, nil)
 	if !waitFor(t, 30*time.Second, func() (bool, string) {
 		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "edges", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	}) {
-		t.Fatal("edges APIBinding never reached Bound")
+		t.Fatal("edges APIBinding never reached Bound with valid permission claims")
 	}
 }
 
@@ -312,7 +295,7 @@ func prepareEdgesWorkspace(t *testing.T, s *cliSession) (string, dynamic.Interfa
 	t.Helper()
 	tenantWS := clusterFromKubeconfig(t, s.kubeconfig)
 	tenantAdmin := kcpDynamic(t, tenantWS, adminToken)
-	enableEdges(t, tenantAdmin)
+	enableEdges(t, tenantAdmin, s.token)
 	grantEdgeProxy(t, tenantAdmin)
 	return tenantWS, tenantAdmin
 }

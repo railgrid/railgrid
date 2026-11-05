@@ -139,3 +139,66 @@ func TestProviderRelaySuppressesInformationalAndTrailerHeaders(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderRelayFiltersBrowserRedirectsAndAuthChallenges(t *testing.T) {
+	endpoint := responseTestRelay(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("case") {
+		case "relative-redirect":
+			w.Header().Set("Location", "proxy/?tab=1")
+			w.WriteHeader(http.StatusMovedPermanently)
+		case "external-redirect":
+			w.Header().Set("Location", "https://login.other.example/authorize")
+			w.WriteHeader(http.StatusFound)
+		case "network-path-redirect":
+			w.Header().Set("Location", "//evil.example/collect")
+			w.WriteHeader(http.StatusFound)
+		case "encoded-backslash-redirect":
+			w.Header().Set("Location", "/%5c%5cevil.example/collect")
+			w.WriteHeader(http.StatusFound)
+		case "mcp-metadata":
+			w.Header().Add("WWW-Authenticate", `Basic realm="browser prompt", Bearer error="invalid_token", resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		case "basic-challenge":
+			w.Header().Set("WWW-Authenticate", `Basic realm="browser prompt"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	client := &http.Client{
+		Timeout: 3 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	for _, test := range []struct {
+		name     string
+		status   int
+		location string
+		wantLoc  string
+		wantAuth string
+	}{
+		{name: "relative redirect", status: http.StatusMovedPermanently, location: "relative-redirect", wantLoc: "proxy/?tab=1"},
+		{name: "external redirect", status: http.StatusFound, location: "external-redirect"},
+		{name: "network path redirect", status: http.StatusFound, location: "network-path-redirect"},
+		{name: "encoded backslash redirect", status: http.StatusFound, location: "encoded-backslash-redirect"},
+		{name: "MCP metadata challenge", status: http.StatusUnauthorized, location: "mcp-metadata"},
+		{name: "Basic challenge", status: http.StatusUnauthorized, location: "basic-challenge"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := responseTestRequest(endpoint + "?case=" + test.location)
+			response, err := client.Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = response.Body.Close()
+			if response.StatusCode != test.status {
+				t.Fatalf("status = %d, want %d", response.StatusCode, test.status)
+			}
+			if got := response.Header.Get("Location"); got != test.wantLoc {
+				t.Errorf("Location = %q, want %q", got, test.wantLoc)
+			}
+			if got := response.Header.Get("WWW-Authenticate"); got != test.wantAuth {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, test.wantAuth)
+			}
+		})
+	}
+}

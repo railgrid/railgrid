@@ -122,6 +122,14 @@ platform binding. Disabling a provider retains the current explicit deletion
 policy; export data before removal when it must be preserved. No automatic
 platform-to-organization resource migration is promised.
 
+A customer-hosted copy of a platform provider may retain that provider's name,
+API groups, and schemas. This is intentional compatibility with existing provider
+charts, not ownership of the platform export: the copy has its own APIExport
+identity and can serve only consumers in its organization. The workspace's actual
+APIBinding selects the copy used for requests and console assets. An existing
+platform binding continues to select the platform copy until explicitly changed;
+publishing an organization copy does not migrate or combine their resources.
+
 ## Deployment requirements and lifecycle
 
 Both embedded kcp and separately deployed kcp must run the Railgrid organization
@@ -129,6 +137,12 @@ boundary hooks. External deployments require the compatible Railgrid kcp serving
 binary and authenticated shard relay configuration; upgrading the Hub alone cannot
 protect clients that call a shard directly. Use mTLS for the external relay and
 keep trusted platform backend listeners private from tenant workloads.
+
+Organization APIExport wildcard requests are limited to one minute. Each reconnect
+rechecks APIBindings against the shard's local informer cache. A newly created
+foreign binding does not immediately cancel an already-open watch, so events may
+remain visible until that request expires. Cross-shard binding ownership
+enforcement remains deferred.
 
 Set `--provider-heartbeat-auth=enforce` (Helm:
 `hub.security.providerHeartbeatAuth: enforce`) before registering organization

@@ -37,6 +37,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
+
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var (
@@ -395,26 +397,14 @@ func TestETenantSeesTemplatesCatalog(t *testing.T) {
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "infrastructure"},
-		"spec": map[string]any{
-			"reference": map[string]any{
-				"export": map[string]any{
-					"path": workspacePath,
-					"name": infraAPIExportName,
-				},
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	// Enable through the Hub so it creates the APIBinding with its own kcp
+	// credentials after checking the tenant's workspace scope.
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "infrastructure", []framework.ProviderPermissionClaim{
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
+		{Resource: "secrets"},
+	}, nil)
 	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = tenant.Resource(apiBindingGVR).Delete(ctx, "infrastructure", metav1.DeleteOptions{})
+		framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "infrastructure")
 	})
 
 	ok := waitForCondition(t, 60*time.Second, func() (bool, string) {
@@ -423,10 +413,18 @@ func TestETenantSeesTemplatesCatalog(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	})
 	if !ok {
-		t.Fatal("APIBinding never reached Bound")
+		t.Fatal("APIBinding never reached Bound with valid permission claims")
 	}
 
 	// The Templates catalog must be readable through the binding.

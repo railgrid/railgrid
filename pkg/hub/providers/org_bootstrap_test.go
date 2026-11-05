@@ -200,6 +200,18 @@ func TestOrgBootstrapRejectsGroupOwnedByAnotherVisibleProvider(t *testing.T) {
 	}
 }
 
+func TestOrgBootstrapPreservesSameNamePlatformProviderAPIGroup(t *testing.T) {
+	registry := NewRegistry()
+	registry.Upsert(Provider{Name: "quickstart", APIGroups: []string{"quickstart.providers.railgrid.ai"}})
+	request := quickstartBootstrap(t)
+	if _, err := validateOrgBootstrap("quickstart", "org", registry, request); err != nil {
+		t.Fatalf("same-name customer-hosted copy must retain its API group: %v", err)
+	}
+	if err := validateOrgProviderGroupOwnership("org", "different-provider", "quickstart.providers.railgrid.ai", registry); err == nil {
+		t.Fatal("another provider was allowed to claim the visible platform provider's group")
+	}
+}
+
 func TestOrgBootstrapRefusesDifferentExistingImmutableSchema(t *testing.T) {
 	request := quickstartBootstrap(t)
 	existing := request.Schemas[0].DeepCopy()

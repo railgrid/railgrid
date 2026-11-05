@@ -35,6 +35,7 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/endpoints/request"
 	"k8s.io/client-go/tools/cache"
+	k8sjson "sigs.k8s.io/json"
 
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
@@ -44,6 +45,14 @@ const (
 	// DefaultMaxRequestBytes covers existing provider transfers (up to 96 MiB).
 	// Ordinary KCP object decoders retain their smaller object limits.
 	DefaultMaxRequestBytes int64 = 96 << 20
+	// maxAPIBindingRequestBytes bounds the body the guard inspects before KCP's
+	// APIBinding decoder. APIBinding objects are small; this is independent of
+	// the larger limit needed by provider transfer requests.
+	maxAPIBindingRequestBytes int64 = 1 << 20
+	// maxOrgWildcardRequestLifetime bounds how long an admitted organization
+	// wildcard request can remain open before reconnecting through requestScope,
+	// which rechecks the APIBinding ownership cache.
+	maxOrgWildcardRequestLifetime = time.Minute
 	// DefaultRequestsPerSecond is the sustained per-organization request rate.
 	DefaultRequestsPerSecond = 100.0
 	// DefaultBurst is the per-organization token bucket burst.
@@ -237,48 +246,12 @@ func (g *Guard) requestScope(r *http.Request, info user.Info) (scope, error) {
 			return g.finishScope(r, source, org, false)
 		}
 	} else if inVirtualClusterPath && wildcard {
-		if source.org != "" {
-			exportID, exportName, ok := apiExportFromRequest(r)
-			if !ok {
-				return scope{}, fmt.Errorf("organization ServiceAccount cannot address an unscoped wildcard virtual workspace")
-			}
-			exportPath, err := g.clusterPath(logicalcluster.Name(exportID))
-			if err != nil {
-				return scope{}, fmt.Errorf("resolve wildcard APIExport owner: %w", err)
-			}
-			exportOrg, err := organizationForPath(exportPath)
-			if err != nil || exportOrg != source.org {
-				return scope{}, fmt.Errorf("organization ServiceAccount may watch only its own organization's APIExport virtual workspace")
-			}
-			if err := g.ensureWildcardExportBindingsAreOrgScoped(exportID, exportPath, exportName, source.org); err != nil {
-				return scope{}, err
-			}
-			return scope{source: source, target: source.org, wildcard: true}, nil
-		}
-		return scope{source: source, wildcard: true}, nil
+		return g.wildcardScope(r, source)
 	}
 
 	if cluster := request.ClusterFrom(r.Context()); cluster != nil {
 		if cluster.Wildcard {
-			if source.org != "" {
-				exportID, exportName, ok := apiExportFromRequest(r)
-				if !ok {
-					return scope{}, fmt.Errorf("organization ServiceAccount cannot address an unscoped wildcard workspace")
-				}
-				exportPath, err := g.clusterPath(logicalcluster.Name(exportID))
-				if err != nil {
-					return scope{}, fmt.Errorf("resolve wildcard APIExport owner: %w", err)
-				}
-				exportOrg, err := organizationForPath(exportPath)
-				if err != nil || exportOrg != source.org {
-					return scope{}, fmt.Errorf("organization ServiceAccount may watch only its own organization's APIExport virtual workspace")
-				}
-				if err := g.ensureWildcardExportBindingsAreOrgScoped(exportID, exportPath, exportName, source.org); err != nil {
-					return scope{}, err
-				}
-				return scope{source: source, target: source.org, wildcard: true}, nil
-			}
-			return scope{source: source, wildcard: true}, nil
+			return g.wildcardScope(r, source)
 		}
 		if !cluster.Name.Empty() {
 			path, err := g.clusterPath(cluster.Name)
@@ -302,6 +275,32 @@ func (g *Guard) requestScope(r *http.Request, info user.Info) (scope, error) {
 		}
 	}
 	return scope{source: source}, nil
+}
+
+func (g *Guard) wildcardScope(r *http.Request, source sourceIdentity) (scope, error) {
+	if source.org == "" {
+		return scope{source: source, wildcard: true}, nil
+	}
+	exportID, exportName, ok := apiExportFromRequest(r)
+	if !ok {
+		return scope{}, fmt.Errorf("organization ServiceAccount cannot address an unscoped wildcard virtual workspace")
+	}
+	exportPath, err := g.clusterPath(logicalcluster.Name(exportID))
+	if err != nil {
+		return scope{}, fmt.Errorf("resolve wildcard APIExport owner: %w", err)
+	}
+	exportOrg, err := organizationForPath(exportPath)
+	if err != nil || exportOrg != source.org {
+		return scope{}, fmt.Errorf("organization ServiceAccount may watch only its own organization's APIExport virtual workspace")
+	}
+	if err := g.ensureWildcardExportBindingsAreOrgScoped(exportID, exportPath, exportName, source.org); err != nil {
+		return scope{}, err
+	}
+	return scope{
+		source:   source,
+		target:   source.org,
+		wildcard: true,
+	}, nil
 }
 
 func (g *Guard) finishScope(r *http.Request, source sourceIdentity, targetOrg string, wildcard bool) (scope, error) {
@@ -538,10 +537,18 @@ func (g *Guard) Wrap(next http.Handler) http.Handler {
 			defer release()
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), g.config.StreamLifetime)
+		ctx, cancel := context.WithTimeout(r.Context(), g.requestLifetime(s))
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (g *Guard) requestLifetime(s scope) time.Duration {
+	lifetime := g.config.StreamLifetime
+	if s.wildcard && s.source.org != "" && lifetime > maxOrgWildcardRequestLifetime {
+		return maxOrgWildcardRequestLifetime
+	}
+	return lifetime
 }
 
 // trustedForRateLimit exempts platform control-plane identities from tenant
@@ -607,28 +614,49 @@ func safeAPIBindingWrite(r *http.Request, info *request.RequestInfo, sourceOrg s
 	if info.Verb != "create" && info.Verb != "update" {
 		return true
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, DefaultMaxRequestBytes+1))
-	if err != nil || int64(len(body)) > DefaultMaxRequestBytes {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxAPIBindingRequestBytes+1))
+	if err != nil || int64(len(body)) > maxAPIBindingRequestBytes {
 		return false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
-	var object struct {
-		Spec struct {
-			Reference struct {
-				Export *struct {
-					Path string `json:"path"`
-				} `json:"export"`
-			} `json:"reference"`
-		} `json:"spec"`
-	}
-	if err := json.Unmarshal(body, &object); err != nil {
+	var object map[string]interface{}
+	strictErrors, err := k8sjson.UnmarshalStrict(body, &object, k8sjson.DisallowDuplicateFields)
+	if err != nil || len(strictErrors) > 0 {
 		return false
 	}
-	if object.Spec.Reference.Export == nil || object.Spec.Reference.Export.Path == "" {
+	path, hasPath, valid := apiBindingExportPath(object)
+	if !valid {
+		return false
+	}
+	if !hasPath || path == "" {
 		return true
 	}
-	org, err := organizationForPath(object.Spec.Reference.Export.Path)
+	org, err := organizationForPath(path)
 	return err == nil && org == sourceOrg
+}
+
+func apiBindingExportPath(object map[string]interface{}) (path string, hasPath, valid bool) {
+	if object == nil {
+		return "", false, true
+	}
+	spec, ok := object["spec"].(map[string]interface{})
+	if !ok {
+		return "", false, object["spec"] == nil
+	}
+	reference, ok := spec["reference"].(map[string]interface{})
+	if !ok {
+		return "", false, spec["reference"] == nil
+	}
+	export, ok := reference["export"].(map[string]interface{})
+	if !ok {
+		return "", false, reference["export"] == nil
+	}
+	value, hasPath := export["path"]
+	if !hasPath {
+		return "", false, true
+	}
+	path, ok = value.(string)
+	return path, true, ok
 }
 
 func writeStatus(w http.ResponseWriter, code int, reason metav1.StatusReason, message string) {

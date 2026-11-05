@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -41,14 +42,24 @@ const (
 // edgeUpstream stands in for the platform edges provider and records what the
 // hub asked it to do.
 type edgeUpstream struct {
-	hit           bool
-	path          string
-	user          string
-	tenant        string
-	cluster       string
-	authorization string
-	upstreamAuth  string
-	headers       http.Header
+	hit             bool
+	path            string
+	user            string
+	tenant          string
+	cluster         string
+	authorization   string
+	upstreamAuth    string
+	headers         http.Header
+	responseMu      sync.RWMutex
+	responseStatus  int
+	responseHeaders http.Header
+}
+
+func (u *edgeUpstream) setResponse(status int, headers http.Header) {
+	u.responseMu.Lock()
+	defer u.responseMu.Unlock()
+	u.responseStatus = status
+	u.responseHeaders = headers.Clone()
 }
 
 // recordingIssuer is a DelegatedTokenIssuer that records what it was asked
@@ -92,7 +103,19 @@ func newEdgeBackedProxyWithTenant(t *testing.T, orgOfCaller, wsOfCaller string) 
 		rec.cluster = r.Header.Get("X-Railgrid-Cluster")
 		rec.authorization = r.Header.Get("Authorization")
 		rec.upstreamAuth = r.Header.Get(dataplane.HeaderUpstreamAuthorization)
-		w.WriteHeader(http.StatusOK)
+		rec.responseMu.RLock()
+		responseStatus := rec.responseStatus
+		responseHeaders := rec.responseHeaders.Clone()
+		rec.responseMu.RUnlock()
+		for key, values := range responseHeaders {
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		if responseStatus == 0 {
+			responseStatus = http.StatusOK
+		}
+		w.WriteHeader(responseStatus)
 	}))
 	t.Cleanup(srv.Close)
 	// The recording server stands in for kcp's front door: the hop lands on
@@ -181,6 +204,50 @@ func TestBackendProxyRoutesOrgProviderOverItsEdge(t *testing.T) {
 	wantPrefix := "/clusters/" + testCluster + "/apis/edges.railgrid.ai/v1alpha1/services/provider-infrastructure/proxy"
 	if got := rec.path; got != wantPrefix+"/mcp" {
 		t.Errorf("kcp saw path %q, want %q", got, wantPrefix+"/mcp")
+	}
+}
+
+func TestBackendProxyPreservesOAuthRedirectAndMCPMetadata(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		path       string
+		status     int
+		headers    http.Header
+		wantStatus int
+		wantLoc    string
+		wantAuth   string
+	}{
+		{
+			name:       "OAuth external redirect",
+			path:       "/services/providers/infrastructure/oauth/authorize",
+			status:     http.StatusFound,
+			headers:    http.Header{"Location": {"https://login.example/authorize?client_id=railgrid"}},
+			wantStatus: http.StatusFound,
+			wantLoc:    "https://login.example/authorize?client_id=railgrid",
+		},
+		{
+			name:       "MCP protected resource metadata",
+			path:       "/services/providers/infrastructure/mcp",
+			status:     http.StatusUnauthorized,
+			headers:    http.Header{"WWW-Authenticate": {`Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`}},
+			wantStatus: http.StatusUnauthorized,
+			wantAuth:   `Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource"`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			proxy, upstream := newEdgeBackedProxy(t, testOrg)
+			upstream.setResponse(test.status, test.headers)
+			response := serveProxy(proxy, test.path)
+			if response.Code != test.wantStatus {
+				t.Fatalf("status = %d, want %d", response.Code, test.wantStatus)
+			}
+			if got := response.Header().Get("Location"); got != test.wantLoc {
+				t.Errorf("Location = %q, want %q", got, test.wantLoc)
+			}
+			if got := response.Header().Get("WWW-Authenticate"); got != test.wantAuth {
+				t.Errorf("WWW-Authenticate = %q, want %q", got, test.wantAuth)
+			}
+		})
 	}
 }
 

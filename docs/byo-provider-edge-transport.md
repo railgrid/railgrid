@@ -72,12 +72,33 @@ Secret mount. Ordinary browser credentials and caller-supplied `X-Remote-*`
 headers do not authenticate a shard. Both embedded and external transports must
 pass the same organization/binding authorization checks.
 
+The signed relay envelope is a short-lived identity delegation, not a complete
+request signature. It binds the destination, HTTP method, path, query and
+caller identity for 30 seconds, but does not bind the request body and has no
+one-time nonce. Protect every network segment that carries the envelope. An
+external shard reaches the Hub over the dedicated mTLS listener, and the Hub
+uses its configured kcp transport (normally HTTPS) for the next hop. The chart
+currently advertises the platform Edges provider through an in-cluster HTTP
+Service, so keep that shard-to-Edges segment on trusted private cluster
+networking and make the custom-subresource listener unreachable from tenant
+workloads; use authenticated TLS if that segment crosses a less-trusted
+network. The external shard-to-Hub mTLS listener does not by itself secure the
+later Hub-to-kcp-to-Edges path. A party able to capture a live envelope on that
+later path could replay it for the same method, path and query with a different
+body until it expires. The tunnel consumes the proof before the customer
+Service sees the request. This transport assumption lets streaming bodies pass
+through without buffering them for a body digest.
+
 ## Other backend traffic
 
 MCP, OAuth, UI assets, health and supported non-kube route classes keep the
 existing Hub-to-Edge routing. Scoped delegated credentials replace interactive
 user bearers before the Edge delivers requests to customer backends. UI asset
 grants are for assets only and do not grant arbitrary backend or kcp access.
+The response-header filter described for custom subresources does not apply to
+the ordinary `/services/providers/{name}/mcp` or
+`/services/providers/{name}/oauth/*` backend routes, so their MCP OAuth metadata
+challenges and external authorization redirects keep their existing behavior.
 
 The workspace's actual APIBinding selects a provider copy; catalog shadowing
 alone cannot switch an existing workspace from a platform to an organization

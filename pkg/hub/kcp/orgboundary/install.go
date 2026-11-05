@@ -15,9 +15,10 @@ import (
 )
 
 // Install attaches the organization boundary to a KCP server config before
-// Complete. The same source resolver is installed on the main KCP authenticator
-// and optional virtual-workspace server, so the check runs before either path
-// processes impersonation headers.
+// Complete. KCP's Config.Complete passes MiniAggregator.GenericConfig.Authentication
+// into OptionalVirtual.Complete, so wrapping that shared authenticator here also
+// covers the optional virtual-workspace root before it processes impersonation
+// headers.
 func Install(config *server.Config) error {
 	return InstallWithConfig(config, DefaultConfig())
 }

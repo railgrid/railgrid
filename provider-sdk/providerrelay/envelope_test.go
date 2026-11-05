@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -165,5 +166,73 @@ func TestRemoteVerifierBacksOffFailedRefreshAndRejectsMalformedProof(t *testing.
 	}
 	if requests != 2 {
 		t.Fatal("failed refresh did not retry after backoff")
+	}
+}
+
+func TestRemoteVerifierCoalescesRefreshAndAllowsWaiterCancellation(t *testing.T) {
+	key, _ := SigningKey(bytes.Repeat([]byte{3}, 32))
+	var requests atomic.Int32
+	started := make(chan struct{})
+	release := make(chan struct{})
+	keyClient := &http.Client{Transport: testRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if requests.Add(1) == 1 {
+			close(started)
+		}
+		select {
+		case <-r.Context().Done():
+			return nil, r.Context().Err()
+		case <-release:
+			return testResponse(r, http.StatusOK, make(http.Header), base64.RawURLEncoding.EncodeToString(key.Public().(ed25519.PublicKey))), nil
+		}
+	})}
+	verifier, err := NewRemoteVerifier("https://hub.example", keyClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := exampleClaims()
+	proof, _ := Sign(key, c, time.Now())
+	verify := func(ctx context.Context) error {
+		_, err := verifier.Verify(ctx, proof, c.Cluster, c.Service, c.Method, c.Path, c.Query)
+		return err
+	}
+
+	ownerCtx, cancelOwner := context.WithCancel(context.Background())
+	defer cancelOwner()
+	owner := make(chan error, 1)
+	go func() { owner <- verify(ownerCtx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("key refresh did not start")
+	}
+
+	// Every caller, including the refresh owner, can stop waiting without
+	// canceling the bounded shared fetch or starting another key request.
+	const waiters = 8
+	results := make(chan error, waiters)
+	for range waiters {
+		go func() { results <- verify(context.Background()) }()
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if err := verify(waitCtx); err != context.DeadlineExceeded {
+		t.Fatalf("waiting verify error = %v, want context deadline exceeded", err)
+	}
+	cancelOwner()
+	if err := <-owner; err != context.Canceled {
+		t.Fatalf("refresh owner error = %v, want context canceled", err)
+	}
+	close(release)
+	for range waiters {
+		err := <-results
+		if err != nil {
+			t.Errorf("coalesced verify: %v", err)
+		}
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("concurrent refreshes made %d key requests, want 1", got)
+	}
+	if err := verify(context.Background()); err != nil {
+		t.Fatalf("cached verify after refresh: %v", err)
 	}
 }

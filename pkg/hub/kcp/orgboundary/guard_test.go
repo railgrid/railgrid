@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,7 +163,7 @@ func TestTenantServiceAccountMayUseOnlyOwnExportWildcard(t *testing.T) {
 	}
 }
 
-func TestWildcardExportDeniesLegacyForeignBindings(t *testing.T) {
+func TestWildcardExportRechecksBindingScopeOnReconnect(t *testing.T) {
 	guard := testGuard(t, defaultLimits())
 	indexer := cache.NewIndexer(kcpcache.MetaClusterNamespaceKeyFunc, cache.Indexers{kcpcache.ClusterIndexName: kcpcache.ClusterIndexFunc})
 	binding := &apisv1alpha2.APIBinding{
@@ -176,9 +177,6 @@ func TestWildcardExportDeniesLegacyForeignBindings(t *testing.T) {
 		}}},
 		Status: apisv1alpha2.APIBindingStatus{APIExportClusterName: localExportID},
 	}
-	if err := indexer.Add(binding); err != nil {
-		t.Fatal(err)
-	}
 	guard.bindings = apislisters.NewAPIBindingClusterLister(indexer)
 	info := serviceAccountInfo("system:serviceaccount:default:provider", providerID)
 	r := httptest.NewRequest(http.MethodGet, "/clusters/*/apis/example.io/v1/widgets", nil)
@@ -186,8 +184,135 @@ func TestWildcardExportDeniesLegacyForeignBindings(t *testing.T) {
 	ctx = request.WithCluster(ctx, request.Cluster{Wildcard: true})
 	ctx = dynamiccontext.WithAPIDomainKey(ctx, dynamiccontext.APIDomainKey(localExportID+"/local"))
 	r = r.WithContext(ctx)
+	if _, err := guard.requestScope(r, info); err != nil {
+		t.Fatalf("initial wildcard request failed without a foreign binding: %v", err)
+	}
+	if err := indexer.Add(binding); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := guard.requestScope(r, info); err == nil {
-		t.Fatal("wildcard request reached an export with a legacy foreign-org binding")
+		t.Fatal("wildcard reconnect passed after a foreign-org APIBinding appeared")
+	}
+}
+
+func TestOrgWildcardRequestsHaveBoundedLifetime(t *testing.T) {
+	guard := testGuard(t, defaultLimits())
+	requestLifetime := func(info user.Info, apiDomain string) time.Duration {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodGet, "/clusters/*/apis/example.io/v1/widgets", nil)
+		ctx := request.WithUser(r.Context(), info)
+		ctx = request.WithCluster(ctx, request.Cluster{Wildcard: true})
+		ctx = dynamiccontext.WithAPIDomainKey(ctx, dynamiccontext.APIDomainKey(apiDomain))
+		started := time.Now()
+		var lifetime time.Duration
+		guard.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			deadline, ok := r.Context().Deadline()
+			if !ok {
+				t.Error("guarded request has no stream deadline")
+				return
+			}
+			lifetime = time.Until(deadline)
+			w.WriteHeader(http.StatusNoContent)
+		})).ServeHTTP(httptest.NewRecorder(), r.WithContext(ctx))
+		if lifetime <= 0 {
+			t.Fatal("guarded request did not have a future deadline")
+		}
+		if lifetime > time.Since(started)+guard.config.StreamLifetime {
+			t.Fatalf("guarded request lifetime %s is longer than configured limit %s", lifetime, guard.config.StreamLifetime)
+		}
+		return lifetime
+	}
+
+	orgInfo := serviceAccountInfo("system:serviceaccount:default:provider", providerID)
+	orgLifetime := requestLifetime(orgInfo, localExportID+"/local")
+	if orgLifetime > maxOrgWildcardRequestLifetime || orgLifetime < maxOrgWildcardRequestLifetime-time.Second {
+		t.Fatalf("org wildcard request lifetime = %s, want approximately %s", orgLifetime, maxOrgWildcardRequestLifetime)
+	}
+
+	platformInfo := serviceAccountInfo("system:serviceaccount:default:controller", platformID)
+	platformLifetime := requestLifetime(platformInfo, platformID+"/agents")
+	if platformLifetime > guard.config.StreamLifetime || platformLifetime < guard.config.StreamLifetime-time.Second {
+		t.Fatalf("platform wildcard request lifetime = %s, want approximately configured %s", platformLifetime, guard.config.StreamLifetime)
+	}
+
+	guard.config.StreamLifetime = 30 * time.Second
+	orgLifetime = requestLifetime(orgInfo, localExportID+"/local")
+	if orgLifetime > guard.config.StreamLifetime || orgLifetime < guard.config.StreamLifetime-time.Second {
+		t.Fatalf("short configured org wildcard lifetime = %s, want approximately %s", orgLifetime, guard.config.StreamLifetime)
+	}
+}
+
+func TestSafeAPIBindingWriteUsesCaseSensitiveDuplicateRejectingDecoder(t *testing.T) {
+	foreign := kcppaths.OrgProviderPath("org-b", "provider")
+	local := kcppaths.OrgProviderPath("org-a", "provider")
+	info := &request.RequestInfo{Verb: "create"}
+	tests := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{
+			name: "local path",
+			body: `{"spec":{"reference":{"export":{"path":"` + local + `","name":"provider"}}}}`,
+			want: true,
+		},
+		{
+			name: "foreign path",
+			body: `{"spec":{"reference":{"export":{"path":"` + foreign + `","name":"provider"}}}}`,
+			want: false,
+		},
+		{
+			name: "foreign path before case variant local path",
+			body: `{"spec":{"reference":{"export":{"path":"` + foreign + `","Path":"` + local + `","name":"provider"}}}}`,
+			want: false,
+		},
+		{
+			name: "case variant local path before foreign path",
+			body: `{"spec":{"reference":{"export":{"Path":"` + local + `","path":"` + foreign + `","name":"provider"}}}}`,
+			want: false,
+		},
+		{
+			name: "duplicate path foreign then local",
+			body: `{"spec":{"reference":{"export":{"path":"` + foreign + `","path":"` + local + `","name":"provider"}}}}`,
+			want: false,
+		},
+		{
+			name: "duplicate path local then foreign",
+			body: `{"spec":{"reference":{"export":{"path":"` + local + `","path":"` + foreign + `","name":"provider"}}}}`,
+			want: false,
+		},
+		{
+			name: "duplicate nested export object",
+			body: `{"spec":{"reference":{"export":{"path":"` + foreign + `","name":"provider"},"export":{"path":"` + local + `","name":"provider"}}}}`,
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body))
+			if got := safeAPIBindingWrite(r, info, "org-a"); got != tc.want {
+				t.Fatalf("safeAPIBindingWrite = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAPIBindingInspectionHasIndependentBodyLimit(t *testing.T) {
+	guard := testGuard(t, defaultLimits())
+	info := serviceAccountInfo("system:serviceaccount:default:tenant-workload", sourceID)
+	body := `{"spec":{"reference":{"export":{"path":"` + kcppaths.OrgProviderPath("org-a", "provider") + `","name":"provider"}}},"unused":"` + strings.Repeat("x", int(maxAPIBindingRequestBytes)) + `"}`
+	r := httptest.NewRequest(http.MethodPost, "/clusters/"+sameTargetID+"/apis/apis.kcp.io/v1alpha2/apibindings", strings.NewReader(body))
+	r = withScopeContext(r, info, request.Cluster{Name: logicalcluster.Name(sameTargetID)})
+	r = r.WithContext(request.WithRequestInfo(r.Context(), &request.RequestInfo{
+		IsResourceRequest: true,
+		Verb:              "create",
+		APIGroup:          "apis.kcp.io",
+		Resource:          "apibindings",
+	}))
+	response := httptest.NewRecorder()
+	guard.Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Error("oversized APIBinding reached handler") })).ServeHTTP(response, r)
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("oversized APIBinding status = %d, want 403", response.Code)
 	}
 }
 

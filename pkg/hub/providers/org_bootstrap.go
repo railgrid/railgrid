@@ -562,6 +562,10 @@ func validateOrgProviderGroupOwnership(org, name, group string, reg *Registry) e
 		return nil
 	}
 	for _, existing := range reg.ListForOrg(org) {
+		// A same-name customer-hosted copy intentionally keeps the platform
+		// provider's API group and schemas. Export identity and the consumer's
+		// actual APIBinding distinguish the copies; catalog shadowing alone
+		// must never replace an existing binding or route its requests.
 		if existing.Name != name && containsString(existing.APIGroups, group) {
 			return fmt.Errorf("API group %q is already served by provider %q", group, existing.Name)
 		}
