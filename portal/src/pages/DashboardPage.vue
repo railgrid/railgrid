@@ -8,6 +8,7 @@ import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
 import DashboardTile from '@/components/DashboardTile.vue'
+import DashboardUsageTile from '@/components/DashboardUsageTile.vue'
 import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
@@ -35,7 +36,7 @@ const providers = useProvidersStore()
 const tenant = useTenantStore()
 const auth = useAuthStore()
 const dash = useDashboardLayoutStore()
-const { layout, addable } = storeToRefs(dash)
+const { layout, addable, columns } = storeToRefs(dash)
 
 onMounted(() => {
   if (!providers.loaded) providers.load()
@@ -65,29 +66,23 @@ const pageWidth = ref(1280)
 const TILE_GAP = 16
 const MIN_TILE_WIDTH = 320
 const MAX_DASHBOARD_COLUMNS = 8
-let pageResizeObserver: ResizeObserver | null = null
-let fallbackResize: (() => void) | null = null
-
-onMounted(() => {
-  const page = pageRef.value
+// The shell can mount this content after hydration or replace it on a
+// cluster switch. Always observe the current element, including remounts.
+watch(pageRef, (page, _previous, onCleanup) => {
   if (!page) return
   const measure = () => {
-    pageWidth.value = page.clientWidth
+    if (page.clientWidth > 0) pageWidth.value = page.clientWidth
   }
   measure()
   if (typeof ResizeObserver !== 'undefined') {
-    pageResizeObserver = new ResizeObserver(measure)
-    pageResizeObserver.observe(page)
+    const observer = new ResizeObserver(measure)
+    observer.observe(page)
+    onCleanup(() => observer.disconnect())
   } else {
-    fallbackResize = measure
     window.addEventListener('resize', measure)
+    onCleanup(() => window.removeEventListener('resize', measure))
   }
-})
-
-onUnmounted(() => {
-  pageResizeObserver?.disconnect()
-  if (fallbackResize) window.removeEventListener('resize', fallbackResize)
-})
+}, { flush: 'post' })
 
 const responsiveCols = computed(() => {
   const columns = Math.floor((pageWidth.value + TILE_GAP) / (MIN_TILE_WIDTH + TILE_GAP))
@@ -221,7 +216,10 @@ function onRemove(name: string) {
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 function onUserLayoutUpdated() {
   if (persistTimer) clearTimeout(persistTimer)
-  persistTimer = setTimeout(() => dash.persist(), 300)
+  const scope = currentScope.value
+  persistTimer = setTimeout(() => {
+    if (scope === currentScope.value) dash.persist()
+  }, 300)
 }
 
 onUnmounted(() => {
@@ -369,7 +367,7 @@ function onGridSelectStart(event: Event) {
           v-else
           v-model:layout="layout"
           :class="editMode ? 'select-none' : undefined"
-          :col-num="responsiveCols"
+          :col-num="columns"
           :row-height="90"
           :margin="[TILE_GAP, TILE_GAP]"
           :is-draggable="editMode"
@@ -401,6 +399,15 @@ function onGridSelectStart(event: Event) {
           </GridItem>
         </GridLayout>
         </template>
+
+        <!-- Match the grid's outer gutters and follow every provider row.
+             The grid already leaves TILE_GAP below its last row. -->
+        <div
+          v-if="tenant.workspaceUUID"
+          :style="{ marginInline: `${TILE_GAP}px`, marginTop: gated.length > 0 && layout.length === 0 ? `${TILE_GAP}px` : undefined }"
+        >
+          <DashboardUsageTile />
+        </div>
       </template>
     </template>
     </div>

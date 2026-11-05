@@ -18,7 +18,9 @@ limitations under the License.
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
 import { computed, nextTick, onBeforeUnmount, ref, useId, watch, type CSSProperties } from 'vue'
 import { useRoute } from 'vue-router'
+import { authSessionRevision } from '@/auth/token'
 import {
+  ArrowUpRight,
   Building2,
   Check,
   ChevronDown,
@@ -68,6 +70,42 @@ const theme = useThemeStore()
 const route = useRoute()
 
 const isOpen = ref(false)
+const canUpgrade = ref(false)
+const upgradeDestination = computed(() => ({
+  path: scopePath('/settings/organizations'),
+  query: { panel: 'billing', review: '1' },
+}))
+
+// Preload independently of the flyout. Keep a verified result visible while
+// refreshing so opening the menu never clears and reinserts its upgrade action.
+let planRequest: AbortController | undefined
+async function refreshUpgradeEligibility() {
+  const org = tenant.orgUUID
+  if (!org || !auth.user?.userId || planRequest) return
+  const controller = new AbortController()
+  planRequest = controller
+  const session = authSessionRevision()
+  try {
+    const billing = await tenant.fetchOrgBilling(org, AbortSignal.any([controller.signal, AbortSignal.timeout(10000)]))
+    if (controller.signal.aborted || session !== authSessionRevision()) return
+    canUpgrade.value = billing.installed && (billing.plan || billing.defaultPlan)?.toLowerCase() === 'free'
+  } catch {
+    // Retain the last verified plan on transient failures. Without a verified
+    // result, the ordinary Plan & billing link remains available.
+  } finally {
+    if (planRequest === controller) planRequest = undefined
+  }
+}
+watch([() => tenant.orgUUID, () => auth.user?.userId], () => {
+  planRequest?.abort()
+  planRequest = undefined
+  canUpgrade.value = false
+  void refreshUpgradeEligibility()
+}, { immediate: true, flush: 'sync' })
+watch(isOpen, open => {
+  if (open) void refreshUpgradeEligibility()
+})
+onBeforeUnmount(() => planRequest?.abort())
 const triggerRef = ref<HTMLButtonElement | null>(null)
 const panelRef = ref<HTMLElement | null>(null)
 const positionReady = ref(false)
@@ -584,6 +622,19 @@ onBeforeUnmount(() => {
       </button>
 
       <div class="k-menu-sep" />
+      <template v-if="canUpgrade">
+        <div class="px-1 py-1.5">
+          <router-link
+            :to="upgradeDestination"
+            class="account-menu-upgrade k-btn k-btn--primary min-h-11 w-full justify-center text-xs"
+            @click="closeMenu(true)"
+          >
+            Upgrade plan
+            <ArrowUpRight class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+          </router-link>
+        </div>
+        <div class="k-menu-sep" />
+      </template>
       <button type="button" class="account-menu-item k-menu-item k-menu-item--danger" @click="emitAndClose('logout')">
         <LogOut class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" aria-hidden="true" />
         <span class="flex-1">Logout</span>

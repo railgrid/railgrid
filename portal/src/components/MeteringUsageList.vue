@@ -16,8 +16,9 @@
 // that one is a size container, so its container queries never reach into a
 // table.
 import { computed, ref } from 'vue'
+import { RouterLink, type RouteLocationRaw } from 'vue-router'
 import { ChevronRight } from 'lucide-vue-next'
-import { meterLabel as label } from './metering-meters'
+import { meterDefinition, meterLabel as label } from './metering-meters'
 
 export type LimitRow = { meter?: unknown; shape?: unknown; enforce?: unknown; max?: unknown }
 export type UsageWindow = { start?: string; end?: string }
@@ -28,7 +29,8 @@ const props = withDefaults(
     usage?: Record<string, unknown> | null
     window?: UsageWindow | null
     interactive?: boolean
-    variant?: 'list' | 'grid' | 'summary'
+    variant?: 'list' | 'grid' | 'summary' | 'compact'
+    meterTo?: RouteLocationRaw
   }>(),
   { limits: null, usage: null, window: null, interactive: false, variant: 'list' },
 )
@@ -195,9 +197,15 @@ function usageTitle(row: Row): string | undefined {
   if (row.used === null) return row.shape ? shapeTitles[row.shape] : undefined
   const w = props.window
   const windowText = w?.start && w?.end ? `; snapshot ${w.start} to ${w.end}` : ''
-  if (!row.max) return `${row.used} used${windowText}`
+  const unit = rateUnit(row) ? ` ${rateUnit(row)}` : ''
+  if (!row.max) return `${row.used}${unit} used${windowText}`
   const over = row.state === 'over' && row.enforce !== 'Meter' ? `; over the ${row.enforce.toLowerCase()} limit` : ''
-  return `${row.used} of ${row.max} used${windowText}${over}`
+  return `${row.used} of ${row.max}${unit} used${windowText}${over}`
+}
+
+function rateUnit(row: Row): string {
+  const unit = meterDefinition(row.meter)?.unit
+  return unit?.includes('/') ? unit : ''
 }
 
 // The number carries the state when it matters: danger over a hard limit,
@@ -225,7 +233,8 @@ function barPercent(row: Row): number {
 }
 
 function barText(row: Row): string {
-  return `${row.used} of ${row.max}${row.state === 'over' && row.enforce !== 'Meter' ? ', over the limit' : ''}`
+  const unit = rateUnit(row) ? ` ${rateUnit(row)}` : ''
+  return `${row.used} of ${row.max}${unit}${row.state === 'over' && row.enforce !== 'Meter' ? ', over the limit' : ''}`
 }
 
 function barLabel(row: Row): string {
@@ -236,7 +245,7 @@ function barLabel(row: Row): string {
 <template>
   <div
     class="metering-list"
-    :class="{ 'metering-list--interactive': interactive, 'metering-list--grid': variant === 'grid', 'metering-list--summary': variant === 'summary' }"
+    :class="{ 'metering-list--interactive': interactive, 'metering-list--grid': variant === 'grid', 'metering-list--summary': variant === 'summary', 'metering-list--compact': variant === 'compact' }"
   >
     <template v-if="variant === 'summary'">
       <div v-if="rows.length" class="metering-summary">
@@ -279,11 +288,12 @@ function barLabel(row: Row): string {
     <ul v-if="variant !== 'summary' && filteredRows.length" class="metering-rows">
       <li v-for="r in filteredRows" :key="r.meter" class="metering-item">
         <component :is="interactive ? 'details' : 'div'" class="metering-detail">
-          <component :is="interactive ? 'summary' : 'div'" class="metering-row">
+          <component :is="interactive ? 'summary' : meterTo ? RouterLink : 'div'" :to="!interactive ? meterTo : undefined" class="metering-row" :class="{ 'metering-row--link': !interactive && !!meterTo }">
             <div class="metering-label">
               <span class="font-medium text-text-primary">{{ label(r.meter) }}</span>
               <span v-if="interactive" class="metering-description">{{ description(r) }}</span>
-              <span v-else-if="r.enforce" class="metering-description">{{ r.enforce }} limit</span>
+              <span v-else-if="variant === 'compact' && rateUnit(r)" class="metering-description">{{ rateUnit(r) }}</span>
+              <span v-else-if="r.enforce && variant !== 'compact'" class="metering-description">{{ r.enforce }} limit</span>
             </div>
             <div class="metering-measure">
               <div class="metering-numbers">
@@ -291,16 +301,19 @@ function barLabel(row: Row): string {
                   <template v-if="r.used !== null">
                     <span :class="usedClass(r)">{{ r.used }}</span><span v-if="r.max" class="text-text-muted"> / {{ r.max }}</span>
                   </template>
+                  <template v-else-if="variant === 'compact' && usage !== null">
+                    <span class="text-text-muted">Not reported</span><span v-if="r.max" class="text-text-muted"> / {{ r.max }}</span>
+                  </template>
                   <span v-else-if="r.max" class="text-text-primary">{{ r.max }}<span v-if="usage !== null" class="text-text-muted"> limit</span></span>
                   <span v-else class="text-text-muted">No configured limit</span>
                 </span>
                 <span v-if="interactive" class="metering-state" :class="usedClass(r)">{{ stateLabel(r) }}</span>
               </div>
-              <div v-if="r.ratio !== null" class="k-progress" role="progressbar" :aria-label="barLabel(r)" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="barPercent(r)" :aria-valuetext="barText(r)">
+              <div v-if="r.ratio !== null" class="k-progress metering-bar" role="progressbar" :aria-label="barLabel(r)" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="barPercent(r)" :aria-valuetext="barText(r)">
                 <div class="k-progress__bar" :class="barClass(r)" :style="{ '--k-progress-value': r.ratio }" />
               </div>
             </div>
-            <ChevronRight v-if="interactive" class="metering-chevron" :stroke-width="2" aria-hidden="true" />
+            <ChevronRight v-if="interactive || meterTo" class="metering-chevron" :stroke-width="2" aria-hidden="true" />
           </component>
           <div v-if="interactive" class="metering-explanation">
             <p>{{ modeTitle(r) || 'Usage is reported without a configured limit.' }}.</p>
@@ -325,6 +338,16 @@ function barLabel(row: Row): string {
  * (24rem and 28rem in the admin tables). */
 .metering-list { min-width: 22rem; }
 .metering-list--interactive { min-width: 0; container-type: inline-size; }
+.metering-list--compact { min-width: 0; container-type: inline-size; font-size: 13px; }
+.metering-list--compact .metering-item + .metering-item { border-top: 1px solid var(--color-border-subtle); }
+.metering-list--compact .metering-row { padding: 12px 0; }
+.metering-list--compact .metering-measure { display: flex; align-items: center; justify-content: flex-end; gap: 24px; }
+.metering-list--compact .metering-numbers { margin-bottom: 0; text-align: end; }
+.metering-list--compact .metering-bar { width: 7rem; flex-shrink: 0; }
+@container (max-width: 540px) {
+  .metering-list--compact .metering-measure { flex-wrap: wrap; gap: 8px; }
+  .metering-list--compact .metering-bar { width: 100%; }
+}
 /* The summary is one inline run, so the table cell's own ellipsis truncates
  * it and discloses the full text on hover; the grid has the whole detail row. */
 .metering-list--summary,
@@ -353,6 +376,8 @@ function barLabel(row: Row): string {
 .metering-list--interactive .metering-item { border-bottom: 1px solid var(--color-border-subtle); }
 .metering-list--interactive .metering-item:last-child { border-bottom: 0; }
 .metering-list--interactive .metering-row { grid-template-columns: minmax(0, 1fr) minmax(0, .85fr) 14px; gap: 24px; padding: 20px 0; cursor: pointer; list-style: none; }
+.metering-row--link { grid-template-columns: minmax(0, 1fr) minmax(0, .8fr) 14px; min-height: 44px; text-decoration: none; }
+.metering-row--link:hover { background: var(--color-surface-hover); }
 .metering-row::-webkit-details-marker { display: none; }
 .metering-list--interactive .metering-row:hover { background: var(--color-surface-hover); }
 .metering-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 3px; }

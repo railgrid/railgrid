@@ -26,6 +26,17 @@ ordinary page padding and delegates scrolling to the surface, as the App Studio
 workbench does. Do not use full-bleed merely because a table or grid is wide,
 and do not add a local readable region that competes with the page shell.
 
+The workspace dashboard measures the current content element, including when
+the shell mounts it after hydration or replaces it during a workspace switch.
+A temporarily zero-width element must not force a one-column layout. The grid
+and its layout store use the same responsive column count, capped by available
+width. Rendering a narrow layout must not overwrite remembered desktop widths;
+late preference reads must not undo newer reads or user edits, including while
+a preference save is pending. See
+[DashboardPage.vue](../../../portal/src/pages/DashboardPage.vue) and
+[dashboardLayout.ts](../../../portal/src/stores/dashboardLayout.ts); their
+regressions run with `make test-portal`.
+
 Every view has one solid-accent primary button with the sanctioned glow (`0 0
 16px var(--color-accent-glow)`, 22px on hover). Other actions are ghost
 (overlay plus hairline) or text-level. Danger uses danger-subtle tint, or solid

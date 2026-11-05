@@ -12,16 +12,17 @@ const parsed = ts.createSourceFile('MeteringUsageList.ts', script, ts.ScriptTarg
 
 const meterSource = fs.readFileSync(new URL('./metering-meters.ts', import.meta.url), 'utf8')
 const meterCode = ts.transpileModule(meterSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-const { meterLabel } = await import('data:text/javascript;base64,' + Buffer.from(meterCode).toString('base64'))
+const { meterLabel, meterDefinition } = await import('data:text/javascript;base64,' + Buffer.from(meterCode).toString('base64'))
 
 function usageFixture(props) {
   const context = {
     props: { limits: [], usage: null, window: null, ...props },
     label: meterLabel,
+    meterDefinition,
     integerFormat: new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }),
     computed: (calculate) => ({ get value() { return calculate() } }),
   }
-  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText', 'headlineRank', 'pickHeadline', 'summarize']) {
+  for (const name of ['num', 'show', 'stateLabel', 'usedClass', 'barClass', 'barPercent', 'barText', 'rateUnit', 'headlineRank', 'pickHeadline', 'summarize']) {
     const declaration = parsed.statements.find((node) => ts.isFunctionDeclaration(node) && node.name?.text === name)
     assert.ok(declaration, `${name} exists in the production component`)
     const code = ts.transpileModule(declaration.getText(parsed), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
@@ -40,6 +41,13 @@ function usageFixture(props) {
 const limit = (max = '10', enforce = 'Hard') => ({ meter: 'workspaces', shape: 'Level', max, enforce })
 // Objects built inside the sandbox have the sandbox's prototypes; compare them by value.
 const plain = (value) => JSON.parse(JSON.stringify(value))
+
+test('rate limits retain their units in compact rows and accessible progress text', () => {
+  const fixture = usageFixture({ limits: [{ meter: 'request_cost_rpm', max: '600', enforce: 'Hard' }], usage: { request_cost_rpm: '25' } })
+  assert.equal(fixture.rateUnit(fixture.rows[0]), 'cost units / min')
+  assert.equal(fixture.barText(fixture.rows[0]), '25 of 600 cost units / min')
+  assert.equal(fixture.rateUnit({ meter: 'workspaces' }), '')
+})
 
 test('missing, null and empty measurements remain unavailable while zero is measured', () => {
   for (const usage of [{}, { workspaces: null }, { workspaces: '' }]) {
