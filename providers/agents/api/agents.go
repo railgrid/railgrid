@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	einomodel "github.com/cloudwego/eino/components/model"
@@ -544,37 +545,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	flusher, isFlusher := w.(http.Flusher)
-	if !isFlusher {
-		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming unsupported")
+	runCtx, sse := chatSSE(w, r)
+	if sse == nil {
 		return
-	}
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	// The run's lifetime is deliberately decoupled from this stream. A research
-	// fan-out or a long tool chain can outlast the browser tab that started it,
-	// and cancelling the work because the reader went away loses minutes of real
-	// spend for no reason. So: writes stop when the client disappears, but the run
-	// keeps going, finishes, and lands in the session transcript and on the run
-	// record — where reopening the chat, or GET /api/runs/{id}, will find it.
-	//
-	// The user can still stop it deliberately: executeTask registers the run for
-	// POST /api/runs/{id}/cancel.
-	runCtx, clientGone := detachedStreamContext(r)
-
-	seq := 0
-	sse := func(event string, payload map[string]any) {
-		if clientGone() {
-			return
-		}
-		seq++
-		b, _ := json.Marshal(payload)
-		// A write error here only means the client went away, which
-		// clientGone() already covers on the next call; nothing to report.
-		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
-		flusher.Flush()
 	}
 
 	// The runID goes out first so a dropped stream can reconcile against
@@ -602,6 +575,47 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	sse(frame.Event, frame.Data)
 }
 
+func chatSSE(w http.ResponseWriter, r *http.Request) (context.Context, func(string, map[string]any)) {
+	flusher, isFlusher := w.(http.Flusher)
+	if !isFlusher {
+		writeStatus(w, http.StatusInternalServerError, "InternalError", "streaming unsupported")
+		return nil, nil
+	}
+	// The run's lifetime is deliberately decoupled from this stream. A research
+	// fan-out or a long tool chain can outlast the browser tab that started it,
+	// and cancelling the work because the reader went away loses minutes of real
+	// spend for no reason. So: writes stop when the client disappears, but the run
+	// keeps going, finishes, and lands in the session transcript and on the run
+	// record — where reopening the chat, or GET /api/runs/{id}, will find it.
+	//
+	// The user can still stop it deliberately: executeTask registers the run for
+	// POST /api/runs/{id}/cancel.
+	runCtx, clientGone := detachedStreamContext(r)
+
+	var mu sync.Mutex
+	seq := 0
+	sse := func(event string, payload map[string]any) {
+		mu.Lock()
+		defer mu.Unlock()
+		if clientGone() {
+			return
+		}
+		if seq == 0 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Connection", "keep-alive")
+			w.Header().Set("X-Accel-Buffering", "no")
+		}
+		seq++
+		b, _ := json.Marshal(payload)
+		// A write error here only means the client went away, which
+		// clientGone() already covers on the next call; nothing to report.
+		_, _ = fmt.Fprintf(w, "id: %d\nevent: %s\ndata: %s\n\n", seq, event, b)
+		flusher.Flush()
+	}
+	return runCtx, sse
+}
+
 // chatFrame is one event of the chat grammar: the same (event, data) pairs
 // the chat verb streams as SSE frames and the MCP `chat` tool delivers as
 // progress notifications, with the terminal frame as the call's result.
@@ -625,6 +639,12 @@ func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event stri
 	// Titles belong only to attended chat submissions; internal run triggers do
 	// not opt in to this presentation metadata.
 	run.generateSessionTitle = true
+	bindChatStream(&run, emit)
+	res, err := s.executeTask(ctx, run)
+	return s.chatTerminalFrame(run.RunID, res, err)
+}
+
+func bindChatStream(run *taskRun, emit func(string, map[string]any)) {
 	runID, sessionID := run.RunID, run.SessionID
 	run.OnRunStarted = func(startedAt time.Time) {
 		emit("run_started", map[string]any{
@@ -670,13 +690,15 @@ func (s *Server) chatTurn(ctx context.Context, run taskRun, emit func(event stri
 		if presentation := safeToolPresentation(ev.Presentation); presentation != nil {
 			data["presentation"] = presentation
 		}
-		if savedCapture := savedCaptureForToolEvent(run, ev); savedCapture != nil {
+		if savedCapture := savedCaptureForToolEvent(*run, ev); savedCapture != nil {
 			data["savedCapture"] = savedCapture
 		}
 		emit("tool_end", data)
 	}
 
-	res, err := s.executeTask(ctx, run)
+}
+
+func (s *Server) chatTerminalFrame(runID string, res runResult, err error) chatFrame {
 	if err != nil {
 		status := "failed"
 		if res.Phase == store.RunPhaseAborted {

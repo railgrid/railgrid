@@ -299,12 +299,14 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 	item := store.InboxItem{
 		ID: "inbox-question", AgentName: run.AgentName, RunID: run.ID,
 		Kind: store.InboxKindQuestion, Prompt: "Where should the note go?",
+		Response: "Line guide",
 		Payload: map[string]any{
 			"questions": []map[string]any{{"id": "location", "prompt": "Where should the note go?"}},
 			"answers":   map[string]*string{"location": new("Line guide")},
 		},
 	}
 	checked := false
+	started := false
 	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{checkContext: func(ctx context.Context) {
 		identity, ok := dataplane.ProxiedIdentityFrom(ctx)
 		if !ok || identity.User != "reviewer" || ctx.Err() != nil {
@@ -312,6 +314,17 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 		}
 	}, check: func() {
 		checked = true
+		if !started {
+			t.Fatal("continuation began before the stream identified the run")
+		}
+	}}}
+	ctx, cancel := context.WithCancel(dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "reviewer"}))
+	cancel()
+	_, err := s.continueInboxRun(ctx, scope, item, access, true, item.Response, func(event string, data map[string]any) {
+		if started || event != "start" || data["runID"] != run.ID || data["sessionID"] != run.SessionID || data["response"] != item.Response {
+			t.Fatalf("unexpected resume frame: %q, %v", event, data)
+		}
+		started = true
 		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 20, "")
 		if err != nil {
 			t.Fatal(err)
@@ -325,12 +338,9 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 			reply.Metadata["questions"] == nil || reply.Metadata["answers"] == nil {
 			t.Fatalf("unexpected question reply: %+v", reply)
 		}
-	}}}
-	ctx, cancel := context.WithCancel(dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "reviewer"}))
-	cancel()
-	s.resumeApprovedRun(ctx, scope, item, access, true, "Line guide")
-	if !checked {
-		t.Fatal("question resume did not reach its continuation boundary")
+	})
+	if err == nil || !checked {
+		t.Fatalf("question resume did not reach the fixture's failing continuation boundary: %v", err)
 	}
 }
 

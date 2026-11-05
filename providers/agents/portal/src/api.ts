@@ -755,6 +755,22 @@ export class ApiClient {
 
   // ---- streams -------------------------------------------------------------
 
+  async *answerStream(agent: string, id: string, response: import('./types').QuestionReply | undefined, signal: AbortSignal): AsyncGenerator<SSEEvent> {
+    const path = this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id)
+    const r = await this.fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { ...this.headers(true), Accept: 'text/event-stream' },
+      body: JSON.stringify({ decision: 'answer', ...(typeof response === 'object' ? { answers: response } : { response }) }),
+      signal,
+    })
+    if (!r.ok || !r.body) throw await this.fail(r)
+    if (!(r.headers.get('content-type') || '').includes('text/event-stream')) {
+      throw new Error('The question reply did not open a chat stream.')
+    }
+    yield* readSSE(r.body, signal)
+  }
+
   // chatStream sends one conversation turn and yields the chat events as they
   // arrive. The caller drives the loop and applies deltas/tool events/errors.
   // `signal` aborts the fetch so a Stop button can drop the stream immediately.

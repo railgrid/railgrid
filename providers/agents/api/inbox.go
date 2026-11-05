@@ -202,6 +202,15 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		req.Response = response
 		payload = append(payload, map[string]any{"answers": req.Answers})
 	}
+	var emit func(string, map[string]any)
+	ctx := r.Context()
+	if existing.RunID != "" && existing.Kind == store.InboxKindQuestion && state == store.InboxStateAnswered &&
+		r.Header.Get("Accept") == "text/event-stream" {
+		ctx, emit = chatSSE(w, r)
+		if emit == nil {
+			return
+		}
+	}
 	item, err := s.resolveInboxDecision(r.Context(), wsScope, itemID, state, req.Response, time.Now().UTC(), payload...)
 	if err != nil {
 		if _, ok := errors.AsType[*requestError](err); ok {
@@ -225,6 +234,26 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
 		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
+		if emit != nil {
+			started := false
+			res, err := s.continueInboxRun(ctx, wsScope, item, access, true, item.Response, func(event string, data map[string]any) {
+				if event == "start" {
+					started = true
+				}
+				emit(event, data)
+			})
+			if !started {
+				if errors.Is(err, errResumeConflict) {
+					writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+				} else {
+					writeStatus(w, http.StatusInternalServerError, "InternalError", "could not resume this run")
+				}
+				return
+			}
+			frame := s.chatTerminalFrame(item.RunID, res, err)
+			emit(frame.Event, frame.Data)
+			return
+		}
 		go s.resumeApprovedRun(r.Context(), wsScope, item, access, state != store.InboxStateDenied, item.Response)
 	}
 	writeJSON(w, http.StatusOK, item)

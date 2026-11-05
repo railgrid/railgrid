@@ -1267,9 +1267,15 @@ describe('chat streaming', () => {
   // A harness that cannot proceed asks a question. It names no tool, so the
   // approval card rendered "Approval required … tool unavailable" over an
   // Approve button that could not mean anything — reported from a live run.
-  it('asks a question rather than offering an approval with no tool', async () => {
-    const answer = deferred<{ id: string; state: string }>()
-    const resolveInbox = vi.fn(() => answer.promise)
+  it('streams the same run after a question reply and uses the composer Stop control', async () => {
+    const admitted = deferred<void>()
+    const close = deferred<void>()
+    const answerStream = vi.fn(async function* () {
+      await admitted.promise
+      yield { event: 'start', data: { runID: 'r1', sessionID: 's1', response: 'the acme/app one' } }
+      yield { event: 'delta', data: { text: 'Opening the pull request' } }
+      await close.promise
+    })
     const cancelRun = vi.fn().mockResolvedValue({})
     const { el, store } = await mountChat(
       scripted([
@@ -1282,7 +1288,7 @@ describe('chat streaming', () => {
           },
         },
       ]),
-      { resolveInbox, cancelRun },
+      { answerStream, cancelRun },
     )
     await send(el, 'open a PR')
 
@@ -1304,21 +1310,22 @@ describe('chat streaming', () => {
     store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase: 'Running' } } }))
     await settle(2)
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
-    answer.resolve({ id: 'i1', state: 'answered' })
+    admitted.resolve()
     await settle(6)
-    expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
+    expect(answerStream).toHaveBeenCalledWith('scout', 'i1', 'the acme/app one', expect.any(AbortSignal))
     expect(el.querySelector('.agents-question-dock')).toBeNull()
     expect(el.querySelector('.agents-log .agents-question-card')).toBeNull()
     const reply = el.querySelector('.agents-answer-context')?.parentElement
     expect(text(reply)).toContain('Which repository should I open the pull request against?')
     expect(text(reply)).toContain('the acme/app one')
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
-    const status = el.querySelector('.agents-question-continuation')
-    expect(text(status)).toContain('Continuing after your answer')
-    status!.querySelector('button')!.click()
+    expect(text(el.querySelector('.agents-log'))).toContain('Working')
+    expect(text(el.querySelector('.agents-log'))).toContain('Opening the pull request')
+    el.querySelector<HTMLButtonElement>('.agents-composer button[aria-label="Stop generating"]')!.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r1')
-    expect(el.querySelector('.agents-question-continuation')).toBeNull()
+    close.resolve()
+    await settle(4)
   })
 
   it('rebuilds question replies as user messages before the continued reply', () => {
@@ -2175,7 +2182,7 @@ describe('a run still working with nobody attached', () => {
     expect(text(banner!)).toContain('View progress')
   })
 
-  it('reopens a continuing question inline and replaces the status with the saved reply', async () => {
+  it('keeps the composer Stop control when reopening a running question reply', async () => {
     const answer = { id: 'answer', role: 'user', content: 'README', runID: 'r-live', metadata: { questionPrompt: 'Where?' } }
     let finished = false
     const { el, store } = await mountWith('Running', {
@@ -2184,12 +2191,12 @@ describe('a run still working with nobody attached', () => {
         ? [{ id: 'final', role: 'assistant', content: 'I updated the README.', runID: 'r-live' }, answer]
         : [answer] }),
     })
-    expect(text(el.querySelector('.agents-question-continuation'))).toContain('Continuing after your answer')
+    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeTruthy()
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
     finished = true
     store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r-live', phase: 'Succeeded' } } }))
     await settle(6)
-    expect(el.querySelector('.agents-question-continuation')).toBeNull()
+    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeNull()
     expect(text(el.querySelector('.agents-log'))).toContain('I updated the README.')
   })
 

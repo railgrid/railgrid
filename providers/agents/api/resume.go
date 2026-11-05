@@ -23,6 +23,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -43,13 +44,19 @@ import (
 // Detached from the resolving request: runs on its own context with the run's
 // own timeout. Errors are recorded on the run, not returned to the resolver.
 func (s *Server) resumeApprovedRun(ctx context.Context, scope store.Scope, item store.InboxItem, access runAccess, approve bool, note string) {
+	_, _ = s.continueInboxRun(ctx, scope, item, access, approve, note, nil)
+}
+
+func (s *Server) continueInboxRun(ctx context.Context, scope store.Scope, item store.InboxItem, access runAccess, approve bool, note string, stream func(string, map[string]any)) (runResult, error) {
 	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: item.AgentName}
-	s.resumeRun(ctx, agentScope, item.RunID, access, resumeIntent{
+	return s.resumeRun(ctx, agentScope, item.RunID, access, resumeIntent{
 		Approval: true, Approve: approve, Note: note,
 		FromPhase: store.RunPhasePendingApproval,
-		InboxItem: item,
+		InboxItem: item, Stream: stream,
 	})
 }
+
+var errResumeConflict = errors.New("the run has already continued or is no longer waiting for this reply")
 
 // resumeIntent distinguishes the two reasons a checkpointed run continues.
 //
@@ -64,13 +71,14 @@ type resumeIntent struct {
 	Note      string
 	FromPhase store.RunPhase
 	InboxItem store.InboxItem
+	Stream    func(string, map[string]any)
 	// RecoveryClaimedAt identifies the revision claimed by the recovery caller.
 	RecoveryClaimedAt time.Time
 }
 
 // resumeRun rehydrates a checkpointed run and continues it through the shared
 // lifecycle. Used by the approval path and by recovery.
-func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID string, access runAccess, intent resumeIntent) {
+func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID string, access runAccess, intent resumeIntent) (runResult, error) {
 	// Detached from whoever asked: the resume outlives the resolving request, and
 	// runTurn applies the agent's own timeout to the turn.
 	ctx := context.WithoutCancel(parent)
@@ -78,19 +86,19 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	run, err := s.store.GetRun(ctx, agentScope, runID)
 	if err != nil {
 		log.Printf("resume: run %s: %v", runID, err)
-		return
+		return runResult{}, err
 	}
 	if run.Phase != intent.FromPhase || len(run.Checkpoint) == 0 {
 		log.Printf("resume: run %s is %s (not resumable)", run.ID, run.Phase)
-		return
+		return runResult{}, errResumeConflict
 	}
 	var ck runCheckpoint
 	if err := json.Unmarshal(run.Checkpoint, &ck); err != nil {
 		log.Printf("resume: run %s checkpoint corrupt: %v", run.ID, err)
-		return
+		return runResult{}, err
 	}
 	if intent.InboxItem.ID != "" && intent.InboxItem.ID != ck.InboxID {
-		return
+		return runResult{}, errResumeConflict
 	}
 	startedAt := run.CreatedAt
 	if run.StartedAt != nil {
@@ -104,7 +112,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	if intent.FromPhase == store.RunPhaseRunning {
 		if intent.RecoveryClaimedAt.IsZero() || !run.UpdatedAt.Equal(intent.RecoveryClaimedAt) || run.CancelRequested {
 			log.Printf("resume: run %s recovery claim rejected (missing=%t, current=%t, cancel=%t)", run.ID, intent.RecoveryClaimedAt.IsZero(), run.UpdatedAt.Equal(intent.RecoveryClaimedAt), run.CancelRequested)
-			return
+			return runResult{}, errResumeConflict
 		}
 		claimed = run
 	} else {
@@ -112,7 +120,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
-			return
+			return runResult{}, claimErr
 		}
 	}
 	// A crash after claiming a model question can leave its question
@@ -122,7 +130,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
 		if err != nil || item.Kind != store.InboxKindQuestion || item.State != store.InboxStateAnswered || item.AgentName != run.AgentName || item.RunID != run.ID || strings.TrimSpace(item.Response) == "" {
 			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "could not recover the saved question reply")
-			return
+			return runResult{}, errResumeConflict
 		}
 		intent.Approval, intent.Approve, intent.Note, intent.InboxItem = true, true, item.Response, item
 	}
@@ -144,10 +152,16 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			})
 		}
 	}
+	if intent.Stream != nil {
+		intent.Stream("start", map[string]any{
+			"runID": run.ID, "sessionID": effectiveSessionID(run.SessionID, run.Trigger),
+			"response": item.Response, "answers": item.Payload["answers"],
+		})
+	}
 	artifactOwner, artifactRefs, artifactErr := resumeArtifactReferences(ck, access.CallerUser)
 	if artifactErr != nil {
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, artifactErr.Error())
-		return
+		return runResult{}, artifactErr
 	}
 	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
@@ -160,7 +174,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		// The run has been announced Running, so it cannot just be abandoned.
 		log.Printf("resume: run %s: loading agent %s: %v", run.ID, run.AgentName, err)
 		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
-		return
+		return runResult{}, err
 	}
 
 	used := false
@@ -182,6 +196,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		ModelSettings:   run.ModelSettings,
 	}
 	access.applyTo(&tr)
+	if intent.Stream != nil {
+		bindChatStream(&tr, intent.Stream)
+	}
 	// Only an approval resume pre-authorizes a call. A recovery checkpoint has no
 	// pending call at all, so there is nothing to grant.
 	if intent.Approval && intent.Approve {
@@ -201,12 +218,12 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			// as everyone watching is concerned.
 			s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, err.Error())
 		}
-		return
+		return res, err
 	}
 	// The resumed turn may hit ANOTHER gated call; it is checkpointed again and
 	// delivery waits for the next resume.
 	if res.Pending != nil {
-		return
+		return res, nil
 	}
 
 	// Deliver the continuation where the run's output was headed: channel runs
@@ -227,6 +244,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			}
 		}
 	}
+	return res, nil
 }
 
 const legacyResumeImagePlaceholder = "[multimodal content from tool calls omitted on resume]"

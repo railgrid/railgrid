@@ -117,7 +117,7 @@ func (s *Server) routes() map[string]resourceRoutes {
 			"messages":      {methods: get, handler: s.listMessages, readOnly: true},
 			"usage":         {methods: get, handler: s.usageRollup, readOnly: true},
 			"inbox":         {methods: get, handler: s.listInboxItems, readOnly: true},
-			"inbox-resolve": {methods: post, tail: tailRequired, handler: s.resolveInboxItem},
+			"inbox-resolve": {methods: post, tail: tailRequired, handler: s.resolveInboxItem, stream: true},
 			"events":        {methods: get, handler: s.streamEvents, stream: true, readOnly: true},
 			"artifacts":     {methods: []string{http.MethodGet, http.MethodDelete}, tail: tailFree, handler: s.agentArtifacts},
 		}},
