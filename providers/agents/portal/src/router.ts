@@ -208,6 +208,14 @@ export function routeForSubPath(subPath: string | undefined | null): MenuKey | n
   return MENUS.includes(segment as MenuKey) ? (segment as MenuKey) : null
 }
 
+/** Stable host path for cross-provider links to the question on a run. */
+export function questionRunForSubPath(subPath: string | undefined | null): Route | null {
+  const match = /^\/?activity\/([^/]+)\/question\/?$/.exec(subPath || '')
+  if (!match) return null
+  const id = decodePart(match[1])
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(id) ? { kind: 'run', id } : null
+}
+
 // activeMenu is which nav tab lights up for a route (detail pages keep their
 // parent tab highlighted).
 export function activeMenu(route: Route): MenuKey {

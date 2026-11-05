@@ -122,6 +122,35 @@ func TestParseClarificationAcceptsCodexLegacyMissingBlockingFlag(t *testing.T) {
 	}
 }
 
+func TestParseClarificationAcceptsNonblockingQuestionWithTimer(t *testing.T) {
+	data := json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","isBlocking":false,"autoResolutionMs":50,"questions":[{"id":"location","header":"Location","question":"Where should it go?","options":[{"label":"README","description":"Use the README"}]}]}`)
+	clarification, err := parseClarification("thread-1", "turn-1", data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if clarification == nil || clarification.Text != "Location: Where should it go?\nOptions:\n- README: Use the README" {
+		t.Fatalf("unexpected clarification: %+v", clarification)
+	}
+}
+
+func TestOversizedClarificationReportsSafeNeedsInputReason(t *testing.T) {
+	var events []harness.Event
+	state := runState{sessionID: "thread-1", turnID: "turn-1", emit: func(event harness.Event) error {
+		events = append(events, event)
+		return nil
+	}}
+	payload := json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","questions":[{"id":"location","header":"Location","question":"` + strings.Repeat("x", maxClarificationField+1) + `"}]}`)
+	err := state.handle(wireMessage{Method: "item/tool/requestUserInput", Params: payload})
+	var input *needsInputError
+	if !errors.As(err, &input) || input.clarification != nil {
+		t.Fatalf("expected needs input without a clarification, got %v", err)
+	}
+	const want = "Codex request-user-input payload was rejected: request-user-input question is empty, invalid, or oversized"
+	if len(events) != 1 || events[0].Type != "needs_input" || events[0].Message != want {
+		t.Fatalf("unexpected events: %+v", events)
+	}
+}
+
 func TestRequestUserInputMethodIsExact(t *testing.T) {
 	for _, method := range []string{"item/tool/request_user_input", "tool/requestUserInput", "mcpServer/elicitation/request"} {
 		if isRequestUserInput(method) {

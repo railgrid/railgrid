@@ -12,6 +12,7 @@ import {
   activeMenu,
   hashFor,
   parseHash,
+  questionRunForSubPath,
   routeForSubPath,
   syncHash,
   writeHash,
@@ -534,6 +535,11 @@ watch(
   () => props.ctx?.subPath,
   (subPath) => {
     if (props.overlay) return
+    const questionRun = questionRunForSubPath(subPath)
+    if (questionRun) {
+      if (hashFor(route.value) !== hashFor(questionRun)) go(questionRun, 'replace')
+      return
+    }
     const menu = routeForSubPath(subPath)
     if (menu && activeMenu(route.value) !== menu) go({ kind: 'menu', menu }, 'replace')
   },

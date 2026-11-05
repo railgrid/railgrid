@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
@@ -16,6 +16,8 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import type { Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import { skippedQuestionResponse } from '../question-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
 
@@ -60,9 +62,6 @@ const resolvingInbox = ref(new Map<string, InboxDecision>())
 // because the same item must not be resolved twice.
 const bulkDismiss = ref<{ done: number; total: number } | null>(null)
 const BULK_DISMISS_CONCURRENCY = 4
-// answerDrafts holds the reply typed for each pending question, by item id, so
-// a draft survives the list re-rendering around it.
-const answerDrafts = reactive<Record<string, string>>({})
 const tablePage = ref(1)
 const tablePageSize = ref(PAGE)
 const tableQuery = ref('')
@@ -205,8 +204,7 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: stri
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
     if (!authorityIsCurrent(authority)) return
-    if (decision === 'answer') delete answerDrafts[item.id]
-    toast('ok', resolutionToast(item, decision))
+    toast('ok', decision === 'answer' && answer === skippedQuestionResponse ? 'Question skipped.' : resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
     if (authorityIsCurrent(authority)) {
@@ -382,9 +380,9 @@ onBeforeUnmount(() => {
             @click="dismissAll"
           ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
         </div>
-        <div v-for="item in pending" :key="item.id" class="agents-approval-row k-card">
+        <div v-for="item in pending" :key="item.id" :class="item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'">
           <div class="agents-approval-body">
-            <div class="agents-approval-prompt">{{ item.prompt }}</div>
+            <div v-if="item.kind !== 'question'" class="agents-approval-prompt">{{ item.prompt }}</div>
             <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
             <div class="agents-approval-meta">
               <span class="k-badge agents-badge">{{ item.agentName }}</span>
@@ -392,7 +390,7 @@ onBeforeUnmount(() => {
               <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
             </div>
           </div>
-          <div class="agents-approval-actions">
+          <div v-if="item.kind !== 'question'" class="agents-approval-actions">
             <!--
               A change is a self-configuration edit a harness session asked
               for. It parks no run: approving it is what applies it.
@@ -405,25 +403,15 @@ onBeforeUnmount(() => {
               <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
               <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
             </template>
-            <!--
-              A question is answered in words, not with a verdict, and a
-              trigger-fired run has no channel or chat to answer from — so the
-              reply box lives here. Dismiss closes the item without resuming.
-            -->
-            <template v-else>
-              <input
-                v-model="answerDrafts[item.id]"
-                class="k-input agents-approval-answer"
-                type="text"
-                :disabled="locked(item.id)"
-                placeholder="Your answer…"
-                :aria-label="item.prompt || 'Your answer'"
-                @keydown.enter.prevent="resolve(item, 'answer', answerDrafts[item.id])"
-              />
-              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !(answerDrafts[item.id] || '').trim()" :aria-busy="resolvingInbox.get(item.id) === 'answer' || undefined" @click="resolve(item, 'answer', answerDrafts[item.id])"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'answer' ? 'Sending…' : 'Send answer' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Dismissing…' : 'Dismiss' }}</button>
-            </template>
           </div>
+          <AgentQuestionCard
+            v-else
+            :question-id="item.id"
+            :prompt="item.prompt"
+            :busy="resolvingInbox.get(item.id) === 'answer'"
+            :disabled="locked(item.id)"
+            @answer="response => resolve(item, 'answer', response)"
+          />
         </div>
       </section>
     </template>

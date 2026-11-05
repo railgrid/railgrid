@@ -39,12 +39,14 @@ const (
 )
 
 type requestUserInputParams struct {
-	ThreadID         string                     `json:"threadId"`
-	TurnID           string                     `json:"turnId"`
-	ItemID           string                     `json:"itemId"`
-	Questions        []requestUserInputQuestion `json:"questions"`
-	IsBlocking       *bool                      `json:"isBlocking"`
-	AutoResolutionMs *uint64                    `json:"autoResolutionMs"`
+	ThreadID  string                     `json:"threadId"`
+	TurnID    string                     `json:"turnId"`
+	ItemID    string                     `json:"itemId"`
+	Questions []requestUserInputQuestion `json:"questions"`
+	// Decode these fields for strict wire validation. The runner intentionally
+	// ignores Codex blocking and timer settings because it owns the durable pause.
+	IsBlocking       *bool   `json:"isBlocking"`
+	AutoResolutionMs *uint64 `json:"autoResolutionMs"`
 }
 
 type requestUserInputQuestion struct {
@@ -86,12 +88,6 @@ func parseClarification(sessionID, turnID string, data json.RawMessage) (*harnes
 	}
 	if turnID != "" && params.TurnID != turnID {
 		return nil, errors.New("request-user-input payload referenced a foreign turn")
-	}
-	// The installed Codex app-server deserializer defaults an omitted
-	// isBlocking field to true for legacy request payloads. Preserve that
-	// runtime compatibility while rejecting an explicit nonblocking request.
-	if params.IsBlocking != nil && !*params.IsBlocking {
-		return nil, errors.New("nonblocking request-user-input payload is not resumable")
 	}
 	if len(params.Questions) == 0 || len(params.Questions) > maxClarificationQuestions {
 		return nil, errors.New("request-user-input payload has an unsupported question count")
