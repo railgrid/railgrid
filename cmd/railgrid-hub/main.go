@@ -105,7 +105,6 @@ func main() {
 	cmd.Flags().DurationVar(&opts.SoftDeleteGracePeriod, "soft-delete-grace-period", opts.SoftDeleteGracePeriod,
 		"How long a soft-deleted user, organization or workspace stays recoverable before the hub cascades it away (Go duration, e.g. 720h, 72h). "+
 			"One window for every kind; the undelete endpoints refuse a restore once it has elapsed. Must be positive.")
-	cmd.Flags().StringVar(&opts.ProviderHeartbeatAuth, "provider-heartbeat-auth", opts.ProviderHeartbeatAuth, "What to do with a provider heartbeat whose bearer token does not verify as that provider's own service account: warn (log and accept) or enforce (reject). Default warn for this release; the next release defaults to enforce.")
 	cmd.Flags().BoolVar(&opts.ProviderWorkspaceClusterAdmin, "provider-workspace-cluster-admin", opts.ProviderWorkspaceClusterAdmin,
 		"Bind each provider's ServiceAccount to cluster-admin inside its own provider workspace. "+
 			"False binds the narrower generated railgrid:provider ClusterRole instead. Default true for this release so "+

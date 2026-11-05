@@ -471,7 +471,7 @@ Values the operator computes and refuses in `hub.values`:
 | `replicaCount` | `hub.replicas` (forced to 1 for `embedded`) |
 | `hub.hubExternalURL`, `hub.internalURL` | `https://<domain>`, `https://<release>-railgrid-hub.<ns>.svc.cluster.local:9443` |
 | `hub.staticAuthTokens`, `idp.*`, `hub.disableTokenLogin`, `hub.adminUsers` | `hub.auth`, `hub.adminUsers` |
-| `hub.security.*` | `hub.security: hardened` sets `providerHeartbeatAuth: enforce`, `providerDelegatedTokens: platform`, `providerWorkspaceClusterAdmin: false`, `providerHubAccessPlatformDefault: false` |
+| `hub.security.*` | `hub.security: hardened` sets `providerDelegatedTokens: platform`, `providerWorkspaceClusterAdmin: false`, `providerHubAccessPlatformDefault: false` |
 | `hub.tls.existingSecret` | the cert-manager `Certificate` from §3.3 step 2 |
 | `hub.trustedProxyCIDRs`, `hostAliases`, `ingress.*` | `networking` |
 | `image.hub.tag`, `kcp.featureGates` | the release manifest |

@@ -43,7 +43,7 @@ For a complete production setup (TLS, OIDC, ingress) see the [full docs](https:/
 | `hub.staticAuthTokens` | `[]` | Static bearer tokens for access. Each token creates its own user/workspace. Generate with `openssl rand -base64 32` |
 | `hub.adminUsers` | `[]` | Platform-admin identities allowed at `/api/admin/*` + the portal `/bonkers` area. Match a User by name, email, or rbacIdentity. Empty disables the admin surface (the `/bonkers` menu item stays hidden). For a static token use its RBAC identity, `railgrid:static:<first 16 hex of sha256("static-token/<token>")>` (static-token users have no email, so the token never appears in member lists). |
 | `hub.resources` | see values | CPU/memory requests and limits (includes embedded kcp overhead) |
-| `hub.extraArgs` | `[]` | Extra hub command-line flags appended after the flags the chart renders, for flags the chart does not model yet (e.g. `--providers=edges,infrastructure`). The chart refuses an entry that repeats a flag it renders from a value — set the value instead. |
+| `hub.extraArgs` | `[]` | Extra hub command-line flags appended after the flags the chart renders, for flags the chart does not model yet (e.g. `--v=4`). The chart refuses an entry that repeats a flag it renders from a value — set the value instead. |
 
 ### Provider hardening
 
@@ -55,7 +55,6 @@ for the recommended production settings.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `hub.security.providerHeartbeatAuth` | `""` (binary: `warn`) | What the hub does with a provider heartbeat whose bearer token does not verify as that provider's own service account: `warn` logs and accepts it, `enforce` rejects it. Next release defaults to `enforce`. |
 | `hub.security.providerDelegatedTokens` | `""` (binary: `off`) | Which platform providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on `/services/providers/*`: `off`, `platform` (all except `providerDelegatedTokensExclude`), or `all`. Org-owned providers are always delegated. Next release defaults to `platform`. |
 | `hub.security.providerHubAccessPlatformDefault` | `null` (binary: `true`) | Whether platform providers may use the hub capabilities they declare (`spec.hubAccess`) in workspaces where nobody has accepted or declined them yet. Org-owned providers always need acceptance in the Enable dialog. `false` requires acceptance for every provider. |
 | `hub.security.providerDelegatedTokensExclude` | `[]` (binary: `[edges]`) | Platform providers that keep receiving the caller's bearer under `platform`. Setting it replaces the built-in list, so include `edges` if you still need it (its SSH data plane resolves the caller with a TokenReview on the bearer). |

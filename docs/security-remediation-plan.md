@@ -25,7 +25,7 @@ Every item below was re-read on main, not taken from PR descriptions. "Closed" m
 | 1.1 agent SSRF | Partial | `svc_policy.go` hard-blocks link-local/unspecified/multicast; resolve-then-pin dialer; 403 in enforce | **`warn`**: still dials LAN and internet targets, only the metadata class is refused | Flip `--svc-policy=enforce` plus `--svc-allow-cidr`. No `spec.caBundle`; no e2e for `HostNotAllowed` |
 | 1.2 bearer to org providers | Closed | `proxy_edge.go` deletes Authorization and sets a delegated token unconditionally; empty `CatalogEntryCreation` = admin; migration pins existing orgs to `members` | on | – |
 | 1.2 delegated identity forgery (found in review) | Closed | HMAC proof over tenant, user, provider, SA name **and UID**, keyed from a Secret in `root:railgrid:system:controllers`; verified in the resolver | on | Assurance is absence of any tenant binding in that workspace plus kcp default-deny; no test asserts tenants cannot reach it |
-| 1.3 heartbeat auth | Partial | TokenReview in the provider workspace, username must be the provider SA; generic bodies; unknown names indistinguishable from bad credentials | **`warn`**: unauthenticated beats accepted and recorded | Flip `--provider-heartbeat-auth=enforce`. TokenReview sends no audience because the provider token is a legacy secret token with none |
+| 1.3 heartbeat auth | Closed | TokenReview in the provider workspace, username must be the provider SA; generic bodies; unknown names indistinguishable from bad credentials | on | TokenReview sends no audience because the provider token is a legacy secret token with none |
 | 1.4 MCP aggregate | Closed | 401 before federation; SA must be the MCPServer's; per-IP limiter | on | Limiter off under `--dev-mode` |
 | 2.1 MCPServer role | Closed (RBAC) | generated role, no cluster-admin; exec scoped to `instances` and action IDs must be `<name>/vN` (#657) | on | Token is still a non-expiring Secret; rotation needs a portal flow |
 | 2.2 static-token bypass | Closed | short-circuits gone; refuses to start with `RAILGRID_STATIC_TOKENS` and a kcp config; fails closed (503) without kcp | on | – |
@@ -88,7 +88,7 @@ What the fixes themselves introduced or left, each verified in code. One reporte
 
 ### What is still open (main at `d2d01e78`)
 
-1. **Default flips, deliberate for one release, now settable from the hub chart.** `--svc-policy=enforce` with `--svc-allow-cidr`; `--provider-heartbeat-auth=enforce`; `--provider-delegated-tokens=platform`. The precondition (#659) is merged, so nothing blocks the first two. `--provider-workspace-cluster-admin=false` stays blocked until the infrastructure provider stops seeding its own CRDs.
+1. **Default flips, deliberate for one release, now settable from the hub chart.** `--svc-policy=enforce` with `--svc-allow-cidr`; `--provider-delegated-tokens=platform` (heartbeat auth is already fail-closed: the `warn` mode and its flag are gone). The precondition (#659) is merged, so nothing blocks the first one. `--provider-workspace-cluster-admin=false` stays blocked until the infrastructure provider stops seeding its own CRDs.
 2. **Design decisions.** Co-member impersonation via TokenRequest on a delegated account (recommended: hub-computed MAC in the TokenRequest audience); operator chart's cluster-wide Secrets CRUD; RuntimeClass for App Studio sandboxes (cluster decision, documented).
 3. **Process.** Branch protection on `main` with CI required and code-owner review; `SECURITY.md`, CHANGELOG entries for the flipped defaults, trust-model section in `docs/security.md`; rotate the `kk` client certificate that remains in history.
 4. **Residuals from the table.** `dev-token` defaults in the Makefile and dev scripts; `providers/edges` without `-race` and `dev-agent` outside the matrix; channel messages without the untrusted envelope and per-process dedup; non-expiring MCPServer token Secret; TLS-skip decided in four places; portal `token` shipped one more release and iframe isolation deferred; proof-key rotation procedure; no test that tenants cannot reach the controllers workspace; no e2e for `HostNotAllowed` and no `spec.caBundle`; MCP limiter off under `--dev-mode`.
@@ -195,7 +195,7 @@ Change.
 2. Provider side: in `runHeartbeat`, when `RAILGRID_HUB_TOKEN` is empty, read the token from `RAILGRID_PROVIDER_KUBECONFIG`. Charts need no change.
 3. Fix the comment at `heartbeat.go:57-61`.
 
-Compatibility. `--provider-heartbeat-auth=warn|enforce`, default `warn` for one release, logging rejected beats with the provider name. In `enforce`, providers on old charts go stale after the TTL, which is the correct outcome.
+Compatibility. There is no warn mode: a beat that does not authenticate is rejected, and providers on old charts go stale after the TTL, which is the correct outcome.
 
 Tests. Extend `heartbeat_test.go`: no bearer gives 401 and the registry is untouched; wrong service account gives 403; the right one is recorded. Add `TestHeartbeatRequiresOwnProviderSA` in `registry_scope_test.go`.
 

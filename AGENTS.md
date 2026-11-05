@@ -325,11 +325,10 @@ whatever gates `/readyz`). The beat is authenticated as
 the provider's own service account: the bearer is `RAILGRID_HUB_TOKEN` if set,
 otherwise the token inside `RAILGRID_PROVIDER_KUBECONFIG`
 (`hubclient.ResolveHubToken`), and the hub verifies it by TokenReview in the
-provider's workspace (`heartbeat_auth.go`). `--provider-heartbeat-auth=warn|enforce`
-picks whether a failed check is logged or rejected (default `warn` this
-release, `enforce` next); the client logs a 401/403 with what to fix. A
-provider is "Ready" only when its endpoints are valid and (once heartbeats
-have started) not stale.
+provider's workspace (`heartbeat_auth.go`); a beat that does not verify is
+rejected, and the client logs the 401/403 with what to fix. A provider is
+"Ready" only when its endpoints are valid and (once heartbeats have started)
+not stale.
 
 ### 5.3 Provider portal micro-frontends
 
