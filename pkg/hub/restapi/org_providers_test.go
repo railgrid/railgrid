@@ -1107,3 +1107,45 @@ func TestDeleteOrgProvider_AuthenticatedTeardownSurvivesRequestCancellation(t *t
 		t.Fatalf("delete unexpectedly provisioned credentials or workspaces: minted=%d rotated=%v registered=%v", creds.minted, creds.rotated, ops.registered)
 	}
 }
+
+func TestOrgProviderTransportUnavailableDoesNotIssueCredentials(t *testing.T) {
+	org := &tenancyv1alpha1.Organization{ObjectMeta: metav1.ObjectMeta{Name: "org-a"}}
+	mgr, wsOps, _ := newTestManager(t, org)
+	if err := wsOps.EnsureOrgMembership(t.Context(), "org-a", "alice", tenancyv1alpha1.MembershipRoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	ops, creds := &fakeOrgProviderOps{}, &fakeCredMinter{}
+	mgr.WithOrgProviders(ops, creds).WithOrgProviderAvailability(func(context.Context) error { return errors.New("authenticated shard relay is unavailable") })
+	srv := newTestServer(t, mgr, adminTC("alice", "org-a", ""))
+	defer srv.Close()
+	for _, path := range []string{"/api/orgs/org-a/providers", "/api/orgs/org-a/providers/custom/credentials/rotate"} {
+		resp, err := http.Post(srv.URL+path, "application/json", strings.NewReader(`{"name":"custom"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable {
+			t.Fatalf("%s: status %d", path, resp.StatusCode)
+		}
+	}
+	resp, err := http.Get(srv.URL + "/api/orgs/org-a/providers/custom/kubeconfig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("credential fetch: status %d", resp.StatusCode)
+	}
+	if len(ops.registered) != 0 || creds.minted != 0 {
+		t.Fatalf("runtime unavailable: created %v, minted %d", ops.registered, creds.minted)
+	}
+	// Inspection remains available so operators can recover registrations.
+	resp, err = http.Get(srv.URL + "/api/orgs/org-a/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list: status %d", resp.StatusCode)
+	}
+}

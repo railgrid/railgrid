@@ -75,7 +75,7 @@ ldflags: ## Print ldflags for goreleaser
 
 all: build
 
-build: build-railgrid build-hub
+build: build-railgrid build-hub build-railgrid-kcp
 
 build-railgrid:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid ./cmd/railgrid/
@@ -98,6 +98,23 @@ build-release: ## Build the release-tagging helper (release <component|all>)
 
 build-hub:
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-hub ./cmd/railgrid-hub/
+
+.PHONY: build-railgrid-kcp
+build-railgrid-kcp: ## Build external kcp with the same organization boundary as embedded kcp
+	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINDIR)/railgrid-kcp ./cmd/railgrid-kcp/
+
+.PHONY: test-byo-providers test-byo-provider-sdk
+test-byo-providers: test-byo-provider-sdk test-byo-provider-compat ## Verify organization provider bootstrap, identity and routing
+	go test $(GOFLAGS) -count=1 ./pkg/hub/... ./cmd/railgrid-kcp/...
+	cd providers/edges && go test $(GOFLAGS) -count=1 ./internal/tunnel/...
+
+test-byo-provider-sdk: ## Verify SDK organization bootstrap and signed Edge relay
+	cd provider-sdk && go test $(GOFLAGS) -count=1 ./install/... ./providerrelay/...
+
+.PHONY: test-byo-provider-compat
+test-byo-provider-compat: ## Verify existing provider installation remains compatible
+	cd providers/infrastructure && go test $(GOFLAGS) -count=1 ./install/...
+	cd providers/quickstart && go test $(GOFLAGS) -count=1 ./...
 
 test-runner: ## Run focused generic runner and harness tests
 	go test -count=1 ./pkg/runner/... ./cmd/railgrid-runner/...
@@ -1347,10 +1364,16 @@ install-provider-quickstart: ## Apply quickstart Provider + CatalogEntry into ro
 ## raises the hub's (and that kcp's) log level — 4 makes kcp's authorizers say
 ## why a virtual-workspace request was refused; RAILGRID_E2E_HUB_GOFLAGS passes
 ## extra flags to the hub build (e.g. -modfile=… to embed a kcp checkout).
+# Host subprocess suites may run beside Tilt with separate embedded-etcd ports.
+# Use the same values for Make's preflight and the suites' Hub flags.
+RAILGRID_E2E_ETCD_CLIENT_PORT ?= 2379
+RAILGRID_E2E_ETCD_PEER_PORT ?= 2380
+export RAILGRID_E2E_ETCD_CLIENT_PORT RAILGRID_E2E_ETCD_PEER_PORT
+
 E2E_PROVIDER_TIMEOUT ?= 10m
 e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
-	@test -z "$$(lsof -ti :19443 :16443 :18081 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/18081/2380 are in use; stop any running railgrid-hub/quickstart-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19443 -iTCP:16443 -iTCP:18081 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19443/16443/18081/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/quickstart-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1379,8 +1402,8 @@ e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-fla
 ## not run them concurrently.
 E2E_INFRA_PROVIDER_TIMEOUT ?= 15m
 e2e-infra-provider: build-hub build-infrastructure-provider ## Run infrastructure provider e2e suite
-	@test -z "$$(lsof -ti :19453 :16453 :18086 :2380 2>/dev/null)" || { \
-		echo "ports 19453/16453/18086/2380 are in use; stop any running railgrid-hub/infrastructure-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19453 -iTCP:16453 -iTCP:18086 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19453/16453/18086/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/infrastructure-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/infraprovider/... -v -timeout $(E2E_INFRA_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1418,8 +1441,8 @@ e2e-identity: build-hub build-quickstart-provider ## Run hub scoped-identity e2e
 ## port 2380 with the other subprocess suites — do not run them concurrently.
 E2E_KUERY_PROVIDER_TIMEOUT ?= 15m
 e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e suite
-	@test -z "$$(lsof -ti :19493 :16493 :18118 :2380 2>/dev/null)" || { \
-		echo "ports 19493/16493/18118/2380 are in use; stop any running railgrid-hub/kuery-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19493 -iTCP:16493 -iTCP:18118 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19493/16493/18118/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/kuery-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/kueryprovider/... -v -timeout $(E2E_KUERY_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1435,10 +1458,10 @@ e2e-kuery-provider: build-hub build-kuery-provider ## Run kuery provider e2e sui
 ## credential). Etcd defaults to 2379/2380. For a local run beside Tilt, set
 ## E2E_AGENTS_ETCD_CLIENT_PORT and E2E_AGENTS_ETCD_PEER_PORT to free ports.
 E2E_AGENTS_PROVIDER_TIMEOUT ?= 15m
-E2E_AGENTS_ETCD_CLIENT_PORT ?= 2379
-E2E_AGENTS_ETCD_PEER_PORT ?= 2380
+E2E_AGENTS_ETCD_CLIENT_PORT ?= $(RAILGRID_E2E_ETCD_CLIENT_PORT)
+E2E_AGENTS_ETCD_PEER_PORT ?= $(RAILGRID_E2E_ETCD_PEER_PORT)
 e2e-agents-provider: build-hub build-agents-provider ## Run agents provider (webhook/trigger routing) e2e suite
-	@test -z "$$(lsof -ti :19513 :16513 :18138 :$(E2E_AGENTS_ETCD_CLIENT_PORT) :$(E2E_AGENTS_ETCD_PEER_PORT) 2>/dev/null)" || { \
+	@test -z "$$(lsof -t -iTCP:19513 -iTCP:16513 -iTCP:18138 -iTCP:$(E2E_AGENTS_ETCD_CLIENT_PORT) -iTCP:$(E2E_AGENTS_ETCD_PEER_PORT) 2>/dev/null)" || { \
 		echo "one of the selected Agents E2E ports is in use; choose free E2E_AGENTS_ETCD_CLIENT_PORT/E2E_AGENTS_ETCD_PEER_PORT values or stop only the conflicting test process"; \
 		exit 1; \
 	}
@@ -1454,8 +1477,8 @@ e2e-agents-provider: build-hub build-agents-provider ## Run agents provider (web
 ## port 2380 with the other subprocess suites — do not run them concurrently.
 E2E_EDGES_TIMEOUT ?= 15m
 e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
-	@test -z "$$(lsof -ti :19463 :16463 :18088 :2380 2>/dev/null)" || { \
-		echo "ports 19463/16463/18088/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19463 -iTCP:16463 -iTCP:18088 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19463/16463/18088/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/edges/... -v -timeout $(E2E_EDGES_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1471,8 +1494,8 @@ e2e-edges: build-hub build-edges-provider ## Run edges provider e2e suite
 ## subprocess suites.
 E2E_EDGES_CONN_TIMEOUT ?= 15m
 e2e-edges-connectivity: build-hub build-edges-provider build-kuery-provider build-railgrid certs ## Run edges data-plane connectivity e2e (needs kind)
-	@test -z "$$(lsof -ti :19473 :16473 :18098 :18099 :2380 2>/dev/null)" || { \
-		echo "ports 19473/16473/18098/18099/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19473 -iTCP:16473 -iTCP:18098 -iTCP:18099 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19473/16473/18098/18099/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/edgesconn/... -v -timeout $(E2E_EDGES_CONN_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -1485,8 +1508,8 @@ e2e-edges-connectivity: build-hub build-edges-provider build-kuery-provider buil
 ## do not run concurrently with the other subprocess suites.
 E2E_CLI_TIMEOUT ?= 20m
 e2e-cli: build-hub build-edges-provider build-railgrid certs ## Run the railgrid CLI e2e suite (kind optional)
-	@test -z "$$(lsof -ti :19483 :16483 :18108 :2380 2>/dev/null)" || { \
-		echo "ports 19483/16483/18108/2380 are in use; stop any running railgrid-hub/edges-provider first"; \
+	@test -z "$$(lsof -t -iTCP:19483 -iTCP:16483 -iTCP:18108 -iTCP:$(RAILGRID_E2E_ETCD_CLIENT_PORT) -iTCP:$(RAILGRID_E2E_ETCD_PEER_PORT) 2>/dev/null)" || { \
+		echo "ports 19483/16483/18108/$(RAILGRID_E2E_ETCD_CLIENT_PORT)/$(RAILGRID_E2E_ETCD_PEER_PORT) are in use; stop any running railgrid-hub/edges-provider first"; \
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/cli/... -v -timeout $(E2E_CLI_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
@@ -2298,6 +2321,7 @@ run-provider-agents: build-agents-provider agents-db-up ## Run the agents provid
 	fi; \
 	PORT=$(AGENTS_PORT) \
 	RAILGRID_HUB_URL=$(AGENTS_HUB_URL) \
+	RAILGRID_HUB_PUBLIC_URL="$${RAILGRID_HUB_PUBLIC_URL:-$(AGENTS_HUB_URL)}" \
 	RAILGRID_HUB_INSECURE=true \
 	RAILGRID_PROVIDER_NAME=agents \
 	RAILGRID_CATALOGENTRY_FILE=$(abspath $(AGENTS_MANIFEST)) \
@@ -2945,6 +2969,11 @@ docker-build-hub: ## Build railgrid-hub container image
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		-t ghcr.io/railgrid/railgrid-hub:$(VERSION) .
 
+.PHONY: docker-build-kcp
+docker-build-kcp: ## Build external kcp with Railgrid organization enforcement
+	docker build -f deploy/Dockerfile.kcp --platform $(DOCKER_PLATFORM) \
+		-t ghcr.io/railgrid/railgrid-kcp:$(VERSION) .
+
 docker-build-agent: ## Build railgrid-agent container image
 	docker build -f deploy/Dockerfile.agent \
 		--platform $(DOCKER_PLATFORM) \
@@ -3299,9 +3328,10 @@ test-provider-issuer-boundary: ## Verify native SA issuers cannot cross provider
 
 .PHONY: test-provider-action-routing
 test-provider-action-routing: ## Test binding-scoped provider actions and agent ingress
-	go test -count=1 ./pkg/hub/kcp ./pkg/hub/providers ./pkg/hub -run 'TestShard|TestForwardShard|TestProviderAgentIngress|TestAgentIngress'
-	cd provider-sdk && go test -count=1 ./dataplane
-	cd providers/edges && go test -count=1 ./internal/tunnel
+	go test $(GOFLAGS) -count=1 ./pkg/hub/providers ./pkg/hub -run 'TestProviderRelay|TestEmbeddedRelay|TestShard|TestProviderAgentIngress|TestAgentIngress'
+	go test $(GOFLAGS) -count=1 ./pkg/hub/kcp/orgboundary
+	cd provider-sdk && go test $(GOFLAGS) -count=1 ./dataplane ./providerrelay
+	cd providers/edges && go test $(GOFLAGS) -count=1 ./internal/tunnel
 
 .PHONY: test-provider-agent-ingress
 test-provider-agent-ingress: ## Test binding-scoped agent routing and credential isolation

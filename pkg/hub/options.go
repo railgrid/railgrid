@@ -65,9 +65,20 @@ type Options struct {
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).
 	IDPCAFile       string
+	ProviderCAFile  string // Trust bundle for the provider-facing Hub origin, not the KCP admin CA.
 	ServingCertFile string
 	ServingKeyFile  string
-	HubExternalURL  string
+	// ProviderRelay is a dedicated mTLS listener for external kcp shards.
+	// Embedded kcp dispatches provider data-plane requests in-process and does
+	// not use this listener. The normal browser-facing listener never trusts
+	// shard identity headers.
+	ProviderRelayURL          string
+	ProviderRelayListenAddr   string
+	ProviderRelayCertFile     string
+	ProviderRelayKeyFile      string
+	ProviderRelayClientCAFile string
+	ProviderRelayAllowedNames []string
+	HubExternalURL            string
 	// HubInternalURL, when set, is the address in-cluster components use to
 	// reach this hub instead of HubExternalURL. It is baked into minted provider
 	// kubeconfigs and offered as the "internal" option by the admin kubeconfig

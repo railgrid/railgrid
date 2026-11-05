@@ -57,6 +57,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
@@ -84,6 +85,12 @@ var (
 
 // Options bundles everything a provider's init needs.
 type Options struct {
+	// PrivateCRDs are provider-owned runtime types that are not themselves
+	// APIExport schemas. Platform providers apply them from init; organization
+	// providers include the declarations in the authenticated Hub bootstrap,
+	// which validates them and applies both the CRDs and their exact runtime
+	// object permissions.
+	PrivateCRDs []*unstructured.Unstructured
 	// Config is the workspace-admin rest.Config (its Host already targets the
 	// provider workspace cluster, e.g. .../clusters/root:railgrid:providers:code).
 	Config *rest.Config
@@ -108,8 +115,13 @@ type Options struct {
 	// Set it only to reference an export in a DIFFERENT workspace than the one
 	// Config targets.
 	WorkspacePath string
-	// KCPDir is the directory holding the two declarative objects a provider
-	// ships, exactly as codegen wrote them:
+	// APIExportEndpointSliceAliases asks the installer to create additional
+	// APIExportEndpointSlices pointing to the same export. A small number of
+	// existing provider controllers use a stable slice name independent of the
+	// APIExport name.
+	APIExportEndpointSliceAliases []string
+	// KCPDir is the directory holding the generated APIExport and its
+	// APIResourceSchemas, exactly as codegen wrote them:
 	//
 	//   apiexport.yaml   the generated APIExport (name + permission claims
 	//                    from manifest.yaml, resources from kcp apigen)
@@ -122,6 +134,9 @@ type Options struct {
 	// The chart's deploy/chart/files/ IS this directory: it is baked into the
 	// image at /etc/railgrid/kcp and pointed at by RAILGRID_KCP_DIR. Required.
 	KCPDir string
+	// PrivateCRDs are optional runtime types not generated from the APIExport.
+	// Platform providers apply them before the export; organization providers
+	// submit them for Hub validation and application.
 
 	// CatalogEntryFile, when set, is the path to a CatalogEntry YAML the
 	// provider self-registers into its OWN workspace (which the platform's
@@ -187,6 +202,21 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	if name := export.GetName(); name != opts.ExportName {
 		return fmt.Errorf("install: %s declares APIExport %q but init was configured for %q; re-run codegen", filepath.Join(opts.KCPDir, APIExportFileName), name, opts.ExportName)
 	}
+	workspacePath, err := workspacePathOf(ctx, cl)
+	if err != nil {
+		return fmt.Errorf("install: resolving bootstrap scope: %w", err)
+	}
+	if isOrgOwnedWorkspace(workspacePath) {
+		return bootstrapOrganization(ctx, opts, export, workspacePath)
+	}
+	for _, crd := range opts.PrivateCRDs {
+		if crd == nil || crd.GetName() == "" {
+			return fmt.Errorf("install: private CRDs must be named objects")
+		}
+		if err := applyUnstructured(ctx, cl, schema.GroupVersionResource{Group: "apiextensions.k8s.io", Version: "v1", Resource: "customresourcedefinitions"}, crd); err != nil {
+			return fmt.Errorf("install: apply private CRD %s: %w", crd.GetName(), err)
+		}
+	}
 	if err := ApplySchemasFromDir(ctx, cl, opts.KCPDir); err != nil {
 		return fmt.Errorf("install: apply schemas: %w", err)
 	}
@@ -221,6 +251,15 @@ func Bootstrap(ctx context.Context, opts Options) error {
 	if err := EnsureAPIExportEndpointSlice(ctx, cl, opts.ExportName, opts.ExportName, opts.WorkspacePath); err != nil {
 		return fmt.Errorf("install: ensure APIExportEndpointSlice: %w", err)
 	}
+	aliases, err := validatedEndpointSliceAliases(opts.ExportName, opts.APIExportEndpointSliceAliases)
+	if err != nil {
+		return fmt.Errorf("install: %w", err)
+	}
+	for _, alias := range aliases {
+		if err := EnsureAPIExportEndpointSlice(ctx, cl, alias, opts.ExportName, opts.WorkspacePath); err != nil {
+			return fmt.Errorf("install: ensure APIExportEndpointSlice alias %s: %w", alias, err)
+		}
+	}
 	if err := ApplyBindGrant(ctx, cl, opts.ExportName); err != nil {
 		return fmt.Errorf("install: apply bind grant: %w", err)
 	}
@@ -230,6 +269,19 @@ func Bootstrap(ctx context.Context, opts Options) error {
 		}
 	}
 	return nil
+}
+
+func validatedEndpointSliceAliases(exportName string, aliases []string) ([]string, error) {
+	seen := map[string]bool{exportName: true}
+	out := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		if len(validation.IsDNS1123Label(alias)) != 0 || seen[alias] {
+			return nil, fmt.Errorf("APIExport endpoint slice alias %q is invalid or duplicated", alias)
+		}
+		seen[alias] = true
+		out = append(out, alias)
+	}
+	return out, nil
 }
 
 // catalogEntryGVR is the cluster-scoped CatalogEntry served by the

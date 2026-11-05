@@ -290,7 +290,7 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 // leader-election Lease and the shared browser-session / app-access-code
 // Secrets. It is hub-internal — no tenant, provider, or user identity is ever
 // granted access to system:controllers.
-const HubSystemNamespace = "railgrid-hub"
+const HubSystemNamespace = kcppaths.HubSystemNamespace
 
 // ControllersConfig returns a rest.Config targeting root:railgrid:system:controllers,
 // where the platform APIExports and the hub's own coordination objects live.
@@ -712,8 +712,8 @@ func ensureDefaultNamespace(ctx context.Context, wsClient dynamic.Interface) err
 	return nil
 }
 
-// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
-// Workspace to the given rbacIdentity. Thin wrapper over
+// EnsureChildWorkspaceAdmin grants bounded tenant-admin access in the child
+// team Workspace to the given rbacIdentity. Thin wrapper over
 // EnsureWorkspaceAdmin with the canonical child-workspace path.
 // Idempotent.
 func (b *Bootstrapper) EnsureChildWorkspaceAdmin(ctx context.Context, orgUUID, wsUUID, rbacIdentity string) error {
@@ -1751,8 +1751,9 @@ func ensureExportBinding(ctx context.Context, bindDynamic dynamic.Interface, exp
 	return nil
 }
 
-// EnsureWorkspaceAdmin ensures cluster-admin is granted to rbacIdentity in the
-// workspace identified by clusterName. Idempotent — safe to call on every login.
+// EnsureWorkspaceAdmin ensures bounded tenant-admin access is granted to
+// rbacIdentity in the workspace identified by clusterName. Idempotent — safe
+// to call on every login.
 func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
 	if clusterName == "" || rbacIdentity == "" {
 		return nil
@@ -1765,7 +1766,7 @@ func (b *Bootstrapper) EnsureWorkspaceAdmin(ctx context.Context, clusterName, rb
 	return ensureWorkspaceAdmin(ctx, tenantClient, rbacIdentity)
 }
 
-// RevokeWorkspaceAdmin removes the cluster-admin grant for rbacIdentity in
+// RevokeWorkspaceAdmin removes the tenant-admin grant for rbacIdentity in
 // the workspace identified by clusterName. Idempotent on NotFound. Only the
 // caller's own per-user binding is touched; every other member keeps theirs.
 func (b *Bootstrapper) RevokeWorkspaceAdmin(ctx context.Context, clusterName, rbacIdentity string) error {
@@ -1802,13 +1803,13 @@ var clusterRoleBindingGVR = schema.GroupVersionResource{
 // next grant or revoke in that workspace and then deletes it.
 const legacyWorkspaceAdminCRB = "railgrid-cluster-admin"
 
-// userAdminCRBPrefix prefixes the per-user cluster-admin bindings. The
+// userAdminCRBPrefix prefixes the per-user tenant-admin bindings. The
 // suffix is a hash of the rbacIdentity: identities are emails, which are
 // not valid object names, and the hash keeps the name stable across the
 // identity's spelling while never colliding between users.
 const userAdminCRBPrefix = "railgrid-user-admin-"
 
-// userAdminCRBName returns the per-user cluster-admin binding name for an
+// userAdminCRBName returns the per-user tenant-admin binding name for an
 // rbacIdentity.
 func userAdminCRBName(rbacIdentity string) string {
 	sum := sha256.Sum256([]byte(rbacIdentity))
@@ -1832,7 +1833,7 @@ func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
 			"roleRef": map[string]interface{}{
 				"apiGroup": "rbac.authorization.k8s.io",
 				"kind":     "ClusterRole",
-				"name":     "cluster-admin",
+				"name":     TenantAdminRoleName,
 			},
 			"subjects": []interface{}{
 				map[string]interface{}{
@@ -1845,11 +1846,14 @@ func userAdminCRB(rbacIdentity string) *unstructured.Unstructured {
 	}
 }
 
-// ensureWorkspaceAdmin creates a per-user cluster-admin ClusterRoleBinding for
+// ensureWorkspaceAdmin creates a per-user tenant-admin ClusterRoleBinding for
 // the given rbacIdentity in the workspace targeted by tenantClient. Grants are
 // additive: each member holds their own binding, so granting one user never
 // disturbs another's access. Idempotent.
 func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := ensureTenantAdminRole(ctx, tenantClient); err != nil {
+		return err
+	}
 	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
 		return err
 	}
@@ -1879,10 +1883,13 @@ func ensureWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, r
 	return nil
 }
 
-// revokeWorkspaceAdmin deletes the per-user cluster-admin binding for
+// revokeWorkspaceAdmin deletes the per-user tenant-admin binding for
 // rbacIdentity. The legacy shared binding is migrated first so a user who
 // only ever held access through it is revoked too. Idempotent on NotFound.
 func revokeWorkspaceAdmin(ctx context.Context, tenantClient dynamic.Interface, rbacIdentity string) error {
+	if err := ensureTenantAdminRole(ctx, tenantClient); err != nil {
+		return err
+	}
 	if err := migrateLegacyWorkspaceAdmin(ctx, tenantClient); err != nil {
 		return err
 	}

@@ -34,6 +34,7 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/providerrelay"
 )
 
 // serviceResource is the URL resource segment for the Service kind. It is
@@ -176,6 +177,23 @@ func (v *serviceView) setSvcHeaders(h http.Header) {
 func (p *Server) serveService(w http.ResponseWriter, r *http.Request, req dataplane.Request, svcObj *unstructured.Unstructured) {
 	ctx := r.Context()
 	logger := klog.FromContext(ctx).WithName("edgeservice-proxy")
+	if len(r.Header.Values(providerrelay.Header)) > 0 {
+		// Provider relay proofs are accepted only on the HTTP proxy verb with
+		// a complete nested custom-subresource path. The proof is consumed
+		// before any credentials or caller identity can cross the tunnel.
+		if req.Verb != VerbProxy || req.Tail == "" || r.Header.Get(dataplane.HeaderUpstreamIdentity) != "" {
+			http.Error(w, "invalid provider relay proof", http.StatusForbidden)
+			return
+		}
+		var err error
+		ctx, err = p.verifyProviderRelay(ctx, r, req.ClusterID, req.Name, "/"+req.Tail)
+		if err != nil {
+			logger.Info("refusing invalid provider relay proof", "cluster", req.ClusterID, "service", req.Name)
+			http.Error(w, "invalid provider relay proof", http.StatusForbidden)
+			return
+		}
+		r = r.WithContext(ctx)
+	}
 
 	forwarded, err := providerActionIdentity(r, svcObj)
 	if err != nil {
@@ -340,6 +358,9 @@ func stampCallerForUpstream(h http.Header, ctx context.Context, cluster string) 
 			h[key] = values
 		}
 		h.Set(dataplane.HeaderUser, forwarded.Get(dataplane.HeaderRemoteUser))
+	}
+	if stampProviderRelay(h, ctx) {
+		h.Set(dataplane.HeaderUser, h.Get(dataplane.HeaderRemoteUser))
 	}
 }
 

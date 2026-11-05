@@ -60,6 +60,10 @@ mcpApps:
 
 hub:
   url: "http://railgrid-hub.railgrid.svc.cluster.local:8080"
+  # The hub's public address (https://console.example.com). A remote coding
+  # harness reaches the agent's self-configuration endpoint through it; empty
+  # leaves harness-backed agents unable to configure themselves.
+  publicURL: ""
   insecure: false
   tokenSecretRef:
     name: ""

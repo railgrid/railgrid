@@ -621,6 +621,7 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 	}
 	names := make(map[string]string, len(bindings))
 	details := make(map[string]EnabledProviderDetail, len(bindings))
+	issuedAssetGrant := false
 	for provider, binding := range bindings {
 		names[provider] = binding.Name
 		var presentation *providers.ProviderDTO
@@ -628,7 +629,8 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		var compositions *CompositionState
 		if copy, found := h.boundProviderCopy(tc.OrgUUID, provider, binding); found {
 			if binding.Ready && !binding.Terminating {
-				dto := providers.PresentProvider(copy)
+				dto, issued := providers.PresentProviderForTenant(r.Context(), copy, tc, h.providerUIGrants)
+				issuedAssetGrant = issuedAssetGrant || issued
 				presentation = &dto
 			}
 			access = h.hubAccessState(r.Context(), tc.OrgUUID, tc.WorkspaceUUID, copy)
@@ -651,6 +653,11 @@ func (h *Handler) listEnabledProviders(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
+	if issuedAssetGrant {
+		// Bound provider presentations can carry the same short-lived asset
+		// grants as the public catalog; never let a shared cache replay one.
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(ListEnabledProvidersResponse{
 		BindingNamesByProvider: names,

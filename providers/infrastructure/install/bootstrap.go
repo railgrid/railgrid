@@ -13,6 +13,11 @@ package install
 import (
 	"context"
 	"fmt"
+	"io/fs"
+	"strings"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/yaml"
 
 	sdkinstall "github.com/railgrid/provider-sdk/install"
 )
@@ -22,6 +27,39 @@ import (
 // The cache slice may precede its export: kcp's slice reconciler marks its
 // APIExportValid condition false until the export appears, then reconciles it.
 func BootstrapWorkspace(ctx context.Context, opts sdkinstall.Options) error {
+	organization, err := sdkinstall.IsOrganizationProvider(ctx, opts.Config)
+	if err != nil {
+		return fmt.Errorf("resolve provider scope: %w", err)
+	}
+	if organization {
+		// Publish private storage and its local cache projection through the Hub.
+		// The runtime credential never needs CRD, cache or endpoint write access.
+		entries, err := fs.ReadDir(crdsFS, "crds")
+		if err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+				continue
+			}
+			raw, err := fs.ReadFile(crdsFS, "crds/"+entry.Name())
+			if err != nil {
+				return err
+			}
+			crd := &unstructured.Unstructured{}
+			if err := yaml.Unmarshal(raw, &crd.Object); err != nil {
+				return err
+			}
+			opts.PrivateCRDs = append(opts.PrivateCRDs, crd)
+		}
+		opts.VirtualStorage = TemplateVirtualStorage()
+		opts.APIExportEndpointSliceAliases = []string{APIExportEndpointSliceName}
+		if err := sdkinstall.Bootstrap(ctx, opts); err != nil {
+			return fmt.Errorf("provider workspace bootstrap: %w", err)
+		}
+		_, err = WaitForCachedResourceIdentity(ctx, opts.Config)
+		return err
+	}
 	if err := CRDs(ctx, opts.Config); err != nil {
 		return fmt.Errorf("install CRDs: %w", err)
 	}

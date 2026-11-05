@@ -66,6 +66,9 @@ const (
 	// consumer binds the exports from here.
 	SystemControllers = System + ":controllers"
 
+	// HubSystemNamespace contains Hub-only credentials and coordination objects.
+	HubSystemNamespace = "railgrid-hub"
+
 	// SystemProviders holds the Provider + CatalogEntry OBJECTS (and the
 	// builtin CatalogEntries). The catalog + provisioning controllers target it.
 	SystemProviders = System + ":providers"

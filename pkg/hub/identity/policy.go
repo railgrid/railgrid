@@ -172,6 +172,20 @@ func (p *Policy) Authorize(requester, clusterID string, requested []rbacv1.Polic
 	if p == nil || p.catalog == nil {
 		return nil, Refusal{Code: CodeUnknownRequester, Reason: "the hub has no provider catalog to check rules against"}
 	}
+	if scoped, ok := p.catalog.(interface {
+		ForWorkspace(string) (ProviderCatalog, error)
+	}); ok {
+		catalog, err := scoped.ForWorkspace(clusterID)
+		if err != nil {
+			return nil, fmt.Errorf("resolving workspace provider catalog: %w", err)
+		}
+		policy := *p
+		policy.catalog = catalog
+		if bindings, ok := catalog.(BindingChecker); ok {
+			policy.bindings = bindings
+		}
+		return policy.Authorize(requester, clusterID, requested)
+	}
 	if strings.TrimSpace(requester) == "" {
 		return nil, Refusal{Code: CodeUnknownRequester, Reason: "the requesting provider is unknown"}
 	}

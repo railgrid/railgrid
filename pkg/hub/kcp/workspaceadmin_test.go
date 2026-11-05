@@ -33,6 +33,8 @@ func newCRBClient(t *testing.T) dynamic.Interface {
 	t.Helper()
 	return fake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		clusterRoleBindingGVR: "ClusterRoleBindingList",
+		apiBindingGVR:         "APIBindingList",
+		tenantAdminRoleGVR:    "ClusterRoleList",
 	})
 }
 
@@ -69,6 +71,14 @@ func TestEnsureWorkspaceAdmin_GrantsAreAdditive(t *testing.T) {
 	for _, id := range []string{"railgrid:alice@example.com", "railgrid:bob@example.com"} {
 		if got := crbSubjects(t, c, userAdminCRBName(id)); len(got) != 1 || got[0] != id {
 			t.Errorf("binding for %s: subjects %v", id, got)
+		}
+		binding, err := c.Resource(clusterRoleBindingGVR).Get(context.Background(), userAdminCRBName(id), metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		role, _, _ := unstructured.NestedString(binding.Object, "roleRef", "name")
+		if role != TenantAdminRoleName || role == "cluster-admin" {
+			t.Errorf("binding for %s role=%q, want bounded %q", id, role, TenantAdminRoleName)
 		}
 	}
 	if userAdminCRBName("railgrid:alice@example.com") == userAdminCRBName("railgrid:bob@example.com") {

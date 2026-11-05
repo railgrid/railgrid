@@ -122,6 +122,8 @@ export const POLICY_NAME = 'railgrid'
  * side; see the TODO in the emitted header.
  */
 export const PROVIDER_SUBJECTS = Object.freeze([
+  // Organization declarations are validated and published by the Hub.
+  Object.freeze({ kind: 'User', name: 'kcp-admin' }),
   Object.freeze({ kind: 'User', name: 'system:serviceaccount:default:provider' }),
 ])
 

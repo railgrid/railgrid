@@ -62,11 +62,16 @@ limitations under the License.
 //	                              custom commands/agents, output styles, workflows — i.e.
 //	                              every project-controlled code and config path. Auth,
 //	                              model selection, built-in tools and permissions still work.
-//	                              It is passed ONLY when there is nobody to ask: measured
-//	                              against 2.1.281, --safe-mode disables --mcp-config
-//	                              servers too, so it and a permission prompt tool cannot
-//	                              both exist. See the trade documented on args().
-//	--strict-mcp-config           no MCP server but the permission prompt one, and with
+//	                              It is passed ONLY when the launch has no MCP server at
+//	                              all: measured against 2.1.281, --safe-mode disables
+//	                              --mcp-config servers too, so it cannot coexist with a
+//	                              permission prompt tool or a remote server. See the
+//	                              trade documented on args().
+//	--mcp-config <file>           the launch's one MCP document: the permission prompt
+//	                              server and any remote server the identity brought
+//	                              (Credential.MCPServers), each with its secret in a
+//	                              0600 file, never on argv; see mcp.go
+//	--strict-mcp-config           no MCP server but the ones in that document, and with
 //	                              no --mcp-config at all, none whatsoever
 //	--disable-slash-commands      no skills
 //	--no-chrome                   no browser integration
@@ -304,14 +309,23 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	// that is never asked.
 	var permissions *permissionServer
 	if mode, _ := a.permissionMode(); launch.Permissions != nil && mode != PermissionBypass {
-		permissions, err = startPermissionServer(launch.Permissions, launch.AttemptID, a.cfg.Home)
+		permissions, err = startPermissionServer(launch.Permissions, launch.AttemptID)
 		if err != nil {
 			return result, err
 		}
 		defer func() { _ = permissions.Close() }()
 	}
+	mcpConfig, err := writeMCPConfig(a.cfg.Home, permissions, launch.Credential.MCPServers)
+	if err != nil {
+		return result, credential.redactError(err)
+	}
+	if mcpConfig != "" {
+		// The document holds the permission secret and every remote bearer;
+		// it lives exactly as long as the launch it was written for.
+		defer func() { _ = os.Remove(mcpConfig) }()
+	}
 
-	cmd := exec.Command(a.cfg.Binary, a.args(launch, permissions)...) //nolint:gosec // the binary is operator-configured enrollment, never request data
+	cmd := exec.Command(a.cfg.Binary, a.args(launch, permissions, mcpConfig)...) //nolint:gosec // the binary is operator-configured enrollment, never request data
 	cmd.Env = a.childEnv(credential)
 	cmd.Dir = launch.Workdir
 	proc.Configure(cmd)
@@ -366,8 +380,9 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 
 // args builds the headless command line. See the package comment for what each
 // flag is protecting against; the ordering is stable so contract tests can pin
-// it.
-func (a *Adapter) args(launch harness.Launch, permissions *permissionServer) []string {
+// it. mcpConfig is the document writeMCPConfig wrote, or "" when the launch has
+// no MCP server at all.
+func (a *Adapter) args(launch harness.Launch, permissions *permissionServer, mcpConfig string) []string {
 	mode, _ := a.permissionMode()
 	args := []string{
 		"--print",
@@ -380,8 +395,6 @@ func (a *Adapter) args(launch harness.Launch, permissions *permissionServer) []s
 		// means a request that would still have prompted is denied outright
 		// rather than parked.
 		args = append(args, "--permission-prompts", "none")
-		// Every project-controlled execution path off.
-		args = append(args, "--safe-mode", "--strict-mcp-config")
 	} else {
 		// Somebody can be asked, so ask: "host" routes anything the mode does
 		// not pre-approve to the permission prompt tool instead of denying it.
@@ -389,25 +402,34 @@ func (a *Adapter) args(launch harness.Launch, permissions *permissionServer) []s
 		args = append(args,
 			"--permission-prompts", "host",
 			"--permission-prompt-tool", permissionToolRef,
-			"--mcp-config", permissions.ConfigPath(),
 		)
+	}
+	if mcpConfig == "" {
+		// Every project-controlled execution path off.
+		args = append(args, "--safe-mode", "--strict-mcp-config")
+	} else {
 		// --safe-mode is NOT passed here, and it is not an oversight.
 		// Measured against 2.1.281: --safe-mode disables MCP servers including
-		// ones given with --mcp-config, so the permission prompt tool is not
-		// found and every launch fails outright. The flags that remain were
-		// measured to still cover the execution paths that matter: with
-		// --setting-sources "" a project .claude/settings.json hook does not
-		// run, and with --strict-mcp-config a project .mcp.json server is not
-		// started. What --safe-mode ALSO removed and these do not is
+		// ones given with --mcp-config, so neither the permission prompt tool
+		// nor a remote server the identity brought would be found, and a launch
+		// that needs either would fail outright or run without it. That holds
+		// whichever of the two put a server in the document. The flags that
+		// remain were measured to still cover the execution paths that matter:
+		// with --setting-sources "" a project .claude/settings.json hook does
+		// not run, and with --strict-mcp-config a project .mcp.json server is
+		// not started. What --safe-mode ALSO removed and these do not is
 		// project-supplied PROMPT text — ./CLAUDE.md and .claude/agents — which
 		// the model now reads. That is text, not code: it can steer the model,
-		// and every action it steers the model into that the mode does not
-		// pre-approve now stops at a human instead of being silently denied.
+		// but with a permission server every action it steers the model into
+		// that the mode does not pre-approve stops at a human, and without one
+		// it is denied as before. The remote servers' tools are the exception,
+		// pre-approved below, which is why they are only ever servers the
+		// identity brought and never ones a project names.
 		//
 		// --strict-mcp-config still applies and now carries more weight: it is
-		// what keeps the permission prompt server the ONLY MCP server the child
-		// can reach, rather than one of however many a project asked for.
-		args = append(args, "--strict-mcp-config")
+		// what keeps the document's servers the ONLY ones the child can reach,
+		// rather than some of however many a project asked for.
+		args = append(args, "--mcp-config", mcpConfig, "--strict-mcp-config")
 	}
 	args = append(args,
 		"--disable-slash-commands",
@@ -437,6 +459,14 @@ func (a *Adapter) args(launch harness.Launch, permissions *permissionServer) []s
 	for _, tool := range a.cfg.AllowedTools {
 		if tool = strings.TrimSpace(tool); tool != "" {
 			args = append(args, "--allowedTools", tool)
+		}
+	}
+	// Only when the document exists: a pattern for a server the child was
+	// never given is harmless, but it would be a line in the contract that
+	// describes nothing.
+	if mcpConfig != "" {
+		for _, server := range launch.Credential.MCPServers {
+			args = append(args, "--allowedTools", remoteToolPattern(server))
 		}
 	}
 	return args

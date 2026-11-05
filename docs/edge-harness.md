@@ -318,6 +318,39 @@ number to `attemptEpoch`. The harness may fork the session on resume; the real
 session id is always on the receipt, so the next turn chains onto the one that
 exists rather than one that does not.
 
+## The agent's own MCP server
+
+A harness brings its own tools and ignores the provider's, so a harness-backed
+agent with `spec.selfConfiguration.enabled` gets its self-configuration tools
+another way: every launch attaches one more MCP server, named `agent`, at
+`<hub public URL>/services/providers/agents/mcp`.
+
+- **The provider** (`providers/agents/api/harness_mcp.go`) mints a random
+  bearer per launch and keeps only its SHA-256, bound to one (workspace, agent,
+  run), with a lifetime of the agent's run timeout plus ten minutes (four hours
+  when unset). Presented to `/mcp`, the bearer selects a server that serves
+  exactly that agent's self-configuration tools (prompt, triggers, memory, per
+  `spec.selfConfiguration.scopes`) and its schedule tools, executed as the
+  provider. The same scope, ownership and approval checks as an in-process run
+  apply. A change that `spec.selfConfiguration.approval` holds back becomes a
+  `change` item in the inbox and is applied, re-checked against the agent as it
+  is then, when someone approves it.
+- **The protocol** carries the server inside `HarnessCredential.mcpServers`,
+  so it is dispatch data: stripped before the request is fingerprinted or
+  persisted, held in memory, sent again on every resume. The runner advertises
+  `remote-mcp-v1`; the provider sends the field only to a runner that does,
+  because an older one refuses the unknown field.
+- **Claude Code** gets one `--mcp-config` document per launch (`0600`, in its
+  home, removed afterwards) holding the permission server and the remote one,
+  plus `--allowedTools mcp__<name>`. `--safe-mode` is dropped whenever any
+  server exists, because it disables them all.
+- **Codex** gets `-c mcp_servers.<name>.url=…` and
+  `-c mcp_servers.<name>.bearer_token_env_var=RAILGRID_MCP_TOKEN_<NAME>`, with
+  the token only in the app-server's environment.
+- **Setup:** the agents provider needs `hub.publicURL` (`RAILGRID_HUB_PUBLIC_URL`),
+  the hub address a remote machine can reach. Without it the server is not
+  attached and the harness runs as before.
+
 ## Threat notes
 
 **Who can cause code execution on the machine.** Whoever can set
@@ -379,6 +412,15 @@ that does the job: a fine-grained token limited to the repositories to review
 with `pull_requests: write` and `contents: read`, on a bot account that cannot
 approve or merge, and nothing on the tenant's own account.
 
+**The self-configuration bearer.** The harness can read its own MCP
+configuration, and anything it runs can too, so treat the token as readable by
+whatever the turn executes. It is worth exactly what the server's tools are:
+it reaches no kcp object, serves only the one agent's prompt, triggers, memory
+and schedules, never its tools, autonomy, budget, limits, backend or
+self-configuration settings, and stops working when the agent is recreated,
+self-configuration is turned off, or the session expires. The `Unattended`
+default holds back every change from a turn nobody is watching.
+
 **The model credential.** It is the caller's, it arrives per attempt, and it
 lives in the caller's workspace rather than on the machine. On the host it
 exists only in the runner process's memory, and for Codex in one `0600` file
@@ -386,6 +428,18 @@ inside the harness home for the length of a single launch. Whoever can start an
 attempt can spend that credential's money; whoever owns the machine cannot.
 
 ## Not done
+
+- **Codex against a real binary.** The `-c` overrides, a dashed server name and
+  `bearer_token_env_var` follow codex-rs's config schema but have not been run
+  against a Codex build, and a Codex MCP approval or elicitation request the
+  runner does not recognize would stall the turn.
+- **Self-signed hubs.** The harness's MCP client verifies TLS, so a local dev
+  hub with a self-signed certificate is unreachable unless its CA is trusted
+  on the machine.
+- **Hub log noise.** The hub cannot resolve a harness bearer to a tenant (it is
+  not a kcp credential), forwards the request without tenant headers as it
+  does for any such caller, and logs one "tenant resolve failed" line per
+  call.
 
 - **`KubernetesCluster` edges.** A harness on a cluster edge needs a Deployment,
   not a supervised child, and that story is not written.

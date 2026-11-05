@@ -19,37 +19,31 @@ scoping), and [`security.md`](./security.md) (auth setup).
 
 ---
 
-## Self-hosted actions on the embedded shard
+## Organization-provider actions on embedded and external shards
 
-The embedded shard keeps native authentication and subresource authorization in
-front of self-hosted actions. Its virtual-resource transport resolves the
-consumer's APIBinding and selects the exact organization/export, then checks the
-advertised endpoint against that registration. The hub forwards the authorized
-request through the platform Edges provider's `services/{name}/proxy` verb for
-the hub-owned provider Service. It never dials the hosting cluster's private
-Service DNS from the hub.
+The shard keeps native authentication and subresource authorization in front of
+organization-provider actions. The Hub-owned DataPlaneEndpointSlice names the
+authenticated provider relay. The relay checks the consumer's organization,
+current APIBinding, export identity and declared verb, then reaches the recorded
+Edge Service through the platform Edges provider's `services/{name}/proxy` verb.
+The Hub does not dial the customer's private Service DNS directly.
 
-The outer Edge hop authenticates as the hub. An allowlisted, bounded identity
-envelope carries the original shard-stamped user, groups and extras; no caller
-bearer, cookie, impersonation header or shard credential crosses the tunnel.
-Edges consumes that envelope only for an authenticated `kcp-admin` in
-`system:kcp:admin` addressing a hub-owned provider Service. Other callers are
-refused. The provider receives the original identity and runs its ordinary
-parent-object SubjectAccessReview before acting as itself. Its consumer
-workspace can differ from the workspace hosting the Edge.
+The outer Edge hop authenticates as the Hub. A short-lived signed envelope binds
+the original shard-stamped identity to the exact destination, method, path and
+query. Edges verifies it and strips both the envelope and Hub transport credential
+before forwarding. The provider receives the original identity for its SDK checks.
+Railgrid enforces the hard organization boundary even when customer code bypasses
+those SDK checks. The consumer workspace may differ from the hosting workspace.
 
-This hook is installed by `pkg/hub/kcp/provider_action_transport.go` in the
-embedded kcp server, with the Edge hop in
-`pkg/hub/providers/action_transport.go`. An external shard needs an equivalent
-transport integration; changing its advertised virtual-workspace URL alone does
-not route provider actions through an Edge.
+Embedded kcp uses the in-process transport in
+`pkg/hub/providers/provider_relay_transport.go`. External kcp uses a dedicated
+Hub mTLS listener. Both install `pkg/hub/kcp/orgboundary`; the standalone command
+is `cmd/railgrid-kcp`. See [Edge transport](./byo-provider-edge-transport.md).
 
-Provider workspace provisioning reads before creating to avoid reserving quota
-for an existing object. Native quota admission, delayed quota reclamation and
-APIExport garbage-collection limitations remain documented under
-[Known gaps](./byo-providers.md#known-gaps).
-`make test-provider-action-routing` checks binding isolation, credential stripping
-and the Edge trust boundary using the current dependency versions.
+Persistent-storage quota accounting remains an accepted gap, alongside the
+trusted-browser limitation in [BYO providers](./byo-providers.md#trust-boundary).
+`make test-byo-providers` checks bootstrap, native boundaries, binding isolation,
+relay and existing-provider compatibility against the current dependency pins.
 
 ## Restore-from-reboot summary
 
@@ -700,12 +694,16 @@ MCP servers receive the token by design.
 
 1. `EnsureProviderWorkspace` creates `root:railgrid:providers:{name}`.
 2. `EnsureProviderSA` creates `system:serviceaccount:default:provider`, granted
-   cluster-admin **only inside its own workspace** — its single privilege.
+   the operator-configured platform-provider role inside its own workspace.
 3. `MintProviderKubeconfig` mints a long-lived SA-token kubeconfig pointing at
-   `{hub}/clusters/root:railgrid:providers:{name}`, delivered to the provider as
+   `{hub}/clusters/<provider-cluster-id>`, delivered to the provider as
    the `railgrid-provider-kubeconfig` Secret.
 4. `ApplyAPIExport` registers the provider's permission claims; `ApplyBindGrant`
    lets `system:authenticated` tenants bind the export.
+
+Organization providers instead use restricted runtime RBAC and the Hub bootstrap
+endpoint, with no generic authenticated-user bind grant. See
+[BYO providers](./byo-providers.md).
 
 The provider then builds a multicluster manager off its APIExportEndpointSlice
 (e.g. `providers/code/controller_manager.go`,

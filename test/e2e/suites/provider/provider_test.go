@@ -32,12 +32,15 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/yaml"
+
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // workspacePath is the provider sub-workspace the hub's Provider controller
@@ -541,20 +544,12 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 	t.Logf("tenant workspace = %s", tenantWS)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
 
-	// Clean any stale binding from a previous run.
-	_ = tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.DeleteOptions{})
-	// Wait briefly for delete to settle.
-	for i := 0; i < 5; i++ {
-		_, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "quickstart", metav1.GetOptions{})
-		if apierrors.IsNotFound(err) {
-			break
-		}
-		time.Sleep(time.Second)
-	}
-
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), quickstartBinding(), metav1.CreateOptions{}); err != nil {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	// Start from the same state as a fresh Enable click, then exercise the Hub
+	// endpoint that owns tenant APIBinding creation.
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "quickstart")
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "quickstart", []framework.ProviderPermissionClaim{{
+		Group: "authorization.k8s.io", Resource: "subjectaccessreviews",
+	}}, nil)
 
 	// Wait for Bound.
 	ok := waitForCondition(t, 30*time.Second, func() (bool, string) {
@@ -563,10 +558,18 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	})
 	if !ok {
-		t.Fatal("APIBinding never reached Bound")
+		t.Fatal("APIBinding never reached Bound with valid permission claims")
 	}
 
 	// CR must now be creatable in the tenant workspace. Greeting is
@@ -700,8 +703,8 @@ func TestF2GreetVerbAcrossTwoWorkspaces(t *testing.T) {
 	}
 }
 
-// enableQuickstart creates the APIBinding a tenant's Enable flow would create,
-// as the tenant, and waits for it to bind. Idempotent.
+// enableQuickstart drives the Hub's tenant Enable endpoint and waits for its
+// APIBinding to bind. Idempotent.
 // TestF3GreetVerbThroughKcpSubresource drives the verb straight at kcp, with
 // no hub in front: the generated APIExport declares "greetings/greet" with
 // virtual storage pointing at the provider's DataPlaneEndpointSlice, so a kcp
@@ -857,9 +860,11 @@ func TestF4CrossClaimThroughClaimerVW(t *testing.T) {
 		t.Fatalf("create claimer bind ClusterRoleBinding: %v", err)
 	}
 
-	// 3. The tenant binds the claimer and accepts both claims — the consent
-	//    half; the hub's Enable flow writes exactly this.
+	// 3. The fake claimer is not registered in the Hub catalog, so this fixture
+	//    creates its APIBinding with the kcp-admin test credential. Production
+	//    tenant activation remains covered through the Hub Enable endpoint above.
 	tenant := kcpDynamic(t, workspaceA, staticToken)
+	tenantAdmin := kcpDynamic(t, workspaceA, adminToken)
 	accepted := func(resource string, verbs ...any) map[string]any {
 		return map[string]any{"group": greetingGVR.Group, "resource": resource, "verbs": verbs, "selector": map[string]any{"matchAll": true}, "state": "Accepted"}
 	}
@@ -871,7 +876,7 @@ func TestF4CrossClaimThroughClaimerVW(t *testing.T) {
 			"permissionClaims": []any{accepted("greetings", "get"), accepted("greetings/greet", "create")},
 		},
 	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctx, binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+	if _, err := tenantAdmin.Resource(apiBindingGVR).Create(ctx, binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("bind claimer in workspace A: %v", err)
 	}
 	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
@@ -1059,52 +1064,29 @@ func greetViaKcp(t *testing.T, cluster, token, name string) (int, string) {
 // insecureClient talks to the embedded kcp's self-signed dev certificate.
 var insecureClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // dev cert
 
-// quickstartBinding is the APIBinding the hub's Enable flow writes for
-// quickstart in a tenant workspace: the export reference plus its one
-// tenantScoped claim, accepted — the review API the provider's proxied
-// subresource gate runs through its export virtual workspace. Every place the
-// suite binds a tenant uses this, because a binding created without the
-// accepted claim makes kcp refuse that SubjectAccessReview and turns the
-// shard-forwarded verb into a 500.
-func quickstartBinding() *unstructured.Unstructured {
-	return &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "quickstart"},
-		"spec": map[string]any{
-			"reference": map[string]any{
-				"export": map[string]any{
-					"path": workspacePath,
-					"name": "quickstart.providers.railgrid.ai",
-				},
-			},
-			"permissionClaims": []any{map[string]any{
-				"group":    "authorization.k8s.io",
-				"resource": "subjectaccessreviews",
-				"verbs":    []any{"create"},
-				"selector": map[string]any{"matchAll": true},
-				"state":    "Accepted",
-			}},
-		},
-	}}
-}
-
 func enableQuickstart(t *testing.T, cluster, token string) {
 	t.Helper()
 	tenant := kcpDynamic(t, cluster, token)
-	_, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), quickstartBinding(), metav1.CreateOptions{})
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create APIBinding in %s: %v", cluster, err)
-	}
+	framework.EnableTenantProvider(t, hubURL, tenant, token, "quickstart", []framework.ProviderPermissionClaim{{
+		Group: "authorization.k8s.io", Resource: "subjectaccessreviews",
+	}}, nil)
 	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
 		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	}) {
-		t.Fatalf("APIBinding in %s never reached Bound", cluster)
+		t.Fatalf("APIBinding in %s never reached Bound with valid permission claims", cluster)
 	}
 }
 
@@ -1279,30 +1261,68 @@ func TestF5ClaimsFollowCatalogEntry(t *testing.T) {
 func TestGTenantDisableRemovesCR(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
+	adminTenant := kcpDynamic(t, tenantWS, adminToken)
+	enableQuickstart(t, tenantWS, staticToken)
 
-	// Sanity: binding exists from the previous test.
-	if _, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.GetOptions{}); err != nil {
-		t.Skipf("no quickstart APIBinding to disable (skipping): %v", err)
-	}
-	if err := tenant.Resource(apiBindingGVR).Delete(ctxWithTimeout(t, 5*time.Second), "quickstart", metav1.DeleteOptions{}); err != nil {
-		t.Fatalf("delete APIBinding: %v", err)
-	}
+	// Seed a known object first so the tenant read checks prove that Disable
+	// revokes access to data, rather than succeeding only because the workspace
+	// happens to be empty.
+	const greetingName = "e2e-disable"
+	createGreeting(t, tenantWS, staticToken, greetingName, "must not be visible after disable")
 
-	// After delete, the CR group should disappear from the tenant workspace.
-	ok := waitForCondition(t, 30*time.Second, func() (bool, string) {
-		_, err := tenant.Resource(greetingGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
-		if err == nil {
-			return false, "Greeting list still succeeds"
+	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "quickstart")
+
+	// Disable is asynchronous in kcp. Confirm from the admin client that the
+	// tenant binding is actually gone before checking the tenant-facing surface.
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "quickstart", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return true, "APIBinding removed"
 		}
-		// Either a NotFound from the missing resource or a "no matches" discovery error is acceptable.
-		msg := err.Error()
-		return strings.Contains(msg, "could not find the requested resource") ||
-			strings.Contains(msg, "no matches for kind") ||
-			apierrors.IsNotFound(err), msg
-	})
-	if !ok {
-		t.Fatal("Greeting CR still discoverable after disable")
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "quickstart APIBinding still exists"
+	}) {
+		t.Fatal("quickstart APIBinding still exists after Disable")
 	}
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(greetingGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return true, "Greeting API is no longer served"
+		}
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "Greeting API still served to kcp admin"
+	}) {
+		t.Fatal("Greeting API remained served after the quickstart APIBinding was removed")
+	}
+
+	assertUnavailable := func(operation string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("tenant %s unexpectedly succeeded after Disable; Greeting data must not be readable", operation)
+		}
+		if !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			t.Fatalf("tenant %s returned unexpected error after Disable: %v", operation, err)
+		}
+	}
+	got, err := tenant.Resource(greetingGVR).Get(ctxWithTimeout(t, 5*time.Second), greetingName, metav1.GetOptions{})
+	if err == nil && got != nil {
+		t.Fatalf("tenant read Greeting after Disable returned data: %v", got.Object)
+	}
+	assertUnavailable("get Greeting", err)
+
+	list, err := tenant.Resource(greetingGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
+	if err == nil && list != nil {
+		for _, item := range list.Items {
+			if item.GetName() == greetingName {
+				t.Fatalf("tenant list returned Greeting %q after Disable: %v", greetingName, item.Object)
+			}
+		}
+	}
+	assertUnavailable("list Greetings", err)
 }
 
 func TestHHeartbeatEndpoint(t *testing.T) {

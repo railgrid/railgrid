@@ -25,7 +25,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kcp-dev/embeddedetcd"
@@ -39,17 +38,19 @@ import (
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
 
+	"github.com/railgrid/railgrid/pkg/hub/kcp/orgboundary"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // EmbeddedKCPOptions contains configuration for the embedded kcp server.
 type EmbeddedKCPOptions struct {
-	RootDir          string
-	EtcdClientPort   int // Zero preserves the embedded etcd default.
-	EtcdPeerPort     int // Zero preserves the embedded etcd default.
-	SecurePort       int
-	BindAddress      string
-	BatteriesInclude []string
+	ProviderRelayTransport func(http.RoundTripper) http.RoundTripper
+	RootDir                string
+	EtcdClientPort         int // Zero preserves the embedded etcd default.
+	EtcdPeerPort           int // Zero preserves the embedded etcd default.
+	SecurePort             int
+	BindAddress            string
+	BatteriesInclude       []string
 
 	// TLS certificate/key files for the KCP API server.
 	// When set, KCP uses these instead of auto-generating self-signed certs.
@@ -116,10 +117,8 @@ type EmbeddedKCPOptions struct {
 
 // EmbeddedKCP wraps a kcp server that runs in-process.
 type EmbeddedKCP struct {
-	opts            EmbeddedKCPOptions
-	server          *server.Server
-	actionMu        sync.RWMutex
-	actionTransport func(*http.Request, string, string, string) (*http.Response, error)
+	opts   EmbeddedKCPOptions
+	server *server.Server
 
 	// readyCh is closed when kcp is ready to serve requests.
 	readyCh chan struct{}
@@ -320,7 +319,12 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 		return fmt.Errorf("creating kcp server config: %w", err)
 	}
 
-	e.wrapProviderActions(serverConfig)
+	if e.opts.ProviderRelayTransport != nil && serverConfig.VirtualResources != nil {
+		serverConfig.VirtualResources.Extra.VWClientConfig.Wrap(e.opts.ProviderRelayTransport)
+	}
+	if err := orgboundary.Install(serverConfig); err != nil {
+		return fmt.Errorf("install organization boundary: %w", err)
+	}
 
 	// Complete the config.
 	completedConfig, err := serverConfig.Complete()

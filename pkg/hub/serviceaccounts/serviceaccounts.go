@@ -29,13 +29,9 @@ limitations under the License.
 //	  tenants.railgrid.ai/role:                   admin|member
 //	  tenants.railgrid.ai/last-token-issued-at:   <RFC3339>
 //
-// Plus a ClusterRoleBinding owned by the SA that maps
-// `system:serviceaccount:default:<sa-name>` to `cluster-admin`
-// today; the binding target will switch to the documented
-// `railgrid:workspace:admin` / `railgrid:workspace:member` ClusterRoles
-// when those land. Until then the role annotation carries the user
-// intent so the REST layer can reflect it without breaking the
-// public contract.
+// A ClusterRoleBinding owned by the SA grants the bounded
+// railgrid:tenant-admin role, matching workspace members and migration. The
+// admin/member annotation retains the REST role intent.
 //
 // Tokens are minted via the kube TokenRequest API with audience
 // `railgrid` and a 1-year expiry. Revoke = delete the SA (kills all
@@ -94,6 +90,10 @@ const (
 	// Membership.role; validated at the REST boundary.
 	RoleAdmin  = "admin"
 	RoleMember = "member"
+
+	// WorkspaceMemberClusterRole is the bounded data-administration role
+	// granted to tenant members and delegated provider identities.
+	WorkspaceMemberClusterRole = "railgrid:tenant-admin"
 
 	// TokenAudience is the JWT audience claim we request for SA
 	// tokens. kcp validates against this; the railgrid proxy doesn't
@@ -481,11 +481,8 @@ func buildSAObject(saUUID, displayName, role string, extraAnnos map[string]strin
 	}
 }
 
-// buildCRB constructs the ClusterRoleBinding for an SA. Role today
-// always maps to `cluster-admin`; will switch to
-// `railgrid:workspace:admin` / `railgrid:workspace:member` once those
-// ClusterRoles are bootstrapped (open follow-up flagged in the
-// package doc).
+// buildCRB binds managed accounts to the same bounded role used by workspace
+// membership and legacy migration. Workspace access bootstraps that role.
 func buildCRB(saUUID string, saUID types.UID, role string) *rbacv1.ClusterRoleBinding {
 	return &rbacv1.ClusterRoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -511,7 +508,7 @@ func buildCRB(saUUID string, saUID types.UID, role string) *rbacv1.ClusterRoleBi
 		RoleRef: rbacv1.RoleRef{
 			APIGroup: "rbac.authorization.k8s.io",
 			Kind:     "ClusterRole",
-			Name:     "cluster-admin",
+			Name:     WorkspaceMemberClusterRole,
 		},
 	}
 }

@@ -40,6 +40,8 @@ type MemoryStore struct {
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
 	// mirroring the org/workspace columns the Postgres rows carry.
 	runScopes map[string]Scope // key: scope|runID
+	// mcpSessions are harness MCP sessions by token hash.
+	mcpSessions map[string]HarnessMCPSession
 }
 
 type memorySessionModel struct {
@@ -65,6 +67,7 @@ func NewMemoryStore() *MemoryStore {
 		artifacts:          map[string]runArtifactRow{},
 		agentArtifacts:     map[string]AgentArtifact{},
 		deliveries:         map[string][]WebhookDelivery{},
+		mcpSessions:        map[string]HarnessMCPSession{},
 		runScopes:          map[string]Scope{},
 	}
 }
@@ -1222,6 +1225,37 @@ func (m *MemoryStore) DeleteMemory(_ context.Context, scope Scope, id string) er
 	scope = m.normalizeScopeLocked(scope)
 	delete(m.memories, tenantKey(scope)+"|"+id)
 	return nil
+}
+
+func (m *MemoryStore) PutHarnessMCPSession(_ context.Context, scope Scope, s HarnessMCPSession) error {
+	scope = m.normalizeScope(scope)
+	if err := scope.validate(); err != nil {
+		return err
+	}
+	if s.TokenHash == "" || s.RunID == "" {
+		return fmt.Errorf("harness MCP session needs a token hash and a run ID")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s.Scope = m.normalizeScopeLocked(scope)
+	now := s.CreatedAt
+	for hash, old := range m.mcpSessions {
+		if !old.ExpiresAt.After(now) {
+			delete(m.mcpSessions, hash)
+		}
+	}
+	m.mcpSessions[s.TokenHash] = s
+	return nil
+}
+
+func (m *MemoryStore) GetHarnessMCPSession(_ context.Context, tokenHash string, now time.Time) (HarnessMCPSession, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.mcpSessions[tokenHash]
+	if !ok || !s.ExpiresAt.After(now) {
+		return HarnessMCPSession{}, false, nil
+	}
+	return s, true, nil
 }
 
 func (m *MemoryStore) AddInboxItem(_ context.Context, scope Scope, item InboxItem) error {

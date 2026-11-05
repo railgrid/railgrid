@@ -35,7 +35,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic"
 
+	hubproviders "github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/util/identity"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 var (
@@ -219,57 +221,23 @@ func TestKubectlThroughTunnel(t *testing.T) {
 
 func enableEdges(t *testing.T, tenant dynamic.Interface) {
 	t.Helper()
-	claimVerbs := func(group, resource string, verbs ...string) map[string]any {
-		vs := make([]any, 0, len(verbs))
-		for _, v := range verbs {
-			vs = append(vs, v)
-		}
-		return map[string]any{
-			"group": group, "resource": resource,
-			"verbs":    vs,
-			"selector": map[string]any{"matchAll": true},
-			"state":    "Accepted",
-		}
-	}
-	claim := func(group, resource string) map[string]any {
-		return claimVerbs(group, resource, "get", "list", "watch", "create", "update", "patch", "delete")
-	}
-	binding := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata":   map[string]any{"name": "edges"},
-		"spec": map[string]any{
-			"reference": map[string]any{"export": map[string]any{"path": edgesWorkspacePath, "name": edgesAPIExportName}},
-			// Mirror the claim set the hub's Enable flow accepts for this
-			// provider (providers/edges/manifest.yaml). The two review claims
-			// are what let the provider run delegated TokenReview +
-			// SubjectAccessReview for a CALLER's token against this workspace
-			// through its APIExport virtual workspace — the consumer-egress
-			// authorization path (edgeproxy k8s/ssh and the service proxy).
-			// Without them every user-token request to the data plane is
-			// denied, while agents keep working because join-token
-			// registration never uses the review APIs. Built-in review APIs:
-			// verb create only, no identityHash.
-			"permissionClaims": []any{
-				claim("", "namespaces"), claim("", "serviceaccounts"), claim("", "secrets"),
-				claim("rbac.authorization.k8s.io", "clusterroles"), claim("rbac.authorization.k8s.io", "clusterrolebindings"),
-				claimVerbs("authentication.k8s.io", "tokenreviews", "create"),
-				claimVerbs("authorization.k8s.io", "subjectaccessreviews", "create"),
-			},
-		},
-	}}
-	if _, err := tenant.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
-		t.Fatalf("create APIBinding: %v", err)
-	}
+	// Let the Hub derive claim verbs and selectors from the current manifest.
+	// A hand-written matchAll claim for secrets differs from Edges' declared
+	// label selector and makes the binding unusable for scoped identities.
+	framework.EnableTenantProvider(t, hubURL, tenant, staticToken, "edges", []framework.ProviderPermissionClaim{
+		{Resource: "namespaces"},
+		{Resource: "secrets"},
+		{Group: "authentication.k8s.io", Resource: "tokenreviews"},
+		{Group: "authorization.k8s.io", Resource: "subjectaccessreviews"},
+	}, nil)
 	if !waitFor(t, 30*time.Second, func() (bool, string) {
-		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "edges", metav1.GetOptions{})
+		binding, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "edges", metav1.GetOptions{})
 		if err != nil {
 			return false, err.Error()
 		}
-		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		return hubproviders.BindingReadiness(binding)
 	}) {
-		t.Fatal("edges APIBinding never reached Bound")
+		t.Fatal("edges APIBinding never became ready with valid permission claims")
 	}
 }
 
