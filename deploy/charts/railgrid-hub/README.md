@@ -78,6 +78,7 @@ for the recommended production settings.
 | `idp.issuerURL` | `""` | Canonical OIDC issuer URL used by discovery, token exchange, JWKS, and issuer validation; must be reachable by the hub |
 | `idp.browserAuthURL` | `""` | Optional public HTTPS authorization endpoint for browser redirects when the issuer uses cluster-internal DNS |
 | `idp.clientID` | `railgrid` | OIDC client ID (register as a public client — no client secret needed) |
+| `idp.linkVerifiedEmailIssuers` | `[]` | Issuers whose first-time identities are linked onto the single existing User with the same verified email, so accounts survive an IdP or Dex-connector change (see `docs/oidc-identity-linking.md`) |
 
 ### kcp (Embedded)
 

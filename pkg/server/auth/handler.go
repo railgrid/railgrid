@@ -19,10 +19,8 @@ package auth
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -45,6 +43,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
+	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
 // defaultRateLimit is the default number of requests allowed per minute per
@@ -334,6 +333,8 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 		Email string `json:"email"`
 		Name  string `json:"name"`
 		Sub   string `json:"sub"`
+		// Most IdPs send a JSON bool; a few (e.g. Cognito) send "true".
+		EmailVerified any `json:"email_verified"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		h.logger.Error(err, "failed to parse ID token claims")
@@ -349,7 +350,13 @@ func (h *Handler) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	// patches User.spec.DefaultCluster itself once the Workspace is
 	// Ready. The auth handler just needs to write the User CR; the
 	// controller does the rest asynchronously.
-	userID, err := h.seedUser(ctx, claims.Email, claims.Name, claims.Sub, h.oidcConfig.IssuerURL)
+	userID, err := h.seedUser(ctx, oidcIdentity{
+		Issuer:        h.oidcConfig.IssuerURL,
+		Subject:       claims.Sub,
+		Email:         claims.Email,
+		EmailVerified: claims.EmailVerified == true || claims.EmailVerified == "true",
+		Name:          claims.Name,
+	})
 	if err != nil {
 		h.logger.Error(err, "failed to seed user")
 		http.Error(w, "failed to create user", http.StatusInternalServerError)
@@ -587,19 +594,38 @@ func (h *Handler) RegisterBrowserSessionRoutes(router *mux.Router) {
 	router.HandleFunc("/auth/logout", h.rateLimiter.middleware(h.HandleLogout)).Methods("GET", "POST")
 }
 
-// seedUser creates or updates a User CRD based on OIDC claims.
+// oidcIdentity is the part of a verified ID token that seedUser binds to a
+// User.
+type oidcIdentity struct {
+	Issuer        string
+	Subject       string
+	Email         string
+	EmailVerified bool
+	Name          string
+}
+
+func (id oidcIdentity) provider() tenancyv1alpha1.OIDCProvider {
+	return tenancyv1alpha1.OIDCProvider{
+		Name:       "dex",
+		Issuer:     id.Issuer,
+		ProviderID: id.Subject,
+		Email:      id.Email,
+	}
+}
+
 // adoptInvitedUser finds a pending invited User (matching email,
-// case-insensitive, and crucially NO issuer/sub label yet) and binds it to
+// case-insensitive, and crucially NO IdP identity yet) and binds it to
 // the just-verified OIDC subject: it stamps the sub label, records the OIDC
 // provider, and drops the invited marker. Returns nil when no adoptable user
-// exists. Bound accounts are never matched by email — the sub label is the
-// only credential-grade identity link.
-func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub string) (*tenancyv1alpha1.User, error) {
+// exists. Bound accounts are never matched by email here — an IdP identity
+// label is the only credential-grade identity link; see linkByVerifiedEmail
+// for the opt-in exception.
+func (h *Handler) adoptInvitedUser(ctx context.Context, id oidcIdentity, subHash string) (*tenancyv1alpha1.User, error) {
 	list, err := h.railgridClient.Users().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("listing users for invite adoption: %w", err)
 	}
-	want := strings.ToLower(strings.TrimSpace(email))
+	want := strings.ToLower(strings.TrimSpace(id.Email))
 	if want == "" {
 		return nil, nil
 	}
@@ -608,7 +634,7 @@ func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub stri
 		if strings.ToLower(user.Spec.Email) != want {
 			continue
 		}
-		if user.Labels["tenants.railgrid.ai/sub"] != "" {
+		if identity.HasOIDCIdentity(user) {
 			// Already bound to an IdP subject; email similarity grants
 			// nothing.
 			continue
@@ -616,13 +642,9 @@ func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub stri
 		if user.Labels == nil {
 			user.Labels = map[string]string{}
 		}
-		user.Labels["tenants.railgrid.ai/sub"] = subHash
+		user.Labels[identity.LabelSubject] = subHash
 		delete(user.Labels, "tenants.railgrid.ai/invited")
-		user.Spec.OIDCProviders = append(user.Spec.OIDCProviders, tenancyv1alpha1.OIDCProvider{
-			Name:       "dex",
-			ProviderID: sub,
-			Email:      email,
-		})
+		user.Spec.OIDCProviders = append(user.Spec.OIDCProviders, id.provider())
 		updated, err := h.railgridClient.Users().Update(ctx, user, metav1.UpdateOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("adopting invited user %s: %w", user.Name, err)
@@ -632,36 +654,98 @@ func (h *Handler) adoptInvitedUser(ctx context.Context, email, subHash, sub stri
 	return nil, nil
 }
 
-func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string) (string, error) {
-	// Hash issuer+sub for a label-safe lookup key.
-	hash := sha256.Sum256([]byte(issuer + "/" + sub))
-	subHash := hex.EncodeToString(hash[:])[:63]
-
-	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", subHash)
-	users, err := h.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+// linkByVerifiedEmail links an identity no User is bound to yet onto the one
+// existing, already-bound User with the same email. This is what lets an
+// account survive an IdP change: Dex derives sub from the connector, so a new
+// connector (or a new IdP behind the same hostname) presents every returning
+// person as an unknown subject.
+//
+// It runs only for issuers listed in LinkVerifiedEmailIssuers, only when the
+// token asserts email_verified, and only when exactly one bound User has that
+// email; anything else returns nil and the caller falls back to creating a
+// new User. Listing an issuer therefore trusts it to verify email ownership
+// for every connector it fronts.
+func (h *Handler) linkByVerifiedEmail(ctx context.Context, id oidcIdentity, subHash string) (*tenancyv1alpha1.User, error) {
+	if !id.EmailVerified || !h.linkingEnabled(id.Issuer) {
+		return nil, nil
+	}
+	want := strings.ToLower(strings.TrimSpace(id.Email))
+	if want == "" {
+		return nil, nil
+	}
+	list, err := h.railgridClient.Users().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", fmt.Errorf("listing users: %w", err)
+		return nil, fmt.Errorf("listing users for identity linking: %w", err)
+	}
+	var match *tenancyv1alpha1.User
+	for i := range list.Items {
+		user := &list.Items[i]
+		if strings.ToLower(user.Spec.Email) != want || !identity.HasOIDCIdentity(user) {
+			continue
+		}
+		if user.Labels["tenants.railgrid.ai/auth-type"] == "static-token" {
+			continue
+		}
+		if match != nil {
+			h.logger.Info("not linking OIDC identity: several users share its verified email", "issuer", id.Issuer, "users", []string{match.Name, user.Name})
+			return nil, nil
+		}
+		match = user
+	}
+	if match == nil {
+		return nil, nil
+	}
+	match.Labels[identity.LinkedIdentityLabel(subHash)] = "true"
+	match.Spec.OIDCProviders = append(match.Spec.OIDCProviders, id.provider())
+	updated, err := h.railgridClient.Users().Update(ctx, match, metav1.UpdateOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("linking OIDC identity to user %s: %w", match.Name, err)
+	}
+	h.logger.Info("linked OIDC identity to existing user by verified email", "user", updated.Name, "issuer", id.Issuer)
+	return updated, nil
+}
+
+func (h *Handler) linkingEnabled(issuer string) bool {
+	issuer = strings.TrimSuffix(issuer, "/")
+	for _, allowed := range h.oidcConfig.LinkVerifiedEmailIssuers {
+		if strings.TrimSuffix(strings.TrimSpace(allowed), "/") == issuer {
+			return true
+		}
+	}
+	return false
+}
+
+// seedUser creates or updates a User CRD based on OIDC claims.
+func (h *Handler) seedUser(ctx context.Context, id oidcIdentity) (string, error) {
+	subHash := identity.OIDCSubjectHash(id.Issuer, id.Subject)
+	email, name := id.Email, id.Name
+
+	user, err := identity.FindUserByOIDCSubject(ctx, h.railgridClient, subHash)
+	if err != nil {
+		return "", err
+	}
+	if user == nil {
+		// No account bound to this issuer/subject yet. Before creating one,
+		// try to link it onto an existing account (opt-in per issuer), then
+		// adopt a pending invited User with the same (IdP-verified) email:
+		// invitations pre-provision the account so memberships and app-access
+		// grants written before first sign-in apply immediately. Only users
+		// WITHOUT an IdP identity are adoptable — without linking, an email
+		// match must never re-bind an account that already belongs to
+		// another IdP subject.
+		if user, err = h.linkByVerifiedEmail(ctx, id, subHash); err != nil {
+			return "", err
+		}
+	}
+	if user == nil {
+		if user, err = h.adoptInvitedUser(ctx, id, subHash); err != nil {
+			return "", err
+		}
 	}
 
 	now := metav1.Now()
 
-	if len(users.Items) == 0 {
-		// No account bound to this issuer/subject yet. Before creating one,
-		// adopt a pending invited User with the same (IdP-verified) email:
-		// invitations pre-provision the account so memberships and app-access
-		// grants written before first sign-in apply immediately. Only users
-		// WITHOUT a sub label are adoptable — an email match must never
-		// re-bind an account that already belongs to another IdP subject.
-		if adopted, err := h.adoptInvitedUser(ctx, email, subHash, sub); err != nil {
-			return "", err
-		} else if adopted != nil {
-			users.Items = append(users.Items, *adopted)
-		}
-	}
-
-	if len(users.Items) > 0 {
-		user := &users.Items[0]
-
+	if user != nil {
 		// Reconcile spec fields that may have drifted on legacy users created
 		// before the sub→email RBAC switch. Without this, an old User CRD keeps
 		// railgrid:<sub> in RBACIdentity forever, which no longer matches the
@@ -689,24 +773,18 @@ func (h *Handler) seedUser(ctx context.Context, email, name, sub, issuer string)
 	}
 
 	// Create new user.
-	user := &tenancyv1alpha1.User{
+	user = &tenancyv1alpha1.User{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: "user-",
 			Labels: map[string]string{
-				"tenants.railgrid.ai/sub": subHash,
+				identity.LabelSubject: subHash,
 			},
 		},
 		Spec: tenancyv1alpha1.UserSpec{
-			Email:        email,
-			Name:         name,
-			RBACIdentity: fmt.Sprintf("railgrid:%s", email),
-			OIDCProviders: []tenancyv1alpha1.OIDCProvider{
-				{
-					Name:       "dex",
-					ProviderID: sub,
-					Email:      email,
-				},
-			},
+			Email:         email,
+			Name:          name,
+			RBACIdentity:  fmt.Sprintf("railgrid:%s", email),
+			OIDCProviders: []tenancyv1alpha1.OIDCProvider{id.provider()},
 		},
 	}
 	// Set apiVersion and kind for dynamic client.
