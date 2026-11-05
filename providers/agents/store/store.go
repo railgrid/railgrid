@@ -535,6 +535,10 @@ type InboxItemKind string
 const (
 	InboxKindApproval InboxItemKind = "approval"
 	InboxKindQuestion InboxItemKind = "question"
+	// InboxKindChange is a self-configuration change a harness turn asked for
+	// and the agent's approval setting held back. Unlike an approval it parks
+	// no run: the change itself is the payload, and approving it applies it.
+	InboxKindChange InboxItemKind = "change"
 )
 
 // InboxItemState is the lifecycle of an inbox item.
@@ -560,6 +564,24 @@ type InboxItem struct {
 	Response  string         `json:"response,omitempty"` // answer text, or approver note
 	CreatedAt time.Time      `json:"createdAt"`
 	UpdatedAt time.Time      `json:"updatedAt"`
+}
+
+// HarnessMCPSession binds one harness launch's bearer to the agent it may
+// configure. It is all the token authorizes: the endpoint serves that agent's
+// self-configuration tools and nothing else, so the token reaches no kcp
+// object directly and is worthless anywhere but there.
+type HarnessMCPSession struct {
+	TokenHash string `json:"-"`
+	Scope     Scope  `json:"scope"`
+	ClusterID string `json:"clusterID"`
+	AgentName string `json:"agentName"`
+	AgentUID  string `json:"agentUID"`
+	RunID     string `json:"runID"`
+	// Interactive is the run's approval class: a chat or channel turn has
+	// somebody watching, a schedule or trigger turn does not.
+	Interactive bool      `json:"interactive"`
+	ExpiresAt   time.Time `json:"expiresAt"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 // ToolCall is one audit-log entry and the step record behind the run trace
@@ -870,6 +892,17 @@ type Store interface {
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
 	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error)
+
+	// Harness MCP sessions: the bearer a remote harness turn presents to the
+	// agent's own configuration endpoint. Only the token's SHA-256 is kept.
+	// PutHarnessMCPSession adds a session and drops every expired one. A
+	// run's earlier sessions stay valid until they expire: a permission
+	// resume answers the harness that is already running, without a relaunch,
+	// so that harness still holds the token it started with.
+	// GetHarnessMCPSession finds a live session by hash alone, since the hash
+	// is the credential.
+	PutHarnessMCPSession(ctx context.Context, scope Scope, s HarnessMCPSession) error
+	GetHarnessMCPSession(ctx context.Context, tokenHash string, now time.Time) (HarnessMCPSession, bool, error)
 
 	// Audit + usage.
 	AppendToolCall(ctx context.Context, scope Scope, tc ToolCall) error

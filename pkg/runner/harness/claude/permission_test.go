@@ -256,7 +256,7 @@ func TestBypassPermissionsNeverAsks(t *testing.T) {
 func TestPermissionServerIsReachableOnlyWithItsSecret(t *testing.T) {
 	home := t.TempDir()
 	asker := newRecordingAsker(harness.PermissionVerdict{Allow: true})
-	server, err := startPermissionServer(asker, "attempt-1", home)
+	server, err := startPermissionServer(asker, "attempt-1")
 	if err != nil {
 		t.Fatalf("startPermissionServer: %v", err)
 	}
@@ -274,8 +274,14 @@ func TestPermissionServerIsReachableOnlyWithItsSecret(t *testing.T) {
 		t.Fatal("an unauthenticated caller reached the human")
 	}
 
-	// The configuration the child reads is not world-readable either.
-	info, err := os.Stat(server.ConfigPath())
+	// The configuration the child reads is not world-readable either. That it
+	// does not outlive the launch is pinned by the Run tests in mcp_test.go.
+	configPath, err := writeMCPConfig(home, server, nil)
+	if err != nil {
+		t.Fatalf("writeMCPConfig: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(configPath) })
+	info, err := os.Stat(configPath)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
@@ -285,17 +291,13 @@ func TestPermissionServerIsReachableOnlyWithItsSecret(t *testing.T) {
 	if err := server.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := os.Stat(server.ConfigPath()); !os.IsNotExist(err) {
-		t.Fatal("the permission configuration outlived the launch")
-	}
 }
 
 // TestPermissionServerExposesNothingElse: one tool, and no other method does
 // anything useful.
 func TestPermissionServerExposesNothingElse(t *testing.T) {
-	home := t.TempDir()
 	asker := newRecordingAsker(harness.PermissionVerdict{Allow: true})
-	server, err := startPermissionServer(asker, "attempt-1", home)
+	server, err := startPermissionServer(asker, "attempt-1")
 	if err != nil {
 		t.Fatalf("startPermissionServer: %v", err)
 	}
