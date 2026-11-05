@@ -250,7 +250,10 @@ func TestMain(m *testing.M) {
 		// a declared kcp custom subresource.
 		"RAILGRID_CATALOGENTRY_FILE="+filepath.Join(repoRoot, "providers", "infrastructure", "manifest.yaml"),
 		"RAILGRID_HUB_URL="+hubURL,
-		"RAILGRID_HUB_TOKEN="+staticToken,
+		// No RAILGRID_HUB_TOKEN: hubclient.ResolveHubToken prefers it over the
+		// kubeconfig, and the hub only accepts a heartbeat from the provider's
+		// own service account, so the bearer comes from the runtime kubeconfig
+		// below — the credential the chart actually mounts.
 		"RAILGRID_HUB_INSECURE=true",
 		"RAILGRID_PROVIDER_NAME=infrastructure",
 		"RAILGRID_PROVIDER_KUBECONFIG="+mintedKubeconfig,

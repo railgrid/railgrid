@@ -46,8 +46,7 @@ const (
 //     which every provider already mounts.
 //
 // An empty string with a nil error means neither is configured; callers keep
-// sending unauthenticated beats, which the hub logs (warn) or rejects
-// (enforce). A kubeconfig that is set but cannot be read or carries no bearer
+// sending unauthenticated beats, which the hub rejects. A kubeconfig that is set but cannot be read or carries no bearer
 // token is an error so the misconfiguration surfaces in the provider's logs.
 func ResolveHubToken() (string, error) {
 	if t := strings.TrimSpace(os.Getenv(EnvHubToken)); t != "" {

@@ -60,7 +60,7 @@ func TestHeartbeatEnforceRejectsMissingBearerAndLeavesRegistryUntouched(t *testi
 			return ErrHeartbeatNoBearer
 		}
 		return nil
-	}, HeartbeatAuthEnforce, logr.Discard())
+	}, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestFor("code"))
@@ -82,7 +82,7 @@ func TestHeartbeatEnforceRejectsWrongIdentityWith403(t *testing.T) {
 
 	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 		return fmt.Errorf("%w: authenticated as %q", ErrHeartbeatWrongIdentity, "system:serviceaccount:default:someone-else")
-	}, HeartbeatAuthEnforce, logr.Discard())
+	}, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
@@ -102,7 +102,7 @@ func TestHeartbeatEnforceReports503WhenItCannotVerify(t *testing.T) {
 
 	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 		return fmt.Errorf("%w: kcp down", ErrHeartbeatAuthUnavailable)
-	}, HeartbeatAuthEnforce, logr.Discard())
+	}, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
@@ -112,7 +112,7 @@ func TestHeartbeatEnforceReports503WhenItCannotVerify(t *testing.T) {
 
 	// With no authenticator at all (no kcp) enforce mode must fail closed the
 	// same way rather than silently accepting everything.
-	handler = NewHeartbeatHandler(reg, nil, nil, HeartbeatAuthEnforce, logr.Discard())
+	handler = NewHeartbeatHandler(reg, nil, nil, logr.Discard())
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -129,7 +129,7 @@ func TestHeartbeatEnforceRecordsTheProvidersOwnIdentity(t *testing.T) {
 		token, _ := bearerToken(r)
 		seen = append(seen, name+":"+token)
 		return nil
-	}, HeartbeatAuthEnforce, logr.Discard())
+	}, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "sa-token"))
@@ -141,39 +141,6 @@ func TestHeartbeatEnforceRecordsTheProvidersOwnIdentity(t *testing.T) {
 	}
 	if got, _ := reg.Get("code"); !got.HeartbeatRequired || got.LastHeartbeat.IsZero() {
 		t.Fatalf("authenticated beat not recorded: %+v", got)
-	}
-}
-
-// Warn mode is the bridge for providers on charts that predate the
-// authenticated heartbeat: the beat still counts, but the failure is logged at
-// the default verbosity with the provider name so operators can find them.
-func TestHeartbeatWarnRecordsAndLogsFailures(t *testing.T) {
-	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true})
-
-	var logged []string
-	log := funcr.New(func(prefix, args string) { logged = append(logged, prefix+" "+args) }, funcr.Options{})
-
-	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
-		return ErrHeartbeatNoBearer
-	}, HeartbeatAuthWarn, log)
-
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, heartbeatRequestFor("code"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 in warn mode", rec.Code)
-	}
-	if got, _ := reg.Get("code"); !got.HeartbeatRequired {
-		t.Fatal("warn mode dropped the beat")
-	}
-	var found bool
-	for _, line := range logged {
-		if strings.Contains(line, `"provider"="code"`) && strings.Contains(line, ErrHeartbeatNoBearer.Error()) && strings.Contains(line, "warn") {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("no warn-mode log line naming the provider and reason; got %q", logged)
 	}
 }
 
@@ -210,7 +177,7 @@ func TestHeartbeatEnforceRejectionBodiesRevealNothing(t *testing.T) {
 		reg.Upsert(Provider{Name: provider, EndpointsValid: true, CatalogEntryCluster: cluster})
 		handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 			return tc.err
-		}, HeartbeatAuthEnforce, logr.Discard())
+		}, logr.Discard())
 
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, heartbeatRequestWithBearer(provider, "tok"))
@@ -237,7 +204,7 @@ func TestHeartbeatEnforceHidesUnknownProviders(t *testing.T) {
 	reg.Upsert(Provider{Name: "code", EndpointsValid: true, CatalogEntryCluster: "code-cluster", WorkspaceCluster: "code-cluster"})
 	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 		return ErrHeartbeatTokenRejected
-	}, HeartbeatAuthEnforce, logr.Discard())
+	}, logr.Discard())
 
 	known := httptest.NewRecorder()
 	handler.ServeHTTP(known, heartbeatRequestWithBearer("code", "garbage"))
@@ -267,7 +234,7 @@ func TestHeartbeatEnforceStillReports503BeforeTheClusterIsKnown(t *testing.T) {
 	f := &tokenReviewFake{}
 	now := time.Now()
 	a := newTestTokenReviewAuthenticator(reg, f, &now)
-	handler := NewHeartbeatHandler(reg, nil, a.Authenticate, HeartbeatAuthEnforce, logr.Discard())
+	handler := NewHeartbeatHandler(reg, nil, a.Authenticate, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
@@ -302,7 +269,7 @@ func TestHeartbeatEnforceLogsTheDetailedReason(t *testing.T) {
 		funcr.Options{Verbosity: 1})
 	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
 		return fmt.Errorf("%w: authenticated as %q, want %q", ErrHeartbeatWrongIdentity, "system:serviceaccount:kube-system:sneaky", ProviderSAUsername)
-	}, HeartbeatAuthEnforce, log)
+	}, log)
 
 	handler.ServeHTTP(httptest.NewRecorder(), heartbeatRequestWithBearer("code", "tok"))
 	handler.ServeHTTP(httptest.NewRecorder(), heartbeatRequestWithBearer("no-such-provider", "tok"))
@@ -321,88 +288,6 @@ func TestHeartbeatEnforceLogsTheDetailedReason(t *testing.T) {
 	}
 	if !unknown {
 		t.Errorf("no log line saying the provider is not registered; got %q", logged)
-	}
-}
-
-// Warn mode logs a rejected identity per beat because that is the list of
-// providers an operator has to fix before enforce becomes the default. It must
-// not do the same for "cannot verify": that repeats for every provider on
-// every tick and says nothing about any of them.
-func TestHeartbeatWarnKeepsIdentityFailuresLoudAndVerificationOutagesQuiet(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		err      error
-		wantAtV0 bool
-	}{
-		{"wrong identity", ErrHeartbeatWrongIdentity, true},
-		{"token rejected", ErrHeartbeatTokenRejected, true},
-		{"no bearer", ErrHeartbeatNoBearer, true},
-		{"cannot verify", fmt.Errorf("%w: no kcp configured", ErrHeartbeatAuthUnavailable), false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			reg := NewRegistry()
-			reg.Upsert(Provider{Name: "code", EndpointsValid: true})
-
-			var logged []string
-			// Verbosity 0: only what an operator sees by default.
-			log := funcr.New(func(prefix, args string) { logged = append(logged, prefix+" "+args) },
-				funcr.Options{Verbosity: 0})
-			handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
-				return tc.err
-			}, HeartbeatAuthWarn, log)
-
-			rec := httptest.NewRecorder()
-			handler.ServeHTTP(rec, heartbeatRequestWithBearer("code", "tok"))
-			if rec.Code != http.StatusOK {
-				t.Fatalf("warn mode must still accept the beat; got %d", rec.Code)
-			}
-
-			var sawAcceptedWarning bool
-			for _, line := range logged {
-				if strings.Contains(line, "accepting because --provider-heartbeat-auth=warn") {
-					sawAcceptedWarning = true
-				}
-			}
-			if sawAcceptedWarning != tc.wantAtV0 {
-				t.Errorf("logged at default verbosity = %v, want %v; got %q", sawAcceptedWarning, tc.wantAtV0, logged)
-			}
-		})
-	}
-}
-
-// The quiet case must still be readable when an operator turns verbosity up.
-func TestHeartbeatWarnVerificationOutageLogsAtV1(t *testing.T) {
-	reg := NewRegistry()
-	reg.Upsert(Provider{Name: "code", EndpointsValid: true})
-
-	var logged []string
-	log := funcr.New(func(prefix, args string) { logged = append(logged, prefix+" "+args) },
-		funcr.Options{Verbosity: 1})
-	handler := NewHeartbeatHandler(reg, nil, func(context.Context, *http.Request, string) error {
-		return fmt.Errorf("%w: no kcp configured", ErrHeartbeatAuthUnavailable)
-	}, HeartbeatAuthWarn, log)
-
-	handler.ServeHTTP(httptest.NewRecorder(), heartbeatRequestWithBearer("code", "tok"))
-
-	for _, line := range logged {
-		if strings.Contains(line, "accepting because --provider-heartbeat-auth=warn") && strings.Contains(line, "no kcp configured") {
-			return
-		}
-	}
-	t.Errorf("no V(1) line carrying the verification-unavailable reason; got %q", logged)
-}
-
-func TestParseHeartbeatAuthMode(t *testing.T) {
-	for in, want := range map[string]HeartbeatAuthMode{"warn": HeartbeatAuthWarn, " Enforce ": HeartbeatAuthEnforce} {
-		got, err := ParseHeartbeatAuthMode(in)
-		if err != nil || got != want {
-			t.Fatalf("ParseHeartbeatAuthMode(%q) = %q, %v; want %q", in, got, err, want)
-		}
-	}
-	for _, in := range []string{"", "off", "audit"} {
-		if _, err := ParseHeartbeatAuthMode(in); err == nil {
-			t.Fatalf("ParseHeartbeatAuthMode(%q) accepted", in)
-		}
 	}
 }
 

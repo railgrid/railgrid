@@ -34,33 +34,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
-// HeartbeatAuthMode selects what the heartbeat handler does when a beat fails
-// authentication.
-type HeartbeatAuthMode string
-
-const (
-	// HeartbeatAuthWarn records the beat anyway and logs the failure with the
-	// provider name and reason. It is the default for this release so that
-	// providers deployed from charts that predate the authenticated heartbeat
-	// keep working while operators roll them forward; the next release flips
-	// the default to HeartbeatAuthEnforce.
-	HeartbeatAuthWarn HeartbeatAuthMode = "warn"
-	// HeartbeatAuthEnforce rejects unauthenticated beats. A provider that
-	// cannot prove it holds its own service-account token goes stale after
-	// HeartbeatTTL, which is the correct outcome.
-	HeartbeatAuthEnforce HeartbeatAuthMode = "enforce"
-)
-
-// ParseHeartbeatAuthMode validates a --provider-heartbeat-auth flag value.
-func ParseHeartbeatAuthMode(s string) (HeartbeatAuthMode, error) {
-	switch m := HeartbeatAuthMode(strings.ToLower(strings.TrimSpace(s))); m {
-	case HeartbeatAuthWarn, HeartbeatAuthEnforce:
-		return m, nil
-	default:
-		return "", fmt.Errorf("invalid provider heartbeat auth mode %q (want %q or %q)", s, HeartbeatAuthWarn, HeartbeatAuthEnforce)
-	}
-}
-
 // HeartbeatAuthenticator decides whether r is allowed to heartbeat on behalf
 // of providerName. A nil error accepts the beat. Errors wrap one of the
 // ErrHeartbeat* sentinels so the handler can pick the status code; anything
@@ -362,8 +335,8 @@ func bearerToken(r *http.Request) (string, bool) {
 }
 
 // heartbeatAuthFailureBody is the whole body the handler returns for a beat it
-// refused in enforce mode: one short string per status class, and nothing that
-// varies with the hub's state.
+// refused: one short string per status class, and nothing that varies with
+// the hub's state.
 //
 // The authenticator's errors are written for the log, not for the wire — they
 // name the logical cluster the TokenReview was issued in, the service account
@@ -384,7 +357,7 @@ func heartbeatAuthFailureBody(status int) string {
 }
 
 // heartbeatAuthStatus maps an authenticator error to the HTTP status the
-// handler returns in enforce mode.
+// handler returns.
 func heartbeatAuthStatus(err error) int {
 	switch {
 	case errors.Is(err, ErrHeartbeatNoBearer), errors.Is(err, ErrHeartbeatTokenRejected):

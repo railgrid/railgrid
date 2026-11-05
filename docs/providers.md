@@ -832,11 +832,9 @@ Content-Type: application/json
   org provider cannot update a platform provider or another org's status.
 - Authenticates the provider's own service account
   (`system:serviceaccount:default:provider`) in the resolved workspace, using
-  the token from its Hub-issued kubeconfig. Organization providers require
-  `--provider-heartbeat-auth=enforce`; warn mode retains legacy platform-only
-  behavior and is not sufficient for BYO enrollment. In enforce mode missing
-  or invalid credentials are rejected. Authenticated beats and valid endpoints
-  determine readiness; a started heartbeat becomes stale after its TTL.
+  the token from its Hub-issued kubeconfig. Missing or invalid credentials
+  are rejected. Authenticated beats and valid endpoints determine readiness;
+  a started heartbeat becomes stale after its TTL.
 - A rejection body says only which class of failure it was (`heartbeat not
   authenticated` / `forbidden` / `heartbeat verification unavailable`); the
   reason — logical cluster, expected service account, TokenReview error —

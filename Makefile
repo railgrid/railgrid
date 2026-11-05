@@ -357,11 +357,9 @@ test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening v
 			echo "default values rendered a provider hardening flag; they must leave the binary default"; exit 1; \
 		fi; \
 		helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" \
-			--set hub.security.providerHeartbeatAuth=enforce \
 			--set hub.security.providerDelegatedTokens=platform \
 			--set 'hub.security.providerDelegatedTokensExclude={edges,mcp}' \
 			--set hub.security.providerWorkspaceClusterAdmin=false >"$$tmp_dir/hardened.yaml"; \
-		grep -q -- '- --provider-heartbeat-auth=enforce$$' "$$tmp_dir/hardened.yaml"; \
 		grep -q -- '- --provider-delegated-tokens=platform$$' "$$tmp_dir/hardened.yaml"; \
 		grep -q -- '- --provider-delegated-tokens-exclude=edges$$' "$$tmp_dir/hardened.yaml"; \
 		grep -q -- '- --provider-delegated-tokens-exclude=mcp$$' "$$tmp_dir/hardened.yaml"; \
@@ -376,9 +374,6 @@ test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening v
 			--set 'hub.extraArgs={--providers=edges\,infrastructure,--disable-token-login}' >"$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--providers=edges,infrastructure"$$' "$$tmp_dir/extra.yaml"; \
 		grep -q -- '- "--disable-token-login"$$' "$$tmp_dir/extra.yaml"; \
-		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerHeartbeatAuth=maybe >/dev/null 2>&1; then \
-			echo "invalid providerHeartbeatAuth unexpectedly rendered"; exit 1; \
-		fi; \
 		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set hub.security.providerDelegatedTokens=some >/dev/null 2>&1; then \
 			echo "invalid providerDelegatedTokens unexpectedly rendered"; exit 1; \
 		fi; \
@@ -392,8 +387,8 @@ test-hub-chart: ## Lint and render the railgrid-hub chart's provider hardening v
 		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--dev-mode}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating a modelled flag unexpectedly rendered"; exit 1; \
 		fi; \
-		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-heartbeat-auth=enforce}' >/dev/null 2>&1; then \
-			echo "extraArgs repeating --provider-heartbeat-auth unexpectedly rendered"; exit 1; \
+		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-delegated-tokens=platform}' >/dev/null 2>&1; then \
+			echo "extraArgs repeating --provider-delegated-tokens unexpectedly rendered"; exit 1; \
 		fi; \
 		if helm template railgrid "$$chart" --set hub.hubExternalURL="$$url" --set 'hub.extraArgs={--provider-delegated-tokens=platform}' >/dev/null 2>&1; then \
 			echo "extraArgs repeating --provider-delegated-tokens unexpectedly rendered"; exit 1; \
@@ -2035,7 +2030,7 @@ run-provider-infrastructure: build-infrastructure-provider app-studio-preview-br
 	RAILGRID_PROVIDER_NAME=infrastructure \
 	RAILGRID_CATALOGENTRY_FILE=$(abspath $(KROMC_MANIFEST)) \
 	KRO_KUBECONFIG=$${KRO_KUBECONFIG:-$$( [ -f "$(KRO_KIND_KUBECONFIG)" ] && echo "$(KRO_KIND_KUBECONFIG)" )} \
-	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_RUNTIME_KUBECONFIG)} \
+	RAILGRID_PROVIDER_KUBECONFIG=$${RAILGRID_PROVIDER_KUBECONFIG:-$(INFRASTRUCTURE_PROVIDER_KUBECONFIG)} \
 	RAILGRID_APP_BASE_DOMAIN=$${RAILGRID_APP_BASE_DOMAIN:-apps.127.0.0.1.sslip.io} \
 	RAILGRID_GATEWAY_NAME=$${RAILGRID_GATEWAY_NAME:-cloudflare-tunnel} \
 	RAILGRID_GATEWAY_NAMESPACE=$${RAILGRID_GATEWAY_NAMESPACE:-cfgate-system} \

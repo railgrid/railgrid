@@ -29,10 +29,6 @@ import (
 )
 
 func (s *Server) orgProviderRuntimeAvailable(context.Context) error {
-	mode, err := providers.ParseHeartbeatAuthMode(s.opts.ProviderHeartbeatAuth)
-	if err != nil || mode != providers.HeartbeatAuthEnforce {
-		return fmt.Errorf("organization providers require --provider-heartbeat-auth=enforce (hub.security.providerHeartbeatAuth); legacy warn mode permits unauthenticated platform status writes")
-	}
 	if s.ProviderRelayBaseURL() == "" {
 		return fmt.Errorf("organization providers require an authenticated shard relay; configure hub.providerRelay for external kcp")
 	}

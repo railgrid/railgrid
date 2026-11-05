@@ -47,7 +47,7 @@ func TestHeartbeatIsPersistedForOtherReplicas(t *testing.T) {
 	handler := NewHeartbeatHandler(reg, func(_ context.Context, name, version string, _ time.Time) error {
 		recorded = append(recorded, name+"@"+version)
 		return nil
-	}, allowAllHeartbeats, HeartbeatAuthEnforce, logr.Discard())
+	}, allowAllHeartbeats, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost,
@@ -75,7 +75,7 @@ func TestHeartbeatPersistIsThrottled(t *testing.T) {
 	handler := NewHeartbeatHandler(reg, func(context.Context, string, string, time.Time) error {
 		writes++
 		return nil
-	}, allowAllHeartbeats, HeartbeatAuthEnforce, logr.Discard())
+	}, allowAllHeartbeats, logr.Discard())
 
 	for range 5 {
 		rec := httptest.NewRecorder()
@@ -97,7 +97,7 @@ func TestHeartbeatFailsWhenPersistFails(t *testing.T) {
 
 	handler := NewHeartbeatHandler(reg, func(context.Context, string, string, time.Time) error {
 		return fmt.Errorf("kcp unavailable")
-	}, allowAllHeartbeats, HeartbeatAuthEnforce, logr.Discard())
+	}, allowAllHeartbeats, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestFor("cost"))
@@ -107,46 +107,38 @@ func TestHeartbeatFailsWhenPersistFails(t *testing.T) {
 }
 
 func TestHeartbeatUnknownProviderIsNotPersisted(t *testing.T) {
-	// Enforce mode hides the fact that the name is unknown behind the same 401
-	// a bad credential gets (see TestHeartbeatEnforceHidesUnknownProviders);
-	// warn mode, which accepts unauthenticated beats anyway, says 404.
-	for mode, want := range map[HeartbeatAuthMode]int{
-		HeartbeatAuthEnforce: http.StatusUnauthorized,
-		HeartbeatAuthWarn:    http.StatusNotFound,
-	} {
-		reg := NewRegistry()
-		persisted := false
-		handler := NewHeartbeatHandler(reg, func(context.Context, string, string, time.Time) error {
-			persisted = true
-			return nil
-		}, allowAllHeartbeats, mode, logr.Discard())
+	// The fact that the name is unknown hides behind the same 401 a bad
+	// credential gets (see TestHeartbeatEnforceHidesUnknownProviders).
+	reg := NewRegistry()
+	persisted := false
+	handler := NewHeartbeatHandler(reg, func(context.Context, string, string, time.Time) error {
+		persisted = true
+		return nil
+	}, allowAllHeartbeats, logr.Discard())
 
-		rec := httptest.NewRecorder()
-		handler.ServeHTTP(rec, heartbeatRequestFor("nope"))
-		if rec.Code != want {
-			t.Fatalf("%s: status = %d, want %d", mode, rec.Code, want)
-		}
-		if persisted {
-			t.Fatalf("%s: persisted a heartbeat for a provider that is not registered", mode)
-		}
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, heartbeatRequestFor("nope"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if persisted {
+		t.Fatal("persisted a heartbeat for a provider that is not registered")
 	}
 }
 
 // An unknown name must be turned away before the authenticator runs: the
-// TokenReview round trip and, in warn mode, the log line per beat are work an
-// anonymous caller would otherwise drive at will.
+// TokenReview round trip is work an anonymous caller would otherwise drive at
+// will.
 func TestHeartbeatUnknownProviderIsNotAuthenticated(t *testing.T) {
-	for _, mode := range []HeartbeatAuthMode{HeartbeatAuthEnforce, HeartbeatAuthWarn} {
-		calls := 0
-		handler := NewHeartbeatHandler(NewRegistry(), nil, func(context.Context, *http.Request, string) error {
-			calls++
-			return nil
-		}, mode, logr.Discard())
+	calls := 0
+	handler := NewHeartbeatHandler(NewRegistry(), nil, func(context.Context, *http.Request, string) error {
+		calls++
+		return nil
+	}, logr.Discard())
 
-		handler.ServeHTTP(httptest.NewRecorder(), heartbeatRequestWithBearer("nope", "tok"))
-		if calls != 0 {
-			t.Fatalf("%s: authenticator ran %d times for an unregistered provider, want 0", mode, calls)
-		}
+	handler.ServeHTTP(httptest.NewRecorder(), heartbeatRequestWithBearer("nope", "tok"))
+	if calls != 0 {
+		t.Fatalf("authenticator ran %d times for an unregistered provider, want 0", calls)
 	}
 }
 
@@ -154,7 +146,7 @@ func TestHeartbeatUnknownProviderIsNotAuthenticated(t *testing.T) {
 func TestHeartbeatWithoutRecorder(t *testing.T) {
 	reg := NewRegistry()
 	reg.Upsert(Provider{Name: "cost", EndpointsValid: true})
-	handler := NewHeartbeatHandler(reg, nil, allowAllHeartbeats, HeartbeatAuthEnforce, logr.Discard())
+	handler := NewHeartbeatHandler(reg, nil, allowAllHeartbeats, logr.Discard())
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, heartbeatRequestFor("cost"))
