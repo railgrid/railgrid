@@ -964,3 +964,21 @@ test('a stale projection cannot roll back the status of a same-ID action from a 
   const merged = mergeAssistantThreadMessages(current, projected)[0]
   assert.deepEqual(merged.metadata.assistantActionFeed, current[0].metadata.assistantActionFeed)
 })
+
+test('preserves per-message senders across thread replay without guessing legacy authors', async () => {
+  const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { formatAIMessageAuthor } = await vite.ssrLoadModule('/src/agentkit/conversation.ts')
+  const messages = assistantThreadItemsToMessages([
+    { id: 'alice', actorID: 'railgrid:alice@example.com', type: 'userMessage', status: 'completed', content: 'First', sequence: 1, createdAt: '2026-11-05T00:00:00Z' },
+    { id: 'bob', actorID: 'railgrid:bob@example.com', type: 'userMessage', status: 'completed', content: 'Second', sequence: 2, createdAt: '2026-11-05T00:01:00Z' },
+    { id: 'legacy', type: 'userMessage', status: 'completed', content: 'Older message', sequence: 3, createdAt: '2026-11-05T00:02:00Z' },
+  ], 'demo')
+  assert.deepEqual(messages.map(message => formatAIMessageAuthor(message.actorID)), ['alice@example.com', 'bob@example.com', 'Unknown sender'])
+})
+
+test('attributes optimistic user messages immediately when an account has no email', async () => {
+  const { optimisticAIMessageActor } = await vite.ssrLoadModule('/src/agentkit/conversation.ts')
+  assert.equal(optimisticAIMessageActor({ email: '', userId: 'static-user-alice' }), 'static-user-alice')
+  assert.equal(optimisticAIMessageActor({ email: 'alice@example.com', userId: 'user-alice' }), 'alice@example.com')
+  assert.equal(optimisticAIMessageActor(null), 'You')
+})

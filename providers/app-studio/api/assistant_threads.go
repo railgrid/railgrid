@@ -231,6 +231,7 @@ type assistantThreadInterruptRequest struct {
 }
 
 type assistantThreadItem struct {
+	ActorID            string                 `json:"actorID,omitempty"`
 	ID                 string                 `json:"id"`
 	TurnID             string                 `json:"turnID,omitempty"`
 	Type               string                 `json:"type"`
@@ -1110,7 +1111,7 @@ func (s *Server) startProjectAssistantThreadExecution(w http.ResponseWriter, r *
 				Mode: created.Mode, ApprovalMode: created.ApprovalMode, Status: store.AssistantTurnStatusInProgress, CreatedAt: now, UpdatedAt: now}
 			turnStartedPayload := map[string]any{"turn": canonicalTurn}
 			turnPayload, _ := json.Marshal(turnStartedPayload)
-			userItem := assistantThreadItem{ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSelectionDataWithParts(selectedSkills, selectedContextResources, request.ContentParts), CreatedAt: now}
+			userItem := assistantThreadItem{ActorID: id.user, ID: created.UserMessageID, TurnID: created.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: request.Content, Data: projectAssistantThreadSelectionDataWithParts(selectedSkills, selectedContextResources, request.ContentParts), CreatedAt: now}
 			userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 			assistantItem := assistantThreadAgentMessageItem(canonicalTurn, created, "in_progress", "", now, nil)
 			assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -1239,7 +1240,7 @@ func (s *Server) repairProjectAssistantThreadTurn(ctx context.Context, scope sto
 		UpdatedAt:           now,
 	}
 	turnPayload, _ := json.Marshal(map[string]any{"turn": turn})
-	userItem := assistantThreadItem{ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, Data: projectAssistantThreadSelectionDataWithParts(projectAssistantSkillReceiptsFromRunAudit(run), projectAssistantContextResourceReceiptsFromRunAudit(run), projectAssistantContentPartsFromRunAudit(run)), CreatedAt: user.CreatedAt}
+	userItem := assistantThreadItem{ActorID: user.ActorID, ID: user.ID, TurnID: turn.ID, Type: assistantThreadEventUserMessage, Status: "completed", Content: user.Content, Data: projectAssistantThreadSelectionDataWithParts(projectAssistantSkillReceiptsFromRunAudit(run), projectAssistantContextResourceReceiptsFromRunAudit(run), projectAssistantContentPartsFromRunAudit(run)), CreatedAt: user.CreatedAt}
 	userPayload, _ := json.Marshal(map[string]any{"item": userItem})
 	assistantItem := assistantThreadAgentMessageItem(turn, run, "in_progress", assistant.Content, assistant.CreatedAt, assistant.Metadata)
 	assistantPayload, _ := json.Marshal(map[string]any{"item": assistantItem})
@@ -1520,7 +1521,7 @@ func assistantThreadSteeringUserMessageItem(user store.Message, turnID string) a
 		data, _ = json.Marshal(map[string]string{"clientUserMessageID": strings.TrimSpace(requestID)})
 	}
 	return assistantThreadItem{
-		ID: user.ID, TurnID: turnID, Type: assistantThreadEventUserMessage,
+		ActorID: user.ActorID, ID: user.ID, TurnID: turnID, Type: assistantThreadEventUserMessage,
 		Status: "completed", Content: user.Content, Data: data, CreatedAt: user.CreatedAt,
 	}
 }
