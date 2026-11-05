@@ -225,8 +225,8 @@ func TestTenancySATokenCrossWorkspace(t *testing.T) {
 // Two-user membership-gated kcp proxy isolation: each user reaches only the
 // workspace clusters their UserMembershipIndex covers, cross access is refused
 // until granted, and bare paths are rejected. OIDC-only (needs two identities).
-func TestHubProxyMembershipIsolation(t *testing.T) {
-	testenv.Test(t, cases.HubProxyMembershipIsolation())
+func TestWorkspaceAccessIsolation(t *testing.T) {
+	testenv.Test(t, cases.WorkspaceAccessIsolation())
 }
 
 // TestOIDCTokenIssuerMatchesDiscovery verifies that the hub's OIDC issuer URL

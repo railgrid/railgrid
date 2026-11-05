@@ -693,7 +693,7 @@ func (s *Server) Run(ctx context.Context) error {
 			verifier = authHandler.Verifier()
 		}
 		var err error
-		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, bootstrapper, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.DevMode)
+		kcpProxy, err = proxy.NewKCPProxy(kcpConfig, verifier, userClient, s.opts.StaticAuthTokens, s.opts.HubExternalURL, s.opts.DevMode)
 		if err != nil {
 			return fmt.Errorf("creating kcp proxy: %w", err)
 		}
@@ -970,7 +970,7 @@ func (s *Server) Run(ctx context.Context) error {
 				PlatformDefault: s.opts.ProviderHubAccessPlatformDefault,
 			}
 			membershipResolver := hubaccess.DelegatedUserResolver(userResolver)
-			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys)
+			providerTenantResolver := newKCPTenantResolver(kcpProxy, userClient, bootstrapper, delegatedProofKeys, kcpConfig)
 			backendProxy.SetTenantResolver(providerTenantResolver)
 			// The UI proxy serves an org-owned bundle only against a grant the
 			// portal obtained as the user. Minting and redemption share the
@@ -979,9 +979,11 @@ func (s *Server) Run(ctx context.Context) error {
 			// for an asset fetch as for an API call.
 			providerUIGrantHandler.SetTenantResolver(providerTenantResolver)
 			uiProxy.SetUIGrantKeys(delegatedProofKeys)
+			// Redemption asks kcp whether the user may still enter the
+			// workspace, the same review kcp applies on /clusters/{id}.
 			uiProxy.SetUIGrantAuthorizer(func(ctx context.Context, user, org, workspace string) bool {
 				cluster, err := bootstrapper.GetChildWorkspaceClusterName(ctx, org, workspace)
-				return err == nil && kcpProxy.AuthorizeCluster(ctx, user, cluster)
+				return err == nil && providerTenantResolver.AuthorizeCluster(ctx, user, cluster)
 			})
 			uiProxy.SetDelegatedTokenIssuer(serviceaccounts.NewManager(bootstrapper, delegatedProofKeys))
 			// Inject X-Railgrid-Cluster (the resolved tenant's logical-cluster
@@ -1606,11 +1608,10 @@ func (s *Server) Run(ctx context.Context) error {
 			router.ServeHTTP(w, r)
 			return
 		}
-		// 2. kcp API paths — forwarded unchanged to kcpProxy.
+		// 2. kcp API paths — forwarded to kcp byte-for-byte; kcp
+		//    authenticates the bearer and authorizes with its own RBAC.
 		//  - /clusters/<cluster>/...          user kubeconfig / kubectl-ws
-		//  - /apis/<group>/... or /api/v1/... agent's bare kcp calls
-		//    (serveServiceAccount prepends /clusters/<name> from SA token claim),
-		//    including the bare /api and /apis discovery roots
+		//  - /api, /apis and anything under them, which kcp answers itself
 		//  - /services/apiexport/...          APIExport virtual workspace, so a
 		//    provider running outside the platform can watch its own export.
 		//    Reached only after the explicit routes above declined it, so the

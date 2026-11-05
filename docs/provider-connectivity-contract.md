@@ -32,13 +32,13 @@ The outer Edge hop authenticates as the Hub. A short-lived signed envelope binds
 the original shard-stamped identity to the exact destination, method, path and
 query. Edges verifies it and strips both the envelope and Hub transport credential
 before forwarding. The provider receives the original identity for its SDK checks.
-Railgrid enforces the hard organization boundary even when customer code bypasses
-those SDK checks. The consumer workspace may differ from the hosting workspace.
+The relay's organization and binding checks hold even when customer code
+bypasses those SDK checks; inside kcp, ordinary RBAC and token scoping are the
+boundary. The consumer workspace may differ from the hosting workspace.
 
 Embedded kcp uses the in-process transport in
 `pkg/hub/providers/provider_relay_transport.go`. External kcp uses a dedicated
-Hub mTLS listener. Both install `pkg/hub/kcp/orgboundary`; the standalone command
-is `cmd/railgrid-kcp`. See [Edge transport](./byo-provider-edge-transport.md).
+Hub mTLS listener on stock kcp. See [Edge transport](./byo-provider-edge-transport.md).
 
 Persistent-storage quota accounting remains an accepted gap, alongside the
 trusted-browser limitation in [BYO providers](./byo-providers.md#trust-boundary).
@@ -546,7 +546,7 @@ Two proxies back every provider, defined in
 |-------|------|----------------|
 | **UI proxy** (`NewUIProxy`, `proxy.go:52`) | `/ui/providers/{name}/*` | Static assets only. Injects `X-Railgrid-Base-Path`. **No token forwarded.** First-party providers are served from an embedded FS (`LocalUIAssets`). |
 | **Backend proxy** (`NewBackendProxy`, `proxy.go:92`) | `/services/providers/{name}/*` — MCP, browser OAuth, signed webhooks, the agent tunnel, health and the hub-only `/workload-identities/*`; **no verbs** | **Forwards the caller's `Authorization` header as-is** for a platform provider (a delegated ServiceAccount token replaces it for an org-owned one, or when the delegation policy selects it), and additionally injects `X-Railgrid-User` plus the caller's resolved workspace's kcp logical-cluster ID as both `X-Railgrid-Tenant` and `X-Railgrid-Cluster`. Inbound `X-Railgrid-*` and `X-Remote-*` headers are **always stripped** first (anti-spoofing). |
-| **kcp proxy** (`pkg/server/proxy`) | `/clusters/{id}/…` | Membership-gated, forwarded to kcp **as the caller**. Every declared verb is reached here as `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`; the shard authorizes it and reverse-proxies it to the provider with the caller's identity stamped. The hub never sees the verb as such. |
+| **kcp front door** (`pkg/server/proxy`) | `/clusters/{id}/…` | Forwarded to kcp unchanged, **as the caller**; kcp's RBAC (the workspace `access` gate) decides who enters a workspace. Every declared verb is reached here as `/clusters/{id}/apis/{group}/{version}/{resource}/{name}/{verb}`; the shard authorizes it and reverse-proxies it to the provider with the caller's identity stamped. The hub never sees the verb as such. |
 
 The identity injected by the backend proxy is resolved by the
 **TenantResolver** ([`pkg/hub/provider_tenant_resolver.go`](../pkg/hub/provider_tenant_resolver.go),
@@ -1167,7 +1167,7 @@ is not.
 | WebSocket bearer subprotocol | `pkg/server/proxy/proxy.go` `websocketBearer` |
 | Shard request deadline for streaming verbs | `pkg/hub/kcp/embedded.go` `providerVerbRequestTimeout` |
 | Tenant resolution (token → workspace path) | `pkg/hub/provider_tenant_resolver.go:104` |
-| kcp proxy (membership-gated, caller-scoped) | `pkg/server/proxy/proxy.go`, `pkg/server/proxy/authorizer.go` |
+| kcp front door (transparent, caller-scoped; kcp RBAC decides) | `pkg/server/proxy/proxy.go` |
 | Provider provisioning (workspace, SA, kubeconfig) | `pkg/hub/providers/provision.go` |
 | Portal login / token storage | `portal/src/pages/LoginPage.vue`, `portal/src/auth/token.ts` |
 | Host-owned provider fetch (allowlist + bearer) | `portal/src/providers/providerFetch.ts` |
