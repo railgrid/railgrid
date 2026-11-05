@@ -2,7 +2,7 @@
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { Search, ChevronRight, ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type SessionModelPreferences } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
@@ -143,6 +143,67 @@ function handoffKey(): string {
   return JSON.stringify([authority.userKey, authority.tenantKey, props.name])
 }
 function offerDraft(): void { offerChatDraft(handoffKey(), draft.value) }
+// The host owns the overlay header; the provider owns chat data and transitions.
+const overlayChatsVisible = ref(false)
+const overlayChatSearch = ref('')
+const overlayChatSearchInput = ref<HTMLInputElement | null>(null)
+const overlayDrafts = new Map<string, string>()
+const overlayScrollPositions = new Map<string, number>()
+const filteredOverlayChats = computed(() => conversationItems.value.filter(item =>
+  (item.title || '').toLocaleLowerCase().includes(overlayChatSearch.value.trim().toLocaleLowerCase())))
+function overlayChatGroup(item: AIConversationItem): string {
+  const date = new Date(item.updatedAt || item.createdAt || '')
+  if (Number.isNaN(date.getTime())) return 'Recent'
+  const today = new Date()
+  const yesterday = new Date()
+  yesterday.setDate(today.getDate() - 1)
+  return date.toDateString() === today.toDateString() ? 'Today'
+    : date.toDateString() === yesterday.toDateString() ? 'Yesterday' : 'Earlier'
+}
+const overlayChatGroups = computed(() => {
+  const groups = new Map<string, AIConversationItem[]>()
+  for (const item of filteredOverlayChats.value) {
+    const label = overlayChatGroup(item)
+    groups.set(label, [...(groups.get(label) || []), item])
+  }
+  return [...groups].map(([label, items]) => ({ label, items }))
+})
+function publishOverlayView(): void {
+  if (props.overlay) chatHost?.value?.dispatchEvent(new CustomEvent('railgrid-overlay-view', {
+    detail: { chats: overlayChatsVisible.value, title: activeSessionLabel.value },
+  }))
+}
+function showOverlayChats(): void {
+  saveOverlayConversation()
+  overlayChatsVisible.value = true
+  void loadSessions()
+  void nextTick(() => overlayChatSearchInput.value?.focus())
+}
+function saveOverlayConversation(): void {
+  overlayDrafts.set(sessionID.value, draft.value)
+  if (!overlayChatsVisible.value) overlayScrollPositions.set(sessionID.value, log.value?.scrollTop ?? 0)
+}
+async function selectOverlayChat(id: string): Promise<void> {
+  if (selectingSessionID.value) return
+  const changed = id !== sessionID.value
+  if (changed) saveOverlayConversation()
+  overlayChatsVisible.value = false
+  if (changed) {
+    await switchSession(id)
+    draft.value = overlayDrafts.get(id) || ''
+  }
+  await nextTick()
+  if (log.value && overlayScrollPositions.has(id)) log.value.scrollTop = overlayScrollPositions.get(id)!
+  composer.value?.focus()
+}
+function createOverlayChat(): void {
+  if (selectingSessionID.value) return
+  saveOverlayConversation()
+  draft.value = ''
+  overlayChatsVisible.value = false
+  newChat()
+}
+watch(() => props.composerOnly, compact => { if (compact) overlayChatsVisible.value = false })
 const orphanRun = ref<RunSummary | null>(null)
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
@@ -569,6 +630,7 @@ const activeSessionLabel = computed(() => {
   const active = sessionOptions.value.find(session => session.id === sessionID.value)
   return active ? sessionLabel(active) : 'New chat'
 })
+watch([overlayChatsVisible, () => activeSessionLabel.value], publishOverlayView, { flush: 'post' })
 const primaryActionState = computed<AIPrimaryActionState>(() => {
   if (!streaming.value) return 'send'
   return stopRequested.value ? 'stopping' : 'stop'
@@ -2183,6 +2245,9 @@ function onCompositionStart(): void { composing = true }
 function onCompositionEnd(): void { composing = false }
 
 watch([() => props.store, () => props.api, () => props.name], () => {
+  overlayDrafts.clear()
+  overlayScrollPositions.clear()
+  overlayChatsVisible.value = false
   modelSaveSerial += 1
   modelSaving.value = false
   modelSaveError.value = ''
@@ -2243,6 +2308,9 @@ onMounted(() => {
   chatHost?.value?.addEventListener('railgrid-chat-setup', stashSetupDraft)
   chatHost?.value?.addEventListener('railgrid-overlay-focus-composer', focusComposer)
   chatHost?.value?.addEventListener('railgrid-overlay-resume', resumeOverlayModels)
+  chatHost?.value?.addEventListener('railgrid-overlay-show-chats', showOverlayChats)
+  chatHost?.value?.addEventListener('railgrid-overlay-new-chat', createOverlayChat)
+  publishOverlayView()
   bindServer(props.store)
   window.addEventListener('resize', syncMobileRailViewport)
   void openAgent()
@@ -2254,6 +2322,8 @@ onBeforeUnmount(() => {
   chatHost?.value?.removeEventListener('railgrid-chat-setup', stashSetupDraft)
   chatHost?.value?.removeEventListener('railgrid-overlay-focus-composer', focusComposer)
   chatHost?.value?.removeEventListener('railgrid-overlay-resume', resumeOverlayModels)
+  chatHost?.value?.removeEventListener('railgrid-overlay-show-chats', showOverlayChats)
+  chatHost?.value?.removeEventListener('railgrid-overlay-new-chat', createOverlayChat)
   logResizeObserver?.disconnect()
   clearDetachedStarts()
   mounted = false
@@ -2318,7 +2388,19 @@ defineExpose({
       </div>
     </AIConversationHeader>
 
-    <AIConversationLayout class="agents-chat" aria-label="Agent conversation">
+    <section v-if="overlay && overlayChatsVisible && !composerOnly" class="agents-overlay-chats" aria-label="Chats">
+      <label class="agents-overlay-chats__search"><Search :size="16" aria-hidden="true" /><input ref="overlayChatSearchInput" v-model="overlayChatSearch" type="search" placeholder="Search chats" aria-label="Search chats" /></label>
+      <div v-if="sessionsError" role="alert" class="agents-overlay-chats__state">Could not refresh chats. {{ sessionsError }} <button class="k-btn k-btn--ghost" :disabled="sessionsLoading" @click="loadSessions()">Retry</button></div>
+      <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading chats…</p>
+      <p v-else-if="!filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
+      <div v-for="group in overlayChatGroups" :key="group.label" class="agents-overlay-chats__group"><h3>{{ group.label }}</h3>
+      <button v-for="item in group.items" :key="item.id" type="button" class="agents-overlay-chats__row" :disabled="!!selectingSessionID" :aria-current="item.id === sessionID ? 'true' : undefined" @click="selectOverlayChat(item.id)">
+        <span class="agents-overlay-chats__text"><strong>{{ item.title }}</strong><span class="muted">{{ name }}<template v-if="item.updatedAt"> · {{ new Date(item.updatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) }}</template></span></span>
+        <span v-if="item.status === 'active'" class="agents-overlay-chats__status">Running</span><span v-else-if="item.id === sessionID" class="agents-overlay-chats__status">Last opened</span><ChevronRight :size="16" aria-hidden="true" />
+      </button>
+      </div>
+    </section>
+    <AIConversationLayout v-show="!overlayChatsVisible || composerOnly" class="agents-chat" aria-label="Agent conversation">
       <div
         v-if="!compact"
         class="agents-conversation-rail-shell"
@@ -2629,3 +2711,23 @@ defineExpose({
     </AIConversationLayout>
   </div>
 </template>
+
+<style scoped>
+.agents-overlay-chats { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
+.agents-overlay-chats__search { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-bottom: 20px; padding: 0 10px; min-height: 36px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md, 6px); background: var(--color-surface-raised); color: var(--color-text-secondary); }
+.agents-overlay-chats__search:focus-within { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.agents-overlay-chats__search > svg { flex-shrink: 0; }
+.agents-overlay-chats__search input { min-width: 0; width: 100%; flex: 1; padding: 8px 0; border: 0; border-radius: 0; background: transparent; color: var(--color-text-primary); font: inherit; font-size: 13px; box-shadow: none; outline: none; }
+.agents-overlay-chats__search input:focus { border: 0; box-shadow: none; outline: none; }
+.agents-overlay-chats__search input::placeholder { color: var(--color-text-secondary); }
+.agents-overlay-chats__row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 72px; padding: 14px 4px; text-align: left; border: 0; border-bottom: 1px solid var(--color-border-default); background: transparent; color: var(--color-text-primary); cursor: pointer; }
+.agents-overlay-chats__row:hover { background: var(--color-surface-hover); }
+.agents-overlay-chats__row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.agents-overlay-chats__row:disabled { cursor: wait; opacity: .6; }
+.agents-overlay-chats__text { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.agents-overlay-chats__text strong { overflow-wrap: anywhere; font-size: 14px; }
+.agents-overlay-chats__text > span { font-size: 12px; }
+.agents-overlay-chats__status { color: var(--color-accent); font-size: 11px; flex-shrink: 0; }
+.agents-overlay-chats__group h3 { font-size: 12px; font-weight: 600; color: var(--color-text-secondary); margin: 24px 0 8px; }
+.agents-overlay-chats__state { margin-bottom: 12px; font-size: 13px; }
+</style>

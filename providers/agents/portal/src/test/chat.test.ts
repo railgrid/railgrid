@@ -1,7 +1,8 @@
 // Chat streaming: the delta → tool card → approval card → done lifecycle, plus
 // the Stop button's cancel call and scroll-pinning behaviour.
 
-import { ref } from 'vue'
+import { defineComponent, h, ref, shallowRef } from 'vue'
+import { provideAgentsRuntime } from '../vue/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
 import ChatMessageView from '../views/ChatMessage.vue'
@@ -3421,4 +3422,51 @@ it('renders saved user IDs and new pending messages with the same account email'
     release()
     await settle()
   }
+})
+
+
+it('navigates the overlay chat list, searches, and keeps drafts when starting another chat', async () => {
+  const api = stubApi({ listSessions: async () => [session('saved', 'Saved conversation')], listRuns: async () => ({ items: [] }) })
+  const store = makeStore(api)
+  store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-test' }]
+  store.credentials.loaded = store.credentials.hasSnapshot = true
+  store.agents.data = [agentFixture('scout')]
+  store.agents.loaded = true
+  const host = document.createElement('div')
+  document.body.appendChild(host)
+  const views: Array<{ chats: boolean; title: string }> = []
+  host.addEventListener('railgrid-overlay-view', event => views.push((event as CustomEvent).detail))
+  const wrapper = defineComponent({ setup() {
+    provideAgentsRuntime({ store: shallowRef(store), api: shallowRef(api), route: ref({ kind: 'agent', name: 'scout', tab: 'chat' }), authorityEpoch: ref(0), host: ref(host) })
+    return () => h(AgentChat, { store, api, name: 'scout', overlay: true, compact: true })
+  } })
+  const view = await mountVue(wrapper, {})
+  mounted.push(view)
+  await settle(8)
+  const input = view.element.querySelector<HTMLTextAreaElement>('textarea')!
+  input.value = 'Keep this draft'
+  input.dispatchEvent(new Event('input'))
+  host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+  await settle()
+  expect(views.at(-1)?.chats).toBe(true)
+  expect(text(view.element.querySelector('.agents-overlay-chats'))).toContain('Saved conversation')
+  const search = view.element.querySelector<HTMLInputElement>('input[type="search"]')!
+  search.value = 'no match'
+  search.dispatchEvent(new Event('input'))
+  await settle()
+  expect(text(view.element.querySelector('.agents-overlay-chats'))).toContain('No chats match')
+  search.value = ''
+  search.dispatchEvent(new Event('input'))
+  host.dispatchEvent(new Event('railgrid-overlay-new-chat'))
+  await settle()
+  expect(views.at(-1)?.chats).toBe(false)
+  expect(input.value).toBe('')
+  host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
+  await settle()
+  const saved = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('Saved conversation'))!
+  saved.click()
+  await settle(8)
+  expect(input.value).toBe('Keep this draft')
+  expect(views.at(-1)?.chats).toBe(false)
+  host.remove()
 })
