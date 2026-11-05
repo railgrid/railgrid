@@ -147,7 +147,7 @@ function offerDraft(): void { offerChatDraft(handoffKey(), draft.value) }
 const overlayChatsVisible = ref(false)
 const overlayChatSearch = ref('')
 const overlayChatSearchInput = ref<HTMLInputElement | null>(null)
-const overlayDrafts = new Map<string, string>()
+const overlayDrafts = ref(new Map<string, string>())
 const overlayScrollPositions = new Map<string, number>()
 const filteredOverlayChats = computed(() => conversationItems.value.filter(item =>
   (item.title || '').toLocaleLowerCase().includes(overlayChatSearch.value.trim().toLocaleLowerCase())))
@@ -180,7 +180,7 @@ function showOverlayChats(): void {
   void nextTick(() => overlayChatSearchInput.value?.focus())
 }
 function saveOverlayConversation(): void {
-  overlayDrafts.set(sessionID.value, draft.value)
+  overlayDrafts.value.set(sessionID.value, draft.value)
   if (!overlayChatsVisible.value) overlayScrollPositions.set(sessionID.value, log.value?.scrollTop ?? 0)
 }
 async function selectOverlayChat(id: string): Promise<void> {
@@ -188,11 +188,15 @@ async function selectOverlayChat(id: string): Promise<void> {
   const changed = id !== sessionID.value
   if (changed) saveOverlayConversation()
   overlayChatsVisible.value = false
+  const authority = captureAuthority()
+  const name = props.name
   if (changed) {
-    await switchSession(id)
-    draft.value = overlayDrafts.get(id) || ''
+    draft.value = overlayDrafts.value.get(id) || ''
+    const localDraft = overlayDrafts.value.has(id) && !sessions.value.some(session => session.id === id)
+    await switchSession(id, !localDraft)
   }
   await nextTick()
+  if (!authorityIsCurrent(authority) || props.name !== name || sessionID.value !== id) return
   if (log.value && overlayScrollPositions.has(id)) log.value.scrollTop = overlayScrollPositions.get(id)!
   composer.value?.focus()
 }
@@ -580,6 +584,12 @@ const sessionOptions = computed(() => {
     const title = sessionTitleOverrides.value.get(session.id)
     return title ? { ...session, title } : session
   })
+  if (props.overlay) {
+    for (const [id, text] of overlayDrafts.value) {
+      if (!text.trim() || id === sessionID.value || list.some(session => session.id === id)) continue
+      list.push({ id, preview: text.trim().slice(0, 80), messageCount: 0, createdAt: '', lastActivity: '' })
+    }
+  }
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
     const title = sessionTitleOverrides.value.get(sessionID.value)
     list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
@@ -1992,7 +2002,7 @@ function detachConversationStream(): void {
   } : undefined)
 }
 
-async function switchSession(id: string): Promise<void> {
+async function switchSession(id: string, loadHistory = true): Promise<void> {
   if (!id || id === sessionID.value || selectingSessionID.value) return
   detachConversationStream()
   claimChatOwnership()
@@ -2008,7 +2018,8 @@ async function switchSession(id: string): Promise<void> {
   liveRunID = ''
   liveRunSessionID = ''
   try {
-    await loadMessages(id)
+    if (loadHistory) await loadMessages(id)
+    else messagesHasSnapshot.value = true
   } finally {
     if (selectingSessionID.value === id) selectingSessionID.value = ''
   }
@@ -2245,7 +2256,7 @@ function onCompositionStart(): void { composing = true }
 function onCompositionEnd(): void { composing = false }
 
 watch([() => props.store, () => props.api, () => props.name], () => {
-  overlayDrafts.clear()
+  overlayDrafts.value.clear()
   overlayScrollPositions.clear()
   overlayChatsVisible.value = false
   modelSaveSerial += 1
