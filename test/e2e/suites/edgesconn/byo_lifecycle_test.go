@@ -23,9 +23,11 @@ import (
 	"net/http"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -52,6 +54,9 @@ var (
 	}
 	catalogEntryGVR = schema.GroupVersionResource{
 		Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
+	}
+	apiExportGVR = schema.GroupVersionResource{
+		Group: "apis.kcp.io", Version: "v1alpha2", Resource: "apiexports",
 	}
 )
 
@@ -135,6 +140,125 @@ func TestBYOProviderRegistrationLifecycle(t *testing.T) {
 		t.Error("registration returned no kubeconfig; the Org has nothing to install with")
 	}
 	t.Logf("provider workspace = %s", reg.Provider.WorkspacePath)
+
+	// 2b. Who may bind the export is kcp's decision, taken in its APIBinding
+	// admission: a SubjectAccessReview for `bind` on the APIExport, evaluated in
+	// the PROVIDER workspace as the binding's author. Platform exports open that
+	// with a grant to system:authenticated; an organization export publishes no
+	// grant at all, so the review passes for kcp-admin (the Hub's Enable flow)
+	// and nobody else. This runs against kcp directly, with no Hub component in
+	// the path, and in the SAME organization, so the boundary guard's own-org
+	// check cannot be what refuses it.
+	t.Run("kcp admission alone decides who may bind the export", func(t *testing.T) {
+		providerWS := kcpDynamic(t, reg.Provider.WorkspacePath, adminToken)
+
+		// Stand in for the bootstrap endpoint's published APIExport. The hub
+		// applies it as kcp-admin; the only question here is what accompanies
+		// it, so an export with no resources is enough.
+		exportName := providerName + ".providers.railgrid.ai"
+		export := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIExport",
+			"metadata": map[string]any{"name": exportName},
+			"spec":     map[string]any{},
+		}}
+		if _, err := providerWS.Resource(apiExportGVR).Create(ctxWithTimeout(t, 30*time.Second), export, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create APIExport in the provider workspace: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = providerWS.Resource(apiExportGVR).Delete(context.Background(), exportName, metav1.DeleteOptions{})
+		})
+
+		// No ClusterRole in the provider workspace may grant `bind` on
+		// apiexports. The SDK skips the grant for organization workspaces and
+		// the hub deletes legacy copies; this is the invariant both protect.
+		roles, err := providerWS.Resource(clusterRoleGVR).List(ctxWithTimeout(t, 20*time.Second), metav1.ListOptions{})
+		if err != nil {
+			t.Fatalf("list ClusterRoles in the provider workspace: %v", err)
+		}
+		for _, role := range roles.Items {
+			if grantsBindOnAPIExports(role) {
+				t.Fatalf("ClusterRole %s grants bind on apiexports in an organization provider workspace", role.GetName())
+			}
+		}
+
+		// The tenant-admin role reads APIBindings but does not write them, so a
+		// refusal at that layer would prove nothing about the bind review.
+		// Widen this one tenant to exactly the write it lacks, as an operator
+		// could, and leave the export's own authorization as the only gate.
+		user := tenantUserIdentity(t, tenantAdmin)
+		const probeRole = "e2e-byo-bind-probe"
+		role := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRole",
+			"metadata": map[string]any{"name": probeRole},
+			"rules": []any{map[string]any{
+				"apiGroups": []any{"apis.kcp.io"}, "resources": []any{"apibindings"},
+				"verbs": []any{"create", "get", "delete"},
+			}},
+		}}
+		if _, err := tenantAdmin.Resource(clusterRoleGVR).Create(ctxWithTimeout(t, 10*time.Second), role, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create probe ClusterRole: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = tenantAdmin.Resource(clusterRoleGVR).Delete(context.Background(), probeRole, metav1.DeleteOptions{})
+		})
+		crb := &unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "rbac.authorization.k8s.io/v1", "kind": "ClusterRoleBinding",
+			"metadata": map[string]any{"name": probeRole},
+			"roleRef":  map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "ClusterRole", "name": probeRole},
+			"subjects": []any{map[string]any{"apiGroup": "rbac.authorization.k8s.io", "kind": "User", "name": user}},
+		}}
+		if _, err := tenantAdmin.Resource(clusterRoleBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), crb, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+			t.Fatalf("create probe ClusterRoleBinding: %v", err)
+		}
+		t.Cleanup(func() {
+			_ = tenantAdmin.Resource(clusterRoleBindingGVR).Delete(context.Background(), probeRole, metav1.DeleteOptions{})
+		})
+
+		const bindingName = "byo-bind-probe"
+		binding := func() *unstructured.Unstructured {
+			return &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "apis.kcp.io/v1alpha2", "kind": "APIBinding",
+				"metadata": map[string]any{"name": bindingName},
+				"spec": map[string]any{"reference": map[string]any{"export": map[string]any{
+					"path": reg.Provider.WorkspacePath, "name": exportName,
+				}}},
+			}}
+		}
+		t.Cleanup(func() {
+			_ = tenantAdmin.Resource(apiBindingGVR).Delete(context.Background(), bindingName, metav1.DeleteOptions{})
+		})
+
+		// kcp authenticates the static token natively, so this is the tenant
+		// user's own RBAC, with the hub proxy out of the picture.
+		tenantUser := kcpDynamic(t, tenantWS, staticToken)
+		if !waitFor(t, 30*time.Second, func() (bool, string) {
+			_, err := tenantUser.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 10*time.Second), binding(), metav1.CreateOptions{})
+			switch {
+			case err == nil:
+				_ = tenantAdmin.Resource(apiBindingGVR).Delete(context.Background(), bindingName, metav1.DeleteOptions{})
+				t.Fatal("a tenant bound an organization export that publishes no bind grant")
+				return true, ""
+			case apierrors.IsForbidden(err) && strings.Contains(err.Error(), "no permission to bind to export"):
+				return true, ""
+			case apierrors.IsForbidden(err):
+				// The probe grant has not propagated yet: RBAC, not admission,
+				// is still answering. Keep waiting for the admission message.
+				return false, err.Error()
+			default:
+				t.Fatalf("create APIBinding as the tenant user: %v", err)
+				return true, ""
+			}
+		}) {
+			t.Fatal("the tenant's APIBinding was never refused by kcp's bind review; some other layer kept answering")
+		}
+
+		// Control: the identical object is admitted for kcp-admin, which is the
+		// identity the Hub's Enable flow binds with. The difference between the
+		// two attempts is the bind review and nothing else.
+		if _, err := tenantAdmin.Resource(apiBindingGVR).Create(ctxWithTimeout(t, 30*time.Second), binding(), metav1.CreateOptions{}); err != nil {
+			t.Fatalf("kcp-admin could not bind the export the tenant was refused: %v", err)
+		}
+	})
 
 	// 3. The edge binding, recorded by the hub on an object only the hub writes.
 	// The backend proxy reads it back to route this provider's data plane; if it
@@ -345,4 +469,56 @@ func hubJSON(t *testing.T, method, path, orgUUID string, body []byte) (int, []by
 		t.Fatalf("reading %s %s: %v", method, path, err)
 	}
 	return resp.StatusCode, buf.Bytes()
+}
+
+// grantsBindOnAPIExports reports whether a ClusterRole carries any rule that
+// would satisfy kcp's bind review for an APIExport in its workspace.
+func grantsBindOnAPIExports(role unstructured.Unstructured) bool {
+	rules, _, _ := unstructured.NestedSlice(role.Object, "rules")
+	for _, raw := range rules {
+		rule, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if !sliceHasAny(rule["apiGroups"], "apis.kcp.io", "*") ||
+			!sliceHasAny(rule["resources"], "apiexports", "*") ||
+			!sliceHasAny(rule["verbs"], "bind", "*") {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func sliceHasAny(raw any, want ...string) bool {
+	items, _ := raw.([]any)
+	for _, item := range items {
+		s, _ := item.(string)
+		for _, w := range want {
+			if s == w {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tenantUserIdentity returns the kcp RBAC identity of the static-token user,
+// read from the hub-managed tenant-admin binding in their workspace rather
+// than assumed from the token's spelling.
+func tenantUserIdentity(t *testing.T, tenant dynamic.Interface) string {
+	t.Helper()
+	list, err := tenant.Resource(clusterRoleBindingGVR).List(ctxWithTimeout(t, 20*time.Second), metav1.ListOptions{
+		LabelSelector: "tenancy.railgrid.ai/managed-by=hub",
+	})
+	if err != nil {
+		t.Fatalf("list hub-managed ClusterRoleBindings: %v", err)
+	}
+	for _, crb := range list.Items {
+		if id := crb.GetAnnotations()["tenancy.railgrid.ai/rbac-identity"]; id != "" {
+			return id
+		}
+	}
+	t.Fatal("no hub-managed tenant-admin binding names the static-token user")
+	return ""
 }

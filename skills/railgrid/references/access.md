@@ -132,10 +132,10 @@ thing lives tells you what kind of thing it is. Edges are objects inside the
 team workspace, not child workspaces.
 
 Org and Workspace `metadata.name` are server-assigned UUIDs. Display names
-are metadata. You never type paths: the hub proxy rejects `/clusters/root:…`
-with 403 (`address workspaces by cluster ID (/clusters/{id}), not by path —
-resolve the id via /api/orgs/{org}/workspaces/{ws}`) and an org workspace's
-cluster with 403 too. Source: `pkg/kcppaths/paths.go`,
+are metadata. Address workspaces by cluster ID (`/clusters/{id}`), resolved
+via `/api/orgs/{org}/workspaces/{ws}`; a `/clusters/root:…` path is forwarded
+to kcp and resolves to the same cluster and the same RBAC. An org workspace
+answers 403 from kcp: tenants hold no RBAC there. Source: `pkg/kcppaths/paths.go`,
 `pkg/server/proxy/proxy.go` (`addressByIDBody`, `orgWorkspaceForbiddenBody`).
 
 Membership model: personal org plus default workspace on first login; scopes

@@ -429,8 +429,9 @@ and `/mcp` only). The wrong header/key means 401/403, so **do not re-inline
 this** — call the helpers and never call the global `fetch` for a hub request.
 
 **There is one auth model, not two.** A portal reads and writes its bound CRs
-with the `portalkit` kube client over the hub's kcp proxy at
-`/clusters/<cluster>`, addressing kcp by cluster in the path and
+with the `portalkit` kube client through the hub's kcp front door at
+`/clusters/<cluster>` (forwarded to kcp unchanged; kcp authenticates and
+authorizes), addressing kcp by cluster in the path and
 authenticating with the caller's bearer — and it invokes a **verb or action**
 on one of those CRs the same way, at the path `kubeVerbPath` (`portalkit/kube.ts`)
 builds: `/clusters/<cluster>/apis/<group>/<version>/<resource>/<name>/<verb>`,
@@ -951,8 +952,9 @@ railgrid runs on kcp; some symptoms that look like railgrid bugs are actually up
 - `docs/providers.md` + per-provider arch docs — provider plane deep dives.
 - `docs/security.md`, `docs/organizations.md`, `docs/provider-scoping.md` —
   tenancy + isolation model.
-- `docs/hub-proxy-workspace-access.md` — the hub kcp proxy's membership-gated
-  per-workspace access (`/clusters/{cluster}`).
+- `docs/hub-proxy-workspace-access.md` — per-workspace access through the
+  hub's kcp front door (`/clusters/{cluster}`): kcp RBAC decides, the hub
+  forwards; the retired membership gate is kept there as history.
 - `CONTRIBUTING.md` — contribution workflow.
 
 Linear and Databricks implementation, build, codegen, portal copies and release

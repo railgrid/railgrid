@@ -394,9 +394,10 @@ provider that sets it; no in-tree provider does.)
 
 **Why the identity is workspace-local, not the provider SA.** The provider SA's token is
 issued in `root:railgrid:providers:kuery`. The edges data plane TokenReviews a foreign SA
-in the SA's home cluster with its own credential, and the hub's kcp proxy
-(`pkg/server/proxy/proxy.go` `serveServiceAccount`) pins every SA caller to the caller's
-own workspace — so the review lands on a doubled
+in the SA's home cluster with its own credential, and the hub's kcp proxy at the
+time (`serveServiceAccount`, since removed: the front door now forwards paths
+unchanged) pinned every SA caller to the caller's
+own workspace — so the review landed on a doubled
 `/clusters/{edges}/clusters/{kuery}/…/tokenreviews` path, kcp answers 404, and the edges
 provider answers 403. Every engage failed with `discovery failed … Forbidden`. A token
 minted **in the consumer workspace** — which is what the hub's identity service does —

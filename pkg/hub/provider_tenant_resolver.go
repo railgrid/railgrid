@@ -30,13 +30,16 @@ import (
 	"sync"
 	"time"
 
+	authorizationv1 "k8s.io/api/authorization/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/railgrid/pkg/apiurl"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
 	"github.com/railgrid/railgrid/pkg/hub/hubaccess"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
 	kcpproxy "github.com/railgrid/railgrid/pkg/server/proxy"
 )
@@ -82,6 +85,9 @@ type kcpTenantResolver struct {
 	// accounts are written inside the tenant's own workspace and prove
 	// nothing on their own.
 	proofKeys serviceaccounts.ProofKeySource
+	// clusterConfig builds the hub's admin config for one logical cluster, so
+	// AuthorizeCluster can ask kcp a SubjectAccessReview there. Nil answers no.
+	clusterConfig func(clusterID string) *rest.Config
 
 	mu  sync.RWMutex
 	hot map[string]kcpResolverEntry
@@ -101,13 +107,20 @@ const kcpResolverTTL = 5 * time.Minute
 // for unauthenticated requests; the backend proxy maps that to
 // "forward without injecting X-Railgrid-*" so anonymous /healthz reads
 // keep working.
-func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *railgridclient.Client, workloadConfig serviceaccounts.WorkspaceConfigBuilder, proofKeys serviceaccounts.ProofKeySource) providers.TenantResolver {
+func newKCPTenantResolver(kcpProxy *kcpproxy.KCPProxy, client *railgridclient.Client, workloadConfig serviceaccounts.WorkspaceConfigBuilder, proofKeys serviceaccounts.ProofKeySource, kcpConfig *rest.Config) *kcpTenantResolver {
 	r := &kcpTenantResolver{
 		kcpProxy:       kcpProxy,
 		client:         client,
 		workloadConfig: workloadConfig,
 		proofKeys:      proofKeys,
 		hot:            make(map[string]kcpResolverEntry),
+	}
+	if kcpConfig != nil {
+		r.clusterConfig = func(clusterID string) *rest.Config {
+			cfg := rest.CopyConfig(kcpConfig)
+			cfg.Host = apiurl.KCPClusterURL(kcpConfig.Host, clusterID)
+			return cfg
+		}
 	}
 	if kcpProxy != nil {
 		r.identifyUser = kcpProxy.IdentifyUser
@@ -120,24 +133,52 @@ func (r *kcpTenantResolver) Resolve(req *http.Request) (string, string, error) {
 	return r.resolve(req)
 }
 
-// AuthorizeCluster answers: may user address clusterID? Data-plane verbs no
-// longer pass through the backend proxy (kcp authorizes them on
-// /clusters/{id} itself), so nothing on that path asks this any more; it
-// remains the hub's one membership answer for other callers.
+// AuthorizeCluster answers: may user address clusterID? It asks kcp the
+// question kcp itself asks of every request entering a workspace — a
+// SubjectAccessReview for the `access` verb on `/` in that cluster, as the
+// user's RBAC identity (the workspace content authorizer's entry gate, which
+// the hub's tenant-admin binding satisfies). The hub's own routes that are
+// not kube paths (UI asset grants, backend routes) therefore admit exactly
+// the callers kcp admits on /clusters/{id}, with no membership index of the
+// hub's own to drift from kcp's answer. An edge mount {cluster}:{edge} is
+// authorized by its parent workspace.
 //
-// The answer comes from the SAME check the kcp proxy applies to
-// /clusters/{id} (pkg/server/proxy authorizer.go): a workspace-scope
-// Membership for that workspace, or an org-scope one for its org. Asking it
-// twice, in two places, is how "kubectl can reach it but the provider cannot"
-// (and its more dangerous mirror) gets introduced, so there is one
-// implementation and this delegates to it.
-//
-// Failure is closed: no proxy, no name, no cluster — no.
+// Failure is closed: no kcp config, no user, no cluster, no User record, a
+// review that errors — no.
 func (r *kcpTenantResolver) AuthorizeCluster(ctx context.Context, user, clusterID string) bool {
-	if r == nil || r.kcpProxy == nil || user == "" || clusterID == "" {
+	if r == nil || r.clusterConfig == nil || r.client == nil || user == "" || clusterID == "" {
 		return false
 	}
-	return r.kcpProxy.AuthorizeCluster(ctx, user, clusterID)
+	if i := strings.IndexByte(clusterID, ':'); i >= 0 {
+		clusterID = clusterID[:i]
+	}
+	if clusterID == "" {
+		return false
+	}
+	record, err := r.client.Users().Get(ctx, user, metav1.GetOptions{})
+	if err != nil || record.Spec.RBACIdentity == "" {
+		return false
+	}
+	cfg := r.clusterConfig(clusterID)
+	if cfg == nil {
+		return false
+	}
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return false
+	}
+	review, err := cs.AuthorizationV1().SubjectAccessReviews().Create(ctx, &authorizationv1.SubjectAccessReview{
+		Spec: authorizationv1.SubjectAccessReviewSpec{
+			User:                  record.Spec.RBACIdentity,
+			Groups:                []string{"system:authenticated"},
+			NonResourceAttributes: &authorizationv1.NonResourceAttributes{Path: "/", Verb: "access"},
+		},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		klog.FromContext(ctx).V(4).Info("workspace access review failed", "user", user, "cluster", clusterID, "err", err)
+		return false
+	}
+	return review.Status.Allowed
 }
 
 // ErrAnonymousProviderCaller is returned by the tenant resolver when
