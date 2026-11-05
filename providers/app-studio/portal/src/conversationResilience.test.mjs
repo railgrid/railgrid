@@ -18,7 +18,10 @@ const snapshot = (revision, content, status = 'running') => ({ run: { id: 'run-1
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
 const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-const compileStatements = statements => ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), {
+const conversationSource = await readFile(new URL('./agentkit/conversation.ts', import.meta.url), 'utf8')
+const conversationAST = ts.createSourceFile('conversation.ts', conversationSource, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+const optimisticActorHelper = conversationAST.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'optimisticAIMessageActor').getText(conversationAST).replace(/^export /, '')
+const compileStatements = statements => ts.transpileModule(optimisticActorHelper + '\n' + statements.map(node => node.getText(ast)).join('\n'), {
   compilerOptions: { target: ts.ScriptTarget.ES2022 },
 }).outputText
 
