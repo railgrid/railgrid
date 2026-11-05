@@ -99,12 +99,22 @@ type OIDCProvider struct {
 	// written before it was recorded.
 	//
 	// +optional
-	Issuer       string       `json:"issuer,omitempty"`
-	ProviderID   string       `json:"providerID"`
-	Email        string       `json:"email"`
-	AccessToken  string       `json:"accessToken"`
-	RefreshToken string       `json:"refreshToken"`
-	ExpiresAt    *metav1.Time `json:"expiresAt,omitempty"`
+	Issuer     string `json:"issuer,omitempty"`
+	ProviderID string `json:"providerID"`
+	Email      string `json:"email"`
+	// EmailVerified records whether the issuer asserted email_verified for
+	// Email when the identity was bound or when Email last changed; a later
+	// sign-in that verifies the same email sets it to true. Linking by email
+	// (--idp-link-verified-email-issuers) never targets a User whose matching
+	// entry is recorded as unverified, so an account seeded from an
+	// unverified claim cannot capture another person's identity. Unset on
+	// entries written before it was recorded; those are trusted as before.
+	//
+	// +optional
+	EmailVerified *bool        `json:"emailVerified,omitempty"`
+	AccessToken   string       `json:"accessToken"`
+	RefreshToken  string       `json:"refreshToken"`
+	ExpiresAt     *metav1.Time `json:"expiresAt,omitempty"`
 }
 
 // UserStatus defines the observed state of a User.

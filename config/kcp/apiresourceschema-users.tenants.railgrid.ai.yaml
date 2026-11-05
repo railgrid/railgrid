@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261105-96c85db7.users.tenants.railgrid.ai
+  name: v261105-e454911b.users.tenants.railgrid.ai
 spec:
   group: tenants.railgrid.ai
   names:
@@ -62,6 +62,16 @@ spec:
                     type: string
                   email:
                     type: string
+                  emailVerified:
+                    description: |-
+                      EmailVerified records whether the issuer asserted email_verified for
+                      Email when the identity was bound or when Email last changed; a later
+                      sign-in that verifies the same email sets it to true. Linking by email
+                      (--idp-link-verified-email-issuers) never targets a User whose matching
+                      entry is recorded as unverified, so an account seeded from an
+                      unverified claim cannot capture another person's identity. Unset on
+                      entries written before it was recorded; those are trusted as before.
+                    type: boolean
                   expiresAt:
                     format: date-time
                     type: string

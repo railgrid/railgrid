@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"testing"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,6 +47,14 @@ const (
 
 func newSeedTestHandler(t *testing.T, linkIssuers []string, users ...*tenancyv1alpha1.User) (*Handler, *railgridclient.Client) {
 	t.Helper()
+	h, client, _ := newSeedTestHandlerWithFake(t, linkIssuers, users...)
+	return h, client
+}
+
+// newSeedTestHandlerWithFake also returns the fake dynamic client, for tests
+// that inject reactors.
+func newSeedTestHandlerWithFake(t *testing.T, linkIssuers []string, users ...*tenancyv1alpha1.User) (*Handler, *railgridclient.Client, *dynamicfake.FakeDynamicClient) {
+	t.Helper()
 	dyn := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{
 		railgridclient.UserGVR: "UserList",
 	})
@@ -69,7 +78,7 @@ func newSeedTestHandler(t *testing.T, linkIssuers []string, users ...*tenancyv1a
 		railgridClient: client,
 		oidcConfig:     &OIDCConfig{IssuerURL: testIssuer, LinkVerifiedEmailIssuers: linkIssuers},
 		logger:         klog.Background(),
-	}, client
+	}, client, dyn
 }
 
 // boundAlice is an account created by a GitHub login through Dex.
@@ -167,6 +176,9 @@ func TestSeedUserLinksVerifiedEmailFromAllowedIssuer(t *testing.T) {
 	if p := user.Spec.OIDCProviders; len(p) != 2 || p[1].Issuer != testIssuer || p[1].ProviderID != googleSub {
 		t.Fatalf("providers = %+v, want the linked identity appended", p)
 	}
+	if v := user.Spec.OIDCProviders[1].EmailVerified; v == nil || !*v {
+		t.Fatal("linked entry does not record the email as verified")
+	}
 
 	// Both identities now resolve to the account, without linking again.
 	for _, sub := range []string{githubSub, googleSub} {
@@ -209,6 +221,17 @@ func TestSeedUserDoesNotLink(t *testing.T) {
 	twin.Name = "user-alice-twin"
 	twin.Labels = map[string]string{identity.LabelSubject: identity.OIDCSubjectHash(testIssuer, "other-sub")}
 
+	// A static-token account that happens to carry the email (legacy hubs
+	// derived one from the token) is bound to a token, not to an IdP.
+	static := boundAlice()
+	static.Name = "static-user-alice"
+	static.Labels["tenants.railgrid.ai/auth-type"] = "static-token"
+
+	// An account whose identity presented the email without the issuer
+	// verifying it: seeded through a connector that does not check emails.
+	unverified := boundAlice()
+	unverified.Spec.OIDCProviders[0].EmailVerified = ptrBool(false)
+
 	tests := []struct {
 		name        string
 		linkIssuers []string
@@ -231,6 +254,18 @@ func TestSeedUserDoesNotLink(t *testing.T) {
 			name:        "several users share the email",
 			linkIssuers: []string{testIssuer},
 			users:       []*tenancyv1alpha1.User{boundAlice(), twin},
+			id:          alice(testIssuer, googleSub, true),
+		},
+		{
+			name:        "static-token user with the email",
+			linkIssuers: []string{testIssuer},
+			users:       []*tenancyv1alpha1.User{static},
+			id:          alice(testIssuer, googleSub, true),
+		},
+		{
+			name:        "existing user's email recorded unverified",
+			linkIssuers: []string{testIssuer},
+			users:       []*tenancyv1alpha1.User{unverified},
 			id:          alice(testIssuer, googleSub, true),
 		},
 	}
@@ -286,3 +321,119 @@ func TestSeedUserAdoptsInvitedUserOnlyWhenUnbound(t *testing.T) {
 		t.Fatal("a bound user was adopted by email")
 	}
 }
+
+func TestSeedUserRetriesLinkAfterConflict(t *testing.T) {
+	h, client, dyn := newSeedTestHandlerWithFake(t, []string{testIssuer}, boundAlice())
+	conflicts := 0
+	dyn.PrependReactor("update", "users", func(action clienttesting.Action) (bool, runtime.Object, error) {
+		if conflicts > 0 {
+			return false, nil, nil
+		}
+		conflicts++
+		name := action.(clienttesting.UpdateAction).GetObject().(*unstructured.Unstructured).GetName()
+		return true, nil, apierrors.NewConflict(railgridclient.UserGVR.GroupResource(), name, fmt.Errorf("the object has been modified"))
+	})
+
+	got, err := h.seedUser(context.Background(), alice(testIssuer, googleSub, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != aliceUserName {
+		t.Fatalf("seedUser = %q, want %q after retrying the conflicting link", got, aliceUserName)
+	}
+	if conflicts != 1 {
+		t.Fatalf("update conflicts = %d, want 1", conflicts)
+	}
+	if n := userCount(t, client); n != 1 {
+		t.Fatalf("got %d users, want 1", n)
+	}
+}
+
+func TestSeedUserKeepsStoredEmailSpelling(t *testing.T) {
+	mixed := boundAlice()
+	mixed.Spec.Email = "Alice@Example.com"
+	mixed.Spec.RBACIdentity = "railgrid:Alice@Example.com"
+	mixed.Spec.OIDCProviders[0].Email = "Alice@Example.com"
+	h, client := newSeedTestHandler(t, []string{testIssuer}, mixed)
+	ctx := context.Background()
+
+	assertSpelling := func(step string) {
+		t.Helper()
+		user, err := client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if user.Spec.Email != "Alice@Example.com" || user.Spec.RBACIdentity != "railgrid:Alice@Example.com" {
+			t.Fatalf("%s: email %q, rbacIdentity %q; want the stored spelling kept", step, user.Spec.Email, user.Spec.RBACIdentity)
+		}
+	}
+
+	// The primary identity signs in with a lower-case email.
+	if got, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil || got != aliceUserName {
+		t.Fatalf("seedUser = %q, %v", got, err)
+	}
+	assertSpelling("primary sign-in")
+
+	// A new identity with the lower-case email links onto the account.
+	if got, err := h.seedUser(ctx, alice(testIssuer, googleSub, true)); err != nil || got != aliceUserName {
+		t.Fatalf("seedUser = %q, %v; want the identity linked", got, err)
+	}
+	assertSpelling("linked sign-in")
+}
+
+func TestSeedUserRecordsIdentityEmail(t *testing.T) {
+	// An entry written before issuer and emailVerified were recorded.
+	legacy := boundAlice()
+	legacy.Spec.OIDCProviders[0].Issuer = ""
+	h, client := newSeedTestHandler(t, nil, legacy)
+	ctx := context.Background()
+
+	if _, err := h.seedUser(ctx, alice(testIssuer, githubSub, true)); err != nil {
+		t.Fatal(err)
+	}
+	user, err := client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(user.Spec.OIDCProviders) != 1 {
+		t.Fatalf("providers = %+v, want the legacy entry updated in place", user.Spec.OIDCProviders)
+	}
+	entry := identity.IdentityEntry(user, testIssuer, githubSub)
+	if entry == nil || entry.Issuer != testIssuer || entry.EmailVerified == nil || !*entry.EmailVerified {
+		t.Fatalf("entry = %+v, want the issuer stamped and the email recorded as verified", entry)
+	}
+
+	// The identity now presents another email the issuer did not verify:
+	// the account follows it but is no longer a linking target for it.
+	changed := oidcIdentity{Issuer: testIssuer, Subject: githubSub, Email: "alice@new.example", Name: "Alice"}
+	if _, err := h.seedUser(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	user, _ = client.Users().Get(ctx, aliceUserName, metav1.GetOptions{})
+	entry = identity.IdentityEntry(user, testIssuer, githubSub)
+	if entry == nil || entry.Email != changed.Email || entry.EmailVerified == nil || *entry.EmailVerified {
+		t.Fatalf("entry = %+v, want the new email recorded as unverified", entry)
+	}
+	if user.Spec.Email != changed.Email {
+		t.Fatalf("spec.email = %q, want %q", user.Spec.Email, changed.Email)
+	}
+	if identity.EmailLinkable(user, changed.Email) {
+		t.Fatal("an email recorded as unverified must not be linkable")
+	}
+}
+
+func TestEmailVerifiedClaim(t *testing.T) {
+	for _, tt := range []struct {
+		claim any
+		want  bool
+	}{
+		{true, true}, {false, false}, {"true", true}, {"True", true}, {" true ", true},
+		{"false", false}, {"", false}, {nil, false}, {1, false},
+	} {
+		if got := emailVerifiedClaim(tt.claim); got != tt.want {
+			t.Errorf("emailVerifiedClaim(%#v) = %v, want %v", tt.claim, got, tt.want)
+		}
+	}
+}
+
+func ptrBool(b bool) *bool { return &b }
