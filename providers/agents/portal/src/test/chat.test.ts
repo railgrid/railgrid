@@ -4,6 +4,8 @@
 import { ref } from 'vue'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
+import ChatMessageView from '../views/ChatMessage.vue'
+import { formatAIMessageAuthor, optimisticAIMessageActor } from '../agentkit/conversation'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
@@ -3357,4 +3359,66 @@ describe('authoritative recovery state', () => {
     expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Retain my draft')
     expect(store.takePendingPrompt('scout')).toBe('Queued assisted setup')
   })
+})
+
+it('keeps each stored sender beside its timestamp after rebuilding a shared transcript', async () => {
+  const rows = rebuildTranscript([
+    { id: 'alice', role: 'user', content: 'First', metadata: { actorID: 'railgrid:alice@example.com' }, createdAt: '2026-11-05T00:00:00Z' },
+    { id: 'bob', role: 'user', content: 'Second', metadata: { actorID: 'railgrid:bob@example.com' }, createdAt: '2026-11-05T00:01:00Z' },
+    { id: 'legacy', role: 'user', content: 'Older message' },
+  ])
+  expect(rows.map(row => formatAIMessageAuthor(row.actorID))).toEqual(['alice@example.com', 'bob@example.com', 'Unknown sender'])
+  for (const message of rows) {
+    const view = await mountVue(ChatMessageView, { message, showRunLink: false })
+    mounted.push(view)
+    await settle()
+    const footer = view.element.querySelector('.k-ai-message__after')
+    expect(footer?.textContent).toContain(formatAIMessageAuthor(message.actorID))
+    expect(view.element.querySelector('article')?.getAttribute('aria-label')).toBe(`Message from ${formatAIMessageAuthor(message.actorID)}`)
+  }
+})
+
+it('attributes optimistic messages for accounts without an email before the server responds', async () => {
+  const user = { email: '', userId: 'static-user-47b9dce0e91570a1' }
+  const message = { id: 'pending', role: 'user', content: 'Hello', tools: [], actorID: optimisticAIMessageActor(user) }
+  const view = await mountVue(ChatMessageView, { message })
+  mounted.push(view)
+  expect(view.element.querySelector('.k-ai-message-author')?.textContent).toBe(user.userId)
+  expect(view.element.textContent).not.toContain('Unknown sender')
+  expect(optimisticAIMessageActor(null)).toBe('You')
+  expect(formatAIMessageAuthor(undefined)).toBe('Unknown sender')
+})
+
+it('shows the Railgrid user immediately while a no-email account waits for a chat response', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const { el } = await mountChat(scripted([], gate), {
+    context: () => ({ user: { email: '', userId: 'static-user-alice' } }),
+  })
+  try {
+    await send(el, 'Please review this thread.')
+    expect(el.querySelector('.k-ai-message-author')?.textContent).toBe('static-user-alice')
+    expect(text(el)).not.toContain('Unknown sender')
+  } finally {
+    release()
+    await settle()
+  }
+})
+
+it('renders saved user IDs and new pending messages with the same account email', async () => {
+  localStorage.setItem('railgrid:agents:session:org:ws:scout', 'sender-session')
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const { el } = await mountChat(scripted([], gate), {
+    context: () => ({ user: { email: 'alice@example.com', userId: 'user-alice' } }),
+    listMessagePage: () => Promise.resolve({ items: [{ id: 'saved', role: 'user', content: 'Earlier message', metadata: { actorID: 'user-alice' } }] }),
+  })
+  try {
+    expect(el.querySelector('.k-ai-message-author')?.textContent).toBe('alice@example.com')
+    await send(el, 'New message')
+    expect([...el.querySelectorAll('.k-ai-message-author')].map(node => node.textContent)).toEqual(['alice@example.com', 'alice@example.com'])
+  } finally {
+    release()
+    await settle()
+  }
 })

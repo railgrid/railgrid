@@ -179,7 +179,7 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 func TestAssistantThreadSteeringUserMessageCarriesExactRequestIdentity(t *testing.T) {
 	createdAt := time.Date(2026, time.January, 2, 3, 4, 5, 0, time.UTC)
 	user := store.Message{
-		ID: "user-steer-2", Role: "user", Content: "continue with the correction", CreatedAt: createdAt,
+		ID: "user-steer-2", Role: "user", ActorID: "railgrid:alice@example.com", Content: "continue with the correction", CreatedAt: createdAt,
 		Metadata: map[string]any{projectAssistantSteeringRequestMetadata: "steer-request-2"},
 	}
 	item := assistantThreadSteeringUserMessageItem(user, "turn-shared")
@@ -195,6 +195,9 @@ func TestAssistantThreadSteeringUserMessageCarriesExactRequestIdentity(t *testin
 		TurnID: "turn-shared", Sequence: 1, Type: assistantThreadEventItemCompleted,
 		ItemID: user.ID, Payload: payload, CreatedAt: createdAt,
 	}})
+	if len(items) == 1 && items[0].ActorID != user.ActorID {
+		t.Fatalf("materialized sender = %q, want %q", items[0].ActorID, user.ActorID)
+	}
 	if len(items) != 1 {
 		t.Fatalf("materialized steering item count = %d, want 1", len(items))
 	}

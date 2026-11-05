@@ -496,6 +496,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
     result.push({
       id: itemOwnMessageID(item),
       projectID: projectName,
+      ...(role === 'user' && typeof item.actorID === 'string' ? { actorID: item.actorID } : {}),
       role,
       content: item.content ?? '',
       metadata,

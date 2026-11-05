@@ -180,6 +180,23 @@ func TestMCPChatStreamsTheTurnAndReturnsTheTerminalFrame(t *testing.T) {
 	if data["runID"] == "" || data["runID"] == nil {
 		t.Fatalf("done frame carries no runID: %v", data)
 	}
+	page, err := s.store.ListMessages(context.Background(), store.Scope{OrgUUID: "o", WorkspaceUUID: "w", AgentName: "scout"}, "t1", 100, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, message := range page.Items {
+		if message.Role == "user" {
+			found = true
+			if message.Metadata["actorID"] != "alice" {
+				t.Fatalf("stored sender = %v, want authenticated caller alice", message.Metadata["actorID"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing persisted user message")
+	}
+
 }
 
 func TestMCPChatRefusalKeepsTheHTTPClass(t *testing.T) {

@@ -33,6 +33,7 @@ export interface ProjectSourceChange {
 }
 
 export interface ProjectMessage {
+  actorID?: string
   id: string
   projectID: string
   role: 'user' | 'assistant'
@@ -261,6 +262,7 @@ export interface ProjectAssistantThreadEvent {
 }
 
 export interface ProjectAssistantThreadItem {
+  actorID?: string
   id: string
   turnID?: string
   type: 'userMessage' | 'agentMessage' | 'dynamicToolCall' | string
