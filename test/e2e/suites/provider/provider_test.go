@@ -32,6 +32,7 @@ import (
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -557,10 +558,18 @@ func TestFTenantEnableAndCRUsable(t *testing.T) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	})
 	if !ok {
-		t.Fatal("APIBinding never reached Bound")
+		t.Fatal("APIBinding never reached Bound with valid permission claims")
 	}
 
 	// CR must now be creatable in the tenant workspace. Greeting is
@@ -1067,9 +1076,17 @@ func enableQuickstart(t *testing.T, cluster, token string) {
 			return false, err.Error()
 		}
 		phase, _, _ := unstructured.NestedString(got.Object, "status", "phase")
-		return phase == "Bound", "phase=" + phase
+		conditions, _, _ := unstructured.NestedSlice(got.Object, "status", "conditions")
+		claimsValid := false
+		for _, raw := range conditions {
+			condition, _ := raw.(map[string]any)
+			if condition["type"] == "PermissionClaimsValid" && condition["status"] == "True" {
+				claimsValid = true
+			}
+		}
+		return phase == "Bound" && claimsValid, fmt.Sprintf("phase=%s claimsValid=%v", phase, claimsValid)
 	}) {
-		t.Fatalf("APIBinding in %s never reached Bound", cluster)
+		t.Fatalf("APIBinding in %s never reached Bound with valid permission claims", cluster)
 	}
 }
 
@@ -1244,24 +1261,68 @@ func TestF5ClaimsFollowCatalogEntry(t *testing.T) {
 func TestGTenantDisableRemovesCR(t *testing.T) {
 	tenantWS := loginStaticTokenAndGetCluster(t)
 	tenant := kcpDynamic(t, tenantWS, staticToken)
+	adminTenant := kcpDynamic(t, tenantWS, adminToken)
+	enableQuickstart(t, tenantWS, staticToken)
+
+	// Seed a known object first so the tenant read checks prove that Disable
+	// revokes access to data, rather than succeeding only because the workspace
+	// happens to be empty.
+	const greetingName = "e2e-disable"
+	createGreeting(t, tenantWS, staticToken, greetingName, "must not be visible after disable")
 
 	framework.DisableTenantProvider(t, hubURL, tenant, staticToken, "quickstart")
 
-	// After delete, the CR group should disappear from the tenant workspace.
-	ok := waitForCondition(t, 30*time.Second, func() (bool, string) {
-		_, err := tenant.Resource(greetingGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
-		if err == nil {
-			return false, "Greeting list still succeeds"
+	// Disable is asynchronous in kcp. Confirm from the admin client that the
+	// tenant binding is actually gone before checking the tenant-facing surface.
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 2*time.Second), "quickstart", metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return true, "APIBinding removed"
 		}
-		// Either a NotFound from the missing resource or a "no matches" discovery error is acceptable.
-		msg := err.Error()
-		return strings.Contains(msg, "could not find the requested resource") ||
-			strings.Contains(msg, "no matches for kind") ||
-			apierrors.IsNotFound(err), msg
-	})
-	if !ok {
-		t.Fatal("Greeting CR still discoverable after disable")
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "quickstart APIBinding still exists"
+	}) {
+		t.Fatal("quickstart APIBinding still exists after Disable")
 	}
+	if !waitForCondition(t, 30*time.Second, func() (bool, string) {
+		_, err := adminTenant.Resource(greetingGVR).List(ctxWithTimeout(t, 2*time.Second), metav1.ListOptions{})
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return true, "Greeting API is no longer served"
+		}
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "Greeting API still served to kcp admin"
+	}) {
+		t.Fatal("Greeting API remained served after the quickstart APIBinding was removed")
+	}
+
+	assertUnavailable := func(operation string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("tenant %s unexpectedly succeeded after Disable; Greeting data must not be readable", operation)
+		}
+		if !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			t.Fatalf("tenant %s returned unexpected error after Disable: %v", operation, err)
+		}
+	}
+	got, err := tenant.Resource(greetingGVR).Get(ctxWithTimeout(t, 5*time.Second), greetingName, metav1.GetOptions{})
+	if err == nil && got != nil {
+		t.Fatalf("tenant read Greeting after Disable returned data: %v", got.Object)
+	}
+	assertUnavailable("get Greeting", err)
+
+	list, err := tenant.Resource(greetingGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
+	if err == nil && list != nil {
+		for _, item := range list.Items {
+			if item.GetName() == greetingName {
+				t.Fatalf("tenant list returned Greeting %q after Disable: %v", greetingName, item.Object)
+			}
+		}
+	}
+	assertUnavailable("list Greetings", err)
 }
 
 func TestHHeartbeatEndpoint(t *testing.T) {
