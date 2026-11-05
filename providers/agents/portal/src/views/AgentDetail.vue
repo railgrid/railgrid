@@ -81,12 +81,34 @@ function isMobileViewport(): boolean {
   return window.innerWidth <= 767
 }
 
+// Layout choices are local to this browser, caller, workspace, and agent.
+const workbenchStorageKey = computed(() => {
+  const tenantKey = props.api.tenantKey()
+  const user = props.api.context()?.user
+  const userKey = user?.sub || user?.userId || user?.email || ''
+  return `railgrid:agents:workbench:${encodeURIComponent(JSON.stringify([tenantKey, userKey, props.name]))}:open:v1`
+})
+function preferredWorkbenchOpen(): boolean {
+  try {
+    const stored = localStorage.getItem(workbenchStorageKey.value)
+    if (stored === '0' || stored === '1') return stored === '1'
+  } catch { /* Storage may be unavailable. */ }
+  return true
+}
+function rememberWorkbenchOpen(open: boolean): void {
+  // Mobile drawers and compact overlays should not change the desktop layout.
+  if (props.compact || workspaceCompact.value) return
+  try {
+    localStorage.setItem(workbenchStorageKey.value, open ? '1' : '0')
+  } catch { /* Keep the controls usable when storage is unavailable. */ }
+}
+
 // Chat is the route's primary surface, but a wide desktop gets the retained
 // workbench alongside it on first entry. A mobile deep link to a workbench tab
 // is an explicit request for that pane and therefore still opens it.
 const workbenchExplicitlyOpened = ref(props.tab !== 'chat')
 const workspaceCompact = ref(isMobileViewport())
-const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || !isMobileViewport()))
+const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || (!isMobileViewport() && preferredWorkbenchOpen())))
 let inspectionActive = false
 let inspectionWorkspaceOpen: boolean | null = null
 let workbenchIntentVersion = 0
@@ -94,7 +116,7 @@ let inspectionIntentVersion = 0
 watch(() => props.compact, compact => {
   workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = false
-  workspaceOpen.value = !compact && !workspaceCompact.value
+  workspaceOpen.value = !compact && !workspaceCompact.value && preferredWorkbenchOpen()
   if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
 })
 const initialWorkbenchState = props.tab === 'chat'
@@ -104,6 +126,11 @@ const workbench = ref<AgentWorkbenchState>(initialWorkbenchState)
 const configMounted = ref(props.tab === 'config' || props.tab === 'tools' || props.tab === 'automation' || (props.tab === 'chat' && workspaceOpen.value))
 const runsMounted = ref(props.tab === 'runs')
 const workbenchTab = computed(() => workbench.value.activeTabID)
+
+watch(workbenchStorageKey, () => {
+  workspaceOpen.value = !props.compact && (props.tab !== 'chat' || (!workspaceCompact.value && preferredWorkbenchOpen()))
+  if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
+})
 
 function navigate(route: Route): void { emit('navigate', route) }
 
@@ -116,6 +143,7 @@ watch(() => props.tab, tab => {
   if (inspectionActive) workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
+    rememberWorkbenchOpen(true)
     workbench.value = openAgentWorkbenchTab(workbench.value, tab)
     workspaceOpen.value = true
     ensureWorkbenchSurfaceMounted(tab)
@@ -151,6 +179,7 @@ function toggleWorkbench(event: MouseEvent): void {
     workspace.value?.close()
     return
   }
+  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workspace.value?.open(trigger)
   workspaceOpen.value = true
@@ -169,6 +198,7 @@ function onWorkspaceCompactChange(compact: boolean): void {
 }
 
 function closeWorkbench(): void {
+  rememberWorkbenchOpen(false)
   workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = false
   workspaceOpen.value = false
@@ -177,6 +207,7 @@ function closeWorkbench(): void {
 
 function selectWorkbenchTab(tab: WorkbenchTab): void {
   workbenchIntentVersion += 1
+  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workbench.value = activateAgentWorkbenchTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -186,6 +217,7 @@ function selectWorkbenchTab(tab: WorkbenchTab): void {
 
 function openWorkbenchLauncherTab(): void {
   workbenchIntentVersion += 1
+  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workspace.value?.open()
   workspaceOpen.value = true
@@ -194,6 +226,7 @@ function openWorkbenchLauncherTab(): void {
 
 function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
   workbenchIntentVersion += 1
+  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workbench.value = selectAgentWorkbenchLauncherTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -203,6 +236,7 @@ function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
 
 function closeWorkbenchTab(tab: WorkbenchTab): void {
   workbenchIntentVersion += 1
+  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   const wasActive = workbench.value.activeTabID === tab
   workbench.value = closeAgentWorkbenchTab(workbench.value, tab)
