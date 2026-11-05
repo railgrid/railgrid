@@ -215,17 +215,6 @@ func DeleteAgentKubeconfig(edgeName string) error {
 	return nil
 }
 
-// SaveAgentConfigWithCluster persists the durable agent token and its kcp
-// cluster context so the agent can reconnect without the bootstrap join token
-// after the first successful auth.
-func SaveAgentConfigWithCluster(edgeName, hubURL, token, cluster string) error {
-	path, err := AgentConfigPath(edgeName)
-	if err != nil {
-		return err
-	}
-	return SaveAgentConfigAt(path, AgentConfig{HubURL: hubURL, Token: token, Cluster: cluster})
-}
-
 // SaveAgentConfigAt writes a persisted agent config at path with owner-only
 // permissions. Callers that install for another account should chown the file
 // to that account after this function returns.

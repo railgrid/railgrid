@@ -20,14 +20,6 @@ async function load(): Promise<VersionResponse | null> {
   return inflight
 }
 
-// isAgentOutdated returns true when both versions are known, neither is the
-// placeholder "dev" build, and the agent's version differs from the hub's.
-export function isAgentOutdated(agentVersion: string | undefined, hubVer: string | undefined): boolean {
-  if (!agentVersion || !hubVer) return false
-  if (agentVersion === 'dev' || hubVer === 'dev') return false
-  return agentVersion !== hubVer
-}
-
 // hubVersionLabel renders the hub build the way provider versions are shown
 // ("v1.2.3"): release builds get a "v" prefix unless they already carry one;
 // "dev" and commit-ish builds are shown as-is.

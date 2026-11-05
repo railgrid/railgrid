@@ -31,74 +31,8 @@ import (
 	"k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/rest"
 
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
-
-func TestEnsureBuiltinCatalogEntries_DoesNotTouchChartOwnedEntry(t *testing.T) {
-	const providerName = "chart-owned-test"
-	if _, ok := providers.BuiltinByName(providerName); !ok {
-		providers.RegisterBuiltin(providers.BuiltinSpec{
-			Name:        providerName,
-			DisplayName: "Chart Owned Test",
-		})
-	}
-
-	scheme := runtime.NewScheme()
-	dyn := fake.NewSimpleDynamicClientWithCustomListKinds(scheme, map[schema.GroupVersionResource]string{
-		apiBindingGVR:   "APIBindingList",
-		catalogEntryGVR: "CatalogEntryList",
-	})
-
-	if _, err := dyn.Resource(apiBindingGVR).Create(context.Background(), &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "apis.kcp.io/v1alpha2",
-		"kind":       "APIBinding",
-		"metadata": map[string]interface{}{
-			"name": "providers.railgrid.ai",
-		},
-		"status": map[string]interface{}{
-			"phase": "Bound",
-		},
-	}}, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("seeding APIBinding: %v", err)
-	}
-
-	original := &unstructured.Unstructured{Object: map[string]interface{}{
-		"apiVersion": "providers.railgrid.ai/v1alpha1",
-		"kind":       "CatalogEntry",
-		"metadata": map[string]interface{}{
-			"name": providerName,
-		},
-		"spec": map[string]interface{}{
-			"displayName": "Provider from Chart",
-			"ui": map[string]interface{}{
-				"url": "/services/chart-owned-test",
-			},
-		},
-	}}
-	if _, err := dyn.Resource(catalogEntryGVR).Create(context.Background(), original, metav1.CreateOptions{}); err != nil {
-		t.Fatalf("seeding CatalogEntry: %v", err)
-	}
-
-	if err := ensureBuiltinCatalogEntries(context.Background(), dyn, []string{providerName}); err != nil {
-		t.Fatalf("ensureBuiltinCatalogEntries: %v", err)
-	}
-
-	got, err := dyn.Resource(catalogEntryGVR).Get(context.Background(), providerName, metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("get CatalogEntry: %v", err)
-	}
-	if got.GetAnnotations()[builtinAnnotation] == "true" {
-		t.Fatal("expected chart-owned entry to remain unannotated")
-	}
-	displayName, found, err := unstructured.NestedString(got.Object, "spec", "displayName")
-	if err != nil {
-		t.Fatalf("reading displayName: %v", err)
-	}
-	if !found || displayName != "Provider from Chart" {
-		t.Fatalf("displayName = %q, want chart-owned value", displayName)
-	}
-}
 
 // binding builds an unstructured APIBinding with the given deletion state for
 // deletionBlockedMessage tests.

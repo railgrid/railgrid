@@ -86,7 +86,6 @@ func (o *DevOptions) appsHubValues(hubValues map[string]any) {
 	if !o.appsGatewayEnabled() {
 		return
 	}
-	hubValues["publishedAppsDomain"] = devAppsBaseDomain
 	hubValues["portalFrameSources"] = []string{"https://*." + devAppsBaseDomain + o.appsPublicURLSuffix()}
 }
 

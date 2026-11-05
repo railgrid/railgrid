@@ -234,7 +234,6 @@ make build-hub
   --data-dir=%s \
   --portal-dev-url=http://localhost:%s \
   --portal-frame-source=%s \
-  --published-apps-domain=%s \
   --kubeconfig=.railgrid-kro.kubeconfig \
   --hub-internal-url=%s
 ''' % (
@@ -244,7 +243,6 @@ make build-hub
         os.getenv('HUB_DATA_DIR', '/tmp/railgrid-data'),
         portal_port,
         preview_app_frame_source,
-        preview_app_base_domain,
         hub_internal_url,
     )),
     deps=[

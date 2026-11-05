@@ -23,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"strings"
@@ -117,7 +116,7 @@ func uiIntegrityVersion(specVersion, reportedVersion string) string {
 // the snapshot it took beforehand: a record another reconcile wrote meanwhile
 // is left alone, and only this call's own superseded pin is dropped.
 func (r *CatalogReconciler) pinUIIntegrity(ctx context.Context, logger logr.Logger, prov Provider, version string) (string, bool) {
-	if prov.OrgUUID != "" || (prov.LocalUIAssets == nil && prov.UIURL == nil) {
+	if prov.OrgUUID != "" || prov.UIURL == nil {
 		return "", false
 	}
 	key := providerKey{Org: prov.OrgUUID, Name: prov.Name}
@@ -249,29 +248,12 @@ type uiBundleRead struct {
 	notModified bool
 }
 
-// hashProviderMainJS reads the bundle exactly as the UI proxy would serve it —
-// from the embedded assets of a first-party provider, or from
-// <spec.serving.ui.url>/main.js — and returns its SRI metadata.
-func hashProviderMainJS(ctx context.Context, client httpDoer, prov Provider) (string, error) {
-	read, err := readProviderMainJS(ctx, client, prov, "")
-	if err != nil {
-		return "", err
-	}
-	return read.integrity, nil
-}
-
 // readProviderMainJS is hashProviderMainJS plus revalidation: ifNoneMatch, when
 // non-empty, is sent as If-None-Match so an unchanged upstream can answer 304
 // without a body. Embedded assets ignore it — they are read from this binary,
 // so there is nothing to revalidate against.
 func readProviderMainJS(ctx context.Context, client httpDoer, prov Provider, ifNoneMatch string) (uiBundleRead, error) {
 	switch {
-	case prov.LocalUIAssets != nil:
-		data, err := fs.ReadFile(prov.LocalUIAssets, "main.js")
-		if err != nil {
-			return uiBundleRead{}, err
-		}
-		return uiBundleRead{integrity: sriSHA384(data)}, nil
 	case prov.UIURL != nil:
 		return fetchProviderMainJS(ctx, client, prov.UIURL, ifNoneMatch)
 	default:

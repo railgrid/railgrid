@@ -23,9 +23,6 @@ import (
 
 	"github.com/railgrid/provider-sdk/dataplane"
 	rbacv1 "k8s.io/api/rbac/v1"
-
-	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
 )
 
 // The policy is the whole point of this service. A provider asking the hub to
@@ -380,98 +377,6 @@ func containsAny(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// RegistryCatalog adapts the hub provider registry to ProviderCatalog.
-//
-// A provider's exported groups are Provider.APIGroups: the groups the catalog
-// controller READ from spec.resources[].group on the provider's own APIExport.
-// They are emphatically NOT the APIExport's name. An export is named after the
-// provider that serves it — `edges.providers.railgrid.ai` — while the kinds it
-// serves live in `edges.railgrid.ai`, and a single export may serve several
-// groups. Answering "who owns this group" from the export name therefore
-// misses every provider whose two names differ (edges, infrastructure, code),
-// which is most of them: the edges agent asking for its own
-// `edges.railgrid.ai` was told unknown_group.
-//
-// A provider whose export the hub has not read yet has no groups, and the
-// answer here is "nobody owns it" — the policy then refuses the rule with
-// unknown_group. That is the fail-closed direction: a guess would hand one
-// provider's group to another provider's identity.
-//
-// Declared verbs come from the export: every verb and action is declared ON the
-// resource it is served on, which is exactly the {resource}/{verb} coordinate
-// clause C mints.
-//
-// Declared verbs are the union of two declarations that land on the same RBAC
-// coordinate: ACTIONS (spec.export.resources[].actions — versioned, schema'd,
-// request/response) and VERBS (spec.export.resources[].verbs — unversioned,
-// streaming or proxying: exec, ssh, proxy, delegate). Both are enforced
-// provider-side by a caller-scoped SSAR on {resource}/{verb}; the declaration
-// is what makes the coordinate machine-readable so the hub can tell a real
-// verb from an invented one.
-type RegistryCatalog struct {
-	registry *providers.Registry
-}
-
-// NewRegistryCatalog adapts a provider registry.
-func NewRegistryCatalog(registry *providers.Registry) *RegistryCatalog {
-	return &RegistryCatalog{registry: registry}
-}
-
-// GroupOwner implements ProviderCatalog.
-//
-// The registry spans scopes, so an org-owned provider and a platform one could
-// both claim a group. The platform copy wins and ties below it break on name,
-// so the answer is the same on every replica and on every call — a map-order
-// answer would make one identity request succeed and the next one refuse.
-func (c *RegistryCatalog) GroupOwner(apiGroup string) (string, bool) {
-	if c == nil || c.registry == nil || apiGroup == "" {
-		return "", false
-	}
-	owner, platform := "", false
-	for _, provider := range c.registry.List() {
-		if !containsAny(provider.APIGroups, apiGroup) {
-			continue
-		}
-		isPlatform := provider.OrgUUID == ""
-		switch {
-		case owner == "":
-		case platform && !isPlatform:
-			continue
-		case platform == isPlatform && provider.Name >= owner:
-			continue
-		}
-		owner, platform = provider.Name, isPlatform
-	}
-	return owner, owner != ""
-}
-
-// ExportedGroups implements ProviderCatalog.
-func (c *RegistryCatalog) ExportedGroups(provider string) []string {
-	if c == nil || c.registry == nil {
-		return nil
-	}
-	entry, ok := c.registry.Get(provider)
-	if !ok {
-		return nil
-	}
-	return append([]string(nil), entry.APIGroups...)
-}
-
-// DeclaredVerbs implements ProviderCatalog.
-func (c *RegistryCatalog) DeclaredVerbs(provider, resource string) []string {
-	if c == nil || c.registry == nil {
-		return nil
-	}
-	entry, ok := c.registry.Get(provider)
-	if !ok {
-		return nil
-	}
-	// ProviderDeclaredVerbs answers for verbs and actions together: the policy
-	// draws no distinction between them, because both are one coordinate
-	// somebody may be granted.
-	return dedupeSorted(providersv1alpha1.ProviderDeclaredVerbs(entry.Export, resource))
 }
 
 // Clause D — the platform allowlist.

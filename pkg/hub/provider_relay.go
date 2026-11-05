@@ -167,13 +167,6 @@ func (s *Server) ProviderRelayBaseURL() string {
 	return s.opts.ProviderRelayURL
 }
 
-// StartProviderRelay starts the dedicated external-kcp mTLS listener, or does
-// nothing when embedded kcp is in use. The returned channel is nil when no
-// external listener is configured.
-func (s *Server) StartProviderRelay(ctx context.Context, handler http.Handler) (<-chan error, error) {
-	return s.startProviderRelay(ctx, handler)
-}
-
 func (s *Server) startProviderRelay(ctx context.Context, handler http.Handler) (<-chan error, error) {
 	if s.opts.EmbeddedKCP {
 		if s.opts.ProviderRelayURL != "" || s.opts.ProviderRelayListenAddr != "" || s.opts.ProviderRelayCertFile != "" || s.opts.ProviderRelayKeyFile != "" || s.opts.ProviderRelayClientCAFile != "" || len(s.opts.ProviderRelayAllowedNames) > 0 {

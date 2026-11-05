@@ -80,13 +80,6 @@ type providerDTO struct {
 	// false. Values come from Provider.Readiness and are safe for end users.
 	ReadinessReason  string `json:"readinessReason,omitempty"`
 	ReadinessMessage string `json:"readinessMessage,omitempty"`
-	// Builtin is true for first-party providers (those that registered via
-	// providers.RegisterBuiltin) regardless of how they surface their UI
-	// (legacy builtinRoute or new LocalUIAssets custom element). The portal
-	// uses this flag to skip the "Enable" / APIBinding gate that third-
-	// party providers require before appearing in the side nav.
-	Builtin bool `json:"builtin,omitempty"`
-
 	// The four sections below mirror CatalogEntry.spec one for one, with the
 	// same JSON names, so a portal reading this response and an operator
 	// reading `kubectl get catalogentry -o yaml` see the same shape.
@@ -449,12 +442,6 @@ func PresentProvider(p Provider) ProviderDTO {
 	if iconURL == "" && p.UIURL != nil && p.OrgUUID == "" {
 		iconURL = "/ui/providers/" + p.Name + "/icon.svg"
 	}
-	// Only a platform provider can be a builtin — builtins ship inside
-	// the hub binary, so an Org cannot register one, and matching an
-	// org-owned provider by name here would wrongly grant it the
-	// builtin affordances (no Enable dialog).
-	_, isBuiltin := BuiltinByName(p.Name)
-	isBuiltin = isBuiltin && p.OrgUUID == ""
 	scope := ScopeGlobal
 	if p.OrgUUID != "" {
 		scope = ScopeOrg
@@ -473,7 +460,6 @@ func PresentProvider(p Provider) ProviderDTO {
 		Ready:            ready,
 		ReadinessReason:  readinessReason,
 		ReadinessMessage: readinessMessage,
-		Builtin:          isBuiltin,
 		Export:           exportDTO(p),
 		Requires:         cloneProviderRequirements(p.Requires),
 		Serving:          servingDTO(p),
@@ -567,7 +553,7 @@ func exportDTO(p Provider) *providerExportDTO {
 // it offers none.
 func servingDTO(p Provider) *providerServingDTO {
 	out := &providerServingDTO{}
-	if p.UIURL != nil || p.BuiltinRoute != "" || p.LocalUIAssets != nil {
+	if p.UIURL != nil || p.BuiltinRoute != "" {
 		ui := &providerUIDTO{
 			BuiltinRoute:    p.BuiltinRoute,
 			MainJSIntegrity: p.MainJSIntegrity,

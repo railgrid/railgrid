@@ -1517,7 +1517,7 @@ test('workspace hydration defers transient copy and does not call an unresolved 
 
 test('provider frames gate APIExport providers on an authoritative workspace binding', () => {
   assert.match(providerFrame, /const isBuiltinProvider = computed/)
-  assert.match(providerFrame, /p\.builtin \|\| !!p\.serving\?\.ui\?\.builtinRoute/)
+  assert.match(providerFrame, /!!p && !!p\.serving\?\.ui\?\.builtinRoute/)
   assert.match(providerFrame, /const requiresBinding = computed/)
   assert.match(providerFrame, /!isBuiltinProvider\.value/)
   assert.match(providerFrame, /p\.export\?\.name \|\| p\.export\?\.path/)

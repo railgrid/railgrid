@@ -125,12 +125,6 @@ func (s *Server) Run(ctx context.Context) error {
 	// Prometheus metrics for every manager in this process, on their own
 	// cluster-internal listener (never the serving port).
 	go metrics.Serve(ctx, s.opts.MetricsListenAddr)
-	// Validate --providers BEFORE any expensive init (embedded kcp takes
-	// ~60s to bootstrap). A typo or dep violation should error in
-	// milliseconds, not after the user watches kcp boot.
-	if err := kcp.ValidateProviders(s.opts.Providers); err != nil {
-		return err
-	}
 	delegationMode, err := providers.ParseDelegationMode(s.opts.ProviderDelegatedTokens)
 	if err != nil {
 		return err
@@ -367,7 +361,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// Defaults to the base railgridClient; overridden to root:railgrid:users when kcp is configured.
 	userClient := railgridClient
 	if kcpConfig != nil {
-		bootstrapper = kcp.NewBootstrapper(kcpConfig).WithEnabledProviders(s.opts.Providers)
+		bootstrapper = kcp.NewBootstrapper(kcpConfig)
 		// Retry for the same reason InstallCRDs does: sibling replicas bootstrap
 		// the same idempotent objects concurrently, so a lost write race is a
 		// transient condition, not a fatal one.
@@ -734,8 +728,8 @@ func (s *Server) Run(ctx context.Context) error {
 		// hubs — an unauthenticated visitor bounces through /login?next=…,
 		// signs in with whichever mode the hub offers, and the authorize
 		// continuation completes.
-		// Registered whenever the hub can reach kcp — NOT gated on
-		// PublishedAppsDomain: redirects are pinned per sign-in to the host
+		// Registered whenever the hub can reach kcp — not gated on any
+		// apps domain: redirects are pinned per sign-in to the host
 		// stamped on the instance being authorized, so apps published under a
 		// BYO provider's own zone (or a fully customer-owned domain) work on
 		// hubs that configure no platform apps zone at all.

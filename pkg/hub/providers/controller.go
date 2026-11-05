@@ -673,14 +673,6 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// /services/providers/{name}/vw/*; custom verbs belong on the data-plane
 	// grammar (docs/provider-connectivity-contract.md).
 
-	// If this CatalogEntry name matches a first-party provider that
-	// registered LocalUIAssets via BuiltinSpec, plumb the embedded FS into
-	// the registry record so the UI proxy serves /ui/providers/{name}/*
-	// from the hub binary instead of forwarding to an external URL.
-	if spec, ok := BuiltinByName(entry.Name); ok && spec.LocalUIAssets != nil && prov.UIURL == nil && prov.BuiltinRoute == "" {
-		prov.LocalUIAssets = spec.LocalUIAssets
-	}
-
 	// Pin the bundle the portal will execute in its own document. The pin is
 	// keyed on the running version so a chart upgrade or a heartbeat that
 	// reports a new version re-hashes on this reconcile; otherwise a cached
@@ -703,7 +695,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	// are nil — it only stops the portal from rendering the provider as broken.
 	prov.EndpointsValid = len(parseErrs) == 0 &&
 		(prov.UIURL != nil || prov.BackendURL != nil ||
-			prov.BuiltinRoute != "" || prov.LocalUIAssets != nil || prov.APIExportName != "")
+			prov.BuiltinRoute != "" || prov.APIExportName != "")
 
 	// Every heartbeat and status write reconciles the entry again, so the
 	// steady-state upsert is logged at V(4); a new record, or a change in
@@ -715,8 +707,8 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 		upsertLogger = logger
 	}
 	// Render URLs as strings: a nil *url.URL panics klog's stringer (shows as
-	// "<panic: ...>" in logs), which is the common case for builtins (localUI).
-	upsertLogger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", urlString(prov.UIURL), "backend", urlString(prov.BackendURL), "localUI", prov.LocalUIAssets != nil)
+	// "<panic: ...>" in logs), which is the common case for API-only providers.
+	upsertLogger.Info("Upserted provider", "endpointsValid", prov.EndpointsValid, "ui", urlString(prov.UIURL), "backend", urlString(prov.BackendURL))
 
 	// The hub no longer provisions the per-provider workspace, schemas,
 	// APIExport, SA, or kubeconfig — that moved to admin onboarding
@@ -881,7 +873,7 @@ func (r *CatalogReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 	if prov.BackendHealthRequired || prov.HeartbeatRequired || edgeRouteErr != nil || credentialExpiryPending || apiGroupsUnknown {
 		return ctrl.Result{RequeueAfter: SweepInterval}, nil
 	}
-	if prov.MainJSIntegrity != "" || prov.LocalUIAssets != nil || (prov.UIURL != nil && prov.OrgUUID == "") {
+	if prov.MainJSIntegrity != "" || (prov.UIURL != nil && prov.OrgUUID == "") {
 		// Nothing else drives a periodic reconcile for this entry, so schedule
 		// the SRI resync (and the retry after a failed hash fetch) here.
 		return ctrl.Result{RequeueAfter: UIIntegrityResync}, nil
@@ -989,8 +981,7 @@ func apiGroupsUnknownDetail(err error) string {
 func routingChanged(prev, next Provider) bool {
 	return prev.EndpointsValid != next.EndpointsValid ||
 		urlString(prev.UIURL) != urlString(next.UIURL) ||
-		urlString(prev.BackendURL) != urlString(next.BackendURL) ||
-		(prev.LocalUIAssets != nil) != (next.LocalUIAssets != nil)
+		urlString(prev.BackendURL) != urlString(next.BackendURL)
 }
 
 func urlString(u *url.URL) string {

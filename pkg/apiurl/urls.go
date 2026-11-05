@@ -219,30 +219,3 @@ func MCPServerPath(cluster, mcpServerName string) string {
 func MCPServerURL(hubBase, cluster, mcpServerName string) string {
 	return strings.TrimRight(hubBase, "/") + MCPServerPath(cluster, mcpServerName)
 }
-
-// EdgeAPIPath returns the kcp API path for an Edge resource, suitable for use
-// as a client Host suffix or in kubeconfig server URLs.
-//
-// Pattern: /clusters/{cluster}/apis/railgrid.ai/v1alpha1/edges/{name}
-func EdgeAPIPath(cluster, edgeName string) string {
-	return fmt.Sprintf("/clusters/%s/apis/railgrid.ai/v1alpha1/edges/%s", cluster, edgeName)
-}
-
-// ExternalizeURL replaces the scheme and host in edgeURL with those from
-// hubBase, making an internal edge-proxy URL routable through the public hub.
-//
-// If edgeURL does not start with /services/ it is returned unchanged.
-func ExternalizeURL(edgeURL, hubBase string) (string, error) {
-	// A hub-relative path is either a kube path on the front door (an edge's
-	// status.URL names its k8s or ssh verb under /clusters/{id}/apis/…) or a
-	// backend-proxy route (/services/…). Anything else is already absolute.
-	if !strings.HasPrefix(edgeURL, "/clusters/") && !strings.HasPrefix(edgeURL, "/services/") {
-		return edgeURL, nil
-	}
-	hub, err := url.Parse(strings.TrimRight(hubBase, "/"))
-	if err != nil {
-		return "", fmt.Errorf("parsing hub base URL %q: %w", hubBase, err)
-	}
-	result := hub.Scheme + "://" + hub.Host + edgeURL
-	return result, nil
-}

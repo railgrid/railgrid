@@ -82,11 +82,6 @@ func (a *LocalhostCallbackAuthenticator) Port() int {
 	return a.listener.Addr().(*net.TCPAddr).Port
 }
 
-// Endpoint returns the full callback URL.
-func (a *LocalhostCallbackAuthenticator) Endpoint() string {
-	return fmt.Sprintf("http://127.0.0.1:%d/callback", a.Port())
-}
-
 // WaitForResponse blocks until the callback is received or the context is cancelled.
 func (a *LocalhostCallbackAuthenticator) WaitForResponse(ctx context.Context) (tenancyv1alpha1.LoginResponse, error) {
 	select {

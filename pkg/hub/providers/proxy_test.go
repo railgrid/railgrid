@@ -14,9 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"testing"
-	"testing/fstest"
 
 	"github.com/go-logr/logr"
 )
@@ -173,82 +171,6 @@ func TestBackendProxyHubOnlyReservations(t *testing.T) {
 
 }
 
-// TestUIProxyLocalAssets exercises the first-party-provider path:
-// when Provider.LocalUIAssets is set, asset requests serve from the
-// embedded FS without ever touching an upstream URL. The catalog SPA
-// fallback still wins for non-asset paths so refresh of
-// /ui/providers/mcp/some/spa-route lands in the portal.
-func TestUIProxyLocalAssets(t *testing.T) {
-	reg := NewRegistry()
-	assets := fstest.MapFS{
-		"main.js":  &fstest.MapFile{Data: []byte("/* mcp bundle */")},
-		"icon.svg": &fstest.MapFile{Data: []byte("<svg/>")},
-	}
-	reg.Upsert(Provider{
-		Name:           "mcp",
-		LocalUIAssets:  assets,
-		EndpointsValid: true,
-	})
-
-	spaCalled := false
-	spa := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		spaCalled = true
-		w.WriteHeader(http.StatusOK)
-	})
-	proxy := NewUIProxy(reg, logr.Discard())
-	proxy.SetFallback(spa)
-
-	t.Run("serves main.js from embedded FS", func(t *testing.T) {
-		spaCalled = false
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/ui/providers/mcp/main.js", nil)
-		proxy.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
-		}
-		if got := rec.Body.String(); got != "/* mcp bundle */" {
-			t.Errorf("body = %q, want embedded bundle", got)
-		}
-		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
-			t.Errorf("content-type = %q, want javascript", ct)
-		}
-		if spaCalled {
-			t.Error("SPA fallback was hit for an asset request")
-		}
-	})
-
-	t.Run("serves icon.svg", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/ui/providers/mcp/icon.svg", nil)
-		proxy.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d", rec.Code)
-		}
-		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "svg") {
-			t.Errorf("content-type = %q, want svg", ct)
-		}
-	})
-
-	t.Run("missing asset returns 404", func(t *testing.T) {
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/ui/providers/mcp/nope.js", nil)
-		proxy.ServeHTTP(rec, req)
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("status = %d, want 404", rec.Code)
-		}
-	})
-
-	t.Run("bare provider route still falls through to SPA", func(t *testing.T) {
-		spaCalled = false
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/ui/providers/mcp", nil)
-		proxy.ServeHTTP(rec, req)
-		if !spaCalled {
-			t.Errorf("SPA fallback was not hit; status=%d", rec.Code)
-		}
-	})
-}
-
 // The portal loads /ui/providers/<name>/main.js as a same-origin classic
 // script and pins it with Subresource Integrity, deliberately WITHOUT a
 // crossorigin attribute: a same-origin response is type "basic", which the
@@ -260,10 +182,19 @@ func TestUIProxyLocalAssets(t *testing.T) {
 // If a future change starts emitting CORS headers here, revisit
 // portal/src/providers/providerScriptLoader.ts before adding the attribute.
 func TestUIProxyServesBundleWithoutCORSNegotiation(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write([]byte("/* mcp bundle */"))
+	}))
+	t.Cleanup(upstream.Close)
+	uiURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	reg := NewRegistry()
 	reg.Upsert(Provider{
 		Name:           "mcp",
-		LocalUIAssets:  fstest.MapFS{"main.js": &fstest.MapFile{Data: []byte("/* mcp bundle */")}},
+		UIURL:          uiURL,
 		EndpointsValid: true,
 	})
 	proxy := NewUIProxy(reg, logr.Discard())
