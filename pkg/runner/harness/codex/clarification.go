@@ -43,7 +43,8 @@ type requestUserInputParams struct {
 	TurnID    string                     `json:"turnId"`
 	ItemID    string                     `json:"itemId"`
 	Questions []requestUserInputQuestion `json:"questions"`
-	// The runner pauses both blocking and nonblocking questions for an answer.
+	// Decode these fields for strict wire validation. The runner intentionally
+	// ignores Codex blocking and timer settings because it owns the durable pause.
 	IsBlocking       *bool   `json:"isBlocking"`
 	AutoResolutionMs *uint64 `json:"autoResolutionMs"`
 }

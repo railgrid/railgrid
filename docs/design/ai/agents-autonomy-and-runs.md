@@ -199,6 +199,14 @@ send it. The answer stays editable after an unsuccessful send. A link to
 `/activity/{runID}/question` opens the run directly so the last viewed chat
 cannot determine which question the user sees.
 
+Send and Skip are the question card's two actions. Skip resumes the run with
+an explicit instruction that the operator did not answer. To dismiss inbox
+items while keeping their question runs paused, use the inbox's bulk dismissal.
+
+For a runner-managed Codex question, the runner owns the durable pause and
+ignores Codex's blocking flag and auto-resolution timer. The reply or skip
+instruction is supplied in a new turn on the saved Codex session.
+
 The full original request is a single collapsed disclosure below the result and
 execution sections. Its summary includes a bounded, redacted preview; truncation
 preserves Unicode code points. The diagnostic excerpt yields to the full
