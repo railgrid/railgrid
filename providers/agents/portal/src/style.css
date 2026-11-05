@@ -567,6 +567,16 @@ railgrid-provider-agents .agents-warn-banner {
   background: var(--color-warning-subtle); color: var(--color-warning, #f0a63a);
   border: 1px solid color-mix(in srgb, var(--color-warning, #f0a63a) 35%, transparent);
 }
+railgrid-provider-agents .agents-question-continuation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-block: 4px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
 /* A run still working with nobody attached — informational, not a warning. */
 railgrid-provider-agents .agents-orphan-banner {
   display: flex; align-items: center; gap: 9px; flex-wrap: wrap;

@@ -280,12 +280,25 @@ function createOverlayChat(): void {
 }
 watch(() => props.composerOnly, compact => { if (compact) overlayChatsVisible.value = false })
 const orphanRun = ref<RunSummary | null>(null)
+const continuingQuestionReplyID = computed(() => {
+  const run = orphanRun.value
+  if (!run || run.phase !== 'Running' || streaming.value) return undefined
+  if (messages.value.some(message => message.runID === run.id && message.approval && !message.approval.resolved)) return undefined
+  return messages.value.filter(message => message.runID === run.id && message.questionPrompt !== undefined).at(-1)?.id
+})
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
 const orphanLoading = ref(false)
 const stopRequested = ref(false)
 const cancelingRunID = ref('')
 const approvalBusy = ref<Record<string, 'approve' | 'deny' | 'answer'>>({})
+function submittingQuestionReply(message: ChatMessage): boolean {
+  const approval = message.approval
+  return !!approval && pendingIsQuestion(approval) && approvalBusy.value[approval.inboxID] === 'answer'
+}
+const orphanQuestionReplyPending = computed(() => messages.value.some(message =>
+  message.runID === orphanRun.value?.id && submittingQuestionReply(message),
+))
 const orphanCancelBusyID = ref('')
 const deletingSessionID = ref('')
 const mobileRailOpen = ref(false)
@@ -1992,6 +2005,13 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     const id = `mquestion-answer-${inboxID}`
     patchMessage(target.id, { approval: { ...approval, resolved, ...(content ? { answerInThread: true } : {}) } })
     if (!content || messages.value.some(message => message.id === id)) return
+    if (!approvalRecoveryClosedRunIDs.has(approval.runID)) {
+      orphanReadSerial += 1
+      orphanRun.value = recoverableRun(approval.runID, session, name)
+      orphanError.value = null
+      orphanHasSnapshot.value = true
+      orphanLoading.value = false
+    }
     messages.value.push({
       id, role: 'user', content, questionPrompt: approval.question ?? '',
       runID: approval.runID, tools: [], actorID, questions: approval.questions, answers,
@@ -2263,7 +2283,7 @@ function onServerEvent(event: Event): void {
         orphanLoading.value = false
       }
       messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
-        ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
+        ? { ...message, approval: submittingQuestionReply(message) ? message.approval : undefined, progress: progressPatch(message, { status }) } : message)
       if (answeredElsewhere && !streaming.value) void loadMessages(sessionID.value)
     }
     return
@@ -2558,7 +2578,7 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="orphanRun && !streaming" class="agents-orphan-banner" role="status">
+        <div v-if="orphanRun && !streaming && !continuingQuestionReplyID && !orphanQuestionReplyPending" class="agents-orphan-banner" role="status">
           <Clock aria-hidden="true" />
           <span class="agents-orphan-text">
             This conversation has an active background run. Its reply will appear here when it finishes.
@@ -2619,26 +2639,34 @@ defineExpose({
               </button>
               <p v-if="olderError" class="muted" role="alert">Could not load earlier messages. {{ olderError }} Try again.</p>
             </div>
-            <ChatMessageView
-              v-for="message in messages"
-              :key="`${message.id}:${inlineAppGeneration}`"
-              :message="message"
-              :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
-              :session-i-d="sessionID"
-              :load-inline-app="loadInlineApp"
-              :inspected-artifact-receipt="inspectedArtifactReceipt"
-              :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
-              :announce="message.role === 'assistant' && message.streaming"
-              :show-run-link="runLinkMessageIDs.has(message.id)"
-              :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
-              :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
-              @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
-              @view-run="emit('navigate', { kind: 'run', id: $event })"
-              @recovery="navigateForFailure"
-              @inline-layout="scrollToBottom"
-              @save-artifact="saveArtifact"
-              @open-saved-capture="openSavedCaptureCitation"
-            />
+            <template v-for="message in messages" :key="`${message.id}:${inlineAppGeneration}`">
+              <ChatMessageView
+                :message="message"
+                :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
+                :session-i-d="sessionID"
+                :load-inline-app="loadInlineApp"
+                :inspected-artifact-receipt="inspectedArtifactReceipt"
+                :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
+                :announce="message.role === 'assistant' && message.streaming"
+                :show-run-link="runLinkMessageIDs.has(message.id)"
+                :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
+                :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
+                @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
+                @view-run="emit('navigate', { kind: 'run', id: $event })"
+                @recovery="navigateForFailure"
+                @inline-layout="scrollToBottom"
+                @save-artifact="saveArtifact"
+                @open-saved-capture="openSavedCaptureCitation"
+              />
+              <div v-if="message.id === continuingQuestionReplyID" class="agents-question-continuation">
+                <span role="status">Continuing after your answer…</span>
+                <button type="button" class="k-btn k-btn--ghost secondary"
+                  aria-label="Stop run: continuing after your answer"
+                  :disabled="!!orphanCancelBusyID" @click="cancelOrphan">
+                  {{ orphanCancelBusyID ? 'Stopping…' : 'Stop' }}
+                </button>
+              </div>
+            </template>
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
               <h2>Start a conversation with {{ agent?.spec.displayName || name }}</h2>

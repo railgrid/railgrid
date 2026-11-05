@@ -1268,8 +1268,10 @@ describe('chat streaming', () => {
   // approval card rendered "Approval required … tool unavailable" over an
   // Approve button that could not mean anything — reported from a live run.
   it('asks a question rather than offering an approval with no tool', async () => {
-    const resolveInbox = vi.fn().mockResolvedValue({ id: 'i1', state: 'answered' })
-    const { el } = await mountChat(
+    const answer = deferred<{ id: string; state: string }>()
+    const resolveInbox = vi.fn(() => answer.promise)
+    const cancelRun = vi.fn().mockResolvedValue({})
+    const { el, store } = await mountChat(
       scripted([
         { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
         {
@@ -1280,7 +1282,7 @@ describe('chat streaming', () => {
           },
         },
       ]),
-      { resolveInbox },
+      { resolveInbox, cancelRun },
     )
     await send(el, 'open a PR')
 
@@ -1298,6 +1300,11 @@ describe('chat streaming', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await settle(2)
     card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle(2)
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase: 'Running' } } }))
+    await settle(2)
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    answer.resolve({ id: 'i1', state: 'answered' })
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
     expect(el.querySelector('.agents-question-dock')).toBeNull()
@@ -1305,6 +1312,13 @@ describe('chat streaming', () => {
     const reply = el.querySelector('.agents-answer-context')?.parentElement
     expect(text(reply)).toContain('Which repository should I open the pull request against?')
     expect(text(reply)).toContain('the acme/app one')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    const status = el.querySelector('.agents-question-continuation')
+    expect(text(status)).toContain('Continuing after your answer')
+    status!.querySelector('button')!.click()
+    await settle(4)
+    expect(cancelRun).toHaveBeenCalledWith('r1')
+    expect(el.querySelector('.agents-question-continuation')).toBeNull()
   })
 
   it('rebuilds question replies as user messages before the continued reply', () => {
@@ -2159,6 +2173,24 @@ describe('a run still working with nobody attached', () => {
     expect(banner).toBeTruthy()
     expect(text(banner!)).toContain('active background run')
     expect(text(banner!)).toContain('View progress')
+  })
+
+  it('reopens a continuing question inline and replaces the status with the saved reply', async () => {
+    const answer = { id: 'answer', role: 'user', content: 'README', runID: 'r-live', metadata: { questionPrompt: 'Where?' } }
+    let finished = false
+    const { el, store } = await mountWith('Running', {
+      listRuns: async () => ({ items: [runRow({ phase: finished ? 'Succeeded' : 'Running' })] }),
+      listMessagePage: async () => ({ items: finished
+        ? [{ id: 'final', role: 'assistant', content: 'I updated the README.', runID: 'r-live' }, answer]
+        : [answer] }),
+    })
+    expect(text(el.querySelector('.agents-question-continuation'))).toContain('Continuing after your answer')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    finished = true
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r-live', phase: 'Succeeded' } } }))
+    await settle(6)
+    expect(el.querySelector('.agents-question-continuation')).toBeNull()
+    expect(text(el.querySelector('.agents-log'))).toContain('I updated the README.')
   })
 
   it('counts a run waiting on approval as still working', async () => {
