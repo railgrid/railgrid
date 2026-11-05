@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 43;
+  --railgrid-ui-core-version: 45;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -36,6 +36,16 @@
   --k-layer-fullscreen: 2000;
   --k-layer-modal: 2147483000;
   --k-layer-toast: 2147483001;
+}
+
+/* Static headings receive programmatic focus after navigation or a wizard
+ * transition so assistive technology can announce the destination. Keep that
+ * focus without drawing a control-like outline around the whole heading row.
+ * Interactive headings and the controls inside headings retain their rings.
+ * Important is scoped here because the host imports this file in a CSS layer,
+ * while provider-wide focus rules can be unlayered. */
+:is(h1, h2, h3, h4, h5, h6)[tabindex="-1"]:not([role]):not([contenteditable]):focus {
+  outline: none !important;
 }
 
 /* ── Eyebrow / KPI ────────────────────────────────────────────────────────
