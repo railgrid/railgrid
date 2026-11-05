@@ -35,13 +35,9 @@ async function mount(component: Parameters<typeof mountVue>[0], props: Record<st
   return view
 }
 
-async function openInbox(view: MountedVue, expandFirst = true): Promise<void> {
+async function openInbox(view: MountedVue): Promise<void> {
   view.element.querySelector<HTMLButtonElement>('[data-k-tab-id="inbox"]')!.click()
   await settleVue(2)
-  if (expandFirst) {
-    view.element.querySelector<HTMLButtonElement>('.agents-inbox-row')!.click()
-    await settleVue(2)
-  }
 }
 
 const run = (over: Partial<RunSummary> = {}): RunSummary => ({
@@ -385,7 +381,7 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector<HTMLButtonElement>('button[aria-label="Refresh runs"]')?.disabled).toBe(false)
   })
 
-  it('opens a compact approval and resolves it without leaving the inbox', async () => {
+  it('selects the first approval in the detail pane and resolves it without leaving the inbox', async () => {
     const resolution = deferred<Record<string, never>>()
     const resolveInbox = vi.fn().mockImplementation(() => resolution.promise)
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
@@ -400,15 +396,10 @@ describe('Activity.vue', () => {
     const view = await mount(Activity, { store, api })
     expect(view.element.querySelector('[data-k-tab-id="inbox"] .k-tab__count')?.textContent).toBe('1')
     expect(view.element.querySelector('.agents-inbox-row')).toBeNull()
-    await openInbox(view, false)
-    expect(view.element.querySelector('.agents-approval-disclosure')).toBeNull()
+    await openInbox(view)
+    expect(view.element.querySelector('.agents-inbox-row')?.getAttribute('aria-current')).toBe('true')
     expect(view.element.querySelector<HTMLElement>('.agents-activity-run-history')?.style.display).toBe('none')
-    view.element.querySelector<HTMLButtonElement>('.agents-inbox-row')!.click()
-    await settleVue(2)
-
-    expect([...view.element.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(heading => [heading.tagName, text(heading)])).toEqual([
-      ['H1', 'Activity'],
-    ])
+    expect(text(view.element.querySelector('.agents-inbox-detail-heading h2'))).toBe(item.prompt)
     expect(text(view.element.querySelector('.agents-approval-disclosure'))).toContain('edges__pods_delete')
     expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
 
@@ -555,10 +546,15 @@ describe('Activity.vue', () => {
     await openInbox(view)
 
     const rows = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-inbox-row')]
+    buttonWithText(view.element, 'All requests').click()
+    await settleVue(2)
+    expect(view.element.querySelector('.agents-inbox-review--queue')).not.toBeNull()
     rows[1].click()
     await settleVue(2)
-    expect(rows.map(row => row.getAttribute('aria-expanded'))).toEqual(['false', 'true', 'false'])
+    expect(view.element.querySelector('.agents-inbox-review--queue')).toBeNull()
+    expect(rows.map(row => row.getAttribute('aria-current'))).toEqual([null, 'true', null])
     expect(view.element.querySelectorAll('.agents-question-card')).toHaveLength(1)
+    expect(text(view.element.querySelector('.agents-inbox-detail-heading h2'))).toBe('Which repository?')
     const dismissAll = buttonWithText(view.element.querySelector('.agents-attention-head')!, 'Dismiss all')
     dismissAll.click()
     await settleVue()

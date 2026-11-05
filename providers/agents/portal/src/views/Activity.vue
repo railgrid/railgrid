@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { QuestionReply } from '../types'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, ChevronDown, CircleHelp, Inbox, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ArrowLeft, Check, ChevronRight, CircleHelp, Inbox, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
@@ -56,7 +56,10 @@ const RANGES = [
 
 const section = ref<ActivityTab>(props.activityTab ?? 'runs')
 watch(() => props.activityTab, tab => { section.value = tab ?? 'runs' })
-const openInboxID = ref('')
+const selectedInboxID = ref('')
+const mobileQueue = ref(false)
+const inboxQueue = ref<HTMLElement | null>(null)
+const inboxDetail = ref<HTMLElement | null>(null)
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -81,6 +84,31 @@ const pending = computed(() => {
   void revision.value
   return props.store.pendingInbox().filter(item => !props.agent || item.agentName === props.agent)
 })
+const selectedInboxIndex = computed(() => Math.max(0, pending.value.findIndex(item => item.id === selectedInboxID.value)))
+const selectedInboxItem = computed(() => pending.value[selectedInboxIndex.value])
+const inboxDetails = computed(() => props.agent ? pending.value : selectedInboxItem.value ? [selectedInboxItem.value] : [])
+
+function selectInboxItem(id: string): void {
+  selectedInboxID.value = id
+  mobileQueue.value = false
+  void nextTick(() => inboxDetail.value?.focus())
+}
+
+function showInboxQueue(): void {
+  mobileQueue.value = true
+  void nextTick(() => inboxQueue.value?.querySelector<HTMLElement>('[aria-current="true"]')?.focus())
+}
+
+watch(pending, (items, previous) => {
+  if (!selectedInboxID.value || items.some(item => item.id === selectedInboxID.value)) return
+  const index = previous.findIndex(item => item.id === selectedInboxID.value)
+  selectedInboxID.value = items[Math.max(0, Math.min(index, items.length - 1))]?.id ?? ''
+})
+
+function inboxPreview(item: InboxItem): string {
+  return item.payload?.questions?.[0]?.prompt || item.prompt
+}
+
 const activityTabs = computed(() => [
   { id: 'runs', label: 'Run history' },
   { id: 'inbox', label: 'Inbox', icon: Inbox, count: pending.value.length },
@@ -339,7 +367,8 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   if (refreshTimer) window.clearTimeout(refreshTimer)
   refreshTimer = 0
   section.value = props.activityTab ?? 'runs'
-  openInboxID.value = ''
+  selectedInboxID.value = ''
+  mobileQueue.value = false
   runs.value = []
   tablePage.value = 1
   tableQuery.value = ''
@@ -396,39 +425,62 @@ onBeforeUnmount(() => {
         </div>
         <p v-if="viewingInbox && !inboxSlice.hasSnapshot && inboxSlice.loading" class="agents-inbox-empty" role="status">Loading inbox…</p>
         <p v-else-if="viewingInbox && !pending.length" class="agents-inbox-empty">You’re all caught up.</p>
-        <section v-if="pending.length" class="agents-approvals" :class="{ 'agents-inbox-queue': viewingInbox }" aria-label="Pending requests">
-          <div v-if="agent || pending.length > 1 || bulkDismiss" class="agents-attention-head">
-            <h3 v-if="agent" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h3>
-            <button
-              v-if="pending.length > 1 || bulkDismiss"
-              class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
-              type="button"
-              :disabled="bulkDismiss !== null"
-              :aria-busy="bulkDismiss !== null || undefined"
-              @click="dismissAll"
-            ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
+        <section
+          v-if="pending.length"
+          class="agents-approvals"
+          :class="{ 'agents-inbox-review': viewingInbox, 'agents-inbox-review--queue': viewingInbox && mobileQueue }"
+          aria-label="Pending requests"
+        >
+          <div v-if="viewingInbox" ref="inboxQueue" class="agents-inbox-queue">
+            <ul class="agents-inbox-list">
+              <li v-for="item in pending" :key="item.id">
+                <button
+                  class="agents-inbox-row"
+                  type="button"
+                  :aria-current="selectedInboxItem?.id === item.id ? 'true' : undefined"
+                  @click="selectInboxItem(item.id)"
+                >
+                  <component :is="item.kind === 'question' ? CircleHelp : ShieldCheck" :size="17" :stroke-width="1.75" aria-hidden="true" />
+                  <span class="agents-inbox-row-copy">
+                    <span class="agents-inbox-prompt">{{ inboxPreview(item) }}</span>
+                    <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
+                  </span>
+                  <ChevronRight :size="14" aria-hidden="true" />
+                </button>
+              </li>
+            </ul>
           </div>
-          <div v-for="item in pending" :key="item.id" :class="viewingInbox ? 'agents-inbox-item' : item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'">
-            <button
-              v-if="viewingInbox"
-              class="agents-inbox-row"
-              type="button"
-              :aria-expanded="openInboxID === item.id"
-              :aria-controls="openInboxID === item.id ? `agents-inbox-detail-${item.id}` : undefined"
-              @click="openInboxID = openInboxID === item.id ? '' : item.id"
-            >
-              <component :is="item.kind === 'question' ? CircleHelp : ShieldCheck" :size="17" :stroke-width="1.75" aria-hidden="true" />
-              <span class="agents-inbox-row-copy">
-                <span class="agents-inbox-prompt" :title="item.prompt">{{ item.prompt }}</span>
+          <div :class="viewingInbox ? 'agents-inbox-review-tools' : 'agents-inbox-legacy-detail'">
+            <div v-if="agent || pending.length > 1 || bulkDismiss" class="agents-attention-head">
+              <h3 v-if="agent" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h3>
+              <button
+                v-if="pending.length > 1 || bulkDismiss"
+                class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
+                type="button"
+                :disabled="bulkDismiss !== null"
+                :aria-busy="bulkDismiss !== null || undefined"
+                @click="dismissAll"
+              ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
+            </div>
+          </div>
+          <div
+            v-for="item in inboxDetails"
+            :key="item.id"
+            :class="viewingInbox ? 'agents-inbox-detail' : item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'"
+          >
+            <template v-if="viewingInbox">
+              <div class="agents-inbox-mobile-nav">
+                <button class="k-btn k-btn--ghost secondary" type="button" @click="showInboxQueue">
+                  <ArrowLeft :size="16" aria-hidden="true" /> All requests
+                </button>
+                <span class="agents-inbox-meta">Request {{ selectedInboxIndex + 1 }} of {{ pending.length }}</span>
+              </div>
+              <div :ref="el => inboxDetail = el as HTMLElement | null" class="agents-inbox-detail-heading" tabindex="-1">
                 <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
-              </span>
-              <span class="agents-inbox-row-action">{{ item.kind === 'question' ? 'Reply' : 'Review' }} <ChevronDown :size="14" aria-hidden="true" /></span>
-            </button>
-            <div
-              v-if="!viewingInbox || openInboxID === item.id"
-              :id="viewingInbox ? `agents-inbox-detail-${item.id}` : undefined"
-              :class="viewingInbox ? 'agents-inbox-detail' : 'agents-inbox-legacy-detail'"
-            >
+                <h2 v-if="item.kind !== 'question' || !item.payload?.questions?.length">{{ item.prompt }}</h2>
+              </div>
+            </template>
+            <div :class="viewingInbox ? 'agents-inbox-detail-content' : 'agents-inbox-legacy-detail'">
               <div v-if="!viewingInbox || item.kind !== 'question' || item.runID" class="agents-approval-body">
                 <div v-if="item.kind !== 'question' && !viewingInbox" class="agents-approval-prompt">{{ item.prompt }}</div>
                 <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />

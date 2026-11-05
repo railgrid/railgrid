@@ -123,36 +123,45 @@ railgrid-provider-agents .agents-run-failure-link { align-self: flex-start; }
 /* Once the full diagnostic is open, keep only that copy visible. */
 railgrid-provider-agents .agents-run-state--inspection:has(.agents-run-state__details[open]) .agents-run-state__diagnostic { display: none; }
 
-/* Activity inbox keeps requests compact until a reviewer opens one. */
+/* Inbox list and selected request share a stable split layout. */
 railgrid-provider-agents .agents-inbox-legacy-detail { display: contents; }
-railgrid-provider-agents .agents-inbox-queue { gap: 0; min-width: 0; }
-railgrid-provider-agents .agents-inbox-queue .agents-attention-head { justify-content: flex-end; padding-block-end: 4px; }
-railgrid-provider-agents .agents-inbox-item { border-block-end: 1px solid var(--color-border-subtle); }
-railgrid-provider-agents .agents-inbox-item:first-of-type { border-block-start: 1px solid var(--color-border-subtle); }
+railgrid-provider-agents .agents-inbox-review {
+  display: grid; grid-template-columns: minmax(210px, 1fr) minmax(0, 2fr); gap: 0;
+  min-width: 0; border: 1px solid var(--color-border-subtle); border-radius: 8px;
+}
+railgrid-provider-agents .agents-inbox-review-tools { grid-column: 1; grid-row: 2; }
+railgrid-provider-agents .agents-inbox-review-tools .agents-attention-head { padding: 6px 8px; }
+railgrid-provider-agents .agents-inbox-queue { grid-column: 1; grid-row: 1; min-width: 0; }
+railgrid-provider-agents .agents-inbox-list { margin: 0; padding: 0; list-style: none; }
 railgrid-provider-agents .agents-inbox-row {
   display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px;
-  width: 100%; min-height: 52px; padding: 6px 12px; border: 0; border-radius: 0; background: transparent;
+  width: 100%; min-height: 60px; padding: 8px 12px; border: 0; border-radius: 0; background: transparent;
   color: var(--color-text-secondary); font: inherit; text-align: start; cursor: pointer;
 }
+railgrid-provider-agents .agents-inbox-list li { border-block-end: 1px solid var(--color-border-subtle); }
 railgrid-provider-agents .agents-inbox-row:hover { background: var(--color-surface-hover); }
-railgrid-provider-agents .agents-inbox-item:has(> .agents-inbox-detail) { background: var(--color-surface-raised); }
+railgrid-provider-agents .agents-inbox-row[aria-current="true"] { background: var(--color-accent-subtle); }
 railgrid-provider-agents .agents-inbox-row:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 railgrid-provider-agents .agents-inbox-row-copy { display: grid; gap: 2px; min-width: 0; }
-railgrid-provider-agents .agents-inbox-prompt,
-railgrid-provider-agents .agents-inbox-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-railgrid-provider-agents .agents-inbox-prompt { color: var(--color-text-primary); font-weight: 600; }
-railgrid-provider-agents .agents-inbox-row[aria-expanded="true"] .agents-inbox-prompt { white-space: normal; overflow-wrap: anywhere; }
-railgrid-provider-agents .agents-inbox-meta { font-size: 12px; }
-railgrid-provider-agents .agents-inbox-row-action { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
-railgrid-provider-agents .agents-inbox-row[aria-expanded="true"] .agents-inbox-row-action svg { transform: rotate(180deg); }
-railgrid-provider-agents .agents-inbox-detail {
-  display: grid; gap: 8px; max-width: 680px; padding: 4px 12px 14px 39px;
+railgrid-provider-agents .agents-inbox-prompt {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--color-text-primary); font-weight: 600;
 }
-/* The expanded row owns the surface. The shared question component supplies the form. */
+railgrid-provider-agents .agents-inbox-meta { color: var(--color-text-secondary); font-size: 12px; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-inbox-detail {
+  grid-column: 2; grid-row: 1 / span 2; min-width: 0; min-height: 250px;
+  display: grid; align-content: start; gap: 12px; padding: 16px 20px;
+  border-inline-start: 1px solid var(--color-border-subtle); background: var(--color-surface-raised);
+}
+railgrid-provider-agents .agents-inbox-detail-content { display: grid; gap: 12px; min-width: 0; max-width: 680px; }
+railgrid-provider-agents .agents-inbox-detail-heading { max-width: 68ch; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-inbox-detail-heading h2 { margin: 4px 0 0; font-size: 17px; font-weight: 600; }
+railgrid-provider-agents .agents-inbox-detail-heading:focus { outline-offset: 3px; }
+railgrid-provider-agents .agents-inbox-mobile-nav { display: none; }
 railgrid-provider-agents .agents-inbox-detail .agents-question-card {
   gap: 8px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
 }
-/* The row already displays this prompt. Keep it available as the form's accessible label. */
+/* The detail heading already presents the single question. */
 railgrid-provider-agents .agents-inbox-detail .agents-question-card__prompt {
   position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
 }
@@ -163,3 +172,15 @@ railgrid-provider-agents .agents-inbox-detail .agents-question-card__group > .ag
 }
 railgrid-provider-agents .agents-inbox-detail .agents-question-card__footer { gap: 8px; }
 railgrid-provider-agents .agents-inbox-empty { margin: 0; padding-block: 10px; color: var(--color-text-secondary); }
+
+@container resource-page (max-width: 650px) {
+  railgrid-provider-agents .agents-inbox-review { display: block; }
+  railgrid-provider-agents .agents-inbox-review:not(.agents-inbox-review--queue) > .agents-inbox-queue,
+  railgrid-provider-agents .agents-inbox-review:not(.agents-inbox-review--queue) > .agents-inbox-review-tools,
+  railgrid-provider-agents .agents-inbox-review--queue > .agents-inbox-detail { display: none; }
+  railgrid-provider-agents .agents-inbox-detail { min-height: 0; padding: 12px; border-inline-start: 0; }
+  railgrid-provider-agents .agents-inbox-mobile-nav {
+    display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px;
+    padding-block-end: 6px; border-block-end: 1px solid var(--color-border-subtle);
+  }
+}
