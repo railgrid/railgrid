@@ -479,7 +479,7 @@ describe('Activity.vue', () => {
     expect(text(view.element)).not.toContain('Approve & resume')
     expect(text(view.element)).not.toContain("Answer from the agent's channel")
     const actions = view.element.querySelector('.agents-question-card')!
-    const send = buttonWithText(actions, 'Send answer')
+    const send = actions.querySelector<HTMLButtonElement>('button[aria-label="Send answer"]')!
     expect(send.disabled).toBe(true)
     send.click()
     expect(resolveInbox).not.toHaveBeenCalled()
@@ -1253,7 +1253,7 @@ describe('RunDetail.vue', () => {
     expect(text(view.element.querySelector('.agents-question-card__prompt'))).toBe('Which pull request should I review?')
     expect(text(view.element)).not.toContain('tool unavailable')
     expect(text(view.element)).not.toContain('Approve & resume')
-    const send = buttonWithText(view.element, 'Send answer')
+    const send = view.element.querySelector<HTMLButtonElement>('button[aria-label="Send answer"]')!
     expect(send.disabled).toBe(true)
 
     const answer = view.element.querySelector<HTMLInputElement>('.agents-question-card input[type="text"]')!

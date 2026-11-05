@@ -18,6 +18,7 @@ const draft = ref('')
 const choice = ref('')
 const question = computed(() => questionPresentation(props.prompt))
 const response = computed(() => choice.value || draft.value.trim())
+const canSend = computed(() => !!response.value && !props.disabled && !props.busy && !props.dismissing && !props.resolved)
 watch(() => props.questionId, () => { draft.value = ''; choice.value = '' })
 
 function select(label: string): void {
@@ -26,7 +27,7 @@ function select(label: string): void {
 }
 
 function send(): void {
-  if (!props.disabled && !props.busy && !props.resolved && response.value) emit('answer', response.value)
+  if (canSend.value) emit('answer', response.value)
 }
 </script>
 
@@ -49,9 +50,9 @@ function send(): void {
           <input v-model="draft" class="k-input agents-question-card__input" type="text" aria-label="Your answer" :placeholder="question.options.length ? 'Or write your own response…' : 'Write your answer…'" :disabled="disabled || busy || dismissing" maxlength="8192" @input="choice = ''">
         </div>
         <div class="agents-question-card__actions">
-          <button v-if="dismissible" class="k-btn k-btn--ghost secondary" type="button" :disabled="disabled || busy || dismissing" title="Dismiss and keep the run paused" @click="emit('dismiss')">{{ dismissing ? 'Dismissing…' : 'Dismiss' }}</button>
-          <button class="k-btn k-btn--primary" type="submit" :disabled="disabled || busy || dismissing || !response" aria-label="Send answer">
-            <LoaderCircle v-if="busy" :size="16" class="k-spin" aria-hidden="true" /> {{ busy ? 'Sending…' : 'Send answer' }}
+          <button v-if="dismissible" class="k-btn k-btn--ghost secondary agents-question-card__action" type="button" :disabled="disabled || busy || dismissing" title="Dismiss and keep the run paused" @click="emit('dismiss')">{{ dismissing ? 'Dismissing…' : 'Dismiss' }}</button>
+          <button class="k-btn agents-question-card__action agents-question-card__send" :class="canSend ? 'k-btn--primary' : 'k-btn--ghost secondary'" type="submit" :disabled="!canSend" aria-label="Send answer">
+            <LoaderCircle v-if="busy" :size="16" class="k-spin" aria-hidden="true" /> {{ busy ? 'Sending…' : 'Send' }}
           </button>
         </div>
       </div>
@@ -60,22 +61,26 @@ function send(): void {
 </template>
 
 <style scoped>
-.agents-question-card { display: grid; gap: 14px; min-width: 0; padding: 16px; border-radius: 12px; }
-.agents-question-card__heading { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 13px; }
-.agents-question-card__prompt { margin: 0; color: var(--color-text-primary); font-size: 16px; font-weight: 600; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agents-question-card { display: grid; gap: 18px; min-width: 0; padding: clamp(16px, 2.4vw, 24px); border-radius: 12px; background: var(--color-surface-overlay); }
+.agents-question-card__heading { display: flex; align-items: center; gap: 9px; color: var(--color-text-secondary); font-size: 14px; }
+.agents-question-card__prompt { max-width: 72ch; margin: 0; color: var(--color-text-primary); font-size: 17px; font-weight: 550; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agents-question-card__form, .agents-question-card__choices { display: grid; gap: 6px; min-width: 0; }
-.agents-question-card__choices { border: 0; padding: 0; margin: 0 0 6px; }
-.agents-question-card__choice { position: relative; display: flex; align-items: baseline; gap: 10px; padding: 8px; border: 1px solid transparent; border-radius: 6px; line-height: 1.45; cursor: pointer; overflow-wrap: anywhere; }
-.agents-question-card__choice:hover, .agents-question-card__choice:focus-within { background: var(--color-surface-overlay); }
+.agents-question-card__choices { border: 0; padding: 0; margin: 0 0 10px; }
+.agents-question-card__choice { position: relative; display: flex; align-items: baseline; gap: 12px; padding: 10px 6px; border: 1px solid transparent; border-radius: 8px; font-size: 15px; line-height: 1.45; cursor: pointer; overflow-wrap: anywhere; }
+.agents-question-card__choice:hover, .agents-question-card__choice:focus-within { background: var(--color-surface-raised); }
 .agents-question-card__choice:focus-within { outline: 2px solid var(--color-accent); outline-offset: 1px; }
 .agents-question-card__choice.is-selected { border-color: var(--color-accent); background: var(--color-accent-subtle); }
 .agents-question-card__choices:disabled .agents-question-card__choice { cursor: default; }
 .agents-question-card__radio { position: absolute; width: 1px; height: 1px; opacity: 0; }
-.agents-question-card__number { display: grid; place-items: center; flex: 0 0 24px; height: 24px; border: 1px solid var(--color-border-default); border-radius: 5px; background: var(--color-surface-overlay); color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }
+.agents-question-card__number { display: grid; place-items: center; flex: 0 0 26px; height: 26px; border: 1px solid var(--color-border-default); border-radius: 6px; background: var(--color-surface-raised); color: var(--color-text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }
 .agents-question-card__description, .agents-question-card__status { color: var(--color-text-secondary); }
 .agents-question-card__status { margin: 0; }
-.agents-question-card__footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
-.agents-question-card__custom { display: grid; grid-template-columns: auto minmax(0, 1fr); flex: 1 1 230px; align-items: center; gap: 8px; min-width: 0; color: var(--color-text-secondary); }
-.agents-question-card__input { width: 100%; min-width: 0; }
+.agents-question-card__footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px 12px; }
+.agents-question-card__custom { display: grid; grid-template-columns: auto minmax(0, 1fr); flex: 1 1 210px; align-items: center; gap: 10px; min-width: 0; padding-inline: 6px; border-radius: 8px; color: var(--color-text-secondary); }
+.agents-question-card__custom:focus-within { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.agents-question-card__input, .agents-question-card__input:focus { width: 100%; min-width: 0; padding-inline: 0; border-color: transparent; background: transparent; box-shadow: none; outline: none; font-size: 14px; }
 .agents-question-card__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.agents-question-card__action { min-height: 36px; padding-inline: 15px; border-radius: 12px; }
+.agents-question-card__send { min-width: 68px; }
+.agents-question-card__send:disabled { border-color: var(--color-border-default); background: var(--color-surface-raised); color: var(--color-text-secondary); opacity: 1; }
 </style>
