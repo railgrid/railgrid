@@ -874,7 +874,7 @@ func (s *runState) handle(msg wireMessage) error {
 	if isRequestUserInput(msg.Method) {
 		clarification, clarificationErr := parseClarification(s.sessionID, s.turnID, msg.Params)
 		if clarificationErr != nil {
-			const message = "Codex request-user-input payload was rejected as an unbounded or malformed product question"
+			message := "Codex request-user-input payload was rejected: " + clarificationErr.Error()
 			if err := s.emitEvent(harness.Event{
 				Type:      "needs_input",
 				SessionID: s.sessionID,

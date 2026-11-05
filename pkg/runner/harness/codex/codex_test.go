@@ -557,7 +557,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 					"itemId":     "item-clarification-1",
 					"threadId":   "thread-1",
 					"turnId":     "turn-1",
-					"isBlocking": true,
+					"isBlocking": false,
 					"questions": []map[string]any{{
 						"id":       "environment",
 						"header":   "Environment",

@@ -842,6 +842,7 @@ export interface PendingApproval {
   // resolved is set once the user approves/denies/answers so the card stops
   // offering controls without needing a full reload.
   resolved?: 'approve' | 'deny' | 'answer'
+  answerInThread?: boolean
 }
 
 /** pendingIsQuestion: absent kind with no tool is a question too. */
@@ -853,6 +854,7 @@ export function pendingIsQuestion(pending: PendingApproval | null | undefined): 
 
 export interface ChatMessage {
   actorID?: string
+  questionPrompt?: string
   // id is stable across Vue's keyed re-renders so DOM nodes (and browser text
   // selection) survive while a reply streams in.
   id: string
@@ -880,6 +882,7 @@ export interface TranscriptMessage {
   runID?: string
   metadata?: {
     actorID?: string
+    questionPrompt?: string
     tool?: string
     args?: string
     error?: string | boolean

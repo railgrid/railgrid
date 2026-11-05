@@ -47,6 +47,7 @@ func (s *Server) resumeApprovedRun(scope store.Scope, item store.InboxItem, acce
 	s.resumeRun(context.Background(), agentScope, item.RunID, access, resumeIntent{
 		Approval: true, Approve: approve, Note: note,
 		FromPhase: store.RunPhasePendingApproval,
+		InboxItem: item,
 	})
 }
 
@@ -62,6 +63,7 @@ type resumeIntent struct {
 	Approve   bool
 	Note      string
 	FromPhase store.RunPhase
+	InboxItem store.InboxItem
 	// RecoveryClaimedAt identifies the revision claimed by the recovery caller.
 	RecoveryClaimedAt time.Time
 }
@@ -108,6 +110,19 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
 			return
+		}
+	}
+	// The claim above ensures only the resolver that resumes this run writes
+	// its reply. Record it before publishing progress or appending the next turn.
+	item := intent.InboxItem
+	if intent.Approve && item.Kind == store.InboxKindQuestion && item.ID != "" && item.ID == ck.InboxID {
+		if answer := strings.TrimSpace(intent.Note); answer != "" {
+			_ = s.appendProgressMessage(ctx, agentScope, store.Message{
+				ID: "question-answer-" + item.ID, AgentName: run.AgentName,
+				SessionID: effectiveSessionID(run.SessionID, run.Trigger), RunID: run.ID,
+				Role: "user", Content: answer, CreatedAt: time.Now().UTC(),
+				Metadata: map[string]any{"actorID": strings.TrimSpace(access.CallerUser), "questionPrompt": item.Prompt},
+			})
 		}
 	}
 	artifactOwner, artifactRefs, artifactErr := resumeArtifactReferences(ck, access.CallerUser)

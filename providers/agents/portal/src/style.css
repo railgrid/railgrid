@@ -494,6 +494,12 @@ railgrid-provider-agents .agents-approval-question { margin: 0; max-width: 72ch;
 railgrid-provider-agents .agents-approval-answer { min-width: 0; flex: 1 1 16rem; }
 
 /* composer */
+railgrid-provider-agents .agents-question-dock {
+  max-height: 55dvh;
+  overflow: auto;
+  padding-block: 8px 0;
+}
+railgrid-provider-agents .agents-question-dock + .agents-composer { padding-top: 8px; }
 railgrid-provider-agents .agents-composer-surface { min-width: 0; }
 
 /* --- connection picker + type-driven form --- */
@@ -929,6 +935,12 @@ railgrid-provider-agents .agents-chat-shell--compact .agents-composer { padding:
 railgrid-provider-agents .agents-chat-shell--compact .agents-chat-main { min-width: 0; }
 
 railgrid-provider-agents .agents-user-content { min-width: 0; }
+railgrid-provider-agents .agents-answer-context {
+  margin-bottom: 6px;
+  color: var(--color-text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 railgrid-provider-agents .agents-page-reference { margin-top: 4px; min-width: 0; max-width: 100%; white-space: normal; font-size: 11px; color: var(--color-text-secondary); }
 railgrid-provider-agents .agents-page-reference summary { display: flex; align-items: center; gap: 5px; cursor: pointer; list-style: none; min-height: 28px; max-width: 100%; border-radius: var(--radius-sm); }
 railgrid-provider-agents .agents-page-reference summary::-webkit-details-marker { display: none; }

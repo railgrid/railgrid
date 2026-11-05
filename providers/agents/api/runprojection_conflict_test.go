@@ -286,6 +286,39 @@ func TestApprovalResumeProjectsClaimedRunningBeforeContinuing(t *testing.T) {
 	}
 }
 
+func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
+	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	s, scope, run := newProjectionFixture(t, dyn, store.RunPhasePendingApproval)
+	run.Checkpoint = []byte(`{"inboxID":"inbox-question","engine":{"messages":[]}}`)
+	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	item := store.InboxItem{
+		ID: "inbox-question", AgentName: run.AgentName, RunID: run.ID,
+		Kind: store.InboxKindQuestion, Prompt: "Where should the note go?",
+	}
+	checked := false
+	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{check: func() {
+		checked = true
+		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 20, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Items) != 1 {
+			t.Fatalf("got %d transcript messages, want the reply", len(page.Items))
+		}
+		reply := page.Items[0]
+		if reply.Role != "user" || reply.Content != "Line guide" || reply.RunID != run.ID ||
+			reply.Metadata["questionPrompt"] != item.Prompt || reply.Metadata["actorID"] != "reviewer" {
+			t.Fatalf("unexpected question reply: %+v", reply)
+		}
+	}}}
+	s.resumeApprovedRun(scope, item, access, true, "Line guide")
+	if !checked {
+		t.Fatal("question resume did not reach its continuation boundary")
+	}
+}
+
 type projectionResumeCR struct {
 	fakeCR
 	check func()
