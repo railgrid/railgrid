@@ -199,11 +199,11 @@ func TestKCPTenantResolverRoutesServiceAccountIdentityThroughWorkloadVerificatio
 // A delegated user token — what the backend proxy hands an org-owned provider
 // in place of the caller's bearer — resolves to the HUMAN it stands in for,
 // so a provider calling back into the hub with it gets X-Railgrid-User=alice, not
-// the railgrid-du-* account name, and the same tenant binding every workload
+// the railgrid-pdu-* account name, and the same tenant binding every workload
 // token is held to.
 func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T) {
 	const token = "delegated-token"
-	const serviceAccount = "railgrid-du-test"
+	const serviceAccount = "railgrid-pdu-test"
 	const tenantPath = "root:railgrid:tenants:org:workspace"
 	builder := &resolverConfigBuilder{cfg: &rest.Config{
 		Host: "https://workload.test",
@@ -246,13 +246,10 @@ func TestKCPTenantResolverResolvesDelegatedUserTokenToTheHumanUser(t *testing.T)
 }
 
 // A delegated ServiceAccount lives in namespace "default" of the tenant's own
-// team workspace, where the bootstrap binds every member — not just admins —
-// to cluster-admin. So an ordinary member can create the object themselves,
-// label it delegated, annotate it with a colleague's username, and mint a
-// token for it with TokenRequest. The resolver must refuse it: without the
-// hub's keyed proof, nothing on that object distinguishes it from one the hub
-// minted, and accepting it would send the provider X-Railgrid-User naming the
-// victim.
+// team workspace. The bounded tenant-admin role lets members create service
+// accounts but cannot mint serviceaccounts/token. The resolver also requires
+// the hub's keyed proof, so an object with tenant-written identity annotations
+// cannot assert a colleague's identity.
 func TestKCPTenantResolverRejectsTenantForgedDelegatedServiceAccount(t *testing.T) {
 	const token = "attacker-minted-token"
 	const serviceAccount = "railgrid-du-forged"

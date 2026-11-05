@@ -78,4 +78,6 @@ spec:
     - edges.railgrid.ai
   providers:
   - kind: User
+    name: "kcp-admin"
+  - kind: User
     name: "system:serviceaccount:default:provider"

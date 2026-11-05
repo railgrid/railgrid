@@ -331,7 +331,7 @@ those too, under three rules:
    delegated-token swap the backend proxy uses for
    `/services/providers/{name}`). The request carries a **delegated user
    token** — a ten-minute ServiceAccount token minted in the caller's team
-   workspace for (user, provider), `railgrid-du-<hash>` — and `X-Railgrid-User`
+   workspace for (user, provider), `railgrid-pdu-<hash>` (platform) or `railgrid-odu-<hash>` (org-owned) — and `X-Railgrid-User`
    naming the human. The federation client does not even attach the caller's
    bearer to such a request, and the transport refuses to send the delegated
    token anywhere but that provider's edge route. When no delegated token can

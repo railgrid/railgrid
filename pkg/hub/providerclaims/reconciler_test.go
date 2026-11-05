@@ -24,7 +24,9 @@ import (
 
 	apisv1alpha2 "github.com/kcp-dev/sdk/apis/apis/v1alpha2"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/util/workqueue"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	tenancyv1alpha1 "github.com/railgrid/railgrid/apis/tenancy/v1alpha1"
@@ -32,6 +34,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
+	"github.com/railgrid/railgrid/utils/testfakes"
 )
 
 type fakeOps struct {
@@ -39,7 +42,9 @@ type fakeOps struct {
 
 	coreCalls     []string
 	providerCalls []providerCall
+	adminCalls    []string
 	pathErr       error
+	adminErr      error
 }
 
 type providerCall struct {
@@ -66,6 +71,11 @@ func (f *fakeOps) ResolveClusterPath(_ context.Context, clusterName string) (str
 		return "", errors.New("unknown cluster " + clusterName)
 	}
 	return path, nil
+}
+
+func (f *fakeOps) RefreshTenantAdminAccess(_ context.Context, clusterName string) error {
+	f.adminCalls = append(f.adminCalls, clusterName)
+	return f.adminErr
 }
 
 type fakeGrants struct {
@@ -224,6 +234,17 @@ func TestReconcileBinding_LeavesAloneWhatItDoesNotOwn(t *testing.T) {
 			t.Fatalf("org-owned binding not reconciled: %+v", ops.providerCalls)
 		}
 	})
+
+	t.Run("org-owned export claims are not accepted in another org", func(t *testing.T) {
+		ops := &fakeOps{paths: map[string]string{"c1": kcppaths.WorkspacePath("org-c", "ws-1")}}
+		r := newReconciler(ops, reg, nil)
+		if _, err := r.reconcileBinding(context.Background(), "c1", binding("agents", orgProv.APIExportPath, orgProv.APIExportName)); err != nil {
+			t.Fatal(err)
+		}
+		if len(ops.providerCalls) != 0 {
+			t.Fatalf("cross-org provider binding had its claims rewritten: %+v", ops.providerCalls)
+		}
+	})
 }
 
 func TestReconcileBinding_EmptyRequirementsClearOnlyOnceObserved(t *testing.T) {
@@ -270,6 +291,35 @@ func TestReconcileBinding_RetriesWhenConsentCannotBeRead(t *testing.T) {
 	}
 	if len(ops.providerCalls) != 0 {
 		t.Fatalf("binding written without knowing the tenant's consent: %+v", ops.providerCalls)
+	}
+}
+
+func TestReconcileRefreshesTenantAdminPermissionsForBindingChangesAndDeletes(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := apisv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	existing := binding("unmanaged", "root:someone:else", "other.example.com")
+	client := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	ops := &fakeOps{}
+	r := &Reconciler{mgr: testfakes.NewManager(client), ops: ops, registry: providers.NewRegistry(), paths: map[string]string{}}
+
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("c1", "", "unmanaged")); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.adminCalls) != 1 || ops.adminCalls[0] != "c1" {
+		t.Fatalf("tenant-admin refreshes after binding change = %v, want [c1]", ops.adminCalls)
+	}
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("c1", "", "deleted")); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops.adminCalls) != 2 || ops.adminCalls[1] != "c1" {
+		t.Fatalf("tenant-admin refreshes after deletion = %v, want [c1 c1]", ops.adminCalls)
+	}
+
+	ops.adminErr = errors.New("role update failed")
+	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("c1", "", "deleted")); err == nil {
+		t.Fatal("failed tenant-admin refresh did not requeue the binding event")
 	}
 }
 

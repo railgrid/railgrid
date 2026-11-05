@@ -8,6 +8,7 @@ package providers
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,7 +31,16 @@ func TestAgentIngressRoutesVerifiedCredentialToActualBinding(t *testing.T) {
 			up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
 				gotHeaders = r.Header.Clone()
+				w.Header().Set("Set-Cookie", "provider-session=secret; Path=/")
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Content-Security-Policy", "default-src https:")
+				w.Header().Set("Cache-Control", "public")
+				w.Header().Set("X-Content-Type-Options", "unsafe")
+				w.Header().Set("Trailer", "X-Provider-Trailer")
 				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("agent response"))
+				w.Header().Set("X-Provider-Trailer", "announced")
+				w.Header()[http.TrailerPrefix+"X-Provider-Late"] = []string{"late"}
 			}))
 			defer up.Close()
 			u, _ := url.Parse(up.URL)
@@ -64,9 +74,43 @@ func TestAgentIngressRoutesVerifiedCredentialToActualBinding(t *testing.T) {
 				r.Header.Set(header, value)
 			}
 			w := httptest.NewRecorder()
+			w.Header().Add("Set-Cookie", "hub-session=trusted; HttpOnly; Path=/")
 			p.ServeHTTP(w, r)
 			if w.Code != 200 {
 				t.Fatalf("status %d: %s", w.Code, w.Body.String())
+			}
+			if got := w.Body.String(); got != "agent response" {
+				t.Errorf("body = %q, want the agent response", got)
+			}
+			if orgCopy {
+				if cookies := w.Header().Values("Set-Cookie"); len(cookies) != 1 || cookies[0] != "hub-session=trusted; HttpOnly; Path=/" {
+					t.Errorf("org agent cookies = %#v, want trusted Hub cookie only", cookies)
+				}
+				for _, name := range []string{"Access-Control-Allow-Origin", "Trailer", "X-Provider-Trailer", "X-Provider-Late"} {
+					if w.Header().Get(name) != "" || w.Result().Trailer.Get(name) != "" {
+						t.Errorf("org agent response leaked %s", name)
+					}
+				}
+				for name, want := range map[string]string{
+					"Content-Security-Policy": orgProviderContentSecurityPolicy,
+					"Cache-Control":           "private, no-store",
+					"X-Content-Type-Options":  "nosniff",
+				} {
+					if got := w.Header().Get(name); got != want {
+						t.Errorf("org agent %s = %q, want %q", name, got, want)
+					}
+				}
+			} else {
+				cookies := w.Header().Values("Set-Cookie")
+				if len(cookies) != 2 || cookies[0] != "hub-session=trusted; HttpOnly; Path=/" || cookies[1] != "provider-session=secret; Path=/" {
+					t.Errorf("platform agent Set-Cookie = %#v, want outer and provider cookies preserved", cookies)
+				}
+				if got := w.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+					t.Errorf("platform agent CORS = %q, want existing behavior", got)
+				}
+				if got := w.Header().Get("Content-Security-Policy"); got != "default-src https:" {
+					t.Errorf("platform agent CSP = %q, want existing behavior", got)
+				}
 			}
 			if orgCopy {
 				if gotPath != "/clusters/host-cluster/apis/edges.railgrid.ai/v1alpha1/services/provider-edges/proxy/agent/clusters/consumer/kubernetesclusters/edge/proxy" {
@@ -89,6 +133,69 @@ func TestAgentIngressRoutesVerifiedCredentialToActualBinding(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentIngressOrgUpgradeFiltersHeadersAndKeepsDuplexStream(t *testing.T) {
+	const exportPath = "root:railgrid:tenants:" + testOrg + ":providers:edges"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "relay-test") {
+			t.Errorf("upstream Upgrade = %q, want relay-test", r.Header.Get("Upgrade"))
+		}
+		serveProviderTestUpgrade(w)
+	}))
+	t.Cleanup(upstream.Close)
+	upstreamURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	registry.Upsert(Provider{Name: EdgesProviderName, BackendURL: upstreamURL, EndpointsValid: true})
+	registry.Upsert(Provider{
+		Name: EdgesProviderName, OrgUUID: testOrg, WorkspaceCluster: "org-provider",
+		APIExportPath: exportPath, APIExportName: "edges-export", EndpointsValid: true,
+		EdgeRoute: &EdgeRoute{Cluster: testCluster, EdgeName: "host", ServiceName: "provider-edges", WorkspaceUUID: testWS},
+	})
+	proxy := NewBackendProxy(registry, logr.Discard())
+	proxy.SetKCPFrontDoor(upstreamURL, http.DefaultTransport)
+	proxy.SetAgentIngressResolver(func(context.Context, string, string, string, string) (AgentIngressTarget, error) {
+		return AgentIngressTarget{OrgUUID: testOrg, ExportPath: exportPath, ExportName: "edges-export", ExportCluster: "org-provider"}, nil
+	})
+	frontend := httptest.NewServer(proxy)
+	t.Cleanup(frontend.Close)
+	request, err := http.NewRequest(http.MethodGet, frontend.URL+"/services/providers/edges/agent/clusters/consumer/kubernetesclusters/edge/proxy", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer edge-join")
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "relay-test")
+	transport := &http.Transport{ResponseHeaderTimeout: 3 * time.Second}
+	t.Cleanup(transport.CloseIdleConnections)
+	response, err := (&http.Client{Transport: transport}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d, want 101", response.StatusCode)
+	}
+	if response.Header.Get("Set-Cookie") != "" || response.Header.Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unsafe agent upgrade headers escaped: %#v", response.Header)
+	}
+	if response.Header.Get("Content-Security-Policy") != orgProviderContentSecurityPolicy {
+		t.Errorf("CSP = %q, want forced policy", response.Header.Get("Content-Security-Policy"))
+	}
+	stream, ok := response.Body.(io.ReadWriteCloser)
+	if !ok {
+		t.Fatal("agent upgrade lost duplex stream")
+	}
+	if _, err := stream.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(stream, reply); err != nil || string(reply) != "ping" {
+		t.Fatalf("agent upgrade echo %q: %v", reply, err)
 	}
 }
 

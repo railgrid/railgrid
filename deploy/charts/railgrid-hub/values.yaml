@@ -81,12 +81,15 @@ hub:
   # Set this to the hub's in-cluster Service so provider pods stay inside the
   # cluster:
   #   internalURL: "https://<release>-railgrid-hub.<namespace>.svc.cluster.local:9443"
-  # Minted kubeconfigs use insecure-skip-tls-verify, so the serving cert does
-  # not need a SAN for this name. Leave empty when providers run outside the
+  # The certificate must cover this DNS name; for a private CA configure
+  # providerCASecretName below. Leave empty when providers run outside the
   # cluster (e.g. local kind, where they need https://host.docker.internal:9443).
   internalURL: ""
   listenAddr: ":9443"
   devMode: false
+  # Optional private CA bundle for the provider-facing Hub certificate. Secret
+  # key ca.crt is embedded in minted provider kubeconfigs. Empty uses system trust.
+  providerCASecretName: ""
   # Static bearer tokens for access (each token creates its own user/workspace. Example: openssl rand -base64 32)
   staticAuthTokens: []
   # Disable the interactive static-token login (endpoint + portal form) so
@@ -188,6 +191,21 @@ hub:
     # keeps existing workspaces working across the upgrade; false requires
     # acceptance for every provider.
     providerHubAccessPlatformDefault: null
+  # -- Dedicated mTLS listener used by external kcp shards to relay org-owned
+  # provider custom subresources through the hub to their selected Edge. The
+  # normal browser-facing HTTPS listener does not trust shard identity. For
+  # embedded kcp, relay dispatch runs in-process and this stays disabled.
+  providerRelay:
+    enabled: false
+    # Dialable HTTPS origin, including the mTLS port, for custom subresources.
+    # Keep advertised APIExport virtual-workspace URLs on the shard origin.
+    url: ""
+    port: 9444
+    # Secret with tls.crt, tls.key and client-ca.crt. The serving cert must be
+    # trusted by kcp's shard virtual-workspace CA configuration.
+    secretName: ""
+    # Exact Common Names allowed on kcp shard client certificates.
+    allowedShardNames: []
   # -- Extra command-line flags appended to the hub container after the flags
   # the chart renders from the values above, for flags the chart does not
   # model yet (e.g. "--providers=edges,infrastructure"). The chart refuses an

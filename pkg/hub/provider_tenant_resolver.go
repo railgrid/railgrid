@@ -311,7 +311,8 @@ func (r *kcpTenantResolver) verifyWorkloadCaller(req *http.Request) (workloadCal
 	// A delegated user token (the credential the backend proxy hands a
 	// provider in place of the caller's bearer) stands in for a person.
 	// Surface the person, so a provider calling back into the hub with it
-	// attributes the work to the user, not to the railgrid-du-* account — and
+	// attributes the work to the user, not to the railgrid-pdu-* or
+	// railgrid-odu-* account — and
 	// the provider it was issued to, so hub access can be authorized per
 	// provider. The tenant binding was verified above, and so was the hub's
 	// keyed proof — without it this account is just an object any workspace

@@ -19,14 +19,10 @@ package serviceaccounts
 // The keyed proof that makes a delegated user identity unforgeable.
 //
 // A delegated ServiceAccount lives in namespace "default" of the caller's own
-// team workspace, and the bootstrap binds every workspace member — not just
-// admins — to cluster-admin there (pkg/hub/kcp/bootstrap.go
-// ensureWorkspaceAdmin, reached for every member via
-// EnsureChildWorkspaceAdmin). A member can therefore create a ServiceAccount,
-// label it delegated, annotate it with any username they like, and mint a
-// token for it with TokenRequest. Every consistency check the hub can make
-// over that object compares inputs the same attacker wrote, so none of them
-// can separate a hub-minted account from a hand-made one.
+// team workspace. Members hold the bounded railgrid:tenant-admin role and can
+// create ServiceAccounts and alter ordinary labels and annotations. Historical
+// or explicitly granted credentials may also permit token minting. Object fields
+// alone therefore cannot establish that the Hub minted a delegated identity.
 //
 // The proof is the one field they cannot produce: an HMAC-SHA256 over the
 // identity tuple, keyed by a secret that lives in a hub-internal kcp workspace
@@ -65,7 +61,7 @@ const (
 	// delegated identity tuple. It is the ONLY field on a delegated
 	// ServiceAccount that a tenant member cannot write for themselves; every
 	// other label, annotation, and even the object name is derived from public
-	// inputs inside a workspace where members hold cluster-admin.
+	// inputs inside a workspace where members can write ServiceAccounts.
 	AnnotationDelegatedProof = "railgrid.ai/delegated-user-proof"
 
 	// delegatedProofDomain versions and domain-separates the MAC input, so a

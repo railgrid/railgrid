@@ -838,12 +838,17 @@ func TestKDeletion(t *testing.T) {
 // suite's last test: the binding goes, and the agents kinds with it.
 func TestLTenantDisable(t *testing.T) {
 	requireTenant(t)
+	tenantClient := tenant(t)
+	adminTenant := kcpDynamic(t, tenantCluster, adminToken)
+	const webhookName = "disable-check"
+	createObject(t, webhookGVR, "Webhook", webhookName, map[string]any{"source": "github"})
+
 	code, raw := hubDo(t, http.MethodPost, enablePath(providerName, "disable"), staticToken, orgUUID, workspaceUUID, nil, nil)
 	if code != http.StatusNoContent && code != http.StatusOK {
 		t.Fatalf("disable agents = %d: %s", code, truncate(raw))
 	}
 	if !waitForCondition(t, 3*time.Minute, func() (bool, string) {
-		got, err := tenant(t).Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), providerName, metav1.GetOptions{})
+		got, err := adminTenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), providerName, metav1.GetOptions{})
 		if apierrors.IsNotFound(err) {
 			return true, ""
 		}
@@ -856,12 +861,38 @@ func TestLTenantDisable(t *testing.T) {
 		t.Fatal("agents APIBinding was never removed after disable")
 	}
 	if !waitForCondition(t, 60*time.Second, func() (bool, string) {
-		_, err := tenant(t).Resource(webhookGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
-		if err == nil {
-			return false, "webhooks still served"
+		_, err := adminTenant.Resource(webhookGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+			return true, "Webhook API is no longer served"
 		}
-		return apierrors.IsNotFound(err) || meta.IsNoMatchError(err), err.Error()
+		if err != nil {
+			return false, err.Error()
+		}
+		return false, "Webhook API still served to kcp admin"
 	}) {
-		t.Error("webhooks API still served after agents was disabled")
+		t.Fatal("Webhook API remained served after the agents APIBinding was removed")
 	}
+	assertUnavailable := func(operation string, err error) {
+		t.Helper()
+		if err == nil {
+			t.Fatalf("tenant %s unexpectedly succeeded after Disable; Webhook data must not be readable", operation)
+		}
+		if !apierrors.IsForbidden(err) && !apierrors.IsNotFound(err) && !meta.IsNoMatchError(err) {
+			t.Fatalf("tenant %s returned unexpected error after Disable: %v", operation, err)
+		}
+	}
+	got, err := tenantClient.Resource(webhookGVR).Get(ctxWithTimeout(t, 5*time.Second), webhookName, metav1.GetOptions{})
+	if err == nil && got != nil {
+		t.Fatalf("tenant read Webhook after Disable returned data: %v", got.Object)
+	}
+	assertUnavailable("get Webhook", err)
+	list, err := tenantClient.Resource(webhookGVR).List(ctxWithTimeout(t, 5*time.Second), metav1.ListOptions{})
+	if err == nil && list != nil {
+		for _, item := range list.Items {
+			if item.GetName() == webhookName {
+				t.Fatalf("tenant list returned Webhook %q after Disable: %v", webhookName, item.Object)
+			}
+		}
+	}
+	assertUnavailable("list Webhooks", err)
 }

@@ -18,11 +18,13 @@ package providers
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -512,5 +514,94 @@ func TestEnsureProviderRoleBindingPreservesServerMetadata(t *testing.T) {
 	subjects, _, _ := unstructured.NestedSlice(binding.Object, "subjects")
 	if len(subjects) != 1 || subjects[0].(map[string]any)["name"] != ProviderSAName {
 		t.Fatal("provider subject was not repaired")
+	}
+}
+
+func TestApplyUnstructuredPreservesKCPMetadataAndRevokesStaleRules(t *testing.T) {
+	ctx := context.Background()
+	name := OrgProviderClusterRoleName
+	existing := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata": map[string]any{
+			"name":        name,
+			"annotations": map[string]any{"internal.kcp.io/replicate": "true", "hub.example/owned": "keep"},
+			"labels":      map[string]any{"kcp.example/label": "keep"},
+		},
+		"rules": []any{map[string]any{
+			"apiGroups": []any{"legacy.example"}, "resources": []any{"secrets"}, "verbs": []any{"get"},
+		}},
+	}}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(), map[schema.GroupVersionResource]string{clusterRoleGVR: "ClusterRoleList"}, existing,
+	)
+	updates := 0
+	client.PrependReactor("update", "clusterroles", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		update := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+		if update.GetAnnotations()["internal.kcp.io/replicate"] != "true" {
+			return true, nil, fmt.Errorf("KCP rejected update that removed internal.kcp.io/replicate")
+		}
+		updates++
+		if updates == 1 {
+			return true, nil, apierrors.NewConflict(clusterRoleGVR.GroupResource(), name, fmt.Errorf("injected conflict"))
+		}
+		return false, nil, nil
+	})
+
+	desired := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "rbac.authorization.k8s.io/v1",
+		"kind":       "ClusterRole",
+		"metadata": map[string]any{
+			"name":   name,
+			"labels": map[string]any{"hub.example/owned": "new"},
+		},
+		"rules": []any{map[string]any{
+			"apiGroups": []any{"current.example"}, "resources": []any{"records"}, "verbs": []any{"get", "list"},
+		}},
+	}}
+	if err := applyUnstructured(ctx, client, clusterRoleGVR, desired); err != nil {
+		t.Fatalf("apply after a conflict: %v", err)
+	}
+	got, err := client.Resource(clusterRoleGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updates != 2 {
+		t.Fatalf("update attempts=%d, want conflict retry to make two attempts", updates)
+	}
+	if got.GetAnnotations()["internal.kcp.io/replicate"] != "true" || got.GetAnnotations()["hub.example/owned"] != "keep" {
+		t.Fatalf("existing annotations were lost: %#v", got.GetAnnotations())
+	}
+	if got.GetLabels()["kcp.example/label"] != "keep" || got.GetLabels()["hub.example/owned"] != "new" {
+		t.Fatalf("existing or desired labels were lost: %#v", got.GetLabels())
+	}
+	rules, _, _ := unstructured.NestedSlice(got.Object, "rules")
+	if len(rules) != 1 {
+		t.Fatalf("current rules=%#v, want only the desired rule", rules)
+	}
+	groups, _, _ := unstructured.NestedStringSlice(rules[0].(map[string]any), "apiGroups")
+	if len(groups) != 1 || groups[0] != "current.example" {
+		t.Fatalf("stale authorization rule survived update: %#v", rules)
+	}
+
+	// A later declaration with no private resource permissions must remove the
+	// old rules; preserving metadata must never preserve authorization state.
+	revoked := desired.DeepCopy()
+	if err := unstructured.SetNestedSlice(revoked.Object, []any{}, "rules"); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyUnstructured(ctx, client, clusterRoleGVR, revoked); err != nil {
+		t.Fatalf("apply revocation: %v", err)
+	}
+	got, err = client.Resource(clusterRoleGVR).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules, _, _ = unstructured.NestedSlice(got.Object, "rules")
+	if len(rules) != 0 {
+		t.Fatalf("revoked rules remain: %#v", rules)
+	}
+	if got.GetAnnotations()["internal.kcp.io/replicate"] != "true" {
+		t.Fatal("revocation removed KCP replication metadata")
 	}
 }

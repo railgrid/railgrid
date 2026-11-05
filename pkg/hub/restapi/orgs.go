@@ -139,9 +139,9 @@ func (h *Handler) createOrg(w http.ResponseWriter, r *http.Request) {
 	if wc == "" {
 		wc = tenancyv1alpha1.WorkspaceCreationMembers
 	}
-	// Provider registration mints a cluster-admin credential and can shadow a
-	// platform provider for the whole Org, so the default keeps it with
-	// admins; an Org opts members in explicitly.
+	// Provider registration authorizes org-wide provider code and a restricted
+	// runtime credential. Keep it with admins by default; an Org can explicitly
+	// opt members into registration.
 	cec := req.CatalogEntryCreation
 	if cec == "" {
 		cec = tenancyv1alpha1.CatalogEntryCreationAdmin

@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	"github.com/railgrid/railgrid/pkg/apiurl"
+	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
 // Kuery runs beside the edges provider in this suite; :18098 is edges.
@@ -551,7 +552,7 @@ func enableKueryViaHub(t *testing.T, tenant dynamic.Interface, tenantWS string) 
 		bindingName = "kuery"
 	}
 	t.Cleanup(func() {
-		_ = tenant.Resource(apiBindingGVR).Delete(context.Background(), bindingName, metav1.DeleteOptions{})
+		framework.DisableTenantProvider(t, hubURL, tenant, staticToken, bindingName)
 	})
 	if !waitFor(t, 90*time.Second, func() (bool, string) {
 		got, err := tenant.Resource(apiBindingGVR).Get(ctxWithTimeout(t, 5*time.Second), bindingName, metav1.GetOptions{})

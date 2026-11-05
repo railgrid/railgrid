@@ -42,6 +42,10 @@ func (h *Handler) startOrgProviderInstallation(w http.ResponseWriter, r *http.Re
 	if !ok {
 		return
 	}
+	if !h.requireOrgProviderRuntime(w, r) {
+		return
+	}
+
 	if h.mgr.providerInstaller == nil {
 		writeStatus(w, http.StatusNotImplemented, "NotImplemented", "console installation is unavailable")
 		return

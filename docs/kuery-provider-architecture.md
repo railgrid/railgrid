@@ -401,7 +401,7 @@ own workspace — so the review lands on a doubled
 provider answers 403. Every engage failed with `discovery failed … Forbidden`. A token
 minted **in the consumer workspace** — which is what the hub's identity service does —
 authenticates natively through the edges APIExport virtual workspace instead, the same
-path edge-agent and delegated `railgrid-du-*` tokens take.
+path edge-agent and delegated `railgrid-pdu-*` / `railgrid-odu-*` tokens take.
 
 **Runtime properties.** The SAR runs once per proxied request and kuery's watches are
 long-lived streams, so it is one TokenReview + SAR per watch (re)establishment —

@@ -270,7 +270,9 @@ func ParseClusterServiceTarget(backendURL string) (*ClusterServiceTarget, error)
 // substituting the Service's own token would collapse per-user RBAC into
 // "anyone who can reach the tunnel" (E-5). The object is hub-owned and fully
 // overwritten on every reconcile, so a tenant editing its target has that edit
-// reverted rather than silently redirecting platform traffic (E-4).
+// reverted (E-4). The provider still selects a validated Service destination
+// inside its registered Edge through its CatalogEntry. This is not namespace
+// isolation within a customer's Kubernetes cluster.
 func (b *Bootstrapper) EnsureProviderEdgeService(ctx context.Context, orgUUID string, route EdgeRoute, target ClusterServiceTarget) error {
 	if orgUUID == "" || route.WorkspaceUUID == "" || route.EdgeName == "" || route.ServiceName == "" {
 		return fmt.Errorf("EnsureProviderEdgeService: orgUUID and a complete route are required")
