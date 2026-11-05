@@ -35,6 +35,15 @@ async function mount(component: Parameters<typeof mountVue>[0], props: Record<st
   return view
 }
 
+async function openInbox(view: MountedVue, expandFirst = true): Promise<void> {
+  view.element.querySelector<HTMLButtonElement>('[data-k-tab-id="inbox"]')!.click()
+  await settleVue(2)
+  if (expandFirst) {
+    view.element.querySelector<HTMLButtonElement>('.agents-inbox-row')!.click()
+    await settleVue(2)
+  }
+}
+
 const run = (over: Partial<RunSummary> = {}): RunSummary => ({
   id: 'r1',
   agent: 'scout',
@@ -323,8 +332,9 @@ describe('Activity.vue', () => {
     }]
     Object.assign(store.inbox, { loaded: true, hasSnapshot: true, error: 'inbox refresh failed' })
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
-    expect(text(view.element.querySelector('.agents-approval-row'))).toContain('approve the deployment')
+    expect(text(view.element.querySelector('.agents-inbox-row'))).toContain('approve the deployment')
     expect(text(view.element.querySelector('.agents-state-error'))).toContain('Showing the last loaded data. inbox refresh failed')
   })
 
@@ -375,7 +385,7 @@ describe('Activity.vue', () => {
     expect(view.element.querySelector<HTMLButtonElement>('button[aria-label="Refresh runs"]')?.disabled).toBe(false)
   })
 
-  it('pins an approval and resolves it without leaving the feed', async () => {
+  it('opens a compact approval and resolves it without leaving the inbox', async () => {
     const resolution = deferred<Record<string, never>>()
     const resolveInbox = vi.fn().mockImplementation(() => resolution.promise)
     const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
@@ -388,10 +398,16 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    expect(view.element.querySelector('[data-k-tab-id="inbox"] .k-tab__count')?.textContent).toBe('1')
+    expect(view.element.querySelector('.agents-inbox-row')).toBeNull()
+    await openInbox(view, false)
+    expect(view.element.querySelector('.agents-approval-disclosure')).toBeNull()
+    expect(view.element.querySelector<HTMLElement>('.agents-activity-run-history')?.style.display).toBe('none')
+    view.element.querySelector<HTMLButtonElement>('.agents-inbox-row')!.click()
+    await settleVue(2)
 
     expect([...view.element.querySelectorAll('h1, h2, h3, h4, h5, h6')].map(heading => [heading.tagName, text(heading)])).toEqual([
       ['H1', 'Activity'],
-      ['H2', 'Needs your attention (1)'],
     ])
     expect(text(view.element.querySelector('.agents-approval-disclosure'))).toContain('edges__pods_delete')
     expect(text(view.element.querySelector('.agents-approval-args'))).toBe('{}')
@@ -409,7 +425,7 @@ describe('Activity.vue', () => {
     expect(approve.getAttribute('aria-busy')).toBe('true')
     expect(deny.disabled).toBe(true)
     expect(deny.getAttribute('aria-busy')).toBeNull()
-    expect(text(view.element.querySelector('.agents-approval-row'))).toContain('edges__pods_delete')
+    expect(text(view.element.querySelector('.agents-inbox-row'))).toContain('edges__pods_delete')
 
     resolution.resolve({})
     await settleVue()
@@ -452,6 +468,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
     expect(text(view.element)).toContain('self_prompt_update')
     expect(text(view.element)).not.toContain('Approve & resume')
@@ -475,6 +492,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
     expect(text(view.element.querySelector('.agents-question-card__prompt'))).toBe('Which pull request should I review?')
     expect(text(view.element)).not.toContain('Approve & resume')
@@ -509,6 +527,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
     const actions = view.element.querySelector('.agents-question-card')!
     buttonWithText(actions, 'Skip').click()
@@ -533,7 +552,13 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
+    const rows = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-inbox-row')]
+    rows[1].click()
+    await settleVue(2)
+    expect(rows.map(row => row.getAttribute('aria-expanded'))).toEqual(['false', 'true', 'false'])
+    expect(view.element.querySelectorAll('.agents-question-card')).toHaveLength(1)
     const dismissAll = buttonWithText(view.element.querySelector('.agents-attention-head')!, 'Dismiss all')
     dismissAll.click()
     await settleVue()
@@ -572,6 +597,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
     const dismissAll = buttonWithText(view.element.querySelector('.agents-attention-head')!, 'Dismiss all')
     dismissAll.click()
@@ -607,6 +633,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
     const actions = view.element.querySelector('.agents-approval-actions')!
     const approve = buttonWithText(actions, 'Approve & resume')
 
@@ -624,7 +651,7 @@ describe('Activity.vue', () => {
     expect(listRuns.mock.calls.length).toBeGreaterThan(1)
     expect(text(document.querySelector('.k-toast--error'))).toContain('do not have permission')
     expect(text(document.querySelector('.k-toast--error'))).not.toContain('sensitive-backend-detail')
-    expect(view.element.querySelector('.agents-approval-row')).not.toBeNull()
+    expect(view.element.querySelector('.agents-inbox-row')).not.toBeNull()
   })
 
   it('blocks approval without a valid disclosed argument object but leaves denial available', async () => {
@@ -638,6 +665,7 @@ describe('Activity.vue', () => {
     store.inbox.loaded = true
     store.inbox.hasSnapshot = true
     const view = await mount(Activity, { store, api })
+    await openInbox(view)
 
     const actions = view.element.querySelector('.agents-approval-actions')!
     const approve = buttonWithText(actions, 'Approve')
