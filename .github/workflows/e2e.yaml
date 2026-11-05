@@ -140,6 +140,15 @@ jobs:
         with:
           install_only: true
 
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
@@ -200,6 +209,15 @@ jobs:
         with:
           install_only: true
 
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+
       - name: Install Helm
         uses: azure/setup-helm@v3
         with:
@@ -256,6 +274,15 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
       - name: Install Helm
         uses: azure/setup-helm@v3
@@ -321,6 +348,15 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
       - name: Install Helm
         uses: azure/setup-helm@v3
@@ -388,6 +424,15 @@ jobs:
         with:
           install_only: true
 
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
+
       - name: Run edges connectivity e2e
         env:
           RAILGRID_E2E_ARTIFACT_DIR: ${{ runner.temp }}/railgrid-e2e-edges-connectivity
@@ -422,6 +467,15 @@ jobs:
         uses: helm/kind-action@v1
         with:
           install_only: true
+
+      # ubuntu-latest became ubuntu-26.04 on 2026-11-05, whose defaults (128
+      # inotify instances, 129k watches) are too low for the kind clusters a
+      # suite starts on one runner: external_kcp's third cluster failed in
+      # kubeadm init on every run since, while the 24.04 image met these
+      # values and never warned. Raise them to what `railgrid dev init`
+      # recommends.
+      - name: Raise inotify limits for kind
+        run: sudo sysctl -w fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512
 
       - name: Run CLI e2e
         env:
