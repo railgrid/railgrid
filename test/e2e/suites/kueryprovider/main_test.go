@@ -272,6 +272,13 @@ func TestMain(m *testing.M) {
 	}
 
 	code := m.Run()
+	if code != 0 {
+		// The hub's heartbeat verdicts and the provider's readiness are what
+		// explain a "provider not ready" from the proxy, and both live only in
+		// these files, which cleanup removes unless the data dir is kept.
+		fmt.Fprintf(os.Stderr, "--- hub.log (tail)\n%s\n", tailInitLog(filepath.Join(dataDir, "hub.log"), 80))
+		fmt.Fprintf(os.Stderr, "--- provider.log (tail)\n%s\n", tailInitLog(filepath.Join(dataDir, "provider.log"), 80))
+	}
 	cleanup()
 	os.Exit(code)
 }
