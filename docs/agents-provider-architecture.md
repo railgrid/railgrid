@@ -607,6 +607,34 @@ textually and both against the route table, because a verb that is served but
 not declared cannot be granted to a workload identity, and one that is declared
 but not served mints a capability whose calls 404.
 
+### Attended chat questions
+
+An attended `chat` MCP call can complete with `done`, fail with `error`, or
+return `approval_required` when the run pauses. A pause ends the current
+response stream while the run waits. Top-level API-backed chat pauses on
+`ask` by default. Codex and Claude Code can also pause for clarification.
+Background `ask` calls post to the inbox and let the run continue.
+
+For `approval_required` with `data.kind: "question"`, use
+`data.question` for a text prompt or `data.questions` for prompts with
+stable IDs and optional choices. Submit the reply to the agent's
+`inbox-resolve` subresource:
+
+```text
+POST /clusters/{clusterID}/apis/agents.railgrid.ai/v1alpha1/agents/{agent}/inbox-resolve/{inboxID}
+```
+
+Use the frame's `data.inboxID`. Send `{"decision":"answer","response":"My reply"}`
+for a text prompt. For a question group, send one value per question ID, using
+`null` for an explicit skip:
+
+```json
+{"decision":"answer","answers":{"location":"README","owner":null}}
+```
+
+A successful submission schedules continuation of the same run. Follow its
+run events or reload the conversation for the eventual result.
+
 ### Chat model preferences
 
 `GET agents/{name}/session/{sessionID}` returns `modelCredential` (empty means

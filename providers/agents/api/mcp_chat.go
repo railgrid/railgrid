@@ -89,7 +89,8 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		Description: "Send one message to an agent in a conversation and get its reply. This is the attended turn the portal's chat uses: " +
 			"the agent runs with its interactive tool grant and, as you, with the workspace's connected clusters and servers. " +
 			"Pass a progress token to receive the turn's events (deltas, tool calls) as progress notifications; the result is the terminal event — " +
-			"done, error, or approval_required when the agent paused for your approval or to ask a question (resolve those in the portal). " +
+			"done, error, or approval_required when the run pauses. A pause with kind question includes an inboxID and a prompt or question group. " +
+			"Submit the reply in the portal or through the agent's inbox-resolve subresource to continue the same run. " +
 			"To hand an agent a task unattended, use run_agent instead.",
 		Annotations: &mcp.ToolAnnotations{
 			// The turn may run write-capable tools as the caller (gated by the
