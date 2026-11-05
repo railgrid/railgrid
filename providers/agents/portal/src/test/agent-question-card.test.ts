@@ -15,6 +15,7 @@ it('requires a send action for a choice and retains a custom answer across a fai
   const app = createApp(() => h(AgentQuestionCard, { questionId: questionId.value, prompt, busy: busy.value, onAnswer: value => answers.push(value) }))
   app.mount(host)
   try {
+    expect(host.textContent).toContain('Waiting for your answers')
     const send = () => host.querySelector<HTMLButtonElement>('button[type="submit"]')!
     const input = host.querySelector<HTMLInputElement>('input[type="text"]')!
     expect(send().disabled).toBe(true)

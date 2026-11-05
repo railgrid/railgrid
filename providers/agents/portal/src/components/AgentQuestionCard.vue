@@ -4,7 +4,7 @@ import { CircleHelp, LoaderCircle, Pencil } from 'lucide-vue-next'
 import type { AgentQuestion, QuestionAnswers, QuestionReply } from '../types'
 import { questionPresentation, skippedQuestionResponse } from '../question-presentation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   questionId: string
   prompt?: string
   questions?: AgentQuestion[]
@@ -12,7 +12,7 @@ const props = defineProps<{
   busy?: boolean
   disabled?: boolean
   resolved?: 'answered' | 'dismissed'
-}>()
+}>(), { blocking: true })
 const emit = defineEmits<{ answer: [response: QuestionReply] }>()
 const id = useId()
 const draft = ref('')
