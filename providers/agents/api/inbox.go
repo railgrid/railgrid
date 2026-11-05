@@ -81,10 +81,10 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 		if len(answerPayload) == 0 {
 			answerPayload = []map[string]any{{}}
 		}
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, answerPayload...)
+		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: answerPayload[0]})
 	}
 	if state != store.InboxStateApproved {
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
+		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
 	}
 	item, err := s.store.GetInboxItem(ctx, scope, id)
 	if err != nil {
@@ -110,7 +110,7 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 		}
 		response = strings.TrimSpace(strings.TrimSpace(response) + "\n" + result)
 	}
-	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
+	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
 }
 
 // resolutionResumesRun reports whether resolving an item this way continues the
@@ -186,7 +186,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if _, ok := errors.AsType[*requestError](err); ok {
 			writeUpdateError(w, err)
-		} else if errors.Is(err, store.ErrQuestionAlreadyResolved) {
+		} else if errors.Is(err, store.ErrInboxAlreadyResolved) {
 			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 		} else if strings.Contains(err.Error(), "not found") {
 			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())

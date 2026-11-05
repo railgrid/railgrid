@@ -17,17 +17,24 @@ const emit = defineEmits<{ answer: [response: QuestionReply] }>()
 const id = useId()
 const draft = ref('')
 const choice = ref('')
+const answerByteLimit = 8192
+const utf8 = new TextEncoder()
 const replies = ref<QuestionAnswers>({})
 const customDrafts = ref<Record<string, string>>({})
 const activeIndex = ref(0)
 const questionHeading = ref<HTMLElement>()
 const activeQuestion = computed(() => props.questions?.[activeIndex.value])
 const lastQuestion = computed(() => activeIndex.value === (props.questions?.length ?? 0) - 1)
-const firstUnanswered = computed(() => props.questions?.findIndex(entry => !hasReply(entry.id)) ?? -1)
+const firstInvalidReply = computed(() => props.questions?.findIndex(entry => !validReply(entry.id)) ?? -1)
 
-function hasReply(questionID: string): boolean {
+function replyTooLong(questionID: string): boolean {
   const reply = replies.value[questionID]
-  return reply === null || (typeof reply === 'string' && !!reply.trim())
+  return typeof reply === 'string' && utf8.encode(reply.trim()).length > answerByteLimit
+}
+
+function validReply(questionID: string): boolean {
+  const reply = replies.value[questionID]
+  return reply === null || (typeof reply === 'string' && !!reply.trim() && !replyTooLong(questionID))
 }
 
 function goTo(index: number): void {
@@ -42,9 +49,9 @@ function setReply(questionID: string, value: string | null, custom = false): voi
 }
 function advanceGroup(): void {
   const entry = activeQuestion.value
-  if (!entry || !hasReply(entry.id) || props.disabled || props.busy) return
+  if (!entry || !validReply(entry.id) || props.disabled || props.busy) return
   if (!lastQuestion.value) goTo(activeIndex.value + 1)
-  else if (firstUnanswered.value !== -1) goTo(firstUnanswered.value)
+  else if (firstInvalidReply.value !== -1) goTo(firstInvalidReply.value)
   else emit('answer', replies.value)
 }
 
@@ -97,15 +104,20 @@ function send(): void {
             </label>
             <input class="k-input agents-question-card__input" type="text" :aria-label="`Your answer to ${activeQuestion.prompt}`"
               :value="customDrafts[activeQuestion.id] ?? ''"
+              :aria-invalid="replyTooLong(activeQuestion.id) || undefined"
+              :aria-describedby="replyTooLong(activeQuestion.id) ? `${id}-reply-error` : undefined"
               :placeholder="activeQuestion.options?.length ? 'Or write your own response…' : 'Write your answer…'" maxlength="8192"
               @input="setReply(activeQuestion.id, ($event.target as HTMLInputElement).value, true)">
+            <p v-if="replyTooLong(activeQuestion.id)" :id="`${id}-reply-error`" class="agents-question-card__error" role="alert">
+              This reply exceeds the 8,192-byte limit. Shorten it to continue.
+            </p>
           </fieldset>
         </div>
         <div class="agents-question-card__actions">
           <span v-if="replies[activeQuestion.id] === null" class="agents-question-card__skipped" role="status">Skipped</span>
           <button class="k-btn k-btn--ghost secondary" type="button" :disabled="disabled || busy" @click="skipQuestion">Skip</button>
-          <button class="k-btn k-btn--primary" type="submit" :disabled="!hasReply(activeQuestion.id) || disabled || busy">
-            {{ busy ? 'Sending…' : !lastQuestion ? 'Next' : firstUnanswered !== -1 ? 'Review unanswered' : questions.length === 1 ? 'Send answer' : 'Send answers' }}
+          <button class="k-btn k-btn--primary" type="submit" :disabled="!validReply(activeQuestion.id) || disabled || busy">
+            {{ busy ? 'Sending…' : !lastQuestion ? 'Next' : firstInvalidReply !== -1 ? 'Review replies' : questions.length === 1 ? 'Send answer' : 'Send answers' }}
           </button>
         </div>
       </form>
@@ -141,6 +153,7 @@ function send(): void {
 <style scoped>
 .agents-question-card__navigation { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .agents-question-card__navigation .k-btn { display: grid; place-items: center; min-width: 32px; min-height: 32px; padding: 0; }
+.agents-question-card__error { margin: 0; color: var(--color-text-primary); font-size: 13px; }
 .agents-question-card__skipped { align-self: center; color: var(--color-text-secondary); font-size: 13px; }
 .agents-question-card__questions { display: grid; gap: 8px; min-width: 0; }
 .agents-question-dock .agents-question-card__questions { max-block-size: 42dvh; overflow: auto; padding: 3px; }

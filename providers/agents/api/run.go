@@ -1134,8 +1134,10 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 			if item.Kind == store.InboxKindQuestion {
 				state = store.InboxStateAnswered
 			}
-			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC()); err != nil {
-				cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC(), store.InboxResolution{PendingOnly: true}); err != nil {
+				if !errors.Is(err, store.ErrInboxAlreadyResolved) {
+					cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+				}
 			} else {
 				s.events.publish(wsScope, "inbox", map[string]any{
 					"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
@@ -1574,8 +1576,10 @@ func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, ru
 	if phase == store.RunPhaseAborted {
 		response = "The run was cancelled before this was resolved."
 	}
-	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now); err != nil {
-		log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now, store.InboxResolution{PendingOnly: true}); err != nil {
+		if !errors.Is(err, store.ErrInboxAlreadyResolved) {
+			log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+		}
 		return
 	}
 	s.events.publish(wsScope, "inbox", map[string]any{

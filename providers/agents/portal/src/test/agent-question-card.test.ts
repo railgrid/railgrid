@@ -79,6 +79,12 @@ it('submits a choice, write-in, and explicit skip as one group', async () => {
     next.click()
     await nextTick()
     expect(prompt()).toBe('What should it be called?')
+    input().value = '界'.repeat(3000)
+    input().dispatchEvent(new Event('input', { bubbles: true }))
+    await nextTick()
+    expect(input().getAttribute('aria-invalid')).toBe('true')
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('8,192-byte limit')
+    expect(send().disabled).toBe(true)
     input().value = 'Operator guide'
     input().dispatchEvent(new Event('input', { bubbles: true }))
     previous.click()

@@ -419,7 +419,7 @@ func TestMemoryStore_InboxResolve(t *testing.T) {
 	if err != nil || len(pending) != 1 {
 		t.Fatalf("list pending: %v n=%d", err, len(pending))
 	}
-	if _, err := s.ResolveInboxItem(ctx, sc, "i1", InboxStateApproved, "ok", now); err != nil {
+	if _, err := s.ResolveInboxItem(ctx, sc, "i1", InboxStateApproved, "ok", now, InboxResolution{}); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	pending, _ = s.ListInbox(ctx, sc, InboxStatePending)

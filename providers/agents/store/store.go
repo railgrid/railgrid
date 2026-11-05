@@ -556,8 +556,17 @@ const (
 	InboxStateAnswered InboxItemState = "answered"
 )
 
-// ErrQuestionAlreadyResolved indicates the question cannot accept this resolution.
-var ErrQuestionAlreadyResolved = errors.New("question is no longer pending")
+// ErrInboxAlreadyResolved indicates the item cannot accept this resolution.
+var ErrInboxAlreadyResolved = errors.New("inbox item is no longer pending")
+
+// InboxResolution controls which existing states a resolution may update.
+type InboxResolution struct {
+	// PendingOnly is used by run cleanup to preserve a concurrent reply.
+	PendingOnly bool
+	// QuestionPayload gates a user resolution on question state and merges its
+	// metadata. A non-nil empty map supports legacy text replies and dismissal.
+	QuestionPayload map[string]any
+}
 
 // InboxItem is one approval or question, resolvable from the portal or a channel.
 // A matching resolution resumes its run when RunID is set.
@@ -902,7 +911,7 @@ type Store interface {
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
-	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (InboxItem, error)
+	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error)
 
 	// Harness MCP sessions: the bearer a remote harness turn presents to the
 	// agent's own configuration endpoint. Only the token's SHA-256 is kept.

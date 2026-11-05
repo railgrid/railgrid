@@ -1547,7 +1547,7 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (InboxItem, error) {
+func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return InboxItem{}, err
@@ -1560,8 +1560,8 @@ func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id st
 	query := `UPDATE agents_inbox SET state=$4, response=$5, updated_at=$6
   WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`
 	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(state), response, now.UTC()}
-	if len(answerPayload) > 0 {
-		payload, err := json.Marshal(answerPayload[0])
+	if resolution.QuestionPayload != nil {
+		payload, err := json.Marshal(resolution.QuestionPayload)
 		if err != nil {
 			return InboxItem{}, err
 		}
@@ -1571,13 +1571,16 @@ func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id st
     AND (state='pending' OR ($4='answered' AND state='denied' AND run_id<>''))`
 		args = append(args, string(payload))
 	}
+	if resolution.PendingOnly {
+		query += " AND state='pending'"
+	}
 	res, err := mutation.executor.ExecContext(ctx, query, args...)
 	if err != nil {
 		return InboxItem{}, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		if len(answerPayload) > 0 {
-			return InboxItem{}, ErrQuestionAlreadyResolved
+		if resolution.PendingOnly || resolution.QuestionPayload != nil {
+			return InboxItem{}, ErrInboxAlreadyResolved
 		}
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
 	}

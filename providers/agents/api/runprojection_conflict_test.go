@@ -392,3 +392,37 @@ func TestQuestionGroupResolution(t *testing.T) {
 		t.Fatal("unknown question ID accepted")
 	}
 }
+
+type answerDuringCleanupStore struct {
+	store.Store
+	t *testing.T
+}
+
+func (s answerDuringCleanupStore) GetInboxItem(ctx context.Context, scope store.Scope, id string) (store.InboxItem, error) {
+	item, err := s.Store.GetInboxItem(ctx, scope, id)
+	if err == nil {
+		_, answerErr := s.Store.ResolveInboxItem(ctx, scope, id, store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
+			QuestionPayload: map[string]any{"answers": map[string]string{"a": "User reply"}},
+		})
+		if answerErr != nil {
+			s.t.Fatal(answerErr)
+		}
+	}
+	return item, err
+}
+
+func TestClosingParkedQuestionPreservesConcurrentReply(t *testing.T) {
+	s, scope, run := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
+	run.Checkpoint = []byte(`{"inboxID":"race-question"}`)
+	item := store.InboxItem{ID: "race-question", AgentName: run.AgentName, RunID: run.ID, Kind: store.InboxKindQuestion, State: store.InboxStatePending}
+	original := s.store
+	if err := original.AddInboxItem(t.Context(), scope, item); err != nil {
+		t.Fatal(err)
+	}
+	s.store = answerDuringCleanupStore{Store: original, t: t}
+	s.closeParkedInboxItem(t.Context(), scope, run, store.RunPhaseAborted, time.Now())
+	got, err := original.GetInboxItem(t.Context(), scope, item.ID)
+	if err != nil || got.Response != "User reply" || got.Payload["answers"] == nil {
+		t.Fatalf("concurrent answer was lost: %+v, %v", got, err)
+	}
+}

@@ -1312,7 +1312,7 @@ func (m *MemoryStore) ListInbox(_ context.Context, scope Scope, state InboxItemS
 	return out, nil
 }
 
-func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (InboxItem, error) {
+func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return InboxItem{}, err
@@ -1325,14 +1325,17 @@ func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string
 	if !ok {
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
 	}
-	if len(answerPayload) > 0 {
+	if resolution.PendingOnly && it.State != InboxStatePending {
+		return InboxItem{}, ErrInboxAlreadyResolved
+	}
+	if resolution.QuestionPayload != nil {
 		canAnswerDismissedRun := state == InboxStateAnswered && it.State == InboxStateDenied && it.RunID != ""
 		if it.Kind != InboxKindQuestion || (it.State != InboxStatePending && !canAnswerDismissedRun) {
-			return InboxItem{}, ErrQuestionAlreadyResolved
+			return InboxItem{}, ErrInboxAlreadyResolved
 		}
-		payload := make(map[string]any, len(it.Payload)+len(answerPayload[0]))
+		payload := make(map[string]any, len(it.Payload)+len(resolution.QuestionPayload))
 		maps.Copy(payload, it.Payload)
-		maps.Copy(payload, answerPayload[0])
+		maps.Copy(payload, resolution.QuestionPayload)
 		it.Payload = payload
 	}
 	it.State = state
