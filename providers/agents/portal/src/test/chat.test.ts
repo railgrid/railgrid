@@ -1285,6 +1285,8 @@ describe('chat streaming', () => {
     await send(el, 'open a PR')
 
     const card = el.querySelector('.agents-question-card')!
+    expect(el.querySelector('.agents-log .agents-question-card')).toBeNull()
+    expect(el.querySelector('.agents-question-dock')?.nextElementSibling).toBe(el.querySelector('.agents-composer'))
     expect(text(card)).toContain('Which repository should I open the pull request against?')
     expect(text(card)).not.toContain('tool unavailable')
     expect(text(card)).not.toContain('Approval required')
@@ -1298,7 +1300,8 @@ describe('chat streaming', () => {
     card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
-    expect(text(el.querySelector('.agents-question-card__status'))).toBe('Answer sent')
+    expect(el.querySelector('.agents-question-dock')).toBeNull()
+    expect(text(el.querySelector('.agents-log .agents-question-card__status'))).toBe('Answer sent')
   })
 
   // An older server sends no kind. A park with no tool is still a question, so

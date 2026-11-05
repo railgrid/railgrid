@@ -17,6 +17,7 @@ import type { Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import { skippedQuestionResponse } from '../question-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
 
@@ -203,7 +204,7 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: stri
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
     if (!authorityIsCurrent(authority)) return
-    toast('ok', resolutionToast(item, decision))
+    toast('ok', decision === 'answer' && answer === skippedQuestionResponse ? 'Question skipped.' : resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
     if (authorityIsCurrent(authority)) {
@@ -409,10 +410,7 @@ onBeforeUnmount(() => {
             :prompt="item.prompt"
             :busy="resolvingInbox.get(item.id) === 'answer'"
             :disabled="locked(item.id)"
-            :dismissing="resolvingInbox.get(item.id) === 'deny'"
-            dismissible
             @answer="response => resolve(item, 'answer', response)"
-            @dismiss="resolve(item, 'deny')"
           />
         </div>
       </section>

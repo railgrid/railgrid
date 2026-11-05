@@ -40,6 +40,7 @@ const props = withDefaults(defineProps<{
   authorLabel?: string
   sessionID?: string
   announce?: boolean
+  questionDocked?: boolean
   approvalBusy?: 'approve' | 'deny' | 'answer'
   /** The parent chooses one stable message per run for navigation metadata. */
   showRunLink?: boolean
@@ -511,7 +512,7 @@ onBeforeUnmount(() => { mounted = false })
 
     <template v-if="message.role === 'user' || message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <AgentQuestionCard
-        v-if="message.approval && pendingIsQuestion(message.approval)"
+        v-if="message.approval && !questionDocked && pendingIsQuestion(message.approval)"
         :question-id="message.approval.inboxID"
         :prompt="message.approval.question"
         :busy="approvalBusy === 'answer'"
@@ -521,7 +522,7 @@ onBeforeUnmount(() => { mounted = false })
       />
 
       <AIInterrupt
-        v-else-if="message.approval"
+        v-else-if="message.approval && !pendingIsQuestion(message.approval)"
         class="agents-approval"
         :status="message.approval.resolved ? 'resolved' : approvalBusy ? 'busy' : 'pending'"
         :busy="!!approvalBusy"

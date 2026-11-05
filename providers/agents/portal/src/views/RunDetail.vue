@@ -42,6 +42,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import { skippedQuestionResponse } from '../question-presentation'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
 import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
@@ -266,7 +267,7 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer',
       ? authority.api.resolveInbox(inboxID, 'answer', response!.trim())
       : authority.api.resolveInbox(inboxID, decision))
     if (!authorityIsCurrent(authority) || id !== props.runId) return
-    toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? 'Answered — the run is resuming.' : 'Denied.')
+    toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? response === skippedQuestionResponse ? 'Question skipped — the run is resuming.' : 'Answered — the run is resuming.' : 'Denied.')
     await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
     if (authorityIsCurrent(authority) && id === props.runId) {

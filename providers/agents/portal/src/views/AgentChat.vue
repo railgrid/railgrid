@@ -19,7 +19,7 @@ import type { Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
-import { credentialUnavailable, agentHarnessBacked, agentModelCredential, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
@@ -31,6 +31,8 @@ import { waitForAgentConfigSaves } from '../vue/config-save-queue'
 import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
+import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import { skippedQuestionResponse } from '../question-presentation'
 import McpAppViewer from '../components/McpAppViewer.vue'
 import RenameChatDialog from '../components/RenameChatDialog.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
@@ -104,6 +106,13 @@ const artifactPanelElement = ref<HTMLElement | null>(null)
 let artifactDetailSerial = 0
 
 const messages = ref<ChatMessage[]>([])
+const dockedQuestion = computed(() => {
+  if (props.composerOnly) return
+  for (let i = messages.value.length - 1; i >= 0; i--) {
+    const question = messages.value[i].approval
+    if (question && !question.resolved && pendingIsQuestion(question)) return question
+  }
+})
 const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
 // A title event can arrive while a session-list read is in flight. Keep the
@@ -1988,7 +1997,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       void refreshRunApproval(target.approval.runID)
     }
     toast('ok', decision === 'answer'
-      ? 'Answered — resuming the run.'
+      ? response === skippedQuestionResponse ? 'Question skipped — resuming the run.' : 'Answered — resuming the run.'
       : decision === 'approve' ? 'Approved — resuming the run.' : 'Denied.')
     void store.load('inbox')
   } catch (error) {
@@ -2603,6 +2612,7 @@ defineExpose({
               :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
               :announce="message.role === 'assistant' && message.streaming"
               :show-run-link="runLinkMessageIDs.has(message.id)"
+              :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
               :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
               @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
               @view-run="emit('navigate', { kind: 'run', id: $event })"
@@ -2646,6 +2656,15 @@ defineExpose({
           </button>
         </div>
 
+        <div v-if="dockedQuestion" class="agents-question-dock k-ai-composer-dock">
+          <AgentQuestionCard
+            :question-id="dockedQuestion.inboxID"
+            :prompt="dockedQuestion.question"
+            :busy="approvalBusy[dockedQuestion.inboxID] === 'answer'"
+            :disabled="!!approvalBusy[dockedQuestion.inboxID]"
+            @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"
+          />
+        </div>
         <section v-if="modelRecovery !== 'ready'" ref="recoveryPanel" class="agents-model-recovery" :class="{ 'agents-model-recovery--compact': composerOnly }" :aria-labelledby="domID('model-recovery-title')" :aria-busy="modelRecovery === 'loading' || modelSaving">
           <h3 ref="recoveryHeading" :id="domID('model-recovery-title')" tabindex="-1" aria-live="polite">{{ composerOnly ? compactRecoveryTitle : modelRecovery === 'loading' ? 'Loading models…' : modelRecovery === 'error' ? 'Models could not be loaded' : modelRecovery === 'inaccessible' ? 'Model access is restricted' : modelRecovery === 'choose' ? 'Choose a model to continue' : 'Connect a model to continue' }}</h3>
           <template v-if="!composerOnly">

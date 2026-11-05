@@ -1,3 +1,4 @@
+import { skippedQuestionResponse } from '../question-presentation'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, type ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
@@ -495,7 +496,7 @@ describe('Activity.vue', () => {
     expect(text(document.querySelector('.k-toast--ok'))).toContain('Answered')
   })
 
-  it('lets a pending question be dismissed without an answer', async () => {
+  it('skips a pending question through the resume path', async () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
     const listInbox = vi.fn().mockResolvedValue([])
     const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
@@ -510,12 +511,11 @@ describe('Activity.vue', () => {
     const view = await mount(Activity, { store, api })
 
     const actions = view.element.querySelector('.agents-question-card')!
-    const dismiss = buttonWithText(actions, 'Dismiss')
-    dismiss.click()
+    buttonWithText(actions, 'Skip').click()
     await settleVue(3)
-    expect(resolveInbox).toHaveBeenCalledWith('i4', 'deny')
+    expect(resolveInbox).toHaveBeenCalledWith('i4', 'answer', skippedQuestionResponse)
     expect(listInbox).toHaveBeenCalled()
-    expect(text(document.querySelector('.k-toast--ok'))).toContain('Dismissed')
+    expect(text(document.querySelector('.k-toast--ok'))).toContain('Question skipped')
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
   })
 

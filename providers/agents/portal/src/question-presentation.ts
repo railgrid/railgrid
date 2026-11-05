@@ -1,3 +1,7 @@
+// Resuming a parked harness requires a nonempty resolution. This instruction
+// communicates the skip without supplying a product decision.
+export const skippedQuestionResponse = 'The user skipped this question without answering. Continue with the task where possible. If the missing decision prevents progress, explain what remains blocked.'
+
 export interface QuestionPresentation {
   prompt: string
   options: { label: string; description: string }[]
