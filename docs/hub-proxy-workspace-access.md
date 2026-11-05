@@ -1,18 +1,49 @@
-# Hub kcp-proxy — per-workspace access (membership-gated)
+# Hub kcp front door — per-workspace access
 
-**Status:** Option A implemented in `pkg/server/proxy` (A-1/A-3 membership gate in `authorizer.go`; A-2 as a per-caller, lazily populated topology cache rather than a reconciler-maintained index). The interim GraphQL path (Option B) has been removed; the proxy is the only tenant data path.
+**Status:** Retired as a gate on 2026-11-05. The hub no longer decides which
+workspace a caller may address. `pkg/server/proxy` forwards every kube path
+(`/clusters/{id}/…`, `/services/apiexport/…`, bare `/api` and `/apis`) to kcp
+byte-for-byte — path, query, `Authorization` and the WebSocket bearer
+subprotocol untouched, no hub credential added — and kcp answers. The
+membership gate described below (A-1/A-3, `authorizer.go`), the O-10 refusal of
+Organization-workspace paths, the ban on addressing a workspace by path, the
+ServiceAccount path rewrite and the virtual-workspace ownership check were all
+deleted. Everything below the rule is history: why the gate existed and what
+it decided, kept so the kcp-side rules that replaced it can be read against it.
 **Owner:** TBD
-**Last updated:** 2026-06-27
+**Last updated:** 2026-11-05
 **Reads as a delta on:** [organizations.md](./organizations.md) (decision O-10), [provider-connectivity-contract.md](./provider-connectivity-contract.md)
-**Companion:** [app-studio-sandbox-runtime.md](./app-studio-sandbox-runtime.md) (the provider that hit this first)
 
-> **Note (2026-09-25).** The `X-Railgrid-Cluster` header the backend proxy
-> injects now reaches a provider only on the non-kube routes (MCP, OAuth,
-> webhooks, health). Every provider verb is a kcp custom subresource served
-> through this kcp proxy at `/clusters/{id}/apis/…`, so the membership gate
-> described here is the one gate in front of provider data planes as well as
-> CR traffic. Browser WebSocket upgrades present the bearer as the
-> `base64url.bearer.authorization.k8s.io.<token>` subprotocol (`websocketBearer`).
+## What decides access now
+
+- **Entering a workspace** is kcp's workspace content authorizer: a human
+  needs the `access` verb on `/` in that logical cluster. The only thing that
+  grants it to a tenant is the hub-managed `railgrid:tenant-admin` binding
+  (`pkg/hub/kcp/tenant_admin.go`), written per Membership and, for an org-scope
+  Membership, into every child workspace of the org (O-15). No binding, no
+  entry — whatever the hub's membership index says.
+- **Organization workspaces (O-10)** stay unreachable for tenants because no
+  tenant RBAC is ever written there; the hub's privileged account is the only
+  identity with rules in `root:railgrid:tenants:{org}`.
+- **Addressing by path** (`/clusters/root:railgrid:tenants:{org}:{ws}`) is
+  allowed as kcp allows it; it resolves to the same cluster and the same RBAC.
+- **ServiceAccounts** carry `authentication.kcp.io/scopes: cluster:<issuer>`
+  and are rejected outside their issuing cluster by kcp itself.
+- **APIExport virtual workspaces** are authorized by `apiexports/content` in
+  the export's workspace; a credential that does not own the export gets kcp's
+  403.
+- **The hub's own non-kube routes** that still need "may this user address
+  this workspace" (UI asset grants, backend routes) ask kcp the same question:
+  `kcpTenantResolver.AuthorizeCluster` runs a SubjectAccessReview for
+  `access` on `/` in the target cluster as the user's RBAC identity, so the
+  answer cannot drift from what `/clusters/{id}` would do.
+- A request that names no workspace is forwarded as is; the hub no longer
+  substitutes `User.spec.defaultCluster`. Login still mints kubeconfigs with
+  the cluster in the server URL.
+
+The `oidc` suite's `Tenancy/WorkspaceAccessIsolation` case proves the kcp
+decision end to end: own workspace allowed, another user's refused, cross
+access after a Membership grant.
 
 ---
 

@@ -25,17 +25,10 @@ the same authenticated route.
 
 ## External kcp
 
-Deploy the compatible Railgrid kcp serving binary with the organization boundary
-hooks. Stock external kcp does not acquire those hooks merely by upgrading the
-Hub. Upstream kcp quota-accounting changes are not part of this implementation.
-
-Build it with `make build-railgrid-kcp` (or `make docker-build-kcp`). Run
-`railgrid-kcp start` with the shard's normal storage, authentication and TLS
-configuration. The command accepts the existing kcp serving flags and installs
-the same organization guard as embedded mode before the server starts.
-For a standalone root deployment, keep the shard name `root`; the relay client
-certificate name is independent of that flag. Mount writable state and set
-`--root-directory` to that location.
+Run stock kcp; no Railgrid shard binary is required and no organization guard
+runs inside the shard. Upstream kcp quota-accounting changes are not part of
+this implementation. For a standalone root deployment, keep the shard name
+`root`; the relay client certificate name is independent of that flag.
 Give the Hub an admin kubeconfig scoped to the root logical cluster, for example
 `https://kcp.example.internal:6443/clusters/root`, rather than a bare shard URL.
 Use the normal `kcp-admin` identity (`system:kcp:admin`), rather than a shard's

@@ -32,9 +32,12 @@ unload already executed JavaScript; close or reload its console document.
 cluster-scoped ResourceQuota accounting defect. This implementation does not fix
 upstream kcp, introduce a fork, change dependency pins, or require that defect to
 be fixed before enrollment. Reliable containment of persistent storage exhaustion
-is not claimed. Request/body/concurrency controls are separate from storage
-quotas and do not close that gap. Operators must account for shared availability
-risk when permitting customer-authored providers.
+is not claimed. There are no per-organization request, body or concurrency
+limits inside kcp either: the in-process organization guard that carried them
+was removed, so a shard's protection against a noisy customer provider is kcp's
+own request limits and priority-and-fairness, plus whatever the ingress
+enforces. Operators must account for shared availability risk when permitting
+customer-authored providers.
 
 ## Manual installation
 
@@ -102,7 +105,21 @@ The Hub creates a provider workspace at
 `root:railgrid:tenants:<org>:providers:<name>`. Restricted provider credentials
 read their own runtime state and access enabled consumers through their APIExport
 virtual workspace. Hub-owned enrollment metadata lives outside their authority.
-No generic authenticated-user bind grant is published for organization exports.
+
+**Who may bind an organization export is decided by kcp, not by Railgrid.**
+kcp's APIBinding admission runs a SubjectAccessReview for the `bind` verb on
+the APIExport, evaluated in the provider workspace as the user creating the
+binding. Platform exports publish a `railgrid:providers:bind:<export>` grant
+to `system:authenticated`, which is why anyone can bind them with kubectl.
+Organization exports publish no bind grant: the SDK removes it in an
+organization workspace, the Hub deletes any legacy copy before bootstrap, and
+the restricted provider credential cannot write RBAC. The only identity that
+passes that review is kcp-admin, which the Hub uses in the per-workspace
+Enable flow and only for workspaces of the registering organization. A tenant
+who can write APIBindings in their own workspace is still refused with
+`no permission to bind to export`, in the same organization or any other.
+Knowing the export path grants nothing. The `edgesconn` e2e suite proves the
+kcp decision directly.
 
 Custom subresource requests follow kcp authorization, then the authenticated
 shard-to-Hub relay, then the Hub-selected Edge tunnel and Kubernetes Service.
@@ -132,17 +149,21 @@ publishing an organization copy does not migrate or combine their resources.
 
 ## Deployment requirements and lifecycle
 
-Both embedded kcp and separately deployed kcp must run the Railgrid organization
-boundary hooks. External deployments require the compatible Railgrid kcp serving
-binary and authenticated shard relay configuration; upgrading the Hub alone cannot
-protect clients that call a shard directly. Use mTLS for the external relay and
-keep trusted platform backend listeners private from tenant workloads.
+Embedded and separately deployed kcp run stock kcp: there is no Railgrid shard
+binary and no in-kcp organization guard. What keeps an organization provider
+inside its organization is kcp itself — ServiceAccount tokens scoped to their
+issuing cluster, the restricted `railgrid:org-provider` role, no bind grant on
+organization exports, and the relay's binding check on every custom
+subresource. External deployments additionally need the authenticated shard
+relay configuration. Use mTLS for the external relay and keep trusted platform
+backend listeners private from tenant workloads.
 
-Organization APIExport wildcard requests are limited to one minute. Each reconnect
-rechecks APIBindings against the shard's local informer cache. A newly created
-foreign binding does not immediately cancel an already-open watch, so events may
-remain visible until that request expires. Cross-shard binding ownership
-enforcement remains deferred.
+An organization export's virtual workspace serves every workspace that has
+bound it. Because only the Hub can bind one (kcp-admin, in the registering
+organization's workspaces), that set stays inside the organization unless an
+operator creates a bind grant by hand; there is no runtime recheck of the
+binding set behind an open wildcard watch, so audit such grants before relying
+on the boundary. Cross-shard binding ownership enforcement remains deferred.
 
 Set `--provider-heartbeat-auth=enforce` (Helm:
 `hub.security.providerHeartbeatAuth: enforce`) before registering organization
@@ -196,8 +217,7 @@ token needed by the replacement deployment. Deleting the old token Secret
 revokes that legacy credential. A short-lived refresh system and an org-admin
 emergency-revoke convenience API remain follow-up work.
 
-External-shard enforcement detection and automatic deployment upgrades remain
-deferred. Operators must satisfy the compatible-binary requirement themselves;
-the Hub currently checks relay configuration, not the running shard binary.
-Cross-shard credential ownership lookup remains a known limitation, so this MVP
-has been validated with a single KCP shard.
+Automatic deployment upgrades remain deferred. The Hub checks relay
+configuration before enrolling organization providers. Cross-shard credential
+ownership lookup remains a known limitation, so this MVP has been validated
+with a single KCP shard.

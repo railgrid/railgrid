@@ -14,16 +14,14 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package proxy reverse-proxies authenticated requests to kcp.
+// Package proxy is the hub's transparent front door to kcp, plus the
+// identity helpers and static-token login that share its auth dispatch.
 package proxy
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,7 +29,6 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
@@ -48,7 +45,6 @@ import (
 	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/browsersession"
 	railgridclient "github.com/railgrid/railgrid/pkg/client"
-	"github.com/railgrid/railgrid/pkg/hub/kcp"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -58,22 +54,25 @@ const defaultStaticTokenRateLimit = 10
 // defaultStaticTokenBurstDuration is the default time window for static token rate limiting.
 const defaultStaticTokenBurstDuration = time.Minute
 
-// KCPProxy is a reverse proxy that authenticates requests via OIDC
-// and forwards them to the user's dedicated kcp tenant workspace.
+// KCPProxy is the hub's front door to kcp. It forwards every kube path
+// (/clusters/{id}/…, /services/apiexport/…, bare /api and /apis) to kcp
+// byte-for-byte: path, query, Authorization and the WebSocket bearer
+// subprotocol all arrive as the caller sent them, and the hub adds no
+// credential of its own. kcp authenticates the bearer (static token, OIDC,
+// ServiceAccount) and authorizes the request with its own RBAC — the
+// workspace `access` gate, the bound tenant-admin role and the organization
+// boundary guard — so the hub makes no access decision on this path. The
+// type also hosts the identity helpers (BrowserIdentity, IdentifyUser) and
+// the static-token login the rest of the hub shares with that front door.
 type KCPProxy struct {
-	kcpTarget            *url.URL
-	passthroughTransport http.RoundTripper // TLS-only transport; no credentials injected
-	verifier             *oidc.IDTokenVerifier
-	verifyCtx            context.Context // context with HTTP client for OIDC key fetches
-	railgridClient       *railgridclient.Client
-	bootstrapper         *kcp.Bootstrapper
-	staticAuthTokens     []string
-	hubExternalURL       string
-	devMode              bool
-	logger               klog.Logger
-	// authorizer gates /clusters/{id} access against the caller's
-	// UserMembershipIndex (docs/hub-proxy-workspace-access.md, Option A).
-	authorizer *clusterAuthorizer
+	forward          *httputil.ReverseProxy // TLS-only transport; no credentials injected
+	verifier         *oidc.IDTokenVerifier
+	verifyCtx        context.Context // context with HTTP client for OIDC key fetches
+	railgridClient   *railgridclient.Client
+	staticAuthTokens []string
+	hubExternalURL   string
+	devMode          bool
+	logger           klog.Logger
 	// staticTokenRateLimiter protects the token-login endpoint against brute
 	// force attacks. It is keyed on ClientIP, so it only sees through a proxy
 	// once SetTrustedProxies has been called with that proxy's address range.
@@ -100,10 +99,9 @@ func (p *KCPProxy) SetBrowserSessionStore(store *browsersession.Store) {
 	}
 }
 
-// NewKCPProxy creates a reverse proxy to kcp.
-// It validates bearer tokens as OIDC id_tokens before proxying.
-// verifier may be nil when only static token auth is used.
-func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, railgridClient *railgridclient.Client, bootstrapper *kcp.Bootstrapper, staticAuthTokens []string, hubExternalURL string, devMode bool) (*KCPProxy, error) {
+// NewKCPProxy creates the transparent front door to kcp. verifier is used
+// only by BrowserIdentity and may be nil when only static token auth is used.
+func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, railgridClient *railgridclient.Client, staticAuthTokens []string, hubExternalURL string, devMode bool) (*KCPProxy, error) {
 	target, err := url.Parse(kcpConfig.Host)
 	if err != nil {
 		return nil, err
@@ -146,176 +144,35 @@ func NewKCPProxy(kcpConfig *rest.Config, verifier *oidc.IDTokenVerifier, railgri
 		verifyCtx = context.WithValue(verifyCtx, oauth2.HTTPClient, insecureClient)
 	}
 
-	authorizer := newClusterAuthorizer(
-		func(ctx context.Context, userName string) (*tenancyv1alpha1.UserMembershipIndex, error) {
-			return railgridClient.UserMembershipIndices().Get(ctx, userName, metav1.GetOptions{})
-		},
-		bootstrapper.GetChildWorkspaceClusterName,
-		// Team workspaces only. An Org workspace can also hold the `providers`
-		// container for org-owned providers, and authorizing that here would
-		// give every org member access to the workspace that parents provider
-		// credentials.
-		bootstrapper.ListChildTeamWorkspaces,
-	)
-
+	logger := klog.Background().WithName("kcp-proxy")
 	return &KCPProxy{
-		kcpTarget:            target,
-		passthroughTransport: passthroughTransport,
-		verifier:             verifier,
-		verifyCtx:            verifyCtx,
-		railgridClient:       railgridClient,
-		bootstrapper:         bootstrapper,
-		staticAuthTokens:     staticAuthTokens,
-		hubExternalURL:       hubExternalURL,
-		devMode:              devMode,
-		logger:               klog.Background().WithName("kcp-proxy"),
-		authorizer:           authorizer,
+		forward:          newForwarder(target, passthroughTransport, logger),
+		verifier:         verifier,
+		verifyCtx:        verifyCtx,
+		railgridClient:   railgridClient,
+		staticAuthTokens: staticAuthTokens,
+		hubExternalURL:   hubExternalURL,
+		devMode:          devMode,
+		logger:           logger,
 		// Initialize rate limiter for token-login endpoint (10 requests per minute)
 		staticTokenRateLimiter: newRateLimiter(defaultStaticTokenBurstDuration, defaultStaticTokenRateLimit),
 	}, nil
 }
 
-// ServeHTTP validates the bearer token and proxies the request to kcp.
-// Two token types are supported:
-//   - OIDC id_tokens (from Dex): resolved to a tenant workspace via User CRD lookup,
-//     forwarded with admin credentials.
-//   - kcp ServiceAccount tokens: the clusterName claim identifies the workspace,
-//     forwarded with the original SA token so kcp handles authn/authz natively.
-func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Extract bearer token.
-	authHeader := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authHeader, "Bearer ") {
-		// A browser cannot set Authorization on a WebSocket upgrade. The
-		// Kubernetes convention is to carry the bearer as a subprotocol
-		// (base64url.bearer.authorization.k8s.io.<base64url token>), which
-		// kcp's own authenticator understands; the hub reads the same
-		// subprotocol for its membership check and forwards the request
-		// untouched, so kcp authenticates it natively and echoes the
-		// protocol back the way kube-apiserver does.
-		if token, ok := websocketBearer(r); ok {
-			authHeader = "Bearer " + token
-		} else {
-			writeUnauthorized(w)
-			return
-		}
-	}
-	token := strings.TrimPrefix(authHeader, "Bearer ")
-
-	// Static token: create user/workspace if needed and proxy to user's workspace.
-	// Use constant-time comparison to prevent timing side-channel attacks.
-	for _, staticToken := range p.staticAuthTokens {
-		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
-			p.logger.V(4).Info("proxy auth: static token matched", "path", r.URL.Path)
-			p.serveStaticToken(w, r, token)
-			return
-		}
-	}
-
-	// APIExport virtual workspaces are provider-only and authorized structurally
-	// (the export must live in the caller's own workspace), so they get their
-	// own branch ahead of the general SA path — which would otherwise rewrite
-	// the URL by prepending /clusters/{name} and destroy it.
-	if vw, ok := parseVirtualWorkspacePath(r.URL.Path); ok {
-		saClaims, isSA := parseServiceAccountToken(token)
-		if !isSA {
-			p.logger.Info("VW: non-ServiceAccount credential rejected", "path", r.URL.Path)
-			writeForbidden(w, vwRequiresProviderIdentityBody)
-			return
-		}
-		p.serveVirtualWorkspace(w, r, token, saClaims.ClusterName(), vw)
-		return
-	}
-
-	// Check for kcp ServiceAccount tokens BEFORE OIDC verification.
-	// SA tokens have iss="kubernetes/serviceaccount"; the OIDC verifier would
-	// correctly reject them, but running the check first saves a JWKS fetch and
-	// makes the auth branch unambiguous in logs.
-	if saClaims, ok := parseServiceAccountToken(token); ok {
-		p.logger.V(4).Info("proxy auth: SA token", "path", r.URL.Path, "clusterName", saClaims.ClusterName())
-		p.serveServiceAccount(w, r, token, saClaims.ClusterName())
-		return
-	}
-
-	// Try OIDC verification (user tokens from Dex). A failure is reported on
-	// the 401 line below rather than as a line of its own, so a rejected
-	// request logs once.
-	oidcErr := "no verifier configured"
-	if p.verifier != nil {
-		idToken, err := p.verifier.Verify(p.verifyCtx, token)
-		if err == nil {
-			p.logger.V(4).Info("proxy auth: OIDC verified", "path", r.URL.Path)
-			p.serveOIDC(w, r, token, idToken)
-			return
-		}
-		oidcErr = err.Error()
-	}
-
-	// Log only SHA-256 hash prefix to prevent token information disclosure
-	// while still allowing correlation for debugging
-	tokenHash := sha256.Sum256([]byte(token))
-	p.logger.Info("proxy auth: no match — returning 401", "path", r.URL.Path, "oidcErr", oidcErr, "tokenHash", hex.EncodeToString(tokenHash[:])[:16])
-	writeUnauthorized(w)
-}
-
-// serveOIDC handles OIDC-authenticated requests by resolving the user's tenant
-// workspace and proxying with admin credentials.
-//
-// Two path formats are supported:
-//   - /clusters/{logicalClusterName}/... — kcp-syntax (new kubeconfigs). The
-//     cluster ID is verified against user.spec.defaultCluster.
-//   - /api/... or /apis/... — bare path (legacy kubeconfigs). The workspace
-//     path is constructed from the userID.
-func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token string, idToken *oidc.IDToken) {
-	var claims struct {
-		Sub string `json:"sub"`
-	}
-	if err := idToken.Claims(&claims); err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"failed to parse token claims","reason":"InternalError","code":500}`)
-		return
-	}
-
-	user, err := p.resolveUser(r.Context(), idToken.Issuer, claims.Sub)
-	if err != nil {
-		p.logger.Error(err, "failed to resolve user workspace", "sub", claims.Sub)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"user workspace not found","reason":"Forbidden","code":403}`)
-		return
-	}
-	// Wait for the bootstrap controller to finish provisioning the user's
-	// personal org/workspace (and its membership index) on the very first
-	// request after sign-up. Warm-path requests short-circuit immediately.
-	user = p.waitForDefaultCluster(r.Context(), user)
-
-	// Authorize the requested cluster against the caller's membership (A-1/A-3).
-	kcpPath, errStatus, errBody := p.authorizeKCPPath(r.Context(), user.Name, r.URL.Path)
-	if errStatus != 0 {
-		p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "status", errStatus)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(errStatus)
-		_, _ = fmt.Fprint(w, errBody)
-		return
-	}
-
-	target := *p.kcpTarget
-	logger := p.logger
-
-	proxy := &httputil.ReverseProxy{
+// newForwarder builds the one reverse proxy every kube path goes through.
+// The Director rewrites only the target host: the path (including a
+// workspace path in the cluster segment or a virtual-workspace prefix), the
+// query and every header are kcp's to interpret. FlushInterval -1 disables
+// response buffering so watches and streamed verbs deliver as events arrive.
+func newForwarder(target *url.URL, transport http.RoundTripper, logger klog.Logger) *httputil.ReverseProxy {
+	return &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = target.Scheme
 			req.URL.Host = target.Host
-			req.URL.Path = kcpPath
 			req.Host = target.Host
-
-			// Forward the user's bearer token unchanged — kcp authenticates it
-			// directly (OIDC), so the request runs with the user's identity and
-			// their RBAC is enforced by kcp natively. Do not strip Authorization
-			// or add Impersonate-* headers.
-			_ = user
 		},
-		Transport: p.passthroughTransport,
+		FlushInterval: -1,
+		Transport:     transport,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error(err, "proxy upstream error", "method", r.Method, "path", r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
@@ -323,64 +180,14 @@ func (p *KCPProxy) serveOIDC(w http.ResponseWriter, r *http.Request, token strin
 			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"upstream error","reason":"ServiceUnavailable","code":502}`)
 		},
 	}
-
-	proxy.ServeHTTP(w, r)
 }
 
-// serveStaticToken handles static-token-authenticated requests by creating
-// a user and workspace (if needed) and proxying to the user's tenant workspace.
-func (p *KCPProxy) serveStaticToken(w http.ResponseWriter, r *http.Request, token string) {
-	ctx := r.Context()
-
-	// Look up or create the user for this static token.
-	user, err := p.ensureStaticTokenUser(ctx, identity.NewStaticToken(token))
-	if err != nil {
-		p.logger.Error(err, "failed to ensure static token user")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"failed to create user","reason":"InternalError","code":500}`)
-		return
-	}
-	// Wait for the bootstrap controller to finish provisioning the user's
-	// personal org/workspace (and its membership index) on first request.
-	user = p.waitForDefaultCluster(ctx, user)
-
-	// Authorize the requested cluster against the caller's membership (A-1/A-3).
-	kcpPath, errStatus, errBody := p.authorizeKCPPath(ctx, user.Name, r.URL.Path)
-	if errStatus != 0 {
-		p.logger.Info("cluster access denied", "user", user.Name, "path", r.URL.Path, "status", errStatus)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(errStatus)
-		_, _ = fmt.Fprint(w, errBody)
-		return
-	}
-
-	target := *p.kcpTarget
-	logger := p.logger
-
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = kcpPath
-			req.Host = target.Host
-
-			// Forward the user's bearer token unchanged — kcp must have a
-			// matching static-token auth entry so it authenticates the request
-			// as this user and enforces their RBAC natively. Do not strip
-			// Authorization or add Impersonate-* headers.
-			_ = user
-		},
-		Transport: p.passthroughTransport,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Error(err, "proxy upstream error (static token)", "method", r.Method, "path", r.URL.Path)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"upstream error","reason":"ServiceUnavailable","code":502}`)
-		},
-	}
-
-	proxy.ServeHTTP(w, r)
+// ServeHTTP forwards the request to kcp unchanged. There is no bearer check,
+// cluster check or path rewrite here: a request without a credential gets
+// kcp's 401, a workspace the caller holds no RBAC in gets kcp's 403, and a
+// path kcp does not serve gets kcp's 404.
+func (p *KCPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.forward.ServeHTTP(w, r)
 }
 
 // ensureStaticTokenUser creates or retrieves a User for a static token.
@@ -622,271 +429,10 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 	return created, nil
 }
 
-// saClusterRE bounds a cluster a ServiceAccount request may name, in its token
-// claim or in the path, so neither can carry a traversal.
-var saClusterRE = regexp.MustCompile(`^[a-z0-9]+(?:[:-][a-z0-9]+)*$`)
-
-// serveServiceAccount handles kcp ServiceAccount tokens by forwarding the
-// request to the workspace identified by the clusterName claim, keeping the
-// original SA token so kcp performs native authn/authz.
-func (p *KCPProxy) serveServiceAccount(w http.ResponseWriter, r *http.Request, token, clusterName string) {
-	// Validate clusterName against a strict regex to prevent path traversal.
-	if !saClusterRE.MatchString(clusterName) {
-		p.logger.Info("SA: clusterName regex rejected — 401", "clusterName", clusterName)
-		writeUnauthorized(w)
-		return
-	}
-
-	// O-10 gate: refuse direct access to Organization workspaces even when
-	// authenticated as a kcp ServiceAccount. SA tokens bound at the Org
-	// workspace shouldn't exist in v1, but defense-in-depth: the structural
-	// check here costs nothing and stops a misconfigured token from
-	// reaching the Org workspace's API server.
-	if isOrgWorkspacePath(clusterName) {
-		p.logger.Info("SA: org workspace access denied (O-10)", "cluster", clusterName)
-		writeOrgWorkspaceForbidden(w)
-		return
-	}
-
-	// Where to forward. A request may name the workspace it is aimed at, which a
-	// data-plane verb on another provider's object always does:
-	//
-	//	/clusters/{tenant}/apis/{group}/{version}/{resource}/{name}/{verb}
-	//
-	// The clusterName claim says where the ServiceAccount LIVES, not where the
-	// request is aimed, so prepending it to a path that already names a cluster
-	// produces /clusters/{sa}/clusters/{tenant}/... and kcp answers 404. An agent
-	// kubeconfig whose server URL carries its own /clusters/{name} lands here
-	// too, and forwarding it unchanged is what the prefix strip used to achieve.
-	//
-	// Honouring the addressed cluster is safe because the SA token is forwarded
-	// as it arrived: kcp authenticates it natively and authorizes it in THAT
-	// workspace, so reaching another one still needs a grant there. Both checks
-	// the claim gets are applied to the addressed cluster as well, so naming one
-	// in the path cannot get past either.
-	forwardPath := "/clusters/" + clusterName + r.URL.Path
-	if addressed := extractClusterPathFromKCPPath(r.URL.Path); addressed != "" {
-		if !saClusterRE.MatchString(addressed) {
-			p.logger.Info("SA: addressed cluster regex rejected — 401", "cluster", addressed)
-			writeUnauthorized(w)
-			return
-		}
-		if isOrgWorkspacePath(addressed) {
-			p.logger.Info("SA: org workspace access denied (O-10)", "cluster", addressed)
-			writeOrgWorkspaceForbidden(w)
-			return
-		}
-		forwardPath = r.URL.Path
-	}
-
-	target := *p.kcpTarget
-	logger := p.logger
-
-	proxy := &httputil.ReverseProxy{
-		Director: func(req *http.Request) {
-			req.URL.Scheme = target.Scheme
-			req.URL.Host = target.Host
-			req.URL.Path = forwardPath
-			req.Host = target.Host
-
-			// Keep the SA token — kcp authenticates it natively.
-			req.Header.Set("Authorization", "Bearer "+token)
-		},
-		Transport: p.passthroughTransport,
-		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			logger.Error(err, "proxy upstream error (SA)", "method", r.Method, "path", r.URL.Path)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"upstream error","reason":"ServiceUnavailable","code":502}`)
-		},
-	}
-
-	proxy.ServeHTTP(w, r)
-}
-
-// saTokenClaims holds the claims we extract from a kcp ServiceAccount JWT. kcp
-// carries the SA's logical cluster in the token: bound tokens nest it under
-// kubernetes.io.clusterName, legacy tokens use the flat
-// kubernetes.io/serviceaccount/clusterName key. We read both, matching kcp's
-// WithInClusterServiceAccountRequestRewrite (pkg/server/filters/serviceaccounts.go).
-type saTokenClaims struct {
-	Issuer            string `json:"iss"`
-	ClusterNameLegacy string `json:"kubernetes.io/serviceaccount/clusterName"`
-	Kubernetes        struct {
-		ClusterName string `json:"clusterName"`
-	} `json:"kubernetes.io"`
-}
-
-// ClusterName returns the SA's logical cluster, preferring the bound-token claim
-// and falling back to the legacy flat claim.
-func (c saTokenClaims) ClusterName() string {
-	if c.Kubernetes.ClusterName != "" {
-		return c.Kubernetes.ClusterName
-	}
-	return c.ClusterNameLegacy
-}
-
-// parseServiceAccountToken decodes a JWT without signature verification and
-// checks whether it is a kcp ServiceAccount token. kcp will verify the
-// signature when the request is forwarded.
-func parseServiceAccountToken(token string) (saTokenClaims, bool) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return saTokenClaims{}, false
-	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return saTokenClaims{}, false
-	}
-	var claims saTokenClaims
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		return saTokenClaims{}, false
-	}
-	// It's a kcp SA token when it carries a logical-cluster claim (bound or
-	// legacy). An OIDC/Dex user token has neither, so this never misclassifies a
-	// user token. We no longer require iss=="kubernetes/serviceaccount" so that
-	// bound SA tokens (different issuer) are also recognised.
-	if claims.ClusterName() == "" {
-		return saTokenClaims{}, false
-	}
-	return claims, true
-}
-
-// websocketBearerProtocolPrefix is the Kubernetes WebSocket bearer subprotocol
-// (k8s.io/apiserver/pkg/authentication/request/websocket): the token follows
-// the prefix, base64url-encoded without padding.
-const websocketBearerProtocolPrefix = "base64url.bearer.authorization.k8s.io."
-
-// websocketBearer extracts the bearer a WebSocket upgrade carries as a
-// subprotocol. It reports false for a request that is not an upgrade or
-// offers no such protocol; the request is not modified.
-func websocketBearer(r *http.Request) (string, bool) {
-	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return "", false
-	}
-	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
-		for _, protocol := range strings.Split(header, ",") {
-			protocol = strings.TrimSpace(protocol)
-			if !strings.HasPrefix(protocol, websocketBearerProtocolPrefix) {
-				continue
-			}
-			encoded := strings.TrimPrefix(protocol, websocketBearerProtocolPrefix)
-			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
-			if err != nil || len(decoded) == 0 {
-				return "", false
-			}
-			return string(decoded), true
-		}
-	}
-	return "", false
-}
-
 func writeUnauthorized(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Unauthorized","reason":"Unauthorized","code":401}`)
-}
-
-// orgWorkspacePathPrefix is the kcp logical-cluster path under which every
-// Organization workspace lives (root:railgrid:orgs:{org-uuid}). The proxy
-// uses this prefix together with the structural rule "an Organization
-// workspace has exactly one segment after orgs:" to decide whether a
-// requested target is an Org workspace.
-const orgWorkspacePathPrefix = "root:railgrid:tenants:"
-
-// orgWorkspaceForbiddenBody is the JSON the proxy returns when refusing a
-// direct request to an Organization workspace per docs/organizations.md
-// decision O-10 ("Org workspaces are hub-mediated only"). The body uses
-// the standard Kubernetes Status envelope so kubectl renders the message
-// nicely while also carrying a railgrid-specific reason + a pointer at the
-// hub REST surface so CLI tooling can suggest the right endpoint.
-const orgWorkspaceForbiddenBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"Organization workspaces are hub-mediated and not directly accessible — use the hub REST endpoints at /api/orgs/{org-uuid}/... instead.","reason":"OrgWorkspaceNotDirectlyAccessible","code":403,"details":{"kind":"OrganizationWorkspace","group":"tenants.railgrid.ai"}}`
-
-// isOrgWorkspacePath reports whether clusterPath addresses a kcp
-// Organization workspace (path root:railgrid:orgs:{single-segment}). Child
-// "team" workspaces under an Org, which look like
-// root:railgrid:orgs:{org-uuid}:{ws-uuid}, do NOT match — those remain
-// tenant-accessible per the design.
-//
-// The check is structural rather than annotation-based on purpose: every
-// Organization workspace lives at exactly this path shape by the
-// invariant established in PR #2 (workspacetype-organization.yaml +
-// Bootstrapper.EnsureOrgWorkspace). Using the path keeps the proxy hot
-// path free of kcp lookups and avoids a cache layer.
-func isOrgWorkspacePath(clusterPath string) bool {
-	if !strings.HasPrefix(clusterPath, orgWorkspacePathPrefix) {
-		return false
-	}
-	rest := strings.TrimPrefix(clusterPath, orgWorkspacePathPrefix)
-	if rest == "" {
-		return false
-	}
-	// Exactly one segment after `orgs:` ⇒ an Org workspace. A second
-	// colon ⇒ child team Workspace (root:railgrid:orgs:{org}:{ws}).
-	return !strings.Contains(rest, ":")
-}
-
-// extractClusterPathFromKCPPath returns the logical-cluster path portion
-// of a kcp-syntax URL path like `/clusters/{cluster}/api/...`. Returns
-// the empty string if the input doesn't carry a /clusters/ prefix
-// (i.e. it has already been resolved by resolveKCPPath, which would
-// have prepended the default cluster). The proxy calls this AFTER
-// resolveKCPPath so kcpPath is always /clusters/-prefixed.
-func extractClusterPathFromKCPPath(kcpPath string) string {
-	if !strings.HasPrefix(kcpPath, "/clusters/") {
-		return ""
-	}
-	rest := strings.TrimPrefix(kcpPath, "/clusters/")
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		return rest[:i]
-	}
-	return rest
-}
-
-// writeOrgWorkspaceForbidden writes the O-10 403 response.
-func writeOrgWorkspaceForbidden(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusForbidden)
-	_, _ = fmt.Fprint(w, orgWorkspaceForbiddenBody)
-}
-
-// Response bodies for the membership-gated cluster authorization (Option A).
-const (
-	bareNoClusterBody       = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"no workspace selected — address /clusters/{id} (resolve the id via the hub REST endpoints, e.g. /api/orgs/{org}/workspaces)","reason":"BadRequest","code":400}`
-	addressByIDBody         = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"address workspaces by cluster ID (/clusters/{id}), not by path — resolve the id via /api/orgs/{org}/workspaces/{ws}","reason":"Forbidden","code":403}`
-	clusterAccessDeniedBody = `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"cluster access denied","reason":"Forbidden","code":403}`
-)
-
-// authorizeKCPPath authorizes userName's request URL against their membership
-// and returns the kcp path to forward (unchanged for /clusters/{id}) or an
-// error (status, body). Implements docs/hub-proxy-workspace-access.md:
-//
-//   - bare /api|/apis (no cluster segment) → rejected; there is no
-//     DefaultCluster default (A-1).
-//   - /clusters/{org-workspace-path} → O-10 refusal (Org workspaces are
-//     hub-mediated).
-//   - /clusters/{tenant-path} (path-form) → rejected; clients address by ID.
-//   - /clusters/{id}[:{edge}] → allowed iff the caller is a member of the
-//     workspace the id (or the id of an edge's parent) belongs to (A-3).
-//
-// Returns (kcpPath, 0, "") on success, or ("", status, body) on denial.
-func (p *KCPProxy) authorizeKCPPath(ctx context.Context, userName, urlPath string) (string, int, string) {
-	if !strings.HasPrefix(urlPath, "/clusters/") {
-		return "", http.StatusBadRequest, bareNoClusterBody
-	}
-	seg := extractClusterPathFromKCPPath(urlPath)
-	switch {
-	case seg == "":
-		return "", http.StatusBadRequest, bareNoClusterBody
-	case isOrgWorkspacePath(seg):
-		return "", http.StatusForbidden, orgWorkspaceForbiddenBody
-	case strings.HasPrefix(seg, "root:"):
-		return "", http.StatusForbidden, addressByIDBody
-	}
-	if !p.authorizer.authorize(ctx, userName, seg) {
-		return "", http.StatusForbidden, clusterAccessDeniedBody
-	}
-	return urlPath, 0, ""
 }
 
 // ErrIdentifyNoBearer is returned by IdentifyUser when the request
@@ -906,11 +452,9 @@ var ErrIdentifyNoBearer = errors.New("no Authorization: Bearer token")
 // can proceed on this; anything that acts as the user must still fail.
 var ErrUserRecordUnavailable = errors.New("caller authenticated but user record unavailable")
 
-// IdentifyUser extracts the caller's User CR name from r's bearer
-// token, using the same auth schemes as ServeHTTP (static token,
-// OIDC). Used by hub REST endpoints behind the tenant middleware so
-// they can identify the caller without duplicating the proxy's auth
-// dispatch.
+// IdentifyUser extracts the caller's User CR name from r's bearer token
+// (static token or OIDC). Used by hub REST endpoints behind the tenant
+// middleware so they can identify the caller with one auth dispatch.
 //
 // Returns ErrIdentifyNoBearer for missing/unparseable Authorization
 // headers, and other errors for verification failures. kcp
@@ -938,7 +482,7 @@ func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, er
 	}
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
-	// Static token branch first — constant-time compare per ServeHTTP.
+	// Static token branch first — constant-time compare.
 	for _, staticToken := range p.staticAuthTokens {
 		if staticToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(staticToken)) == 1 {
 			user, err := p.ensureStaticTokenUser(r.Context(), identity.NewStaticToken(token))

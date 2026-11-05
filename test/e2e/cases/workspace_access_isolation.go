@@ -14,11 +14,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// End-to-end coverage for the membership-gated kcp proxy (Option A,
-// docs/hub-proxy-workspace-access.md). Two distinct users each own a
-// workspace; the hub kcp proxy must let each reach their own workspace cluster
-// (/clusters/{id}) and refuse the other's with "cluster access denied", until a
-// Membership grants cross access. Requires the OIDC suite for two identities.
+// End-to-end coverage for per-workspace access through the hub's front door
+// to kcp. The hub forwards /clusters/{id} requests to kcp unchanged, so who
+// may enter a workspace is kcp's decision: the `access` entry gate and the
+// tenant-admin binding the hub writes for each Membership. Two distinct users
+// each own a workspace; each reaches their own cluster, is refused the
+// other's by kcp, and gains it once a Membership grants cross access.
+// Requires the OIDC suite for two identities.
 
 package cases
 
@@ -36,15 +38,10 @@ import (
 	"github.com/railgrid/railgrid/test/e2e/framework"
 )
 
-// proxyDeniedMessage is the exact message the proxy's membership gate returns
-// (pkg/server/proxy/proxy.go clusterAccessDeniedBody). Asserting on it isolates
-// "the proxy refused" from any downstream kcp auth/RBAC result, so the test
-// doesn't depend on whether kcp trusts Dex in this suite.
-const proxyDeniedMessage = "cluster access denied"
-
-// proxyClusterGet issues a raw kcp-proxy request (no tenant headers — the proxy
-// authorizes from the path + bearer) for a harmless read in the target cluster.
-func proxyClusterGet(ctx context.Context, hubURL, clusterID, bearer string) (int, string) {
+// clusterGet issues a raw request through the hub front door (no tenant
+// headers — nothing in the hub reads them on this path) for a harmless read
+// in the target cluster, and returns kcp's answer.
+func clusterGet(ctx context.Context, hubURL, clusterID, bearer string) (int, string) {
 	url := strings.TrimRight(hubURL, "/") + "/clusters/" + clusterID + "/apis/apis.kcp.io/v1alpha2/apibindings"
 	code, body, err := framework.DoRESTRequest(ctx, http.MethodGet, url, bearer, nil, nil)
 	if err != nil {
@@ -53,10 +50,11 @@ func proxyClusterGet(ctx context.Context, hubURL, clusterID, bearer string) (int
 	return code, string(body)
 }
 
-// proxyDenied reports whether the response is the proxy's own membership refusal
-// (as opposed to a downstream kcp 401/403 with a different body).
-func proxyDenied(code int, body string) bool {
-	return code == http.StatusForbidden && strings.Contains(body, proxyDeniedMessage)
+// kcpRefused reports whether kcp turned the caller away at the workspace:
+// a 403 is the `access` gate (or RBAC below it), and a 401 means kcp did not
+// accept the credential at all. Either way the hub made no decision.
+func kcpRefused(code int) bool {
+	return code == http.StatusForbidden || code == http.StatusUnauthorized
 }
 
 // workspaceClusterID polls GET /api/orgs/{org}/workspaces/{ws} until the
@@ -85,27 +83,28 @@ func workspaceClusterID(ctx context.Context, t *testing.T, hubURL, bearer, org, 
 
 // waitProxyAllowed polls until the proxy stops refusing access (Membership
 // reconciled into the caller's UserMembershipIndex).
-func waitProxyAllowed(ctx context.Context, t *testing.T, hubURL, clusterID, bearer, who string) {
+func waitClusterAllowed(ctx context.Context, t *testing.T, hubURL, clusterID, bearer, who string) {
 	t.Helper()
 	deadline := time.Now().Add(90 * time.Second)
 	var lastCode int
 	var lastBody string
 	for time.Now().Before(deadline) {
-		code, body := proxyClusterGet(ctx, hubURL, clusterID, bearer)
+		code, body := clusterGet(ctx, hubURL, clusterID, bearer)
 		lastCode, lastBody = code, body
-		if !proxyDenied(code, body) {
+		if code == http.StatusOK {
 			return
 		}
 		time.Sleep(2 * time.Second)
 	}
-	t.Fatalf("%s never gained proxy access to cluster %s (last code=%d body=%s)", who, clusterID, lastCode, lastBody)
+	t.Fatalf("%s never gained access to cluster %s (last code=%d body=%s)", who, clusterID, lastCode, lastBody)
 }
 
-// HubProxyMembershipIsolation verifies the membership-gated proxy: each user
-// reaches only the workspace clusters their UserMembershipIndex covers, with
-// cross-user access refused until granted, and bare paths rejected.
-func HubProxyMembershipIsolation() features.Feature {
-	return features.New("Tenancy/ProxyMembershipIsolation").
+// WorkspaceAccessIsolation verifies that kcp alone gates workspace access
+// through the hub: each user reaches only the workspace clusters their
+// Memberships have RBAC for, cross-user access is refused by kcp until
+// granted, and a request that names no workspace is not served as if it had.
+func WorkspaceAccessIsolation() features.Feature {
+	return features.New("Tenancy/WorkspaceAccessIsolation").
 		Assess("membership_gates_cluster_access", func(ctx context.Context, t *testing.T, _ *envconf.Config) context.Context {
 			dex := framework.DexEnvFrom(ctx)
 			if dex == nil || dex.User2Email == "" {
@@ -150,26 +149,29 @@ func HubProxyMembershipIsolation() features.Feature {
 			cidB := workspaceClusterID(ctx, t, hubURL, resB.IDToken, orgB.UUID, wsB.UUID)
 
 			// ── Baseline: each user reaches their own workspace cluster ──────
-			// (org-scope admin membership covers the org's child workspaces).
-			waitProxyAllowed(ctx, t, hubURL, cidA, resA.IDToken, "userA→wsA")
-			waitProxyAllowed(ctx, t, hubURL, cidB, resB.IDToken, "userB→wsB")
-
+			// (org-scope admin membership is mirrored into each child
+			// workspace as a tenant-admin binding; waitClusterAllowed absorbs
+			// the moment between workspace Ready and that binding landing).
+			waitClusterAllowed(ctx, t, hubURL, cidA, resA.IDToken, "userA→wsA")
+			waitClusterAllowed(ctx, t, hubURL, cidB, resB.IDToken, "userB→wsB")
 			// ── Isolation: neither user may reach the other's cluster ────────
-			if code, body := proxyClusterGet(ctx, hubURL, cidB, resA.IDToken); !proxyDenied(code, body) {
-				t.Fatalf("userA→userB workspace: expected %q, got code=%d body=%s", proxyDeniedMessage, code, body)
+			// The refusal is kcp's: the user holds no RBAC in that workspace,
+			// so the `access` gate denies before any resource is consulted.
+			if code, body := clusterGet(ctx, hubURL, cidB, resA.IDToken); !kcpRefused(code) {
+				t.Fatalf("userA→userB workspace: expected kcp to refuse, got code=%d body=%s", code, body)
 			}
-			if code, body := proxyClusterGet(ctx, hubURL, cidA, resB.IDToken); !proxyDenied(code, body) {
-				t.Fatalf("userB→userA workspace: expected %q, got code=%d body=%s", proxyDeniedMessage, code, body)
+			if code, body := clusterGet(ctx, hubURL, cidA, resB.IDToken); !kcpRefused(code) {
+				t.Fatalf("userB→userA workspace: expected kcp to refuse, got code=%d body=%s", code, body)
 			}
-			t.Log("cross-user cluster access refused in both directions (correct)")
-
-			// ── Bare path is rejected (no DefaultCluster default, A-1) ───────
+			t.Log("cross-user cluster access refused by kcp in both directions (correct)")
+			// ── A path that names no workspace is not served as one ──────────
+			// The hub no longer substitutes a default cluster; whatever kcp
+			// does with a bare path, it must not hand back the user's data.
 			bareURL := strings.TrimRight(hubURL, "/") + "/apis/apis.kcp.io/v1alpha2/apibindings"
-			if code, body, err := framework.DoRESTRequest(ctx, http.MethodGet, bareURL, resA.IDToken, nil, nil); err != nil || code != http.StatusBadRequest {
-				t.Fatalf("bare path: expected 400 (no default), got code=%d err=%v body=%s", code, err, body)
+			if code, _, err := framework.DoRESTRequest(ctx, http.MethodGet, bareURL, resA.IDToken, nil, nil); err != nil || code == http.StatusOK {
+				t.Fatalf("bare path: expected a refusal, got code=%d err=%v", code, err)
 			}
-			t.Log("bare path rejected with 400 (no DefaultCluster default)")
-
+			t.Log("bare path not served as a workspace")
 			// ── Grant: workspace-scope Membership opens cross access ─────────
 			// The membership endpoint keys off the target's User CR name (it
 			// does Users().Get(req.User)), which the login surfaces as UserID.
@@ -180,7 +182,7 @@ func HubProxyMembershipIsolation() features.Feature {
 			if err != nil || code != http.StatusCreated {
 				t.Fatalf("grant User B membership in wsA: code=%d err=%v body=%s", code, err, body)
 			}
-			waitProxyAllowed(ctx, t, hubURL, cidA, resB.IDToken, "userB→wsA (after grant)")
+			waitClusterAllowed(ctx, t, hubURL, cidA, resB.IDToken, "userB→wsA (after grant)")
 			t.Log("workspace-scope membership grants User B access to wsA (correct)")
 
 			return ctx

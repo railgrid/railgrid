@@ -38,7 +38,6 @@ import (
 	"github.com/kcp-dev/kcp/pkg/server"
 	serveroptions "github.com/kcp-dev/kcp/pkg/server/options"
 
-	"github.com/railgrid/railgrid/pkg/hub/kcp/orgboundary"
 	"github.com/railgrid/railgrid/pkg/util/identity"
 )
 
@@ -321,9 +320,6 @@ func (e *EmbeddedKCP) Run(ctx context.Context) error {
 
 	if e.opts.ProviderRelayTransport != nil && serverConfig.VirtualResources != nil {
 		serverConfig.VirtualResources.Extra.VWClientConfig.Wrap(e.opts.ProviderRelayTransport)
-	}
-	if err := orgboundary.Install(serverConfig); err != nil {
-		return fmt.Errorf("install organization boundary: %w", err)
 	}
 
 	// Complete the config.
