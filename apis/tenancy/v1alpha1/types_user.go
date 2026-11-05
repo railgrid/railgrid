@@ -90,9 +90,16 @@ type UserQuota struct {
 	FreeOrganizations *int32 `json:"freeOrganizations,omitempty"`
 }
 
-// OIDCProvider stores OIDC provider information for a user.
+// OIDCProvider stores OIDC provider information for a user. A User has one
+// entry per IdP identity bound to it: the one it was created with, plus any
+// linked later (see --idp-link-verified-email-issuers).
 type OIDCProvider struct {
-	Name         string       `json:"name"`
+	Name string `json:"name"`
+	// Issuer is the OIDC issuer URL of the identity. Empty on entries
+	// written before it was recorded.
+	//
+	// +optional
+	Issuer       string       `json:"issuer,omitempty"`
 	ProviderID   string       `json:"providerID"`
 	Email        string       `json:"email"`
 	AccessToken  string       `json:"accessToken"`

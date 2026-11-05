@@ -231,6 +231,11 @@ idp:
   # Client ID for the OIDC provider. Must be registered as a public client
   # (no client secret) in your IdP (e.g. Dex: public: true).
   clientID: "railgrid"
+  # Optional: issuers whose not-yet-known identities are linked onto the one
+  # existing User with the same email on first sign-in (ID token must carry
+  # email_verified=true). Lets accounts survive an IdP or Dex-connector change;
+  # see docs/oidc-identity-linking.md. Empty: every new identity is a new User.
+  linkVerifiedEmailIssuers: []
   # Optional: name of a secret in the release namespace whose `ca.crt` (or
   # `tls.crt`) holds the PEM CA bundle for the IdP. When set, the secret is
   # mounted into the hub pod and `--idp-ca-file` is passed so embedded kcp

@@ -57,8 +57,10 @@ spec:
                 type: string
               oidcProviders:
                 items:
-                  description: OIDCProvider stores OIDC provider information for a
-                    user.
+                  description: |-
+                    OIDCProvider stores OIDC provider information for a user. A User has one
+                    entry per IdP identity bound to it: the one it was created with, plus any
+                    linked later (see --idp-link-verified-email-issuers).
                   properties:
                     accessToken:
                       type: string
@@ -66,6 +68,11 @@ spec:
                       type: string
                     expiresAt:
                       format: date-time
+                      type: string
+                    issuer:
+                      description: |-
+                        Issuer is the OIDC issuer URL of the identity. Empty on entries
+                        written before it was recorded.
                       type: string
                     name:
                       type: string

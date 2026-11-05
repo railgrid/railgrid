@@ -41,6 +41,12 @@ type Options struct {
 	// and issuer validation continue to use IDPIssuerURL.
 	IDPBrowserAuthURL string
 	IDPClientID       string
+	// IDPLinkVerifiedEmailIssuers lists OIDC issuers whose identities are
+	// linked onto the one existing User with the same verified email when
+	// they sign in for the first time, instead of getting a new User. It is
+	// what keeps accounts intact across an IdP or IdP-connector change (Dex's
+	// sub is connector-scoped). Empty disables linking.
+	IDPLinkVerifiedEmailIssuers []string
 	// DisableTokenLogin removes the interactive static-token login: the
 	// /auth/token-login endpoint is not registered and /healthz advertises
 	// tokenLogin=false so the portal hides its token form. Static bearer

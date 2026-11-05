@@ -520,7 +520,7 @@ func (p *KCPProxy) ScrubStaticTokenUsers(ctx context.Context) error {
 			continue
 		}
 		id := identity.NewStaticToken(token)
-		users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: "tenants.railgrid.ai/sub=" + id.Sub})
+		users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: identity.LabelSubject + "=" + id.Sub})
 		if err != nil {
 			return fmt.Errorf("listing static-token users: %w", err)
 		}
@@ -535,7 +535,7 @@ func (p *KCPProxy) ScrubStaticTokenUsers(ctx context.Context) error {
 
 // ensureStaticTokenUserOnce is the single-attempt logic for ensureStaticTokenUser.
 func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.StaticToken) (*tenancyv1alpha1.User, error) {
-	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", id.Sub)
+	labelSelector := identity.LabelSubject + "=" + id.Sub
 	users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		return nil, fmt.Errorf("listing users: %w", err)
@@ -585,7 +585,7 @@ func (p *KCPProxy) ensureStaticTokenUserOnce(ctx context.Context, id identity.St
 		ObjectMeta: metav1.ObjectMeta{
 			Name: id.UserName,
 			Labels: map[string]string{
-				"tenants.railgrid.ai/sub":       id.Sub,
+				identity.LabelSubject:           id.Sub,
 				"tenants.railgrid.ai/auth-type": "static-token",
 			},
 		},
@@ -973,20 +973,18 @@ func (p *KCPProxy) BrowserIdentity(r *http.Request) (browsersession.Identity, er
 	return browsersession.Identity{}, ErrIdentifyNoBearer
 }
 
-// resolveUser looks up the User CRD by OIDC issuer+sub hash and returns the full User object.
+// resolveUser looks up the User CRD bound to the OIDC issuer+sub, as its
+// primary identity or a linked one, and returns the full User object.
 func (p *KCPProxy) resolveUser(ctx context.Context, issuer, sub string) (*tenancyv1alpha1.User, error) {
-	hash := sha256.Sum256([]byte(issuer + "/" + sub))
-	subHash := hex.EncodeToString(hash[:])[:63]
-
-	labelSelector := fmt.Sprintf("tenants.railgrid.ai/sub=%s", subHash)
-	users, err := p.railgridClient.Users().List(ctx, metav1.ListOptions{LabelSelector: labelSelector})
+	subHash := identity.OIDCSubjectHash(issuer, sub)
+	user, err := identity.FindUserByOIDCSubject(ctx, p.railgridClient, subHash)
 	if err != nil {
-		return nil, fmt.Errorf("listing users: %w", err)
+		return nil, err
 	}
-	if len(users.Items) == 0 {
+	if user == nil {
 		return nil, fmt.Errorf("no user found for sub hash %s", subHash)
 	}
-	return &users.Items[0], nil
+	return user, nil
 }
 
 // waitForDefaultCluster blocks until User.spec.defaultCluster is
