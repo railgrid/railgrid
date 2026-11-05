@@ -46,6 +46,35 @@ function findComponent(instance: ComponentInternalInstance | null, name: string)
 }
 
 describe('agent resource detail conformance', () => {
+  it('restores an explicit workbench choice after remounting', async () => {
+    const restoreViewport = stubViewport(false)
+    const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width: 1200, height: 600 } as DOMRect)
+    try {
+      const api = stubApi()
+      const store = makeStore(api)
+      store.agents.data = [agentFixture('scout')]
+      Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+      const props = { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 }
+      let view = await mountVue(AgentDetail, props)
+      const toggle = () => view.element.querySelector<HTMLButtonElement>('[data-agent-workbench-toggle]')!
+      expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      toggle().click()
+      await settleVue()
+      view.unmount()
+      view = await mountVue(AgentDetail, props)
+      expect(toggle().getAttribute('aria-expanded')).toBe('false')
+      toggle().click()
+      await settleVue()
+      view.unmount()
+      view = await mountVue(AgentDetail, props)
+      expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      view.unmount()
+    } finally {
+      bounds.mockRestore()
+      restoreViewport()
+    }
+  })
+
   it.each([768, 800, 845, 846, 1000])('keeps the initial chat visible in a %ipx container', async width => {
     const restoreViewport = stubViewport(false)
     const bounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ width, height: 600 } as DOMRect)
