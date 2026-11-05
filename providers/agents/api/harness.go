@@ -953,7 +953,7 @@ func shortDigest(raw string) string {
 	return hex.EncodeToString(sum[:4])
 }
 
-// postHarnessQuestion files the inbox item a harness's own question parks on,
+// postRunQuestion files the inbox item that a run's question parks on,
 // and pushes it to the agent's channel the way an approval request is pushed.
 //
 // It is the provider's side of a Parked outcome that carries a Question rather
@@ -961,10 +961,10 @@ func shortDigest(raw string) string {
 // something nobody can see is a run nobody can finish. The item is a QUESTION,
 // not an approval — what resolves it is an answer, and answering it is what
 // resumes the run (see resolveInboxItem).
-func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question string, questions []runnerharness.Question) (string, error) {
+func (s *Server) postRunQuestion(ctx context.Context, run taskRun, question string, questions []runnerharness.Question) (string, error) {
 	question = strings.TrimSpace(question)
 	if question == "" {
-		question = "the harness is waiting for input"
+		question = "the agent is waiting for input"
 	}
 	now := time.Now().UTC()
 	wsScope := store.Scope{OrgUUID: run.Scope.OrgUUID, WorkspaceUUID: run.Scope.WorkspaceUUID}
@@ -974,11 +974,11 @@ func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question 
 		State:  store.InboxStatePending,
 		Prompt: safeTruncate(question, maxHarnessQuestion),
 		Payload: map[string]any{
-			"harness": true, "trigger": run.Trigger, "questions": questions,
+			"harness": run.Agent.Spec.HarnessBacked(), "trigger": run.Trigger, "questions": questions,
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
-		return "", fmt.Errorf("filing the harness's question: %w", err)
+		return "", fmt.Errorf("filing the run's question: %w", err)
 	}
 	s.events.publish(wsScope, "inbox", map[string]any{
 		"id": id, "state": "pending", "agent": run.Agent.Name, "runID": run.RunID, "kind": "question",
@@ -991,7 +991,7 @@ func (s *Server) postHarnessQuestion(ctx context.Context, run taskRun, question 
 // on: an approval, bound to this run and to the exact call the harness asked
 // about, so Approve and Deny both mean something.
 //
-// It is the sibling of postHarnessQuestion and exists for the same reason — the
+// It is the sibling of postRunQuestion and exists for the same reason — the
 // backend cannot reach the store — but it files the other kind, because what
 // resolves it is a verdict on a named call rather than an answer in words.
 func (s *Server) postHarnessApproval(ctx context.Context, run taskRun, tool, args string) (string, error) {

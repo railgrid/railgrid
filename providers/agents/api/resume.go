@@ -115,6 +115,17 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 			return
 		}
 	}
+	// A crash after claiming a model question can leave its question
+	// checkpoint on the Running row. Replay the saved reply in that case.
+	if intent.FromPhase == store.RunPhaseRunning && ck.Backend == agentsv1alpha1.AgentBackendModel && ck.Question != "" && ck.InboxID != "" {
+		wsScope := store.Scope{OrgUUID: agentScope.OrgUUID, WorkspaceUUID: agentScope.WorkspaceUUID}
+		item, err := s.store.GetInboxItem(ctx, wsScope, ck.InboxID)
+		if err != nil || item.Kind != store.InboxKindQuestion || item.State != store.InboxStateAnswered || item.AgentName != run.AgentName || item.RunID != run.ID || strings.TrimSpace(item.Response) == "" {
+			s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "could not recover the saved question reply")
+			return
+		}
+		intent.Approval, intent.Approve, intent.Note, intent.InboxItem = true, true, item.Response, item
+	}
 	// The claim above ensures only the resolver that resumes this run writes
 	// its reply. Record it before publishing progress or appending the next turn.
 	item := intent.InboxItem

@@ -207,11 +207,17 @@ type GateError struct {
 	// so the approval the user gives authorizes that call and no other.
 	Tool string
 	Args string
+	// Question and Questions describe a request for a reply instead of approval.
+	Question  string
+	Questions []harness.Question
 	// RequestID references the approval request (inbox item) awaiting the user.
 	RequestID string
 }
 
 func (e *GateError) Error() string {
+	if e.Question != "" {
+		return "the run is waiting for a reply"
+	}
 	return fmt.Sprintf("tool %q requires user approval (request %s)", e.Tool, e.RequestID)
 }
 

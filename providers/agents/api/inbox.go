@@ -222,11 +222,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// a verb carries no caller credential, and the edges family dials the
 	// hub's aggregate MCP endpoint as the calling user.
 	// An APPROVAL resumes on a verdict, and a QUESTION bound to a run resumes on
-	// an answer. The second is what a harness's own request-user-input parks on
-	// (see postHarnessQuestion): the run is waiting in place, and the answer is
-	// the only thing that can continue it. A free-standing question — the `ask`
-	// tool, which deliberately does not block a run — carries no run id and
-	// resumes nothing.
+	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
 		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
 		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, item.Response)

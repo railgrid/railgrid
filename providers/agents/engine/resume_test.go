@@ -312,3 +312,29 @@ func (m *responsesContinuationModel) Stream(_ context.Context, in []*schema.Mess
 	}
 	return schema.StreamReaderFromArray([]*schema.Message{{Role: schema.Assistant, Content: "Done"}}), nil
 }
+
+func TestQuestionResumeReturnsAnswerWithoutReasking(t *testing.T) {
+	ctx := t.Context()
+	model := &toolMockModel{}
+	calls := 0
+	tool := Tool{
+		Name: "get_weather",
+		Exec: func(context.Context, string) (string, error) {
+			calls++
+			return "", &InterruptError{Question: "Which city?"}
+		},
+	}
+	engine := New()
+	paused, err := engine.StreamTurnWithTools(ctx, model, []Message{{Role: RoleUser, Content: "Ask me for a city"}}, []Tool{tool}, TurnConfig{MaxIters: 8}, Callbacks{})
+	if err != nil || paused.Interrupt == nil || paused.Interrupt.Question != "Which city?" || !paused.Interrupt.Checkpoint.AwaitingReply {
+		t.Fatalf("expected a parked question, got %+v, %v", paused, err)
+	}
+	resumed, err := engine.ResumeTurnWithTools(ctx, model, paused.Interrupt.Checkpoint, []Tool{tool}, TurnConfig{MaxIters: 8}, true, "Vilnius", Callbacks{})
+	if err != nil || resumed.Interrupt != nil || calls != 1 {
+		t.Fatalf("resume = %+v, err = %v, executions = %d", resumed, err, calls)
+	}
+	last := model.gotIn[len(model.gotIn)-1]
+	if last.Role != schema.Tool || last.Content != "Vilnius" || last.ToolCallID != "tc-1" {
+		t.Fatalf("model received the wrong reply: %+v", last)
+	}
+}

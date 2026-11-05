@@ -1074,7 +1074,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		if strings.TrimSpace(out.Parked.Tool) != "" {
 			requestID, err = s.postHarnessApproval(ctx, run, out.Parked.Tool, out.Parked.Args)
 		} else {
-			requestID, err = s.postHarnessQuestion(ctx, run, out.Parked.Question, out.Parked.Questions)
+			requestID, err = s.postRunQuestion(ctx, run, out.Parked.Question, out.Parked.Questions)
 		}
 		if err != nil {
 			return runResult{}, s.failPark(ctx, run, sessionID, harnessT, "", err)

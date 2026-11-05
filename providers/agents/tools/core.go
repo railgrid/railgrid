@@ -20,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/channels"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
@@ -180,6 +181,10 @@ func (d Deps) ownSchedule(ctx context.Context, name string) (*agentsv1alpha1.Sch
 }
 
 func coreTools(d Deps) []engine.Tool {
+	askDescription := "Post one question or a group of up to three questions to the user's inbox and channel. The answer is recorded after this call; finish what you can in this run."
+	if d.AskInChat {
+		askDescription = "Ask the user one question or up to three related questions in this chat, with optional choices. The run pauses until the user replies. Use the reply to continue."
+	}
 	return []engine.Tool{
 		{
 			Name: "wait",
@@ -442,7 +447,7 @@ func coreTools(d Deps) []engine.Tool {
 		},
 		{
 			Name: "ask",
-			Desc: "Post one question or a group of up to three questions to the user's inbox and channel. The answer is recorded after this call; finish what you can in this run.",
+			Desc: askDescription,
 			JSONSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -472,6 +477,9 @@ func coreTools(d Deps) []engine.Tool {
 				q, questions, err := parseAskQuestions(argsJSON)
 				if err != nil {
 					return "", err
+				}
+				if d.AskInChat {
+					return "", &backend.GateError{Question: q, Questions: questions}
 				}
 				now := time.Now().UTC()
 				item := store.InboxItem{
