@@ -10,6 +10,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -125,6 +126,9 @@ func testSessionTitleContract(t *testing.T, s Store, scope Scope) {
 	if written, err := s.SetSessionTitleIfEmpty(ctx, scope, sessionID, firstID, "unclaimed"); err != nil || written {
 		t.Fatalf("set title without a claim = %t, err=%v; want false", written, err)
 	}
+	if _, err := s.SetSessionTitle(ctx, scope, "missing-session", "Manual title"); !errors.Is(err, ErrSessionNotFound) {
+		t.Fatalf("rename nonexistent session = %v; want ErrSessionNotFound", err)
+	}
 	// Append order, rather than caller timestamps, identifies the first
 	// persisted user message. Preview ordering intentionally keeps its existing
 	// timestamp behavior.
@@ -223,9 +227,30 @@ func testSessionTitleContract(t *testing.T, s Store, scope Scope) {
 	if sessions[0].Title == "" || sessions[0].Preview != "Earlier timestamp preview" {
 		t.Fatalf("session title/preview = %q/%q; want generated title and unchanged preview fallback", sessions[0].Title, sessions[0].Preview)
 	}
-	for _, other := range otherScopes {
+	if changed, err := s.SetSessionTitle(ctx, scope, sessionID, "  Manual conversation title  "); err != nil || !changed {
+		t.Fatalf("manual title update = %t, err=%v; want changed", changed, err)
+	}
+	if written, err := s.SetSessionTitleIfEmpty(ctx, scope, sessionID, firstID, "Late generated title"); err != nil || written {
+		t.Fatalf("late generated title after manual rename = %t, err=%v; want false", written, err)
+	}
+	sessions, err = s.ListSessions(ctx, scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "Manual conversation title" {
+		t.Fatalf("session after manual rename = %+v, err=%v; want manual title", sessions, err)
+	}
+	if changed, err := s.SetSessionTitle(ctx, otherScopes[0], sessionID, "Other scope manual title"); err != nil || !changed {
+		t.Fatalf("manual title update in isolated scope = %t, err=%v; want changed", changed, err)
+	}
+	sessions, err = s.ListSessions(ctx, scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "Manual conversation title" {
+		t.Fatalf("other-scope rename affected this session = %+v, err=%v", sessions, err)
+	}
+	for i, other := range otherScopes {
 		otherSessions, err := s.ListSessions(ctx, other, 10)
-		if err != nil || len(otherSessions) != 1 || otherSessions[0].Title != "Other scope title" {
+		wantTitle := "Other scope title"
+		if i == 0 {
+			wantTitle = "Other scope manual title"
+		}
+		if err != nil || len(otherSessions) != 1 || otherSessions[0].Title != wantTitle {
 			t.Fatalf("isolated sessions for %+v = %+v, err=%v", other, otherSessions, err)
 		}
 	}

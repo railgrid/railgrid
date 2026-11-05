@@ -32,6 +32,8 @@ import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModel
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
 import McpAppViewer from '../components/McpAppViewer.vue'
+import RenameChatDialog from '../components/RenameChatDialog.vue'
+import ChatTitleControl from '../components/ChatTitleControl.vue'
 
 const domID = useAgentDOMID()
 
@@ -106,12 +108,71 @@ const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
 // A title event can arrive while a session-list read is in flight. Keep the
 // latest event value over that read so an older snapshot cannot undo it.
-const sessionTitleOverrides = ref(new Map<string, string>())
+const sessionTitleOverrides = ref(new Map<string, { title: string }>())
+const renameTarget = ref<{ id: string; title: string; inline: boolean } | null>(null)
+const renameBusy = ref(false)
+const renameError = ref('')
+const inlineTitle = ref('')
+const canRenameActive = computed(() => sessions.value.some(item => item.id === sessionID.value && item.messageCount > 0))
+watch([() => props.api, () => props.store, () => props.name, () => runtime?.authorityEpoch.value], () => { renameTarget.value = null; renameError.value = '' })
+
+function startRename(id = sessionID.value, inline = false): void {
+  if (renameBusy.value) return
+  const session = sessionOptions.value.find(item => item.id === id)
+  if (!session || session.messageCount === 0 || !sessions.value.some(item => item.id === id)) return
+  const title = sessionLabel(session)
+  renameTarget.value = { id, title, inline }
+  inlineTitle.value = title
+  renameError.value = ''
+}
+function cancelRename(): void { renameTarget.value = null }
+function commitInlineRename(): void {
+  const target = renameTarget.value
+  if (!target?.inline) return
+  const title = inlineTitle.value.trim()
+  // Close before saving, as Studio does: blank and unchanged edits just dismiss.
+  renameTarget.value = null
+  if (!title || title === target.title.trim()) return
+  void saveRename(title, target)
+}
+const titleControl = computed(() => ({
+  title: activeSessionLabel.value,
+  editing: Boolean(renameTarget.value?.inline),
+  modelValue: inlineTitle.value,
+  disabled: !canRenameActive.value,
+  busy: renameBusy.value,
+  onStart: () => startRename(sessionID.value, true),
+  'onUpdate:modelValue': (value: string) => { inlineTitle.value = value },
+  onCommit: commitInlineRename,
+  onCancel: cancelRename,
+}))
+async function saveRename(title: string, target = renameTarget.value): Promise<void> {
+  if (!target || renameBusy.value || !title.trim()) return
+  const authority = captureAuthority()
+  const name = props.name
+  renameBusy.value = true
+  renameError.value = ''
+  try {
+    const result = await authority.api.renameSession(name, target.id, title.trim())
+    if (!authorityIsCurrent(authority) || props.name !== name) return
+    const overrides = new Map(sessionTitleOverrides.value)
+    overrides.set(target.id, { title: result.title })
+    sessionTitleOverrides.value = overrides
+    if (renameTarget.value === target) cancelRename()
+  } catch (error) {
+    if (authorityIsCurrent(authority) && props.name === name && ((target.inline && sessionID.value === target.id) || renameTarget.value === target)) renameError.value = `Could not rename chat: ${(error as Error).message}`
+  } finally { renameBusy.value = false }
+}
+
 const sessionsError = ref<string | null>(null)
 const sessionsHasSnapshot = ref(false)
 const sessionsLoading = ref(false)
 const sessionID = ref('')
 const selectingSessionID = ref('')
+watch(sessionID, () => {
+  if (renameTarget.value?.inline) renameTarget.value = null
+  renameError.value = ''
+})
 const streaming = ref(false)
 const messagesLoading = ref(false)
 const loadError = ref<string | null>(null)
@@ -581,7 +642,7 @@ function retryChatModel(): void { modelPending = updateChatModel(retryModelPrefe
 
 const sessionOptions = computed(() => {
   const list = sessions.value.map(session => {
-    const title = sessionTitleOverrides.value.get(session.id)
+    const title = sessionTitleOverrides.value.get(session.id)?.title
     return title ? { ...session, title } : session
   })
   if (props.overlay) {
@@ -591,7 +652,7 @@ const sessionOptions = computed(() => {
     }
   }
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
-    const title = sessionTitleOverrides.value.get(sessionID.value)
+    const title = sessionTitleOverrides.value.get(sessionID.value)?.title
     list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
   }
   return list
@@ -599,6 +660,7 @@ const sessionOptions = computed(() => {
 const conversationItems = computed<AIConversationItem[]>(() => sessionOptions.value.map(session => ({
   id: session.id,
   title: sessionLabel(session),
+  renameDisabledReason: session.messageCount === 0 ? 'Send a message before renaming this chat' : undefined,
   status: session.id === sessionID.value && streaming.value ? 'active' : undefined,
   createdAt: session.createdAt,
   updatedAt: session.lastActivity,
@@ -1103,9 +1165,15 @@ function resetOrphanRead(): void {
 async function loadSessions(name = props.name, api = props.api): Promise<boolean> {
   const serial = ++sessionReadSerial
   sessionsLoading.value = true
+  const overridesAtStart = sessionTitleOverrides.value
   try {
     const result = await api.listSessions(name)
     if (serial !== sessionReadSerial || !contextIsCurrent(name, api)) return false
+    // This snapshot supersedes overrides already known when the read began.
+    // Preserve writes/events received during the read, including repeated titles.
+    sessionTitleOverrides.value = new Map([...sessionTitleOverrides.value].filter(
+      ([id, override]) => overridesAtStart.get(id) !== override,
+    ))
     sessions.value = result
     sessionsHasSnapshot.value = true
     sessionsError.value = null
@@ -2139,7 +2207,7 @@ function applySessionTitleEvent(detail: ServerEvent): void {
   // fallback is eligible for an update.
   if (!sessions.value.some(session => session.id === eventSessionID) && sessionID.value !== eventSessionID) return
   const overrides = new Map(sessionTitleOverrides.value)
-  overrides.set(eventSessionID, title)
+  overrides.set(eventSessionID, { title })
   sessionTitleOverrides.value = overrides
 }
 
@@ -2352,6 +2420,7 @@ defineExpose({
 
 <template>
   <div class="agents-chat-shell" :class="{ 'agents-chat-shell--compact': compact, 'agents-chat-shell--bar': composerOnly }">
+    <RenameChatDialog v-if="renameTarget && !renameTarget.inline" :title="renameTarget.title" :busy="renameBusy" :error="renameError" @save="saveRename($event)" @close="cancelRename" />
     <AIConversationHeader
       v-if="!compact"
       class="agents-chat-head"
@@ -2387,12 +2456,13 @@ defineExpose({
         <PanelLeft aria-hidden="true" />
       </button>
       <slot name="leading" />
-      <slot name="heading" :active-session-label="activeSessionLabel">
+      <slot name="heading" :active-session-label="activeSessionLabel" :title-control="titleControl">
         <div class="agents-chat-title">
           <strong>Conversation</strong>
-          <span class="muted">{{ activeSessionLabel }}</span>
+          <ChatTitleControl v-bind="titleControl" />
         </div>
       </slot>
+      <span v-if="renameError && !renameTarget" class="agents-chat-rename-error" role="alert">{{ renameError }}</span>
       <span v-if="selectingSessionID" class="muted" role="status">Loading conversation…</span>
       <div v-if="$slots.actions" class="agents-chat-actions agents-detail-actions" role="group" aria-label="Agent workspace actions">
         <slot name="actions" :has-draft="!!draft.trim()" :streaming="streaming" />
@@ -2433,13 +2503,14 @@ defineExpose({
           :loading="sessionsLoading && !sessionsHasSnapshot"
           :selecting-thread-i-d="selectingSessionID"
           :actioning-thread-i-d="deletingSessionID"
-          :capabilities="{ create: true, pin: true, delete: !streaming }"
+          :capabilities="{ create: true, rename: true, pin: true, delete: !streaming }"
           :pinned-thread-i-ds="pinnedSessionIDs"
           :storage-scope="sessionRailScope"
           delete-label="Delete chat"
           @select="selectConversation"
           @create="createConversation"
           @delete="deleteSession"
+          @rename="startRename($event)"
           @toggle-pin="toggleSessionPin"
         />
       </div>
@@ -2724,6 +2795,8 @@ defineExpose({
 </template>
 
 <style scoped>
+.agents-chat-rename-error { color: var(--color-text-error); font-size: 12px; }
+
 .agents-overlay-chats { flex: 1; min-height: 0; overflow: auto; padding: 16px; }
 .agents-overlay-chats__search { display: flex; flex-direction: row; align-items: center; gap: 8px; margin-bottom: 20px; padding: 0 10px; min-height: 36px; border: 1px solid var(--color-border-default); border-radius: var(--radius-md, 6px); background: var(--color-surface-raised); color: var(--color-text-secondary); }
 .agents-overlay-chats__search:focus-within { border-color: var(--color-accent); outline: 2px solid var(--color-accent); outline-offset: 2px; }

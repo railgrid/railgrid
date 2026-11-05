@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -169,6 +170,92 @@ func TestSessionModelExplicitCredentialAuthorizationHidesAndDoesNotSave(t *testi
 		if action.GetVerb() == "get" && action.GetResource() == agentsclient.ModelCredentialGVR {
 			t.Fatalf("denied selector read modelcredential before authorization: %+v", action)
 		}
+	}
+}
+
+func TestManualSessionTitlePatchUsesSessionGateAndPublishesEvent(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects:   []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		ListKinds: map[schema.GroupVersionResource]string{agentsclient.AgentGVR: "AgentList"},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		},
+	}
+	s, handler, scope := sessionModelTestServer(t, callers)
+	if err := s.store.AppendMessage(t.Context(), scope, store.Message{
+		ID: "manual-title-first-message", AgentName: conformanceAgent, SessionID: "rename-me",
+		Role: "user", Content: "Review the release plan", CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	preferences := store.SessionModelSettings{
+		ModelCredential: "chosen-model", ReasoningEffortByModel: map[string]string{"chosen-model": "high"},
+	}
+	if err := s.store.PutSessionModelSettings(t.Context(), scope, "rename-me", preferences); err != nil {
+		t.Fatal(err)
+	}
+	events, unsubscribe := s.events.subscribe(scope)
+	defer unsubscribe()
+
+	recorder := serveSessionModelRequest(handler, http.MethodPatch, "rename-me", `{"title":"  Release readiness  "}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("title PATCH → %d: %s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != 1 || response["title"] != "Release readiness" {
+		t.Fatalf("title PATCH response = %#v; want only the trimmed title", response)
+	}
+	afterPreferences, err := s.store.GetSessionModelSettings(t.Context(), scope, "rename-me")
+	if err != nil || !reflect.DeepEqual(afterPreferences, preferences) {
+		t.Fatalf("title PATCH changed model preferences: got %+v, err=%v; want %+v", afterPreferences, err, preferences)
+	}
+	sessions, err := s.store.ListSessions(t.Context(), scope, 10)
+	if err != nil || len(sessions) != 1 || sessions[0].Title != "Release readiness" {
+		t.Fatalf("sessions after title PATCH = %+v, err=%v", sessions, err)
+	}
+	select {
+	case got := <-events:
+		if got.Type != "session_title" {
+			t.Fatalf("event type = %q; want session_title", got.Type)
+		}
+		data, ok := got.Data.(map[string]any)
+		if !ok || data["agent"] != conformanceAgent || data["sessionID"] != "rename-me" || data["title"] != "Release readiness" || len(data) != 3 {
+			t.Fatalf("session_title event data = %#v", got.Data)
+		}
+	default:
+		t.Fatal("manual title PATCH did not publish a session_title event")
+	}
+}
+
+func TestManualSessionTitlePatchValidatesTitleAndRequiresSession(t *testing.T) {
+	callers := &conformance.FakeCallers{
+		Cluster: conformanceCluster, User: conformanceUser,
+		Objects:   []*unstructured.Unstructured{agentObject(conformanceAgent)},
+		ListKinds: map[schema.GroupVersionResource]string{agentsclient.AgentGVR: "AgentList"},
+		Allow: func(a conformance.Attributes) bool {
+			return a.Verb == "get" && a.Resource == "agents" && a.Name == conformanceAgent
+		},
+	}
+	_, handler, _ := sessionModelTestServer(t, callers)
+	for _, body := range []string{
+		`{"title":"  "}`,
+		`{"title":null}`,
+		`{"title":7}`,
+		`{"title":"` + strings.Repeat("x", 254) + `"}`,
+		`{"title":"A title","modelCredential":"chosen-model"}`,
+	} {
+		recorder := serveSessionModelRequest(handler, http.MethodPatch, "rename-me", body)
+		if recorder.Code != http.StatusBadRequest {
+			t.Errorf("invalid title PATCH %s → %d, want 400: %s", body, recorder.Code, recorder.Body.String())
+		}
+	}
+	recorder := serveSessionModelRequest(handler, http.MethodPatch, "missing-session", `{"title":"A title"}`)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("title PATCH for missing session → %d, want 404: %s", recorder.Code, recorder.Body.String())
 	}
 }
 

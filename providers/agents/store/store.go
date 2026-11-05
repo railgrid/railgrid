@@ -31,6 +31,10 @@ import (
 // a transcript row absent from the compacted model history.
 var ErrSessionCheckpointStale = fmt.Errorf("session compaction checkpoint is stale")
 
+// ErrSessionNotFound means a transcript session has no persisted user message
+// to associate with a title, or its first-message coordinate is no longer live.
+var ErrSessionNotFound = fmt.Errorf("session not found")
+
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
 
@@ -783,6 +787,9 @@ type Store interface {
 	// SetSessionTitleIfEmpty stores a generated title only for the matching live
 	// first-message claim. It never replaces an existing title.
 	SetSessionTitleIfEmpty(ctx context.Context, scope Scope, sessionID, firstUserMessageID, title string) (bool, error)
+	// SetSessionTitle replaces the title attached to the session's current first
+	// persisted user message. It fails when the transcript session does not exist.
+	SetSessionTitle(ctx context.Context, scope Scope, sessionID, title string) (bool, error)
 	ListMessages(ctx context.Context, scope Scope, sessionID string, limit int, cursor string) (Page, error)
 	LoadRecentMessages(ctx context.Context, scope Scope, sessionID string, limit int) ([]Message, error)
 	// ListSessions returns up to limit transcript sessions followed by up to
