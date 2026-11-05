@@ -406,6 +406,7 @@ describe('Activity.vue', () => {
     const actions = view.element.querySelector('.agents-approval-actions')!
     const approve = buttonWithText(actions, 'Approve & resume')
     const deny = buttonWithText(actions, 'Deny')
+    approve.focus()
     approve.click()
     await settleVue(2)
 
@@ -421,6 +422,7 @@ describe('Activity.vue', () => {
     resolution.resolve({})
     await settleVue()
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
+    expect(document.activeElement).toBe(view.element.querySelector('.agents-inbox-empty'))
   })
 
   it('shows one bounded line of a long run input and discloses a longer cut on demand', async () => {
@@ -473,7 +475,8 @@ describe('Activity.vue', () => {
 
   it('lets a pending question be answered from the feed', async () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
-    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
+    const listInbox = vi.fn()
+    const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
     const store = makeStore(api)
     const item: InboxItem = {
       id: 'i3', agentName: 'github-reviewer', runID: 'r11', kind: 'question', state: 'pending',
@@ -495,18 +498,28 @@ describe('Activity.vue', () => {
     expect(resolveInbox).not.toHaveBeenCalled()
 
     const answer = actions.querySelector<HTMLInputElement>('input[type="text"]')!
+    answer.focus()
     setValue(answer, ' railgrid/railgrid#839 ')
+    const newer = { ...item, id: 'i4', prompt: 'Which branch should I review?' }
+    listInbox.mockResolvedValueOnce([newer, item]).mockResolvedValue([newer])
+    await store.load('inbox')
     await settleVue()
+    expect(document.activeElement).toBe(answer)
+    expect(answer.value).toBe(' railgrid/railgrid#839 ')
     expect(send.disabled).toBe(false)
+    send.focus()
     send.click()
     await settleVue(2)
     expect(resolveInbox).toHaveBeenCalledWith('i3', 'answer', 'railgrid/railgrid#839')
     expect(resolveInbox).toHaveBeenCalledTimes(1)
     expect(text(document.querySelector('.k-toast--ok'))).toContain('Answered')
+    expect(document.activeElement).toBe(view.element.querySelector('.agents-inbox-detail-heading'))
+    expect(text(document.activeElement)).toContain(newer.prompt)
   })
 
   it('skips a pending question through the resume path', async () => {
-    const resolveInbox = vi.fn().mockResolvedValue({})
+    const decision = deferred<Record<string, never>>()
+    const resolveInbox = vi.fn(() => decision.promise)
     const listInbox = vi.fn().mockResolvedValue([])
     const api = stubApi({ listInbox, listRuns: vi.fn().mockResolvedValue({ items: [], nextCursor: '' }), resolveInbox })
     const store = makeStore(api)
@@ -521,12 +534,18 @@ describe('Activity.vue', () => {
     await openInbox(view)
 
     const actions = view.element.querySelector('.agents-question-card')!
-    buttonWithText(actions, 'Skip').click()
+    const skip = buttonWithText(actions, 'Skip')
+    skip.focus()
+    skip.click()
+    const inboxTab = view.element.querySelector<HTMLButtonElement>('[data-k-tab-id="inbox"]')!
+    inboxTab.focus()
+    decision.resolve({})
     await settleVue(3)
     expect(resolveInbox).toHaveBeenCalledWith('i4', 'answer', skippedQuestionResponse)
     expect(listInbox).toHaveBeenCalled()
     expect(text(document.querySelector('.k-toast--ok'))).toContain('Question skipped')
     expect(view.element.querySelector('.agents-approvals')).toBeNull()
+    expect(document.activeElement).toBe(inboxTab)
   })
 
   it('dismisses every pending item at once after a confirmation', async () => {

@@ -60,6 +60,7 @@ const selectedInboxID = ref('')
 const mobileQueue = ref(false)
 const inboxQueue = ref<HTMLElement | null>(null)
 const inboxDetail = ref<HTMLElement | null>(null)
+const inboxEmpty = ref<HTMLElement | null>(null)
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -99,12 +100,6 @@ function showInboxQueue(): void {
   void nextTick(() => inboxQueue.value?.querySelector<HTMLElement>('[aria-current="true"]')?.focus())
 }
 
-watch(pending, (items, previous) => {
-  if (!selectedInboxID.value || items.some(item => item.id === selectedInboxID.value)) return
-  const index = previous.findIndex(item => item.id === selectedInboxID.value)
-  selectedInboxID.value = items[Math.max(0, Math.min(index, items.length - 1))]?.id ?? ''
-})
-
 function inboxPreview(item: InboxItem): string {
   return item.payload?.questions?.[0]?.prompt || item.prompt
 }
@@ -114,6 +109,28 @@ const activityTabs = computed(() => [
   { id: 'inbox', label: 'Inbox', icon: Inbox, count: pending.value.length },
 ])
 const viewingInbox = computed(() => !props.agent && section.value === 'inbox')
+function focusIsInInboxDetail(active: Element | null): boolean {
+  return !!inboxDetail.value?.closest('.agents-inbox-detail')?.contains(active)
+}
+
+watch([viewingInbox, pending], ([showing, items], [, previous]) => {
+  if (!showing || items.some(item => item.id === selectedInboxID.value)) return
+  const index = previous?.findIndex(item => item.id === selectedInboxID.value) ?? -1
+  const active = document.activeElement
+  const focusedRow = inboxQueue.value?.querySelector('[aria-current="true"]')
+  const restoreFocus = index >= 0 && (focusIsInInboxDetail(active) || active === focusedRow)
+  const nextID = items[Math.max(0, Math.min(index, items.length - 1))]?.id ?? ''
+  selectedInboxID.value = nextID
+  if (!restoreFocus) return
+  void nextTick(() => {
+    if (!viewingInbox.value || selectedInboxID.value !== nextID) return
+    if (document.activeElement !== active && document.activeElement !== document.body) return
+    const nextRow = inboxQueue.value?.querySelector<HTMLElement>('[aria-current="true"]')
+    const target = (active === focusedRow ? nextRow : inboxDetail.value) ?? inboxEmpty.value
+    target?.focus()
+  })
+}, { immediate: true })
+
 function selectActivityTab(id: string): void {
   if (id !== 'inbox' && id !== 'runs' || id === section.value) return
   section.value = id
@@ -250,6 +267,11 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: Ques
   const answer = typeof response === 'string' ? response.trim() : response
   if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
+  // The request disables its controls. Keep focus inside the pane so it can
+  // follow the next request even when the inbox event beats the HTTP reply.
+  if (viewingInbox.value && selectedInboxID.value === item.id && focusIsInInboxDetail(document.activeElement)) {
+    inboxDetail.value?.focus({ preventScroll: true })
+  }
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
@@ -367,7 +389,7 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   if (refreshTimer) window.clearTimeout(refreshTimer)
   refreshTimer = 0
   section.value = props.activityTab ?? 'runs'
-  selectedInboxID.value = ''
+  selectedInboxID.value = viewingInbox.value ? pending.value[0]?.id ?? '' : ''
   mobileQueue.value = false
   runs.value = []
   tablePage.value = 1
@@ -424,7 +446,7 @@ onBeforeUnmount(() => {
           <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
         </div>
         <p v-if="viewingInbox && !inboxSlice.hasSnapshot && inboxSlice.loading" class="agents-inbox-empty" role="status">Loading inbox…</p>
-        <p v-else-if="viewingInbox && !pending.length" class="agents-inbox-empty">You’re all caught up.</p>
+        <p v-else-if="viewingInbox && !pending.length" ref="inboxEmpty" class="agents-inbox-empty" tabindex="-1">You’re all caught up.</p>
         <section
           v-if="pending.length"
           class="agents-approvals"
