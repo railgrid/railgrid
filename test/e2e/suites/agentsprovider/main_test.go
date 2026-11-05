@@ -200,8 +200,10 @@ func TestMain(m *testing.M) {
 
 	hubLog, _ := os.Create(filepath.Join(dataDir, "hub.log"))
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
+		"--dev-mode",
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
+		"--kcp-root-dir", filepath.Join(dataDir, "kcp"),
 		"--kcp-secure-port", kcpPort,
 		"--kcp-etcd-client-port", etcdClientPort,
 		"--kcp-etcd-peer-port", etcdPeerPort,

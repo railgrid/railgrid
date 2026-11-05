@@ -85,7 +85,7 @@ type WorkspaceOps interface {
 	EnsureChildWorkspace(ctx context.Context, orgUUID, wsUUID string) error
 	EnsureChildWorkspaceRailgridBinding(ctx context.Context, orgUUID, wsUUID string) error
 	EnsureChildWorkspaceDefaultMCPServer(ctx context.Context, orgUUID, wsUUID string) error
-	// EnsureChildWorkspaceAdmin grants cluster-admin in the child team
+	// EnsureChildWorkspaceAdmin grants the bounded tenant-admin role in the child team
 	// Workspace to the given rbacIdentity. Idempotent. Used at workspace
 	// create time and when adding a member, since the kcp-side CRB is
 	// otherwise only seeded by the org bootstrap controller for the
@@ -213,9 +213,10 @@ type Manager struct {
 	// orgProviders / providerCreds back the org-owned ("bring your own")
 	// provider surface. Both optional and wired together — the endpoints return
 	// 501 unless both are set. See org_providers.go.
-	orgProviders      OrgProviderOps
-	providerCreds     ProviderCredentialMinter
-	providerInstaller OrgProviderInstaller
+	orgProviders            OrgProviderOps
+	providerCreds           ProviderCredentialMinter
+	providerInstaller       OrgProviderInstaller
+	orgProviderAvailability func(context.Context) error
 	// hubAccess records the hub capabilities a tenant accepts for a
 	// provider on Enable (optional; nil skips recording). platformDefault
 	// mirrors the gate's --provider-hub-access-platform-default so the
@@ -372,6 +373,13 @@ func (m *Manager) WithOrgProviders(ops OrgProviderOps, creds ProviderCredentialM
 	return m
 }
 
+// WithOrgProviderAvailability verifies the transport prerequisites before issuing
+// new customer credentials. Read/list/delete remain available for recovery.
+func (m *Manager) WithOrgProviderAvailability(check func(context.Context) error) *Manager {
+	m.orgProviderAvailability = check
+	return m
+}
+
 type OrgProviderInstaller interface {
 	Authorize(context.Context, string, string, string, string) error
 	Target(context.Context, string, string) (*kcp.EdgeRoute, error)
@@ -389,6 +397,10 @@ func (m *Manager) WithProviderInstaller(installer OrgProviderInstaller) *Manager
 // /api/* endpoints across the two middlewares.
 type Handler struct {
 	mgr *Manager
+	// providerUIGrants issues workspace-scoped asset URLs for org-owned
+	// provider icons in bound-provider presentations. Installed before routes
+	// start serving, alongside the public catalog projection.
+	providerUIGrants *providers.UIGrantHandler
 	// userSearch rate-limits GET /api/users/search per caller.
 	userSearch *proxy.IPRateLimiter
 	// orgCreate serializes createOrg's count-then-create per user on this
@@ -402,6 +414,12 @@ type Handler struct {
 // NewHandler constructs a Handler.
 func NewHandler(mgr *Manager) *Handler {
 	return &Handler{mgr: mgr, userSearch: newUserSearchLimiter()}
+}
+
+// SetProviderUIGrantHandler installs the existing scoped asset-grant issuer
+// used when projecting an enabled org-owned provider's icon.
+func (h *Handler) SetProviderUIGrantHandler(grants *providers.UIGrantHandler) {
+	h.providerUIGrants = grants
 }
 
 // keyedMutex hands out one mutex per key. Entries are never evicted; keys

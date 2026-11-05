@@ -17,12 +17,17 @@ limitations under the License.
 package providers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"path"
 	"sort"
+	"strings"
 	"sync"
 
 	providersv1alpha1 "github.com/railgrid/railgrid/apis/providers/v1alpha1"
+	"github.com/railgrid/railgrid/pkg/apiurl"
 	"github.com/railgrid/railgrid/pkg/hub/tenant"
 )
 
@@ -305,7 +310,7 @@ type navChildDTO struct {
 // global catalog rather than an error.
 func NewListHandler(reg *Registry) *ListHandler {
 	h := &ListHandler{}
-	h.inner = listHandlerFunc(reg)
+	h.inner = listHandlerFunc(reg, h)
 	return h
 }
 
@@ -321,6 +326,7 @@ type ListHandler struct {
 
 	mu         sync.RWMutex
 	middleware func(http.Handler) http.Handler
+	uiGrants   *UIGrantHandler
 }
 
 // SetMiddleware installs the middleware wrapped around every list request,
@@ -330,6 +336,16 @@ func (h *ListHandler) SetMiddleware(mw func(http.Handler) http.Handler) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.middleware = mw
+}
+
+// SetUIGrantHandler installs the existing scoped asset-grant issuer used for
+// org-owned provider icons. It is wired alongside the catalog middleware once
+// the hub auth stack exists. Without it, org icons fall back to the portal's
+// generic provider glyph.
+func (h *ListHandler) SetUIGrantHandler(grants *UIGrantHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.uiGrants = grants
 }
 
 // ServeHTTP implements http.Handler.
@@ -344,7 +360,7 @@ func (h *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mw(h.inner).ServeHTTP(w, r)
 }
 
-func listHandlerFunc(reg *Registry) http.Handler {
+func listHandlerFunc(reg *Registry, owner *ListHandler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -354,12 +370,18 @@ func listHandlerFunc(reg *Registry) http.Handler {
 		// An empty OrgUUID (no context, or one the middleware could not verify)
 		// means global scope only — ListForOrg("") returns exactly that.
 		tc, _ := tenant.FromContext(r.Context())
+		owner.mu.RLock()
+		uiGrants := owner.uiGrants
+		owner.mu.RUnlock()
 		entries := reg.ListForOrg(tc.OrgUUID)
 		sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
 
 		items := make([]providerDTO, 0, len(entries))
+		issuedAssetGrant := false
 		for _, p := range entries {
-			items = append(items, PresentProvider(p))
+			item, issued := PresentProviderForTenant(r.Context(), p, tc, uiGrants)
+			issuedAssetGrant = issuedAssetGrant || issued
+			items = append(items, item)
 		}
 
 		// Surface the canonical category registry so the portal can
@@ -375,8 +397,37 @@ func listHandlerFunc(reg *Registry) http.Handler {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
+		if issuedAssetGrant {
+			// Catalog icons carry short-lived sealed asset grants in their URLs.
+			// Do not let a shared cache replay one caller's grant to another.
+			w.Header().Set("Cache-Control", "private, no-store")
+		}
 		_ = json.NewEncoder(w).Encode(listResponse{Items: items, Categories: cats})
 	})
+}
+
+// orgProviderIconAsset recognizes only a same-origin path under this exact
+// provider's UI mount. Other icon URLs retain their existing browser behavior;
+// they are never fetched or proxied by the hub as part of grant issuance.
+func orgProviderIconAsset(p Provider) (string, url.Values, bool) {
+	if p.OrgUUID == "" || p.Name == "" || p.IconURL == "" {
+		return "", nil, false
+	}
+	u, err := url.Parse(p.IconURL)
+	if err != nil || u.IsAbs() || u.Host != "" || u.User != nil || u.Opaque != "" || u.Fragment != "" || u.RawPath != "" {
+		return "", nil, false
+	}
+	prefix := apiurl.PathPrefixProvidersUI + "/" + p.Name + "/"
+	if !strings.HasPrefix(u.Path, prefix) {
+		return "", nil, false
+	}
+	asset := strings.TrimPrefix(u.Path, prefix)
+	if asset == "" || path.Clean("/"+asset) != "/"+asset || strings.Contains(asset, "..") || strings.Contains(asset, "\\") || !isAssetPath("/"+asset) {
+		return "", nil, true
+	}
+	query := u.Query()
+	query.Del(UIGrantQueryParam)
+	return asset, query, true
 }
 
 // ProviderDTO is the stable portal-facing provider presentation. It excludes
@@ -428,6 +479,33 @@ func PresentProvider(p Provider) ProviderDTO {
 		Serving:          servingDTO(p),
 		Hub:              hubDTO(p),
 	}
+}
+
+// PresentProviderForTenant projects one exact provider copy and, when its icon
+// is an org-owned asset served by that provider, replaces the raw UI path with
+// a short-lived scoped asset grant for the verified caller. A platform or
+// external icon keeps its existing URL. The bool reports whether a grant URL
+// was issued so tenant-specific responses can disable shared caching.
+func PresentProviderForTenant(ctx context.Context, p Provider, caller tenant.TenantContext, grants *UIGrantHandler) (ProviderDTO, bool) {
+	dto := PresentProvider(p)
+	asset, query, candidate := orgProviderIconAsset(p)
+	if !candidate {
+		return dto, false
+	}
+	// A raw /ui/providers/{name}/... URL resolves platform-wide. Never leave
+	// an org-owned asset at that address when the caller has no verified
+	// workspace-scoped grant; the generic glyph is safer than crossing an
+	// ownership boundary.
+	dto.IconURL = ""
+	if grants == nil || caller.OrgUUID != p.OrgUUID || caller.WorkspaceUUID == "" || caller.User == "" {
+		return dto, false
+	}
+	iconURL, ok := grants.catalogIconURL(ctx, caller, p, asset, query)
+	if !ok {
+		return dto, false
+	}
+	dto.IconURL = iconURL
+	return dto, true
 }
 
 // exportDTO projects the provider's declared export surface. Nil for a

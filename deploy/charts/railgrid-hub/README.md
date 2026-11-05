@@ -187,6 +187,23 @@ kcp:
 |------|----------|-------------|
 | 9443 | HTTPS/TLS | Hub API server + agent tunnel endpoint |
 | 6443 | HTTPS/TLS | Embedded kcp API server (cluster-internal only) |
+| `hub.providerRelay.port` | HTTPS/mTLS | External kcp shard-only BYO provider relay (disabled by default) |
+
+### External kcp BYO provider relay
+
+With external kcp, enable the dedicated listener so shard custom subresource
+requests for organization-owned providers can reach the hub and the provider's
+selected Edge. The listener requires mutual TLS and is separate from the
+browser-facing hub endpoint. Set `hub.providerRelay.url` to its dialable HTTPS
+origin, create `hub.providerRelay.secretName` with `tls.crt`, `tls.key`, and
+`client-ca.crt`, and list the exact shard client certificate Common Names in
+`hub.providerRelay.allowedShardNames`. Configure each kcp shard to present its
+client certificate and trust the relay serving certificate for its virtual
+workspace endpoint.
+
+The chart exposes the relay as a Service port only when enabled; it does not
+add this port to the browser ingress. Embedded kcp uses an in-process relay and
+rejects enabling this listener.
 
 ## Upgrading
 
@@ -196,3 +213,10 @@ helm upgrade railgrid oci://ghcr.io/railgrid/charts/railgrid-hub \
   --reuse-values \
   --set image.hub.tag=v0.0.40
 ```
+
+Provider kubeconfigs verify TLS by default. Set `hub.providerCASecretName` to a
+Secret with key `ca.crt` when the provider-facing Hub origin uses a private CA.
+The bundle is embedded in newly minted and rotated provider kubeconfigs;
+existing downloaded kubeconfigs must be retrieved again and rolled out.
+`hub.internalURL` must be covered by the serving certificate. `hub.devMode`
+retains insecure verification only for development.

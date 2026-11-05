@@ -55,6 +55,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 
+	"github.com/railgrid/railgrid/pkg/hub/providers"
 	"github.com/railgrid/railgrid/pkg/kcppaths"
 )
 
@@ -68,6 +69,12 @@ var (
 )
 
 const (
+	// The enrollment marker is written on the hub-owned Workspace, outside
+	// the runtime credential's authority. Existing unmarked registrations need
+	// an operator audit before they can receive restricted credentials.
+	orgProviderBootstrapPolicyAnnotation = "providers.railgrid.ai/bootstrap-policy"
+	orgProviderBootstrapPolicy           = "restricted-v1"
+
 	// ProviderRegistrationDeletingAnnotation records accepted removal before the
 	// Workspace DELETE, while installer credentials and APIExport caches drain.
 	// Its value is the Workspace UID so a stale marker cannot hide a replacement.
@@ -149,12 +156,13 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
 			// The same restricted type platform providers use: no `universal`
-			// extension (so the provider cannot spawn workspaces even though it
-			// holds cluster-admin over its own), and a defaultAPIBinding to
-			// providers.railgrid.ai so it can self-register its CatalogEntry.
+			// extension (the provider cannot spawn workspaces). Its runtime
+			// holds railgrid:org-provider; the Hub publishes its CatalogEntry
+			// and API declarations through restricted bootstrap.
 			"type": map[string]any{"name": "provider", "path": kcppaths.Root},
 		},
 	}}
+	ws.SetAnnotations(map[string]string{orgProviderBootstrapPolicyAnnotation: orgProviderBootstrapPolicy})
 
 	// Re-registering right after a delete is the common case — the portal offers
 	// both actions side by side — and kcp keeps the old Workspace around while
@@ -185,6 +193,9 @@ func (b *Bootstrapper) EnsureOrgProviderWorkspace(ctx context.Context, orgUUID, 
 	got, err := parent.Resource(workspaceGVR).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("getting org provider workspace %s in org %s: %w", name, orgUUID, err)
+	}
+	if got.GetAnnotations()[orgProviderBootstrapPolicyAnnotation] != orgProviderBootstrapPolicy {
+		return "", fmt.Errorf("organization provider %q uses a legacy unrestricted workspace; an operator must audit its credentials and grants before enrollment", name)
 	}
 	cluster, _, _ := unstructured.NestedString(got.Object, "spec", "cluster")
 	if cluster == "" {
@@ -348,6 +359,14 @@ func (b *Bootstrapper) deleteOrgProviderWorkspace(ctx context.Context, orgUUID, 
 		}
 		if err := deleteAndWaitForOrgProviderAPIExports(operationCtx, provider); err != nil {
 			return fmt.Errorf("cleaning APIExports in org provider workspace %s/%s before deletion: %w", orgUUID, name, err)
+		}
+		if workspace.GetAnnotations()[orgProviderBootstrapPolicyAnnotation] == orgProviderBootstrapPolicy {
+			if err := providers.DeleteOrgProviderClaimPolicy(operationCtx, b.config, clusterID); err != nil {
+				return fmt.Errorf("removing organization provider claim policy: %w", err)
+			}
+			if err := providers.ReleaseOrgProviderGroups(operationCtx, b.config, orgUUID, clusterID, string(workspaceUID)); err != nil {
+				return fmt.Errorf("releasing organization provider API groups: %w", err)
+			}
 		}
 	}
 

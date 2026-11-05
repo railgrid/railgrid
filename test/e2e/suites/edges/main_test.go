@@ -25,7 +25,8 @@ limitations under the License.
 // `edges-provider serve`.
 //
 // This suite covers the CONTROL-PLANE + AUTH surface that is testable without a
-// live agent or edge target: catalog provisioning, tenant Enable via APIBinding,
+// live agent or edge target: catalog provisioning, tenant Enable through the
+// Hub endpoint,
 // KubernetesCluster/LinuxServer CR lifecycle, and the edge-proxy authorization
 // boundary through the hub backend proxy. The data-plane tunnel (kubectl/ssh
 // streaming, edge Connected/Ready) needs a running agent + edge target and is
@@ -97,8 +98,16 @@ func TestMain(m *testing.M) {
 
 	hubURL = "http://127.0.0.1:" + hubPort
 	kcpServer = "https://127.0.0.1:" + kcpPort
+	etcdClientPort := os.Getenv("RAILGRID_E2E_ETCD_CLIENT_PORT")
+	if etcdClientPort == "" {
+		etcdClientPort = "2379"
+	}
+	etcdPeerPort := os.Getenv("RAILGRID_E2E_ETCD_PEER_PORT")
+	if etcdPeerPort == "" {
+		etcdPeerPort = "2380"
+	}
 
-	for _, p := range []string{hubPort, kcpPort, providerPort, "2380"} {
+	for _, p := range []string{hubPort, kcpPort, providerPort, etcdClientPort, etcdPeerPort} {
 		if portInUse(p) {
 			fmt.Fprintf(os.Stderr, "port :%s already in use; run `pkill railgrid-hub; pkill edges-provider` and retry\n", p)
 			os.Exit(2)
@@ -120,8 +129,12 @@ func TestMain(m *testing.M) {
 	hubLogPath = filepath.Join(dataDir, "hub.log")
 	hubLog, _ := os.Create(hubLogPath)
 	hubCmd := exec.Command(filepath.Join(repoRoot, "bin", "railgrid-hub"),
+		"--dev-mode",
 		"--embedded-kcp",
 		"--kcp-bind-address", "127.0.0.1",
+		"--kcp-root-dir", filepath.Join(dataDir, "kcp"),
+		"--kcp-etcd-client-port", etcdClientPort,
+		"--kcp-etcd-peer-port", etcdPeerPort,
 		"--kcp-secure-port", kcpPort,
 		"--listen-addr", ":"+hubPort,
 		"--data-dir", dataDir,

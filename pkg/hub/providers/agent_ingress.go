@@ -204,5 +204,14 @@ func (p *ProviderProxy) serveAgentHop(w http.ResponseWriter, r *http.Request, pr
 		p.log.Error(err, "agent upstream error", "provider", prov.Name)
 		http.Error(w, "agent provider upstream error", http.StatusBadGateway)
 	}}
+	if prov.OrgUUID != "" {
+		// An org-owned edges provider crosses the Hub origin, including for
+		// plain HTTP agent requests that do not upgrade. Filter its response
+		// headers and trailer channel while retaining the agent upgrade path.
+		rp.ModifyResponse = func(resp *http.Response) error {
+			return orgProviderModifyResponse(resp, r.Header)
+		}
+		w = newOrgProviderResponseWriter(w)
+	}
 	rp.ServeHTTP(w, r)
 }

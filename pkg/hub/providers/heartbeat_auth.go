@@ -223,6 +223,9 @@ func (a *tokenReviewAuthenticator) Authenticate(ctx context.Context, r *http.Req
 	// Resolve the current registration before consulting either cache. Removing
 	// or replacing a registration must not reuse a prior copy's positive result.
 	cluster, ok := a.clusters.ProviderWorkspaceCluster(providerName)
+	if target, selected := ctx.Value(heartbeatTargetKey{}).(heartbeatTarget); selected && target.orgUUID != "" {
+		cluster, ok = target.cluster, target.cluster != ""
+	}
 	if !ok || cluster == "" {
 		return fmt.Errorf("%w: no provider workspace known for provider %q yet", ErrHeartbeatAuthUnavailable, providerName)
 	}
