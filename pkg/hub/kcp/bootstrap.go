@@ -73,10 +73,6 @@ type Bootstrapper struct {
 	// workspaceIdentityHash is the identity hash of the tenancy.kcp.io APIExport
 	// from the root workspace. Needed for permission claims on workspaces.
 	workspaceIdentityHash string
-	// enabledProviders is the value of `--providers`, controlling which
-	// first-party CatalogEntries get materialized. nil/empty means "all
-	// known builtins" (matches the flag's default).
-	enabledProviders []string
 }
 
 // NewBootstrapper creates a new bootstrapper.
@@ -94,14 +90,6 @@ func NewBootstrapper(config *rest.Config) *Bootstrapper {
 	cfg.Burst = 100
 	cfg.RateLimiter = nil
 	return &Bootstrapper{config: cfg}
-}
-
-// WithEnabledProviders sets the subset of builtin providers the
-// bootstrapper will write into root:railgrid:providers. Pass the value of
-// the --providers flag; nil/empty selects every known builtin.
-func (b *Bootstrapper) WithEnabledProviders(names []string) *Bootstrapper {
-	b.enabledProviders = names
-	return b
 }
 
 // Bootstrap creates the workspace hierarchy:
@@ -238,16 +226,6 @@ func (b *Bootstrapper) Bootstrap(ctx context.Context) error {
 		if err := ensureExportBinding(ctx, systemProvidersDynamic, kcppaths.SystemControllers, exportName); err != nil {
 			return fmt.Errorf("binding %s in system:providers: %w", exportName, err)
 		}
-	}
-
-	// 5c. First-party CatalogEntries — the portal's MCP / Edges /
-	//     Workloads tabs surface as ordinary entries in the providers
-	//     list. They declare spec.serving.ui.builtinRoute (not URL) so the portal
-	//     renders an in-tree Vue route instead of loading a custom
-	//     element bundle. They live in system:providers alongside the
-	//     admin-applied Provider/CatalogEntry objects.
-	if err := ensureBuiltinCatalogEntries(ctx, systemProvidersDynamic, b.enabledProviders); err != nil {
-		return fmt.Errorf("creating builtin CatalogEntries: %w", err)
 	}
 
 	// 5d. Apply post-providers workspace artefacts under root:railgrid — namely
@@ -1585,125 +1563,6 @@ func (b *Bootstrapper) GetMCPServerToken(ctx context.Context, clusterName, name 
 		return "", fmt.Errorf("reading MCP token Secret %s/%s: %w", secretNS, secretName, err)
 	}
 	return string(secret.Data["token"]), nil
-}
-
-// catalogEntryGVR is the resource the bootstrap writes when materializing
-// the first-party CatalogEntries declared by the providers/<name>/
-// packages (registered via providers.RegisterBuiltin in their init()).
-var catalogEntryGVR = schema.GroupVersionResource{
-	Group: "providers.railgrid.ai", Version: "v1alpha1", Resource: "catalogentries",
-}
-
-// builtinAnnotation marks CatalogEntries the hub bootstrap owns. The
-// reconcile-delete step ignores any entry without this annotation, so a
-// third-party CatalogEntry that happens to share a name with a deleted
-// builtin is never touched.
-const builtinAnnotation = "providers.railgrid.ai/builtin"
-
-// ValidateProviders is a thin re-export of providers.ResolveEnabledBuiltins
-// that discards the resolved spec list. Used at process start (server.Run)
-// to fail fast on a bad --providers flag BEFORE embedded kcp boots —
-// callers in this package import providers anyway for the registry, so
-// the indirection only saves callers in pkg/hub from learning about the
-// providers.BuiltinSpec type when they just want a yes/no answer.
-func ValidateProviders(enabled []string) error {
-	_, err := providers.ResolveEnabledBuiltins(enabled)
-	return err
-}
-
-// ensureBuiltinCatalogEntries reconciles the enabled set against kcp:
-// writes (or updates) every entry in `enabled`, and deletes any
-// builtin-annotated entries that the user has disabled since the last
-// start. Third-party CatalogEntries with the same name are left alone —
-// only entries carrying providers.railgrid.ai/builtin=true are touched.
-//
-// Waits for the providers.railgrid.ai APIBinding to be Bound first;
-// without that wait the CatalogEntry resource isn't discoverable yet on
-// a fresh hub and we'd race-fail with "no matches for kind".
-func ensureBuiltinCatalogEntries(ctx context.Context, providersDynamic dynamic.Interface, enabled []string) error {
-	if err := waitForAPIBindingBound(ctx, providersDynamic, "providers.railgrid.ai"); err != nil {
-		return fmt.Errorf("waiting for providers.railgrid.ai APIBinding: %w", err)
-	}
-	picked, err := providers.ResolveEnabledBuiltins(enabled)
-	if err != nil {
-		return err
-	}
-
-	// Apply each enabled entry.
-	enabledSet := map[string]struct{}{}
-	for _, e := range picked {
-		enabledSet[e.Name] = struct{}{}
-
-		ui := map[string]interface{}{
-			"builtinRoute": e.BuiltinRoute,
-		}
-		if len(e.Children) > 0 {
-			children := make([]interface{}, 0, len(e.Children))
-			for _, c := range e.Children {
-				children = append(children, map[string]interface{}{
-					"displayName":  c.DisplayName,
-					"builtinRoute": c.BuiltinRoute,
-				})
-			}
-			ui["children"] = children
-		}
-
-		desired := &unstructured.Unstructured{Object: map[string]interface{}{
-			"apiVersion": "providers.railgrid.ai/v1alpha1",
-			"kind":       "CatalogEntry",
-			"metadata": map[string]interface{}{
-				"name":        e.Name,
-				"annotations": map[string]interface{}{builtinAnnotation: "true"},
-			},
-			"spec": map[string]interface{}{
-				"displayName": e.DisplayName,
-				"description": e.Description,
-				"vendor":      "railgrid",
-				"iconURL":     e.IconURL,
-				"category":    e.Category,
-				"ui":          ui,
-			},
-		}}
-		existing, err := providersDynamic.Resource(catalogEntryGVR).Get(ctx, e.Name, metav1.GetOptions{})
-		if errors.IsNotFound(err) {
-			if _, err := providersDynamic.Resource(catalogEntryGVR).Create(ctx, desired, metav1.CreateOptions{}); err != nil {
-				return fmt.Errorf("creating builtin CatalogEntry %s: %w", e.Name, err)
-			}
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("getting builtin CatalogEntry %s: %w", e.Name, err)
-		}
-		if existing.GetAnnotations()[builtinAnnotation] != "true" {
-			continue
-		}
-		desired.SetResourceVersion(existing.GetResourceVersion())
-		if _, err := providersDynamic.Resource(catalogEntryGVR).Update(ctx, desired, metav1.UpdateOptions{}); err != nil {
-			return fmt.Errorf("updating builtin CatalogEntry %s: %w", e.Name, err)
-		}
-	}
-
-	// Reconcile delete: walk every annotated builtin currently in kcp
-	// that isn't in the enabled set. This covers user removing a name
-	// from --providers without manually `kubectl delete`-ing the entry.
-	list, err := providersDynamic.Resource(catalogEntryGVR).List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return fmt.Errorf("listing CatalogEntries for orphan cleanup: %w", err)
-	}
-	for _, item := range list.Items {
-		anns := item.GetAnnotations()
-		if anns[builtinAnnotation] != "true" {
-			continue // not ours
-		}
-		name := item.GetName()
-		if _, keep := enabledSet[name]; keep {
-			continue
-		}
-		if err := providersDynamic.Resource(catalogEntryGVR).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !errors.IsNotFound(err) {
-			return fmt.Errorf("deleting orphan builtin CatalogEntry %s: %w", name, err)
-		}
-	}
-	return nil
 }
 
 // ensureExportBinding creates (idempotently) an APIBinding in the workspace the

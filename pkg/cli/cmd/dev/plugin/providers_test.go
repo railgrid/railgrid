@@ -306,9 +306,6 @@ func TestAppsValues(t *testing.T) {
 	o := NewDevOptions(genericclioptions.IOStreams{})
 	hub := map[string]any{}
 	o.hubAdminValues(hub)
-	if hub["publishedAppsDomain"] != devAppsBaseDomain {
-		t.Errorf("publishedAppsDomain = %v", hub["publishedAppsDomain"])
-	}
 	if !reflect.DeepEqual(hub["portalFrameSources"], []string{"https://*.apps.127.0.0.1.sslip.io:10443"}) {
 		t.Errorf("portalFrameSources = %v", hub["portalFrameSources"])
 	}

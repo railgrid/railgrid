@@ -24,7 +24,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"net/url"
 	"strings"
 	"sync"
@@ -177,15 +176,8 @@ type Provider struct {
 	// "this overrides a platform provider" without a second lookup.
 	ShadowsPlatform bool
 
-	// LocalUIAssets, when non-nil, is an embedded fs.FS that the UI proxy
-	// serves under /ui/providers/{Name}/* instead of forwarding to UIURL.
-	// Populated for first-party providers whose Vite-built portal/dist is
-	// baked into the hub binary via //go:embed. Third-party providers leave
-	// it nil and rely on UIURL.
-	LocalUIAssets fs.FS
-
 	// EndpointsValid is true when spec.serving.ui.url/spec.serving.backend.url parsed cleanly
-	// and at least one endpoint was declared (or LocalUIAssets is set).
+	// and at least one endpoint was declared.
 	// The catalog controller sets this; the sweeper does not touch it.
 	EndpointsValid bool
 

@@ -236,23 +236,6 @@ func (c svcProxyConfig) allowAddr(a netip.Addr, clusterName bool) *svcDenial {
 	return &svcDenial{reason: fmt.Sprintf("%s is not loopback and not in --svc-allow-cidr", a)}
 }
 
-// isAllowedSvcHost classifies a target host without touching DNS: loopback is
-// always allowed; cluster-DNS names only when allowCluster (kubernetes mode);
-// literal IPs only when inside allow (and never when link-local, unspecified
-// or multicast, even if a prefix in allow covers them); any other hostname is
-// not decidable here and reports false — vetSvcHost resolves it and applies
-// the same address checks to every A/AAAA record.
-func isAllowedSvcHost(host string, allowCluster bool, allow []netip.Prefix) bool {
-	cfg := svcProxyConfig{SvcProxyOptions: SvcProxyOptions{AllowedCIDRs: allow}, allowCluster: allowCluster}
-	if isLoopbackHost(host) {
-		return true
-	}
-	if a, err := netip.ParseAddr(host); err == nil {
-		return cfg.allowAddr(a, false) == nil
-	}
-	return allowCluster && isClusterDNSHost(host)
-}
-
 // vetSvcHost decides whether the agent may dial host and, either way, pins
 // the addresses a dial must use: literals are used as-is; hostnames are
 // resolved once here and every resolved address is checked, so a name that

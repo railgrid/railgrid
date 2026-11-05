@@ -25,7 +25,6 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -70,84 +69,6 @@ func newProviderTestScheme(t *testing.T) *runtime.Scheme {
 		t.Fatalf("adding providers scheme: %v", err)
 	}
 	return s
-}
-
-func registerAppStudioBuiltin(t *testing.T) {
-	t.Helper()
-	if _, ok := BuiltinByName("app-studio"); ok {
-		return
-	}
-	RegisterBuiltin(BuiltinSpec{
-		Name:          "app-studio",
-		DisplayName:   "App Studio",
-		LocalUIAssets: fstest.MapFS{"main.js": &fstest.MapFile{Data: []byte("bundle")}},
-	})
-}
-
-func TestCatalogReconciler_PreservesChartOwnedUIRoutingForBuiltinName(t *testing.T) {
-	registerAppStudioBuiltin(t)
-	reg := NewRegistry()
-	scheme := newProviderTestScheme(t)
-	entry := &providersv1alpha1.CatalogEntry{
-		ObjectMeta: metav1.ObjectMeta{Name: "app-studio"},
-		Spec: providersv1alpha1.CatalogEntrySpec{
-			DisplayName: "App Studio from Chart",
-			Description: "Persistent AI project workspace.",
-			Requires: []providersv1alpha1.ProviderRequirement{{
-				Provider: "code",
-				Group:    "code.railgrid.ai",
-				Resources: []providersv1alpha1.ProviderRequiredResource{{
-					Name:  "repositories",
-					Verbs: []providersv1alpha1.ProviderRequiredVerb{providersv1alpha1.RequiredVerbGet},
-				}},
-			}},
-			Export: &providersv1alpha1.ProviderExport{Name: "ai.providers.railgrid.ai"},
-			Serving: &providersv1alpha1.ProviderServing{UI: &providersv1alpha1.ProviderUI{
-				URL: "http://app-studio.invalid",
-			}},
-		},
-	}
-
-	c := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithStatusSubresource(&providersv1alpha1.CatalogEntry{}).
-		WithObjects(entry).
-		Build()
-
-	r := &CatalogReconciler{mgr: testfakes.NewManager(c), reg: reg, noKCP: true}
-	if _, err := r.Reconcile(context.Background(), testfakes.NewRequest("cluster", "", "app-studio")); err != nil {
-		t.Fatalf("reconcile: %v", err)
-	}
-
-	got, ok := reg.Get("app-studio")
-	if !ok {
-		t.Fatal("expected app-studio in registry")
-	}
-	if got.UIURL == nil || got.UIURL.String() != "http://app-studio.invalid" {
-		t.Fatalf("UIURL = %v, want http://app-studio.invalid", got.UIURL)
-	}
-	if got.LocalUIAssets != nil {
-		t.Fatal("expected chart-owned provider to keep proxy routing, not embedded assets")
-	}
-	if deps := providersv1alpha1.Dependencies(got.Requires); len(deps) != 1 || deps[0] != "code" {
-		t.Fatalf("Dependencies = %#v, want [code]", deps)
-	}
-	// The portal's catalog cards and first-run welcome flow render this; if the
-	// reconciler drops it, both fall back to showing a bare provider name.
-	if got.Description != "Persistent AI project workspace." {
-		t.Fatalf("Description = %q, want the spec value", got.Description)
-	}
-	if !got.EndpointsValid {
-		t.Fatal("expected endpoints to be valid when ui.url is present")
-	}
-
-	var updated providersv1alpha1.CatalogEntry
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "app-studio"}, &updated); err != nil {
-		t.Fatalf("get updated entry: %v", err)
-	}
-	if updated.Status.Endpoints == nil || updated.Status.Endpoints.UI != "http://app-studio.invalid" {
-		t.Fatalf("status endpoints = %#v, want UI=http://app-studio.invalid", updated.Status.Endpoints)
-	}
 }
 
 func TestCatalogReconcilerRejectsInvalidActionDeclarations(t *testing.T) {

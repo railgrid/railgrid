@@ -140,7 +140,7 @@ const isFullBleedProvider = computed(() =>
 
 const isBuiltinProvider = computed(() => {
   const p = entry.value
-  return !!p && (!!p.builtin || !!p.serving?.ui?.builtinRoute)
+  return !!p && !!p.serving?.ui?.builtinRoute
 })
 
 // Only providers that publish an APIExport need a workspace APIBinding. A

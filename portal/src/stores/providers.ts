@@ -42,7 +42,6 @@ export interface ProviderDTO {
   // binary, regardless of how they surface UI (an in-tree route or a
   // custom-element via embedded assets). Side-nav skips the
   // APIBinding-required gate for these.
-  builtin?: boolean
 
   // The four sections below mirror CatalogEntry.spec one for one, with the
   // same JSON names, so this store and `kubectl get catalogentry -o yaml`
@@ -446,7 +445,6 @@ export const useProvidersStore = defineStore('providers', () => {
     to: string
     iconURL: string | null
     version: string
-    builtin: boolean
     category: string
     children: { label: string; to: string }[]
   }
@@ -465,7 +463,7 @@ export const useProvidersStore = defineStore('providers', () => {
     // shadows their catalog entry or their original provider is unavailable.
     const names = new Set([
       ...Object.keys(bindingNamesByProvider.value),
-      ...items.value.filter(p => p.builtin || p.serving?.ui?.builtinRoute).map(p => p.name),
+      ...items.value.filter(p => p.serving?.ui?.builtinRoute).map(p => p.name),
     ])
     return [...names].flatMap((name) => {
       const bound = isEnabled(name)
@@ -480,7 +478,6 @@ export const useProvidersStore = defineStore('providers', () => {
         to: parentTo,
         iconURL: p?.iconURL ?? null,
         version: p?.version ?? '',
-        builtin: !!builtinRoute || !!p?.builtin,
         category: p?.category ?? '',
         children: (p?.serving?.ui?.children ?? []).map(c => ({
           label: c.displayName,
@@ -609,7 +606,7 @@ export const useProvidersStore = defineStore('providers', () => {
       return !!p?.ready && binding?.ready !== false && !binding?.terminating
     }
     const p = byName(name)
-    return !!p?.ready && (!p.export?.name || !!p.serving?.ui?.builtinRoute || !!p.builtin)
+    return !!p?.ready && (!p.export?.name || !!p.serving?.ui?.builtinRoute)
   }
 
   // The providers this one depends on: every spec.requires entry that names
