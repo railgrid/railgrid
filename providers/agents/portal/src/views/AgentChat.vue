@@ -2043,6 +2043,7 @@ async function streamTurn(
   }
 
   let started = false
+  let skillSendRejected = false
   try {
     for await (const event of events(controller.signal)) {
       if (!streamIsCurrent(serial, controller, name, api)) {
@@ -2292,6 +2293,12 @@ async function streamTurn(
     }
     if (!streamIsCurrent(serial, controller, name, api)) return
     if (onAnswerAccepted && !started) throw error
+    if (!started && submittedDraft?.skills.length && error instanceof ApiError && error.status === 400) {
+      skillSendRejected = true
+      void loadSkillCatalog(name, api)
+      toast('error', 'Your draft was restored. Review Available skills and reselect any changed skill before retrying.')
+      return
+    }
     flushNow(serial)
     const clientStopped = (error as Error).name === 'AbortError' && stopRequested.value
     patchMessage(assistantID, {
@@ -2319,7 +2326,9 @@ async function streamTurn(
       streaming.value = false
       streamingID = ''
       abort = null
-      if (onAnswerAccepted && !started) {
+      if (skillSendRejected) {
+        messages.value = messages.value.filter(message => message.id !== userID && message.id !== assistantID)
+      } else if (onAnswerAccepted && !started) {
         messages.value = messages.value.filter(message => message.id !== assistantID)
         stopRequested.value = false
       } else {

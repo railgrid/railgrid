@@ -16,8 +16,11 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/railgrid/provider-sdk/dataplane"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
@@ -121,13 +124,17 @@ func chatTestObject(t *testing.T, obj any, apiVersion, kind string) *unstructure
 // endpoint is the fake model, and the cluster→workspace mapping recorded.
 func newChatToolServer(t *testing.T, reply string) *Server {
 	t.Helper()
-	model := newFakeLLM(t, reply)
+	return newChatToolFixture(t, newFakeLLM(t, reply).srv.URL, "", nil)
+}
+
+func newChatToolFixture(t *testing.T, modelURL, aggregateURL string, review http.HandlerFunc) *Server {
+	t.Helper()
 	ws := tenanttest.New()
 	agent := researchAgent(false)
 	agent.Name = "scout"
 	agent.Spec.Tools.Interactive.Families = []string{"core"}
 	ws.Add(chatTestObject(t, agent, "agents.railgrid.ai/v1alpha1", "Agent"))
-	creds := credsFor(model.srv.URL, map[string]string{"strong": "gpt-4o", "cheap": "gpt-4o-mini"})
+	creds := credsFor(modelURL, map[string]string{"strong": "gpt-4o", "cheap": "gpt-4o-mini"})
 	for _, mc := range creds.creds {
 		ws.Add(chatTestObject(t, mc, "agents.railgrid.ai/v1alpha1", "ModelCredential"))
 	}
@@ -135,12 +142,28 @@ func newChatToolServer(t *testing.T, reply string) *Server {
 		sec.Namespace = llm.SecretNamespace
 		ws.Add(chatTestObject(t, sec, "v1", "Secret"))
 	}
-	kcp := httptest.NewServer(ws)
+	if aggregateURL != "" {
+		ws.Add(&unstructured.Unstructured{Object: map[string]any{
+			"apiVersion": "railgrid.ai/v1alpha1", "kind": "MCPServer",
+			"metadata": map[string]any{"name": "default"}, "status": map[string]any{"URL": aggregateURL},
+		}})
+	}
+	kcp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if review != nil && strings.HasSuffix(r.URL.Path, "/selfsubjectaccessreviews") {
+			review(w, r)
+			return
+		}
+		ws.ServeHTTP(w, r)
+	}))
 	t.Cleanup(kcp.Close)
+	callers, err := dataplane.NewHubCallerFactory(kcp.URL, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	s := &Server{
 		store: store.NewMemoryStore(), engine: engine.New(), events: newEventBus(), liveRuns: newRunRegistry(),
-		tenant: tenant.NewClient(kcp.URL, false),
+		tenant: tenant.NewClient(kcp.URL, false), callers: callers,
 	}
 	if err := s.store.SaveTenantRef(context.Background(), "c1", store.TenantRef{OrgUUID: "o", WorkspaceUUID: "w"}); err != nil {
 		t.Fatal(err)
@@ -235,23 +258,22 @@ func TestMCPChatRefusalKeepsTheHTTPClass(t *testing.T) {
 // agent's interactive grant.
 func TestMCPChatIsNotOnTheFederatedSurface(t *testing.T) {
 	s := newChatToolServer(t, "unused")
-	listed := func(withUser bool) bool {
+	listed := func(withUser bool, name string) bool {
 		rec := httptest.NewRecorder()
 		s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/list", map[string]any{}, withUser))
 		_, result := chatFrames(t, rpcMessages(t, rec))
 		tools, _ := result["tools"].([]any)
 		for _, tl := range tools {
-			if m, _ := tl.(map[string]any); m["name"] == "chat" {
+			if m, _ := tl.(map[string]any); m["name"] == name {
 				return true
 			}
 		}
 		return false
 	}
-	if !listed(true) {
-		t.Fatal("chat must be listed for a service-proxy caller")
-	}
-	if listed(false) {
-		t.Fatal("chat must not be listed for a federated caller (no X-Railgrid-User)")
+	for _, name := range []string{"chat", "answer_chat"} {
+		if !listed(true, name) || listed(false, name) {
+			t.Fatalf("%s must be exposed only to direct service-proxy callers", name)
+		}
 	}
 
 	rec := httptest.NewRecorder()
@@ -267,5 +289,132 @@ func TestMCPChatIsNotOnTheFederatedSurface(t *testing.T) {
 	}
 	if !strings.Contains(body, `"error"`) && !strings.Contains(body, `"isError":true`) {
 		t.Fatalf("a federated call must be refused, got: %s", body)
+	}
+}
+
+func TestMCPChatAnswerRetainsCallerFactoryTools(t *testing.T) {
+	var prepared, submitted atomic.Int32
+	factory := mcp.NewServer(&mcp.Implementation{Name: "aggregate", Version: "test"}, nil)
+	type submission struct {
+		Name   string `json:"name"`
+		Digest string `json:"digest"`
+	}
+	mcp.AddTool(factory, &mcp.Tool{Name: "factory__prepare_work"}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		prepared.Add(1)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: `{"task":"proposal","digest":"approved-digest","submitted":false}`}}}, nil, nil
+	})
+	mcp.AddTool(factory, &mcp.Tool{Name: "factory__submit_work"}, func(_ context.Context, _ *mcp.CallToolRequest, in submission) (*mcp.CallToolResult, any, error) {
+		if in.Name != "proposal" || in.Digest != "approved-digest" {
+			t.Errorf("submitted a different proposal: %+v", in)
+		}
+		submitted.Add(1)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "Submitted"}}}, nil, nil
+	})
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return factory }, &mcp.StreamableHTTPOptions{Stateless: true})
+	aggregate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			t.Error("Factory request lost the caller bearer")
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(aggregate.Close)
+
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Tools []struct {
+				Function struct{ Name string }
+			}
+			Messages []struct {
+				ToolCallID string `json:"tool_call_id"`
+				Content    any
+			}
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if len(body.Tools) == 0 {
+			writeSSE(w, textReply("Factory proposal"))
+			return
+		}
+		seen := map[string]bool{}
+		for _, message := range body.Messages {
+			seen[message.ToolCallID] = true
+		}
+		switch {
+		case seen["submit"]:
+			writeSSE(w, textReply("Factory submission accepted."))
+		case seen["confirm"]:
+			if !slices.ContainsFunc(body.Tools, func(tool struct{ Function struct{ Name string } }) bool {
+				return tool.Function.Name == "edges__factory__submit_work"
+			}) {
+				t.Error("Factory submit tool is absent after confirmation")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeSSE(w, toolCallReply("submit", "edges__factory__submit_work", `{"name":"proposal","digest":"approved-digest"}`))
+		case seen["prepare"]:
+			writeSSE(w, toolCallReply("confirm", "ask", `{"questions":[{"prompt":"Submit this proposal?"},{"prompt":"Any additional notes?"}]}`))
+		default:
+			writeSSE(w, toolCallReply("prepare", "edges__factory__prepare_work", `{}`))
+		}
+	}))
+	t.Cleanup(model.Close)
+
+	var allowed atomic.Bool
+	s := newChatToolFixture(t, model.URL, aggregate.URL, func(w http.ResponseWriter, r *http.Request) {
+		var review struct {
+			Spec struct{ ResourceAttributes dataplane.ResourceAttributes }
+		}
+		if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
+			t.Error(err)
+		}
+		attrs := review.Spec.ResourceAttributes
+		if attrs.Resource != "agents" || attrs.Subresource != "inbox-resolve" || attrs.Name != "scout" || attrs.Verb != "create" {
+			t.Errorf("unexpected authorization check: %+v", attrs)
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+			"status": map[string]any{"allowed": allowed.Load()},
+		})
+	})
+	call := func(name string, args map[string]any, attended bool) ([]string, map[string]any) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		s.MCPHandler().ServeHTTP(rec, chatToolRequest("tools/call", map[string]any{
+			"name": name, "arguments": args, "_meta": map[string]any{"progressToken": 1},
+		}, attended))
+		return chatFrames(t, rpcMessages(t, rec))
+	}
+	_, result := call("chat", map[string]any{"agent": "scout", "message": "Prepare a PR", "sessionId": "factory-chat"}, true)
+	frame, _ := result["structuredContent"].(map[string]any)
+	data, _ := frame["data"].(map[string]any)
+	if frame["event"] != "approval_required" || data["kind"] != "question" || prepared.Load() != 1 || submitted.Load() != 0 {
+		t.Fatalf("expected prepared proposal awaiting confirmation: %v", result)
+	}
+	questions, _ := data["questions"].([]any)
+	if len(questions) != 2 {
+		t.Fatalf("expected grouped confirmation: %v", data)
+	}
+	first, second := questions[0].(map[string]any), questions[1].(map[string]any)
+	args := map[string]any{"agent": "scout", "inboxID": data["inboxID"], "answers": map[string]any{
+		first["id"].(string): "submit", second["id"].(string): nil,
+	}}
+	_, rejected := call("answer_chat", args, true)
+	rejectedFrame, _ := rejected["structuredContent"].(map[string]any)
+	rejectedData, _ := rejectedFrame["data"].(map[string]any)
+	if rejectedData["code"] != float64(http.StatusForbidden) || submitted.Load() != 0 {
+		t.Fatalf("expected forbidden without a submission: %v", rejected)
+	}
+	allowed.Store(true)
+	events, result := call("answer_chat", args, true)
+	frame, _ = result["structuredContent"].(map[string]any)
+	done, _ := frame["data"].(map[string]any)
+	if frame["event"] != "done" || done["runID"] != data["runID"] || !slices.Contains(events, "tool_end") ||
+		prepared.Load() != 1 || submitted.Load() != 1 {
+		t.Fatalf("expected one submission on the same run: events=%v result=%v", events, result)
 	}
 }

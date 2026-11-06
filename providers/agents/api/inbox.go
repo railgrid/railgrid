@@ -188,22 +188,13 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusNotFound, "NotFound", "no such inbox item on this agent")
 		return
 	}
-	var payload []map[string]any
-	if state == store.InboxStateAnswered && req.Answers == nil && strings.TrimSpace(req.Response) == "" {
-		writeStatus(w, http.StatusBadRequest, "BadRequest", "answer text is required")
+	payload, err := inboxAnswerPayload(existing, state, &req)
+	if err != nil {
+		writeUpdateError(w, err)
 		return
 	}
-	if req.Answers != nil {
-		response, err := formatQuestionAnswers(existing, req.Answers)
-		if err != nil || state != store.InboxStateAnswered {
-			writeStatus(w, http.StatusBadRequest, "BadRequest", "provide one answer or skip for each question")
-			return
-		}
-		req.Response = response
-		payload = append(payload, map[string]any{"answers": req.Answers})
-	}
 	access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user}
-	access, err := s.prepareInboxAttachmentAccess(r.Context(), wsScope, existing, state, access)
+	access, err = s.prepareInboxAttachmentAccess(r.Context(), wsScope, existing, state, access)
 	if err != nil {
 		writeStatus(w, http.StatusServiceUnavailable, "CallerIdentityUnavailable", "the current caller identity could not be verified for conversation attachments; retry this decision")
 		return
@@ -264,6 +255,21 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+func inboxAnswerPayload(item store.InboxItem, state store.InboxItemState, req *resolveInboxRequest) ([]map[string]any, error) {
+	if req.Answers == nil {
+		if state == store.InboxStateAnswered && strings.TrimSpace(req.Response) == "" {
+			return nil, errBadRequest("answer text is required")
+		}
+		return nil, nil
+	}
+	response, err := formatQuestionAnswers(item, req.Answers)
+	if err != nil || state != store.InboxStateAnswered {
+		return nil, errBadRequest("provide one answer or skip for each question")
+	}
+	req.Response = response
+	return []map[string]any{{"answers": req.Answers}}, nil
+}
+
 func formatQuestionAnswers(item store.InboxItem, answers map[string]*string) (string, error) {
 	raw, err := json.Marshal(item.Payload["questions"])
 	if err != nil {
@@ -299,7 +305,7 @@ func formatQuestionAnswers(item store.InboxItem, answers map[string]*string) (st
 // resolving a decision. Its canonical result is carried into the resume so a
 // hub outage cannot consume the inbox item or claim the paused run.
 func (s *Server) prepareInboxAttachmentAccess(ctx context.Context, scope store.Scope, item store.InboxItem, state store.InboxItemState, access runAccess) (runAccess, error) {
-	if state == store.InboxStateDenied || !resolutionResumesRun(item.Kind, state) || item.RunID == "" || access.HubToken == "" || access.CallerUser == "" {
+	if item.State != store.InboxStatePending || state == store.InboxStateDenied || !resolutionResumesRun(item.Kind, state) || item.RunID == "" || access.HubToken == "" || access.CallerUser == "" {
 		return access, nil
 	}
 	scope.AgentName = item.AgentName

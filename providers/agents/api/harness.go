@@ -574,8 +574,8 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	var stagedInputs []backendharness.StagedInput
 	var stageInput func(context.Context, string, runner.InputFile, io.Reader) error
 	var stageInputs func(context.Context, string, []backendharness.StagedInput) error
-	if run.Repository == nil {
-		stagedInputs, err = s.agentHarnessInputFiles(ctx, run, sessionID, skillSnapshot, cont == nil)
+	if run.Repository == nil && cont == nil {
+		stagedInputs, err = s.agentHarnessInputFiles(ctx, run, sessionID, skillSnapshot, true)
 		if err != nil {
 			return harnessTurn{}, err
 		}
