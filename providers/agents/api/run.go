@@ -17,12 +17,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	sdk "github.com/railgrid/provider-sdk/skills"
 
 	einomodel "github.com/cloudwego/eino/components/model"
 
@@ -782,12 +784,17 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Skills are an optional input catalog on every trigger. Explicit turn
-	// selections pin exact digests; the effective enabled catalog is rebuilt for
-	// all future model and harness calls.
-	skillSnapshot, skillGuidance, skillTools, skillErr := s.agentSkillRuntime(ctx, run, run.SkillRefs)
-	if skillErr != nil {
-		return runResult{}, fmt.Errorf("building the Agent skill catalog: %w", skillErr)
+	// Explicit selections pin exact digests at admission. Model resumes refresh
+	// the tool catalog; harness resumes reuse the runner's staged inputs.
+	var skillSnapshot sdk.Snapshot
+	var skillGuidance string
+	var skillTools []backend.Tool
+	if cont == nil || !agent.Spec.HarnessBacked() {
+		var skillErr error
+		skillSnapshot, skillGuidance, skillTools, skillErr = s.agentSkillRuntime(ctx, run, run.SkillRefs, cont != nil)
+		if skillErr != nil && cont == nil {
+			return runResult{}, fmt.Errorf("building the Agent skill catalog: %w", skillErr)
+		}
 	}
 
 	// WHICH BACKEND. The one branch in the lifecycle, and it is a branch in the
@@ -907,7 +914,6 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		if run.Trigger == agentsv1alpha1.RunTriggerChat || len(run.AttachmentRefs) > 0 {
 			toolset = append(toolset, s.agentAttachmentReadTool(ctx, run, sessionID))
 		}
-		mcpInstructions = joinRunGuidance(mcpInstructions, skillGuidance)
 	}
 	defer closeTools()
 
@@ -941,15 +947,21 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// of the session's history or the agent's notes — the coordinator
 			// approved the prompt it sent, not the conversation around it.
 			msgs = repositoryTurnMessages(agent, run.Task)
-			if strings.TrimSpace(skillGuidance) != "" {
-				last := msgs[len(msgs)-1]
-				msgs = append(msgs[:len(msgs)-1], backend.Message{Role: backend.RoleSystem, Content: skillGuidance}, last)
+			if agent.Spec.HarnessBacked() && skillGuidance != "" {
+				msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: skillGuidance})
 			}
 		} else {
 			msgs, aerr = s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
 		}
 		if aerr != nil {
 			return s.failBeforeStart(ctx, scope, run, sessionID, time.Time{}, fmt.Errorf("assemble agent history: %w", aerr))
+		}
+		if !agent.Spec.HarnessBacked() {
+			for _, guidance := range []string{skillGuidance, agentSkillCatalogPrompt(skillSnapshot)} {
+				if strings.TrimSpace(guidance) != "" {
+					msgs = slices.Insert(msgs, len(msgs)-1, backend.Message{Role: backend.RoleSystem, Content: guidance})
+				}
+			}
 		}
 
 		// A detached starter may have created a Pending record while this run was
@@ -1045,6 +1057,9 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		in = backend.Input{Messages: msgs, Tools: toolset, Limits: limits}
 	} else {
 		startedAt, tracker = cont.StartedAt, cont.Tracker
+		if !agent.Spec.HarnessBacked() {
+			refreshAgentSkillCatalog(&cont.Checkpoint.Engine, agentSkillCatalogPrompt(skillSnapshot))
+		}
 		state, merr := cont.Checkpoint.backendState()
 		if merr != nil {
 			return runResult{}, fmt.Errorf("reading the run's checkpoint: %w", merr)
@@ -1876,15 +1891,38 @@ func hasToolNamed(ts []backend.Tool, name string) bool {
 	return false
 }
 
-func joinRunGuidance(first, second string) string {
-	first, second = strings.TrimSpace(first), strings.TrimSpace(second)
-	if first == "" {
-		return second
+// Refresh the tool catalog independently of the selected guidance, which
+// stays in the checkpoint exactly as it was when the run was admitted.
+func refreshAgentSkillCatalog(checkpoint *engine.Checkpoint, prompt string) {
+	for i, message := range checkpoint.Messages {
+		if message.Role != engine.RoleSystem {
+			continue
+		}
+		if strings.HasPrefix(message.Content, agentSkillCatalogPrefix) {
+			if prompt == "" {
+				checkpoint.Messages = slices.Delete(checkpoint.Messages, i, i+1)
+			} else {
+				checkpoint.Messages[i].Content = prompt
+			}
+			return
+		}
+		// Earlier checkpoints appended catalog rows to the same system message
+		// as selected guidance. Remove only that trailing metadata block.
+		if strings.Contains(message.Content, strings.TrimSpace(agentSkillGuidancePrefix)) {
+			content := strings.TrimRight(message.Content, "\n")
+			for {
+				end := strings.LastIndexByte(content, '\n')
+				if end < 0 || !strings.HasPrefix(content[end+1:], "Skill metadata: ") {
+					break
+				}
+				content = content[:end]
+			}
+			checkpoint.Messages[i].Content = content
+		}
 	}
-	if second == "" {
-		return first
+	if prompt != "" {
+		checkpoint.Messages = slices.Insert(checkpoint.Messages, 0, engine.CheckpointMessage{Role: engine.RoleSystem, Content: prompt})
 	}
-	return first + "\n\n" + second
 }
 
 func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) ([]backend.Message, error) {

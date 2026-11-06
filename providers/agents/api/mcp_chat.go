@@ -228,7 +228,7 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			ContextResourceOwner: id.user, ContextResources: append([]agentContextResource(nil), resolvedResources...),
 		}
 		s.callerAccess(ctx, c, id).applyTo(&run)
-		if _, _, _, err := s.agentSkillRuntime(ctx, run, run.SkillRefs); err != nil {
+		if _, _, _, err := s.agentSkillRuntime(ctx, run, run.SkillRefs, false); err != nil {
 			return chatRefused(errBadRequest(err.Error()))
 		}
 

@@ -305,7 +305,7 @@ func formatQuestionAnswers(item store.InboxItem, answers map[string]*string) (st
 // resolving a decision. Its canonical result is carried into the resume so a
 // hub outage cannot consume the inbox item or claim the paused run.
 func (s *Server) prepareInboxAttachmentAccess(ctx context.Context, scope store.Scope, item store.InboxItem, state store.InboxItemState, access runAccess) (runAccess, error) {
-	if state == store.InboxStateDenied || !resolutionResumesRun(item.Kind, state) || item.RunID == "" || access.HubToken == "" || access.CallerUser == "" {
+	if item.State != store.InboxStatePending || state == store.InboxStateDenied || !resolutionResumesRun(item.Kind, state) || item.RunID == "" || access.HubToken == "" || access.CallerUser == "" {
 		return access, nil
 	}
 	scope.AgentName = item.AgentName
