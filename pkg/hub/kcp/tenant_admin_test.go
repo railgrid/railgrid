@@ -18,13 +18,17 @@ package kcp
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/dynamic/fake"
+	kubetesting "k8s.io/client-go/testing"
 	rbacvalidation "k8s.io/component-helpers/auth/rbac/validation"
 
 	"github.com/railgrid/railgrid/pkg/hub/serviceaccounts"
@@ -191,6 +195,80 @@ func TestEnsureTenantAdminRoleTracksBindingsAndMigratesOnlyManagedClusterAdmin(t
 	}
 	if tenantAdminAllows(readRules(), "planner.example", "boards", "create") {
 		t.Fatal("deleted APIBinding retained the tenant-admin grant")
+	}
+}
+
+func TestTenantAdminMemberMigrationRetriesFailedReplacement(t *testing.T) {
+	ctx := context.Background()
+	client := newCRBClient(t).(*fake.FakeDynamicClient)
+	bindings := client.Resource(clusterRoleBindingGVR)
+	identity := "railgrid:alice@example.com"
+	legacy := userAdminCRB(identity)
+	name := legacy.GetName()
+	if err := unstructured.SetNestedField(legacy.Object, "cluster-admin", "roleRef", "name"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bindings.Create(ctx, legacy, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	binding := tenantAdminBinding("ai.railgrid.ai", "projects")
+	if _, err := client.Resource(apiBindingGVR).Create(ctx, &binding, metav1.CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	injected := errors.New("replacement create failed")
+	failReplacement := true
+	client.PrependReactor("create", "clusterrolebindings", func(action kubetesting.Action) (bool, runtime.Object, error) {
+		object := action.(kubetesting.CreateAction).GetObject().(*unstructured.Unstructured)
+		if failReplacement && object.GetName() == name {
+			failReplacement = false
+			return true, nil, injected
+		}
+		return false, nil, nil
+	})
+
+	assertCanListProjects := func(bindingName string) {
+		t.Helper()
+		got, err := bindings.Get(ctx, bindingName, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var binding rbacv1.ClusterRoleBinding
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(got.Object, &binding); err != nil {
+			t.Fatal(err)
+		}
+		wantSubject := rbacv1.Subject{APIGroup: rbacv1.GroupName, Kind: "User", Name: identity}
+		if len(binding.Subjects) != 1 || binding.Subjects[0] != wantSubject || binding.RoleRef.Name != TenantAdminRoleName {
+			t.Fatalf("binding %s has role %v and subjects %v", bindingName, binding.RoleRef, binding.Subjects)
+		}
+		object, err := client.Resource(tenantAdminRoleGVR).Get(ctx, binding.RoleRef.Name, metav1.GetOptions{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var role rbacv1.ClusterRole
+		if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &role); err != nil {
+			t.Fatal(err)
+		}
+		if !tenantAdminAllows(role.Rules, "ai.railgrid.ai", "projects", "list") {
+			t.Fatalf("binding %s does not grant list on projects", bindingName)
+		}
+	}
+
+	stagedName := name + tenantAdminMigrationSuffix
+	if err := ensureTenantAdminRole(ctx, client); !errors.Is(err, injected) {
+		t.Fatalf("first reconcile error = %v, want %v", err, injected)
+	}
+	if _, err := bindings.Get(ctx, name, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("original binding should be absent after the failed replacement: %v", err)
+	}
+	assertCanListProjects(stagedName)
+
+	if err := ensureTenantAdminRole(ctx, client); err != nil {
+		t.Fatal(err)
+	}
+	assertCanListProjects(name)
+	if _, err := bindings.Get(ctx, stagedName, metav1.GetOptions{}); !apierrors.IsNotFound(err) {
+		t.Fatalf("staged binding should be removed after retry: %v", err)
 	}
 }
 

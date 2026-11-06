@@ -19,6 +19,7 @@ package kcp
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -200,22 +201,131 @@ func (b *Bootstrapper) RefreshTenantAdminAccess(ctx context.Context, clusterName
 // Only hub-managed per-user grants are migrated automatically. A tenant may
 // have created additional bindings while holding the historical role; changing
 // those could revoke deliberate grants or leave authority the hub did not own.
+const tenantAdminMigrationSuffix = "-migration"
+
 func migrateManagedTenantAdminBindings(ctx context.Context, client dynamic.Interface) error {
-	bindings, err := client.Resource(clusterRoleBindingGVR).List(ctx, metav1.ListOptions{})
+	bindings := client.Resource(clusterRoleBindingGVR)
+	list, err := bindings.List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return err
 	}
-	for i := range bindings.Items {
-		binding := &bindings.Items[i]
+	for i := range list.Items {
+		binding := &list.Items[i]
+		identity := binding.GetAnnotations()["tenancy.railgrid.ai/rbac-identity"]
 		role, _, _ := unstructured.NestedString(binding.Object, "roleRef", "name")
+		if identity != "" && binding.GetName() == userAdminCRBName(identity)+tenantAdminMigrationSuffix && role == TenantAdminRoleName {
+			if err := finishTenantAdminMemberMigration(ctx, bindings, identity); err != nil {
+				return err
+			}
+			continue
+		}
 		if role != "cluster-admin" || !managedTenantAdminBinding(binding) {
 			continue
 		}
-		if err := replaceManagedTenantAdminBinding(ctx, client, binding); err != nil {
+		if identity != "" && binding.GetName() == userAdminCRBName(identity) {
+			if err := stageTenantAdminMemberMigration(ctx, bindings, identity, binding); err != nil {
+				return err
+			}
+		} else if err := replaceManagedTenantAdminBinding(ctx, client, binding); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// Stage the bounded grant before deleting the legacy member binding. The
+// staged grant also tells the next reconcile to finish if replacement fails.
+func stageTenantAdminMemberMigration(ctx context.Context, bindings dynamic.ResourceInterface, identity string, legacy *unstructured.Unstructured) error {
+	staged := userAdminCRB(identity)
+	subjects, _, _ := unstructured.NestedSlice(legacy.Object, "subjects")
+	want, _, _ := unstructured.NestedSlice(staged.Object, "subjects")
+	if !reflect.DeepEqual(subjects, want) {
+		return fmt.Errorf("unexpected subjects on managed member binding %q", legacy.GetName())
+	}
+	// The list can contain both the old binding and the staged one. Another
+	// reconcile may already have finished since the list was read.
+	current, err := bindings.Get(ctx, legacy.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) || (err == nil && current.GetUID() != legacy.GetUID()) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	currentRole, _, _ := unstructured.NestedString(current.Object, "roleRef", "name")
+	if currentRole != "cluster-admin" {
+		return nil
+	}
+	staged.SetName(staged.GetName() + tenantAdminMigrationSuffix)
+	staged.SetLabels(current.GetLabels())
+	staged.SetAnnotations(current.GetAnnotations())
+	if _, err := bindings.Create(ctx, staged, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("staging tenant-admin member binding %q: %w", staged.GetName(), err)
+	}
+	return finishTenantAdminMemberMigration(ctx, bindings, identity)
+}
+
+func finishTenantAdminMemberMigration(ctx context.Context, bindings dynamic.ResourceInterface, identity string) error {
+	desired := userAdminCRB(identity)
+	name := desired.GetName()
+	staged, err := bindings.Get(ctx, name+tenantAdminMigrationSuffix, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	stagedRole, _, _ := unstructured.NestedMap(staged.Object, "roleRef")
+	stagedSubjects, _, _ := unstructured.NestedSlice(staged.Object, "subjects")
+	wantRole, _, _ := unstructured.NestedMap(desired.Object, "roleRef")
+	wantSubjects, _, _ := unstructured.NestedSlice(desired.Object, "subjects")
+	if staged.GetDeletionTimestamp() != nil || !reflect.DeepEqual(stagedRole, wantRole) || !reflect.DeepEqual(stagedSubjects, wantSubjects) {
+		return fmt.Errorf("invalid staged tenant-admin member binding %q", staged.GetName())
+	}
+	current, err := bindings.Get(ctx, name, metav1.GetOptions{})
+	create := apierrors.IsNotFound(err)
+	if err != nil && !create {
+		return err
+	}
+	if current != nil {
+		role, _, _ := unstructured.NestedMap(current.Object, "roleRef")
+		subjects, _, _ := unstructured.NestedSlice(current.Object, "subjects")
+		if !managedTenantAdminBinding(current) || !reflect.DeepEqual(subjects, wantSubjects) || current.GetDeletionTimestamp() != nil {
+			return fmt.Errorf("unexpected binding at %q during tenant-admin migration", name)
+		}
+		if !reflect.DeepEqual(role, wantRole) {
+			roleName, _, _ := unstructured.NestedString(current.Object, "roleRef", "name")
+			if roleName != "cluster-admin" {
+				return fmt.Errorf("unexpected role %q on tenant-admin member binding %q", roleName, name)
+			}
+			uid, version := current.GetUID(), current.GetResourceVersion()
+			if err := bindings.Delete(ctx, name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &version}}); err != nil {
+				return fmt.Errorf("deleting legacy tenant-admin member binding %q: %w", name, err)
+			}
+			create = true
+		}
+	}
+	if create {
+		// Re-read the staged grant after deleting the legacy binding. A
+		// concurrent reconcile may have completed the migration already.
+		latest, err := bindings.Get(ctx, staged.GetName(), metav1.GetOptions{})
+		if apierrors.IsNotFound(err) || (err == nil && latest.GetResourceVersion() != staged.GetResourceVersion()) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		desired.SetLabels(staged.GetLabels())
+		desired.SetAnnotations(staged.GetAnnotations())
+		if _, err := bindings.Create(ctx, desired, metav1.CreateOptions{}); err != nil {
+			return fmt.Errorf("replacing managed tenant-admin binding %q: %w", name, err)
+		}
+	}
+	uid := staged.GetUID()
+	err = bindings.Delete(ctx, staged.GetName(), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 func replaceManagedTenantAdminBinding(ctx context.Context, client dynamic.Interface, binding *unstructured.Unstructured) error {
