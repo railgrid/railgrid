@@ -133,6 +133,8 @@ interface AssistantAttachmentChip {
   draftScopeKey: string
   /** The accepted turn now owns this receipt; the composer must not delete it. */
   committed?: boolean
+  /** An upload was sent and may have created a draft even if its reply was lost. */
+  remoteDraft?: boolean
   status: AssistantAttachmentStatus
   error?: string
   retryAction?: 'upload' | 'delete'
@@ -202,6 +204,7 @@ function cleanupAttachmentChips(chips: readonly AssistantAttachmentChip[]) {
     // has not finished binding them when a route/unmount cleanup runs.
     if (chip.committed) continue
     if (chip.status === 'deleting') continue
+    if (!chip.receipt && !chip.remoteDraft) continue
     void bestEffortDeleteAttachment(chip)
   }
 }
@@ -673,32 +676,43 @@ function appendAttachmentError(file: File, message: string) {
   emitAttachmentPending()
 }
 
+function reportAttachmentPreflightError(file: File, chip: AssistantAttachmentChip | undefined, message: string) {
+  if (!chip) {
+    appendAttachmentError(file, message)
+    return
+  }
+  chip.status = 'error'
+  chip.error = message
+  chip.retryAction = 'upload'
+  emitAttachmentPending()
+}
+
 async function uploadAttachment(file: File, existingClientID?: string, allowWhileInactive = false) {
   // Capture the adapter before any await. A route switch may change the active
   // provider/agent while this upload is in flight.
   const ownerKey = props.attachmentOwnerKey
   const draftScopeKey = props.draftScopeKey
   const transport = props.attachmentTransport
-  if (attachmentsBlocked() && !allowWhileInactive) return
-  if (!ownerKey.trim() || !transport) {
-    appendAttachmentError(file, 'Attachments are unavailable for this conversation.')
-    return
-  }
   const existingChip = existingClientID
     ? visibleAttachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
     : undefined
+  if (attachmentsBlocked() && !allowWhileInactive) return
+  if (!ownerKey.trim() || !transport) {
+    reportAttachmentPreflightError(file, existingChip, 'Attachments are unavailable for this conversation.')
+    return
+  }
   const clientID = existingClientID || `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`
   const validationCandidates = existingChip
     ? visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== existingClientID)
     : visibleAttachmentChips.value
   const sharedValidationError = assistantAttachmentValidationError(file, validationCandidates)
   if (sharedValidationError) {
-    appendAttachmentError(file, sharedValidationError)
+    reportAttachmentPreflightError(file, existingChip, sharedValidationError)
     return
   }
   const unresolvedCount = visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== clientID && candidate.status !== 'ready').length
   if (localParts.value.length + unresolvedCount >= MAX_AGENTKIT_COMPOSER_PARTS) {
-    appendAttachmentError(file, `A turn can contain at most ${MAX_AGENTKIT_COMPOSER_PARTS} content parts.`)
+    reportAttachmentPreflightError(file, existingChip, `A turn can contain at most ${MAX_AGENTKIT_COMPOSER_PARTS} content parts.`)
     return
   }
   const controller = new AbortController()
@@ -708,6 +722,7 @@ async function uploadAttachment(file: File, existingClientID?: string, allowWhil
   chip.transport = transport
   chip.draftScopeKey = draftScopeKey
   chip.committed = false
+  chip.remoteDraft = true
   chip.status = 'uploading'
   chip.error = undefined
   chip.retryAction = 'upload'
@@ -802,12 +817,10 @@ async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Pro
     }
 
     chip.receipt = undefined
-    chip.status = 'staged'
-    chip.error = undefined
-    chip.retryAction = undefined
     chip.controller = undefined
+    const upload = uploadAttachment(replacementFile, chip.clientID, true)
     emitState()
-    await uploadAttachment(replacementFile, chip.clientID, true)
+    await upload
     if (props.attachmentOwnerKey !== ownerKey || props.draftScopeKey !== chip.draftScopeKey) return { recovered, removed, unresolved: unresolved + 1 }
     const replacement = visibleAttachmentChips.value.find((candidate) => candidate.clientID === chip.clientID)
     if (replacement?.status === 'ready' && replacement.receipt) recovered += 1
@@ -931,11 +944,9 @@ function retryAttachment(chip: AssistantAttachmentChip) {
   if (!chip.file) return
   const restoreFocus = attachmentFocusRecovery(chip)
   // Keep the stable client identity across retries so a lost upload response
-  // cannot turn one browser candidate into multiple server drafts.
-  chip.status = 'staged'
-  chip.error = undefined
-  chip.retryAction = undefined
-  emitAttachmentPending()
+  // cannot turn one browser candidate into multiple server drafts. Upload
+  // preflight owns the transition to uploading; a blocked or invalid retry
+  // leaves this chip available for correction or removal.
   void uploadAttachment(chip.file, chip.clientID)
   restoreFocus()
 }
@@ -952,7 +963,6 @@ async function removeAttachment(chip: AssistantAttachmentChip) {
     return
   }
   if (chip.status === 'deleting') return
-  if (!chip.receipt) void bestEffortDeleteAttachment(chip)
   if (chip.receipt) {
     const receiptID = chip.receipt.id
     const transport = chip.transport
@@ -988,6 +998,12 @@ async function removeAttachment(chip: AssistantAttachmentChip) {
       },
     })
     return
+  }
+  // A rejected client-side candidate never reached the server. Only an
+  // upload whose outcome may be ambiguous needs a best-effort delete by its
+  // client ID.
+  if (chip.remoteDraft) {
+    void bestEffortDeleteAttachment(chip)
   }
   attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
   emitState()
