@@ -11,6 +11,8 @@ const workbenchTabs = source('AIWorkbenchTabs.vue')
 const workbenchLauncher = source('AIWorkbenchLauncher.vue')
 const workbenchPane = source('AIWorkbenchPane.vue')
 const modelReasoningPicker = source('AIModelReasoningPicker.vue')
+const commandPalette = source('AICommandPalette.vue')
+const attachmentPreview = source('AgentKitAttachmentPreview.vue')
 const aiTypes = source('ai.ts')
 const types = source('conversation.ts')
 const styles = readFileSync(new URL('../agentkit/conversation.css', import.meta.url), 'utf8')
@@ -170,6 +172,26 @@ test('combined model and reasoning picker keeps model and effort policy caller-o
   assert.match(modelReasoningPicker, /<style scoped>/)
   assert.doesNotMatch(modelReasoningPicker, /#(?:[0-9a-f]{3,8})\b/i)
   assert.doesNotMatch(modelReasoningPicker, /fetch\(|localStorage|sessionStorage|reasoningEffortsForConnection|modelcatalog/)
+})
+
+test('command palette escapes conversation stacking contexts and anchors desktop panels', () => {
+  assert.match(commandPalette, /useAnchoredPopover\(\{ width: 420, gap: 8, viewportMargin: 8, align: 'start' \}\)/)
+  assert.match(commandPalette, /<Teleport to="body">[\s\S]*class="k-ai-command-palette-backdrop"/)
+  assert.match(commandPalette, /ref="panelRef"[\s\S]*:style="desktopViewport \? anchoredPanelStyle : undefined"/)
+  assert.match(commandPalette, /window\.matchMedia\('\(min-width: 768px\)'\)/)
+  assert.match(agentStyles, /\.k-ai-command-palette-backdrop\s*\{[^}]*position: fixed;[^}]*z-index: calc\(var\(--k-layer-modal, 2147483000\) - 1\)/)
+  assert.match(agentStyles, /\.k-ai-command-palette-panel\s*\{[^}]*position: fixed;[^}]*z-index: var\(--k-layer-modal, 2147483000\)/)
+  assert.match(agentStyles, /@media \(min-width: 768px\)\s*\{[\s\S]*?\.k-ai-command-palette-panel\s*\{[^}]*width: min\(420px, calc\(100vw - 16px\)\)/)
+})
+
+test('inline attachment controls remain positioned above their status overlay', () => {
+  assert.match(attachmentPreview, /k-agentkit-attachment-preview__remove[\s\S]*aria-label="`Remove attachment \$\{label\}`"/)
+  assert.match(attachmentPreview, /k-agentkit-attachment-preview__retry[\s\S]*aria-label="retryAction/)
+  assert.match(agentStyles, /\.k-agentkit-attachment-preview\s*\{[^}]*position: relative;[^}]*width: 96px;[^}]*height: 96px;/)
+  assert.match(agentStyles, /\.k-agentkit-attachment-preview__overlay\s*\{[^}]*position: absolute;[^}]*pointer-events: none;/)
+  assert.match(agentStyles, /\.k-agentkit-attachment-preview__remove\s*\{[^}]*top: 4px;[^}]*right: 4px;/)
+  assert.match(agentStyles, /\.k-agentkit-attachment-preview__button\s*\{[^}]*z-index: 3;[^}]*pointer-events: auto;/)
+  assert.match(agentStyles, /@media \(hover: none\), \(any-pointer: coarse\)\s*\{\s*\.k-agentkit-attachment-preview__button\s*\{[^}]*width: 44px;[^}]*height: 44px;/)
 })
 
 test('selected workbench tabs keep readable text on their accent tint', () => {

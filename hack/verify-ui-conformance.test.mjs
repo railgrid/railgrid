@@ -87,6 +87,8 @@ test('accepts k-* recipes, known tokens, and true circles', () => {
     'providers/fixture/portal/src/portalkit/legacy.ts': `document.body.className = 'pk-old';\n`,
     'providers/fixture/portal/src/comments.ts': `// pk-old data-pk ⚙ →\n/* old .k-card */\n`,
     'providers/fixture/portal/dist/bundle.js': `window.alert('dist is not application source')\n`,
+    'providers/fixture/portal/.vite/deps/optimized.js': `window.alert('optimized dependency')\n`,
+    'providers/fixture/portal/.vite-cache/dev/deps/optimized.js': `window.confirm('optimized dependency')\n`,
     'providers/fixture/portal/node_modules/fake/index.js': `window.confirm('dependency')\n`,
     'providers/fixture/portal/src/ignored.test.ts': `const emoji = '😀';\n`,
   })
@@ -95,6 +97,8 @@ test('accepts k-* recipes, known tokens, and true circles', () => {
   assert.ok(result.files.includes('providers/fixture/portal/src/App.vue'))
   assert.ok(!result.files.some((file) => file.includes('/portalkit/')))
   assert.ok(!result.files.some((file) => file.includes('/dist/')))
+  assert.ok(!result.files.some((file) => file.includes('/.vite/')))
+  assert.ok(!result.files.some((file) => file.includes('/.vite-cache/')))
   assert.ok(!result.files.some((file) => file.includes('/node_modules/')))
   assert.ok(!result.files.some((file) => file.endsWith('.test.ts')))
 })

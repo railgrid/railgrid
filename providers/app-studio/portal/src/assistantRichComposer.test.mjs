@@ -46,7 +46,7 @@ test('projects canonical contentParts with bounded selection identity', async ()
 })
 
 test('rich composer source keeps editor input plain and chip deletion atomic', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   assert.match(source, /contenteditable/)
   assert.match(source, /event\.key === 'Backspace'/)
   assert.match(source, /event\.key === 'Delete'/)
@@ -60,7 +60,7 @@ test('rich composer source keeps editor input plain and chip deletion atomic', a
 })
 
 test('rich composer exposes one combined Files picker while retaining command entry', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   assert.match(source, /Paperclip/)
   assert.match(source, /aria-label="Add"/)
   assert.match(source, /@click="openAttachmentPicker"[\s\S]*Paperclip[\s\S]*Files/)
@@ -72,23 +72,23 @@ test('rich composer exposes one combined Files picker while retaining command en
 
 test('composer Add triggers and each compact menu action opt into coarse-pointer targets', async () => {
   const [rich, preProject, app] = await Promise.all([
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
   ])
 
-  assert.match(rich, /ref="attachmentMenuTriggerRef"[\s\S]*?class="app-studio-touch-target flex h-7 w-7[^\"]*"/)
-  assert.match(rich, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
-  assert.match(rich, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openPalette"/)
+  assert.match(rich, /ref="attachmentMenuTriggerRef"[\s\S]*?class="k-agentkit-touch-target flex h-7 w-7[^\"]*"/)
+  assert.match(rich, /class="k-agentkit-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
+  assert.match(rich, /class="k-agentkit-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openPalette"/)
   assert.match(preProject, /ref="attachmentMenuTriggerRef"[\s\S]*?class="app-studio-touch-target flex h-7 w-7[^\"]*"/)
   assert.match(preProject, /class="app-studio-touch-target flex w-full[^\"]*"\s+role="menuitem"\s+@click="openAttachmentPicker"/)
   assert.match(app, /ref="landingImportTriggerRef"[\s\S]*?role="menuitem"\s+class="app-studio-touch-target flex w-full[^\"]*"/)
 })
 
 test('rich composer renders image uploads through the lifecycle-safe thumbnail preview', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
-  const preview = await readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8')
-  assert.match(source, /AssistantAttachmentPreview/)
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
+  const preview = await readFile(new URL('./agentkit/AgentKitAttachmentPreview.vue', import.meta.url), 'utf8')
+  assert.match(source, /AgentKitAttachmentPreview/)
   assert.match(source, /chip\.file && assistantAttachmentIsImage\(chip\.file\)/)
   assert.match(source, /@retry="retryAttachment\(chip\)"/)
   assert.match(source, /@remove="removeAttachment\(chip\)"/)
@@ -96,17 +96,18 @@ test('rich composer renders image uploads through the lifecycle-safe thumbnail p
   assert.match(preview, /URL\.revokeObjectURL\(previewURL\.value\)/)
   assert.match(preview, /watch\(\(\) => props\.file, syncPreview, \{ immediate: true \}\)/)
   assert.match(preview, /onBeforeUnmount\(revokePreview\)/)
-  assert.match(preview, /absolute right-1 top-1[\s\S]*`Remove attachment \$\{label\}`/)
+  assert.match(preview, /k-agentkit-attachment-preview__remove[\s\S]*`Remove attachment \$\{label\}`/)
 })
 
 test('Add flyouts dismiss on outside pointer/focus while preserving in-composer interactions', async () => {
   const [rich, preProject, dismiss] = await Promise.all([
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./useDismissibleAddMenu.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/useDismissibleAddMenu.ts', import.meta.url), 'utf8'),
   ])
   assert.match(dismiss, /function isInside\(target: EventTarget \| null\)/)
-  assert.match(dismiss, /container\.contains\(target\)/)
+  assert.match(dismiss, /root\.value\?\.contains\(target\)/)
+  assert.match(dismiss, /panel\?\.value\?\.contains\(target\)/)
   assert.match(dismiss, /if \(!open\.value \|\| isInside\(event\.target\)\) return/)
   assert.match(dismiss, /function handleFocusIn\(event: FocusEvent\)/)
   assert.match(dismiss, /function handleKeydown\(event: KeyboardEvent\)/)
@@ -114,7 +115,7 @@ test('Add flyouts dismiss on outside pointer/focus while preserving in-composer 
   assert.match(dismiss, /nextTick\(\(\) => \{[\s\S]*trigger\.value\?\.focus\(\{ preventScroll: true \}\)/)
   assert.match(dismiss, /function dismissibleMenuNavigationIndex\(key: string, currentIndex: number, itemCount: number\)/)
   assert.match(dismiss, /watch\(open, \(isOpen\) => \{[\s\S]*focusFirstMenuItem\(\)/)
-  assert.match(dismiss, /root\.value\?\.addEventListener\('keydown', handleMenuKeydown\)/)
+  assert.match(dismiss, /document\.addEventListener\('keydown', handleMenuKeydown, true\)/)
   assert.match(dismiss, /document\.addEventListener\('pointerdown', handlePointerDown, true\)/)
   assert.match(dismiss, /document\.addEventListener\('focusin', handleFocusIn, true\)/)
   assert.match(dismiss, /document\.removeEventListener\('pointerdown', handlePointerDown, true\)/)
@@ -122,24 +123,26 @@ test('Add flyouts dismiss on outside pointer/focus while preserving in-composer 
   assert.match(dismiss, /onBeforeUnmount\(\(\) => \{[\s\S]*removeEventListener\('keydown', handleKeydown, true\)/)
   for (const source of [rich, preProject]) {
     assert.match(source, /ref="rootRef"/)
-    assert.match(source, /ref="addMenuRootRef" class="contents"/)
+    assert.match(source, /ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
     assert.match(source, /useDismissibleAddMenu\(\{[\s\S]*open: attachmentMenuOpen,[\s\S]*root: addMenuRootRef,[\s\S]*onClose: closeAttachmentMenu/)
     assert.match(source, /role="menu"[\s\S]*aria-label="Add"/)
     assert.match(source, /@click="openAttachmentPicker"/)
     assert.match(source, /useAssistantFilePickerFocus/)
     assert.match(source, /waitForPicker\(\)[\s\S]*input\.click\(\)/)
     assert.match(source, /input\.value = ''[\s\S]*restorePickerFocus\(\)/)
-    assert.match(source, /AssistantAttachmentTextPreview/)
+    assert.match(source, /(?:AgentKit|Assistant)AttachmentTextPreview/)
     assert.match(source, /class="flex min-w-0 max-w-full flex-col items-stretch rounded-sm border/)
   }
-  assert.match(rich, /ref="rootRef" class="relative min-h-\[72px\]"[\s\S]*ref="addMenuRootRef" class="contents"/)
-  assert.match(preProject, /ref="rootRef"[\s\S]*@paste\.self="handlePaste"[\s\S]*ref="addMenuRootRef" class="contents"/)
+  assert.match(rich, /ref="rootRef" class="relative min-h-\[72px\]"[\s\S]*ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
+  assert.match(preProject, /ref="rootRef"[\s\S]*@paste\.self="handlePaste"[\s\S]*ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
   assert.match(preProject, /<slot name="menu" \/>/)
+  assert.match(rich, /<Teleport to="body">[\s\S]*ref="attachmentMenuRef"/)
+  assert.match(rich, /panel: attachmentMenuRef/)
   assert.match(rich, /@click="openPalette"/)
 })
 
 test('rich attachment removal retries deletion without re-uploading the file', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const retryStart = source.indexOf('function retryAttachment(')
   const retryEnd = source.indexOf('\n}\n\nasync function removeAttachment', retryStart)
   assert.ok(retryStart >= 0 && retryEnd > retryStart, 'retry and removal handlers must remain explicit')
@@ -151,8 +154,8 @@ test('rich attachment removal retries deletion without re-uploading the file', a
   assert.ok(retryBody.indexOf('void removeAttachment(chip)') < retryBody.indexOf('void uploadAttachment(chip.file, chip.clientID)'), 'delete retry must not enqueue an upload')
   assert.match(source, /:retry-action="chip\.retryAction"/)
   assert.match(source, /attachmentStatusLabel\(chip\)/)
-  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
-  assert.match(source, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*`Remove attachment \$\{attachmentLabel\(chip\)\}`/)
+  assert.match(source, /k-agentkit-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
+  assert.match(source, /k-agentkit-touch-target inline-flex h-6 w-6[\s\S]*`Remove attachment \$\{attachmentLabel\(chip\)\}`/)
 
   const preProject = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
   assert.match(preProject, /app-studio-touch-target inline-flex h-6 w-6[\s\S]*Retry attachment upload/)
@@ -160,49 +163,56 @@ test('rich attachment removal retries deletion without re-uploading the file', a
 })
 
 test('cancelled uploads retain a recoverable File and treat absent draft deletes as success', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const uploadStart = source.indexOf('async function uploadAttachment(')
-  const uploadEnd = source.indexOf('\n}\n\nfunction handleAttachmentInput', uploadStart)
+  const uploadEnd = source.indexOf('\n}\n\ninterface UnavailableAttachmentRecovery', uploadStart)
   const removeStart = source.indexOf('async function removeAttachment(')
   const removeEnd = source.indexOf('\n}\n\nfunction detectSlash', removeStart)
   assert.ok(uploadStart >= 0 && uploadEnd > uploadStart, 'upload handler must remain explicit')
   assert.ok(removeStart >= 0 && removeEnd > removeStart, 'remove handler must remain explicit')
   const uploadBody = source.slice(uploadStart, uploadEnd)
   const removeBody = source.slice(removeStart, removeEnd)
-  assert.match(uploadBody, /const projectName = props\.projectName/)
+  assert.match(uploadBody, /const ownerKey = props\.attachmentOwnerKey/)
   assert.match(uploadBody, /const draftScopeKey = props\.draftScopeKey/)
-  assert.match(uploadBody, /const context = props\.ctx/)
-  assert.match(uploadBody, /api\.uploadAssistantAttachment\(context, projectName, file/)
-  assert.match(uploadBody, /bestEffortDeleteAttachment\(chip, projectName\)/)
-  assert.match(uploadBody, /props\.projectName !== projectName \|\| props\.draftScopeKey !== draftScopeKey/)
+  assert.match(uploadBody, /const transport = props\.attachmentTransport/)
+  assert.match(uploadBody, /transport\.upload\(file, controller\.signal, clientID\)/)
+  assert.match(uploadBody, /bestEffortDeleteAttachment\(chip\)/)
+  assert.match(uploadBody, /props\.attachmentOwnerKey !== ownerKey \|\| props\.draftScopeKey !== draftScopeKey/)
   assert.match(uploadBody, /isAttachmentAbortError\(error\)/)
   assert.match(uploadBody, /current\.status = 'staged'/)
   assert.match(uploadBody, /current\.error = undefined/)
   assert.match(removeBody, /chip\.controller\?\.abort\(\)/)
-  assert.match(removeBody, /bestEffortDeleteAttachment\(chip, projectName\)/)
-  assert.match(removeBody, /removeScopedAssistantAttachment\(/)
-  assert.match(removeBody, /removeOwnerDraftReceipt: \(\) => draftScopeKey[\s\S]*removeAssistantComposerDraftAttachment\(draftScopeKey, receiptID\)[\s\S]*: true/)
-  assert.match(removeBody, /deleteAttachment: \(\) => api\.deleteAssistantAttachment\(chip\.context \?\? props\.ctx, projectName, receiptID\)/)
+  assert.match(removeBody, /bestEffortDeleteAttachment\(chip\)/)
+  assert.match(removeBody, /removeScopedAttachment\(/)
+  assert.match(removeBody, /removeOwnerDraftReceipt: \(\) => draftScopeKey[\s\S]*transport\?\.removeOwnerDraftReceipt\?\.\(draftScopeKey, receiptID\)[\s\S]*: true/)
+  assert.match(removeBody, /deleteAttachment: async \(\) => \{[\s\S]*transport\.delete\(receiptID\)/)
   assert.match(removeBody, /attachmentChips\.value = attachmentChips\.value\.filter/)
 })
 
 test('composer commits accepted receipts before clearing parts and cleans only abandoned drafts', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
-  assert.match(source, /projectName\?: string/)
-  assert.match(source, /draftScopeKey: string/)
-  assert.match(source, /context\?: RailgridContext \| null/)
+  const [source, adapter] = await Promise.all([
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+  ])
+  assert.match(source, /attachmentOwnerKey\?: string/)
+  assert.match(source, /attachmentTransport\?: AgentKitAttachmentTransport \| null/)
+  assert.match(source, /draftScopeKey\?: string/)
+  assert.match(adapter, /projectName: string/)
+  assert.match(adapter, /ctx: RailgridContext \| null/)
+  assert.match(adapter, /:attachment-owner-key="projectName"/)
+  assert.match(adapter, /:draft-scope-key="draftScopeKey"/)
   assert.match(source, /const visibleAttachmentChips = computed\(\(\) => attachmentChips\.value\.filter\(\(chip\) => chip\.draftScopeKey === props\.draftScopeKey\)\)/)
   assert.match(source, /committed\?: boolean/)
-  assert.match(source, /function cleanupAttachmentChips\(chips: readonly AssistantAttachmentChip\[\], fallbackProjectName: string\)/)
-  assert.match(source, /chip\.projectName \|\| fallbackProjectName/)
-  assert.match(source, /function commitAttachments\(receiptIDs: readonly string\[\], ownerScopeKey: string, ownerProjectName: string\)/)
+  assert.match(source, /function cleanupAttachmentChips\(chips: readonly AssistantAttachmentChip\[\]\)/)
+  assert.match(source, /function commitAttachments\(receiptIDs: readonly string\[\], ownerScopeKey: string, ownerKey: string\)/)
 
   const handoffStart = source.indexOf('function commitAttachments(')
   const handoffEnd = source.indexOf('\n}\n\nfunction adoptAttachmentDraftScope', handoffStart)
   assert.ok(handoffStart >= 0 && handoffEnd > handoffStart, 'accepted ownership handoff must remain a bounded helper')
   const handoffBody = source.slice(handoffStart, handoffEnd)
-  assert.match(handoffBody, /commitScopedAssistantAttachmentChips\(\s*attachmentChips\.value,\s*ownerScopeKey,\s*ownerProjectName,\s*receiptIDs/)
-  assert.doesNotMatch(handoffBody, /props\.draftScopeKey|props\.projectName/)
+  assert.match(handoffBody, /chip\.draftScopeKey === ownerScopeKey && chip\.ownerKey === ownerKey/)
+  assert.match(handoffBody, /committedIDs\.has\(chip\.receipt\.id\)/)
+  assert.doesNotMatch(handoffBody, /props\.draftScopeKey|props\.attachmentOwnerKey/)
 
   const cleanupStart = source.indexOf('function cleanupAttachmentChips(')
   const cleanupEnd = source.indexOf('\n}\n\nfunction isAttachmentAbortError', cleanupStart)
@@ -218,32 +228,32 @@ test('composer commits accepted receipts before clearing parts and cleans only a
   assert.match(reconcileBody, /chip\.draftScopeKey === scopeKey && chip\.status === 'ready'/)
   assert.match(reconcileBody, /!chip\.committed/)
   assert.match(reconcileBody, /!receiptIDs\.has\(chip\.receipt\.id\)/)
-  assert.match(reconcileBody, /bestEffortDeleteAttachment\(chip, chip\.projectName \|\| props\.projectName\)/)
-  assert.match(reconcileBody, /reconcileAssistantAttachmentChips\(attachmentChips\.value, scopeKey, receiptIDs\)/)
+  assert.match(reconcileBody, /bestEffortDeleteAttachment\(chip\)/)
+  assert.match(reconcileBody, /const receiptIDs = new Set\(receipts\.map\(\(receipt\) => receipt\.id\)\)/)
 
   assert.match(source, /defineExpose\(\{[\s\S]*commitAttachments/)
 
-  const projectWatcherStart = source.indexOf('watch(() => [props.projectName, props.draftScopeKey] as const')
+  const projectWatcherStart = source.indexOf('watch(() => [props.attachmentOwnerKey, props.draftScopeKey] as const')
   const projectWatcherEnd = source.indexOf("\n}, { flush: 'sync' })\nwatch(() => [props.disabled", projectWatcherStart)
   assert.ok(projectWatcherStart >= 0 && projectWatcherEnd > projectWatcherStart, 'owner-scope watcher must remain a bounded helper')
   const projectWatcher = source.slice(projectWatcherStart, projectWatcherEnd)
   assert.match(projectWatcher, /pendingFromPreviousScope/)
-  assert.match(projectWatcher, /cleanupAttachmentChips\(pendingFromPreviousScope, previousProject\)/)
-  assert.match(projectWatcher, /shouldCleanupAssistantAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(previousScope\)\)/)
+  assert.match(projectWatcher, /cleanupAttachmentChips\(pendingFromPreviousScope\)/)
+  assert.match(projectWatcher, /shouldCleanupAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(previousScope\)\)/)
   assert.match(source, /watch\(\(\) => \[props\.modelValue,[\s\S]*props\.draftScopeKey\], syncFromProps\)/)
 
   const unmountStart = source.indexOf('onBeforeUnmount(() => {')
   const unmountEnd = source.indexOf('\n})\n\ndefineExpose', unmountStart)
   assert.ok(unmountStart >= 0 && unmountEnd > unmountStart, 'unmount cleanup must remain explicit')
   const unmountBody = source.slice(unmountStart, unmountEnd)
-  assert.match(unmountBody, /const transientChips = attachmentChips\.value\.filter\(\(chip\) =>\s*!?shouldCleanupAssistantAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(chip\.draftScopeKey\)\)/)
-  assert.match(unmountBody, /cleanupAttachmentChips\(transientChips, props\.projectName\)/)
+  assert.match(unmountBody, /const transientChips = attachmentChips\.value\.filter\(\(chip\) =>\s*shouldCleanupAttachmentOnScopeSwitch\(chip\.status, chip\.retryAction, Boolean\(chip\.draftScopeKey\)\)/)
+  assert.match(unmountBody, /cleanupAttachmentChips\(transientChips\)/)
   assert.doesNotMatch(unmountBody, /cleanupAttachmentChips\(attachmentChips\.value/)
   assert.match(source, /A 409 is expected when the receipt was bound/)
 })
 
 test('regular receipt recovery reuploads retained Files and clears receipt-only chips', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   assert.match(source, /interface UnavailableAttachmentRecovery/)
   assert.match(source, /async function recoverUnavailableAttachments\(receiptIDs: readonly string\[\]\)/)
   assert.match(source, /localParts\.value = localParts\.value\.filter\([\s\S]*previousReceiptID/)
@@ -255,7 +265,7 @@ test('regular receipt recovery reuploads retained Files and clears receipt-only 
 })
 
 test('delayed accepted POST commits its captured chip before returning to that draft, without DELETE', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
   const ast = ts.createSourceFile('AssistantRichComposer.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const names = new Set(['commitAttachments', 'reconcileAttachmentChips'])
@@ -264,20 +274,17 @@ test('delayed accepted POST commits its captured chip before returning to that d
   const { outputText } = ts.transpileModule(declarations.map(node => node.getText(ast)).join('\n'), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   })
-  const { commitScopedAssistantAttachmentChips, reconcileAssistantAttachmentChips } = await vite.ssrLoadModule('/src/assistantAttachmentDeletion.ts')
   const ownerScopeKey = 'scope-thread-a'
   const activeScopeKey = 'scope-thread-b'
-  const props = { projectName: 'project-a', draftScopeKey: activeScopeKey }
-  const owner = { clientID: 'owner-chip', projectName: 'project-a', draftScopeKey: ownerScopeKey, status: 'ready', receipt: { id: 'accepted-receipt' } }
-  const sibling = { clientID: 'sibling-chip', projectName: 'project-a', draftScopeKey: activeScopeKey, status: 'ready', receipt: { id: 'sibling-receipt' } }
+  const props = { attachmentOwnerKey: 'project-a', draftScopeKey: activeScopeKey }
+  const owner = { clientID: 'owner-chip', ownerKey: 'project-a', draftScopeKey: ownerScopeKey, status: 'ready', receipt: { id: 'accepted-receipt' } }
+  const sibling = { clientID: 'sibling-chip', ownerKey: 'project-a', draftScopeKey: activeScopeKey, status: 'ready', receipt: { id: 'sibling-receipt' } }
   const attachmentChips = ref([owner, sibling])
   const deleteCalls = []
   const helpers = new Function(
-    'commitScopedAssistantAttachmentChips', 'reconcileAssistantAttachmentChips',
     'attachmentChips', 'props', 'bestEffortDeleteAttachment', 'emitAttachmentPending',
     `${outputText}\nreturn { commitAttachments, reconcileAttachmentChips }`,
-  )(commitScopedAssistantAttachmentChips, reconcileAssistantAttachmentChips, attachmentChips, props,
-    (chip, projectName) => deleteCalls.push({ chip, projectName }), () => {})
+  )(attachmentChips, props, (chip) => deleteCalls.push(chip), () => {})
 
   // The POST was sent for thread A, but its accepted response arrives after navigation to B.
   helpers.commitAttachments(['accepted-receipt'], ownerScopeKey, 'project-a')
@@ -292,7 +299,7 @@ test('delayed accepted POST commits its captured chip before returning to that d
 })
 
 test('hydrated receipt-only recovery removes just the unavailable attachment', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const script = source.slice(source.indexOf('>', source.indexOf('<script')) + 1, source.indexOf('</script>'))
   const ast = ts.createSourceFile('AssistantRichComposer.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'recoverUnavailableAttachments')
@@ -300,10 +307,10 @@ test('hydrated receipt-only recovery removes just the unavailable attachment', a
   const { outputText } = ts.transpileModule(declaration.getText(ast), {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   })
-  const props = { projectName: 'project-a', draftScopeKey: 'scope-thread-a' }
-  const expired = { clientID: 'expired-chip', projectName: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'expired-receipt' } }
-  const healthy = { clientID: 'healthy-chip', projectName: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'healthy-receipt' } }
-  const sibling = { clientID: 'sibling-chip', projectName: 'project-a', draftScopeKey: 'scope-thread-b', status: 'ready', receipt: { id: 'sibling-receipt' } }
+  const props = { attachmentOwnerKey: 'project-a', draftScopeKey: 'scope-thread-a' }
+  const expired = { clientID: 'expired-chip', ownerKey: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'expired-receipt' } }
+  const healthy = { clientID: 'healthy-chip', ownerKey: 'project-a', draftScopeKey: props.draftScopeKey, status: 'ready', receipt: { id: 'healthy-receipt' } }
+  const sibling = { clientID: 'sibling-chip', ownerKey: 'project-a', draftScopeKey: 'scope-thread-b', status: 'ready', receipt: { id: 'sibling-receipt' } }
   const attachmentChips = ref([expired, healthy, sibling])
   const visibleAttachmentChips = computed(() => attachmentChips.value.filter(chip => chip.draftScopeKey === props.draftScopeKey))
   const textPart = { type: 'text', text: 'Keep this draft text' }
@@ -330,7 +337,7 @@ test('hydrated receipt-only recovery removes just the unavailable attachment', a
 })
 
 test('rich composer isolates attachment counts, upload results, and accepted ownership by draft scope', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const uploadStart = source.indexOf('async function uploadAttachment(')
   const uploadEnd = source.indexOf('\n}\n\ninterface UnavailableAttachmentRecovery', uploadStart)
   const handoffStart = source.indexOf('function commitAttachments(')
@@ -342,17 +349,18 @@ test('rich composer isolates attachment counts, upload results, and accepted own
   const handoff = source.slice(handoffStart, handoffEnd)
   assert.match(upload, /visibleAttachmentChips\.value\.filter/)
   assert.match(upload, /props\.draftScopeKey !== draftScopeKey/)
-  assert.match(upload, /api\.uploadAssistantAttachment\(context, projectName, file/)
-  assert.match(handoff, /commitScopedAssistantAttachmentChips\([\s\S]*ownerScopeKey[\s\S]*ownerProjectName[\s\S]*receiptIDs/)
-  assert.doesNotMatch(handoff, /props\.draftScopeKey|props\.projectName/)
+  assert.match(upload, /transport\.upload\(file, controller\.signal, clientID\)/)
+  assert.match(handoff, /chip\.draftScopeKey === ownerScopeKey && chip\.ownerKey === ownerKey/)
+  assert.match(handoff, /committedIDs\.has\(chip\.receipt\.id\)/)
+  assert.doesNotMatch(handoff, /props\.draftScopeKey|props\.attachmentOwnerKey/)
   assert.match(source, /v-for="chip in visibleAttachmentChips"/)
   assert.match(source, /const attachmentChipsPending = computed\(\(\) => visibleAttachmentChips\.value\.some/)
-  assert.match(source, /function adoptAttachmentDraftScope\([\s\S]*bindAssistantAttachmentChipsToDraftScope/)
+  assert.match(source, /function adoptAttachmentDraftScope\([\s\S]*chip\.draftScopeKey === previousScopeKey && chip\.ownerKey === ownerKey[\s\S]*selectedIDs\.has\(chip\.receipt\.id\)/)
   assert.match(source, /adoptAttachmentDraftScope,\s*\}\)/)
 })
 
 test('late upload and delete completions cannot mutate an unmounted composer', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const uploadStart = source.indexOf('async function uploadAttachment(')
   const uploadEnd = source.indexOf('\n}\n\ninterface UnavailableAttachmentRecovery', uploadStart)
   const removeStart = source.indexOf('async function removeAttachment(')
@@ -362,7 +370,7 @@ test('late upload and delete completions cannot mutate an unmounted composer', a
   assert.ok(uploadStart >= 0 && uploadEnd > uploadStart)
   assert.ok(removeStart >= 0 && removeEnd > removeStart)
   assert.ok(unmountStart >= 0 && unmountEnd > unmountStart)
-  assert.match(source.slice(uploadStart, uploadEnd), /if \(!composerMounted \|\| props\.projectName !== projectName \|\| props\.draftScopeKey !== draftScopeKey\)/)
+  assert.match(source.slice(uploadStart, uploadEnd), /if \(!composerMounted \|\| props\.attachmentOwnerKey !== ownerKey \|\| props\.draftScopeKey !== draftScopeKey\)/)
   assert.match(source.slice(uploadStart, uploadEnd), /if \(!composerMounted\) return/)
   assert.match(source.slice(removeStart, removeEnd), /isOwnerScopeCurrent: \(\) => composerMounted &&/)
   assert.match(source.slice(removeStart, removeEnd), /shouldUpdateComposer: \(\) => composerMounted/)
@@ -386,9 +394,9 @@ test('Add menu keyboard navigation wraps, skips disabled entries, and restores t
   assert.equal(shouldDismissAddMenuEscape({ key: 'Enter', target: menuTarget }), false)
 
   const [rich, preProject, dismiss] = await Promise.all([
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./useDismissibleAddMenu.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/useDismissibleAddMenu.ts', import.meta.url), 'utf8'),
   ])
   for (const source of [rich, preProject]) {
     assert.match(source, /ref="attachmentMenuTriggerRef"/)
@@ -413,7 +421,7 @@ test('local attachment validation chips are removal-only while upload failures r
   assert.ok(staged.error)
   assert.equal(staged.retryable, false)
 
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const localErrorStart = source.indexOf('function attachmentError(')
   const localErrorEnd = source.indexOf('\n}\n\nfunction appendAttachmentError', localErrorStart)
   assert.ok(localErrorStart >= 0 && localErrorEnd > localErrorStart)
@@ -425,30 +433,33 @@ test('local attachment validation chips are removal-only while upload failures r
 })
 
 test('rich composer presents a keyboard-toggleable annotation dialog with an in-pill clear control', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const [source, adapter] = await Promise.all([
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+  ])
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const disclosure = await readFile(new URL('./AssistantMessageAnnotations.vue', import.meta.url), 'utf8')
   assert.match(source, /const localAnnotations = computed/)
   assert.match(source, /if \(part\.type !== 'annotation'\) editor\.append\(createChip\(part\)\)/)
   assert.match(source, /for \(const part of localParts\.value\) \{[\s\S]*if \(part\.type === 'annotation'\) append\(part\)/)
-  assert.match(source, /<AssistantMessageAnnotations/)
-  assert.match(source, /annotationDocumentId\?: string/)
-  assert.match(source, /annotationPagePath\?: string/)
-  assert.match(source, /unresolvedAnnotationIds\?: string\[\]/)
-  assert.match(source, /:current-document-id="annotationDocumentId"/)
-  assert.match(source, /:current-page-path="annotationPagePath"/)
-  assert.match(source, /:unresolved-annotation-ids="unresolvedAnnotationIds"/)
-  assert.match(source, /:rebind-across-documents="true"/)
+  assert.match(adapter, /<AssistantMessageAnnotations/)
+  assert.match(adapter, /annotationDocumentId\?: string/)
+  assert.match(adapter, /annotationPagePath\?: string/)
+  assert.match(adapter, /unresolvedAnnotationIds\?: string\[\]/)
+  assert.match(adapter, /:current-document-id="annotationDocumentId"/)
+  assert.match(adapter, /:current-page-path="annotationPagePath"/)
+  assert.match(adapter, /:unresolved-annotation-ids="unresolvedAnnotationIds"/)
+  assert.match(adapter, /:rebind-across-documents="true"/)
   assert.match(disclosure, /currentDocumentId\?: string/)
   assert.match(disclosure, /props\.currentDocumentId\.trim\(\)/)
   assert.match(disclosure, /props\.rebindAcrossDocuments/)
   assert.match(disclosure, /annotation\.pagePath === props\.currentPagePath/)
   assert.match(appSource, /:annotation-document-id="developmentPreviewAnnotationDocumentID"/)
   assert.doesNotMatch(appSource, /:annotation-document-i-d=/)
-  assert.match(source, /:clearable="true"/)
-  assert.match(source, /@remove-all="removeAllAnnotations"/)
-  assert.doesNotMatch(source, /@update-annotation=/)
-  assert.doesNotMatch(source, /@remove-annotation=/)
+  assert.match(adapter, /:clearable="true"/)
+  assert.match(source, /:remove-all="removeAllAnnotations"/)
+  assert.doesNotMatch(adapter, /@update-annotation=/)
+  assert.doesNotMatch(adapter, /@remove-annotation=/)
   assert.match(disclosure, /useAnchoredPopover/)
   assert.match(disclosure, /@mouseenter="openHoverPreview"/)
   assert.match(disclosure, /@mouseleave="scheduleHoverClose"/)
@@ -504,7 +515,7 @@ test('rich composer presents a keyboard-toggleable annotation dialog with an in-
 })
 
 test('marks DOM-owned input before emitting props so queued sync preserves the caret', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const marked = source.indexOf('lastRenderedSignature.value = stateSignature(content, parts, localSkills.value, localResources.value)')
   const modelUpdate = source.indexOf("emit('update:modelValue', content)")
   assert.ok(marked >= 0, 'input path should mark the DOM-owned signature')
@@ -513,7 +524,7 @@ test('marks DOM-owned input before emitting props so queued sync preserves the c
 })
 
 test('clears detached selections before external rerenders and preserves the divergence gate', async () => {
-  const source = await readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8')
   const renderStart = source.indexOf('function renderParts(')
   const renderEnd = source.indexOf('\n}\n\ninterface Segment', renderStart)
   assert.ok(renderStart >= 0 && renderEnd > renderStart, 'renderParts should remain a bounded helper')
@@ -549,7 +560,7 @@ test('non-default draft modes expose a named exit control and default stays quie
 test('composer exposes permissions and keeps response modes in commands', async () => {
   const [app, composer] = await Promise.all([
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
   ])
   assert.doesNotMatch(app, /<ResponseModePicker/)
   assert.match(app, /@select-mode="selectAssistantResponseMode"/)

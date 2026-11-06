@@ -719,6 +719,14 @@ verify-provider-contract: ## Verify provider manifests, claims and route classes
 permission-claim-policy: ## Regenerate config/kcp/permissionclaimpolicy.yaml from the provider manifests
 	@node hack/generate-permission-claim-policy.mjs $(CLAIM_POLICY_ARGS)
 
+.PHONY: test-agentkit-input-geometry
+test-agentkit-input-geometry: ## Check shared input geometry in live Tilt (set AGENTKIT_TEST_AGENT/PROJECT and PLAYWRIGHT_MODULE)
+	node hack/test-agentkit-input-geometry.mjs
+
+.PHONY: test-agentkit-upload-retry
+test-agentkit-upload-retry: ## Verify ambiguous upload recovery against real Tilt storage in both portals
+	node hack/test-agentkit-upload-retry.mjs
+
 verify-agentkit: ## Verify optional AgentKit style loading and conversation contracts
 	@node --test hack/verify-agentkit-dependencies.test.mjs
 	@node --test provider-sdk/agentkit/styles.conformance.test.mjs

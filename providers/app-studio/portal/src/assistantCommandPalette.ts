@@ -5,6 +5,12 @@ import type {
   ProjectAssistantSkill,
 } from './types'
 import { projectAssistantAttachmentReceipt } from './assistantAttachments'
+import {
+  assistantComposerPlainContent as sharedAssistantComposerPlainContent,
+  assistantSlashToken,
+  consumeAssistantSlashToken,
+} from './agentkit/composer'
+import type { AgentKitComposerPart, AgentKitSlashToken } from './agentkit/composer'
 
 export type AssistantSlashCommandID = 'skill' | 'resource' | 'plan' | 'review' | 'default'
 
@@ -22,47 +28,8 @@ export const assistantSlashCommands: AssistantSlashCommand[] = [
   { id: 'default', label: 'Default', description: 'Use the standard response mode' },
 ]
 
-export interface AssistantSlashToken {
-  start: number
-  end: number
-  query: string
-}
-
-/**
- * Find the slash token immediately preceding the active caret. Slash commands
- * are intentionally local to the caret: a slash elsewhere in a multi-line
- * draft must not steal the palette while the user edits another region.
- *
- * A token may start at the beginning of the draft or after whitespace. This
- * excludes URLs, filesystem paths, and embedded words (`word/foo`) without
- * requiring a URL parser (which would make ordinary prose surprisingly
- * expensive and brittle). The caller owns paste/composition/run suppression.
- */
-export function assistantSlashToken(value: string, caret = value.length): AssistantSlashToken | null {
-  const boundedCaret = Math.max(0, Math.min(caret, value.length))
-  const prefix = value.slice(0, boundedCaret)
-  const slash = prefix.search(/(?:^|\s)\/([A-Za-z-]*)$/u)
-  if (slash < 0) return null
-  const start = prefix.lastIndexOf('/')
-  if (start < 0) return null
-  const query = prefix.slice(start + 1)
-  if (!/^[A-Za-z-]*$/u.test(query)) return null
-  return { start, end: boundedCaret, query: query.toLowerCase() }
-}
-
-export function consumeAssistantSlashToken(value: string, token = assistantSlashToken(value)): string {
-  if (!token) {
-    const match = /(?:^|\s)\/([A-Za-z-]+)(?=\s|$)/u.exec(value)
-    if (match) {
-      const start = match.index + (match[0].startsWith('/') ? 0 : match[0].length - match[1].length - 1)
-      token = { start, end: start + match[1].length + 1, query: match[1].toLowerCase() }
-    }
-  }
-  if (!token) return value
-  const before = value.slice(0, token.start)
-  const after = value.slice(token.end).replace(/^[ \t]+/, '')
-  return `${before}${after}`
-}
+export type AssistantSlashToken = AgentKitSlashToken
+export { assistantSlashToken, consumeAssistantSlashToken }
 
 export function filterAssistantSlashCommands(query: string): AssistantSlashCommand[] {
   const normalized = query.trim().toLowerCase()
@@ -360,7 +327,7 @@ export function projectAssistantComposerParts(value: unknown): AssistantComposer
 
 /** Concatenate only text parts, which is the deterministic model-visible draft. */
 export function assistantComposerPlainContent(parts: readonly AssistantComposerPart[]): string {
-  return parts.filter((part) => part.type === 'text').map((part) => part.text).join('')
+  return sharedAssistantComposerPlainContent(parts as readonly AgentKitComposerPart[])
 }
 
 /** Pure reducers keep annotation edit/remove behavior testable without a DOM. */
