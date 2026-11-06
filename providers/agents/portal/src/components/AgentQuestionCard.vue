@@ -82,10 +82,10 @@ function send(): void {
       Question
       <span v-if="!resolved" class="muted">· {{ blocking === false ? 'Reply when ready' : 'Waiting for your answers' }}</span>
       <div v-if="questions && questions.length > 1 && !resolved" class="agents-question-card__navigation" role="group" aria-label="Question navigation">
-        <button class="k-btn k-btn--ghost" type="button" aria-label="Previous question" title="Previous question"
+        <button class="k-btn k-btn--ghost agents-question-card__arrow" type="button" aria-label="Previous question" title="Previous question"
           :disabled="activeIndex === 0 || disabled || busy" @click="goTo(activeIndex - 1)"><ChevronLeft :size="16" aria-hidden="true" /></button>
         <span aria-live="polite">{{ activeIndex + 1 }} of {{ questions.length }}</span>
-        <button class="k-btn k-btn--ghost" type="button" aria-label="Next question" title="Next question"
+        <button class="k-btn k-btn--ghost agents-question-card__arrow" type="button" aria-label="Next question" title="Next question"
           :disabled="lastQuestion || disabled || busy" @click="goTo(activeIndex + 1)"><ChevronRight :size="16" aria-hidden="true" /></button>
       </div>
     </div>
@@ -152,7 +152,7 @@ function send(): void {
 
 <style scoped>
 .agents-question-card__navigation { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.agents-question-card__navigation .k-btn { display: grid; place-items: center; min-width: 32px; min-height: 32px; padding: 0; }
+.agents-question-card__arrow { display: grid; place-items: center; min-width: 32px; min-height: 32px; padding: 0; }
 .agents-question-card__error { margin: 0; color: var(--color-text-primary); font-size: 13px; }
 .agents-question-card__skipped { align-self: center; color: var(--color-text-secondary); font-size: 13px; }
 .agents-question-card__questions { display: grid; gap: 8px; min-width: 0; }
