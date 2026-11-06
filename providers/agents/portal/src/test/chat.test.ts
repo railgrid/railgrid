@@ -1267,9 +1267,17 @@ describe('chat streaming', () => {
   // A harness that cannot proceed asks a question. It names no tool, so the
   // approval card rendered "Approval required … tool unavailable" over an
   // Approve button that could not mean anything — reported from a live run.
-  it('asks a question rather than offering an approval with no tool', async () => {
-    const resolveInbox = vi.fn().mockResolvedValue({ id: 'i1', state: 'answered' })
-    const { el } = await mountChat(
+  it('streams the same run after a question reply and uses the composer Stop control', async () => {
+    const admitted = deferred<void>()
+    const close = deferred<void>()
+    const answerStream = vi.fn(async function* () {
+      await admitted.promise
+      yield { event: 'start', data: { runID: 'r1', sessionID: 's1', response: 'the acme/app one' } }
+      yield { event: 'delta', data: { text: 'Opening the pull request' } }
+      await close.promise
+    })
+    const cancelRun = vi.fn().mockResolvedValue({})
+    const { el, store } = await mountChat(
       scripted([
         { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
         {
@@ -1280,7 +1288,7 @@ describe('chat streaming', () => {
           },
         },
       ]),
-      { resolveInbox },
+      { answerStream, cancelRun },
     )
     await send(el, 'open a PR')
 
@@ -1298,13 +1306,26 @@ describe('chat streaming', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }))
     await settle(2)
     card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle(2)
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase: 'Running' } } }))
+    await settle(2)
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    admitted.resolve()
     await settle(6)
-    expect(resolveInbox).toHaveBeenCalledWith('i1', 'answer', 'the acme/app one')
+    expect(answerStream).toHaveBeenCalledWith('scout', 'i1', 'the acme/app one', expect.any(AbortSignal))
     expect(el.querySelector('.agents-question-dock')).toBeNull()
     expect(el.querySelector('.agents-log .agents-question-card')).toBeNull()
     const reply = el.querySelector('.agents-answer-context')?.parentElement
     expect(text(reply)).toContain('Which repository should I open the pull request against?')
     expect(text(reply)).toContain('the acme/app one')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(text(el.querySelector('.agents-log'))).toContain('Working')
+    expect(text(el.querySelector('.agents-log'))).toContain('Opening the pull request')
+    el.querySelector<HTMLButtonElement>('.agents-composer button[aria-label="Stop generating"]')!.click()
+    await settle(4)
+    expect(cancelRun).toHaveBeenCalledWith('r1')
+    close.resolve()
+    await settle(4)
   })
 
   it('rebuilds question replies as user messages before the continued reply', () => {
@@ -1315,6 +1336,30 @@ describe('chat streaming', () => {
     expect(rows.map(({ role, content, questionPrompt }) => ({ role, content, questionPrompt }))).toEqual([
       { role: 'user', content: 'Line guide', questionPrompt: 'Where should it go?' },
       { role: 'assistant', content: 'I updated the guide.' },
+    ])
+  })
+
+  it('expands the persisted question group into its original prompt and reply pairs', async () => {
+    const [message] = rebuildTranscript([{
+      id: 'group-reply', role: 'user', content: 'formatted reply', metadata: {
+        questionPrompt: 'Where? Who? When?',
+        questions: [
+          { id: 'where', prompt: 'Where?' },
+          { id: 'who', prompt: 'Who?' },
+          { id: 'when', prompt: 'When?' },
+        ],
+        answers: { where: 'README', who: null, when: 'Tomorrow' },
+      },
+    }])
+    const view = await mountVue(ChatMessageView, { message })
+    mounted.push(view)
+    const details = view.element.querySelector<HTMLDetailsElement>('details.agents-question-history')!
+    expect(details.open).toBe(false)
+    expect(details.querySelector('summary')?.textContent).toBe('Asked 3 questions · 2 answered, 1 skipped')
+    details.querySelector('summary')!.click()
+    expect(details.open).toBe(true)
+    expect(Array.from(details.querySelectorAll('dt, dd'), node => node.textContent)).toEqual([
+      'Where?', 'README', 'Who?', 'Skipped', 'When?', 'Tomorrow',
     ])
   })
 
@@ -2135,6 +2180,24 @@ describe('a run still working with nobody attached', () => {
     expect(banner).toBeTruthy()
     expect(text(banner!)).toContain('active background run')
     expect(text(banner!)).toContain('View progress')
+  })
+
+  it('keeps the composer Stop control when reopening a running question reply', async () => {
+    const answer = { id: 'answer', role: 'user', content: 'README', runID: 'r-live', metadata: { questionPrompt: 'Where?' } }
+    let finished = false
+    const { el, store } = await mountWith('Running', {
+      listRuns: async () => ({ items: [runRow({ phase: finished ? 'Succeeded' : 'Running' })] }),
+      listMessagePage: async () => ({ items: finished
+        ? [{ id: 'final', role: 'assistant', content: 'I updated the README.', runID: 'r-live' }, answer]
+        : [answer] }),
+    })
+    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeTruthy()
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    finished = true
+    store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r-live', phase: 'Succeeded' } } }))
+    await settle(6)
+    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeNull()
+    expect(text(el.querySelector('.agents-log'))).toContain('I updated the README.')
   })
 
   it('counts a run waiting on approval as still working', async () => {

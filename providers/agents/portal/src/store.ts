@@ -163,6 +163,7 @@ export class AppStore extends EventTarget {
     webhooks: new Map(),
     credentials: new Map(),
   }
+  private acknowledgedInboxIDs = new Set<string>()
   private nextLoadID = 0
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
   private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
@@ -213,7 +214,13 @@ export class AppStore extends EventTarget {
     return this.credentials.data.filter((c) => isHarnessProvider(c.provider))
   }
   pendingInbox(): InboxItem[] {
-    return this.inbox.data.filter((i) => i.state === 'pending')
+    return this.inbox.data.filter(item => item.state === 'pending' && !this.acknowledgedInboxIDs.has(item.id))
+  }
+
+  acknowledgeInboxResolution(id: string): void {
+    if (this.retired) return
+    this.acknowledgedInboxIDs.add(id)
+    this.changed()
   }
   // hasProvider answers "can an agent in this workspace reach <provider>'s
   // tools?". A failed probe (unavailable) answers false: optional UI that keys
@@ -332,6 +339,14 @@ export class AppStore extends EventTarget {
       // other row instead of suppressing the reload altogether.
       if (this.latestLoadID[key] === loadID) {
         s.data = this.mergeLoadedRows(key, rows, requestGeneration)
+        if (key === 'inbox' && this.acknowledgedInboxIDs.size) {
+          // A failed or stale read must not reopen an acknowledged decision.
+          // Drop receipts only after the latest successful snapshot catches up.
+          const pendingIDs = new Set(this.inbox.data.filter(item => item.state === 'pending').map(item => item.id))
+          for (const id of this.acknowledgedInboxIDs) {
+            if (!pendingIDs.has(id)) this.acknowledgedInboxIDs.delete(id)
+          }
+        }
         s.error = null
         delete s.errorStatus
         s.hasSnapshot = true

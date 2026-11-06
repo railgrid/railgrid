@@ -310,16 +310,17 @@ func (e *Engine) ResumeTurnWithTools(
 	// gave being applied to whatever it calls next.
 	var dec *decision
 	if len(pending) > 0 {
-		dec = &decision{approve: approve, note: denyNote}
+		dec = &decision{approve: approve, note: denyNote, question: ck.AwaitingReply}
 	}
 	return e.loop(ctx, active, byName, in, identities, schemaTokens, task, cfg, ck.Iter, &content, &usage, pending, dec, cb)
 }
 
 // decision is the user's verdict on the FIRST pending call of a resumed turn.
 type decision struct {
-	approve bool
-	note    string
-	used    bool
+	question bool
+	approve  bool
+	note     string
+	used     bool
 }
 
 // bindTools prepares the (optionally tool-bound) model and the tool index.
@@ -452,6 +453,16 @@ func (e *Engine) loop(
 		for len(pending) > 0 {
 			pc := pending[0]
 
+			// Resolve the original ask call with the user's reply. Executing it
+			// again would open a second question instead of continuing this turn.
+			if dec != nil && !dec.used && dec.question && dec.approve {
+				dec.used = true
+				cb.tool(ToolEvent{ID: pc.ID, Name: pc.Name, Args: pc.Args, Result: dec.note})
+				in = append(in, schema.ToolMessage(dec.note, pc.ID, schema.WithToolName(pc.Name)))
+				pending = pending[1:]
+				continue
+			}
+
 			// A resumed denial: answer the gated call with a denial observation
 			// instead of executing it.
 			if dec != nil && !dec.used && !dec.approve {
@@ -482,12 +493,14 @@ func (e *Engine) loop(
 					Content: content.String(), Usage: *usage,
 					Interrupt: &Interrupt{
 						Tool: ie.Tool, Args: ie.Args, RequestID: ie.RequestID,
+						Question: ie.Question, Questions: ie.Questions,
 						Checkpoint: Checkpoint{
-							Messages: checkpointMessagesWithIdentities(in, identities),
-							Pending:  pending,
-							Content:  content.String(),
-							Usage:    *usage,
-							Iter:     iter,
+							AwaitingReply: ie.Question != "",
+							Messages:      checkpointMessagesWithIdentities(in, identities),
+							Pending:       pending,
+							Content:       content.String(),
+							Usage:         *usage,
+							Iter:          iter,
 						},
 					},
 				}, nil

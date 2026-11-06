@@ -94,6 +94,7 @@ func parseClarification(sessionID, turnID string, data json.RawMessage) (*harnes
 	}
 
 	var text strings.Builder
+	questions := make([]harness.Question, 0, len(params.Questions))
 	seenQuestionIDs := make(map[string]struct{}, len(params.Questions))
 	for index, question := range params.Questions {
 		if question.IsSecret {
@@ -112,6 +113,7 @@ func parseClarification(sessionID, turnID string, data json.RawMessage) (*harnes
 		if index > 0 {
 			text.WriteString("\n\n")
 		}
+		prompt := harness.Question{ID: question.ID, Prompt: question.Question}
 		text.WriteString(question.Header)
 		text.WriteString(": ")
 		text.WriteString(question.Question)
@@ -121,20 +123,23 @@ func parseClarification(sessionID, turnID string, data json.RawMessage) (*harnes
 				if !validClarificationText(option.Label) || !validClarificationText(option.Description) {
 					return nil, errors.New("request-user-input option is empty, invalid, or oversized")
 				}
+				prompt.Options = append(prompt.Options, harness.QuestionOption{Label: option.Label, Description: option.Description})
 				text.WriteString("\n- ")
 				text.WriteString(option.Label)
 				text.WriteString(": ")
 				text.WriteString(option.Description)
 			}
 		}
+		questions = append(questions, prompt)
 		if text.Len() > maxClarificationText {
 			return nil, errors.New("request-user-input question text is oversized")
 		}
 	}
 
 	return &harness.Clarification{
-		ID:   stableClarificationID(params.ThreadID, params.TurnID, params.ItemID),
-		Text: text.String(),
+		ID:        stableClarificationID(params.ThreadID, params.TurnID, params.ItemID),
+		Text:      text.String(),
+		Questions: questions,
 	}, nil
 }
 

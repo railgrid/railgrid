@@ -19,6 +19,8 @@ package runner
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // ProtocolVersion is the wire protocol implemented by the local runner.
@@ -330,10 +332,7 @@ func (e *Error) Error() string { return e.Code + ": " + e.Message }
 // Clarification is a bounded product question captured from a genuine
 // request-user-input harness interaction. Its ID is stable for one session,
 // turn, and interaction item and must be echoed by a matching resume.
-type Clarification struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-}
+type Clarification = harness.Clarification
 
 // PermissionDecision values are the verdicts a resume may carry. They are
 // spelled out rather than being a bool so that "no decision" is a distinct,

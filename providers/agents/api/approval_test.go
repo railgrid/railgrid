@@ -186,7 +186,7 @@ func TestResolveInboxDecisionRequiresDisclosedObjectBeforeApproval(t *testing.T)
 		{name: "scalar arguments", payload: map[string]any{"tool": "notify", "args": `true`}, state: store.InboxStateApproved, wantCode: http.StatusConflict},
 		{name: "empty object is valid", payload: map[string]any{"tool": "notify", "args": `{}`}, state: store.InboxStateApproved},
 		{name: "denial remains available", payload: map[string]any{}, state: store.InboxStateDenied},
-		{name: "non-approval kind keeps existing decision behavior", kind: store.InboxKindQuestion, payload: map[string]any{}, state: store.InboxStateApproved},
+		{name: "question rejects approval", kind: store.InboxKindQuestion, payload: map[string]any{}, state: store.InboxStateApproved, wantCode: http.StatusBadRequest},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -234,8 +234,12 @@ func TestResolveInboxDecisionRequiresDisclosedObjectBeforeApproval(t *testing.T)
 			if decodeErr := json.Unmarshal(w.Body.Bytes(), &body); decodeErr != nil {
 				t.Fatal(decodeErr)
 			}
-			if body["reason"] != "ApprovalDisclosureUnavailable" {
-				t.Fatalf("reason = %#v, want ApprovalDisclosureUnavailable", body["reason"])
+			reason := "ApprovalDisclosureUnavailable"
+			if kind == store.InboxKindQuestion {
+				reason = "InvalidQuestionDecision"
+			}
+			if body["reason"] != reason {
+				t.Fatalf("reason = %#v, want %s", body["reason"], reason)
 			}
 		})
 	}

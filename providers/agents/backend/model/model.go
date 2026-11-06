@@ -158,6 +158,7 @@ func (b *Backend) outcome(ctx context.Context, res engine.Result, err error, pri
 			Parked: &backend.Parked{
 				Tool: res.Interrupt.Tool, Args: res.Interrupt.Args,
 				RequestID: res.Interrupt.RequestID, State: state,
+				Question: res.Interrupt.Question, Questions: res.Interrupt.Questions,
 			},
 		}, nil
 	}

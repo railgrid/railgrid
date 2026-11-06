@@ -1,9 +1,10 @@
 <script setup lang="ts">
+import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { Search, ChevronRight, ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
-import { ApiError, type ApiClient, type SessionModelPreferences } from '../api'
+import { ApiError, type ApiClient, type SessionModelPreferences, type SSEEvent } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
 import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
@@ -44,12 +45,12 @@ const TERMINAL_RUN_PHASES = new Set(['Succeeded', 'Failed', 'Aborted'])
 const MAX_CACHED_ARTIFACT_RECEIPTS = 64
 const inlineAppLoads = new InlineAppLoadCoordinator<AgentArtifact>(2)
 
-interface StartData { runID: string; sessionID: string }
+interface StartData { runID: string; sessionID: string; response?: string; answers?: import('../types').QuestionAnswers }
 interface RunStartedData { runID: string; sessionID?: string; status?: string; startedAt?: string }
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
 interface ToolEndData extends ToolStartData { runID?: string; sessionID?: string; toolCallID?: string; result?: string; error?: string; durationMS?: number; sources?: unknown; savedCapture?: unknown; hasMcpApp?: boolean }
-interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; content?: string; status?: string; startedAt?: string; durationMS?: number }
+interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; questions?: import('../types').AgentQuestion[]; content?: string; status?: string; startedAt?: string; durationMS?: number }
 interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
 interface DoneData {
   runID: string
@@ -279,12 +280,22 @@ function createOverlayChat(): void {
 }
 watch(() => props.composerOnly, compact => { if (compact) overlayChatsVisible.value = false })
 const orphanRun = ref<RunSummary | null>(null)
+const recoveringQuestionRun = computed(() => {
+  const run = orphanRun.value
+  if (!run || run.phase !== 'Running' || streaming.value) return undefined
+  if (messages.value.some(message => message.runID === run.id && message.approval && !message.approval.resolved)) return undefined
+  return messages.value.some(message => message.runID === run.id && message.questionPrompt !== undefined)
+})
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
 const orphanLoading = ref(false)
 const stopRequested = ref(false)
 const cancelingRunID = ref('')
 const approvalBusy = ref<Record<string, 'approve' | 'deny' | 'answer'>>({})
+function submittingQuestionReply(message: ChatMessage): boolean {
+  const approval = message.approval
+  return !!approval && pendingIsQuestion(approval) && approvalBusy.value[approval.inboxID] === 'answer'
+}
 const orphanCancelBusyID = ref('')
 const deletingSessionID = ref('')
 const mobileRailOpen = ref(false)
@@ -840,12 +851,12 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
   try {
     const detail = await authority.api.getRun(runID)
     if (!requestIsCurrent() || !authorityIsCurrent(authority) || !contextIsCurrent(name, authority.api) || sessionID.value !== session || approvalRecoveryClosedRunIDs.has(runID)) return
+    const target = messages.value.filter(message => message.role === 'assistant' && message.runID === runID).at(-1)
     // A local stream error can mark the message failed while the backend run
     // is still executing. Only the backend phase can confirm terminal state.
     if (TERMINAL_RUN_PHASES.has(detail.phase || '')) {
       closeApprovalRecovery(runID)
       applyRunProgress(detail)
-      const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
       if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
       orphanReadSerial += 1
       if (orphanRun.value?.id === runID) orphanRun.value = null
@@ -856,7 +867,6 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
       flushTerminalTranscriptRefresh()
       return
     }
-    const target = messages.value.find(message => message.role === 'assistant' && message.runID === runID)
     if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
       orphanRun.value = detail
       orphanError.value = null
@@ -927,8 +937,10 @@ function closeArtifactPanel(): void {
 
 function currentSourceReceipt(receipt: { runID: string; sessionID: string; toolCallID: string }): ToolCall | undefined {
   if (sessionID.value !== receipt.sessionID) return undefined
-  const message = messages.value.find(item => item.role === 'assistant' && item.runID === receipt.runID)
-  const tool = message?.tools.find(item => item.toolCallID === receipt.toolCallID)
+  const tool = messages.value
+    .filter(item => item.role === 'assistant' && item.runID === receipt.runID)
+    .flatMap(item => item.tools)
+    .find(item => item.toolCallID === receipt.toolCallID)
   return tool && !tool.pending && !tool.error && typeof tool.result === 'string' && tool.sources?.length ? tool : undefined
 }
 
@@ -1645,7 +1657,7 @@ async function cancelLiveRun(
 
 async function send(): Promise<void> {
   const draftText = draft.value.trim()
-  if (!draftText || streaming.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
+  if (!draftText || streaming.value || recoveringQuestionRun.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
   if (recoveryInterruptedPrompt) { props.store.takePendingPrompt(props.name); recoveryInterruptedPrompt = false }
   engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
@@ -1653,6 +1665,22 @@ async function send(): Promise<void> {
   const text = props.pageContext
     ? `${draftText}${PAGE_CONTEXT_MARKER}${props.pageContext}`
     : draftText
+  if (!sessionID.value) {
+    sessionID.value = newSessionID()
+    remember(sessionID.value)
+  }
+
+  draft.value = ''
+  const userID = `u${++messageSequence}`
+  messages.value.push({ id: userID, role: 'user', content: text, tools: [], actorID: optimisticAIMessageActor(props.api.context()?.user) })
+  await streamTurn(userID, (signal) => props.api.chatStream(props.name, text, sessionID.value, signal))
+}
+
+async function streamTurn(
+  userID: string,
+  events: (signal: AbortSignal) => AsyncIterable<SSEEvent>,
+  onAnswerAccepted?: (data: StartData, assistantID: string) => void,
+): Promise<void> {
   claimChatOwnership()
   olderReadSerial += 1
   olderLoading.value = false
@@ -1662,11 +1690,6 @@ async function send(): Promise<void> {
   // if it settles after a fast response completes.
   messageReadSerial += 1
   messagesLoading.value = false
-  if (!sessionID.value) {
-    sessionID.value = newSessionID()
-    remember(sessionID.value)
-  }
-
   const name = props.name
   const api = props.api
   const store = props.store
@@ -1676,30 +1699,27 @@ async function send(): Promise<void> {
   abort = controller
   stopRequested.value = false
   cancelingRunID.value = ''
+  liveRunID = ''
+  liveRunSessionID = ''
   resetOrphanRead()
-  draft.value = ''
-  const userID = `u${++messageSequence}`
   const assistantID = `a${++messageSequence}`
   streamingID = assistantID
-  messages.value = [
-    ...messages.value,
-    { id: userID, role: 'user', content: text, tools: [], actorID: optimisticAIMessageActor(props.api.context()?.user) },
-    {
-      id: assistantID,
-      role: 'assistant',
-      content: '',
-      tools: [],
-      streaming: true,
-      progress: { status: 'pending', trace: [] },
-    },
-  ]
+  messages.value.push({
+    id: assistantID,
+    role: 'assistant',
+    content: '',
+    tools: [],
+    streaming: true,
+    progress: { status: 'pending', trace: [] },
+  })
   messagesHasSnapshot.value = true
   streaming.value = true
   atBottom.value = true
   resizeComposer()
 
+  let started = false
   try {
-    for await (const event of api.chatStream(name, text, requestSession, controller.signal)) {
+    for await (const event of events(controller.signal)) {
       if (!streamIsCurrent(serial, controller, name, api)) {
         if (!detachedStarts.has(controller)) return
         if (!contextIsCurrent(name, api)) {
@@ -1715,7 +1735,7 @@ async function send(): Promise<void> {
             run: () => emit('navigate', { kind: 'run', id: data.runID }),
           })
         }
-        if (event.event === 'run_started' || event.event === 'done' || event.event === 'error') {
+        if ((onAnswerAccepted && event.event === 'start') || event.event === 'run_started' || event.event === 'done' || event.event === 'error') {
           detachedStarts.delete(controller)
           controller.abort()
           void loadSessions(name, api)
@@ -1727,6 +1747,8 @@ async function send(): Promise<void> {
       switch (event.event) {
         case 'start': {
           const data = event.data as StartData
+          started = true
+          onAnswerAccepted?.(data, assistantID)
           liveRunID = data.runID
           patchMessage(assistantID, { runID: data.runID })
           if (data.sessionID) {
@@ -1734,7 +1756,7 @@ async function send(): Promise<void> {
             remember(data.sessionID, name, api)
           }
           liveRunSessionID = data.sessionID || requestSession
-          patchProgress(assistantID, { status: 'pending' })
+          patchProgress(assistantID, { status: onAnswerAccepted ? 'running' : 'pending' })
           if (stopRequested.value) {
             await cancelLiveRun(data.runID, data.sessionID || requestSession, name, api, controller)
             return
@@ -1859,7 +1881,7 @@ async function send(): Promise<void> {
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
-            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question },
+            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question, questions: data.questions },
           })
           const hasClassifiedCommentary = Boolean(current?.progress?.trace.some(block => block.kind === 'commentary'))
           if (!hasClassifiedCommentary && data.content && !current?.content) {
@@ -1923,11 +1945,13 @@ async function send(): Promise<void> {
         }
       }
     }
+    if (onAnswerAccepted && !started) throw new Error('The question reply stream closed before the run continued.')
   } catch (error) {
     if (detachedStarts.has(controller) && contextIsCurrent(name, api)) {
       toast('error', `The original thread could not start: ${(error as Error).message}`)
     }
     if (!streamIsCurrent(serial, controller, name, api)) return
+    if (onAnswerAccepted && !started) throw error
     flushNow(serial)
     const clientStopped = (error as Error).name === 'AbortError' && stopRequested.value
     patchMessage(assistantID, {
@@ -1936,19 +1960,25 @@ async function send(): Promise<void> {
     patchProgress(assistantID, { status: clientStopped ? 'stopping' : 'failed' })
   } finally {
     detachedStarts.delete(controller)
-    if (!streamIsCurrent(serial, controller, name, api)) return
-    flushNow(serial)
-    streaming.value = false
-    streamingID = ''
-    abort = null
-    patchMessage(assistantID, { streaming: false })
-    void loadSessions(name, api)
-    flushTerminalTranscriptRefresh()
-    if (liveRunID && !stopRequested.value && !messages.value.find(message => message.id === assistantID)?.approval) {
-      // A clean EOF can still truncate the response. The server owns the run's
-      // state; recover its progress and controls just as reopening a chat does.
-      patchProgress(assistantID, { status: 'interrupted' })
-      void refreshRunApproval(liveRunID, true)
+    if (streamIsCurrent(serial, controller, name, api)) {
+      flushNow(serial)
+      streaming.value = false
+      streamingID = ''
+      abort = null
+      if (onAnswerAccepted && !started) {
+        messages.value = messages.value.filter(message => message.id !== assistantID)
+        stopRequested.value = false
+      } else {
+        patchMessage(assistantID, { streaming: false })
+      }
+      void loadSessions(name, api)
+      flushTerminalTranscriptRefresh()
+      if (liveRunID && !stopRequested.value && !messages.value.find(message => message.id === assistantID)?.approval) {
+        // A clean EOF can still truncate the response. The server owns the run's
+        // state; recover its progress and controls just as reopening a chat does.
+        patchProgress(assistantID, { status: 'interrupted' })
+        void refreshRunApproval(liveRunID, true)
+      }
     }
   }
 }
@@ -1969,8 +1999,8 @@ async function stop(): Promise<void> {
   await cancelLiveRun(runID, session, name, api, controller)
 }
 
-async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<void> {
-  if (approvalBusy.value[inboxID]) return
+async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: QuestionReply): Promise<void> {
+  if (approvalBusy.value[inboxID] || (decision === 'answer' && streaming.value)) return
   approvalBusy.value = { ...approvalBusy.value, [inboxID]: decision }
   const name = props.name
   const api = props.api
@@ -1984,19 +2014,39 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     Boolean(target) &&
     messages.value.some(message => message.id === target?.id && message.approval?.inboxID === inboxID)
   )
-  const showResolution = (resolved: 'approve' | 'deny' | 'answer', answer?: string, actorID?: string) => {
+  const showResolution = (resolved: 'approve' | 'deny' | 'answer', answer?: string, actorID?: string, answers?: import('../types').QuestionAnswers, beforeID?: string) => {
     const approval = target?.approval
     if (!target || !approval) return
     const content = resolved === 'answer' && pendingIsQuestion(approval) ? answer?.trim() : undefined
     const id = `mquestion-answer-${inboxID}`
     patchMessage(target.id, { approval: { ...approval, resolved, ...(content ? { answerInThread: true } : {}) } })
     if (!content || messages.value.some(message => message.id === id)) return
-    messages.value.push({
+    if (!beforeID && !approvalRecoveryClosedRunIDs.has(approval.runID)) {
+      orphanReadSerial += 1
+      orphanRun.value = recoverableRun(approval.runID, session, name)
+      orphanError.value = null
+      orphanHasSnapshot.value = true
+      orphanLoading.value = false
+    }
+    const reply: ChatMessage = {
       id, role: 'user', content, questionPrompt: approval.question ?? '',
-      runID: approval.runID, tools: [], actorID,
-    })
+      runID: approval.runID, tools: [], actorID, questions: approval.questions, answers,
+    }
+    const before = beforeID ? messages.value.findIndex(message => message.id === beforeID) : -1
+    messages.value.splice(before >= 0 ? before : messages.value.length, 0, reply)
   }
   try {
+    if (decision === 'answer' && target?.approval?.runID && pendingIsQuestion(target.approval)) {
+      await streamTurn(
+        `mquestion-answer-${inboxID}`,
+        signal => api.answerStream(name, inboxID, response, signal),
+        (data, assistantID) => {
+          showResolution('answer', data.response, optimisticAIMessageActor(api.context()?.user), data.answers, assistantID)
+          void store.load('inbox')
+        },
+      )
+      return
+    }
     // Only an answer carries a body. Passing an explicit undefined third
     // argument for approve/deny would change the call every existing caller and
     // test sees, for a value the API does not read.
@@ -2005,7 +2055,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       : api.resolveInbox(inboxID, decision, response))
     if (!requestIsCurrent()) return
     if (target?.approval) {
-      showResolution(decision, item?.response ?? response, optimisticAIMessageActor(api.context()?.user))
+      showResolution(decision, item?.response ?? (typeof response === 'string' ? response : undefined), optimisticAIMessageActor(api.context()?.user), item?.payload?.answers)
       void refreshRunApproval(target.approval.runID)
     }
     toast('ok', decision === 'answer'
@@ -2027,7 +2077,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
         ? 'approve'
         : inboxItem?.state === 'denied' ? 'deny' : inboxItem?.state === 'answered' ? 'answer' : undefined
       if (confirmedDecision && target?.approval) {
-        showResolution(confirmedDecision, inboxItem?.response)
+        showResolution(confirmedDecision, inboxItem?.response, undefined, inboxItem?.payload?.answers)
       }
       if (target?.approval?.runID) {
         await refreshRunApproval(target.approval.runID, false, true)
@@ -2246,8 +2296,12 @@ function onServerEvent(event: Event): void {
   if (!terminal && approvalRecoveryClosedRunIDs.has(detail.data.id)) return
   if (!terminal) {
     const status = progressStatusForRunPhase(detail.data.phase)
-    if (status === 'waiting') void refreshRunApproval(detail.data.id)
+    if (status === 'waiting' && !(watchedLive && streaming.value)) void refreshRunApproval(detail.data.id)
     else if (status === 'running') {
+      const answeredElsewhere = messages.value.some(message =>
+        message.runID === detail.data.id && message.approval?.questions?.length &&
+        !message.approval.resolved && !approvalBusy.value[message.approval.inboxID],
+      )
       invalidateApprovalRead(detail.data.id)
       if (watchedLive && !streaming.value && !stopRequested.value) {
         // This newer event supersedes a disconnected stream's status lookup.
@@ -2257,8 +2311,10 @@ function onServerEvent(event: Event): void {
         orphanHasSnapshot.value = true
         orphanLoading.value = false
       }
-      messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant'
+      messages.value = messages.value.map(message => message.runID === detail.data.id && message.role === 'assistant' &&
+        !message.approval?.resolved && !submittingQuestionReply(message)
         ? { ...message, approval: undefined, progress: progressPatch(message, { status }) } : message)
+      if (answeredElsewhere && !streaming.value) void loadMessages(sessionID.value)
     }
     return
   }
@@ -2552,7 +2608,7 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="orphanRun && !streaming" class="agents-orphan-banner" role="status">
+        <div v-if="orphanRun && !streaming && !recoveringQuestionRun" class="agents-orphan-banner" role="status">
           <Clock aria-hidden="true" />
           <span class="agents-orphan-text">
             This conversation has an active background run. Its reply will appear here when it finishes.
@@ -2613,26 +2669,27 @@ defineExpose({
               </button>
               <p v-if="olderError" class="muted" role="alert">Could not load earlier messages. {{ olderError }} Try again.</p>
             </div>
-            <ChatMessageView
-              v-for="message in messages"
-              :key="`${message.id}:${inlineAppGeneration}`"
-              :message="message"
-              :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
-              :session-i-d="sessionID"
-              :load-inline-app="loadInlineApp"
-              :inspected-artifact-receipt="inspectedArtifactReceipt"
-              :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
-              :announce="message.role === 'assistant' && message.streaming"
-              :show-run-link="runLinkMessageIDs.has(message.id)"
-              :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
-              :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
-              @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
-              @view-run="emit('navigate', { kind: 'run', id: $event })"
-              @recovery="navigateForFailure"
-              @inline-layout="scrollToBottom"
-              @save-artifact="saveArtifact"
-              @open-saved-capture="openSavedCaptureCitation"
-            />
+            <template v-for="message in messages" :key="`${message.id}:${inlineAppGeneration}`">
+              <ChatMessageView
+                :message="message"
+                :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
+                :session-i-d="sessionID"
+                :load-inline-app="loadInlineApp"
+                :inspected-artifact-receipt="inspectedArtifactReceipt"
+                :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
+                :announce="message.role === 'assistant' && message.streaming"
+                :show-run-link="runLinkMessageIDs.has(message.id)"
+                :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
+                :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
+                @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
+                @view-run="emit('navigate', { kind: 'run', id: $event })"
+                @recovery="navigateForFailure"
+                @inline-layout="scrollToBottom"
+                @save-artifact="saveArtifact"
+                @open-saved-capture="openSavedCaptureCitation"
+              />
+
+            </template>
             <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
               <h2>Start a conversation with {{ agent?.spec.displayName || name }}</h2>
@@ -2672,6 +2729,7 @@ defineExpose({
           <AgentQuestionCard
             :question-id="dockedQuestion.inboxID"
             :prompt="dockedQuestion.question"
+            :questions="dockedQuestion.questions"
             :busy="approvalBusy[dockedQuestion.inboxID] === 'answer'"
             :disabled="!!approvalBusy[dockedQuestion.inboxID]"
             @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"
@@ -2745,12 +2803,12 @@ defineExpose({
             </template>
             <template #primary>
               <AIPrimaryAction
-                v-if="streaming"
+                v-if="streaming || recoveringQuestionRun"
                 class="agents-composer-primary agents-stop is-stop"
-                :state="primaryActionState"
+                :state="recoveringQuestionRun ? (orphanCancelBusyID ? 'stopping' : 'stop') : primaryActionState"
                 type="button"
-                :disabled="stopRequested"
-                @click="stop"
+                :disabled="stopRequested || !!orphanCancelBusyID"
+                @click="recoveringQuestionRun ? cancelOrphan() : stop()"
               />
               <AIPrimaryAction
                 v-else

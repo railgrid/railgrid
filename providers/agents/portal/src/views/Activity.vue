@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Check, Inbox, RefreshCw, X } from 'lucide-vue-next'
+import type { QuestionReply } from '../types'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ArrowLeft, Check, ChevronRight, CircleHelp, Inbox, RefreshCw, ShieldCheck, X } from 'lucide-vue-next'
 import { ApiError, type ApiClient, type RunFilter } from '../api'
 import type { AppStore, ServerEvent } from '../store'
 import { fmtDuration, fmtTime, fmtTokens, fmtUSD, runHarnessBacked, type InboxItem, type RunPhase, type RunSummary } from '../types'
@@ -10,10 +11,11 @@ import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import StatusBadge from '../portalkit/StatusBadge.vue'
+import Tabs from '../portalkit/Tabs.vue'
 import { toast } from '../ui/toast'
 import { confirmDialog } from '../portalkit/confirm'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
-import type { Route } from '../router'
+import type { ActivityTab, Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
@@ -26,6 +28,7 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   agent?: string
   authorityEpoch?: number
+  activityTab?: ActivityTab
 }>(), { agent: '', authorityEpoch: 0 })
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
@@ -51,6 +54,13 @@ const RANGES = [
   { id: 'all', label: 'All', hours: 0 },
 ] as const
 
+const section = ref<ActivityTab>(props.activityTab ?? 'runs')
+watch(() => props.activityTab, tab => { section.value = tab ?? 'runs' })
+const selectedInboxID = ref('')
+const mobileQueue = ref(false)
+const inboxQueue = ref<HTMLElement | null>(null)
+const inboxDetail = ref<HTMLElement | null>(null)
+const inboxEmpty = ref<HTMLElement | null>(null)
 const runs = ref<RunSummary[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -75,6 +85,70 @@ const pending = computed(() => {
   void revision.value
   return props.store.pendingInbox().filter(item => !props.agent || item.agentName === props.agent)
 })
+const selectedInboxIndex = computed(() => Math.max(0, pending.value.findIndex(item => item.id === selectedInboxID.value)))
+const selectedInboxItem = computed(() => pending.value[selectedInboxIndex.value])
+const inboxDetails = computed(() => props.agent ? pending.value : selectedInboxItem.value ? [selectedInboxItem.value] : [])
+
+function selectInboxItem(id: string): void {
+  selectedInboxID.value = id
+  mobileQueue.value = false
+  void nextTick(() => inboxDetail.value?.focus())
+}
+
+function showInboxQueue(): void {
+  mobileQueue.value = true
+  void nextTick(() => inboxQueue.value?.querySelector<HTMLElement>('[aria-current="true"]')?.focus())
+}
+
+function inboxPreview(item: InboxItem): string {
+  return item.payload?.questions?.[0]?.prompt || item.prompt
+}
+
+const activityTabs = computed(() => [
+  { id: 'runs', label: 'Run history' },
+  { id: 'inbox', label: 'Inbox', icon: Inbox, count: pending.value.length },
+])
+const viewingInbox = computed(() => !props.agent && section.value === 'inbox')
+function focusIsInInboxDetail(active: Element | null): boolean {
+  return !!inboxDetail.value?.closest('.agents-inbox-detail')?.contains(active)
+}
+
+watch([viewingInbox, pending], ([showing, items], [, previous]) => {
+  if (!showing) return
+  const selectedID = selectedInboxID.value
+  const selectionRemoved = !items.some(item => item.id === selectedID)
+  const selectedIndex = previous?.findIndex(item => item.id === selectedID) ?? -1
+  if (selectionRemoved) {
+    selectedInboxID.value = items[Math.max(0, Math.min(selectedIndex, items.length - 1))]?.id ?? ''
+  }
+
+  const active = document.activeElement
+  const focusedID = active instanceof HTMLElement && inboxQueue.value?.contains(active) ? active.dataset.inboxId : undefined
+  const focusedIndex = focusedID ? previous?.findIndex(item => item.id === focusedID) ?? -1 : -1
+  const rowRemoved = focusedIndex >= 0 && !items.some(item => item.id === focusedID)
+  const detailRemoved = selectionRemoved && selectedIndex >= 0 && focusIsInInboxDetail(active)
+  if (!rowRemoved && !detailRemoved) return
+
+  void nextTick(() => {
+    if (!viewingInbox.value || (document.activeElement !== active && document.activeElement !== document.body)) return
+    const rows = inboxQueue.value?.querySelectorAll<HTMLButtonElement>('[data-inbox-id]')
+    const nextRow = rows?.[Math.min(focusedIndex, rows.length - 1)]
+    const target = (rowRemoved ? nextRow : inboxDetail.value) ?? inboxEmpty.value
+    target?.focus()
+  })
+}, { immediate: true })
+
+function selectActivityTab(id: string): void {
+  if (id !== 'inbox' && id !== 'runs' || id === section.value) return
+  section.value = id
+  emit('navigate', { kind: 'menu', menu: 'activity', ...(id === 'inbox' ? { activityTab: id } : {}) })
+}
+function inboxKindLabel(item: InboxItem): string {
+  if (item.kind === 'approval') return 'Approval'
+  if (item.kind === 'change') return 'Configuration change'
+  const count = item.payload?.questions?.length ?? 0
+  return count > 1 ? `${count} questions` : 'Question'
+}
 const inboxSlice = computed(() => {
   void revision.value
   return props.store.inbox
@@ -195,15 +269,21 @@ async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise
 // verdict; a question takes an answer in words, which resumes the run, or a
 // dismissal (`deny`), which closes the item without resuming — the run, if it
 // is still paused, is ended from its own page.
-async function resolve(item: InboxItem, decision: InboxDecision, response?: string): Promise<void> {
+async function resolve(item: InboxItem, decision: InboxDecision, response?: QuestionReply): Promise<void> {
   if (locked(item.id)) return
-  const answer = (response ?? '').trim()
+  const answer = typeof response === 'string' ? response.trim() : response
   if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
+  // The request disables its controls. Keep focus inside the pane so it can
+  // follow the next request even when the inbox event beats the HTTP reply.
+  if (viewingInbox.value && selectedInboxID.value === item.id && focusIsInInboxDetail(document.activeElement)) {
+    inboxDetail.value?.focus({ preventScroll: true })
+  }
   resolvingInbox.value = new Map(resolvingInbox.value).set(item.id, decision)
   try {
     await (decision === 'answer' ? authority.api.resolveInbox(item.id, 'answer', answer) : authority.api.resolveInbox(item.id, decision))
     if (!authorityIsCurrent(authority)) return
+    authority.store.acknowledgeInboxResolution(item.id)
     toast('ok', decision === 'answer' && answer === skippedQuestionResponse ? 'Question skipped.' : resolutionToast(item, decision))
     await Promise.allSettled([authority.store.load('inbox'), reload('foreground')])
   } catch (cause) {
@@ -275,7 +355,7 @@ async function dismissAll(): Promise<void> {
 
 function resolutionToast(item: InboxItem, decision: InboxDecision): string {
   if (decision === 'approve') return item.kind === 'change' ? 'Approved — the change is applied.' : 'Approved — the run is resuming.'
-  if (decision === 'answer') return 'Answered — the run is resuming.'
+  if (decision === 'answer') return item.runID ? 'Answered — the run is resuming.' : 'Answer recorded.'
   if (item.kind === 'question') {
     return item.runID ? 'Dismissed. The run stays paused until you answer or cancel it from its page.' : 'Dismissed.'
   }
@@ -316,6 +396,9 @@ watch(() => [props.store, props.api, props.agent] as const, () => {
   backgroundRefreshQueued = false
   if (refreshTimer) window.clearTimeout(refreshTimer)
   refreshTimer = 0
+  section.value = props.activityTab ?? 'runs'
+  selectedInboxID.value = viewingInbox.value ? pending.value[0]?.id ?? '' : ''
+  mobileQueue.value = false
   runs.value = []
   tablePage.value = 1
   tableQuery.value = ''
@@ -350,121 +433,177 @@ onBeforeUnmount(() => {
       <button
         class="k-btn k-btn--text agents-runs-refresh"
         type="button"
-        aria-label="Refresh runs"
-        :disabled="loading && refreshMode === 'foreground'"
-        :aria-busy="loading && refreshMode === 'foreground' || undefined"
-        @click="reload('foreground')"
+        :aria-label="viewingInbox ? 'Refresh inbox' : 'Refresh runs'"
+        :disabled="viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground'"
+        :aria-busy="(viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground') || undefined"
+        @click="viewingInbox ? store.load('inbox') : reload('foreground')"
       >
-        <RefreshCw :class="{ 'k-spin': loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" />
-        {{ loading && refreshMode === 'foreground' ? 'Refreshing…' : 'Refresh' }}
+        <RefreshCw :class="{ 'k-spin': viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" />
+        {{ (viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground') ? 'Refreshing…' : 'Refresh' }}
       </button>
     </template>
-    <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
-      <span>{{ inboxSlice.error }}</span>
-      <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
-    </div>
-    <template v-else>
-      <div v-if="inboxSlice.error" class="agents-state agents-state-error" role="status">
-        <span>Showing the last loaded data. {{ inboxSlice.error }}</span>
+    <Tabs v-if="!agent" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
+    <template v-if="agent || viewingInbox">
+      <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+        <span>{{ inboxSlice.error }}</span>
         <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
       </div>
-      <section v-if="pending.length" class="agents-approvals">
-        <div class="agents-attention-head">
-          <component :is="agent ? 'h3' : 'h2'" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</component>
-          <button
-            v-if="pending.length > 1 || bulkDismiss"
-            class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
-            type="button"
-            :disabled="bulkDismiss !== null"
-            :aria-busy="bulkDismiss !== null || undefined"
-            @click="dismissAll"
-          ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
+      <template v-else>
+        <div v-if="inboxSlice.error" class="agents-state agents-state-error" role="status">
+          <span>Showing the last loaded data. {{ inboxSlice.error }}</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" @click="store.load('inbox')">Retry</button>
         </div>
-        <div v-for="item in pending" :key="item.id" :class="item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'">
-          <div class="agents-approval-body">
-            <div v-if="item.kind !== 'question'" class="agents-approval-prompt">{{ item.prompt }}</div>
-            <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
-            <div class="agents-approval-meta">
-              <span class="k-badge agents-badge">{{ item.agentName }}</span>
-              <span class="muted">{{ fmtTime(item.createdAt) }}</span>
-              <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
+        <p v-if="viewingInbox && !inboxSlice.hasSnapshot && inboxSlice.loading" class="agents-inbox-empty" role="status">Loading inbox…</p>
+        <p v-else-if="viewingInbox && !pending.length" ref="inboxEmpty" class="agents-inbox-empty" tabindex="-1">You’re all caught up.</p>
+        <section
+          v-if="pending.length"
+          class="agents-approvals"
+          :class="{ 'agents-inbox-review': viewingInbox, 'agents-inbox-review--queue': viewingInbox && mobileQueue }"
+          aria-label="Pending requests"
+        >
+          <div v-if="viewingInbox" ref="inboxQueue" class="agents-inbox-queue">
+            <ul class="agents-inbox-list">
+              <li v-for="item in pending" :key="item.id">
+                <button
+                  class="agents-inbox-row"
+                  type="button"
+                  :data-inbox-id="item.id"
+                  :aria-current="selectedInboxItem?.id === item.id ? 'true' : undefined"
+                  @click="selectInboxItem(item.id)"
+                >
+                  <component :is="item.kind === 'question' ? CircleHelp : ShieldCheck" :size="17" :stroke-width="1.75" aria-hidden="true" />
+                  <span class="agents-inbox-row-copy">
+                    <span class="agents-inbox-prompt">{{ inboxPreview(item) }}</span>
+                    <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
+                  </span>
+                  <ChevronRight :size="14" aria-hidden="true" />
+                </button>
+              </li>
+            </ul>
+          </div>
+          <div :class="viewingInbox ? 'agents-inbox-review-tools' : 'agents-inbox-legacy-detail'">
+            <div v-if="agent || pending.length > 1 || bulkDismiss" class="agents-attention-head">
+              <h3 v-if="agent" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h3>
+              <button
+                v-if="pending.length > 1 || bulkDismiss"
+                class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
+                type="button"
+                :disabled="bulkDismiss !== null"
+                :aria-busy="bulkDismiss !== null || undefined"
+                @click="dismissAll"
+              ><X :stroke-width="1.75" aria-hidden="true" /> {{ bulkDismiss ? `Dismissing ${bulkDismiss.done} of ${bulkDismiss.total}…` : 'Dismiss all' }}</button>
             </div>
           </div>
-          <div v-if="item.kind !== 'question'" class="agents-approval-actions">
-            <!--
-              A change is a self-configuration edit a harness session asked
-              for. It parks no run: approving it is what applies it.
-            -->
-            <template v-if="item.kind === 'change'">
-              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Applying…' : 'Apply change' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
+          <div
+            v-for="item in inboxDetails"
+            :key="item.id"
+            :class="viewingInbox ? 'agents-inbox-detail' : item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'"
+          >
+            <template v-if="viewingInbox">
+              <div class="agents-inbox-mobile-nav">
+                <button class="k-btn k-btn--ghost secondary" type="button" @click="showInboxQueue">
+                  <ArrowLeft :size="16" aria-hidden="true" /> All requests
+                </button>
+                <span class="agents-inbox-meta">Request {{ selectedInboxIndex + 1 }} of {{ pending.length }}</span>
+              </div>
+              <div :ref="el => inboxDetail = el as HTMLElement | null" class="agents-inbox-detail-heading" tabindex="-1">
+                <span class="agents-inbox-meta">{{ item.agentName }} · {{ inboxKindLabel(item) }} · {{ fmtTime(item.createdAt) }}</span>
+                <h2 v-if="item.kind !== 'question' || !item.payload?.questions?.length">{{ item.prompt }}</h2>
+              </div>
             </template>
-            <template v-else-if="item.kind === 'approval'">
-              <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
-              <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
-            </template>
+            <div :class="viewingInbox ? 'agents-inbox-detail-content' : 'agents-inbox-legacy-detail'">
+              <div v-if="!viewingInbox || item.kind !== 'question' || item.runID" class="agents-approval-body">
+                <div v-if="item.kind !== 'question' && !viewingInbox" class="agents-approval-prompt">{{ item.prompt }}</div>
+                <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
+                <div class="agents-approval-meta">
+                  <template v-if="!viewingInbox">
+                    <span class="k-badge agents-badge">{{ item.agentName }}</span>
+                    <span class="muted">{{ fmtTime(item.createdAt) }}</span>
+                  </template>
+                  <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
+                </div>
+              </div>
+              <div v-if="item.kind !== 'question'" class="agents-approval-actions">
+                <!--
+                  A change is a self-configuration edit a harness session asked
+                  for. It parks no run: approving it is what applies it.
+                -->
+                <template v-if="item.kind === 'change'">
+                  <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Applying…' : 'Apply change' }}</button>
+                  <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
+                </template>
+                <template v-else-if="item.kind === 'approval'">
+                  <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
+                  <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
+                </template>
+              </div>
+              <AgentQuestionCard
+                v-else
+                :question-id="item.id"
+                :prompt="item.prompt"
+                :questions="item.payload?.questions"
+                :blocking="!!item.runID"
+                :busy="resolvingInbox.get(item.id) === 'answer'"
+                :disabled="locked(item.id)"
+                @answer="response => resolve(item, 'answer', response)"
+              />
+            </div>
           </div>
-          <AgentQuestionCard
-            v-else
-            :question-id="item.id"
-            :prompt="item.prompt"
-            :busy="resolvingInbox.get(item.id) === 'answer'"
-            :disabled="locked(item.id)"
-            @answer="response => resolve(item, 'answer', response)"
-          />
-        </div>
-      </section>
+        </section>
+      </template>
     </template>
 
-    <ResourceTable
-      :columns="columns"
-      :rows="tableRows"
-      aria-label="Runs"
-      variant="queryable"
-      row-key="id"
-      :loaded="loaded"
-      :loading="loading"
-      :refresh-mode="refreshMode"
-      :error="error"
-      :stale="loaded && !!error"
-      retryable
-      searchable
-      search-placeholder="Search runs…"
-      :search-keys="searchKeys"
-      :filters="filters"
-      v-model:filter-values="tableFilters"
-      pagination-mode="client"
-      paginated
-      v-model:page="tablePage"
-      v-model:page-size="tablePageSize"
-      v-model:query="tableQuery"
-      :page-size-options="[25, 50, 100]"
-      empty-text="No runs yet. Chat with an agent or fire a schedule to see one here."
-      filter-empty-text="No runs match these filters."
-      :interactive="true"
-      :row-aria-label="row => `Open run ${String(row.id)}`"
-      @retry="reload('foreground')"
-      @row-click="openRun"
-    >
-      <!--
-        Both lines are inline content of the kit's primary value, not nested
-        blocks: the kit truncates and measures its own line boxes, so a block
-        wrapper would neither ellipsize nor trigger the disclosure tooltip.
-      -->
-      <template #input="{ row }">
-        <strong class="agents-run-preview">{{ row.input }}</strong>
-        <template v-if="!agent"><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
-      </template>
-      <template #trigger="{ row }">
-        <span class="agents-run-cell">
-          <span><span class="mono">{{ row.trigger }}</span><span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span></span>
-          <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
-        </span>
-      </template>
-      <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></template>
-      <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
-      <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
-      <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
-    </ResourceTable>
+    <div v-show="!viewingInbox" class="agents-activity-run-history">
+      <ResourceTable
+        :columns="columns"
+        :rows="tableRows"
+        aria-label="Runs"
+        variant="queryable"
+        row-key="id"
+        :loaded="loaded"
+        :loading="loading"
+        :refresh-mode="refreshMode"
+        :error="error"
+        :stale="loaded && !!error"
+        retryable
+        searchable
+        search-placeholder="Search runs…"
+        :search-keys="searchKeys"
+        :filters="filters"
+        v-model:filter-values="tableFilters"
+        pagination-mode="client"
+        paginated
+        v-model:page="tablePage"
+        v-model:page-size="tablePageSize"
+        v-model:query="tableQuery"
+        :page-size-options="[25, 50, 100]"
+        empty-text="No runs yet. Chat with an agent or fire a schedule to see one here."
+        filter-empty-text="No runs match these filters."
+        :interactive="true"
+        :row-aria-label="row => `Open run ${String(row.id)}`"
+        @retry="reload('foreground')"
+        @row-click="openRun"
+      >
+        <!--
+          Both lines are inline content of the kit's primary value, not nested
+          blocks: the kit truncates and measures its own line boxes, so a block
+          wrapper would neither ellipsize nor trigger the disclosure tooltip.
+        -->
+        <template #input="{ row }">
+          <strong class="agents-run-preview">{{ row.input }}</strong>
+          <template v-if="!agent"><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
+        </template>
+        <template #trigger="{ row }">
+          <span class="agents-run-cell">
+            <span><span class="mono">{{ row.trigger }}</span><span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span></span>
+            <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
+          </span>
+        </template>
+        <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></template>
+        <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
+        <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
+        <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
+      </ResourceTable>
+    </div>
   </component>
 </template>

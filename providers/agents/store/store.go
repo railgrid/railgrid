@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -34,6 +35,9 @@ var ErrSessionCheckpointStale = fmt.Errorf("session compaction checkpoint is sta
 // ErrSessionNotFound means a transcript session has no persisted user message
 // to associate with a title, or its first-message coordinate is no longer live.
 var ErrSessionNotFound = fmt.Errorf("session not found")
+
+// ErrRunClaimConflict means the run no longer matches the claim conditions.
+var ErrRunClaimConflict = errors.New("run is no longer claimable")
 
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
@@ -555,8 +559,20 @@ const (
 	InboxStateAnswered InboxItemState = "answered"
 )
 
-// InboxItem is one pending approval or question, resolvable from the portal or
-// a channel. Resolving it resumes the referenced run's checkpoint.
+// ErrInboxAlreadyResolved indicates the item cannot accept this resolution.
+var ErrInboxAlreadyResolved = errors.New("inbox item is no longer pending")
+
+// InboxResolution controls which existing states a resolution may update.
+type InboxResolution struct {
+	// PendingOnly is used by run cleanup to preserve a concurrent reply.
+	PendingOnly bool
+	// QuestionPayload gates a user resolution on question state and merges its
+	// metadata. A non-nil empty map supports legacy text replies and dismissal.
+	QuestionPayload map[string]any
+}
+
+// InboxItem is one approval or question, resolvable from the portal or a channel.
+// A matching resolution resumes its run when RunID is set.
 type InboxItem struct {
 	ID        string         `json:"id"`
 	AgentName string         `json:"agentName"`
@@ -847,8 +863,9 @@ type Store interface {
 	GetRun(ctx context.Context, scope Scope, id string) (Run, error)
 	// ClaimRun atomically moves a pending/resumable run to Running. A canceled or
 	// terminal run cannot be claimed, so an approval racing with cancel cannot
-	// revive work after the cancel flag or terminal phase is recorded.
-	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time) (Run, error)
+	// revive work after the cancel flag or terminal phase is recorded. When
+	// supplied, inboxID must match the parked checkpoint atomically.
+	ClaimRun(ctx context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error)
 	// ClaimRecovery claims exactly the observed Running revision and increments its
 	// recovery attempt atomically. Stale, cancelled and terminal runs are rejected.
 	ClaimRecovery(ctx context.Context, scope Scope, id string, observed time.Time, now time.Time) (Run, error)
@@ -898,7 +915,7 @@ type Store interface {
 	AddInboxItem(ctx context.Context, scope Scope, item InboxItem) error
 	GetInboxItem(ctx context.Context, scope Scope, id string) (InboxItem, error)
 	ListInbox(ctx context.Context, scope Scope, state InboxItemState) ([]InboxItem, error)
-	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error)
+	ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error)
 
 	// Harness MCP sessions: the bearer a remote harness turn presents to the
 	// agent's own configuration endpoint. Only the token's SHA-256 is kept.

@@ -248,7 +248,7 @@ func (s *Server) channelCommand(ctx context.Context, scope store.Scope, dyn dyna
 		// The reply (or the denial's fallout) arrives on this channel when the
 		// resumed run finishes.
 		access := runAccess{Creds: vwSecrets{dyn}, CR: vwCR{dyn}, ClusterID: scope.ClusterID}
-		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, note)
+		go s.resumeApprovedRun(ctx, wsScope, item, access, state != store.InboxStateDenied, note)
 		return " Resuming the run…"
 	}
 	pending := func() []store.InboxItem {
@@ -402,7 +402,7 @@ func (s *Server) channelCommand(ctx context.Context, scope store.Scope, dyn dyna
 		s.events.publish(wsScope, "inbox", map[string]any{
 			"id": resolved.ID, "state": string(resolved.State), "agent": resolved.AgentName, "runID": resolved.RunID,
 		})
-		return "💬 Answered: " + safeTruncate(item.Prompt, 300) + resume(resolved, store.InboxStateAnswered, answer), true
+		return "💬 Answered: " + safeTruncate(item.Prompt, 300) + resume(resolved, store.InboxStateAnswered, resolved.Response), true
 	}
 	return "", false
 }

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { QuestionReply } from '../types'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   Check,
@@ -255,16 +256,17 @@ async function cancel(): Promise<void> {
   }
 }
 
-async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: string): Promise<void> {
+async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer', response?: QuestionReply): Promise<void> {
   if (resolvingInboxID.value) return
-  if (decision === 'answer' && !(response ?? '').trim()) return
+  const answer = typeof response === 'string' ? response.trim() : response
+  if (decision === 'answer' && !answer) return
   const authority = captureAuthority()
   const id = props.runId
   resolvingInboxID.value = inboxID
   resolvingDecision.value = decision
   try {
     await (decision === 'answer'
-      ? authority.api.resolveInbox(inboxID, 'answer', response!.trim())
+      ? authority.api.resolveInbox(inboxID, 'answer', answer)
       : authority.api.resolveInbox(inboxID, decision))
     if (!authorityIsCurrent(authority) || id !== props.runId) return
     toast('ok', decision === 'approve' ? 'Approved — the run is resuming.' : decision === 'answer' ? response === skippedQuestionResponse ? 'Question skipped — the run is resuming.' : 'Answered — the run is resuming.' : 'Denied.')
@@ -584,6 +586,7 @@ onBeforeUnmount(() => {
                 v-else-if="pendingQuestion && run.pending"
                 :question-id="run.pending.inboxID"
                 :prompt="run.pending.question"
+                :questions="run.pending.questions"
                 :busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'answer'"
                 :disabled="!!resolvingInboxID"
                 @answer="response => resolve(run!.pending!.inboxID, 'answer', response)"

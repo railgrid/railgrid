@@ -12,11 +12,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/railgrid/provider-agents/store"
+
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // listInboxItems returns one agent's approvals + questions queue — the `inbox`
@@ -49,8 +52,9 @@ func (s *Server) listInboxItems(w http.ResponseWriter, r *http.Request) {
 
 type resolveInboxRequest struct {
 	// Decision: approve | deny | answer.
-	Decision string `json:"decision"`
-	Response string `json:"response,omitempty"`
+	Decision string             `json:"decision"`
+	Response string             `json:"response,omitempty"`
+	Answers  map[string]*string `json:"answers,omitempty"`
 }
 
 const approvalDisclosureUnavailableMessage = "Approval details are unavailable or malformed. Deny this request or inspect the run."
@@ -72,13 +76,42 @@ func approvalDisclosureAvailable(item store.InboxItem) bool {
 // disclosure and, critically, completes it before any inbox mutation. Denials
 // remain available when the disclosure is unavailable so the user can stop the
 // requested action safely.
-func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id string, state store.InboxItemState, response string, now time.Time) (store.InboxItem, error) {
-	if state != store.InboxStateApproved {
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
-	}
+func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id string, state store.InboxItemState, response string, now time.Time, answerPayload ...map[string]any) (store.InboxItem, error) {
 	item, err := s.store.GetInboxItem(ctx, scope, id)
 	if err != nil {
 		return store.InboxItem{}, err
+	}
+	if item.Kind == store.InboxKindQuestion {
+		if state != store.InboxStateAnswered && state != store.InboxStateDenied {
+			return store.InboxItem{}, &requestError{code: http.StatusBadRequest, reason: "InvalidQuestionDecision", msg: "questions can only be answered or dismissed"}
+		}
+		payload := map[string]any{}
+		if len(answerPayload) > 0 {
+			payload = answerPayload[0]
+		}
+		resolved, err := s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: payload})
+		if state == store.InboxStateAnswered && errors.Is(err, store.ErrInboxAlreadyResolved) {
+			// The first request may have saved its reply without dispatching a
+			// resume. Use the saved reply if this exact question still parks
+			// the run. ClaimRun fences concurrent and delayed dispatches.
+			if saved, readErr := s.store.GetInboxItem(ctx, scope, id); readErr == nil && saved.State == store.InboxStateAnswered && saved.RunID != "" {
+				agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: saved.AgentName}
+				run, runErr := s.store.GetRun(ctx, agentScope, saved.RunID)
+				if runErr == nil && run.Phase == store.RunPhasePendingApproval && !run.CancelRequested {
+					var checkpoint runCheckpoint
+					if json.Unmarshal(run.Checkpoint, &checkpoint) == nil && checkpoint.InboxID == saved.ID {
+						return saved, nil
+					}
+				}
+			}
+		}
+		return resolved, err
+	}
+	if state == store.InboxStateAnswered {
+		return store.InboxItem{}, &requestError{code: http.StatusBadRequest, reason: "InvalidInboxDecision", msg: "only questions accept answers"}
+	}
+	if state != store.InboxStateApproved {
+		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
 	}
 	if item.Kind == store.InboxKindApproval && !approvalDisclosureAvailable(item) {
 		return store.InboxItem{}, &requestError{
@@ -100,7 +133,7 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 		}
 		response = strings.TrimSpace(strings.TrimSpace(response) + "\n" + result)
 	}
-	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now)
+	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
 }
 
 // resolutionResumesRun reports whether resolving an item this way continues the
@@ -150,14 +183,40 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// The item id is a tail segment, not an object the gates saw, so the agent
 	// it belongs to is checked against the one that WAS gated — before anything
 	// is mutated.
-	if existing, gerr := s.store.GetInboxItem(r.Context(), wsScope, itemID); gerr != nil || existing.AgentName != r.PathValue("name") {
+	existing, gerr := s.store.GetInboxItem(r.Context(), wsScope, itemID)
+	if gerr != nil || existing.AgentName != r.PathValue("name") {
 		writeStatus(w, http.StatusNotFound, "NotFound", "no such inbox item on this agent")
 		return
 	}
-	item, err := s.resolveInboxDecision(r.Context(), wsScope, itemID, state, req.Response, time.Now().UTC())
+	var payload []map[string]any
+	if state == store.InboxStateAnswered && req.Answers == nil && strings.TrimSpace(req.Response) == "" {
+		writeStatus(w, http.StatusBadRequest, "BadRequest", "answer text is required")
+		return
+	}
+	if req.Answers != nil {
+		response, err := formatQuestionAnswers(existing, req.Answers)
+		if err != nil || state != store.InboxStateAnswered {
+			writeStatus(w, http.StatusBadRequest, "BadRequest", "provide one answer or skip for each question")
+			return
+		}
+		req.Response = response
+		payload = append(payload, map[string]any{"answers": req.Answers})
+	}
+	var emit func(string, map[string]any)
+	ctx := r.Context()
+	if existing.RunID != "" && existing.Kind == store.InboxKindQuestion && state == store.InboxStateAnswered &&
+		r.Header.Get("Accept") == "text/event-stream" {
+		ctx, emit = chatSSE(w, r)
+		if emit == nil {
+			return
+		}
+	}
+	item, err := s.resolveInboxDecision(r.Context(), wsScope, itemID, state, req.Response, time.Now().UTC(), payload...)
 	if err != nil {
 		if _, ok := errors.AsType[*requestError](err); ok {
 			writeUpdateError(w, err)
+		} else if errors.Is(err, store.ErrInboxAlreadyResolved) {
+			writeStatus(w, http.StatusConflict, "Conflict", err.Error())
 		} else if strings.Contains(err.Error(), "not found") {
 			writeStatus(w, http.StatusNotFound, "NotFound", err.Error())
 		} else {
@@ -172,14 +231,61 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// a verb carries no caller credential, and the edges family dials the
 	// hub's aggregate MCP endpoint as the calling user.
 	// An APPROVAL resumes on a verdict, and a QUESTION bound to a run resumes on
-	// an answer. The second is what a harness's own request-user-input parks on
-	// (see postHarnessQuestion): the run is waiting in place, and the answer is
-	// the only thing that can continue it. A free-standing question — the `ask`
-	// tool, which deliberately does not block a run — carries no run id and
-	// resumes nothing.
+	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
 		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
-		go s.resumeApprovedRun(wsScope, item, access, state != store.InboxStateDenied, req.Response)
+		if emit != nil {
+			started := false
+			res, err := s.continueInboxRun(ctx, wsScope, item, access, true, item.Response, func(event string, data map[string]any) {
+				if event == "start" {
+					started = true
+				}
+				emit(event, data)
+			})
+			if !started {
+				if errors.Is(err, errResumeConflict) {
+					writeStatus(w, http.StatusConflict, "Conflict", err.Error())
+				} else {
+					writeStatus(w, http.StatusInternalServerError, "InternalError", "could not resume this run")
+				}
+				return
+			}
+			frame := s.chatTerminalFrame(item.RunID, res, err)
+			emit(frame.Event, frame.Data)
+			return
+		}
+		go s.resumeApprovedRun(r.Context(), wsScope, item, access, state != store.InboxStateDenied, item.Response)
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func formatQuestionAnswers(item store.InboxItem, answers map[string]*string) (string, error) {
+	raw, err := json.Marshal(item.Payload["questions"])
+	if err != nil {
+		return "", err
+	}
+	var questions []runnerharness.Question
+	if err := json.Unmarshal(raw, &questions); err != nil {
+		return "", err
+	}
+	if len(questions) == 0 || len(questions) != len(answers) {
+		return "", fmt.Errorf("answer count does not match question count")
+	}
+	var reply strings.Builder
+	for _, question := range questions {
+		answer, ok := answers[question.ID]
+		if !ok {
+			return "", fmt.Errorf("missing answer for question %q", question.ID)
+		}
+		value := "(skipped by the user)"
+		if answer != nil {
+			*answer = strings.TrimSpace(*answer)
+			if *answer == "" || len(*answer) > 8192 {
+				return "", fmt.Errorf("invalid answer for question %q", question.ID)
+			}
+			value = *answer
+		}
+		fmt.Fprintf(&reply, "%s\n%s\n\n", question.Prompt, value)
+	}
+	return strings.TrimSpace(reply.String()), nil
 }

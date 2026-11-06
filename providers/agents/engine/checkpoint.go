@@ -15,6 +15,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/backend"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // InterruptError is returned by a tool executor to pause the run instead of
@@ -29,21 +31,24 @@ type InterruptError = backend.GateError
 // Interrupt is the engine's paused state: why it stopped plus the Checkpoint
 // needed to resume.
 type Interrupt struct {
-	Tool       string     `json:"tool"`
-	Args       string     `json:"args"`
-	RequestID  string     `json:"requestID"`
-	Checkpoint Checkpoint `json:"checkpoint"`
+	Tool       string             `json:"tool"`
+	Args       string             `json:"args"`
+	RequestID  string             `json:"requestID"`
+	Question   string             `json:"question,omitempty"`
+	Questions  []harness.Question `json:"questions,omitempty"`
+	Checkpoint Checkpoint         `json:"checkpoint"`
 }
 
 // Checkpoint is the serializable mid-run state of a tool loop: the full wire
 // conversation, the tool calls not yet executed (the first one is the gated
 // call), streamed content so far, accumulated usage, and the loop iteration.
 type Checkpoint struct {
-	Messages []CheckpointMessage `json:"messages"`
-	Pending  []PendingCall       `json:"pending"`
-	Content  string              `json:"content,omitempty"`
-	Usage    Usage               `json:"usage"`
-	Iter     int                 `json:"iter"`
+	AwaitingReply bool                `json:"awaitingReply,omitempty"`
+	Messages      []CheckpointMessage `json:"messages"`
+	Pending       []PendingCall       `json:"pending"`
+	Content       string              `json:"content,omitempty"`
+	Usage         Usage               `json:"usage"`
+	Iter          int                 `json:"iter"`
 }
 
 // PendingCall is one tool call the model requested that has not executed yet.

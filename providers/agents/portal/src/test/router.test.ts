@@ -20,6 +20,13 @@ it('resolves a question deep link independently of the last viewed chat', () => 
   expect(questionRunForSubPath('/activity/foreign%2Frun/question')).toBeNull()
 })
 
+it('opens the Activity inbox from its link and keeps Activity selected', () => {
+  const route = parseHash('#/inbox')
+  expect(route).toEqual({ kind: 'menu', menu: 'activity', activityTab: 'inbox' })
+  expect(activeMenu(route)).toBe('activity')
+  expect(hashFor(route)).toBe('#/inbox')
+})
+
 describe('create routes', () => {
   it.each<[string, Route]>([
     ['#/create/agent', { kind: 'create', resource: 'agent' }],

@@ -20,6 +20,7 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
+	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 
 	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/llm"
@@ -347,8 +348,11 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	f := &fakeRunner{
 		receipt: runner.Receipt{
 			AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseNeedsInput, SessionID: "sess-1",
-			Blocker:       "Claude Code asked a product question",
-			Clarification: &runner.Clarification{ID: "clar-7", Text: "Should I bump the minor or the patch version?"},
+			Blocker: "Claude Code asked a product question",
+			Clarification: &runner.Clarification{
+				ID: "clar-7", Text: "Should I bump the minor or the patch version?",
+				Questions: []runnerharness.Question{{ID: "version", Prompt: "Which version?"}},
+			},
 		},
 		events: []runner.Event{
 			event(1, runner.EventProgress, "reading the changelog", ""),
@@ -370,6 +374,9 @@ func TestNeedsInputParksWithTheQuestion(t *testing.T) {
 	}
 	if !strings.Contains(out.Parked.Question, "minor or the patch") {
 		t.Fatalf("question = %q, want the clarification text", out.Parked.Question)
+	}
+	if len(out.Parked.Questions) != 1 || out.Parked.Questions[0].ID != "version" {
+		t.Fatalf("structured questions were lost: %+v", out.Parked.Questions)
 	}
 	// The park carries no RequestID: the provider files the inbox item, because
 	// reaching the store is its side of the seam.

@@ -472,7 +472,7 @@ func TestPostgres_InboxMemoryTenantRefTeardown(t *testing.T) {
 	if err != nil || len(pending) != 1 || pending[0].Payload["tool"] != "github__merge" {
 		t.Fatalf("inbox list: %v %+v", err, pending)
 	}
-	if _, err := ps.ResolveInboxItem(ctx, sc, itemID, InboxStateApproved, "ok", now); err != nil {
+	if _, err := ps.ResolveInboxItem(ctx, sc, itemID, InboxStateApproved, "ok", now, InboxResolution{}); err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 

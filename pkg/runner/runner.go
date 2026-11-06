@@ -33,6 +33,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1107,7 +1108,7 @@ func (r *Runner) execute(ctx context.Context, launch harness.Launch, attemptID s
 		delete(r.running, attemptID)
 		delete(r.shutdown, attemptID)
 		if result.Clarification != nil {
-			attempt.Receipt.Clarification = clarificationFromHarness(result.Clarification)
+			attempt.Receipt.Clarification = cloneClarification(result.Clarification)
 		}
 		r.finishLocked(attempt, PhaseNeedsInput, result.Blocker, nil)
 		r.mu.Unlock()
@@ -1203,7 +1204,7 @@ func (r *Runner) handleHarnessEvent(attemptID string, event harness.Event) error
 		}
 	}
 	if event.Clarification != nil && isClarificationEvent(event.Type) && validHarnessClarification(event.Clarification) {
-		attempt.Receipt.Clarification = clarificationFromHarness(event.Clarification)
+		attempt.Receipt.Clarification = cloneClarification(event.Clarification)
 	}
 	if err := r.persistLocked(); err != nil {
 		return fail(err)
@@ -1933,6 +1934,10 @@ func cloneClarification(value *Clarification) *Clarification {
 		return nil
 	}
 	copy := *value
+	copy.Questions = slices.Clone(value.Questions)
+	for i := range copy.Questions {
+		copy.Questions[i].Options = slices.Clone(value.Questions[i].Options)
+	}
 	return &copy
 }
 
@@ -1949,13 +1954,6 @@ func validClarificationID(value string) bool {
 
 func isClarificationEvent(eventType string) bool {
 	return eventType == EventNeedsInput || eventType == "item/tool/requestUserInput"
-}
-
-func clarificationFromHarness(value *harness.Clarification) *Clarification {
-	if value == nil {
-		return nil
-	}
-	return &Clarification{ID: value.ID, Text: value.Text}
 }
 
 func boundedMessage(value string) string {

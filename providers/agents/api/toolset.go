@@ -11,6 +11,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -63,6 +64,7 @@ func defaultFamilies(_ bool) []string {
 // spec.instructions) for folding into the system context, and a closer.
 func (s *Server) buildToolset(ctx context.Context, deps tools.Deps, run taskRun) ([]backend.Tool, string, func()) {
 	trigger := run.Trigger
+	deps.AskInChat = trigger == agentsv1alpha1.RunTriggerChat && run.Worker == nil && run.ParentRunID == ""
 	interactive := isInteractive(trigger)
 	// A worker inherits its parent's approval class rather than its own trigger's:
 	// spawn is unattended, but a worker of an interactive chat run should be gated
@@ -387,6 +389,10 @@ func (s *Server) wrapTool(t backend.Tool, deps tools.Deps, run taskRun, trigger 
 		}
 		started := time.Now()
 		obs, err := inner(ctx, argsJSON)
+		// A question has no result to audit until the user answers it.
+		if gate, ok := errors.AsType[*backend.GateError](err); ok && gate.Question != "" {
+			return obs, err
+		}
 		outcome, errText := "ok", ""
 		if err != nil {
 			outcome, errText = "error", err.Error()

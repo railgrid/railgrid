@@ -38,6 +38,8 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/resulttypes"
+
+	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
 
 // Role constants for the conversation a turn runs over.
@@ -205,11 +207,17 @@ type GateError struct {
 	// so the approval the user gives authorizes that call and no other.
 	Tool string
 	Args string
+	// Question and Questions describe a request for a reply instead of approval.
+	Question  string
+	Questions []harness.Question
 	// RequestID references the approval request (inbox item) awaiting the user.
 	RequestID string
 }
 
 func (e *GateError) Error() string {
+	if e.Question != "" {
+		return "the run is waiting for a reply"
+	}
 	return fmt.Sprintf("tool %q requires user approval (request %s)", e.Tool, e.RequestID)
 }
 
@@ -351,7 +359,8 @@ type Parked struct {
 	// Question is what the turn is asking, when it parked on a question rather
 	// than on a gate. The provider posts it to the user's inbox and the answer
 	// comes back as Answer.Note.
-	Question string
+	Question  string
+	Questions []harness.Question
 	// RequestID references the approval request (inbox item) awaiting the user.
 	// A backend that parks on a gate it wrapped already has one; a backend that
 	// parks on a Question leaves it empty and the provider files the inbox item,

@@ -596,6 +596,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :store="store"
         :api="api"
         :authority-epoch="authorityEpoch"
+        :activity-tab="route.activityTab"
         @navigate="go"
       />
       <Connections
