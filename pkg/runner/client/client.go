@@ -34,6 +34,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -120,6 +121,21 @@ type Client struct {
 	basedAt time.Time
 	ttl     time.Duration
 	nowFn   func() time.Time
+}
+
+// InputUpload is one in-memory file in an input-files-v1 staging batch. The
+// caller owns the bytes; the client streams them directly to the runner.
+type InputUpload struct {
+	File runner.InputFile
+	Data []byte
+}
+
+// InputStager is a capability check scoped to one dispatch. PrepareInputStager
+// verifies the runner once; StageInputs can then upload the whole attempt
+// manifest without repeating readiness calls for every file.
+type InputStager struct {
+	client *Client
+	base   string
 }
 
 // Option adjusts how New validates the transport. There is deliberately no
@@ -346,7 +362,146 @@ func (c *Client) Start(ctx context.Context, req runner.StartRequest) (runner.Rec
 	if err := validateMutation(req.RequestID, req.TaskID, req.AttemptID, req.AttemptEpoch); err != nil {
 		return runner.Receipt{}, err
 	}
+	if err := runner.ValidateInputFiles(req.InputFiles); err != nil {
+		return runner.Receipt{}, err
+	}
+	if len(req.InputFiles) > 0 {
+		if err := c.requireInputFiles(ctx); err != nil {
+			return runner.Receipt{}, err
+		}
+	}
 	return c.mutate(ctx, "/runner/v1/attempts", req)
+}
+
+// StageInput streams one attempt file to the runner before Start. The file
+// metadata is carried in a bounded header, while the bytes stay out of JSON
+// bodies and durable runner state. Repeating the same upload is safe; changing
+// the bytes or metadata under the same attempt/file identity is refused.
+func (c *Client) StageInput(ctx context.Context, attemptID string, file runner.InputFile, body io.Reader) error {
+	if !identifier.MatchString(attemptID) {
+		return errors.New("runner client: a valid attempt ID is required")
+	}
+	if err := runner.ValidateInputFile(file); err != nil {
+		return err
+	}
+	if body == nil {
+		return errors.New("runner client: an input reader is required")
+	}
+	stager, err := c.PrepareInputStager(ctx)
+	if err != nil {
+		return err
+	}
+	return c.stageInputAt(ctx, stager.base, attemptID, file, body)
+}
+
+// StageInputs validates the complete manifest and its bytes before the first
+// upload, then stages the files through a dispatch-scoped capability check.
+func (s *InputStager) StageInputs(ctx context.Context, attemptID string, uploads []InputUpload) error {
+	if s == nil || s.client == nil || s.base == "" {
+		return errors.New("runner client: an input stager is required")
+	}
+	if len(uploads) == 0 {
+		return nil
+	}
+	if !identifier.MatchString(attemptID) {
+		return errors.New("runner client: a valid attempt ID is required")
+	}
+	files := make([]runner.InputFile, len(uploads))
+	for i, upload := range uploads {
+		files[i] = upload.File
+	}
+	if err := runner.ValidateInputFiles(files); err != nil {
+		return err
+	}
+	for _, upload := range uploads {
+		if int64(len(upload.Data)) != upload.File.Size {
+			return fmt.Errorf("runner client: input %q does not match its declared size", upload.File.ID)
+		}
+		digest := sha256.Sum256(upload.Data)
+		if upload.File.Digest != "sha256:"+hex.EncodeToString(digest[:]) {
+			return fmt.Errorf("runner client: input %q does not match its declared digest", upload.File.ID)
+		}
+	}
+	for _, upload := range uploads {
+		if err := s.client.stageInputAt(ctx, s.base, attemptID, upload.File, bytes.NewReader(upload.Data)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// StageInputs stages a complete batch using one readiness and capability
+// check. Callers that need to validate capability before creating durable run
+// state should retain the returned InputStager for that dispatch instead.
+func (c *Client) StageInputs(ctx context.Context, attemptID string, uploads []InputUpload) error {
+	if len(uploads) == 0 {
+		return nil
+	}
+	stager, err := c.PrepareInputStager(ctx)
+	if err != nil {
+		return err
+	}
+	return stager.StageInputs(ctx, attemptID, uploads)
+}
+
+// PrepareInputStager verifies readiness and input-files-v1 once and returns a
+// short-lived uploader for one dispatch. It deliberately does not cache the
+// capability on Client, whose Capabilities method reports current runner state.
+func (c *Client) PrepareInputStager(ctx context.Context) (*InputStager, error) {
+	base, err := c.discover(ctx)
+	if err != nil {
+		return nil, err
+	}
+	caps, err := c.capabilities(ctx, base)
+	if err != nil {
+		return nil, err
+	}
+	if !caps.Ready {
+		message := "runner is not ready to stage input files"
+		if len(caps.Reasons) > 0 {
+			message += ": " + strings.Join(caps.Reasons, "; ")
+		}
+		return nil, &runner.Error{Code: runner.ErrorUnavailable, Retryable: true, Message: message}
+	}
+	for _, capability := range caps.Verification {
+		if capability == runner.InputFilesCapability {
+			return &InputStager{client: c, base: base}, nil
+		}
+	}
+	return nil, &runner.Error{Code: runner.ErrorUnsupportedCapability, Message: "runner does not support " + runner.InputFilesCapability}
+}
+
+func (c *Client) stageInputAt(ctx context.Context, base, attemptID string, file runner.InputFile, body io.Reader) error {
+	metadata, err := json.Marshal(file)
+	if err != nil {
+		return err
+	}
+	if len(metadata) > 4096 {
+		return errors.New("runner client: input metadata exceeds the 4KiB limit")
+	}
+	path := base + "/runner/v1/attempts/" + attemptID + "/inputs/" + file.ID
+	headers := make(http.Header)
+	headers.Set("Content-Type", "application/octet-stream")
+	headers.Set("X-Railgrid-Input-Metadata", base64.RawURLEncoding.EncodeToString(metadata))
+	resp, err := c.doReader(ctx, http.MethodPut, path, body, file.Size, headers)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+func (c *Client) requireInputFiles(ctx context.Context) error {
+	caps, err := c.Capabilities(ctx)
+	if err != nil {
+		return err
+	}
+	for _, capability := range caps.Verification {
+		if capability == runner.InputFilesCapability {
+			return nil
+		}
+	}
+	return &runner.Error{Code: runner.ErrorUnsupportedCapability, Message: "runner does not support " + runner.InputFilesCapability}
 }
 
 // Inspect reads the durable receipt of one attempt. It is the reconciliation
@@ -506,12 +661,29 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) (*htt
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.origin+path, reader)
+	headers := make(http.Header)
+	if body != nil {
+		headers.Set("Content-Type", "application/json")
+	}
+	length := int64(-1)
+	if body != nil {
+		length = int64(len(body))
+	}
+	return c.doReader(ctx, method, path, reader, length, headers)
+}
+
+func (c *Client) doReader(ctx context.Context, method, path string, body io.Reader, contentLength int64, headers http.Header) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.origin+path, body)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if body != nil && contentLength >= 0 {
+		req.ContentLength = contentLength
+	}
+	for name, values := range headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -222,6 +222,7 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 	if err := validateLaunch(launch); err != nil {
 		return result, err
 	}
+	launch.Instructions = harness.AppendInputFiles(launch.Instructions, launch.InputFiles)
 	if err := a.validateLaunchConfiguration(launch.Workdir); err != nil {
 		return result, err
 	}
