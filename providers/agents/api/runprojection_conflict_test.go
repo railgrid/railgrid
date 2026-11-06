@@ -13,6 +13,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +27,8 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-agents/store"
+
+	"github.com/railgrid/provider-sdk/dataplane"
 )
 
 func TestRunProjectionRetriesTheCreateFinalizerConflict(t *testing.T) {
@@ -296,10 +299,32 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 	item := store.InboxItem{
 		ID: "inbox-question", AgentName: run.AgentName, RunID: run.ID,
 		Kind: store.InboxKindQuestion, Prompt: "Where should the note go?",
+		Response: "Line guide",
+		Payload: map[string]any{
+			"questions": []map[string]any{{"id": "location", "prompt": "Where should the note go?"}},
+			"answers":   map[string]*string{"location": new("Line guide")},
+		},
 	}
 	checked := false
-	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{check: func() {
+	started := false
+	access := runAccess{CallerUser: "reviewer", CR: projectionResumeCR{checkContext: func(ctx context.Context) {
+		identity, ok := dataplane.ProxiedIdentityFrom(ctx)
+		if !ok || identity.User != "reviewer" || ctx.Err() != nil {
+			t.Fatalf("resume lost caller identity or inherited request cancellation: %v, %v", identity, ctx.Err())
+		}
+	}, check: func() {
 		checked = true
+		if !started {
+			t.Fatal("continuation began before the stream identified the run")
+		}
+	}}}
+	ctx, cancel := context.WithCancel(dataplane.WithProxiedIdentity(t.Context(), dataplane.ProxiedIdentity{User: "reviewer"}))
+	cancel()
+	_, err := s.continueInboxRun(ctx, scope, item, access, true, item.Response, func(event string, data map[string]any) {
+		if started || event != "start" || data["runID"] != run.ID || data["sessionID"] != run.SessionID || data["response"] != item.Response {
+			t.Fatalf("unexpected resume frame: %q, %v", event, data)
+		}
+		started = true
 		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 20, "")
 		if err != nil {
 			t.Fatal(err)
@@ -309,22 +334,26 @@ func TestQuestionResumeRecordsAnswerInConversation(t *testing.T) {
 		}
 		reply := page.Items[0]
 		if reply.Role != "user" || reply.Content != "Line guide" || reply.RunID != run.ID ||
-			reply.Metadata["questionPrompt"] != item.Prompt || reply.Metadata["actorID"] != "reviewer" {
+			reply.Metadata["questionPrompt"] != item.Prompt || reply.Metadata["actorID"] != "reviewer" ||
+			reply.Metadata["questions"] == nil || reply.Metadata["answers"] == nil {
 			t.Fatalf("unexpected question reply: %+v", reply)
 		}
-	}}}
-	s.resumeApprovedRun(scope, item, access, true, "Line guide")
-	if !checked {
-		t.Fatal("question resume did not reach its continuation boundary")
+	})
+	if err == nil || !checked {
+		t.Fatalf("question resume did not reach the fixture's failing continuation boundary: %v", err)
 	}
 }
 
 type projectionResumeCR struct {
 	fakeCR
-	check func()
+	check        func()
+	checkContext func(context.Context)
 }
 
-func (c projectionResumeCR) GetAgent(context.Context, string) (*agentsv1alpha1.Agent, error) {
+func (c projectionResumeCR) GetAgent(ctx context.Context, _ string) (*agentsv1alpha1.Agent, error) {
+	if c.checkContext != nil {
+		c.checkContext(ctx)
+	}
 	c.check()
 	return nil, errors.New("stop test after the projection boundary")
 }
@@ -355,4 +384,86 @@ func projectedObject(t *testing.T, dyn dynamic.Interface, id string) *unstructur
 
 func projectionConflict(id string) error {
 	return apierrors.NewConflict(schema.GroupResource{Group: agentsclient.RunGVR.Group, Resource: agentsclient.RunGVR.Resource}, id, errors.New("concurrent Run write"))
+}
+
+func TestQuestionGroupResolution(t *testing.T) {
+	s, scope, run := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
+	item := store.InboxItem{
+		ID: "question-group", AgentName: run.AgentName, RunID: run.ID, Kind: store.InboxKindQuestion, State: store.InboxStatePending,
+		Payload: map[string]any{"questions": []map[string]any{
+			{"id": "a", "prompt": "Where?"}, {"id": "b", "prompt": "Who?"}, {"id": "c", "prompt": "When?"},
+		}},
+	}
+	run.Checkpoint = []byte(`{"inboxID":"question-group"}`)
+	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.store.AddInboxItem(t.Context(), scope, item); err != nil {
+		t.Fatal(err)
+	}
+	answers := map[string]*string{"a": new("README"), "b": nil, "c": new("Monday")}
+	response, err := formatQuestionAnswers(item, answers)
+	if err != nil || response != "Where?\nREADME\n\nWho?\n(skipped by the user)\n\nWhen?\nMonday" {
+		t.Fatalf("formatted response = %q, err = %v", response, err)
+	}
+	resolved, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, response, time.Now(), map[string]any{"answers": answers})
+	if err != nil || resolved.Response != response || resolved.Payload["answers"] == nil {
+		t.Fatalf("resolved = %+v, err = %v", resolved, err)
+	}
+	retry, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now())
+	if err != nil || retry.Response != response {
+		t.Fatalf("retry did not return the original reply: %+v, %v", retry, err)
+	}
+	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateDenied, "via channel", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("late channel dismissal: %v", err)
+	}
+	run.Checkpoint = []byte(`{"inboxID":"next-question"}`)
+	if err := s.store.SaveRun(t.Context(), scope, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.ClaimRun(t.Context(), scope, run.ID, "retry", time.Now(), item.ID); err == nil {
+		t.Fatal("stale answer claimed a different checkpoint")
+	}
+	if _, err := s.resolveInboxDecision(t.Context(), scope, item.ID, store.InboxStateAnswered, "second reply", time.Now()); !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		t.Fatalf("stale reply retry: %v", err)
+	}
+	delete(answers, "b")
+	answers["wrong"] = nil
+	if _, err := formatQuestionAnswers(item, answers); err == nil {
+		t.Fatal("unknown question ID accepted")
+	}
+}
+
+type answerDuringCleanupStore struct {
+	store.Store
+	t *testing.T
+}
+
+func (s answerDuringCleanupStore) GetInboxItem(ctx context.Context, scope store.Scope, id string) (store.InboxItem, error) {
+	item, err := s.Store.GetInboxItem(ctx, scope, id)
+	if err == nil {
+		_, answerErr := s.ResolveInboxItem(ctx, scope, id, store.InboxStateAnswered, "User reply", time.Now(), store.InboxResolution{
+			QuestionPayload: map[string]any{"answers": map[string]string{"a": "User reply"}},
+		})
+		if answerErr != nil {
+			s.t.Fatal(answerErr)
+		}
+	}
+	return item, err
+}
+
+func TestClosingParkedQuestionPreservesConcurrentReply(t *testing.T) {
+	s, scope, run := newProjectionFixture(t, dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), store.RunPhasePendingApproval)
+	run.Checkpoint = []byte(`{"inboxID":"race-question"}`)
+	item := store.InboxItem{ID: "race-question", AgentName: run.AgentName, RunID: run.ID, Kind: store.InboxKindQuestion, State: store.InboxStatePending}
+	original := s.store
+	if err := original.AddInboxItem(t.Context(), scope, item); err != nil {
+		t.Fatal(err)
+	}
+	s.store = answerDuringCleanupStore{Store: original, t: t}
+	s.closeParkedInboxItem(t.Context(), scope, run, store.RunPhaseAborted, time.Now())
+	got, err := original.GetInboxItem(t.Context(), scope, item.ID)
+	if err != nil || got.Response != "User reply" || got.Payload["answers"] == nil {
+		t.Fatalf("concurrent answer was lost: %+v, %v", got, err)
+	}
 }

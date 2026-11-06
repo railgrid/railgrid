@@ -1,23 +1,70 @@
 <script setup lang="ts">
-import { computed, ref, useId, watch } from 'vue'
-import { CircleHelp, LoaderCircle, Pencil } from 'lucide-vue-next'
+import { computed, nextTick, ref, useId, watch } from 'vue'
+import { ChevronLeft, ChevronRight, CircleHelp, LoaderCircle, Pencil } from 'lucide-vue-next'
+import type { AgentQuestion, QuestionAnswers, QuestionReply } from '../types'
 import { questionPresentation, skippedQuestionResponse } from '../question-presentation'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   questionId: string
   prompt?: string
+  questions?: AgentQuestion[]
+  blocking?: boolean
   busy?: boolean
   disabled?: boolean
   resolved?: 'answered' | 'dismissed'
-}>()
-const emit = defineEmits<{ answer: [response: string] }>()
+}>(), { blocking: true })
+const emit = defineEmits<{ answer: [response: QuestionReply] }>()
 const id = useId()
 const draft = ref('')
 const choice = ref('')
+const answerByteLimit = 8192
+const utf8 = new TextEncoder()
+const replies = ref<QuestionAnswers>({})
+const customDrafts = ref<Record<string, string>>({})
+const activeIndex = ref(0)
+const questionHeading = ref<HTMLElement>()
+const activeQuestion = computed(() => props.questions?.[activeIndex.value])
+const lastQuestion = computed(() => activeIndex.value === (props.questions?.length ?? 0) - 1)
+const firstInvalidReply = computed(() => props.questions?.findIndex(entry => !validReply(entry.id)) ?? -1)
+
+function replyTooLong(questionID: string): boolean {
+  const reply = replies.value[questionID]
+  return typeof reply === 'string' && utf8.encode(reply.trim()).length > answerByteLimit
+}
+
+function validReply(questionID: string): boolean {
+  const reply = replies.value[questionID]
+  return reply === null || (typeof reply === 'string' && !!reply.trim() && !replyTooLong(questionID))
+}
+
+function goTo(index: number): void {
+  if (!props.questions?.[index] || index === activeIndex.value) return
+  activeIndex.value = index
+  void nextTick(() => questionHeading.value?.focus())
+}
+
+function setReply(questionID: string, value: string | null, custom = false): void {
+  customDrafts.value = { ...customDrafts.value, [questionID]: custom ? value ?? '' : '' }
+  replies.value = { ...replies.value, [questionID]: value }
+}
+function advanceGroup(): void {
+  const entry = activeQuestion.value
+  if (!entry || !validReply(entry.id) || props.disabled || props.busy) return
+  if (!lastQuestion.value) goTo(activeIndex.value + 1)
+  else if (firstInvalidReply.value !== -1) goTo(firstInvalidReply.value)
+  else emit('answer', replies.value)
+}
+
+function skipQuestion(): void {
+  const entry = activeQuestion.value
+  if (!entry) return
+  setReply(entry.id, null)
+  if (!lastQuestion.value) goTo(activeIndex.value + 1)
+}
 const question = computed(() => questionPresentation(props.prompt))
 const response = computed(() => choice.value || draft.value.trim())
 const canSend = computed(() => !!response.value && !props.disabled && !props.busy && !props.resolved)
-watch(() => props.questionId, () => { draft.value = ''; choice.value = '' })
+watch(() => props.questionId, () => { draft.value = ''; choice.value = ''; replies.value = {}; customDrafts.value = {}; activeIndex.value = 0 })
 
 function select(label: string): void {
   choice.value = label
@@ -30,8 +77,52 @@ function send(): void {
 </script>
 
 <template>
-  <section class="agents-question-card k-card" :aria-labelledby="`${id}-question`" :aria-busy="busy || undefined">
-    <div class="agents-question-card__heading"><CircleHelp :size="16" :stroke-width="1.75" aria-hidden="true" /> Question</div>
+  <section class="agents-question-card k-card" :aria-labelledby="questions?.length ? `${id}-heading` : `${id}-question`" :aria-busy="busy || undefined">
+    <div :id="`${id}-heading`" class="agents-question-card__heading"><CircleHelp :size="16" :stroke-width="1.75" aria-hidden="true" />
+      Question
+      <span v-if="!resolved" class="muted">· {{ blocking === false ? 'Reply when ready' : 'Waiting for your answers' }}</span>
+      <div v-if="questions && questions.length > 1 && !resolved" class="agents-question-card__navigation" role="group" aria-label="Question navigation">
+        <button class="k-btn k-btn--ghost agents-question-card__arrow" type="button" aria-label="Previous question" title="Previous question"
+          :disabled="activeIndex === 0 || disabled || busy" @click="goTo(activeIndex - 1)"><ChevronLeft :size="16" aria-hidden="true" /></button>
+        <span aria-live="polite">{{ activeIndex + 1 }} of {{ questions.length }}</span>
+        <button class="k-btn k-btn--ghost agents-question-card__arrow" type="button" aria-label="Next question" title="Next question"
+          :disabled="lastQuestion || disabled || busy" @click="goTo(activeIndex + 1)"><ChevronRight :size="16" aria-hidden="true" /></button>
+      </div>
+    </div>
+    <template v-if="questions?.length">
+      <p v-if="resolved" role="status">{{ resolved === 'answered' ? 'Answers sent' : 'Questions dismissed' }}</p>
+      <form v-else-if="activeQuestion" class="agents-question-card__form" @submit.prevent="advanceGroup">
+        <div class="agents-question-card__questions">
+          <fieldset :key="activeQuestion.id" class="agents-question-card__group"
+            :disabled="disabled || busy">
+            <legend ref="questionHeading" tabindex="-1">{{ activeQuestion.prompt }}</legend>
+            <label v-for="option in activeQuestion.options" :key="option.label" class="agents-question-card__choice"
+              :class="{ 'is-selected': !customDrafts[activeQuestion.id] && replies[activeQuestion.id] === option.label }">
+              <input type="radio" :name="`${id}-${activeIndex}`" :checked="!customDrafts[activeQuestion.id] && replies[activeQuestion.id] === option.label"
+                @change="setReply(activeQuestion.id, option.label)">
+              <span><strong>{{ option.label }}</strong><span v-if="option.description && option.description !== option.label"> — {{ option.description }}</span></span>
+            </label>
+            <input class="k-input agents-question-card__input" type="text" :aria-label="`Your answer to ${activeQuestion.prompt}`"
+              :value="customDrafts[activeQuestion.id] ?? ''"
+              :aria-invalid="replyTooLong(activeQuestion.id) || undefined"
+              :aria-describedby="replyTooLong(activeQuestion.id) ? `${id}-reply-error` : undefined"
+              :placeholder="activeQuestion.options?.length ? 'Or write your own response…' : 'Write your answer…'" maxlength="8192"
+              @input="setReply(activeQuestion.id, ($event.target as HTMLInputElement).value, true)">
+            <p v-if="replyTooLong(activeQuestion.id)" :id="`${id}-reply-error`" class="agents-question-card__error" role="alert">
+              This reply exceeds the 8,192-byte limit. Shorten it to continue.
+            </p>
+          </fieldset>
+        </div>
+        <div class="agents-question-card__actions">
+          <span v-if="replies[activeQuestion.id] === null" class="agents-question-card__skipped" role="status">Skipped</span>
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="disabled || busy" @click="skipQuestion">Skip</button>
+          <button class="k-btn k-btn--primary" type="submit" :disabled="!validReply(activeQuestion.id) || disabled || busy">
+            {{ busy ? 'Sending…' : !lastQuestion ? 'Next' : firstInvalidReply !== -1 ? 'Review replies' : questions.length === 1 ? 'Send answer' : 'Send answers' }}
+          </button>
+        </div>
+      </form>
+    </template>
+    <template v-else>
     <h3 :id="`${id}-question`" class="agents-question-card__prompt">{{ question.prompt }}</h3>
     <p v-if="resolved" class="agents-question-card__status" role="status">{{ resolved === 'answered' ? 'Answer sent' : 'Question dismissed' }}</p>
     <form v-else class="agents-question-card__form" @submit.prevent="send">
@@ -55,10 +146,31 @@ function send(): void {
         </div>
       </div>
     </form>
+    </template>
   </section>
 </template>
 
 <style scoped>
+.agents-question-card__navigation { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.agents-question-card__arrow { display: grid; place-items: center; min-width: 32px; min-height: 32px; padding: 0; }
+.agents-question-card__error { margin: 0; color: var(--color-text-primary); font-size: 13px; }
+.agents-question-card__skipped { align-self: center; color: var(--color-text-secondary); font-size: 13px; }
+.agents-question-card__questions { display: grid; gap: 8px; min-width: 0; }
+.agents-question-dock .agents-question-card__questions { max-block-size: 42dvh; overflow: auto; padding: 3px; }
+.agents-question-card__group {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.75rem 0 0;
+  border: 0;
+}
+.agents-question-card__group legend { font-weight: 600; overflow-wrap: anywhere; }
+.agents-question-card__group .agents-question-card__input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
 .agents-question-card {
   display: grid;
   gap: 12px;
@@ -66,7 +178,7 @@ function send(): void {
   padding: 14px 16px;
   background: var(--color-surface-overlay);
 }
-.agents-question-card__heading { display: flex; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 13px; }
+.agents-question-card__heading { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--color-text-secondary); font-size: 13px; }
 .agents-question-card__prompt { max-width: 72ch; margin: 0; color: var(--color-text-primary); font-size: 16px; font-weight: 500; line-height: 1.4; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agents-question-card__form, .agents-question-card__choices { display: grid; gap: 4px; min-width: 0; }
 .agents-question-card__choices { border: 0; padding: 0; margin: 0; }

@@ -10,7 +10,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"sync"
@@ -1009,7 +1011,7 @@ func (m *MemoryStore) GetRun(_ context.Context, scope Scope, id string) (Run, er
 	return run, nil
 }
 
-func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time) (Run, error) {
+func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID string, now time.Time, inboxID ...string) (Run, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return Run{}, err
@@ -1020,10 +1022,18 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
 	if !ok {
-		return Run{}, fmt.Errorf("run %q not found", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	if run.CancelRequested || (run.Phase != RunPhasePending && run.Phase != RunPhasePendingApproval) {
-		return Run{}, fmt.Errorf("run %q is no longer resumable", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+	}
+	if len(inboxID) > 0 && inboxID[0] != "" {
+		var checkpoint struct {
+			InboxID string `json:"inboxID"`
+		}
+		if run.Phase != RunPhasePendingApproval || json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != inboxID[0] {
+			return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
+		}
 	}
 	run.Phase = RunPhaseRunning
 	run.UpdatedAt = now.UTC()
@@ -1311,7 +1321,7 @@ func (m *MemoryStore) ListInbox(_ context.Context, scope Scope, state InboxItemS
 	return out, nil
 }
 
-func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error) {
+func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return InboxItem{}, err
@@ -1323,6 +1333,19 @@ func (m *MemoryStore) ResolveInboxItem(_ context.Context, scope Scope, id string
 	it, ok := m.inbox[k]
 	if !ok {
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
+	}
+	if resolution.PendingOnly && it.State != InboxStatePending {
+		return InboxItem{}, ErrInboxAlreadyResolved
+	}
+	if resolution.QuestionPayload != nil {
+		canAnswerDismissedRun := state == InboxStateAnswered && it.State == InboxStateDenied && it.RunID != ""
+		if it.Kind != InboxKindQuestion || (it.State != InboxStatePending && !canAnswerDismissedRun) {
+			return InboxItem{}, ErrInboxAlreadyResolved
+		}
+		payload := make(map[string]any, len(it.Payload)+len(resolution.QuestionPayload))
+		maps.Copy(payload, it.Payload)
+		maps.Copy(payload, resolution.QuestionPayload)
+		it.Payload = payload
 	}
 	it.State = state
 	it.Response = response

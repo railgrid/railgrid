@@ -7,7 +7,8 @@
 //   #/agents                          Agents grid (default)
 //   #/agents/<name>/chat|config|tools|automation|runs  agent detail
 //   #/agents/<name>/runs/<runID>      agent-scoped run detail
-//   #/activity                        run feed + approvals
+//   #/activity                        run history
+//   #/inbox                           Activity inbox
 //   #/activity/<runID>                run trace
 //   #/connections #/webhooks #/models
 //   #/models/provider-connections|workspace-assistant|usage
@@ -30,6 +31,7 @@ export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
   { id: 'workspace-assistant', label: 'Workspace assistant' },
   { id: 'usage', label: 'Usage & cost' },
 ]
+export type ActivityTab = 'runs' | 'inbox'
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs'
 export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
@@ -39,7 +41,7 @@ export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'webhooks'
 const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs']
 
 export type Route =
-  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab }
+  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: EditResource; name: string }
@@ -135,7 +137,8 @@ export function parseHash(hash = location.hash): Route {
   }
   if ((MENUS as string[]).includes(head)) return { kind: 'menu', menu: head as MenuKey }
   // Legacy tabs fold into their absorbing surface.
-  if (head === 'inbox' || head === 'runs') return { kind: 'menu', menu: 'activity' }
+  if (head === 'inbox') return { kind: 'menu', menu: 'activity', activityTab: 'inbox' }
+  if (head === 'runs') return { kind: 'menu', menu: 'activity' }
   if (head === 'toolsets') return { kind: 'menu', menu: 'connections' }
   if (head === 'schedules' || head === 'triggers') return { kind: 'menu', menu: 'agents' }
   return DEFAULT_ROUTE
@@ -160,6 +163,7 @@ export function hashFor(route: Route): string {
         : `#/agents/${encodeURIComponent(route.agent)}/${collection}/${encodeURIComponent(route.name)}/edit`
     }
     default:
+      if (route.menu === 'activity' && route.activityTab === 'inbox') return '#/inbox'
       return route.menu === 'models' && route.modelsTab && route.modelsTab !== 'models'
         ? `#/models/${route.modelsTab}` : `#/${route.menu}`
   }

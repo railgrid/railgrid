@@ -87,7 +87,8 @@ spec:
             description: "List the agent's pending approvals and questions."
             readOnly: true
           - name: inbox-resolve
-            description: "Approve, deny or answer one of the agent's inbox items."
+            description: "Approve, deny or answer one of the agent's inbox items. A run-bound answer can stream the continuation."
+            stream: true
           - name: events
             description: "Follow the agent's run and inbox activity as it happens."
             stream: true

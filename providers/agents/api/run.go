@@ -132,7 +132,8 @@ type pendingInfo struct {
 	Tool string `json:"tool,omitempty"`
 	Args string `json:"args,omitempty"`
 	// Question is the text to put to the person, for Kind "question".
-	Question string `json:"question,omitempty"`
+	Question  string                   `json:"question,omitempty"`
+	Questions []runnerharness.Question `json:"questions,omitempty"`
 }
 
 // pendingFor says which of the two a park is. A park with a tool is a gate; one
@@ -142,7 +143,7 @@ func pendingFor(inboxID string, parked *backend.Parked) *pendingInfo {
 		return nil
 	}
 	if strings.TrimSpace(parked.Tool) == "" {
-		return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindQuestion), Question: parked.Question}
+		return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindQuestion), Question: parked.Question, Questions: parked.Questions}
 	}
 	return &pendingInfo{InboxID: inboxID, Kind: string(store.InboxKindApproval), Tool: parked.Tool, Args: parked.Args}
 }
@@ -194,10 +195,11 @@ type runCheckpoint struct {
 	// Question is what the turn asked when the park is a question rather than
 	// a gated call (Tool empty). Without it the run detail could say only that
 	// the agent is waiting, not what for.
-	Question      string `json:"question,omitempty"`
-	InboxID       string `json:"inboxID"`
-	SourceName    string `json:"sourceName,omitempty"`
-	NotifyChannel string `json:"notifyChannel,omitempty"`
+	Question      string                   `json:"question,omitempty"`
+	Questions     []runnerharness.Question `json:"questions,omitempty"`
+	InboxID       string                   `json:"inboxID"`
+	SourceName    string                   `json:"sourceName,omitempty"`
+	NotifyChannel string                   `json:"notifyChannel,omitempty"`
 	// Worker carries a spawned sub-task's constraints (its narrowed families,
 	// approval class and tool-turn budget) so a resumed worker is rebuilt as the
 	// worker it was rather than as a top-level run of its agent.
@@ -1036,7 +1038,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 	}
 	requestID := out.Parked.RequestID
 	ck := runCheckpoint{
-		Tool: out.Parked.Tool, Args: out.Parked.Args, Question: out.Parked.Question,
+		Tool: out.Parked.Tool, Args: out.Parked.Args, Question: out.Parked.Question, Questions: out.Parked.Questions,
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel, Worker: run.Worker,
 		WorkedDurationMS: tracker.durationMS(),
 	}
@@ -1072,7 +1074,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		if strings.TrimSpace(out.Parked.Tool) != "" {
 			requestID, err = s.postHarnessApproval(ctx, run, out.Parked.Tool, out.Parked.Args)
 		} else {
-			requestID, err = s.postHarnessQuestion(ctx, run, out.Parked.Question)
+			requestID, err = s.postRunQuestion(ctx, run, out.Parked.Question, out.Parked.Questions)
 		}
 		if err != nil {
 			return runResult{}, s.failPark(ctx, run, sessionID, harnessT, "", err)
@@ -1132,8 +1134,10 @@ func (s *Server) failPark(ctx context.Context, run taskRun, sessionID string, ha
 			if item.Kind == store.InboxKindQuestion {
 				state = store.InboxStateAnswered
 			}
-			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC()); err != nil {
-				cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+			if _, err := s.store.ResolveInboxItem(cleanupCtx, wsScope, requestID, state, response, time.Now().UTC(), store.InboxResolution{PendingOnly: true}); err != nil {
+				if !errors.Is(err, store.ErrInboxAlreadyResolved) {
+					cause = errors.Join(cause, fmt.Errorf("closing inbox item %s after park failure: %w", requestID, err))
+				}
 			} else {
 				s.events.publish(wsScope, "inbox", map[string]any{
 					"id": item.ID, "state": string(state), "agent": item.AgentName, "runID": item.RunID,
@@ -1572,8 +1576,10 @@ func (s *Server) closeParkedInboxItem(ctx context.Context, scope store.Scope, ru
 	if phase == store.RunPhaseAborted {
 		response = "The run was cancelled before this was resolved."
 	}
-	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now); err != nil {
-		log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+	if _, err := s.store.ResolveInboxItem(ctx, wsScope, item.ID, state, response, now, store.InboxResolution{PendingOnly: true}); err != nil {
+		if !errors.Is(err, store.ErrInboxAlreadyResolved) {
+			log.Printf("run %s: closing inbox item %s: %v", run.ID, item.ID, err)
+		}
 		return
 	}
 	s.events.publish(wsScope, "inbox", map[string]any{

@@ -1063,7 +1063,7 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	return mutation.commit()
 }
 
-func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time) (Run, error) {
+func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string, now time.Time, inboxID ...string) (Run, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return Run{}, err
@@ -1073,17 +1073,24 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	if err := scope.validate(); err != nil {
 		return Run{}, err
 	}
-	res, err := mutation.executor.ExecContext(ctx, `
+	query := `
 		UPDATE agents_runs SET phase=$4, updated_at=$5, started_at=COALESCE(started_at, $5)
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`,
-		scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(),
-		string(RunPhasePending), string(RunPhasePendingApproval))
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($6,$7) AND cancel_requested=FALSE`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(RunPhaseRunning), now.UTC(), string(RunPhasePending), string(RunPhasePendingApproval)}
+	if len(inboxID) > 0 && inboxID[0] != "" {
+		query += " AND phase=$7 AND checkpoint->>'inboxID'=$8"
+		args = append(args, inboxID[0])
+	}
+	res, err := mutation.executor.ExecContext(ctx, query, args...)
 	if err != nil {
 		return Run{}, err
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Run{}, err
+	}
 	if n == 0 {
-		return Run{}, fmt.Errorf("run %q not found or already claimed", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	row := mutation.executor.QueryRowContext(ctx, `SELECT `+runColumns+`
 		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`, scope.OrgUUID, scope.WorkspaceUUID, id)
@@ -1547,7 +1554,7 @@ func (p *PostgresStore) ListInbox(ctx context.Context, scope Scope, state InboxI
 	return out, rows.Err()
 }
 
-func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time) (InboxItem, error) {
+func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id string, state InboxItemState, response string, now time.Time, resolution InboxResolution) (InboxItem, error) {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return InboxItem{}, err
@@ -1557,14 +1564,31 @@ func (p *PostgresStore) ResolveInboxItem(ctx context.Context, scope Scope, id st
 	if err := scope.validate(); err != nil {
 		return InboxItem{}, err
 	}
-	res, err := mutation.executor.ExecContext(ctx, `
-		UPDATE agents_inbox SET state=$4, response=$5, updated_at=$6
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`,
-		scope.OrgUUID, scope.WorkspaceUUID, id, string(state), response, now.UTC())
+	query := `UPDATE agents_inbox SET state=$4, response=$5, updated_at=$6
+  WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`
+	args := []any{scope.OrgUUID, scope.WorkspaceUUID, id, string(state), response, now.UTC()}
+	if resolution.QuestionPayload != nil {
+		payload, err := json.Marshal(resolution.QuestionPayload)
+		if err != nil {
+			return InboxItem{}, err
+		}
+		query = `UPDATE agents_inbox SET state=$4, response=$5, updated_at=$6,
+    payload=COALESCE(payload, '{}'::jsonb) || $7::jsonb
+   WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND kind='question'
+    AND (state='pending' OR ($4='answered' AND state='denied' AND run_id<>''))`
+		args = append(args, string(payload))
+	}
+	if resolution.PendingOnly {
+		query += " AND state='pending'"
+	}
+	res, err := mutation.executor.ExecContext(ctx, query, args...)
 	if err != nil {
 		return InboxItem{}, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
+		if resolution.PendingOnly || resolution.QuestionPayload != nil {
+			return InboxItem{}, ErrInboxAlreadyResolved
+		}
 		return InboxItem{}, fmt.Errorf("inbox item %q not found", id)
 	}
 	var item InboxItem

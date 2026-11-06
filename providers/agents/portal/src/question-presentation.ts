@@ -27,3 +27,7 @@ export function questionPresentation(value?: string): QuestionPresentation {
   }
   return { prompt: heading, options }
 }
+
+export function answeredQuestionCount(answers: import('./types').QuestionAnswers): number {
+  return Object.values(answers).filter(answer => answer !== null).length
+}

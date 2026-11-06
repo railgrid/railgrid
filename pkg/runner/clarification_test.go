@@ -18,6 +18,7 @@ package runner
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,7 +29,7 @@ import (
 func TestClarificationReceiptPersistsAcrossRestartAndAdvertisesCapability(t *testing.T) {
 	source, commit := testGitSource(t)
 	stateDir := t.TempDir()
-	want := &harness.Clarification{ID: "clarification-first", Text: "Which bounded change should be made?"}
+	want := &harness.Clarification{ID: "clarification-first", Text: "Which bounded change should be made?", Questions: []harness.Question{{ID: "change", Prompt: "Which change?"}}}
 	firstAdapter := &fakeAdapter{run: func(_ context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {
 		if err := emit(harness.Event{Type: EventStarted, SessionID: "session-clarification"}); err != nil {
 			return harness.Result{}, err
@@ -45,7 +46,7 @@ func TestClarificationReceiptPersistsAcrossRestartAndAdvertisesCapability(t *tes
 	if err != nil {
 		t.Fatalf("Inspect: %v", err)
 	}
-	if checkpoint.Clarification == nil || *checkpoint.Clarification != (Clarification{ID: want.ID, Text: want.Text}) {
+	if checkpoint.Clarification == nil || !reflect.DeepEqual(checkpoint.Clarification, want) {
 		t.Fatalf("clarification checkpoint = %+v, want %+v", checkpoint.Clarification, want)
 	}
 	if !contains(first.Capabilities().Verification, clarificationCapability) {
@@ -60,14 +61,14 @@ func TestClarificationReceiptPersistsAcrossRestartAndAdvertisesCapability(t *tes
 	if err != nil {
 		t.Fatalf("Inspect after restart: %v", err)
 	}
-	if deferred.Clarification == nil || *deferred.Clarification != *checkpoint.Clarification {
+	if deferred.Clarification == nil || !reflect.DeepEqual(deferred.Clarification, checkpoint.Clarification) {
 		t.Fatalf("restart clarification = %+v, want %+v", deferred.Clarification, checkpoint.Clarification)
 	}
 }
 
 func TestClarificationResumeFenceAndReplayKeepsSecondQuestion(t *testing.T) {
 	source, commit := testGitSource(t)
-	firstQuestion := &harness.Clarification{ID: "clarification-first", Text: "Which bounded change should be made?"}
+	firstQuestion := &harness.Clarification{ID: "clarification-first", Text: "Which bounded change should be made?", Questions: []harness.Question{{ID: "change", Prompt: "Which change?"}}}
 	secondQuestion := &harness.Clarification{ID: "clarification-second", Text: "Which verification should run next?"}
 	var runCount atomic.Int32
 	adapter := &fakeAdapter{run: func(_ context.Context, launch harness.Launch, emit harness.Emit) (harness.Result, error) {

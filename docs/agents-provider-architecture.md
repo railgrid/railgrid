@@ -213,7 +213,10 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Approvals + questions over the channel** — approval requests push to the
   agent's channel; `/inbox` lists pending items, `/approve N` / `/deny N`
   resolve approvals (which **resumes the paused run**), `/answer N <text>`
-  answers agent questions — all from Telegram/Slack/Discord.
+  answers agent questions from Telegram/Slack/Discord. For a question group,
+  the channel records the whole reply as free text and passes it to the run.
+  Use the portal to answer or skip each prompt separately and save structured
+  answer history.
 - **Durable approvals (pause/resume)** — a gated tool call raises an engine
   *interrupt*: the loop stops, the conversation + un-executed calls are
   serialized into the run's `checkpoint`, and the run parks in
@@ -606,6 +609,34 @@ CatalogEntry — on the resource it is served on — in
 textually and both against the route table, because a verb that is served but
 not declared cannot be granted to a workload identity, and one that is declared
 but not served mints a capability whose calls 404.
+
+### Attended chat questions
+
+An attended `chat` MCP call can complete with `done`, fail with `error`, or
+return `approval_required` when the run pauses. A pause ends the current
+response stream while the run waits. Top-level API-backed chat pauses on
+`ask` by default. Codex and Claude Code can also pause for clarification.
+Background `ask` calls post to the inbox and let the run continue.
+
+For `approval_required` with `data.kind: "question"`, use
+`data.question` for a text prompt or `data.questions` for prompts with
+stable IDs and optional choices. Submit the reply to the agent's
+`inbox-resolve` subresource:
+
+```text
+POST /clusters/{clusterID}/apis/agents.railgrid.ai/v1alpha1/agents/{agent}/inbox-resolve/{inboxID}
+```
+
+Use the frame's `data.inboxID`. Send `{"decision":"answer","response":"My reply"}`
+for a text prompt. For a question group, send one value per question ID, using
+`null` for an explicit skip:
+
+```json
+{"decision":"answer","answers":{"location":"README","owner":null}}
+```
+
+A successful submission schedules continuation of the same run. Follow its
+run events or reload the conversation for the eventual result.
 
 ### Chat model preferences
 
