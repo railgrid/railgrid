@@ -29,15 +29,19 @@ import (
 
 const identityAccessAnnotation = "tenants.railgrid.ai/initialized-rbac-identity"
 
+// v0.2.47 could delete a managed workspace binding and fail to replace it.
+// Replay the backfill once for identities marked initialized before the fix.
+const identityAccessVersion = "tenant-admin-repair-v1"
+
 // reconcileIdentityAccess covers memberships granted before a User had an RBAC
-// identity. This is independent of organization creation: it reads current
-// membership authority once per identity, never assumes the org creator remains
-// an admin, and records completion only after every required grant succeeds.
+// identity and repairs grants lost in the tenant-admin migration. It reads
+// current membership authority once per identity and version, and records
+// completion only after every required grant succeeds.
 func (r *Reconciler) reconcileIdentityAccess(ctx context.Context, user *tenancyv1alpha1.User) error {
 	if r.provisioner == nil || user.Spec.RBACIdentity == "" {
 		return nil
 	}
-	marker := fmt.Sprintf("%x", sha256.Sum256([]byte(user.Spec.RBACIdentity)))
+	marker := fmt.Sprintf("%s:%x", identityAccessVersion, sha256.Sum256([]byte(user.Spec.RBACIdentity)))
 	if user.Annotations[identityAccessAnnotation] == marker {
 		return nil
 	}

@@ -18,7 +18,9 @@ package organization
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -90,5 +92,62 @@ func TestIdentityAccess_UsesCurrentMembershipsOncePerIdentity(t *testing.T) {
 	}
 	if len(prov.adminCalls) != 1 || prov.adminCalls[0].WSUUID != "explicit-member" {
 		t.Fatalf("backfill ignored current memberships: %#v", prov.adminCalls)
+	}
+}
+
+func TestIdentityAccess_RepairsStrandedPreviouslyInitializedMember(t *testing.T) {
+	ctx := context.Background()
+	user := newUser("alice", "Alice")
+	// v0.2.47 initialized this identity, then lost its workspace binding.
+	oldMarker := fmt.Sprintf("%x", sha256.Sum256([]byte(user.Spec.RBACIdentity)))
+	user.Annotations = map[string]string{identityAccessAnnotation: oldMarker}
+	org := newSharedOrg("org-a", "", "bob")
+	deleted := metav1.Now()
+	idx := &tenancyv1alpha1.UserMembershipIndex{
+		ObjectMeta: metav1.ObjectMeta{Name: user.Name},
+		Spec: tenancyv1alpha1.UserMembershipIndexSpec{Entries: []tenancyv1alpha1.MembershipIndexEntry{
+			{OrgUUID: org.Name, WorkspaceUUID: "stranded", Role: tenancyv1alpha1.MembershipRoleMember},
+			{OrgUUID: org.Name, WorkspaceUUID: "revoked", Role: tenancyv1alpha1.MembershipRoleMember, SoftDeletedAt: &deleted},
+			{OrgUUID: org.Name, Role: tenancyv1alpha1.MembershipRoleMember},
+		}},
+	}
+	c := fake.NewClientBuilder().WithScheme(newTestScheme(t)).WithObjects(user, org, idx).Build()
+	grantErr := errors.New("workspace temporarily unavailable")
+	prov := &fakeProvisioner{
+		adminErr:       grantErr,
+		teamWorkspaces: map[string][]string{org.Name: {"stranded", "revoked", "unrelated"}},
+	}
+	r := &Reconciler{client: c, provisioner: prov}
+	if err := r.reconcileIdentityAccess(ctx, user); !errors.Is(err, grantErr) {
+		t.Fatalf("first repair error = %v, want %v", err, grantErr)
+	}
+	var stored tenancyv1alpha1.User
+	if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Annotations[identityAccessAnnotation]; got != oldMarker {
+		t.Fatalf("failed repair changed completion marker to %q", got)
+	}
+
+	prov.adminErr = nil
+	prov.adminCalls = nil
+	if err := r.reconcileIdentityAccess(ctx, &stored); err != nil {
+		t.Fatal(err)
+	}
+	want := workspaceAdminCall{OrgUUID: org.Name, WSUUID: "stranded", RBACIdentity: user.Spec.RBACIdentity}
+	if len(prov.adminCalls) != 1 || prov.adminCalls[0] != want {
+		t.Fatalf("repair grant calls = %#v, want only %#v", prov.adminCalls, want)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Name: user.Name}, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.Annotations[identityAccessAnnotation]; got != identityAccessVersion+":"+oldMarker {
+		t.Fatalf("successful repair did not persist the versioned marker: %q", got)
+	}
+	if err := r.reconcileIdentityAccess(ctx, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if len(prov.adminCalls) != 1 {
+		t.Fatalf("completed repair replayed grants: %#v", prov.adminCalls)
 	}
 }
