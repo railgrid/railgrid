@@ -395,6 +395,13 @@ function currentComposerDraft(): AgentChatDraft {
     resources: [...selectedResources.value],
   }
 }
+function authoredComposerDraftSnapshot(value: AgentChatDraft): string {
+  // Text is represented by both `content` and text parts while the editor's
+  // prop updates are flushing. Use the content field for authored text and
+  // retain only chips/receipts here, avoiding a stale pre-clear text part from
+  // making an untouched composer look edited.
+  return JSON.stringify({ ...value, contentParts: value.contentParts.filter((part) => part.type !== 'text') })
+}
 function applyComposerDraft(value: AgentChatDraft): void {
   composerDraftLoading.value = true
   draft.value = value.content
@@ -1984,6 +1991,13 @@ async function streamTurn(
   const store = props.store
   const requestSession = sessionID.value
   const requestDraftStorageKey = agentChatDraftStorageKey(api.contextAuthority(), name, requestSession)
+  // send() has cleared only the text field so far; attachments, skills, and
+  // resources stay in the composer until admission. Snapshot that exact
+  // post-submit state so a rejected admission can tell whether the user has
+  // authored anything new while the request was pending.
+  const clearedSubmittedDraftSnapshot = submittedDraft
+    ? authoredComposerDraftSnapshot({ ...currentComposerDraft(), content: '' })
+    : undefined
   const requestOwnerKey = composerOwnerKey.value
   const requestComposer = composer.value
   const serial = ++streamSerial
@@ -2287,7 +2301,15 @@ async function streamTurn(
   } finally {
     if (streamIsCurrent(serial, controller, name, api)) composerSubmitting.value = false
     if (submittedDraft && !turnAccepted && streamIsCurrent(serial, controller, name, api)) {
-      applyComposerDraft(submittedDraft)
+      const currentDraft = currentComposerDraft()
+      const unchangedSinceSubmit = authoredComposerDraftSnapshot(currentDraft) === clearedSubmittedDraftSnapshot
+      if (unchangedSinceSubmit) {
+        applyComposerDraft(submittedDraft)
+      } else {
+        // The composer watcher is paused during admission. Keep any newer
+        // text, attachments, skills, or resources and persist them explicitly.
+        toast('error', 'The previous send was not accepted. Your newer draft is still here.')
+      }
       writeAgentChatDraft(composerDraftKey.value, currentComposerDraft())
       if (composerDraftKey.value !== requestDraftStorageKey) clearAgentChatDraft(requestDraftStorageKey)
     }

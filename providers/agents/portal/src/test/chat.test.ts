@@ -2682,11 +2682,13 @@ describe('rich composer admission boundary', () => {
 
   it('keeps attachment receipts and text when a provisional start fails before admission', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const admission = deferred<void>()
     const upload = vi.fn(async () => draftAttachment)
     const remove = vi.fn(async () => undefined)
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal, _turn: unknown) {
       yield { event: 'start', data: { runID: 'provisional', sessionID: 'source-session' } } as SSEEvent
-      yield { event: 'error', data: { runID: 'provisional', message: 'admission failed' } } as SSEEvent
+      await admission.promise
+      throw new Error('admission failed')
     })
     const { el } = await mountChat(chatStream, {
       ...authOverride,
@@ -2698,7 +2700,12 @@ describe('rich composer admission boundary', () => {
     await attachTextFile(el)
     expect(upload).toHaveBeenCalledOnce()
     expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
-    await send(el, 'Retry the change')
+    setComposerText(el, 'Retry the change')
+    await settle()
+    el.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(6)
+    admission.reject(new Error('admission failed'))
+    await settle(10)
 
     expect(chatStream.mock.calls[0][4]).toEqual(expect.objectContaining({
       contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
@@ -2709,6 +2716,43 @@ describe('rich composer admission boundary', () => {
       content: 'Retry the change',
       contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
     }))
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('preserves follow-up text authored while admission is pending and reports the failed send', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const admission = deferred<void>()
+    const upload = vi.fn(async () => draftAttachment)
+    const remove = vi.fn(async () => undefined)
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal) {
+      yield { event: 'start', data: { runID: 'provisional', sessionID: 'source-session' } } as SSEEvent
+      await admission.promise
+      throw new Error('admission failed')
+    })
+    const { el } = await mountChat(chatStream, {
+      ...authOverride,
+      uploadAgentAttachment: upload,
+      deleteAgentAttachment: remove,
+    })
+    const draftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', 'source-session')
+
+    await attachTextFile(el)
+    setComposerText(el, 'First request')
+    await settle()
+    el.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(6)
+    setComposerText(el, 'Follow-up draft')
+    await settle(2)
+    admission.reject(new Error('503 unavailable'))
+    await settle(10)
+
+    expect(composerText(el)).toBe('Follow-up draft')
+    expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
+    expect(readAgentChatDraft(draftKey)).toEqual(expect.objectContaining({
+      content: 'Follow-up draft',
+      contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
+    }))
+    expect(text(document.getElementById('k-toasts'))).toContain('The previous send was not accepted. Your newer draft is still here.')
     expect(remove).not.toHaveBeenCalled()
   })
 

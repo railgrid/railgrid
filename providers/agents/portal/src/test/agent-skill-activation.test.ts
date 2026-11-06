@@ -25,9 +25,9 @@ describe('Agent skill activation', () => {
   })
 
   it('lets an agent remove a configured skill reference missing from the catalog', async () => {
-    const patchAgent = vi.fn(async () => agentFixture('scout'))
+    const setAgentSkillEnabled = vi.fn(async () => agentFixture('scout'))
     const api = stubApi({
-      patchAgent,
+      setAgentSkillEnabled,
       getAgentSkillCatalog: async () => ({ skills: [], catalogDigest: '', warnings: [] }),
     })
     const store = makeStore(api)
@@ -42,8 +42,8 @@ describe('Agent skill activation', () => {
     remove!.click()
     await settleVue(8)
 
-    expect(patchAgent).toHaveBeenCalledOnce()
-    expect(patchAgent).toHaveBeenCalledWith('scout', { skills: [] })
+    expect(setAgentSkillEnabled).toHaveBeenCalledOnce()
+    expect(setAgentSkillEnabled).toHaveBeenCalledWith('scout', 'workspace:renamed-skill', false)
     view.unmount()
   })
 })

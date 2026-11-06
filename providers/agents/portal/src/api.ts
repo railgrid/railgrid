@@ -458,6 +458,8 @@ export class ApiClient {
   createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
     this.resources.createAgentFromTemplate(agent, schedules)
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
+  setAgentSkillEnabled = (name: string, skillID: string, enabled: boolean): Promise<Agent> =>
+    this.resources.setAgentSkillEnabled(name, skillID, enabled)
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
 
   // Library presentation reads Skill objects and the published provider catalog.

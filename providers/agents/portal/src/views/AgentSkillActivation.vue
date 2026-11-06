@@ -57,16 +57,12 @@ async function load(): Promise<void> {
 
 async function updateEnabled(skillID: string, skillName: string, enabled: boolean): Promise<void> {
   if (busySkill.value) return
-  const current = [...(agent.value?.spec.skills || [])]
-  const next = enabled
-    ? [...current.filter((item) => item.name !== skillID), { name: skillID }]
-    : current.filter((item) => item.name !== skillID)
   const authority = captureAuthority()
   const name = props.name
   busySkill.value = skillID
   try {
     const updated = await mutate(authority.store, {
-      run: () => authority.api.patchAgent(name, { skills: next }),
+      run: () => authority.api.setAgentSkillEnabled(name, skillID, enabled),
       success: enabled ? `Enabled “${skillName}” for this agent.` : `Disabled “${skillName}” for this agent.`,
       failure: 'Could not update agent skills',
       reload: ['agents'],
