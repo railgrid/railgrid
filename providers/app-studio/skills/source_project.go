@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/railgrid/provider-app-studio/workspace"
+	sdk "github.com/railgrid/provider-sdk/skills"
 )
 
 const defaultProjectSkillsRoot = ".agents/skills"
@@ -41,16 +42,6 @@ const ProjectSkillsRoot = defaultProjectSkillsRoot
 const ProjectMetadataPath = defaultProjectSkillsRoot + "/.railgrid-catalog.json"
 
 const projectMetadataVersion = 1
-
-// Activation records are keyed by package-relative identity, not the
-// collision-prone qualified catalog ID. Version and Digest are informational
-// provenance retained for management views; activation itself is the only
-// mutable policy field.
-type Activation struct {
-	Enabled bool   `json:"enabled"`
-	Version string `json:"version,omitempty"`
-	Digest  string `json:"digest,omitempty"`
-}
 
 // ProjectMetadata is the bounded persisted policy for one project skill root.
 type ProjectMetadata struct {
@@ -88,7 +79,7 @@ func NewProjectSourceWithRoot(store *workspace.FileStore, scope workspace.Scope,
 	if root == "" {
 		root = defaultProjectSkillsRoot
 	}
-	root, err := cleanPublicResourcePath(root)
+	root, err := sdk.ValidateResourcePath(root)
 	if err != nil {
 		return nil, err
 	}
@@ -175,7 +166,7 @@ func projectMetadataEntryCount(metadata ProjectMetadata) int {
 
 func validateProjectMetadataActivations(activations map[string]Activation, system bool) error {
 	for rawPath, activation := range activations {
-		clean, err := cleanPublicPackagePath(rawPath)
+		clean, err := sdk.ValidatePackagePath(rawPath)
 		if err != nil || clean != rawPath || len([]byte(clean)) > workspace.MaxProjectPathBytes || strings.Contains(clean, "/.railgrid-") || strings.HasPrefix(clean, ".railgrid-") {
 			if system {
 				return errors.New("project skill metadata contains an invalid bundled package identity")
@@ -237,10 +228,10 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 	metadata, _, metadataErr := ReadProjectMetadata(ctx, s.store, s.scope)
 	metadataInvalid := metadataErr != nil
 	if metadataErr != nil {
-		warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, Code: "activation_metadata_invalid", Message: "project skill activation metadata is invalid; packages are disabled"}, s.limits.MaxWarnings)
+		warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, Code: "activation_metadata_invalid", Message: "project skill activation metadata is invalid; packages are disabled"}, s.limits.MaxWarnings)
 	}
 	if listing.Truncated {
-		warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, Code: "project_file_limit", Message: "project skill file listing reached its bound"}, s.limits.MaxWarnings)
+		warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, Code: "project_file_limit", Message: "project skill file listing reached its bound"}, s.limits.MaxWarnings)
 	}
 	packages := make(map[string]*Package)
 	resourceFiles := make([]workspace.FileInfo, 0)
@@ -256,16 +247,16 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 		if relative == "SKILL.md" || strings.HasSuffix(relative, "/SKILL.md") {
 			packagePath := path.Dir(relative)
 			if packagePath == "." {
-				warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: relative, Code: "invalid_package_path", Message: "project SKILL.md must be inside a package directory"}, s.limits.MaxWarnings)
+				warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: relative, Code: "invalid_package_path", Message: "project SKILL.md must be inside a package directory"}, s.limits.MaxWarnings)
 				continue
 			}
-			packagePath, cleanErr := cleanPublicPackagePath(packagePath)
+			packagePath, cleanErr := sdk.ValidatePackagePath(packagePath)
 			if cleanErr != nil {
-				warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "invalid_package_path", Message: "project skill package path is invalid"}, s.limits.MaxWarnings)
+				warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "invalid_package_path", Message: "project skill package path is invalid"}, s.limits.MaxWarnings)
 				continue
 			}
 			if _, exists := skillPaths[packagePath]; exists {
-				warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "duplicate_skill_file", Message: "project skill package contains duplicate SKILL.md entries"}, s.limits.MaxWarnings)
+				warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "duplicate_skill_file", Message: "project skill package contains duplicate SKILL.md entries"}, s.limits.MaxWarnings)
 				continue
 			}
 			skillPaths[packagePath] = path.Join(s.root, relative)
@@ -275,7 +266,7 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 		if packagePath == "." {
 			continue
 		}
-		if _, cleanErr := cleanPublicPackagePath(packagePath); cleanErr != nil {
+		if _, cleanErr := sdk.ValidatePackagePath(packagePath); cleanErr != nil {
 			continue
 		}
 		resourceFiles = append(resourceFiles, info)
@@ -307,7 +298,7 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 		skillPath := skillPaths[packagePath]
 		content, readErr := s.store.ReadFile(ctx, s.scope, workspace.ReadOptions{Path: skillPath, MaxBytes: s.limits.MaxSkillBytes})
 		if readErr != nil || content.Binary || content.Truncated {
-			warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "skill_read_failed", Message: "project SKILL.md could not be read"}, s.limits.MaxWarnings)
+			warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "skill_read_failed", Message: "project SKILL.md could not be read"}, s.limits.MaxWarnings)
 			continue
 		}
 		packageEntry := &Package{Path: packagePath, SkillContent: []byte(content.Content), Enabled: true}
@@ -316,11 +307,11 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 			packageEntry.Enabled = false
 		} else if activation, exists := metadata.Packages[packagePath]; exists {
 			packageEntry.EnabledSet = true
-			if activationMatchesPackageVersion(*packageEntry, activation) {
+			if sdk.ActivationMatchesPackageVersion(*packageEntry, activation) {
 				packageEntry.Enabled = activation.Enabled
 			} else {
 				packageEntry.Enabled = false
-				warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "activation_stale", Message: "skill activation metadata is stale; package is disabled"}, s.limits.MaxWarnings)
+				warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packagePath, Code: "activation_stale", Message: "skill activation metadata is stale; package is disabled"}, s.limits.MaxWarnings)
 			}
 		}
 		for _, info := range resourceInfos[packagePath] {
@@ -329,7 +320,7 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 				continue
 			}
 			resourcePath := strings.TrimPrefix(relative, packagePath+"/")
-			resourcePath, pathErr := cleanPublicResourcePath(resourcePath)
+			resourcePath, pathErr := sdk.ValidateResourcePath(resourcePath)
 			if pathErr != nil || resourcePath == "SKILL.md" {
 				continue
 			}
@@ -351,7 +342,7 @@ func (s *ProjectSource) List(ctx context.Context, maxPackages int) (PackageList,
 		sort.Slice(packageEntry.Resources, func(i, j int) bool { return packageEntry.Resources[i].Path < packageEntry.Resources[j].Path })
 		if len(packageEntry.Resources) > s.limits.MaxResourceCount {
 			packageEntry.Resources = packageEntry.Resources[:s.limits.MaxResourceCount]
-			warnings = appendBoundedWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packageEntry.Path, Code: "resource_limit", Message: "supporting-resource listing reached its bound"}, s.limits.MaxWarnings)
+			warnings = sdk.AppendWarning(warnings, Warning{Scope: ScopeProject, PackagePath: packageEntry.Path, Code: "resource_limit", Message: "supporting-resource listing reached its bound"}, s.limits.MaxWarnings)
 		}
 		ordered = append(ordered, *packageEntry)
 	}
@@ -376,18 +367,18 @@ func relativeToRoot(filePath, root string) (string, bool) {
 }
 
 func (s *ProjectSource) ReadResource(ctx context.Context, packagePath, resourcePath string, opts ResourceReadOptions) (ResourceReadResult, error) {
-	packagePath, err := cleanPublicPackagePath(packagePath)
+	packagePath, err := sdk.ValidatePackagePath(packagePath)
 	if err != nil {
 		return ResourceReadResult{}, err
 	}
-	resourcePath, err = cleanPublicResourcePath(resourcePath)
+	resourcePath, err = sdk.ValidateResourcePath(resourcePath)
 	if err != nil {
 		return ResourceReadResult{}, err
 	}
 	if resourcePath == "SKILL.md" {
 		return ResourceReadResult{}, fmt.Errorf("SKILL.md is not a supporting resource")
 	}
-	bounded, err := boundedReadOptions(opts, s.limits.MaxResourceRead)
+	bounded, err := sdk.BoundReadOptions(opts, s.limits.MaxResourceRead)
 	if err != nil {
 		return ResourceReadResult{}, err
 	}
