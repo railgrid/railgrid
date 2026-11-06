@@ -482,7 +482,7 @@ func TestRecoveryResumeClaimsRunningCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
+	_, _ = f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
 		checked = true
 		got := f.phaseOf(t, run.ID)
 		if got.Attempt != 1 || got.Phase != store.RunPhaseRunning {
@@ -506,7 +506,7 @@ func TestRecoveryResumeRejectsSupersededClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("superseded recovery continued") }}}, resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+	_, _ = f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("superseded recovery continued") }}}, resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
 	got := f.phaseOf(t, run.ID)
 	if got.Attempt != newer.Attempt || got.Phase != store.RunPhaseRunning {
 		t.Fatalf("stale recovery changed run: %+v", got)
@@ -532,7 +532,7 @@ func TestRecoveryResumeGuards(t *testing.T) {
 				intent.RecoveryClaimedAt = claimed.UpdatedAt
 			}
 			before := f.phaseOf(t, run.ID)
-			f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("guarded recovery continued") }}}, intent)
+			_, _ = f.s.resumeRun(ctx, f.scope, run.ID, runAccess{CR: projectionResumeCR{check: func() { t.Fatal("guarded recovery continued") }}}, intent)
 			got := f.phaseOf(t, run.ID)
 			if got.Attempt != before.Attempt || got.Phase != before.Phase || !got.UpdatedAt.Equal(before.UpdatedAt) || got.CancelRequested != before.CancelRequested {
 				t.Fatalf("guard changed run: %+v", got)

@@ -86,6 +86,7 @@ func initialHarnessCheckpoint(run taskRun, turn *harnessTurn) (json.RawMessage, 
 		Backend: agentsv1alpha1.AgentBackendHarness, Harness: stateRaw, HarnessRunner: target,
 		SourceName: run.SourceName, NotifyChannel: run.NotifyChannel,
 	}
+	checkpoint.AttachmentOwner, checkpoint.AttachmentRefs, checkpoint.SkillRefs, checkpoint.ContextResourceOwner, checkpoint.ContextResources = checkpointAgentInputReferences(run)
 	encoded, err := json.Marshal(checkpoint)
 	if err != nil {
 		return nil, err

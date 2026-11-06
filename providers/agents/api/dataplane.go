@@ -111,6 +111,9 @@ func (s *Server) routes() map[string]resourceRoutes {
 	return map[string]resourceRoutes{
 		"agents": {gvr: agentsclient.AgentGVR, verbs: map[string]verbRoute{
 			"chat":          {methods: post, handler: s.chat, stream: true},
+			"skill-catalog": {methods: get, handler: s.agentSkillCatalog, readOnly: true},
+			"skill-detail":  {methods: get, handler: s.agentSkillDetail, readOnly: true},
+			"attachments":   {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}, tail: tailFree, handler: s.agentAttachments},
 			"run":           {methods: post, handler: s.invokeAgentRun},
 			"sessions":      {methods: get, handler: s.listSessions, readOnly: true},
 			"session":       {methods: []string{http.MethodGet, http.MethodPatch, http.MethodDelete}, tail: tailRequired, handler: s.sessionModelSettings},

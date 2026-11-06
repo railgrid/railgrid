@@ -38,6 +38,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-agents/resulttypes"
+	"github.com/railgrid/provider-sdk/attachments"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
@@ -88,6 +89,9 @@ func (r ToolResultReference) Equal(other ToolResultReference) bool {
 		string(r.Payload) == string(other.Payload) && string(r.Receipt) == string(other.Receipt)
 }
 
+// AttachmentReceipt is a pointer-only immutable upload identity.
+type AttachmentReceipt = attachments.Receipt
+
 // Message is a role-tagged turn in the conversation a turn is given.
 //
 // ToolCalls is the one field that carries an Eino type across this line, and it
@@ -102,6 +106,11 @@ type Message struct {
 	ToolCalls  []schema.ToolCall `json:"toolCalls,omitempty"`
 	ToolCallID string            `json:"toolCallID,omitempty"`
 	Name       string            `json:"name,omitempty"`
+	// InputAttachments are reauthorized and hydrated only for a model invocation.
+	InputAttachments         []AttachmentReceipt `json:"inputAttachments,omitempty"`
+	InputAttachmentOwner     string              `json:"inputAttachmentOwner,omitempty"`
+	InputAttachmentBindingID string              `json:"inputAttachmentBindingID,omitempty"`
+
 	// Continuation carries bounded model protocol state needed to continue a
 	// reasoning response. It is never rendered as transcript content.
 	Continuation *ContinuationMetadata `json:"-"`
@@ -164,6 +173,16 @@ type Image struct {
 	MIMEType string // e.g. "image/jpeg"; defaults to image/jpeg when empty
 	Data     []byte
 }
+
+// UserInputContent is an invocation-only projection of uploaded user data.
+// It is never serialized into transcript history or a checkpoint.
+type UserInputContent struct {
+	Text   string
+	Images []Image
+}
+
+// UserInputHydrator reopens pointer-only user uploads under current authorization.
+type UserInputHydrator func(context.Context, Message) (UserInputContent, error)
 
 // Observation is a rich tool result: a text observation plus any images.
 type Observation struct {

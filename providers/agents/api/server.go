@@ -178,6 +178,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if err := st.EnsureSchema(ctx); err != nil {
 		return nil, err
 	}
+	if attachmentStore, ok := st.(store.AgentAttachmentStore); ok {
+		if err := attachmentStore.ReconcileAgentAttachmentBindings(ctx); err != nil {
+			return nil, fmt.Errorf("reconcile Agent attachment bindings: %w", err)
+		}
+	}
 
 	// The tenant client is nil without a hub URL; resource + chat
 	// endpoints then return a clear 501 rather than crashing (bare-hub dev).

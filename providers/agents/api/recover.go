@@ -80,6 +80,7 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 	runID := run.RunID
 	sourceName, notifyChannel := run.SourceName, run.NotifyChannel
 	artifactOwner, artifactRefs := checkpointArtifactReferences(run)
+	attachmentOwner, attachmentRefs, skillRefs, resourceOwner, contextResources := checkpointAgentInputReferences(run)
 	return func(state json.RawMessage) {
 		workedMS := int64(0)
 		if len(worked) > 0 && worked[0] != nil {
@@ -89,6 +90,8 @@ func (s *Server) checkpointRecorder(ctx context.Context, run taskRun, sessionID,
 			SourceName: sourceName, NotifyChannel: notifyChannel,
 			WorkedDurationMS: workedMS,
 			ArtifactOwner:    artifactOwner, ArtifactRefs: artifactRefs,
+			AttachmentOwner: attachmentOwner, AttachmentRefs: attachmentRefs,
+			SkillRefs: skillRefs, ContextResourceOwner: resourceOwner, ContextResources: contextResources,
 		}
 		if err := ck.setBackendState(backendType, state); err != nil {
 			// A checkpoint that cannot be stored costs recoverability, which is

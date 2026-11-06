@@ -41,6 +41,8 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(SchemeGroupVersion,
 		&Agent{},
 		&AgentList{},
+		&Skill{},
+		&SkillList{},
 		&Connection{},
 		&ConnectionList{},
 		&Schedule{},

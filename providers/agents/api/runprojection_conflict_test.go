@@ -277,7 +277,7 @@ func TestApprovalResumeProjectsClaimedRunningBeforeContinuing(t *testing.T) {
 	}
 	s.projectRun(context.Background(), scope, run)
 	checked := false
-	s.resumeRun(context.Background(), scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
+	_, _ = s.resumeRun(context.Background(), scope, run.ID, runAccess{CR: projectionResumeCR{check: func() {
 		checked = true
 		phase, _, _ := unstructured.NestedString(projectedObject(t, dyn, run.ID).Object, "status", "phase")
 		if phase != agentsv1alpha1.RunPhaseRunning {

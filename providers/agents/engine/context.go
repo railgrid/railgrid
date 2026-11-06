@@ -154,11 +154,14 @@ func EstimateHistoryTokens(messages []Message) int {
 }
 
 type historyIdentity struct {
-	id                string
-	sequence          int64
-	ephemeral         bool
-	resultReference   *backend.ToolResultReference
-	resultUnavailable bool
+	inputAttachments         []backend.AttachmentReceipt
+	inputAttachmentOwner     string
+	inputAttachmentBindingID string
+	id                       string
+	sequence                 int64
+	ephemeral                bool
+	resultReference          *backend.ToolResultReference
+	resultUnavailable        bool
 }
 
 func messagesFromEino(in []*schema.Message, identities map[*schema.Message]historyIdentity) []Message {
@@ -183,6 +186,9 @@ func messagesFromEino(in []*schema.Message, identities map[*schema.Message]histo
 			msg.ID = identity.id
 			msg.Sequence = identity.sequence
 			msg.Ephemeral = identity.ephemeral
+			msg.InputAttachments = append([]backend.AttachmentReceipt(nil), identity.inputAttachments...)
+			msg.InputAttachmentOwner = identity.inputAttachmentOwner
+			msg.InputAttachmentBindingID = identity.inputAttachmentBindingID
 			if identity.resultReference != nil {
 				ref := identity.resultReference.Clone()
 				msg.ResultReference = &ref
@@ -207,12 +213,13 @@ func messageName(message *schema.Message) string {
 func identitiesFromMessages(messages []Message, wire []*schema.Message) map[*schema.Message]historyIdentity {
 	identities := make(map[*schema.Message]historyIdentity, len(messages))
 	for i, message := range messages {
-		if i >= len(wire) || (message.ID == "" && message.Sequence == 0 && !message.Ephemeral && message.ResultReference == nil && !message.ResultUnavailable) {
+		if i >= len(wire) || (message.ID == "" && message.Sequence == 0 && !message.Ephemeral && message.ResultReference == nil && !message.ResultUnavailable && len(message.InputAttachments) == 0) {
 			continue
 		}
 		identity := historyIdentity{
 			id: message.ID, sequence: message.Sequence, ephemeral: message.Ephemeral,
 			resultUnavailable: message.ResultUnavailable,
+			inputAttachments:  append([]backend.AttachmentReceipt(nil), message.InputAttachments...), inputAttachmentOwner: message.InputAttachmentOwner, inputAttachmentBindingID: message.InputAttachmentBindingID,
 		}
 		if message.ResultReference != nil {
 			ref := message.ResultReference.Clone()
@@ -242,12 +249,12 @@ func ensureLatestUserMessageRetained(replacement []Message, anchor *Message) err
 			continue
 		}
 		if anchor.ID != "" {
-			if message.ID == anchor.ID && message.Content == anchor.Content {
+			if message.ID == anchor.ID && message.Content == anchor.Content && reflect.DeepEqual(message.InputAttachments, anchor.InputAttachments) && message.InputAttachmentOwner == anchor.InputAttachmentOwner && message.InputAttachmentBindingID == anchor.InputAttachmentBindingID {
 				return nil
 			}
 			continue
 		}
-		if message.Content == anchor.Content {
+		if message.Content == anchor.Content && reflect.DeepEqual(message.InputAttachments, anchor.InputAttachments) && message.InputAttachmentOwner == anchor.InputAttachmentOwner && message.InputAttachmentBindingID == anchor.InputAttachmentBindingID {
 			return nil
 		}
 	}

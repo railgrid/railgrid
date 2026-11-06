@@ -27,7 +27,8 @@ import (
 // EnsureSchema (idempotent DDL); every table is scoped by org/workspace so a
 // single database serves all tenants.
 type PostgresStore struct {
-	db *sql.DB
+	db              *sql.DB
+	attachmentQuota AgentAttachmentQuota
 }
 
 // scopedExecutor is the part of database/sql used by scoped store operations.
@@ -78,7 +79,7 @@ func OpenPostgres(ctx context.Context, dsn string) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	return &PostgresStore{db: db}, nil
+	return &PostgresStore{db: db, attachmentQuota: DefaultAgentAttachmentQuota()}, nil
 }
 
 func (p *PostgresStore) Close() error { return p.db.Close() }
@@ -280,6 +281,32 @@ var agentsSchema = []string{
 		ON agents_agent_artifacts (org_uuid, workspace_uuid, agent_name, agent_uid, owner, created_at DESC, id DESC)`,
 	`CREATE INDEX IF NOT EXISTS agents_agent_artifacts_owner_quota_idx
 		ON agents_agent_artifacts (org_uuid, workspace_uuid, owner)`,
+	`CREATE TABLE IF NOT EXISTS agents_agent_attachments (
+		id TEXT NOT NULL,
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		agent_uid TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		owner TEXT NOT NULL,
+		filename TEXT NOT NULL,
+		content_type TEXT NOT NULL,
+		size_bytes BIGINT NOT NULL,
+		sha256 TEXT NOT NULL,
+		draft BOOLEAN NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL,
+		expires_at TIMESTAMPTZ,
+		draft_expires_at TIMESTAMPTZ,
+		binding_id TEXT NOT NULL DEFAULT '',
+		data BYTEA NOT NULL,
+		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, agent_uid, id)
+	)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_attachments_session_idx
+		ON agents_agent_attachments (org_uuid, workspace_uuid, agent_name, agent_uid, session_id, created_at DESC, id)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_attachments_workspace_quota_idx
+		ON agents_agent_attachments (org_uuid, workspace_uuid)`,
+	`CREATE INDEX IF NOT EXISTS agents_agent_attachments_draft_quota_idx
+		ON agents_agent_attachments (org_uuid, workspace_uuid, agent_name, owner, expires_at) WHERE draft=TRUE`,
 	// The per-trigger delivery log never shipped; the sink moved to the
 	// Webhook (agents_webhook_deliveries). Dropped so a dev database that ran
 	// the interim schema sheds it.
@@ -344,6 +371,14 @@ var agentsSchema = []string{
 		PRIMARY KEY (org_uuid, workspace_uuid, agent_name, session_id)
 	)`,
 	`ALTER TABLE agents_session_summaries ADD COLUMN IF NOT EXISTS checkpoint JSONB`,
+	`CREATE TABLE IF NOT EXISTS agents_session_checkpoint_generations (
+		org_uuid TEXT NOT NULL,
+		workspace_uuid TEXT NOT NULL,
+		agent_name TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		generation BIGINT NOT NULL DEFAULT 0,
+		PRIMARY KEY (org_uuid,workspace_uuid,agent_name,session_id)
+	)`,
 	// One row per conversational session that has ever run a harness turn: the
 	// harness session its turns chain onto, and the turn count that IS the next
 	// attempt epoch. Both are protocol requirements (see store.HarnessSession),
@@ -651,6 +686,9 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	if err := lockTranscriptSession(ctx, mutation.executor, scope, sessionID); err != nil {
 		return err
 	}
+	if err := bumpSessionCheckpointGeneration(ctx, mutation.executor, scope, sessionID); err != nil {
+		return fmt.Errorf("invalidate session checkpoint generation: %w", err)
+	}
 	if _, err := mutation.executor.ExecContext(ctx, `
 		DELETE FROM agents_session_titles
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
@@ -659,6 +697,12 @@ func (p *PostgresStore) DeleteSession(ctx context.Context, scope Scope, sessionI
 	}
 	if _, err := mutation.executor.ExecContext(ctx, `
 		DELETE FROM agents_messages
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+		return err
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
+		DELETE FROM agents_agent_attachments
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
 		return err
@@ -713,6 +757,26 @@ func (p *PostgresStore) PutSessionSummary(ctx context.Context, scope Scope, s Se
 	if err != nil {
 		return fmt.Errorf("marshal session checkpoint: %w", err)
 	}
+	if mutation.tx == nil {
+		tx, err := p.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("begin session checkpoint write: %w", err)
+		}
+		mutation.tx, mutation.executor = tx, tx
+	}
+	if err := lockTranscriptSession(ctx, mutation.executor, scope, s.SessionID); err != nil {
+		return err
+	}
+	generation, err := sessionCheckpointGeneration(ctx, mutation.executor, scope, s.SessionID)
+	if err != nil {
+		return err
+	}
+	if generation != s.Generation {
+		return ErrSessionCheckpointStale
+	}
+	if err := validateCheckpointAttachments(ctx, mutation.executor, scope, s.SessionID, s.Checkpoint); err != nil {
+		return err
+	}
 	result, err := mutation.executor.ExecContext(ctx, `
 		INSERT INTO agents_session_summaries
 			(org_uuid, workspace_uuid, agent_name, session_id, summary, through_at, message_count, created_at, updated_at, checkpoint)
@@ -747,18 +811,41 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 		return SessionSummary{}, false, err
 	}
 	out := SessionSummary{SessionID: sessionID}
+	var summary sql.NullString
+	var throughAt, createdAt, updatedAt sql.NullTime
+	var messageCount sql.NullInt64
 	var checkpoint []byte
-	row := p.db.QueryRowContext(ctx, `
-		SELECT summary, through_at, message_count, created_at, updated_at, checkpoint
-		FROM agents_session_summaries
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
-	err := row.Scan(&out.Summary, &out.ThroughAt, &out.MessageCount, &out.CreatedAt, &out.UpdatedAt, &checkpoint)
-	if errors.Is(err, sql.ErrNoRows) {
-		return SessionSummary{}, false, nil
-	}
+	var found bool
+	err := p.db.QueryRowContext(ctx, `
+		SELECT summary.summary, summary.through_at, summary.message_count, summary.created_at,
+			summary.updated_at, summary.checkpoint, COALESCE(generation.generation, 0),
+			summary.session_id IS NOT NULL
+		FROM (SELECT $1::TEXT AS org_uuid, $2::TEXT AS workspace_uuid,
+			$3::TEXT AS agent_name, $4::TEXT AS session_id) AS requested
+		LEFT JOIN agents_session_summaries AS summary
+			ON summary.org_uuid=requested.org_uuid AND summary.workspace_uuid=requested.workspace_uuid
+			AND summary.agent_name=requested.agent_name AND summary.session_id=requested.session_id
+		LEFT JOIN agents_session_checkpoint_generations AS generation
+			ON generation.org_uuid=requested.org_uuid AND generation.workspace_uuid=requested.workspace_uuid
+			AND generation.agent_name=requested.agent_name AND generation.session_id=requested.session_id`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID).
+		Scan(&summary, &throughAt, &messageCount, &createdAt, &updatedAt, &checkpoint, &out.Generation, &found)
 	if err != nil {
 		return SessionSummary{}, false, err
+	}
+	if !found {
+		return out, false, nil
+	}
+	out.Summary = summary.String
+	out.MessageCount = int(messageCount.Int64)
+	if throughAt.Valid {
+		out.ThroughAt = throughAt.Time.UTC()
+	}
+	if createdAt.Valid {
+		out.CreatedAt = createdAt.Time.UTC()
+	}
+	if updatedAt.Valid {
+		out.UpdatedAt = updatedAt.Time.UTC()
 	}
 	if len(checkpoint) > 0 {
 		var decoded SessionCheckpoint
@@ -770,8 +857,57 @@ func (p *PostgresStore) GetSessionSummary(ctx context.Context, scope Scope, sess
 		}
 		out.Checkpoint = &decoded
 	}
-	out.ThroughAt, out.CreatedAt, out.UpdatedAt = out.ThroughAt.UTC(), out.CreatedAt.UTC(), out.UpdatedAt.UTC()
 	return out, true, nil
+}
+
+func sessionCheckpointGeneration(ctx context.Context, executor scopedExecutor, scope Scope, sessionID string) (int64, error) {
+	var generation int64
+	err := executor.QueryRowContext(ctx, `
+		SELECT generation FROM agents_session_checkpoint_generations
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID).Scan(&generation)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return generation, err
+}
+
+func bumpSessionCheckpointGeneration(ctx context.Context, executor scopedExecutor, scope Scope, sessionID string) error {
+	_, err := executor.ExecContext(ctx, `
+		INSERT INTO agents_session_checkpoint_generations
+			(org_uuid,workspace_uuid,agent_name,session_id,generation)
+		VALUES ($1,$2,$3,$4,1)
+		ON CONFLICT (org_uuid,workspace_uuid,agent_name,session_id)
+		DO UPDATE SET generation=agents_session_checkpoint_generations.generation+1`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID)
+	return err
+}
+
+func validateCheckpointAttachments(ctx context.Context, executor scopedExecutor, scope Scope, sessionID string, checkpoint *SessionCheckpoint) error {
+	if checkpoint == nil {
+		return nil
+	}
+	for _, message := range checkpoint.ReplacementHistory {
+		for _, receipt := range message.InputAttachments {
+			var matches bool
+			err := executor.QueryRowContext(ctx, `
+				SELECT EXISTS (
+					SELECT 1 FROM agents_agent_attachments
+					WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4
+						AND id=$5 AND owner=$6 AND binding_id=$7 AND draft=FALSE
+						AND filename=$8 AND content_type=$9 AND size_bytes=$10 AND sha256=$11 AND created_at=$12
+				)`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID,
+				receipt.ID, message.InputAttachmentOwner, message.InputAttachmentBindingID,
+				receipt.Filename, receipt.ContentType, receipt.SizeBytes, receipt.SHA256, receipt.CreatedAt.UTC()).Scan(&matches)
+			if err != nil {
+				return fmt.Errorf("validate checkpoint attachment receipt: %w", err)
+			}
+			if !matches {
+				return fmt.Errorf("%w: checkpoint references an unavailable attachment", ErrSessionCheckpointStale)
+			}
+		}
+	}
+	return nil
 }
 
 // ---- harness sessions ---------------------------------------------------------
@@ -2057,15 +2193,53 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 			EXISTS (SELECT 1 FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_session_titles WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2) OR
+			EXISTS (SELECT 1 FROM agents_session_checkpoint_generations WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_harness_sessions WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_run_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_agent_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2) OR
+			EXISTS (SELECT 1 FROM agents_agent_attachments WHERE org_uuid=$1 AND workspace_uuid=$2) OR
 			EXISTS (SELECT 1 FROM agents_webhook_deliveries WHERE org_uuid=$1 AND workspace_uuid=$2)`,
 		fromOrg, fromWorkspace).Scan(&hasSource); err != nil {
 		return fmt.Errorf("check legacy scope for cluster %s: %w", clusterID, err)
 	}
 	if !hasSource {
 		return nil
+	}
+	type sessionCoordinate struct {
+		agentName string
+		sessionID string
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT agent_name, session_id FROM (
+			SELECT agent_name, session_id FROM agents_messages WHERE org_uuid=$1 AND workspace_uuid=$2
+			UNION SELECT agent_name, session_id FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2
+			UNION SELECT agent_name, session_id FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2
+			UNION SELECT agent_name, session_id FROM agents_session_checkpoint_generations WHERE org_uuid=$1 AND workspace_uuid=$2
+		) AS sessions WHERE session_id <> '' ORDER BY agent_name, session_id`, fromOrg, fromWorkspace)
+	if err != nil {
+		return fmt.Errorf("list fallback sessions for checkpoint migration: %w", err)
+	}
+	var sessions []sessionCoordinate
+	for rows.Next() {
+		var session sessionCoordinate
+		if err := rows.Scan(&session.agentName, &session.sessionID); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		destination := Scope{OrgUUID: toOrg, WorkspaceUUID: toWorkspace, AgentName: session.agentName}
+		if err := lockTranscriptSession(ctx, tx, destination, session.sessionID); err != nil {
+			return fmt.Errorf("lock migrated session checkpoint %s/%s: %w", session.agentName, session.sessionID, err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO agents_session_models (org_uuid,workspace_uuid,agent_name,session_id,settings,updated_at)
  SELECT $3,$4,agent_name,session_id,settings,updated_at FROM agents_session_models WHERE org_uuid=$1 AND workspace_uuid=$2
@@ -2166,6 +2340,18 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_agent_artifacts WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
 		return fmt.Errorf("remove migrated agent artifacts for cluster %s: %w", clusterID, err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO agents_agent_attachments
+			(id,org_uuid,workspace_uuid,agent_name,agent_uid,session_id,owner,filename,content_type,size_bytes,sha256,draft,created_at,expires_at,draft_expires_at,binding_id,data)
+		SELECT id,$3,$4,agent_name,agent_uid,session_id,owner,filename,content_type,size_bytes,sha256,draft,created_at,expires_at,draft_expires_at,binding_id,data
+		FROM agents_agent_attachments WHERE org_uuid=$1 AND workspace_uuid=$2
+		ON CONFLICT (org_uuid,workspace_uuid,agent_name,agent_uid,id) DO NOTHING`,
+		fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
+		return fmt.Errorf("migrate agent attachments for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_agent_attachments WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
+		return fmt.Errorf("remove migrated agent attachments for cluster %s: %w", clusterID, err)
+	}
 	// Usage is a cumulative bucket: combine both partitions once, then remove
 	// the source so a later catch-up cannot count it a second time.
 	if _, err := tx.ExecContext(ctx, `
@@ -2222,6 +2408,25 @@ func migrateUnmappedScopeTx(ctx context.Context, tx *sql.Tx, clusterID string, r
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_summaries WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
 		return fmt.Errorf("remove migrated session summaries for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO agents_session_checkpoint_generations
+			(org_uuid,workspace_uuid,agent_name,session_id,generation)
+		SELECT $3,$4,agent_name,session_id,generation
+		FROM agents_session_checkpoint_generations WHERE org_uuid=$1 AND workspace_uuid=$2
+		ON CONFLICT (org_uuid,workspace_uuid,agent_name,session_id) DO UPDATE SET
+			generation=GREATEST(agents_session_checkpoint_generations.generation, EXCLUDED.generation)`,
+		fromOrg, fromWorkspace, toOrg, toWorkspace); err != nil {
+		return fmt.Errorf("migrate session checkpoint generations for cluster %s: %w", clusterID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM agents_session_checkpoint_generations WHERE org_uuid=$1 AND workspace_uuid=$2`, fromOrg, fromWorkspace); err != nil {
+		return fmt.Errorf("remove migrated session checkpoint generations for cluster %s: %w", clusterID, err)
+	}
+	for _, session := range sessions {
+		destination := Scope{OrgUUID: toOrg, WorkspaceUUID: toWorkspace, AgentName: session.agentName}
+		if err := bumpSessionCheckpointGeneration(ctx, tx, destination, session.sessionID); err != nil {
+			return fmt.Errorf("advance migrated session checkpoint generation %s/%s: %w", session.agentName, session.sessionID, err)
+		}
 	}
 	// Epoch and native-session identity travel together. A later tombstone or
 	// receipt wins by observed epoch, then UpdatedAt; allocation count never goes
@@ -2420,7 +2625,7 @@ func (p *PostgresStore) DeleteAgentData(ctx context.Context, scope Scope, agentN
 	if err := scope.validate(); err != nil {
 		return err
 	}
-	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_models", "agents_session_titles", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts"} {
+	for _, table := range []string{"agents_messages", "agents_runs", "agents_memories", "agents_inbox", "agents_tool_calls", "agents_usage", "agents_session_summaries", "agents_session_models", "agents_session_titles", "agents_harness_sessions", "agents_run_artifacts", "agents_agent_artifacts", "agents_agent_attachments"} {
 		if _, err := mutation.executor.ExecContext(ctx,
 			fmt.Sprintf(`DELETE FROM %s WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3`, table),
 			scope.OrgUUID, scope.WorkspaceUUID, agentName); err != nil {
@@ -2474,6 +2679,15 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 		if err := lockTranscriptSession(ctx, mutation.executor, scope, sessionID); err != nil {
 			return err
 		}
+		if err := bumpSessionCheckpointGeneration(ctx, mutation.executor, scope, sessionID); err != nil {
+			return fmt.Errorf("invalidate session checkpoint generation: %w", err)
+		}
+		if _, err := mutation.executor.ExecContext(ctx, `
+			DELETE FROM agents_session_summaries
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND session_id=$4`,
+			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, sessionID); err != nil {
+			return fmt.Errorf("invalidate deleted run's session checkpoint: %w", err)
+		}
 	}
 	// Messages, tool calls and artifacts first: a crash between statements
 	// must leave the run row behind as the thing that still points at them,
@@ -2484,6 +2698,12 @@ func (p *PostgresStore) DeleteRunData(ctx context.Context, scope Scope, runID st
 			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
 			return err
 		}
+	}
+	if _, err := mutation.executor.ExecContext(ctx, `
+		DELETE FROM agents_agent_attachments
+		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND binding_id=$4`,
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, runID); err != nil {
+		return err
 	}
 	if strings.TrimSpace(sessionID) != "" {
 		if _, err := mutation.executor.ExecContext(ctx, `

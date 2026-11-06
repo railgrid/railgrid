@@ -58,10 +58,14 @@
 package harness
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -81,6 +85,15 @@ import (
 type Config struct {
 	// Runner reaches the enrolled runner. dispatch.Wrap adapts the shared client.
 	Runner dispatch.Runner
+	// StageInput transfers verified input bytes through the runner's separate
+	// authenticated upload transport before Start references their manifest.
+	StageInput func(context.Context, string, runner.InputFile, io.Reader) error
+	// StageInputs uploads a fully validated manifest as one dispatch-scoped batch.
+	// StageInput remains the compatibility seam for simpler runner doubles.
+	StageInputs func(context.Context, string, []StagedInput) error
+	// InputFiles are per-attempt files. Their bytes are dispatch-only and never
+	// enter the durable runner StartRequest except through their metadata refs.
+	InputFiles []StagedInput
 	// BackendKey binds a parked attempt to the runner selected for it. A
 	// continuation that resolves to another runner cannot safely resume the
 	// original attempt.
@@ -144,6 +157,13 @@ type Config struct {
 	NewID func() string
 	// Now is the clock; nil means time.Now. Tests pin it.
 	Now func() time.Time
+}
+
+// StagedInput pairs one runner manifest entry with the bytes staged before an
+// attempt starts. The bytes are transient provider memory only.
+type StagedInput struct {
+	Reference runner.InputFile
+	Data      []byte
 }
 
 // Backend executes a turn on a harness. One per turn, like the model backend,
@@ -306,6 +326,39 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 			MaxTurns:           1,
 			MaxDurationSeconds: b.cfg.MaxDurationSeconds,
 		},
+	}
+	if len(b.cfg.InputFiles) > 0 {
+		if b.cfg.StageInputs == nil && b.cfg.StageInput == nil {
+			return backend.Outcome{Status: backend.StatusFailed}, errors.New("runner input staging is unavailable")
+		}
+		refs := make([]runner.InputFile, len(b.cfg.InputFiles))
+		for i, staged := range b.cfg.InputFiles {
+			refs[i] = staged.Reference
+		}
+		if err := runner.ValidateInputFiles(refs); err != nil {
+			return backend.Outcome{Status: backend.StatusFailed}, fmt.Errorf("validating harness input manifest: %w", err)
+		}
+		for _, staged := range b.cfg.InputFiles {
+			if int64(len(staged.Data)) != staged.Reference.Size {
+				return backend.Outcome{Status: backend.StatusFailed}, fmt.Errorf("staged input %q does not match its declared size", staged.Reference.ID)
+			}
+			digest := sha256.Sum256(staged.Data)
+			if staged.Reference.Digest != "sha256:"+hex.EncodeToString(digest[:]) {
+				return backend.Outcome{Status: backend.StatusFailed}, fmt.Errorf("staged input %q does not match its declared digest", staged.Reference.ID)
+			}
+		}
+		if b.cfg.StageInputs != nil {
+			if err := b.cfg.StageInputs(ctx, b.cfg.AttemptID, b.cfg.InputFiles); err != nil {
+				return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("staging harness inputs", err)
+			}
+		} else {
+			for _, staged := range b.cfg.InputFiles {
+				if err := b.cfg.StageInput(ctx, b.cfg.AttemptID, staged.Reference, bytes.NewReader(staged.Data)); err != nil {
+					return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("staging harness input", err)
+				}
+			}
+		}
+		req.InputFiles = refs
 	}
 	if repo := b.cfg.Repository; repo != nil {
 		// A repository attempt: a fresh clone of the approved commit, exporting

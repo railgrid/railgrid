@@ -107,6 +107,14 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
+	attachmentCaller := ""
+	if !intent.Approval || intent.Approve {
+		attachmentCaller, err = s.resumeAttachmentCaller(ctx, ck, access)
+		if err != nil {
+			return runResult{}, fmt.Errorf("verifying caller for conversation attachments: %w", err)
+		}
+	}
+
 	// Claim so only one resolver resumes (double /approve, portal + channel).
 	var claimed store.Run
 	if intent.FromPhase == store.RunPhaseRunning {
@@ -166,6 +174,12 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, artifactErr.Error())
 		return runResult{}, artifactErr
 	}
+
+	attachmentOwner, attachmentRefs, skillRefs, resourceOwner, contextResources, inputErr := resumeAgentInputReferences(ck, access.CallerUser, attachmentCaller, intent.FromPhase == store.RunPhaseRunning)
+	if inputErr != nil {
+		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, inputErr.Error())
+		return runResult{}, inputErr
+	}
 	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
@@ -179,6 +193,19 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
 		return runResult{}, err
 	}
+	if len(attachmentRefs) > 0 {
+		for _, receipt := range attachmentRefs {
+			if _, err := s.loadBoundAgentAttachment(ctx, agentScope, string(agent.UID), effectiveSessionID(run.SessionID, run.Trigger), attachmentOwner, run.ID, receipt); err != nil {
+				s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "uploaded attachments are no longer available to this accepted run")
+				return runResult{}, err
+			}
+		}
+	}
+	// These are coordinate-only prompt references. Admission already resolved
+	// each coordinate through the attended caller and pinned its UID; resuming
+	// carries that accepted context as quoted, untrusted metadata. A resume has
+	// no delegated read capability, and any later tool read is authorized by its
+	// ordinary current-caller path.
 
 	used := false
 	tr := taskRun{
@@ -187,6 +214,8 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
+		AttachmentOwner: attachmentOwner, AttachmentCaller: attachmentCaller, AttachmentRefs: attachmentRefs,
+		SkillRefs: skillRefs, ContextResourceOwner: resourceOwner, ContextResources: contextResources,
 		// A spawned worker's constraints come back off its checkpoint, so a
 		// resumed sub-task is rebuilt as the worker it was — same narrowed
 		// toolset, same approval class, same tool-turn budget, same model

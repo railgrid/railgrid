@@ -86,6 +86,8 @@ type ContextCompactionFunc func(ctx context.Context, history []Message, estimate
 
 // Callbacks stream run progress to the caller. All fields are optional.
 type Callbacks struct {
+	// HydrateUserInput reopens uploaded user content on invocation-only copies.
+	HydrateUserInput backend.UserInputHydrator
 	// PrepareFreshHistory projects prior-turn messages before the first model
 	// request in a new turn. It is not run when resuming a checkpoint: active
 	// tool continuations must retain their original model-bound metadata.
@@ -284,6 +286,13 @@ func (e *Engine) ResumeTurnWithTools(
 	if err := rehydrateReferenceOnly(ctx, in, identities, byName, ck.Pending); err != nil {
 		return Result{Usage: ck.Usage}, err
 	}
+	// Reauthorize input before an approved pending call can produce a side effect.
+	if len(ck.Pending) > 0 {
+		if _, err := hydrateUserInputs(ctx, in, identities, cb.HydrateUserInput); err != nil {
+			return Result{Usage: ck.Usage}, err
+		}
+	}
+
 	checkpointHistory := make([]Message, 0, len(ck.Messages))
 	for _, message := range ck.Messages {
 		checkpointHistory = append(checkpointHistory, Message{
@@ -291,6 +300,7 @@ func (e *Engine) ResumeTurnWithTools(
 			Name: checkpointMessageName(message), ToolCalls: checkpointToolCalls(message.ToolCalls),
 			Continuation: message.Continuation.Clone(),
 			ID:           message.ID, Sequence: message.Sequence, Ephemeral: message.Ephemeral,
+			InputAttachments: append([]backend.AttachmentReceipt(nil), message.InputAttachments...), InputAttachmentOwner: message.InputAttachmentOwner, InputAttachmentBindingID: message.InputAttachmentBindingID,
 		})
 	}
 	task := latestUserMessage(checkpointHistory)
@@ -417,8 +427,18 @@ func (e *Engine) loop(
 					Iter:     iter,
 				})
 			}
+			modelInput, hydrateErr := hydrateUserInputs(ctx, in, identities, cb.HydrateUserInput)
+			if hydrateErr != nil {
+				return Result{Usage: *usage}, hydrateErr
+			}
+			if cfg.ContextBudgetTokens > 0 {
+				estimate := requestContextEstimate(modelInput, toolSchemaTokens, cfg.ContextBudgetTokens)
+				if estimate.TotalTokens > estimate.BudgetTokens {
+					return Result{Usage: *usage}, &ContextBudgetError{Estimate: estimate, Reason: "uploaded user input leaves too little room for this turn"}
+				}
+			}
 			started := time.Now()
-			full, err := e.streamOnce(ctx, active, in, content, usage, cb.OnDelta)
+			full, err := e.streamOnce(ctx, active, modelInput, content, usage, cb.OnDelta)
 			if err != nil {
 				cb.assistantMessage(AssistantMessage{Duration: time.Since(started)})
 				return Result{}, err

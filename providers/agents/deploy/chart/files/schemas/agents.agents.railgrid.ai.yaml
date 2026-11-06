@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v261103-8d04f28c.agents.agents.railgrid.ai
+  name: v261105-980e97ca4.agents.agents.railgrid.ai
 spec:
   group: agents.railgrid.ai
   names:
@@ -380,6 +380,27 @@ spec:
                   - name
                   x-kubernetes-list-type: map
               type: object
+            skills:
+              description: |-
+                Skills opts this agent into workspace or provider-published guidance.
+                An empty list exposes no skills. Availability applies to future turns.
+              items:
+                description: AgentSkillReference opts an agent into one qualified
+                  catalog identity.
+                properties:
+                  name:
+                    description: Name is a qualified identity such as workspace:incident-review.
+                    maxLength: 1024
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
+              maxItems: 64
+              type: array
+              x-kubernetes-list-map-keys:
+              - name
+              x-kubernetes-list-type: map
             systemPrompt:
               description: |-
                 SystemPrompt is the agent's persona and standing instructions, injected

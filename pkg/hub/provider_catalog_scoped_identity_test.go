@@ -190,6 +190,46 @@ func TestProviderCatalogScopedIdentityRequiresLiveCentralProjectOwner(t *testing
 	}
 }
 
+func TestProviderCatalogScopedIdentityAdmitsOnlyCurrentAgentOwner(t *testing.T) {
+	for _, scenario := range []string{"current", "replaced", "missing", "wrong-provider", "wrong-resource", "wrong-tenant", "other-route"} {
+		t.Run(scenario, func(t *testing.T) {
+			record, _ := validCatalogProjectRecord()
+			owner := identity.Owner{Provider: agentCatalogOwnerProvider, Kind: agentCatalogOwnerKind, Group: agentCatalogOwnerGroup, Version: agentCatalogOwnerVersion, Resource: agentCatalogOwnerResource, Name: "agent-1", UID: testCatalogProjectUID}
+			account := identity.ServiceAccountName(owner)
+			record.Name = identity.RecordName(testCatalogProjectCluster, account)
+			record.Spec.ServiceAccountName, record.Status.ServiceAccount = account, account
+			record.Spec.Owner = tenancyv1alpha1.ScopedIdentityOwner{Provider: owner.Provider, Kind: owner.Kind, Group: owner.Group, Version: owner.Version, Resource: owner.Resource, Name: owner.Name, UID: owner.UID, ClusterID: testCatalogProjectCluster}
+			resolver, _, records, probe, _ := newCatalogProjectResolver(record, account, true)
+			req := validCatalogProjectRequest()
+			switch scenario {
+			case "replaced":
+				probe.uid = "new-agent-uid"
+			case "missing":
+				probe.found = false
+			case "wrong-provider":
+				record.Spec.Owner.Provider = "other"
+			case "wrong-resource":
+				record.Spec.Owner.Resource = "runs"
+			case "wrong-tenant":
+				req.Header.Set(dataplane.HeaderCluster, "othercluster")
+			case "other-route":
+				req.URL.Path = "/api/orgs"
+			}
+			records.record = record
+			_, path, err := resolver.resolve(req)
+			if scenario != "current" {
+				if err == nil {
+					t.Fatal("catalog admitted an invalid Agent identity")
+				}
+				return
+			}
+			if err != nil || path != workspacePathRoot+":"+testCatalogOrg+":"+testCatalogWorkspace || probe.owner.Provider != "agents" || probe.owner.Kind != "Agent" || probe.owner.UID != owner.UID {
+				t.Fatalf("Agent catalog admission: path=%q owner=%#v error=%v", path, probe.owner, err)
+			}
+		})
+	}
+}
+
 func TestProviderCatalogScopedIdentityRejectsMismatchedOrAmbiguousTenantHeaders(t *testing.T) {
 	record, account := validCatalogProjectRecord()
 	cases := map[string]func(*http.Request){

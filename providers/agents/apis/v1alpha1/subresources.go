@@ -443,6 +443,7 @@ func init() {
 		scheme.AddKnownTypes(SchemeGroupVersion,
 			&ArtifactRequest{},
 			&ArtifactsRequest{},
+			&AttachmentsRequest{},
 			&AuthorizeRequest{},
 			&CancelRequest{},
 			&ChatRequest{},
@@ -455,6 +456,8 @@ func init() {
 			&RunRequest{},
 			&SessionRequest{},
 			&SessionsRequest{},
+			&SkillCatalogRequest{},
+			&SkillDetailRequest{},
 			&TestRequest{},
 			&TraceRequest{},
 			&UsageRequest{},
@@ -462,4 +465,52 @@ func init() {
 		)
 		return nil
 	})
+}
+
+// SkillCatalogRequest carries the skill-catalog custom subresource.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=skill-catalog,scope=Cluster
+// +kubebuilder:resource:singular=skill-catalog
+type SkillCatalogRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// SkillDetailRequest carries the skill-detail custom subresource.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=skill-detail,scope=Cluster
+// +kubebuilder:resource:singular=skill-detail
+type SkillDetailRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
+}
+
+// AttachmentsRequest carries the attachments custom subresource.
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:resource:path=attachments,scope=Cluster
+// +kubebuilder:resource:singular=attachments
+type AttachmentsRequest struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Input runtime.RawExtension `json:"input,omitempty"`
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Result runtime.RawExtension `json:"result,omitempty"`
 }

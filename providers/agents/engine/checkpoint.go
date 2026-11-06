@@ -63,15 +63,18 @@ type PendingCall struct {
 // images) are degraded to a text note — they are transient vision input, not
 // conversation state worth persisting.
 type CheckpointMessage struct {
-	Role       string               `json:"role"`
-	Content    string               `json:"content,omitempty"`
-	ToolCalls  []CheckpointToolCall `json:"toolCalls,omitempty"`
-	ToolCallID string               `json:"toolCallID,omitempty"`
-	ToolName   string               `json:"toolName,omitempty"`
-	Name       string               `json:"name,omitempty"`
-	ID         string               `json:"id,omitempty"`
-	Sequence   int64                `json:"sequence,omitempty"`
-	Ephemeral  bool                 `json:"ephemeral,omitempty"`
+	InputAttachments         []backend.AttachmentReceipt `json:"inputAttachments,omitempty"`
+	InputAttachmentOwner     string                      `json:"inputAttachmentOwner,omitempty"`
+	InputAttachmentBindingID string                      `json:"inputAttachmentBindingID,omitempty"`
+	Role                     string                      `json:"role"`
+	Content                  string                      `json:"content,omitempty"`
+	ToolCalls                []CheckpointToolCall        `json:"toolCalls,omitempty"`
+	ToolCallID               string                      `json:"toolCallID,omitempty"`
+	ToolName                 string                      `json:"toolName,omitempty"`
+	Name                     string                      `json:"name,omitempty"`
+	ID                       string                      `json:"id,omitempty"`
+	Sequence                 int64                       `json:"sequence,omitempty"`
+	Ephemeral                bool                        `json:"ephemeral,omitempty"`
 	// ResultReference is the bounded adapter reference for a tool result whose
 	// bytes are deliberately omitted from this durable snapshot.
 	ResultReference *backend.ToolResultReference `json:"resultReference,omitempty"`
@@ -135,6 +138,9 @@ func checkpointMessagesWithIdentities(in []*schema.Message, identities map[*sche
 			cm.ID = identity.id
 			cm.Sequence = identity.sequence
 			cm.Ephemeral = identity.ephemeral
+			cm.InputAttachments = append([]backend.AttachmentReceipt(nil), identity.inputAttachments...)
+			cm.InputAttachmentOwner = identity.inputAttachmentOwner
+			cm.InputAttachmentBindingID = identity.inputAttachmentBindingID
 			if identity.resultReference != nil {
 				ref := identity.resultReference.Clone()
 				cm.ResultReference = &ref
@@ -180,10 +186,11 @@ func restoreMessagesWithIdentities(in []CheckpointMessage) ([]*schema.Message, m
 				Function: schema.FunctionCall{Name: tc.Name, Arguments: tc.Args},
 			})
 		}
-		if cm.ID != "" || cm.Sequence != 0 || cm.Ephemeral || cm.ResultReference != nil || cm.ResultUnavailable {
+		if cm.ID != "" || cm.Sequence != 0 || cm.Ephemeral || cm.ResultReference != nil || cm.ResultUnavailable || len(cm.InputAttachments) > 0 {
 			identity := historyIdentity{
 				id: cm.ID, sequence: cm.Sequence, ephemeral: cm.Ephemeral,
 				resultUnavailable: cm.ResultUnavailable,
+				inputAttachments:  append([]backend.AttachmentReceipt(nil), cm.InputAttachments...), inputAttachmentOwner: cm.InputAttachmentOwner, inputAttachmentBindingID: cm.InputAttachmentBindingID,
 			}
 			if cm.ResultReference != nil {
 				ref := cm.ResultReference.Clone()

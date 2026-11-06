@@ -557,9 +557,12 @@ func (b *background) resumeRecoveredRun(ctx context.Context, sr store.ScopedRun,
 		return fmt.Errorf("claiming recovered run: %w", err)
 	}
 	// Detached: the resume outlives this reconcile, and its own timeout bounds it.
-	go b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID,
-		b.agentAccess(ctx, dyn, clusterID, sr.Run.AgentName),
-		resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+	access := b.agentAccess(ctx, dyn, clusterID, sr.Run.AgentName)
+	go func() {
+		// The detached continuation records its terminal error on the run.
+		_, _ = b.server.resumeRun(context.WithoutCancel(ctx), sr.Scope, sr.Run.ID, access,
+			resumeIntent{FromPhase: store.RunPhaseRunning, RecoveryClaimedAt: claimed.UpdatedAt})
+	}()
 	return nil
 }
 

@@ -313,6 +313,10 @@ type RunDelivery struct {
 type SessionSummary struct {
 	SessionID string `json:"sessionID"`
 	Summary   string `json:"summary"`
+	// Generation fences an in-flight compactor from restoring a checkpoint
+	// after its session history was invalidated by run/session deletion. It is
+	// store metadata and is not part of the checkpoint wire format.
+	Generation int64 `json:"-"`
 	// ThroughAt is the CreatedAt of the newest message folded in. Messages at or
 	// before it are represented by Summary and are not replayed.
 	ThroughAt time.Time `json:"throughAt"`
@@ -342,14 +346,17 @@ type SessionCheckpoint struct {
 // checkpoint. Tool calls and their results remain structured so replay can
 // restore valid call/result pairing after restart.
 type SessionCheckpointMessage struct {
-	ID           string                        `json:"id,omitempty"`
-	Sequence     int64                         `json:"sequence,omitempty"`
-	Role         string                        `json:"role"`
-	Content      string                        `json:"content,omitempty"`
-	Name         string                        `json:"name,omitempty"`
-	ToolCallID   string                        `json:"toolCallID,omitempty"`
-	ToolCalls    []SessionCheckpointToolCall   `json:"toolCalls,omitempty"`
-	Continuation *backend.ContinuationMetadata `json:"continuation,omitempty"`
+	ID                       string                        `json:"id,omitempty"`
+	Sequence                 int64                         `json:"sequence,omitempty"`
+	Role                     string                        `json:"role"`
+	Content                  string                        `json:"content,omitempty"`
+	InputAttachments         []backend.AttachmentReceipt   `json:"inputAttachments,omitempty"`
+	InputAttachmentOwner     string                        `json:"inputAttachmentOwner,omitempty"`
+	InputAttachmentBindingID string                        `json:"inputAttachmentBindingID,omitempty"`
+	Name                     string                        `json:"name,omitempty"`
+	ToolCallID               string                        `json:"toolCallID,omitempty"`
+	ToolCalls                []SessionCheckpointToolCall   `json:"toolCalls,omitempty"`
+	Continuation             *backend.ContinuationMetadata `json:"continuation,omitempty"`
 }
 
 // SessionCheckpointToolCall is the durable subset of a model tool call.
@@ -386,6 +393,18 @@ func validateSessionCheckpoint(checkpoint *SessionCheckpoint) error {
 			if err := message.Continuation.Validate(); err != nil {
 				return fmt.Errorf("session checkpoint message %d has invalid continuation metadata: %w", i, err)
 			}
+		}
+		if len(message.InputAttachments) > 0 {
+			if message.Role != "user" || strings.TrimSpace(message.InputAttachmentOwner) == "" || strings.TrimSpace(message.InputAttachmentBindingID) == "" {
+				return fmt.Errorf("session checkpoint message %d has invalid uploaded input identity", i)
+			}
+			receipts := make([]AgentAttachmentReceipt, len(message.InputAttachments))
+			copy(receipts, message.InputAttachments)
+			if err := validateAgentAttachmentBatch(receipts); err != nil {
+				return fmt.Errorf("session checkpoint message %d has invalid uploaded input references: %w", i, err)
+			}
+		} else if message.InputAttachmentOwner != "" || message.InputAttachmentBindingID != "" {
+			return fmt.Errorf("session checkpoint message %d has uploaded input owner without references", i)
 		}
 	}
 	return nil
@@ -842,8 +861,10 @@ type Store interface {
 	DeleteSession(ctx context.Context, scope Scope, sessionID string) error
 
 	// Compaction. PutSessionSummary upserts the summary standing in for a
-	// session's older messages; GetSessionSummary reports ok=false when the
-	// session has never been compacted.
+	// session's older messages using SessionSummary.Generation as a compare
+	// token. GetSessionSummary reports ok=false when there is no current summary,
+	// but still returns the latest generation so compaction can detect an
+	// invalidation that happened while it was preparing a replacement.
 	PutSessionSummary(ctx context.Context, scope Scope, s SessionSummary) error
 	GetSessionSummary(ctx context.Context, scope Scope, sessionID string) (SessionSummary, bool, error)
 
@@ -962,7 +983,9 @@ type Store interface {
 	// Retention / teardown.
 	DeleteAgentData(ctx context.Context, scope Scope, agentName string) error
 	// DeleteRunData removes everything filed under one run: the run row itself,
-	// its transcript messages, and its tool-call trace. It is what the Run
+	// its transcript messages, and its tool-call trace. A session summary that
+	// may include the deleted turn is invalidated under the transcript lock, and
+	// its generation fence prevents an older compactor from restoring it. It is what the Run
 	// kind's finalizer calls, so deleting a Run object actually discards the
 	// run rather than hiding it.
 	//

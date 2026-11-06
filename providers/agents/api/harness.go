@@ -35,6 +35,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ import (
 	"github.com/railgrid/provider-agents/internal/edgeref"
 	"github.com/railgrid/provider-agents/llm"
 	"github.com/railgrid/provider-agents/store"
+	sdk "github.com/railgrid/provider-sdk/skills"
 )
 
 // runnerDialer builds a dispatcher for one enrolled runner. It is a field on the
@@ -106,6 +108,28 @@ type runnerWithArtifacts struct {
 
 func (r runnerWithArtifacts) Artifact(ctx context.Context, attemptID, artifactID string, w io.Writer) (runner.Artifact, error) {
 	return r.client.Artifact(ctx, attemptID, artifactID, w)
+}
+
+func (r runnerWithArtifacts) Capabilities(ctx context.Context) (runner.Capabilities, error) {
+	return r.client.Capabilities(ctx)
+}
+
+func (r runnerWithArtifacts) StageInput(ctx context.Context, attemptID string, file runner.InputFile, body io.Reader) error {
+	return r.client.StageInput(ctx, attemptID, file, body)
+}
+
+func (r runnerWithArtifacts) PrepareInputBatch(ctx context.Context) (func(context.Context, string, []backendharness.StagedInput) error, error) {
+	stager, err := r.client.PrepareInputStager(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, attemptID string, files []backendharness.StagedInput) error {
+		uploads := make([]runnerclient.InputUpload, len(files))
+		for i, file := range files {
+			uploads[i] = runnerclient.InputUpload{File: file.Reference, Data: file.Data}
+		}
+		return stager.StageInputs(ctx, attemptID, uploads)
+	}, nil
 }
 
 // runnerRESTConfig aims the agent's renewable identity at its tenant front door.
@@ -224,6 +248,14 @@ type harnessTurn struct {
 	// Repository marks a repository attempt, whose Session is synthetic (the
 	// run is its own task) and must never be written to the session store.
 	Repository bool
+}
+
+type runnerInputStager interface {
+	StageInput(context.Context, string, runner.InputFile, io.Reader) error
+}
+
+type runnerInputBatchPreparer interface {
+	PrepareInputBatch(context.Context) (func(context.Context, string, []backendharness.StagedInput) error, error)
 }
 
 // persistHarnessSession records the thread the harness actually used. The
@@ -474,7 +506,7 @@ func unbilledHarnessUsage(total, billed backend.Cost) backend.Cost {
 // the same identity that reads a model credential — a harness credential is a
 // ModelCredential, and an unattended run must be able to reach it without a
 // caller to borrow.
-func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, runID string, cont *continuation) (harnessTurn, error) {
+func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, runID string, cont *continuation, skillSnapshot sdk.Snapshot) (harnessTurn, error) {
 	agent := run.Agent
 	cfg := agent.Spec.Harness()
 	if cfg == nil {
@@ -539,6 +571,37 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 	if err != nil {
 		return harnessTurn{}, fmt.Errorf("reaching the runner on edge %s/%s: %w", cfg.EdgeRef.Kind, cfg.EdgeRef.Name, err)
 	}
+	var stagedInputs []backendharness.StagedInput
+	var stageInput func(context.Context, string, runner.InputFile, io.Reader) error
+	var stageInputs func(context.Context, string, []backendharness.StagedInput) error
+	if run.Repository == nil {
+		stagedInputs, err = s.agentHarnessInputFiles(ctx, run, sessionID, skillSnapshot, cont == nil)
+		if err != nil {
+			return harnessTurn{}, err
+		}
+		if len(stagedInputs) > 0 {
+			if batcher, ok := dispatcher.(runnerInputBatchPreparer); ok {
+				stageInputs, err = batcher.PrepareInputBatch(ctx)
+				if err != nil {
+					return harnessTurn{}, fmt.Errorf("the selected harness runner cannot stage file inputs: %w", err)
+				}
+			} else {
+				capabilities, ok := dispatcher.(capabilityReader)
+				if !ok {
+					return harnessTurn{}, errors.New("the selected harness runner cannot report input-file capability")
+				}
+				report, capErr := capabilities.Capabilities(ctx)
+				if capErr != nil || !report.Ready || !slices.Contains(report.Verification, runner.InputFilesCapability) {
+					return harnessTurn{}, errors.New("the selected harness runner does not support file inputs; update or reconnect the runner")
+				}
+				stager, ok := dispatcher.(runnerInputStager)
+				if !ok {
+					return harnessTurn{}, errors.New("the selected harness runner cannot stage file inputs")
+				}
+				stageInput = stager.StageInput
+			}
+		}
+	}
 
 	if run.Repository != nil {
 		return s.repositoryHarnessTurn(run, runID, sessionID, cont, repositoryTurnDeps{
@@ -581,6 +644,9 @@ func (s *Server) harnessBackendFor(ctx context.Context, run taskRun, sessionID, 
 		Credential:      identity,
 		Environment:     environment,
 		MCPServers:      s.harnessSelfMCPServers(ctx, run, runID, dispatcher),
+		InputFiles:      stagedInputs,
+		StageInput:      stageInput,
+		StageInputs:     stageInputs,
 		Provenance: map[string]any{
 			"workspace": run.Scope.WorkspaceUUID,
 			"org":       run.Scope.OrgUUID,
