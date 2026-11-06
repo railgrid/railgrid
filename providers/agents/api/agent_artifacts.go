@@ -471,7 +471,7 @@ func (s *Server) artifactMCPCaller(ctx context.Context, r *http.Request, agentNa
 	if err != nil {
 		return artifactMCPCaller{}, &artifactMCPFailure{code: "Unauthorized", reason: "CallerWorkspaceUnavailable", message: "could not address the caller's workspace", status: http.StatusUnauthorized}
 	}
-	allowed, err := authorizeArtifactResource(ctx, callerScope.Dynamic(), dataplane.ResourceAttributes{
+	allowed, err := authorizeCallerResource(ctx, callerScope.Dynamic(), dataplane.ResourceAttributes{
 		Group: agentsv1alpha1.GroupName, Version: agentsv1alpha1.Version, Resource: "agents", Subresource: "artifacts", Name: agent.Name, Verb: verb,
 	})
 	if err != nil || !allowed {
@@ -480,7 +480,7 @@ func (s *Server) artifactMCPCaller(ctx context.Context, r *http.Request, agentNa
 	return artifactMCPCaller{identity: id, scope: id.scope(agent.Name), agent: agent, client: client, dynamic: callerScope.Dynamic()}, nil
 }
 
-func authorizeArtifactResource(ctx context.Context, caller dynamic.Interface, attrs dataplane.ResourceAttributes) (bool, error) {
+func authorizeCallerResource(ctx context.Context, caller dynamic.Interface, attrs dataplane.ResourceAttributes) (bool, error) {
 	resource := map[string]any{"group": attrs.Group, "version": attrs.Version, "resource": attrs.Resource, "verb": attrs.Verb, "name": attrs.Name}
 	if attrs.Subresource != "" {
 		resource["subresource"] = attrs.Subresource
@@ -506,7 +506,7 @@ func authorizeArtifactResource(ctx context.Context, caller dynamic.Interface, at
 func authorizeArtifactRunRead(ctx context.Context, caller dynamic.Interface, agentName, runID string) error {
 	ctx, cancel := context.WithTimeout(ctx, agentArtifactSourceRevalidationTimeout)
 	defer cancel()
-	allowed, err := authorizeArtifactResource(ctx, caller, dataplane.ResourceAttributes{
+	allowed, err := authorizeCallerResource(ctx, caller, dataplane.ResourceAttributes{
 		Group: agentsv1alpha1.GroupName, Version: agentsv1alpha1.Version, Resource: "runs", Name: runID, Verb: "get",
 	})
 	if err != nil || !allowed {
@@ -531,7 +531,7 @@ func revalidateAgentArtifactSources(ctx context.Context, caller dynamic.Interfac
 			return err
 		}
 		for _, access := range source.Access {
-			allowed, err := authorizeArtifactResource(ctx, caller, dataplane.ResourceAttributes{
+			allowed, err := authorizeCallerResource(ctx, caller, dataplane.ResourceAttributes{
 				Group: access.Group, Version: access.Version, Resource: access.Resource,
 				Subresource: access.Subresource, Namespace: access.Namespace, Name: access.Name, Verb: access.Verb,
 			})

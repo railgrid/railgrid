@@ -17,6 +17,7 @@ import (
 
 	agents "github.com/railgrid/provider-agents/apis/v1alpha1"
 	agentsclient "github.com/railgrid/provider-agents/client"
+	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/store"
 	"github.com/railgrid/provider-agents/tenant"
 	"github.com/railgrid/provider-sdk/skills"
@@ -50,7 +51,7 @@ func skillRuntimeFixture(t *testing.T) (*Server, taskRun, agentSkillSelection) {
 
 func TestAgentSkillRuntimePinsSelectionsAndRequiresLoadingResources(t *testing.T) {
 	s, run, selection := skillRuntimeFixture(t)
-	_, prompt, tools, err := s.agentSkillRuntime(context.Background(), run, nil)
+	_, prompt, tools, err := s.agentSkillRuntime(context.Background(), run, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,17 +70,50 @@ func TestAgentSkillRuntimePinsSelectionsAndRequiresLoadingResources(t *testing.T
 	if got, err := tools[1].Exec(context.Background(), `{"id":"workspace:demo","path":"checklist.md"}`); err != nil || !strings.Contains(got, "Recheck permissions.") {
 		t.Fatalf("resource = %q, %v", got, err)
 	}
-	_, prompt, _, err = s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{selection})
+	_, prompt, _, err = s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{selection}, false)
 	if err != nil || !strings.Contains(prompt, "Inspect evidence before answering.") {
 		t.Fatalf("selected guidance = %q, %v", prompt, err)
 	}
 	selection.SHA256 = "sha256:" + strings.Repeat("0", 64)
-	if _, _, _, err := s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{selection}); err == nil {
+	if _, _, _, err := s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{selection}, false); err == nil {
 		t.Fatal("changed selection was accepted")
 	}
 	run.Agent.Spec.Skills = nil
-	if _, _, _, err := s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{{ID: "workspace:demo", SHA256: selection.SHA256}}); err == nil {
+	if _, _, _, err := s.agentSkillRuntime(context.Background(), run, []agentSkillSelection{{ID: "workspace:demo", SHA256: selection.SHA256}}, false); err == nil {
 		t.Fatal("disabled selection was accepted")
+	}
+}
+
+func TestResumeSkillCatalogRefreshPreservesAdmittedGuidance(t *testing.T) {
+	s, run, selection := skillRuntimeFixture(t)
+	ctx := context.Background()
+	_, guidance, _, err := s.agentSkillRuntime(ctx, run, []agentSkillSelection{selection}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := selection
+	stale.SHA256 = "sha256:" + strings.Repeat("0", 64)
+	snapshot, _, tools, err := s.agentSkillRuntime(ctx, run, []agentSkillSelection{stale}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const staleRow = "Skill metadata: stale"
+	checkpoint := engine.Checkpoint{Messages: []engine.CheckpointMessage{
+		{Role: engine.RoleSystem, Content: guidance + staleRow},
+	}}
+	refreshAgentSkillCatalog(&checkpoint, agentSkillCatalogPrompt(snapshot))
+	if len(checkpoint.Messages) != 2 ||
+		!strings.Contains(checkpoint.Messages[0].Content, selection.SHA256) ||
+		!strings.Contains(checkpoint.Messages[1].Content, "Inspect evidence before answering.") ||
+		strings.Contains(checkpoint.Messages[1].Content, staleRow) {
+		t.Fatalf("resumed messages did not preserve guidance and refresh metadata: %+v", checkpoint.Messages)
+	}
+	if _, err := tools[1].Exec(ctx, `{"id":"workspace:demo","path":"checklist.md"}`); err == nil {
+		t.Fatal("a stale selection authorized resources from the current package")
+	}
+	refreshAgentSkillCatalog(&checkpoint, "")
+	if len(checkpoint.Messages) != 1 || !strings.Contains(checkpoint.Messages[0].Content, "Inspect evidence before answering.") {
+		t.Fatalf("an unavailable catalog affected selected guidance: %+v", checkpoint.Messages)
 	}
 }
 
