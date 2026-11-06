@@ -1,3 +1,4 @@
+import { loadSkillLibrary, loadSkillLibraryDetail } from './skill-library'
 // ApiClient is the agents micro-frontend's single data entry point.
 //
 // It has two halves. Tenant OBJECTS — Agent, Schedule, Connection, Toolset,
@@ -51,6 +52,9 @@ import type {
   Agent,
   AgentCreate,
   AgentPatch,
+  AgentSkillCatalog,
+  AgentSkillDetail,
+  AgentInputCapabilities,
   Capabilities,
   Connection,
   ConnectionWrite,
@@ -90,6 +94,12 @@ import type {
   WebhookRunBody,
   WebhookRunResult,
 } from './types'
+import type {
+  AgentKitAttachmentReceipt,
+  AgentKitComposerPart,
+  AgentKitContextResource,
+  AgentKitSkill,
+} from './agentkit/composer'
 
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
@@ -137,6 +147,31 @@ export interface RunFilter {
   until?: string
   cursor?: string
   limit?: number
+}
+
+export interface AgentChatTurnContext {
+  contentParts?: AgentKitComposerPart[]
+  contextResources?: AgentKitContextResource[]
+  skills?: AgentKitSkill[]
+}
+
+export interface AgentAttachmentList {
+  items: AgentKitAttachmentReceipt[]
+  inputCapabilities?: AgentInputCapabilities
+}
+
+export interface AgentProviderResourceCoordinate {
+  name: string
+  displayName: string
+  ready: boolean
+  export?: {
+    resources?: Array<{
+      name: string
+      apiVersion: string
+      kind: string
+      actions?: Array<{ deprecation?: { deprecated?: boolean } }>
+    }>
+  }
 }
 
 // ContextAuthority is the security boundary for a mounted provider. The
@@ -423,7 +458,73 @@ export class ApiClient {
   createAgentFromTemplate = (agent: Agent, schedules: Schedule[]): Promise<TemplateCreateResult> =>
     this.resources.createAgentFromTemplate(agent, schedules)
   patchAgent = (name: string, body: AgentPatch): Promise<Agent> => this.resources.patchAgent(name, body)
+  setAgentSkillEnabled = (name: string, skillID: string, enabled: boolean): Promise<Agent> =>
+    this.resources.setAgentSkillEnabled(name, skillID, enabled)
   deleteAgent = (name: string): Promise<void> => this.resources.deleteAgent(name)
+
+  // Library presentation reads Skill objects and the published provider catalog.
+  getSkillLibrary = (): Promise<AgentSkillCatalog> => loadSkillLibrary(this.context())
+  getSkillLibraryDetail = (id: string): Promise<AgentSkillDetail> => loadSkillLibraryDetail(this.context(), id)
+  // Runtime skill availability remains an authorized per-Agent catalog.
+  getAgentSkillCatalog = (agent: string): Promise<AgentSkillCatalog> =>
+    this.getVerb(this.verb(AGENTS, agent, 'skill-catalog'))
+  getAgentSkillDetail = (agent: string, skillID: string): Promise<AgentSkillDetail> =>
+    this.getVerb(this.verb(AGENTS, agent, 'skill-detail', { query: { skillID } }))
+
+  /** Upload a browser-owned attachment draft for one conversation session. */
+  uploadAgentAttachment = async (agent: string, sessionID: string, file: File, signal: AbortSignal, clientID: string): Promise<AgentKitAttachmentReceipt> => {
+    if (!sessionID.trim()) throw new ApiError(400, 'a chat session is required for attachments')
+    const path = this.verb(AGENTS, agent, 'attachments', { query: { sessionID, draft: true } })
+    const body = new FormData()
+    body.append('file', file, file.name || 'attachment')
+    body.append('sessionID', sessionID)
+    body.append('draft', 'true')
+    body.append('clientAttachmentID', clientID)
+    const response = await this.fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: this.headers(false),
+      body,
+      signal,
+    })
+    if (!response.ok) throw await this.fail(response)
+    return await response.json() as AgentKitAttachmentReceipt
+  }
+
+  listAgentAttachments = async (agent: string, sessionID: string): Promise<AgentKitAttachmentReceipt[]> => {
+    if (!sessionID.trim()) return []
+    const result = await this.getVerb<{ items?: AgentKitAttachmentReceipt[] }>(this.verb(AGENTS, agent, 'attachments', { query: { sessionID } }))
+    return Array.isArray(result.items) ? result.items : []
+  }
+
+  getAgentAttachmentList = async (agent: string, sessionID: string): Promise<AgentAttachmentList> => {
+    if (!sessionID.trim()) return { items: [] }
+    const result = await this.getVerb<AgentAttachmentList>(this.verb(AGENTS, agent, 'attachments', { query: { sessionID } }))
+    return { items: Array.isArray(result.items) ? result.items : [], inputCapabilities: result.inputCapabilities }
+  }
+
+  getAgentAttachment = async (agent: string, sessionID: string, attachmentID: string, signal?: AbortSignal): Promise<Blob> => {
+    const path = this.verbTail(this.verb(AGENTS, agent, 'attachments'), attachmentID)
+    const response = await this.fetch(`${path}?${new URLSearchParams({ sessionID }).toString()}`, {
+      credentials: 'same-origin',
+      headers: this.headers(false),
+      signal,
+    })
+    if (!response.ok) throw await this.fail(response)
+    return response.blob()
+  }
+
+  deleteAgentAttachment = async (agent: string, sessionID: string, attachmentID: string): Promise<void> => {
+    const path = this.verbTail(this.verb(AGENTS, agent, 'attachments'), attachmentID)
+    await this.sendVerb('DELETE', `${path}?${new URLSearchParams({ sessionID }).toString()}`)
+  }
+
+  listProviderResourceCatalog = async (): Promise<AgentProviderResourceCoordinate[]> => {
+    const response = await this.fetch('/api/providers', { credentials: 'same-origin', headers: this.headers(false) })
+    if (!response.ok) throw await this.fail(response)
+    const result = await response.json() as { items?: AgentProviderResourceCoordinate[] }
+    return Array.isArray(result.items) ? result.items : []
+  }
 
   // Host edges live in the edges provider's group, bound in the same tenant
   // workspace. They are read as objects like everything else above — see
@@ -783,7 +884,7 @@ export class ApiClient {
   // each event is a progress notification carrying the frame in its _meta,
   // and the terminal frame (done / error / approval_required) is the call's
   // result. Both are mapped back onto the same SSEEvent shape the verb used.
-  async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
+  async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal, turn: AgentChatTurnContext = {}): AsyncGenerator<SSEEvent> {
     const r = await this.fetch(this.url('/mcp'), {
       method: 'POST',
       credentials: 'same-origin',
@@ -795,7 +896,16 @@ export class ApiClient {
         method: 'tools/call',
         params: {
           name: 'chat',
-          arguments: { agent, message, sessionId: sessionID || undefined },
+          arguments: {
+            agent,
+            message,
+            sessionId: sessionID || undefined,
+            ...(turn.contentParts?.length ? { contentParts: turn.contentParts.filter((part) => part.type !== 'annotation') } : {}),
+            ...(turn.contextResources?.length ? { contextResources: turn.contextResources } : {}),
+            ...(turn.skills?.length ? {
+              skillRefs: turn.skills.map((skill) => ({ id: skill.id, sha256: skill.digest || '' })).filter((skill) => skill.sha256),
+            } : {}),
+          },
           _meta: { progressToken: CHAT_CALL_ID },
         },
       }),

@@ -3,7 +3,7 @@ import { defineComponent, h, onBeforeUnmount } from 'vue'
 import AgentChat from '../views/AgentChat.vue'
 import type { ApiClient, SSEEvent } from '../api'
 import type { AgentArtifact, SavedCaptureCitation } from '../types'
-import { agentFixture, makeStore, stubApi } from './helpers'
+import { agentFixture, makeStore, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, unmountVueApps } from './vue-helper'
 
 const life = vi.hoisted(() => ({ unmounts: 0 }))
@@ -23,6 +23,7 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
   const getAgentArtifact = vi.fn(options.read || (async () => ({ artifact: authorized })))
   const chatStream = vi.fn(async function* (): AsyncGenerator<SSEEvent> {
     yield { event: 'start', data: { runID: 'run-1', sessionID: 'session-1' } }
+    yield { event: 'run_started', data: { runID: 'run-1', sessionID: 'session-1', status: 'running' } }
     yield { event: 'tool_start', data: { id: 'call-1', name: 'compile' } }
     yield { event: 'tool_end', data: {
       id: 'call-1', name: 'compile',
@@ -46,7 +47,7 @@ async function setup(options: { history?: boolean; hint?: boolean; mismatch?: 'r
   store.credentials.loaded = store.credentials.hasSnapshot = true
   const view = await mountVue(AgentChat, { store, api, name: 'scout', compact: true }); await settleVue(10)
   if (options.history) { await settleVue(8, 10); return { view, getAgentArtifact, captureAgentArtifact, chatStream } }
-  const input = view.element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!; input.value = 'Compile sales'; input.dispatchEvent(new Event('input')); await settleVue()
+  setComposerText(view.element, 'Compile sales'); await settleVue()
   view.element.querySelector('form.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true })); await settleVue(12)
   return { view, getAgentArtifact, captureAgentArtifact, chatStream }
 }

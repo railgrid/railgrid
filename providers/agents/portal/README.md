@@ -158,3 +158,9 @@ src/
 Four tabs: **Agents** · **Activity** · **Connections** (toolsets are a section)
 · **Models**. Schedules and triggers are owned by their agent and edited in the
 agent's Config pane, next to a live chat playground.
+
+### Skills surfaces
+
+The main navigation’s Skills library (`#/skills`) owns reusable package creation, import/export, editing, deletion, and read-only provider previews. `SkillsLibrary.vue` reuses the existing package editor and `AISkillCatalogList`; `skill-library.ts` reads Skill CRs and published provider packages without requiring an Agent. These library source-package keys are not execution IDs.
+
+An Agent’s `#/agents/<name>/skills` workbench uses `AgentSkillActivation.vue` for enabled/available lists and missing-reference removal. Activation is absent from Config. Open library carries a return destination; browser navigation and the return link preserve the Agent’s chat/workbench context. Runtime availability and composer `/skill` selection continue to use the authorized per-Agent catalog.

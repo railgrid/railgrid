@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useAgentDOMID } from '../vue/runtime'
-import { CalendarClock, Gauge, GripVertical, Plus, SlidersHorizontal, Wrench } from 'lucide-vue-next'
+import { BookOpen, CalendarClock, Gauge, GripVertical, Plus, SlidersHorizontal, Wrench } from 'lucide-vue-next'
 import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue'
 import AIWorkbenchTabs from '../agentkit/AIWorkbenchTabs.vue'
 import type { AIWorkbenchTabView } from '../agentkit/ai'
@@ -61,6 +61,7 @@ function tabIcon(tab: string): Component {
   if (tab === 'tools') return Wrench
   if (tab === 'automation') return CalendarClock
   if (tab === 'runs') return Gauge
+  if (tab === 'skills') return BookOpen
   return Plus
 }
 

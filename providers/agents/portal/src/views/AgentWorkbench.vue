@@ -63,6 +63,17 @@ function isActive(tab: AgentWorkbenchTabKind): boolean {
       <slot name="runs" />
     </section>
     <section
+      :id="domID('agents-workbench-panel-skills')"
+      class="agents-workbench-panel"
+      role="tabpanel"
+      :aria-labelledby="domID('agents-workbench-tab-skills')"
+      :class="{ 'is-active': isActive('skills') }"
+      :aria-hidden="!isActive('skills') ? 'true' : undefined"
+      v-show="isActive('skills')"
+    >
+      <slot name="skills" />
+    </section>
+    <section
       :id="domID('agents-workbench-panel-launcher')"
       class="agents-workbench-panel"
       role="tabpanel"

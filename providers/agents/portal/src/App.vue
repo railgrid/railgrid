@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Bot, Cpu, Gauge, Plug, RefreshCw, Webhook as WebhookIcon } from 'lucide-vue-next'
+import { BookOpen, Bot, Cpu, Gauge, Plug, RefreshCw, Webhook as WebhookIcon } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
@@ -29,6 +29,7 @@ import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
 import AgentCreate from './views/AgentCreate.vue'
 import AgentDetail from './views/AgentDetail.vue'
+import SkillsLibrary from './views/SkillsLibrary.vue'
 import Activity from './views/Activity.vue'
 import RunDetail from './views/RunDetail.vue'
 import Connections from './views/Connections.vue'
@@ -93,6 +94,7 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
   storeRevision.value
   return {
     agents: store.value.agents.data.length,
+    skills: 0,
     activity: store.value.pendingInbox().length,
     connections: store.value.connections.data.length + store.value.toolsets.data.length,
     webhooks: store.value.webhooks.data.length,
@@ -101,8 +103,8 @@ const menuCounts = computed<Record<MenuKey, number>>(() => {
 })
 const live = computed(() => { storeRevision.value; return store.value.live })
 const tabs = computed<PortalTabItem[]>(() => {
-  const icons = { agents: Bot, activity: Gauge, connections: Plug, webhooks: WebhookIcon, models: Cpu }
-  const labels = { agents: 'Agents', activity: 'Activity', connections: 'Connections', webhooks: 'Webhooks', models: 'Models' }
+  const icons = { agents: Bot, skills: BookOpen, activity: Gauge, connections: Plug, webhooks: WebhookIcon, models: Cpu }
+  const labels = { agents: 'Agents', skills: 'Skills library', activity: 'Activity', connections: 'Connections', webhooks: 'Webhooks', models: 'Models' }
   return MENUS.map(menu => ({ id: menu, label: labels[menu], icon: icons[menu], count: menuCounts.value[menu] || undefined }))
 })
 
@@ -589,6 +591,11 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :store="store"
         :api="api"
         @navigate="go"
+      />
+      <SkillsLibrary
+        v-else-if="route.kind === 'menu' && route.menu === 'skills'"
+        :key="routeSurfaceKey" :store="store" :api="api" :authority-epoch="authorityEpoch"
+        :return-agent="route.returnAgent" @navigate="go"
       />
       <Activity
         v-else-if="route.kind === 'menu' && route.menu === 'activity'"

@@ -293,6 +293,8 @@ spec:
           builtinRoute: activity
         - displayName: Connections
           builtinRoute: connections
+        - displayName: Skills library
+          builtinRoute: skills
         - displayName: Webhooks
           builtinRoute: webhooks
     backend:

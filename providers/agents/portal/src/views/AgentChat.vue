@@ -9,6 +9,7 @@ import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
 import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
 import AIComposer from '../agentkit/AIComposer.vue'
+import AgentRichComposer from '../AgentRichComposer.vue'
 import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
@@ -20,8 +21,10 @@ import type { Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
-import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall } from '../types'
+import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type AgentInputCapabilities, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall, type AgentSkillCatalog, type ModelInfo } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
+import type { AgentKitComposerPart, AgentKitContextResource, AgentKitSkill } from '../agentkit/composer'
+import type { AgentProviderResourceCoordinate } from '../api'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
 import { rebuildTranscript } from '../vue/chat'
 import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
@@ -37,6 +40,8 @@ import { skippedQuestionResponse } from '../question-presentation'
 import McpAppViewer from '../components/McpAppViewer.vue'
 import RenameChatDialog from '../components/RenameChatDialog.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
+import { agentChatDraftStorageKey, clearAgentChatDraft, readAgentChatDraft, writeAgentChatDraft, type AgentChatDraft } from '../chatDraft'
+import { assistantAttachmentContentTypeKind } from '../agentkit/composerAttachments'
 
 const domID = useAgentDOMID()
 
@@ -204,6 +209,208 @@ watch(sessionID, () => {
   clearArtifactState()
 }, { flush: 'sync' })
 const draft = ref('')
+const contentParts = ref<AgentKitComposerPart[]>([])
+const selectedSkills = ref<AgentKitSkill[]>([])
+const selectedResources = ref<AgentKitContextResource[]>([])
+const attachmentsPending = ref(false)
+const composerSubmitting = ref(false)
+const composerDraftLoading = ref(false)
+const skillCatalog = ref<AgentSkillCatalog>({ skills: [], warnings: [] })
+const modelCatalog = ref<ModelInfo[]>([])
+const attachmentInputCapabilities = ref<AgentInputCapabilities | undefined>(undefined)
+const attachmentCapabilityLoaded = ref(false)
+const providerResourceCatalog = ref<AgentProviderResourceCoordinate[]>([])
+const composer = ref<InstanceType<typeof AgentRichComposer> | null>(null)
+const composerDraftKey = computed(() => agentChatDraftStorageKey(props.api.contextAuthority(), props.name, sessionID.value))
+const composerOwnerKey = computed(() => {
+  const authority = props.api.contextAuthority()
+  return JSON.stringify([authority.tenantKey, authority.userKey, props.name])
+})
+const agentSkillsConfigKey = computed(() => {
+  revision.value
+  return JSON.stringify((props.store.agent(props.name)?.spec.skills || []).map(skill => skill.name).sort())
+})
+const enabledAgentSkillIDs = computed(() => new Set(JSON.parse(agentSkillsConfigKey.value) as string[]))
+const availableComposerSkills = computed<AgentKitSkill[]>(() => skillCatalog.value.skills
+  .filter((skill) => skill.enabled && enabledAgentSkillIDs.value.has(skill.id))
+  .map((skill) => ({ ...skill })))
+let skillCatalogLoaded = false
+let skillCatalogRequestSerial = 0
+let providerResourceCatalogLoaded = false
+let providerResourceCatalogRequestSerial = 0
+let modelCatalogLoaded = false
+let modelCatalogRequestSerial = 0
+watch([
+  () => props.store,
+  () => props.api,
+  () => props.name,
+  () => runtime?.authorityEpoch.value,
+  () => runtime?.route.value,
+  agentSkillsConfigKey,
+], (current, previous) => {
+  const authorityChanged = !previous || current[0] !== previous[0] || current[1] !== previous[1] || current[2] !== previous[2] || current[3] !== previous[3]
+  if (!authorityChanged) {
+    const skillConfigChanged = current[5] !== previous[5]
+    const routeChanged = current[4] !== previous[4]
+    if (skillConfigChanged) {
+      const enabled = new Set((props.store.agent(props.name)?.spec.skills || []).map(skill => skill.name))
+      selectedSkills.value = selectedSkills.value.filter(skill => enabled.has(skill.id))
+      contentParts.value = contentParts.value.filter(part => part.type !== 'skill' || enabled.has(part.skillID))
+    }
+    if (skillConfigChanged || routeChanged) void loadSkillCatalog()
+    if (routeChanged) void loadUnloadedComposerCatalogs()
+    return
+  }
+  skillCatalogLoaded = false
+  skillCatalog.value = { skills: [], warnings: [] }
+  providerResourceCatalogLoaded = false
+  providerResourceCatalogRequestSerial += 1
+  modelCatalogLoaded = false
+  modelCatalogRequestSerial += 1
+  modelCatalog.value = []
+  attachmentInputCapabilities.value = undefined
+  attachmentCapabilityLoaded.value = false
+  providerResourceCatalog.value = []
+  void loadComposerCatalogs()
+}, { immediate: true })
+watch(availableComposerSkills, skills => {
+  if (!skillCatalogLoaded) return
+  const enabled = new Set(skills.map((skill) => skill.id))
+  selectedSkills.value = selectedSkills.value.filter((skill) => enabled.has(skill.id))
+  contentParts.value = contentParts.value.filter((part) => part.type !== 'skill' || enabled.has(part.skillID))
+})
+async function loadSkillCatalog(name = props.name, api = props.api): Promise<void> {
+  const serial = ++skillCatalogRequestSerial
+  const authority = captureAuthority()
+  const skillsConfigKey = agentSkillsConfigKey.value
+  try {
+    const result = await api.getAgentSkillCatalog(name)
+    if (
+      serial !== skillCatalogRequestSerial ||
+      !authorityIsCurrent(authority) ||
+      props.name !== name ||
+      props.api !== api ||
+      agentSkillsConfigKey.value !== skillsConfigKey
+    ) return
+    skillCatalog.value = result
+    skillCatalogLoaded = true
+  } catch {
+    // Keep the last usable catalog if a refresh fails.
+  }
+}
+async function loadProviderResourceCatalog(name = props.name, api = props.api): Promise<void> {
+  if (providerResourceCatalogLoaded) return
+  const serial = ++providerResourceCatalogRequestSerial
+  const authority = captureAuthority()
+  try {
+    const result = await api.listProviderResourceCatalog()
+    if (serial !== providerResourceCatalogRequestSerial || !authorityIsCurrent(authority) || props.name !== name || props.api !== api) return
+    providerResourceCatalog.value = result
+    providerResourceCatalogLoaded = true
+  } catch {
+    // Leave the catalog unloaded so a later route change can retry it.
+  }
+}
+async function loadModelCatalog(name = props.name, api = props.api): Promise<void> {
+  if (modelCatalogLoaded) return
+  const serial = ++modelCatalogRequestSerial
+  const authority = captureAuthority()
+  try {
+    const result = await api.catalog()
+    if (serial !== modelCatalogRequestSerial || !authorityIsCurrent(authority) || props.name !== name || props.api !== api) return
+    modelCatalog.value = result
+    modelCatalogLoaded = true
+  } catch {
+    // Leave the catalog unloaded so a later route change can retry it.
+  }
+}
+function loadUnloadedComposerCatalogs(name = props.name, api = props.api): Promise<void[]> {
+  return Promise.all([
+    loadProviderResourceCatalog(name, api),
+    loadModelCatalog(name, api),
+  ])
+}
+async function loadComposerCatalogs(name = props.name, api = props.api): Promise<void> {
+  const skillLoad = loadSkillCatalog(name, api)
+  await Promise.all([skillLoad, loadUnloadedComposerCatalogs(name, api)])
+}
+watch(sessionID, id => {
+  if (!id) return
+  const key = agentChatDraftStorageKey(props.api.contextAuthority(), props.name, id)
+  composerDraftLoading.value = true
+  const saved = readAgentChatDraft(key)
+  draft.value = saved.content
+  contentParts.value = saved.contentParts
+  selectedSkills.value = saved.skills
+  selectedResources.value = saved.resources
+  attachmentsPending.value = false
+  composerDraftLoading.value = false
+  void loadAttachmentSnapshot(id)
+}, { flush: 'sync' })
+async function loadAttachmentSnapshot(session: string): Promise<void> {
+  const name = props.name
+  const api = props.api
+  const authority = captureAuthority()
+  const existingReceiptIDs = new Set(contentParts.value.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : []))
+  attachmentCapabilityLoaded.value = false
+  attachmentInputCapabilities.value = undefined
+  try {
+    const result = await api.getAgentAttachmentList(name, session)
+    if (!authorityIsCurrent(authority) || props.name !== name || props.api !== api || sessionID.value !== session) return
+    attachmentInputCapabilities.value = result.inputCapabilities
+    attachmentCapabilityLoaded.value = true
+    const serverReceipts = new Map(result.items.map((receipt) => [receipt.id, receipt]))
+    let removed = false
+    contentParts.value = contentParts.value.flatMap((part) => {
+      if (part.type !== 'attachment' || !existingReceiptIDs.has(part.attachment.id)) return [part]
+      const current = serverReceipts.get(part.attachment.id)
+      if (!current) { removed = true; return [] }
+      return [{ type: 'attachment', attachment: current }]
+    })
+    if (removed) {
+      writeAgentChatDraft(composerDraftKey.value, currentComposerDraft())
+      toast('info', 'Some saved attachment drafts expired and were removed. Attach those files again to send them.')
+    }
+  } catch {
+    if (authorityIsCurrent(authority) && props.name === name && props.api === api && sessionID.value === session) {
+      attachmentCapabilityLoaded.value = false
+      attachmentInputCapabilities.value = undefined
+    }
+  }
+}
+watch([draft, contentParts, selectedSkills, selectedResources], () => {
+  if (composerDraftLoading.value || composerSubmitting.value || !sessionID.value) return
+  writeAgentChatDraft(composerDraftKey.value, {
+    content: draft.value,
+    contentParts: contentParts.value,
+    skills: selectedSkills.value,
+    resources: selectedResources.value,
+  })
+}, { deep: true, flush: 'sync' })
+function currentComposerDraft(): AgentChatDraft {
+  return {
+    content: draft.value,
+    contentParts: [...contentParts.value],
+    skills: [...selectedSkills.value],
+    resources: [...selectedResources.value],
+  }
+}
+function authoredComposerDraftSnapshot(value: AgentChatDraft): string {
+  // Text is represented by both `content` and text parts while the editor's
+  // prop updates are flushing. Use the content field for authored text and
+  // retain only chips/receipts here, avoiding a stale pre-clear text part from
+  // making an untouched composer look edited.
+  return JSON.stringify({ ...value, contentParts: value.contentParts.filter((part) => part.type !== 'text') })
+}
+function applyComposerDraft(value: AgentChatDraft): void {
+  composerDraftLoading.value = true
+  draft.value = value.content
+  contentParts.value = [...value.contentParts]
+  selectedSkills.value = [...value.skills]
+  selectedResources.value = [...value.resources]
+  attachmentsPending.value = false
+  composerDraftLoading.value = false
+}
 const chatHost = runtime?.host
 function focusComposer(): void { if (props.compact) void nextTick(() => composer.value?.focus()) }
 function engageOverlay(): void {
@@ -261,11 +468,11 @@ async function selectOverlayChat(id: string): Promise<void> {
   overlayChatsVisible.value = false
   const authority = captureAuthority()
   const name = props.name
+  const localDraft = overlayDrafts.value.has(id)
   if (changed) {
-    draft.value = overlayDrafts.value.get(id) || ''
-    const localDraft = overlayDrafts.value.has(id) && !sessions.value.some(session => session.id === id)
     await switchSession(id, !localDraft)
   }
+  if (localDraft) draft.value = overlayDrafts.value.get(id) || ''
   await nextTick()
   if (!authorityIsCurrent(authority) || props.name !== name || sessionID.value !== id) return
   if (log.value && overlayScrollPositions.has(id)) log.value.scrollTop = overlayScrollPositions.get(id)!
@@ -274,7 +481,6 @@ async function selectOverlayChat(id: string): Promise<void> {
 function createOverlayChat(): void {
   if (selectingSessionID.value) return
   saveOverlayConversation()
-  draft.value = ''
   overlayChatsVisible.value = false
   newChat()
 }
@@ -303,9 +509,9 @@ const mobileRailTrigger = ref<HTMLButtonElement | null>(null)
 const conversationRail = ref<ConversationRailHandle | null>(null)
 const conversationRailExpanded = computed(() => conversationRail.value?.expanded ?? true)
 const log = ref<HTMLElement | null>(null)
-const composer = ref<HTMLTextAreaElement | null>(null)
 let mounted = false
 let initializedFor = ''
+const sessionInputReady = computed(() => Boolean(sessionID.value) && !selectingSessionID.value)
 let boundStore: AppStore | null = null
 let boundAuthority: ReturnType<typeof captureAuthority> | null = null
 let livenessEverConnected = props.store.live
@@ -314,12 +520,12 @@ let abort: AbortController | null = null
 const detachedStarts = new Set<AbortController>()
 let liveRunID = ''
 let liveRunSessionID = ''
+let liveRunStarted = false
 let streamingID = ''
 let deltaBuffer = ''
 let flushHandle = 0
 const atBottom = ref(true)
 let logResizeObserver: ResizeObserver | null = null
-let composing = false
 let messageSequence = 0
 let openSerial = 0
 let sessionReadSerial = 0
@@ -381,7 +587,7 @@ const inheritedModelLabel = computed(() => {
   return model && !choice.name.toLowerCase().includes(model.toLowerCase()) ? `${choice.name} · ${model}` : choice.name
 })
 const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
-const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value)
+const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value || !sessionInputReady.value)
 
 // A remembered name is not an available model. Keep running work stoppable,
 // but replace the idle overlay composer with one coherent recovery surface.
@@ -444,7 +650,7 @@ const recoveryHeading = ref<HTMLElement | null>(null)
 watch(modelRecovery, async (state, previous) => {
   if (state !== 'ready' && state !== 'loading') recoveryInterruptedPrompt = true
   const focused = document.activeElement
-  const wasEditing = focused === composer.value
+  const wasEditing = focused instanceof HTMLElement && Boolean(focused.closest('.agents-composer'))
   const wasRecovering = focused instanceof Node && Boolean(recoveryPanel.value?.contains(focused))
   await nextTick()
   if (state !== 'ready' && ((previous === 'ready' && wasEditing) || wasRecovering)) recoveryHeading.value?.focus()
@@ -730,6 +936,41 @@ const primaryActionState = computed<AIPrimaryActionState>(() => {
 const composerHelp = computed(() => streaming.value
   ? 'Draft your next message while the agent works.'
   : 'Enter to send · Shift+Enter for a new line')
+const composerHasContent = computed(() => Boolean(draft.value.trim()) || contentParts.value.some((part) => part.type !== 'text' || Boolean(part.text.trim())))
+const selectedImageReceipts = computed(() => contentParts.value.flatMap((part) =>
+  part.type === 'attachment' && assistantAttachmentContentTypeKind(part.attachment.contentType, part.attachment.sizeBytes) === 'image'
+    ? [part.attachment]
+    : [],
+))
+const activeCredential = computed(() => props.store.credentials.data.find((credential) => credential.name === selectedModel.value))
+const knownModelInfo = computed(() => {
+  const model = activeCredential.value?.model?.trim()
+  return model ? modelCatalog.value.find((entry) => entry.id === model) : undefined
+})
+const imageModelUnsupported = computed(() => selectedImageReceipts.value.length > 0 && knownModelInfo.value?.vision === false)
+const harnessUnsupportedInputKinds = computed(() => {
+  if (!agentHarnessBacked(agent.value)) return []
+  const capabilities = attachmentInputCapabilities.value
+  const skillCapabilities = skillCatalog.value.inputCapabilities
+  const hasAttachments = contentParts.value.some((part) => part.type === 'attachment')
+  const configuredSkills = Array.isArray(agent.value?.spec.skills) ? agent.value.spec.skills.length > 0 : false
+  const hasSkills = configuredSkills || selectedSkills.value.length > 0 || contentParts.value.some((part) => part.type === 'skill')
+  const hasResources = selectedResources.value.length > 0 || contentParts.value.some((part) => part.type === 'resource')
+  return [
+    ...(hasAttachments && capabilities?.attachments !== true ? ['attachments'] : []),
+    ...(hasSkills && (capabilities?.skills ?? skillCapabilities?.skills) !== true ? ['skills'] : []),
+    ...(hasResources && (capabilities?.resources ?? skillCapabilities?.resources) !== true ? ['resource references'] : []),
+  ]
+})
+const harnessInputsUnsupported = computed(() => harnessUnsupportedInputKinds.value.length > 0)
+const harnessInputHelp = computed(() => {
+  if (!agentHarnessBacked(agent.value) || !harnessInputsUnsupported.value) return ''
+  const reason = (attachmentInputCapabilities.value?.reason || skillCatalog.value.inputCapabilities?.reason)?.trim()
+  if (reason) return reason
+  if (!attachmentCapabilityLoaded.value) return 'Runner capability unavailable; update or reconnect the runner.'
+  if (skillCatalogLoaded) return `This runner does not support ${harnessUnsupportedInputKinds.value.join(', ')}. Update or reconnect the runner, or remove those inputs.`
+  return `This runner does not support ${harnessUnsupportedInputKinds.value.join(', ')}. Update or reconnect the runner, or remove those inputs.`
+})
 
 function progressStatusForRunPhase(phase: string | undefined): AITurnProgressStatus | undefined {
   switch ((phase || '').trim().toLowerCase()) {
@@ -1109,6 +1350,10 @@ async function saveArtifact(detail: { runID: string; sessionID: string; toolCall
   }
 }
 
+function loadChatAttachment(receipt: import('../agentkit/composer').AgentKitAttachmentReceipt, signal: AbortSignal): Promise<Blob> {
+  return props.api.getAgentAttachment(props.name, sessionID.value, receipt.id, signal)
+}
+
 function sessionKey(name: string, api: ApiClient): string {
   const tenant = api.tenant()
   return `railgrid:agents:session:${tenant.orgUUID || ''}:${tenant.workspaceUUID || ''}:${name}`
@@ -1154,11 +1399,12 @@ function invalidateStream(preserveUnacknowledgedStart = false): void {
   resetApprovalRecovery()
   streamSerial += 1
   liveCancellationSerial += 1
-  if (preserveUnacknowledgedStart && abort && !liveRunID) detachedStarts.add(abort)
+  if (preserveUnacknowledgedStart && abort) detachedStarts.add(abort)
   else abort?.abort()
   abort = null
   liveRunID = ''
   liveRunSessionID = ''
+  liveRunStarted = false
   streamingID = ''
   streaming.value = false
   stopRequested.value = false
@@ -1211,7 +1457,7 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
       // after that snapshot settles because its response may predate the title
       // commit that the non-replayable stream could not deliver.
       queueMicrotask(() => {
-        if (mounted && boundStore === props.store && contextIsCurrent(name, api)) void loadSessions(name, api)
+        if (mounted && boundStore === props.store && contextIsCurrent(name, api)) refreshSessions(name, api)
       })
     }
   }
@@ -1409,13 +1655,15 @@ function returnToLatest(): void {
 }
 
 function applyStarterPrompt(prompt: string): void {
-  if (starterPromptHelp.value) return
+  if (!sessionInputReady.value || starterPromptHelp.value) return
   draft.value = prompt
   void nextTick(() => composer.value?.focus())
 }
-const starterPromptHelp = computed(() => !hasModel.value
-  ? 'Choose a model to use a starter prompt.'
-  : draft.value ? 'Clear your draft to use a starter prompt.' : '')
+const starterPromptHelp = computed(() => !sessionInputReady.value
+  ? 'Loading conversation…'
+  : !hasModel.value
+    ? 'Choose a model to use a starter prompt.'
+    : draft.value ? 'Clear your draft to use a starter prompt.' : '')
 const starterPrompts = [
   'What can you help me with, and which tools can you use?',
   'Help me plan a task. Ask me about my goal and constraints first.',
@@ -1447,9 +1695,7 @@ async function openAgent(): Promise<void> {
 
   if (!name) return
   const transferredDraft = chatHost?.value ? takeChatDraft(handoffKey) : undefined
-  if (transferredDraft !== undefined) draft.value = transferredDraft
   const setupDraft = props.store.takeChatSetupDraft(name)
-  if (setupDraft) { draft.value = setupDraft.draft; recoveryInterruptedPrompt = true }
   let wanted = setupDraft?.session || ''
   try {
     wanted ||= localStorage.getItem(sessionKey(name, api)) || ''
@@ -1505,11 +1751,24 @@ async function openAgent(): Promise<void> {
   }
   sessionID.value = wanted
   remember(wanted, name, api)
+  if (transferredDraft !== undefined) draft.value = transferredDraft
+  if (setupDraft) { draft.value = setupDraft.draft; recoveryInterruptedPrompt = true }
   await loadMessages(wanted, name, api)
   if (serial !== openSerial || ownership !== chatOwnershipSerial || !contextIsCurrent(name, api)) return
   initializedFor = name
   maybeAutoSend()
 }
+
+function refreshSessions(name = props.name, api = props.api): void {
+  if (name !== props.name || api !== props.api) return
+  if (!sessionID.value && !sessionsHasSnapshot.value) {
+    void openAgent()
+    return
+  }
+  void loadSessions(name, api)
+}
+
+function retrySessions(): void { refreshSessions() }
 
 function maybeAutoSend(): void {
   if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value || modelSaveError.value || modelRecovery.value !== 'ready') return
@@ -1656,30 +1915,67 @@ async function cancelLiveRun(
 }
 
 async function send(): Promise<void> {
+  if (!sessionInputReady.value) return
   const draftText = draft.value.trim()
-  if (!draftText || streaming.value || recoveringQuestionRun.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
+  const submittedParts = contentParts.value.filter((part) => part.type !== 'annotation')
+  const hasParts = submittedParts.some((part) => part.type !== 'text' || Boolean(part.text.trim()))
+  if (imageModelUnsupported.value) {
+    toast('error', 'This model does not support images. Choose a vision capable model or remove the image attachments.')
+    return
+  }
+  if (harnessInputsUnsupported.value) {
+    toast('error', harnessInputHelp.value || 'The selected runner cannot receive these inputs. Update or reconnect the runner.')
+    return
+  }
+  if ((!draftText && !hasParts) || attachmentsPending.value || streaming.value || recoveringQuestionRun.value || composerSubmitting.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
   if (recoveryInterruptedPrompt) { props.store.takePendingPrompt(props.name); recoveryInterruptedPrompt = false }
   engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
   // or authorization. Persisting it in the message keeps reloads auditable.
-  const text = props.pageContext
+  const text = draftText && props.pageContext
     ? `${draftText}${PAGE_CONTEXT_MARKER}${props.pageContext}`
     : draftText
+  const submittedSkills = selectedSkills.value.filter((skill) => Boolean(skill.digest))
+  if (selectedSkills.value.length && submittedSkills.length !== selectedSkills.value.length) {
+    toast('error', 'One or more selected skills are stale. Refresh the skill catalog and try again.')
+    void loadComposerCatalogs()
+    return
+  }
+  const submittedResources = [...selectedResources.value]
+  const submittedDraft: AgentChatDraft = {
+    content: draft.value,
+    contentParts: [...submittedParts],
+    skills: [...submittedSkills],
+    resources: [...submittedResources],
+  }
   if (!sessionID.value) {
     sessionID.value = newSessionID()
     remember(sessionID.value)
   }
-
+  const requestSession = sessionID.value
+  composerSubmitting.value = true
   draft.value = ''
   const userID = `u${++messageSequence}`
-  messages.value.push({ id: userID, role: 'user', content: text, tools: [], actorID: optimisticAIMessageActor(props.api.context()?.user) })
-  await streamTurn(userID, (signal) => props.api.chatStream(props.name, text, sessionID.value, signal))
+  messages.value.push({
+    id: userID, role: 'user', content: text, tools: [],
+    actorID: optimisticAIMessageActor(props.api.context()?.user),
+    contentParts: submittedParts,
+    contextResources: submittedResources,
+    skillRefs: submittedSkills.map((skill) => ({ id: skill.id, sha256: skill.digest! })),
+    skillViews: submittedSkills,
+  })
+  await streamTurn(userID, (signal) => props.api.chatStream(props.name, text, requestSession, signal, {
+    contentParts: submittedParts,
+    contextResources: submittedResources,
+    skills: submittedSkills,
+  }), undefined, submittedDraft)
 }
 
 async function streamTurn(
   userID: string,
   events: (signal: AbortSignal) => AsyncIterable<SSEEvent>,
   onAnswerAccepted?: (data: StartData, assistantID: string) => void,
+  submittedDraft?: AgentChatDraft,
 ): Promise<void> {
   claimChatOwnership()
   olderReadSerial += 1
@@ -1694,6 +1990,16 @@ async function streamTurn(
   const api = props.api
   const store = props.store
   const requestSession = sessionID.value
+  const requestDraftStorageKey = agentChatDraftStorageKey(api.contextAuthority(), name, requestSession)
+  // send() has cleared only the text field so far; attachments, skills, and
+  // resources stay in the composer until admission. Snapshot that exact
+  // post-submit state so a rejected admission can tell whether the user has
+  // authored anything new while the request was pending.
+  const clearedSubmittedDraftSnapshot = submittedDraft
+    ? authoredComposerDraftSnapshot({ ...currentComposerDraft(), content: '' })
+    : undefined
+  const requestOwnerKey = composerOwnerKey.value
+  const requestComposer = composer.value
   const serial = ++streamSerial
   const controller = new AbortController()
   abort = controller
@@ -1701,6 +2007,7 @@ async function streamTurn(
   cancelingRunID.value = ''
   liveRunID = ''
   liveRunSessionID = ''
+  liveRunStarted = false
   resetOrphanRead()
   const assistantID = `a${++messageSequence}`
   streamingID = assistantID
@@ -1715,7 +2022,25 @@ async function streamTurn(
   messagesHasSnapshot.value = true
   streaming.value = true
   atBottom.value = true
-  resizeComposer()
+  let turnAccepted = false
+  const acceptTurn = () => {
+    if (turnAccepted || !submittedDraft) return
+    turnAccepted = true
+    const receiptIDs = submittedDraft.contentParts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
+    clearAgentChatDraft(requestDraftStorageKey)
+    // The captured composer owns these receipts even if the user has moved to
+    // another session while admission was pending. Mark that original draft
+    // accepted before checking whether this stream may still update the view.
+    requestComposer?.commitAttachments(receiptIDs, requestSession, requestOwnerKey)
+    if (!streamIsCurrent(serial, controller, name, api)) return
+    composerDraftLoading.value = true
+    contentParts.value = []
+    selectedSkills.value = []
+    selectedResources.value = []
+    attachmentsPending.value = false
+    composerDraftLoading.value = false
+    composerSubmitting.value = false
+  }
 
   let started = false
   try {
@@ -1735,7 +2060,8 @@ async function streamTurn(
             run: () => emit('navigate', { kind: 'run', id: data.runID }),
           })
         }
-        if ((onAnswerAccepted && event.event === 'start') || event.event === 'run_started' || event.event === 'done' || event.event === 'error') {
+        if ((onAnswerAccepted && event.event === 'start') || event.event === 'run_started' || event.event === 'approval_required' || event.event === 'done' || event.event === 'error') {
+          if (event.event === 'run_started' || event.event === 'approval_required' || event.event === 'done') acceptTurn()
           detachedStarts.delete(controller)
           controller.abort()
           void loadSessions(name, api)
@@ -1748,6 +2074,9 @@ async function streamTurn(
         case 'start': {
           const data = event.data as StartData
           started = true
+          // An answered question resumes an already admitted run. Normal chat
+          // still waits for run_started before cancellation or draft commit.
+          if (onAnswerAccepted) liveRunStarted = true
           onAnswerAccepted?.(data, assistantID)
           liveRunID = data.runID
           patchMessage(assistantID, { runID: data.runID })
@@ -1764,7 +2093,9 @@ async function streamTurn(
           break
         }
         case 'run_started': {
+          acceptTurn()
           const data = event.data as RunStartedData
+          liveRunStarted = true
           if (data.runID) {
             liveRunID = data.runID
             patchMessage(assistantID, { runID: data.runID })
@@ -1783,6 +2114,10 @@ async function streamTurn(
             status,
             ...(data.startedAt ? { startedAt: data.startedAt } : {}),
           })
+          if (stopRequested.value && liveRunID) {
+            await cancelLiveRun(liveRunID, data.sessionID || requestSession, name, api, controller)
+            return
+          }
           break
         }
         case 'delta':
@@ -1877,6 +2212,8 @@ async function streamTurn(
           break
         }
         case 'approval_required': {
+          acceptTurn()
+          liveRunStarted = true
           const data = event.data as ApprovalData
           flushNow(serial)
           const current = currentMessage()
@@ -1901,6 +2238,7 @@ async function streamTurn(
           break
         }
         case 'done': {
+          acceptTurn()
           const data = event.data as DoneData
           flushNow(serial)
           const current = currentMessage()
@@ -1924,6 +2262,7 @@ async function streamTurn(
           })
           liveRunID = ''
           liveRunSessionID = ''
+          liveRunStarted = false
           break
         }
         case 'error': {
@@ -1941,6 +2280,7 @@ async function streamTurn(
           })
           liveRunID = ''
           liveRunSessionID = ''
+          liveRunStarted = false
           break
         }
       }
@@ -1959,6 +2299,20 @@ async function streamTurn(
     })
     patchProgress(assistantID, { status: clientStopped ? 'stopping' : 'failed' })
   } finally {
+    if (streamIsCurrent(serial, controller, name, api)) composerSubmitting.value = false
+    if (submittedDraft && !turnAccepted && streamIsCurrent(serial, controller, name, api)) {
+      const currentDraft = currentComposerDraft()
+      const unchangedSinceSubmit = authoredComposerDraftSnapshot(currentDraft) === clearedSubmittedDraftSnapshot
+      if (unchangedSinceSubmit) {
+        applyComposerDraft(submittedDraft)
+      } else {
+        // The composer watcher is paused during admission. Keep any newer
+        // text, attachments, skills, or resources and persist them explicitly.
+        toast('error', 'The previous send was not accepted. Your newer draft is still here.')
+      }
+      writeAgentChatDraft(composerDraftKey.value, currentComposerDraft())
+      if (composerDraftKey.value !== requestDraftStorageKey) clearAgentChatDraft(requestDraftStorageKey)
+    }
     detachedStarts.delete(controller)
     if (streamIsCurrent(serial, controller, name, api)) {
       flushNow(serial)
@@ -1991,10 +2345,9 @@ async function stop(): Promise<void> {
   const api = props.api
   const session = liveRunSessionID || sessionID.value
   const controller = abort
-  // Before the start frame there is no server-owned run ID to cancel. Keep the
-  // stream attached until that frame arrives; its handler will cancel exactly
-  // once, then close the stream. Aborting here would orphan the backend run.
-  if (!runID) return
+  // `start` carries a provisional ID before atomic admission. Keep watching
+  // until `run_started`, then cancel the persisted run exactly once.
+  if (!liveRunStarted || !runID) return
   if (!controller) return
   await cancelLiveRun(runID, session, name, api, controller)
 }
@@ -2133,9 +2486,11 @@ function detachConversationStream(): void {
   // generation before changing the selected session so even queued deltas and
   // terminal frames cannot enter the destination transcript. Only Stop calls
   // the provider's cancellation verb.
-  invalidateStream(!runID)
+  const runIsStarted = liveRunStarted
+  invalidateStream(!runIsStarted)
+  composerSubmitting.value = false
   void loadSessions()
-  toast('info', runID ? 'The run continues in its original thread.' : 'The original request is still starting.', runID ? {
+  toast('info', runIsStarted && runID ? 'The run continues in its original thread.' : 'The original request is still starting.', runIsStarted && runID ? {
     label: 'View progress',
     run: () => emit('navigate', { kind: 'run', id: runID }),
   } : undefined)
@@ -2379,27 +2734,6 @@ function scrollToBottom(): void {
   })
 }
 
-function resizeComposer(): void {
-  void nextTick(() => {
-    const element = composer.value
-    if (!element) return
-    element.style.height = 'auto'
-    element.style.height = `${Math.min(element.scrollHeight, props.composerOnly ? 32 : 180)}px`
-  })
-}
-
-function onComposerKeydown(event: KeyboardEvent): void {
-  if (event.isComposing || composing) return
-  if (streaming.value) return
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault()
-    void send()
-  }
-}
-
-function onCompositionStart(): void { composing = true }
-function onCompositionEnd(): void { composing = false }
-
 watch([() => props.store, () => props.api, () => props.name], () => {
   overlayDrafts.value.clear()
   overlayScrollPositions.clear()
@@ -2427,13 +2761,13 @@ watch(
     if (previousLive === false && live === true) {
       const currentChatIsBound = mounted && initializedFor === props.name && boundStore === store
       if (livenessEverConnected && currentChatIsBound) {
-        void loadSessions(props.name, props.api)
+        refreshSessions(props.name, props.api)
       } else if (!livenessEverConnected && mounted && boundStore === store) {
         // The event bus does not replay a title published before the first
         // stream connection. Catch up from persistence whether the initial
         // session snapshot has settled or is still in flight.
         if (sessionsLoading.value) firstConnectCatchupPending = true
-        else if (initializedFor === props.name) void loadSessions(props.name, props.api)
+        else if (initializedFor === props.name) refreshSessions(props.name, props.api)
       }
       livenessEverConnected = true
     }
@@ -2455,8 +2789,6 @@ watch(log, element => {
   scrollToBottom()
 }, { flush: 'post' })
 watch(messages, scrollToBottom)
-watch(draft, resizeComposer)
-watch(() => props.composerOnly, resizeComposer)
 
 onMounted(() => {
   mounted = true
@@ -2548,7 +2880,7 @@ defineExpose({
 
     <section v-if="overlay && overlayChatsVisible && !composerOnly" class="agents-overlay-chats" aria-label="Chats">
       <label class="agents-overlay-chats__search"><Search :size="16" aria-hidden="true" /><input ref="overlayChatSearchInput" v-model="overlayChatSearch" type="search" placeholder="Search chats" aria-label="Search chats" /></label>
-      <div v-if="sessionsError" role="alert" class="agents-overlay-chats__state">Could not refresh chats. {{ sessionsError }} <button class="k-btn k-btn--ghost" :disabled="sessionsLoading" @click="loadSessions()">Retry</button></div>
+      <div v-if="sessionsError" role="alert" class="agents-overlay-chats__state">Could not refresh chats. {{ sessionsError }} <button class="k-btn k-btn--ghost" :disabled="sessionsLoading" @click="retrySessions">Retry</button></div>
       <p v-if="sessionsLoading && !sessionsHasSnapshot" role="status">Loading chats…</p>
       <p v-else-if="!filteredOverlayChats.length" class="muted" role="status">{{ overlayChatSearch ? 'No chats match your search.' : 'No chats yet. Start a new chat above.' }}</p>
       <div v-for="group in overlayChatGroups" :key="group.label" class="agents-overlay-chats__group"><h3>{{ group.label }}</h3>
@@ -2597,7 +2929,7 @@ defineExpose({
           <section class="agents-conversation-column" aria-label="Conversation and composer">
         <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
           <span><AlertCircle aria-hidden="true" /> Could not load conversations: {{ sessionsError }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="retrySessions">
             <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
           </button>
         </div>
@@ -2675,6 +3007,7 @@ defineExpose({
                 :author-label="formatAIMessageAuthor(userLabel(message.actorID))"
                 :session-i-d="sessionID"
                 :load-inline-app="loadInlineApp"
+                :load-attachment="loadChatAttachment"
                 :inspected-artifact-receipt="inspectedArtifactReceipt"
                 :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
                 :announce="message.role === 'assistant' && message.streaming"
@@ -2735,6 +3068,11 @@ defineExpose({
             @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"
           />
         </div>
+        <div v-if="!sessionInputReady" class="k-ai-composer-dock">
+          <p class="muted agents-composer-readiness" role="status" aria-live="polite">
+            {{ sessionsLoading && !sessionID ? 'Loading conversations…' : selectingSessionID || sessionID ? 'Loading conversation…' : 'Start a new thread or retry loading conversations to begin.' }}
+          </p>
+        </div>
         <section v-if="modelRecovery !== 'ready'" ref="recoveryPanel" class="agents-model-recovery" :class="{ 'agents-model-recovery--compact': composerOnly }" :aria-labelledby="domID('model-recovery-title')" :aria-busy="modelRecovery === 'loading' || modelSaving">
           <h3 ref="recoveryHeading" :id="domID('model-recovery-title')" tabindex="-1" aria-live="polite">{{ composerOnly ? compactRecoveryTitle : modelRecovery === 'loading' ? 'Loading models…' : modelRecovery === 'error' ? 'Models could not be loaded' : modelRecovery === 'inaccessible' ? 'Model access is restricted' : modelRecovery === 'choose' ? 'Choose a model to continue' : 'Connect a model to continue' }}</h3>
           <template v-if="!composerOnly">
@@ -2760,26 +3098,35 @@ defineExpose({
           <button v-else-if="modelRecovery !== 'loading'" type="button" class="k-btn k-btn--text agents-model-recovery__review" @click="reviewModelRecovery">{{ modelRecovery === 'connect' ? 'Review setup' : modelRecovery === 'choose' ? 'Choose model' : 'View details' }}</button>
         </section>
         <form v-else class="agents-composer k-ai-composer-dock" @submit.prevent="send">
-          <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!hasModel">
+          <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!sessionInputReady || !hasModel">
             <template #editor>
-              <textarea
+              <AgentRichComposer
                 ref="composer"
-                v-model="draft"
-                class="agents-composer-input"
-                rows="1"
-                :aria-label="`Message ${name}`"
-                :aria-describedby="domID('agents-composer-help')"
-                :title="composerHelp"
+                :api="api"
+                :agent="name"
+                :owner-key="composerOwnerKey"
+                :draft-storage-key="composerDraftKey"
+                :draft-scope-key="sessionID"
+                :model-value="draft"
+                :content-parts="contentParts"
+                :skills="availableComposerSkills"
+                :selected-skills="selectedSkills"
+                :selected-resources="selectedResources"
+                :providers="providerResourceCatalog"
+                :attachments-pending="attachmentsPending"
+                :submitting="composerSubmitting"
                 :placeholder="compact ? `Ask ${name}…` : `Message ${name}…`"
-                :disabled="!hasModel"
-                @input="resizeComposer"
-                @compositionstart="onCompositionStart"
-                @compositionend="onCompositionEnd"
-                @keydown="onComposerKeydown"
-              ></textarea>
-              <div v-if="isModelBackend && !composerOnly" class="k-ai-composer__controls">
-                <div class="k-ai-composer__actions">
+                :disabled="!sessionInputReady || !hasModel"
+                @update:model-value="draft = $event"
+                @update:content-parts="contentParts = $event"
+                @update:selected-skills="selectedSkills = $event"
+                @update:selected-resources="selectedResources = $event"
+                @update:attachments-pending="attachmentsPending = $event"
+                @submit="send"
+              >
+                <template #actions>
                   <AIModelReasoningPicker
+                    v-if="isModelBackend && !composerOnly"
                     compact
                     class="agents-chat-model-picker"
                     :models="modelChoices"
@@ -2787,7 +3134,7 @@ defineExpose({
                     :effort="selectedEffort"
                     :effort-options="effortOptions"
                     :default-effort-label="effortLabel(modelPreferences?.defaultEffort || '')"
-                    :disabled="modelInteractionLocked"
+                    :disabled="!sessionInputReady || modelInteractionLocked"
                     :model-selection-disabled="modelSwitchDisabled"
                     :saving="modelSaving"
                     :save-error="modelSaveError"
@@ -2797,8 +3144,8 @@ defineExpose({
                     @update:effort="selectReasoningEffort"
                     @retry="retryChatModel"
                   />
-                </div>
-              </div>
+                </template>
+              </AgentRichComposer>
               <span :id="domID('agents-composer-help')" class="sr-only">{{ composerHelp }}</span>
             </template>
             <template #primary>
@@ -2815,11 +3162,13 @@ defineExpose({
                 class="agents-composer-primary"
                 state="send"
                 type="submit"
-                :disabled="!hasModel || modelSaving || Boolean(modelSaveError) || invalidEffort || !draft.trim()"
+                :disabled="!sessionInputReady || !hasModel || !composerHasContent || attachmentsPending || composerSubmitting || modelSaving || Boolean(modelSaveError) || invalidEffort || imageModelUnsupported || harnessInputsUnsupported"
               />
             </template>
-            <template v-if="!composerOnly && isModelBackend && (store.credentials.loading || store.credentials.error || !modelChoices.length)" #help>
-              <span v-if="store.credentials.loading">Loading models…</span>
+            <template v-if="imageModelUnsupported || harnessInputsUnsupported || (!composerOnly && isModelBackend && (store.credentials.loading || store.credentials.error || !modelChoices.length))" #help>
+              <span v-if="imageModelUnsupported" role="status">{{ knownModelInfo?.label || knownModelInfo?.id || 'This model' }} does not support images. Choose a vision capable model or remove the image attachments.</span>
+              <span v-else-if="harnessInputsUnsupported" role="status">{{ harnessInputHelp }}</span>
+              <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
               <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>
             </template>

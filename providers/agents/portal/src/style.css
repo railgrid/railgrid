@@ -307,6 +307,49 @@ railgrid-provider-agents .agents-cat-channel { background: var(--color-success-s
 railgrid-provider-agents .agents-cat-connection { background: var(--color-surface-overlay, #171927); color: var(--color-text-secondary, currentColor); }
 railgrid-provider-agents .agents-inbound-on { color: var(--color-success, #2fd6a0); font-weight: 700; }
 
+/* Workspace skill forms are provider-owned, so define their critical geometry
+ * here instead of relying on utility classes emitted by another portal build. */
+railgrid-provider-agents .agents-skill-activation__list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 6px; }
+railgrid-provider-agents .agents-skill-activation__row { min-width: 0; max-width: 100%; }
+railgrid-provider-agents .agents-skill-activation__summary { flex: 1 1 220px; min-width: 0; }
+railgrid-provider-agents .agents-skill-activation__action { margin-inline-start: auto; }
+railgrid-provider-agents .agents-skill-workbench__columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 16px;
+  min-width: 0;
+  container: agents-skill-workbench-columns / inline-size;
+}
+railgrid-provider-agents .agents-skill-workbench__detail-heading { min-width: 0; overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-skill-workbench__detail-actions { min-width: 0; flex-wrap: wrap; }
+railgrid-provider-agents .agents-skill-workbench__document-editor,
+railgrid-provider-agents .agents-skill-workbench__resource-editor {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+}
+railgrid-provider-agents .agents-skill-workbench__document-editor { min-height: 18rem; }
+railgrid-provider-agents .agents-skill-workbench__resource-editor { min-height: 8rem; }
+railgrid-provider-agents .agents-skill-workbench__detail-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+railgrid-provider-agents .agents-skill-workbench__button-icon,
+railgrid-provider-agents .agents-skill-activation__button-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
+}
+@container agents-skill-workbench-columns (max-width: 640px) {
+  railgrid-provider-agents .agents-skill-workbench__detail-header { flex-wrap: wrap; }
+  railgrid-provider-agents .agents-skill-workbench__detail-heading { width: 100%; flex: 1 1 100%; }
+  railgrid-provider-agents .agents-skill-workbench__detail-actions { width: 100%; flex: 1 1 100%; }
+}
+
 /* --- loading / empty / error states --- */
 railgrid-provider-agents .agents-state {
   display: flex; align-items: center; gap: 9px; flex-wrap: wrap;

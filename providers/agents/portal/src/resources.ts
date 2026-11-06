@@ -774,6 +774,7 @@ export class Resources {
         description: body.description,
         systemPrompt: body.systemPrompt,
         autonomy: body.autonomy,
+        skills: body.skills?.map((skill) => ({ name: skill.name.trim() })).filter((skill) => skill.name),
       })
       const backend = createBackend(body)
       if (backend) spec.backend = backend
@@ -875,6 +876,9 @@ export class Resources {
         if (channels.length > 0) await this.assertChannelsUnclaimed(client, name, channels)
         spec.channels = channels
       }
+      if (body.skills !== undefined) {
+        spec.skills = body.skills.map((skill) => ({ name: skill.name.trim() })).filter((skill) => skill.name)
+      }
       if (body.runOutput !== undefined) {
         // Always is the default, so it is written as the absence of the block
         // rather than as a value the reader then has to know is the default.
@@ -912,6 +916,43 @@ export class Resources {
       if (Object.keys(tools).length > 0) spec.tools = tools
 
       return client.patch<Agent & KubeObject>(AGENTS, name, { spec }, { type: 'merge' })
+    }, () => this.client(context, bounded))
+  }
+
+  /**
+   * setAgentSkillEnabled changes one skill reference against a fresh Agent.
+   * The resourceVersion tests make the focused JSON Patch fail if another
+   * writer changes the Agent after this read, so a skill toggle cannot replace
+   * unrelated skills or Grants from a stale portal snapshot.
+   */
+  setAgentSkillEnabled = (name: string, skillID: string, enabled: boolean): Promise<Agent> => {
+    const id = skillID.trim()
+    if (!id) return Promise.reject(validationError('skill name is required'))
+    const context = this.ctx
+    const bounded = createBoundedRequestFetch(providerFetch(context), {
+      timeoutMs: AGENT_PATCH_TIMEOUT_MS,
+      timeoutMessage: 'Saving agent skills timed out. Refresh to confirm the change.',
+    })
+    return this.run(async (client) => {
+      const current = await client.get<Agent & KubeObject>(AGENTS, name)
+      const uid = current.metadata?.uid
+      const resourceVersion = current.metadata?.resourceVersion
+      if (!uid || !resourceVersion) {
+        throw validationError('agent is missing its UID or resourceVersion; refresh and try again')
+      }
+      const skills = Array.isArray(current.spec?.skills) ? current.spec.skills : []
+      const next = enabled
+        ? [...skills.filter((item) => item.name !== id), { name: id }]
+        : skills.filter((item) => item.name !== id)
+      if (next.length === skills.length && next.every((item, index) => item.name === skills[index]?.name)) {
+        return current
+      }
+
+      return client.patch<Agent & KubeObject>(AGENTS, name, [
+        { op: 'test', path: '/metadata/uid', value: uid },
+        { op: 'test', path: '/metadata/resourceVersion', value: resourceVersion },
+        { op: 'add', path: '/spec/skills', value: next },
+      ], { type: 'json' })
     }, () => this.client(context, bounded))
   }
 
