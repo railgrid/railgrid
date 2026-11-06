@@ -31,6 +31,8 @@ import InlineMcpApp from '../components/InlineMcpApp.vue'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
+import AIAttachmentReceipts from '../agentkit/AIAttachmentReceipts.vue'
+import type { AgentKitAttachmentReceipt } from '../agentkit/composer'
 import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import { formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
@@ -47,6 +49,7 @@ const props = withDefaults(defineProps<{
   /** The parent chooses one stable message per run for navigation metadata. */
   showRunLink?: boolean
   loadInlineApp?: (receipt: { runID: string; sessionID: string; toolCallID: string; title: string }) => Promise<AgentArtifact | null>
+  loadAttachment?: (receipt: AgentKitAttachmentReceipt, signal: AbortSignal) => Promise<Blob>
   inspectedArtifactReceipt?: { runID: string; sessionID: string; toolCallID: string } | null
   /** Suspend every inline app while a saved citation is being resolved. */
   inspectionOpen?: boolean
@@ -62,6 +65,13 @@ const emit = defineEmits<{
 
 const messageAuthor = computed(() => props.authorLabel || formatAIMessageAuthor(props.message.actorID))
 const userMessage = computed(() => splitPageContext(props.message.role === 'user' ? props.message.content : ''))
+const messageAttachments = computed(() => (props.message.contentParts || []).flatMap((part) => part.type === 'attachment' ? [part.attachment] : []))
+const messageResources = computed(() => props.message.contextResources || [])
+const messageSkillRefs = computed(() => props.message.skillRefs || [])
+const userHasBubbleContent = computed(() => Boolean(userMessage.value.text.trim() || userMessage.value.reference || messageResources.value.length || messageSkillRefs.value.length))
+function skillLabel(id: string): string {
+  return props.message.skillViews?.find((skill) => skill.id === id)?.name || id
+}
 const providerContextData = computed(() => {
   const data = userMessage.value.reference?.providerContext?.data
   return data === undefined ? null : JSON.stringify(data, null, 2) ?? ''
@@ -366,11 +376,13 @@ onBeforeUnmount(() => { mounted = false })
       class="agents-ai-message"
       :id="message.id"
       :role="message.role"
-      :bubble="message.role === 'user'"
+      :bubble="message.role === 'user' && userHasBubbleContent"
       :aria-label="message.role === 'user' ? `Message from ${messageAuthor}` : 'Assistant message'"
     >
-      <template v-if="failurePhase" #before>
+      <template v-if="failurePhase || (message.role === 'user' && messageAttachments.length)" #before>
+        <AIAttachmentReceipts v-if="message.role === 'user' && messageAttachments.length" :attachments="messageAttachments" :load-attachment="loadAttachment" />
         <RunFailureNotice
+          v-if="failurePhase"
           :phase="failurePhase"
           :diagnostic="message.error"
           @recovery="emit('recovery', $event)"
@@ -475,8 +487,15 @@ onBeforeUnmount(() => { mounted = false })
         <div class="agents-body">{{ message.content === skippedQuestionResponse ? 'Skipped this question' : message.content }}</div>
       </template>
     </div>
-    <div v-else-if="message.role === 'user' && message.content.trim()" class="agents-user-content">
+    <div v-else-if="message.role === 'user' && userHasBubbleContent" class="agents-user-content">
       <div v-if="userMessage.text" class="agents-body">{{ userMessage.text }}</div>
+      <div v-if="messageSkillRefs.length" class="flex flex-wrap gap-1.5" aria-label="Skills used for this turn">
+        <span v-for="skill in messageSkillRefs" :key="skill.id" class="assistant-composer-chip inline-flex max-w-full items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 font-mono text-[11px] text-accent" :title="skill.id">@{{ skillLabel(skill.id) }}</span>
+      </div>
+      <div v-if="messageResources.length" class="flex flex-wrap gap-1.5" aria-label="Resource references">
+        <span v-for="resource in messageResources" :key="`${resource.provider}:${resource.resourceRef.apiVersion}:${resource.resourceRef.resource}:${resource.resourceRef.name}`" class="inline-flex max-w-full items-center gap-1 rounded-sm border border-border-subtle bg-surface-raised px-1.5 py-0.5 font-mono text-[11px] text-text-secondary" :title="`${resource.provider} · ${resource.resourceRef.apiVersion} · ${resource.resourceRef.kind} / ${resource.resourceRef.name}`">#{{ resource.resourceRef.kind }}/{{ resource.resourceRef.name }}</span>
+        <span class="sr-only">These resource coordinates do not grant access or select tools.</span>
+      </div>
       <details v-if="userMessage.reference" class="agents-page-reference">
         <summary :title="userMessage.reference.label"><FileSearch :size="13" aria-hidden="true" /><span class="agents-page-reference-prefix">Context ·</span><span class="agents-page-reference-label">{{ userMessage.reference.label }}</span><ChevronDown class="agents-page-reference-chevron" :size="12" aria-hidden="true" /></summary>
         <dl><dt>Workspace</dt><dd>{{ userMessage.reference.workspace }}</dd><dt>Page</dt><dd>{{ userMessage.reference.label }}</dd><dt>Location</dt><dd>{{ userMessage.reference.path }}{{ userMessage.reference.view || '' }}</dd></dl>

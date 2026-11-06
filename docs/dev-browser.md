@@ -231,3 +231,51 @@ Development install instructions set `hub.insecure=true` for the hub's
 self-signed certificate. Production recipes keep TLS verification enabled.
 External prerequisites such as a Postgres Secret still need operator
 provisioning; the Review fields collect references, not credentials.
+
+## AgentKit input geometry regression
+
+With the existing stack ready, `make test-agentkit-input-geometry` compares the
+live Agent Skills activation, standalone skill library, composer and App Studio
+project skill library/composer at 1440px, 900px and 390px in both themes. Set
+`PLAYWRIGHT_MODULE` to an installed Playwright module when it is not on Node's
+module path, plus `AGENTKIT_TEST_AGENT` and `AGENTKIT_TEST_PROJECT` to disposable
+resources in the workspace from `.kcp/dev-browser.json`. The Agent must have a
+usable model binding; App Studio does not need an API key for this check.
+The test creates no resources and blocks model submissions. The caller owns
+resource setup and cleanup. It verifies rendered icon/text clearance, vertical
+centering, filled-search clear targets and focus return, Add menu viewport
+bounds and keyboard dismissal, and a single composer focus frame. It also
+simulates image/text upload rejections in both portals, checks visible accessible
+error reasons and image action/status separation, and removes each failed upload
+by keyboard to verify composer focus recovery. Image/text uploads are also
+retried by keyboard, with transport-attempt and focus-recovery assertions. The
+matrix also checks multi-term skill search, App Studio detail-dialog dismissal,
+Agents create-form/resource controls, IME confirmation, and inline skill-chip
+selection/removal. Native chooser and interrupted multi-file scope boundaries
+are covered by mounted component tests. The matrix also verifies unmatched
+command feedback, active-option ownership, reopening with an already-added
+skill, explicit chip removal labels, and 44px chip targets on coarse pointers.
+Separate-root ID collisions are covered by mounted palette/attachment tests.
+Starter-prompt labels are also checked for clipping after returning to the
+conversation pane. It writes at
+most eight current screenshots to `screenshotsDirectory`; preserve earlier
+evidence elsewhere before running when that directory already contains files.
+Source assertions and copy parity cannot detect a missing generated CSS utility;
+this regression inspects computed styles and actual element bounds.
+
+Palette lifecycle coverage also exercises Shift+Tab to Back, Escape from Back,
+and Tab dismissal from the external editor and filter. Mounted tests cover
+rejected resource discovery, retry through Back, and late lookup failures.
+
+The AgentKit matrix also clicks Add → Files and waits for a native file-chooser event, then clicks the command menu item and verifies its listbox. Mocked Agent history checks a sent image above and outside its text bubble without persisting a turn or making model calls.
+Use `AGENTKIT_TEST_BROWSER=webkit` for the Safari-engine checks and `AGENTKIT_TEST_ORIGIN=https://console.dev.kyrosos.com` to test the public Tilt endpoint. `AGENTKIT_TEST_EXECUTABLE` can select a browser wrapper when the host needs an isolated runtime. Chromium remains the default.
+The WebKit report retains nonfatal ResizeObserver deferrals and membership-fetch cancellation diagnostics during provider navigation; every other page error still fails the run.
+The Add-menu regression also checks that the menu is body-mounted and remains interactive when the trigger’s local container clips overflow. Both providers retain the same synchronous file-input activation; provider-specific uploads begin only after selection.
+
+Agent skill activation checks now target the Agent’s Skills workbench. Reusable package/editor checks target the standalone Skills library. Config no longer contains activation controls.
+
+`hack/test-agent-skills-experience.mjs` exercises library import/create/edit/delete, read-only provider packages, per-Agent enable/disable and reload persistence, missing-reference cleanup, and browser Back/Forward at desktop and mobile sizes. It requires an authorized disposable review Agent, makes no model calls, and removes only UID-guarded test-owned skills and references.
+
+`make test-agentkit-upload-retry` uses the same disposable Agent/Project variables as the geometry check. It persists real uploads in both portals, substitutes an error for the first successful upload response, retries the stable upload identity, and verifies stored bytes remain available until explicit removal. It submits no model turns and cleans up its exact receipts. The Skills experience check also imports quoted YAML keys and folded descriptions and delays a real save response to verify that editor controls stay locked until the write completes.
+
+The upload check also delays the initial Agents session read, verifies that inputs wait for a session, and checks that New thread preserves its draft when the old read settles. The Skills check rejects unsupported root merge keys before storage and, on desktop, enables/selects/disables a skill without remounting the chat composer.

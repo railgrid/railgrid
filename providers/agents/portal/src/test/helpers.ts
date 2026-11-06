@@ -17,6 +17,7 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     tenantKey: () => 'org/ws',
     tenant: () => ({ orgUUID: 'org', workspaceUUID: 'ws' }),
     context: () => null,
+    contextAuthority: () => ({ usable: false, tenantKey: '', userKey: null, token: null }),
     setContext: () => undefined,
     canConfigureChatModel: () => Promise.resolve(true),
     listAgents: empty,
@@ -29,6 +30,13 @@ export function stubApi(overrides: StubApi = {}): ApiClient {
     listEdges: empty,
     listInbox: empty,
     listSessions: empty,
+    getSkillLibrary: async () => ({ skills: [], warnings: [] }),
+    getSkillLibraryDetail: async () => ({ id: '', name: '', description: '', scope: '', instructions: '', resources: [] }),
+    getAgentSkillCatalog: async () => ({ skills: [], catalogDigest: '', warnings: [], inputCapabilities: { attachments: true, skills: true, resources: true } }),
+    getAgentSkillDetail: async () => ({ id: '', name: '', description: '', scope: '', instructions: '', resources: [] }),
+    getAgentAttachmentList: async () => ({ items: [], inputCapabilities: { attachments: true, skills: true, resources: true } }),
+    listProviderResourceCatalog: async () => [],
+    catalog: async () => [],
     getSessionModel: async () => ({ selectedCredential: "openai", effortOptions: [], defaultEffort: "" }),
     saveSessionModel: async (_agent: string, _session: string, prefs: unknown) => prefs,
     listMessagePage: async () => ({ items: [] }),
@@ -87,4 +95,25 @@ export async function settle(el: HTMLElement, passes = 4): Promise<void> {
 
 export function text(el: Element | null | undefined): string {
   return (el?.textContent || '').replace(/\s+/g, ' ').trim()
+}
+
+export function composerEditor(root: ParentNode): HTMLElement | null {
+  return root.querySelector<HTMLElement>('.assistant-rich-composer[role="textbox"]')
+}
+
+export function setComposerText(root: ParentNode, value: string): HTMLElement | null {
+  const editor = root instanceof HTMLElement && root.matches('.assistant-rich-composer[role="textbox"]')
+    ? root
+    : composerEditor(root)
+  if (!editor) return null
+  editor.textContent = value
+  editor.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }))
+  return editor
+}
+
+export function composerText(root: ParentNode): string {
+  const editor = root instanceof HTMLElement && root.matches('.assistant-rich-composer[role="textbox"]')
+    ? root
+    : composerEditor(root)
+  return editor?.textContent || ''
 }

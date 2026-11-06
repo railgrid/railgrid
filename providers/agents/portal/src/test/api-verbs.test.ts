@@ -130,6 +130,38 @@ describe('verbs are kube paths', () => {
     })
   })
 
+  it('pins selected skill snapshots and resource coordinates in the MCP chat call', async () => {
+    const { api } = clientWithRecorder()
+    const digest = 'c'.repeat(64)
+    const contentParts = [
+      { type: 'skill' as const, skillID: 'workspace:review' },
+      { type: 'resource' as const, resourceIndex: 0 },
+    ]
+    const contextResources = [{
+      provider: 'deployments',
+      resourceRef: { apiVersion: 'deployments.railgrid.ai/v1alpha1', kind: 'Deployment', resource: 'deployments', name: 'production' },
+      uid: 'uid-1',
+      resourceVersion: 'rv-7',
+    }]
+    await expect(async () => {
+      for await (const _ of api.chatStream('scout', '', 'session-1', undefined, {
+        contentParts,
+        contextResources,
+        skills: [{ id: 'workspace:review', name: 'Review', description: '', scope: 'workspace', digest }],
+      })) { /* drain */ }
+    }).rejects.toThrow()
+
+    const body = bodies.get(0) as { params: { arguments: Record<string, unknown> } }
+    expect(body.params.arguments).toEqual(expect.objectContaining({
+      agent: 'scout',
+      message: '',
+      sessionId: 'session-1',
+      contentParts,
+      contextResources,
+      skillRefs: [{ id: 'workspace:review', sha256: digest }],
+    }))
+  })
+
   it('refuses a tail segment the provider would refuse', () => {
     const { api } = clientWithRecorder()
     for (const bad of ['a/b', 'a b', '..', '', 'x?y', 'x%2Fy', 'x#y']) {

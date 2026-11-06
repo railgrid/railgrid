@@ -207,3 +207,14 @@ describe('model management sub-routes', () => {
     expect(hashFor(parseHash('#/models/unknown'))).toBe('#/models')
   })
 })
+
+
+describe('skills library routing', () => {
+  it('keeps the library outside Agent detail and preserves the return destination', () => {
+    const route: Route = { kind: 'menu', menu: 'skills', returnAgent: 'scout' }
+    expect(hashFor(route)).toBe('#/skills?agent=scout')
+    expect(parseHash(hashFor(route))).toEqual(route)
+    expect(activeMenu(route)).toBe('skills')
+    expect(parseHash('#/agents/scout/skills')).toEqual({ kind: 'agent', name: 'scout', tab: 'skills' })
+  })
+})

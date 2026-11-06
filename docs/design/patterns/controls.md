@@ -45,7 +45,11 @@ output via `portal/src/utils/time.ts` (relative plus title absolute). If input
 is needed, use native `date`/`datetime-local` styled as `.k-input`. A range is
 two inputs joined by an en dash, not a popover calendar.
 
-For the command palette, no implementation is shipped. The planned contract is
+The contextual AgentKit slash palette is shipped for Agents and App Studio;
+see the [shared conversation contract](../components/ai-conversation.md#rich-input-ownership).
+It is anchored to its composer and selects enabled skills and resource context.
+
+For a global application command palette, no implementation is shipped. The planned contract is
 a centered 560px, 6px `surface-raised` panel with hairline, heavy elevation,
 and `surface/60` scrim. Its borderless 14px `.k-input` variant carries a mono
 `⌘K` keycap; results use dropdown-menu items with a 10px mono uppercase group

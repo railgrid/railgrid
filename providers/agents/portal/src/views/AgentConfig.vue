@@ -1114,6 +1114,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </div>
     </ResourceSectionCard>
 
+
     <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-backend-heading')" title="Backend" description="Choose where this agent runs its turns.">
       <fieldset class="agents-cap-fs">
         <legend>Execution backend</legend>

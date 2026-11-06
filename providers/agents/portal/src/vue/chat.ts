@@ -250,6 +250,9 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
     runID: item.runID,
     ...(item.role === 'user' && typeof item.metadata?.actorID === 'string' ? { actorID: item.metadata.actorID } : {}),
     ...(item.role === 'user' && typeof item.metadata?.questionPrompt === 'string' ? { questionPrompt: item.metadata.questionPrompt, questions: item.metadata.questions, answers: item.metadata.answers } : {}),
+    ...(item.role === 'user' && Array.isArray(item.metadata?.contentParts) ? { contentParts: item.metadata.contentParts } : {}),
+    ...(item.role === 'user' && Array.isArray(item.metadata?.contextResources) ? { contextResources: item.metadata.contextResources } : {}),
+    ...(item.role === 'user' && Array.isArray(item.metadata?.skillRefs) ? { skillRefs: item.metadata.skillRefs } : {}),
     ...(item.createdAt ? { createdAt: item.createdAt } : {}),
     ...(progressFromMetadata(item.metadata) ? { progress: progressFromMetadata(item.metadata) } : {}),
   })

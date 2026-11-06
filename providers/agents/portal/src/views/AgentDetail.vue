@@ -32,6 +32,7 @@ import AgentConfig from './AgentConfig.vue'
 import AgentWorkbench from './AgentWorkbench.vue'
 import AgentWorkbenchHeader from './AgentWorkbenchHeader.vue'
 import AgentWorkbenchLauncher from './AgentWorkbenchLauncher.vue'
+import AgentSkillsWorkbench from './AgentSkillsWorkbench.vue'
 import RunDetail from './RunDetail.vue'
 
 type WorkbenchTab = AgentWorkbenchTabKind
@@ -126,6 +127,7 @@ const initialWorkbenchState = props.tab === 'chat'
 const workbench = ref<AgentWorkbenchState>(initialWorkbenchState)
 const configMounted = ref(props.tab === 'config' || props.tab === 'tools' || props.tab === 'automation' || (props.tab === 'chat' && workspaceOpen.value))
 const runsMounted = ref(props.tab === 'runs')
+const skillsMounted = ref(props.tab === 'skills')
 const workbenchTab = computed(() => workbench.value.activeTabID)
 
 watch(workbenchStorageKey, () => {
@@ -138,6 +140,7 @@ function navigate(route: Route): void { emit('navigate', route) }
 function ensureWorkbenchSurfaceMounted(tab: AgentWorkbenchTabKind): void {
   if (tab === 'config' || tab === 'tools' || tab === 'automation') configMounted.value = true
   if (tab === 'runs') runsMounted.value = true
+  if (tab === 'skills') skillsMounted.value = true
 }
 
 watch(() => props.tab, tab => {
@@ -414,6 +417,9 @@ async function remove(): Promise<void> {
                 <template #runs>
                   <Activity v-if="runsMounted" v-show="!runId" :store="store" :api="api" :agent="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
                   <RunDetail v-if="runsMounted && runId" :store="store" :api="api" :run-id="runId" :embedded-agent="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
+                </template>
+                <template #skills>
+                  <AgentSkillsWorkbench v-if="skillsMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
                 </template>
                 <template #launcher>
                   <AgentWorkbenchLauncher :tabs="workbench.tabs" :active="workbenchTab === 'launcher'" @select="selectWorkbenchLauncherTab" />

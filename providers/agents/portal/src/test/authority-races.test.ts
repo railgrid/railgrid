@@ -3,12 +3,13 @@ import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
 import type { Connection, RailgridContext } from '../types'
+import { composerEditor, setComposerText } from './helpers'
 import { settleVue } from './vue-helper'
 
 if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
 
 const context = (token: string): RailgridContext => ({
-  basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', token, user: { sub: 'alice' },
+  basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', tenant: 'workspace', token, user: { sub: 'alice' },
 })
 
 beforeEach(() => {
@@ -95,6 +96,7 @@ describe('public shell authority rotation', () => {
     oldApi.chatStream = vi.fn(async function* (_agent, _message, _session, signal) {
       streamSignal = signal
       yield { event: 'start', data: { runID: 'run-1', sessionID: 'session-1' } }
+      yield { event: 'run_started', data: { runID: 'run-1', sessionID: 'session-1', status: 'running' } }
       await gate
     }) as ApiClient['chatStream']
     oldStore.agents.data = [{ metadata: { name: 'scout' }, spec: { backend: { type: 'model', model: { credentials: { chat: 'main' } } } } }]
@@ -104,9 +106,8 @@ describe('public shell authority rotation', () => {
     oldStore.dispatchEvent(new Event('change'))
     await settleVue(6)
 
-    const composer = element.querySelector<HTMLTextAreaElement>('.agents-composer-input')!
-    composer.value = 'keep working'
-    composer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    expect(composerEditor(element)).not.toBeNull()
+    setComposerText(element, 'keep working')
     element.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue(6)
     expect(streamSignal?.aborted).toBe(false)

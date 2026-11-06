@@ -23,6 +23,7 @@ class FakeKcp {
   private objects = new Map<string, Record<string, unknown>>()
   private deletedObjects = new Set<string>()
   private nextUID = 1
+  private beforeNextJsonPatch?: (object: Record<string, unknown>) => void
 
   /** reply registers a body for `${method} ${pathSuffix}` (suffix-matched). */
   reply(key: string, body: unknown) {
@@ -39,6 +40,10 @@ class FakeKcp {
 
   failNextJsonPatch(key: string, status: number, reason: string, message = reason) {
     this.oneShotJsonPatchFailures.set(key, { status, reason, message })
+  }
+
+  mutateBeforeNextJsonPatch(update: (object: Record<string, unknown>) => void) {
+    this.beforeNextJsonPatch = update
   }
 
   object(pathSuffix: string): Record<string, unknown> | undefined {
@@ -118,6 +123,10 @@ class FakeKcp {
     if (method === 'PATCH' && headers.get('Content-Type') === 'application/json-patch+json' && raw) {
       const operations = JSON.parse(String(raw)) as Array<{ op: string; path: string; value?: unknown }>
       const object = structuredClone(this.objects.get(path) ?? { metadata: { name: path.split('/').pop() } })
+      const concurrentUpdate = this.beforeNextJsonPatch
+      this.beforeNextJsonPatch = undefined
+      concurrentUpdate?.(object)
+      if (concurrentUpdate) this.objects.set(path, structuredClone(object))
       const get = (pointer: string): unknown => {
         if (pointer === '/metadata/uid') return (object.metadata as Record<string, unknown>)?.uid
         if (pointer === '/metadata/resourceVersion') return (object.metadata as Record<string, unknown>)?.resourceVersion
@@ -136,6 +145,11 @@ class FakeKcp {
       for (const operation of operations) {
         const prefix = '/metadata/annotations/'
         if (operation.path === '/spec' && operation.op === 'replace') object.spec = operation.value
+        else if (operation.path === '/spec/skills' && ['add', 'replace'].includes(operation.op)) {
+          const spec = (object.spec as Record<string, unknown> | undefined) ?? {}
+          spec.skills = operation.value
+          object.spec = spec
+        }
         else if (operation.path.startsWith(prefix)) {
           const key = operation.path.slice(prefix.length).replaceAll('~1', '/')
           if (operation.op === 'remove') delete annotations[key]
@@ -310,6 +324,49 @@ describe('bounded Agent writes', () => {
 })
 
 describe('agents', () => {
+  it('enables one skill from the current Agent without replacing Grants or unrelated skills', async () => {
+    kcp.reply('GET /agents/scout', {
+      metadata: { name: 'scout', uid: 'agent-1', resourceVersion: '7' },
+      spec: {
+        skills: [{ name: 'workspace:existing' }],
+        tools: { interactive: { families: ['core', 'web'] } },
+        delegates: ['reviewer'],
+      },
+    })
+
+    const updated = await resources.setAgentSkillEnabled('scout', 'workspace:added', true)
+
+    expect(kcp.calls.map(call => call.method)).toEqual(['GET', 'PATCH'])
+    expect(kcp.lastOf('PATCH').contentType).toBe('application/json-patch+json')
+    expect(kcp.lastOf('PATCH').body).toEqual([
+      { op: 'test', path: '/metadata/uid', value: 'agent-1' },
+      { op: 'test', path: '/metadata/resourceVersion', value: '7' },
+      { op: 'add', path: '/spec/skills', value: [{ name: 'workspace:existing' }, { name: 'workspace:added' }] },
+    ])
+    expect(updated.spec.skills).toEqual([{ name: 'workspace:existing' }, { name: 'workspace:added' }])
+    expect(updated.spec.tools).toEqual({ interactive: { families: ['core', 'web'] } })
+    expect(updated.spec.delegates).toEqual(['reviewer'])
+  })
+
+  it('surfaces a skill-toggle conflict when the Agent changes after the fresh read', async () => {
+    kcp.reply('GET /agents/scout', {
+      metadata: { name: 'scout', uid: 'agent-1', resourceVersion: '7' },
+      spec: { skills: [{ name: 'workspace:existing' }] },
+    })
+    kcp.mutateBeforeNextJsonPatch(object => {
+      const metadata = object.metadata as Record<string, unknown>
+      metadata.resourceVersion = '8'
+      const spec = object.spec as Record<string, unknown>
+      spec.skills = [{ name: 'workspace:existing' }, { name: 'workspace:added-concurrently' }]
+    })
+
+    await expect(resources.setAgentSkillEnabled('scout', 'workspace:added', true)).rejects.toMatchObject({ status: 409 })
+
+    expect(kcp.object('/agents/scout')?.spec).toMatchObject({
+      skills: [{ name: 'workspace:existing' }, { name: 'workspace:added-concurrently' }],
+    })
+  })
+
   it('creates an Agent object rather than posting a DTO', async () => {
     await resources.createAgent({
       name: 'scout',

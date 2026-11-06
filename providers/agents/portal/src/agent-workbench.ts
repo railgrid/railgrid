@@ -31,6 +31,9 @@ const builtInTabs: Record<AgentWorkbenchBuiltInTab, AgentWorkbenchTabDescriptor>
   runs: {
     id: 'runs', kind: 'runs', title: 'Runs', subtitle: 'Review runs, approvals, and execution details', closeable: true,
   },
+  skills: {
+    id: 'skills', kind: 'skills', title: 'Skills', subtitle: 'Manage skills enabled for this agent', closeable: true,
+  },
 }
 
 const launcherTab: AgentWorkbenchTabDescriptor = {

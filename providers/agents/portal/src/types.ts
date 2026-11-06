@@ -1,5 +1,6 @@
 import type { ProviderFetch } from './portalkit/tenant'
 import type { AITurnProgressStatus } from './agentkit/conversation'
+import type { AgentKitComposerPart, AgentKitContextResource, AgentKitSkill } from './agentkit/composer'
 
 // Shared types for the agents micro-frontend.
 //
@@ -197,6 +198,8 @@ export interface Agent {
     notifications?: AgentNotifications
     selfConfiguration?: AgentSelfConfiguration
     delegates?: string[]
+    /** Explicit skills enabled for this agent; absent and empty both mean none. */
+    skills?: Array<{ name: string }>
     budget?: { window?: string; usdLimit?: string; tokenLimit?: number }
     // 0 on any limit means "use the provider default".
     limits?: { maxToolTurns?: number; timeoutSeconds?: number; maxSpawnsPerRun?: number; maxConcurrentSpawns?: number }
@@ -872,6 +875,11 @@ export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  /** Structured references submitted with a user turn. */
+  contentParts?: AgentKitComposerPart[]
+  contextResources?: AgentKitContextResource[]
+  skillRefs?: Array<{ id: string; sha256: string }>
+  skillViews?: AgentKitSkill[]
   /** Server-created timestamp for persisted messages; absent on optimistic rows. */
   createdAt?: string
   error?: string
@@ -897,6 +905,9 @@ export interface TranscriptMessage {
     questionPrompt?: string
     questions?: AgentQuestion[]
     answers?: QuestionAnswers
+    contentParts?: AgentKitComposerPart[]
+    contextResources?: AgentKitContextResource[]
+    skillRefs?: Array<{ id: string; sha256: string }>
     tool?: string
     args?: string
     error?: string | boolean
@@ -1070,6 +1081,7 @@ export interface AgentCreate {
   budgetTokens?: number
   budgetUSD?: string
   channels?: AgentChannel[]
+  skills?: Array<{ name: string }>
   // Tool families granted at creation, so a preset hands over a usable agent
   // instead of one the user still has to wire up.
   interactiveFamilies?: string[]
@@ -1117,6 +1129,8 @@ export interface AgentPatch {
   maxToolTurns?: number
   timeoutSeconds?: number
   channels?: AgentChannel[]
+  /** Explicit skill library references enabled for this agent. */
+  skills?: Array<{ name: string }>
   /** Which unattended runs post their output; 'Always' clears the setting. */
   runOutput?: AgentRunOutput
   /** Written whole; a disabled block keeps its scopes and approval for next time. */
@@ -1129,6 +1143,50 @@ export interface AgentPatch {
   backgroundToolsets?: string[]
   interactiveConnections?: string[]
   backgroundConnections?: string[]
+}
+
+export interface AgentSkillResource {
+  path: string
+  size?: number
+  digest?: string
+  content?: string
+}
+
+export interface AgentSkill {
+  id: string
+  name: string
+  description: string
+  scope: string
+  packagePath?: string
+  packageName?: string
+  enabled: boolean
+  editable: boolean
+  version?: string
+  digest?: string
+  contentDigest?: string
+  resources?: AgentSkillResource[]
+  instructions?: string
+}
+
+export interface AgentSkillCatalog {
+  skills: AgentSkill[]
+  catalogDigest?: string
+  warnings?: string[]
+  inputCapabilities?: AgentInputCapabilities
+}
+
+export interface AgentInputCapabilities {
+  attachments: boolean
+  skills: boolean
+  resources: boolean
+  reason?: string
+}
+
+export interface AgentSkillDetail extends AgentSkill {
+  instructions: string
+  /** Original library source retained for lossless workspace editing/export. */
+  document?: string
+  resources?: Array<AgentSkillResource & { content?: string }>
 }
 
 export interface SchedulePatch {

@@ -3,7 +3,7 @@ import AgentChat from '../views/AgentChat.vue'
 import { rebuildTranscript } from '../vue/chat'
 import type { SSEEvent } from '../api'
 import type { TranscriptMessage } from '../types'
-import { agentFixture, makeStore, stubApi } from './helpers'
+import { agentFixture, composerEditor, composerText, makeStore, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 
 const mounted: MountedVue[] = []
@@ -200,31 +200,31 @@ describe('AgentChat loading and draft behavior', () => {
     expect(text(view.element)).not.toContain('Loading conversation')
   })
 
-  it('keeps Enter editable while a run streams', async () => {
+  it('keeps the composer editable while a run streams', async () => {
     const gate = deferred<void>()
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } } as SSEEvent
       await gate.promise
       yield { event: 'done', data: { runID: 'r1', content: 'done' } } as SSEEvent
     })
     const { view } = await mountChat(chatStream)
     await settleVue(3, 1)
 
-    const textarea = view.element.querySelector<HTMLTextAreaElement>('.agents-composer-input')!
-    textarea.value = 'first question'
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    const editor = composerEditor(view.element)!
+    setComposerText(view.element, 'first question')
     view.element.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue(4, 1)
     expect(chatStream).toHaveBeenCalledTimes(1)
 
-    textarea.value = 'draft while working'
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    setComposerText(view.element, 'draft while working')
     await settleVue(2, 1)
-    const enter = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
-    textarea.dispatchEvent(enter)
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true })
+    editor.dispatchEvent(enter)
     await settleVue(2, 1)
     expect(enter.defaultPrevented).toBe(false)
-    expect(textarea.value).toBe('draft while working')
+    expect(chatStream).toHaveBeenCalledTimes(1)
+    expect(composerText(view.element)).toBe('draft while working')
     expect(text(view.element.querySelector('#agents-composer-help'))).toContain('Draft your next message while the agent works.')
 
     gate.resolve()
@@ -246,9 +246,7 @@ describe('AgentChat loading and draft behavior', () => {
     const { view } = await mountChat(chatStream)
     await settleVue(3, 1)
 
-    const textarea = view.element.querySelector<HTMLTextAreaElement>('.agents-composer-input')!
-    textarea.value = 'question'
-    textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    setComposerText(view.element, 'question')
     view.element.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settleVue(8, 1)
 

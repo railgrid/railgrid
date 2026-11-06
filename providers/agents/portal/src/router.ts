@@ -23,7 +23,7 @@
 //   #/create/connection[/<type>]
 //   #/create/toolset #/create/webhook #/create/model
 
-export type MenuKey = 'agents' | 'activity' | 'connections' | 'webhooks' | 'models'
+export type MenuKey = 'agents' | 'skills' | 'activity' | 'connections' | 'webhooks' | 'models'
 export type ModelsTab = 'models' | 'provider-connections' | 'workspace-assistant' | 'usage'
 export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
   { id: 'models', label: 'Models' },
@@ -32,16 +32,16 @@ export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
   { id: 'usage', label: 'Usage & cost' },
 ]
 export type ActivityTab = 'runs' | 'inbox'
-export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs'
+export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs' | 'skills'
 export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
 export type AutomationResource = 'schedule' | 'trigger'
 
-export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'webhooks', 'models']
-const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs']
+export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'skills', 'webhooks', 'models']
+const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs', 'skills']
 
 export type Route =
-  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab }
+  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab; returnAgent?: string }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: EditResource; name: string }
@@ -83,7 +83,8 @@ export const DEFAULT_ROUTE: Route = { kind: 'menu', menu: 'agents' }
 // tabs) redirect one-way onto their new home. An agent's conversational surface
 // is the default so a bare agent URL can be shared as the place to talk.
 export function parseHash(hash = location.hash): Route {
-  const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean)
+  const [path, query = ''] = hash.replace(/^#\/?/, '').split('?')
+  const parts = path.split('/').filter(Boolean)
   const [head, second, third, fourth, fifth] = parts
   if (head === 'create') {
     // #/create/agent/harness preselects the harness backend; any other third
@@ -135,6 +136,10 @@ export function parseHash(hash = location.hash): Route {
   if (head === 'models' && MODELS_TABS.some(tab => tab.id === second) && second !== 'models') {
     return { kind: 'menu', menu: 'models', modelsTab: second as ModelsTab }
   }
+  if (head === 'skills') {
+    const returnAgent = new URLSearchParams(query).get('agent') || ''
+    return { kind: 'menu', menu: 'skills', ...(returnAgent ? { returnAgent } : {}) }
+  }
   if ((MENUS as string[]).includes(head)) return { kind: 'menu', menu: head as MenuKey }
   // Legacy tabs fold into their absorbing surface.
   if (head === 'inbox') return { kind: 'menu', menu: 'activity', activityTab: 'inbox' }
@@ -164,6 +169,7 @@ export function hashFor(route: Route): string {
     }
     default:
       if (route.menu === 'activity' && route.activityTab === 'inbox') return '#/inbox'
+      if (route.menu === 'skills' && route.returnAgent) return `#/skills?${new URLSearchParams({ agent: route.returnAgent })}`
       return route.menu === 'models' && route.modelsTab && route.modelsTab !== 'models'
         ? `#/models/${route.modelsTab}` : `#/${route.menu}`
   }

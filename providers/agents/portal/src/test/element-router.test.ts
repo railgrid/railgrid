@@ -3,7 +3,7 @@ import type { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
 import type { Agent, Connection, Credential, RailgridContext, Toolset, Webhook } from '../types'
-import { agentFixture } from './helpers'
+import { agentFixture, composerEditor, composerText, setComposerText } from './helpers'
 import { settleVue, text } from './vue-helper'
 
 if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
@@ -16,7 +16,7 @@ function deferred<T>() {
 
 function ctx(overrides: Partial<RailgridContext> = {}): RailgridContext {
   return {
-    basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', token: 'token-a', user: { sub: 'alice' },
+    basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: 'workspace', tenant: 'workspace', token: 'token-a', user: { sub: 'alice' },
     ...overrides,
   }
 }
@@ -67,6 +67,9 @@ function configureChatApi(api: ApiClient, sessions: unknown[]): void {
   api.saveSessionModel = vi.fn().mockImplementation(async (_agent, _session, preferences) => preferences) as ApiClient['saveSessionModel']
   api.listMessagePage = vi.fn().mockResolvedValue({ items: [] }) as ApiClient['listMessagePage']
   api.listRuns = vi.fn().mockResolvedValue({ items: [] }) as ApiClient['listRuns']
+  api.getAgentSkillCatalog = vi.fn().mockResolvedValue({ skills: [], catalogDigest: '', warnings: [], inputCapabilities: { attachments: true, skills: true, resources: true } }) as ApiClient['getAgentSkillCatalog']
+  api.getAgentAttachmentList = vi.fn().mockResolvedValue({ items: [], inputCapabilities: { attachments: true, skills: true, resources: true } }) as ApiClient['getAgentAttachmentList']
+  api.listProviderResourceCatalog = vi.fn().mockResolvedValue([]) as ApiClient['listProviderResourceCatalog']
   api.canConfigureChatModel = vi.fn().mockResolvedValue(true) as ApiClient['canConfigureChatModel']
   api.catalog = vi.fn().mockResolvedValue([]) as ApiClient['catalog']
   api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 }) as ApiClient['testProviderConnection']
@@ -614,7 +617,7 @@ describe('dedicated chat model recovery routing', () => {
     await settleVue()
     buttonWithText(element, 'Use model').click()
 
-    await vi.waitFor(() => expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe(queuedPrompt))
+    await vi.waitFor(() => expect(composerText(element)).toBe(queuedPrompt))
     expect(api.saveSessionModel).toHaveBeenCalledWith('scout', originalSession.id, expect.objectContaining({
       selectedCredential: addedModel.name,
       modelCredential: addedModel.name,
@@ -657,9 +660,7 @@ describe('dedicated chat model recovery routing', () => {
 
     expect(api.listMessagePage).toHaveBeenCalledWith('scout', originalSession.id)
     expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
-    const composer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
-    composer.value = 'Keep this draft with the original conversation.'
-    composer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    setComposerText(element, 'Keep this draft with the original conversation.')
     await settleVue()
 
     // The configured model disappears completely. Recovery must remove the
@@ -668,7 +669,7 @@ describe('dedicated chat model recovery routing', () => {
     store.dispatchEvent(new Event('change'))
     await settleVue(12)
     expect(text(element.querySelector('.agents-model-recovery'))).toContain('Connect a model to continue')
-    expect(element.querySelector('.agents-composer textarea')).toBeNull()
+    expect(composerEditor(element)).toBeNull()
 
     // Keep a saved provider connection available, but no chat model, so the
     // recovery action leads to the normal Add model form.
@@ -726,7 +727,7 @@ describe('dedicated chat model recovery routing', () => {
       selectedCredential: addedModel.name,
       modelCredential: addedModel.name,
     }))
-    expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe('Keep this draft with the original conversation.')
+    expect(composerText(element)).toBe('Keep this draft with the original conversation.')
     expect(store.agent('scout')?.spec.backend?.model?.credentials?.chat).toBe('openai')
     element.remove()
   })
@@ -753,9 +754,7 @@ describe('dedicated chat model recovery routing', () => {
     await settleVue(10, 20)
 
     const draftText = 'Keep the original thread and draft through refresh.'
-    const composer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
-    composer.value = draftText
-    composer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    setComposerText(element, draftText)
     await settleVue()
     store.credentials.data = [connection]
     store.dispatchEvent(new Event('change'))
@@ -782,7 +781,7 @@ describe('dedicated chat model recovery routing', () => {
     expect(location.hash).toBe('#/agents/scout/chat')
     expect(api.listMessagePage).toHaveBeenCalledWith('scout', originalSession.id)
     expect(text(element.querySelector('.agents-agent-heading'))).toContain(originalSession.title)
-    expect(element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')?.value).toBe(draftText)
+    expect(composerText(element)).toBe(draftText)
 
     // Open setup again, then change workspace. A different tenant must not
     // inherit the old thread or its unsent prompt.
@@ -804,14 +803,13 @@ describe('dedicated chat model recovery routing', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     await settleVue(12, 20)
 
-    const otherWorkspaceComposer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
-    expect(otherWorkspaceComposer?.value).toBe('')
+    expect(composerEditor(element)).not.toBeNull()
+    expect(composerText(element)).toBe('')
     expect(api.listMessagePage).not.toHaveBeenCalledWith('scout', originalSession.id)
 
     // An unknown caller is not a matching owner either, even in the same
     // workspace. The setup draft must be discarded when identity disappears.
-    otherWorkspaceComposer.value = 'Do not transfer this anonymous-session draft.'
-    otherWorkspaceComposer.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    setComposerText(element, 'Do not transfer this anonymous-session draft.')
     await settleVue()
     store.credentials.data = [connection]
     store.dispatchEvent(new Event('change'))
@@ -831,8 +829,8 @@ describe('dedicated chat model recovery routing', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     await settleVue(12, 20)
 
-    const anonymousComposer = element.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
-    expect(anonymousComposer?.value).toBe('')
+    expect(composerEditor(element)).not.toBeNull()
+    expect(composerText(element)).toBe('')
     expect(api.listMessagePage).not.toHaveBeenCalledWith('scout', originalSession.id)
     element.remove()
   })

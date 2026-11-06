@@ -10,9 +10,10 @@ import { formatAIMessageAuthor, optimisticAIMessageActor } from '../agentkit/con
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { resolveConfirm } from '../portalkit/confirm'
 import { rebuildTranscript } from '../vue/chat'
+import { agentChatDraftStorageKey, readAgentChatDraft } from '../chatDraft'
 import { ApiError, type SSEEvent } from '../api'
 import type { SessionMeta, TranscriptMessage } from '../types'
-import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
+import { agentFixture, composerEditor, composerText, makeStore, modelBackend, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
 
@@ -96,9 +97,7 @@ async function mountChat(chatStream: unknown, extra: Record<string, unknown> = {
 }
 
 async function send(el: HTMLElement, message: string): Promise<void> {
-  const ta = el.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
-  ta.value = message
-  ta.dispatchEvent(new Event('input'))
+  setComposerText(el, message)
   await settle()
   el.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true }))
   await settle(6)
@@ -110,6 +109,26 @@ async function chooseSession(el: HTMLElement, label: string): Promise<void> {
   expect(option).toBeDefined()
   option!.click()
   await settle()
+}
+
+const draftAttachment = {
+  id: 'attachment-one',
+  filename: 'notes.txt',
+  contentType: 'text/plain',
+  sizeBytes: 5,
+  sha256: 'a'.repeat(64),
+  createdAt: '2026-11-05T00:00:00Z',
+}
+const attachmentAuthority = { usable: true, tenantKey: 'org/ws', userKey: 'alice@example.test', token: 'fixture-token' }
+
+async function attachTextFile(el: HTMLElement): Promise<void> {
+  const input = el.querySelector<HTMLInputElement>('.agents-composer input[type="file"]')!
+  Object.defineProperty(input, 'files', {
+    configurable: true,
+    value: [new File(['notes'], draftAttachment.filename, { type: draftAttachment.contentType })],
+  })
+  input.dispatchEvent(new Event('change', { bubbles: true }))
+  await settle(8)
 }
 
 describe('chat streaming', () => {
@@ -189,7 +208,7 @@ describe('chat streaming', () => {
     input.dispatchEvent(new Event('input'))
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settle()
-    const composer = el.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    const composer = composerEditor(el)!
     composer.focus()
     pending.resolve({ title: 'New title' })
     await settle()
@@ -208,7 +227,7 @@ describe('chat streaming', () => {
     expect(el.querySelector('.agents-chat-title strong')).not.toBeNull()
     input.value = '  Saved on blur  '
     input.dispatchEvent(new Event('input'))
-    const composer = el.querySelector<HTMLTextAreaElement>('.agents-composer textarea')!
+    const composer = composerEditor(el)!
     composer.focus()
     await settle()
     expect(renameSession).toHaveBeenCalledExactlyOnceWith('scout', 's1', 'Saved on blur')
@@ -676,6 +695,7 @@ describe('chat streaming', () => {
       signals.push(signal)
       const first = call++ === 0
       yield { event: 'start', data: { runID: first ? 'run-old' : 'run-new', sessionID } } as SSEEvent
+      yield { event: 'run_started', data: { runID: first ? 'run-old' : 'run-new', sessionID, status: 'running' } } as SSEEvent
       if (first) {
         await oldGate.promise
         yield { event: 'delta', data: { text: 'Old thread late delta' } } as SSEEvent
@@ -720,6 +740,7 @@ describe('chat streaming', () => {
     const chatStream = async function* (_agent: string, _message: string, _session: string, controller: AbortSignal) {
       signal = controller
       yield { event: 'start', data: { runID: 'running-original', sessionID: 'original' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'running-original', sessionID: 'original', status: 'running' } } as SSEEvent
       await gate.promise
     }
     const { el } = await mountChat(chatStream, {
@@ -812,7 +833,7 @@ describe('chat streaming', () => {
     const chatStream = vi.fn(scripted([]))
     const { el } = await mountChat(chatStream)
     const surface = el.querySelector('.agents-composer-surface')
-    const textarea = el.querySelector<HTMLTextAreaElement>('.agents-composer-input')!
+    const editor = composerEditor(el)!
     const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
 
     const layout = el.querySelector<HTMLElement>('.k-ai-conversation-layout')!
@@ -826,26 +847,30 @@ describe('chat streaming', () => {
     expect(el.querySelector('.agents-chat-title')).not.toBeNull()
     expect(el.querySelector('.agents-log.k-ai-transcript-scroll .k-ai-transcript')).not.toBeNull()
     expect(surface).not.toBeNull()
-    expect(textarea.rows).toBe(1)
-    expect(textarea.getAttribute('aria-label')).toBe('Message scout')
-    expect(textarea.getAttribute('aria-describedby')).toBe('agents-composer-help')
-    expect(textarea.placeholder).toBe('Message scout…')
+    expect(editor.getAttribute('role')).toBe('textbox')
+    expect(editor.getAttribute('aria-multiline')).toBe('true')
+    expect(editor.getAttribute('aria-label')).toBe('Message scout…')
+    expect(editor.getAttribute('data-placeholder')).toBe('Message scout…')
     expect(text(el.querySelector('#agents-composer-help'))).toContain('Enter to send')
     expect(el.querySelector('.k-ai-composer__help')).toBeNull()
-    expect(textarea.title).toContain('Enter to send')
     expect(submit.classList.contains('agents-composer-primary')).toBe(true)
     expect(submit.getAttribute('aria-label')).toBe('Send')
     expect(submit.title).toBe('Send')
     expect(submit.textContent?.trim()).toBe('')
     expect(submit.disabled).toBe(true)
+    expect(el.querySelectorAll('.agents-composer .k-ai-composer__controls')).toHaveLength(1)
+    const add = el.querySelector<HTMLButtonElement>('[aria-label="Add files or open slash commands"]')!
+    add.click()
+    await settle()
+    expect(add.getAttribute('aria-expanded')).toBe('true')
+    expect(document.querySelector('[role="menu"][aria-label="Add"]')).not.toBeNull()
 
-    textarea.value = 'hello'
-    textarea.dispatchEvent(new Event('input'))
+    setComposerText(editor, 'hello')
     await settle()
     expect(el.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false)
 
     const composing = new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true })
-    textarea.dispatchEvent(composing)
+    editor.dispatchEvent(composing)
     await settle()
     expect(composing.defaultPrevented).toBe(false)
     expect(chatStream).not.toHaveBeenCalled()
@@ -1288,7 +1313,7 @@ describe('chat streaming', () => {
           },
         },
       ]),
-      { answerStream, cancelRun },
+      { answerStream, cancelRun, uploadAgentAttachment: async () => draftAttachment },
     )
     await send(el, 'open a PR')
 
@@ -1301,6 +1326,9 @@ describe('chat streaming', () => {
     // No verdict buttons: a question is answered, not approved.
     expect(text(card)).not.toContain('Deny')
 
+    await attachTextFile(el)
+    setComposerText(el, 'Keep this draft for my next turn')
+    await settle(2)
     const input = card.querySelector<HTMLInputElement>('input[type="text"]')!
     input.value = 'the acme/app one'
     input.dispatchEvent(new Event('input', { bubbles: true }))
@@ -1313,6 +1341,8 @@ describe('chat streaming', () => {
     admitted.resolve()
     await settle(6)
     expect(answerStream).toHaveBeenCalledWith('scout', 'i1', 'the acme/app one', expect.any(AbortSignal))
+    expect(composerText(el)).toBe('Keep this draft for my next turn')
+    expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
     expect(el.querySelector('.agents-question-dock')).toBeNull()
     expect(el.querySelector('.agents-log .agents-question-card')).toBeNull()
     const reply = el.querySelector('.agents-answer-context')?.parentElement
@@ -1463,7 +1493,10 @@ describe('chat streaming', () => {
     const cancelRun = vi.fn().mockResolvedValue({ id: 'r1', cancelling: true })
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
-    const { el } = await mountChat(scripted([{ event: 'start', data: { runID: 'r1', sessionID: 's1' } }], gate), { cancelRun })
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } },
+    ], gate), { cancelRun })
 
     const done = send(el, 'long task')
     await settle(6)
@@ -1482,6 +1515,7 @@ describe('chat streaming', () => {
     const cancelRun = vi.fn().mockResolvedValue({ id: 'r1', cancelling: true })
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string, signal: AbortSignal) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } } as SSEEvent
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
     const { el, store } = await mountChat(chatStream, { cancelRun, listMessagePage })
@@ -1509,6 +1543,7 @@ describe('chat streaming', () => {
     const cancelRun = vi.fn(() => cancellation.promise)
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string, signal: AbortSignal) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } } as SSEEvent
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
     const { el, store } = await mountChat(chatStream, { cancelRun, listMessagePage })
@@ -1538,6 +1573,7 @@ describe('chat streaming', () => {
     const chatStream = vi.fn(async function* () {
       await start.promise
       yield { event: 'start', data: { runID: 'r-delayed', sessionID: 's-delayed' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'r-delayed', sessionID: 's-delayed', status: 'running' } } as SSEEvent
     })
     const { el } = await mountChat(chatStream, { cancelRun })
 
@@ -1562,6 +1598,7 @@ describe('chat streaming', () => {
       .mockResolvedValueOnce({ id: 'r1', cancelling: true })
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string, signal: AbortSignal) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } } as SSEEvent
       await new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
     })
     const { el } = await mountChat(chatStream, { cancelRun })
@@ -1589,7 +1626,10 @@ describe('chat streaming', () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
     const { el } = await mountChat(
-      scripted([{ event: 'start', data: { runID: 'r1', sessionID: 's1' } }], gate),
+      scripted([
+        { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+        { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } },
+      ], gate),
       { cancelRun: () => cancellation.promise },
     )
 
@@ -1852,7 +1892,7 @@ describe('chat read ownership', () => {
     expect(text(view.element.querySelector('.k-ai-conversation-rail'))).toContain('New chat')
   })
 
-  it('does not let initial session discovery replace a session that has started sending', async () => {
+  it('does not let initial session discovery replace a new thread that has started sending', async () => {
     const sessions = deferred<ReturnType<typeof session>[]>()
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string) {
       yield { event: 'done', data: { runID: 'r1', content: 'current reply' } }
@@ -1866,6 +1906,8 @@ describe('chat read ownership', () => {
     const view = await mountVue(AgentChat, { store, api, name: 'scout' })
     mounted.push(view)
 
+    view.element.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle(6)
     await send(view.element, 'start now')
     const activeSession = chatStream.mock.calls[0][2]
     expect(activeSession).toBeTruthy()
@@ -2445,6 +2487,7 @@ describe('approval handoff after the chat stream closes', () => {
     const getRun = vi.fn().mockResolvedValue(pending('stale'))
     const { el, store } = await mountChat(scripted([
       { event: 'start', data: { runID: 'r-approval', sessionID: 's-approval' } },
+      { event: 'run_started', data: { runID: 'r-approval', sessionID: 's-approval', status: 'running' } },
     ], gate.promise), { cancelRun, getRun })
     await send(el, 'describe models')
     el.querySelector<HTMLButtonElement>('.agents-stop')!.click()
@@ -2634,6 +2677,155 @@ describe('approval handoff after the chat stream closes', () => {
   })
 })
 
+describe('rich composer admission boundary', () => {
+  const authOverride = { contextAuthority: () => attachmentAuthority }
+
+  it('keeps attachment receipts and text when a provisional start fails before admission', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const admission = deferred<void>()
+    const upload = vi.fn(async () => draftAttachment)
+    const remove = vi.fn(async () => undefined)
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal, _turn: unknown) {
+      yield { event: 'start', data: { runID: 'provisional', sessionID: 'source-session' } } as SSEEvent
+      await admission.promise
+      throw new Error('admission failed')
+    })
+    const { el } = await mountChat(chatStream, {
+      ...authOverride,
+      uploadAgentAttachment: upload,
+      deleteAgentAttachment: remove,
+    })
+    const draftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', 'source-session')
+
+    await attachTextFile(el)
+    expect(upload).toHaveBeenCalledOnce()
+    expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
+    setComposerText(el, 'Retry the change')
+    await settle()
+    el.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(6)
+    admission.reject(new Error('admission failed'))
+    await settle(10)
+
+    expect(chatStream.mock.calls[0][4]).toEqual(expect.objectContaining({
+      contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
+    }))
+    expect(composerText(el)).toBe('Retry the change')
+    expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
+    expect(readAgentChatDraft(draftKey)).toEqual(expect.objectContaining({
+      content: 'Retry the change',
+      contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
+    }))
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('preserves follow-up text authored while admission is pending and reports the failed send', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const admission = deferred<void>()
+    const upload = vi.fn(async () => draftAttachment)
+    const remove = vi.fn(async () => undefined)
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal) {
+      yield { event: 'start', data: { runID: 'provisional', sessionID: 'source-session' } } as SSEEvent
+      await admission.promise
+      throw new Error('admission failed')
+    })
+    const { el } = await mountChat(chatStream, {
+      ...authOverride,
+      uploadAgentAttachment: upload,
+      deleteAgentAttachment: remove,
+    })
+    const draftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', 'source-session')
+
+    await attachTextFile(el)
+    setComposerText(el, 'First request')
+    await settle()
+    el.querySelector<HTMLFormElement>('.agents-composer')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settle(6)
+    setComposerText(el, 'Follow-up draft')
+    await settle(2)
+    admission.reject(new Error('503 unavailable'))
+    await settle(10)
+
+    expect(composerText(el)).toBe('Follow-up draft')
+    expect(text(el.querySelector('.agents-composer'))).toContain('notes.txt')
+    expect(readAgentChatDraft(draftKey)).toEqual(expect.objectContaining({
+      content: 'Follow-up draft',
+      contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
+    }))
+    expect(text(document.getElementById('k-toasts'))).toContain('The previous send was not accepted. Your newer draft is still here.')
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('submits an attachment-only turn and commits its receipt after run admission', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const upload = vi.fn(async () => draftAttachment)
+    const remove = vi.fn(async () => undefined)
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, _sessionID: string, _signal: AbortSignal, _turn: unknown) {
+      yield { event: 'start', data: { runID: 'accepted', sessionID: 'source-session' } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'accepted', sessionID: 'source-session', status: 'running' } } as SSEEvent
+      yield { event: 'done', data: { runID: 'accepted', content: 'Read the note.', status: 'completed' } } as SSEEvent
+    })
+    const { el } = await mountChat(chatStream, {
+      ...authOverride,
+      uploadAgentAttachment: upload,
+      deleteAgentAttachment: remove,
+    })
+    const draftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', 'source-session')
+
+    await attachTextFile(el)
+    await send(el, '')
+
+    expect(chatStream.mock.calls[0][1]).toBe('')
+    expect(chatStream.mock.calls[0][4]).toEqual(expect.objectContaining({
+      contentParts: expect.arrayContaining([{ type: 'attachment', attachment: draftAttachment }]),
+    }))
+    expect(localStorage.getItem(draftKey)).toBeNull()
+    expect(text(el.querySelector('.agents-composer'))).not.toContain('notes.txt')
+    expect(remove).not.toHaveBeenCalled()
+  })
+
+  it('cleans up the captured draft on detached admission without clearing the new session', async () => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 'source-session')
+    const admission = deferred<void>()
+    const upload = vi.fn(async () => draftAttachment)
+    const remove = vi.fn(async () => undefined)
+    let signal!: AbortSignal
+    const chatStream = vi.fn(async function* (_agent: string, _message: string, sessionID: string, controller: AbortSignal) {
+      signal = controller
+      yield { event: 'start', data: { runID: 'detached', sessionID } } as SSEEvent
+      await admission.promise
+      yield { event: 'run_started', data: { runID: 'detached', sessionID, status: 'running' } } as SSEEvent
+    })
+    const { el } = await mountChat(chatStream, {
+      ...authOverride,
+      uploadAgentAttachment: upload,
+      deleteAgentAttachment: remove,
+    })
+    const oldDraftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', 'source-session')
+    await attachTextFile(el)
+    await send(el, 'Original session request')
+    await settle(4)
+    expect(readAgentChatDraft(oldDraftKey).content).toBe('Original session request')
+
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle(6)
+    expect(signal.aborted).toBe(false)
+    setComposerText(el, 'New session draft')
+    await settle()
+    const newSessionID = localStorage.getItem('railgrid:agents:session:org:ws:scout')!
+    const newDraftKey = agentChatDraftStorageKey(attachmentAuthority, 'scout', newSessionID)
+
+    admission.resolve()
+    await settle(10)
+
+    expect(signal.aborted).toBe(true)
+    expect(localStorage.getItem(oldDraftKey)).toBeNull()
+    expect(composerText(el)).toBe('New session draft')
+    expect(readAgentChatDraft(newDraftKey).content).toBe('New session draft')
+    expect(remove).not.toHaveBeenCalled()
+  })
+})
+
 describe('conversation model picker', () => {
   async function configureModels(store: ReturnType<typeof makeStore>): Promise<void> {
     store.credentials.data = [
@@ -2686,7 +2878,7 @@ describe('conversation model picker', () => {
     expect(chatStream).not.toHaveBeenCalled()
     pending.resolve({ selectedCredential: 'sol', modelCredential: 'sol', effortOptions: ['low', 'high'], defaultEffort: '' })
     await settle(8)
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe('Keep this draft')
+    expect(composerText(el)).toBe('Keep this draft')
     expect(picker(el).getAttribute('aria-label')).toContain('sol')
     expect(store.agents.data[0].spec.backend!.model!.credentials!.chat).toBe('openai')
   })
@@ -3175,9 +3367,7 @@ describe('conversation model picker', () => {
       listAgents,
     })
     await configureModels(store)
-    const composer = el.querySelector<HTMLTextAreaElement>('textarea')!
-    composer.value = 'Keep this unsent draft'
-    composer.dispatchEvent(new Event('input'))
+    setComposerText(el, 'Keep this unsent draft')
     await settle()
     expect(text(el)).toContain('Earlier answer')
 
@@ -3201,7 +3391,7 @@ describe('conversation model picker', () => {
     await settle(4)
     expect(patchAgent).toHaveBeenCalledOnce()
     expect(getSessionModel).toHaveBeenCalledTimes(1)
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(composerText(el)).toBe('Keep this unsent draft')
 
     pendingAgentSave.resolve({ metadata: { name: 'scout' }, spec: { backend: modelBackend(newDefault) } })
     await save
@@ -3220,7 +3410,7 @@ describe('conversation model picker', () => {
     })
     await settle(10)
     expect(text(el)).toContain('Earlier answer')
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(composerText(el)).toBe('Keep this unsent draft')
     expect(localStorage.getItem('railgrid:agents:session:org:ws:scout')).toBe(sessionID)
     expect(store.takePendingPrompt('scout')).toBe('Do not send this queued prompt')
     expect(chatStream).not.toHaveBeenCalled()
@@ -3609,10 +3799,10 @@ describe('conversation history navigation', () => {
     expect(starter.disabled).toBe(false)
     expect(starter.getAttribute('aria-disabled')).toBe('true')
     expect(text(el)).toContain('Clear your draft to use a starter prompt.')
-    const draft = el.querySelector<HTMLTextAreaElement>('textarea')!.value
+    const draft = composerText(el)
     button(el, 'Help me plan a task').click()
     await settle()
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')!.value).toBe(draft)
+    expect(composerText(el)).toBe(draft)
   })
 
   it('retains new turns when loading history after sending', async () => {
@@ -3672,8 +3862,8 @@ describe('conversation history navigation', () => {
     const { el } = await mountChat(stream)
     button(el, 'What can you help me with').click()
     await settle()
-    const composer = el.querySelector<HTMLTextAreaElement>('textarea')!
-    expect(composer.value).toContain('which tools can you use')
+    const composer = composerEditor(el)!
+    expect(composer.textContent).toContain('which tools can you use')
     expect(document.activeElement).toBe(composer)
     expect(stream).not.toHaveBeenCalled()
   })
@@ -3682,20 +3872,18 @@ describe('conversation history navigation', () => {
 describe('dedicated chat model recovery', () => {
   it('replaces a missing selection with recovery and preserves an unsent draft', async () => {
     const { el, store } = await mountChat(scripted([]))
-    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
-    input.value = 'Keep this conversation draft'; input.dispatchEvent(new Event('input'))
+    setComposerText(el, 'Keep this conversation draft')
     store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
     expect(text(el)).toContain('Connect a model to continue')
-    expect(el.querySelector('textarea')).toBeNull()
+    expect(composerEditor(el)).toBeNull()
     expect(el.querySelector('.k-ai-model-reasoning-picker')).toBeNull()
     store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
     store.dispatchEvent(new Event('change')); await settle()
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this conversation draft')
+    expect(composerText(el)).toBe('Keep this conversation draft')
   })
   it('keeps a draft for setup navigation without assigning a replacement', async () => {
     const { el, store, view } = await mountChat(scripted([]))
-    const input = el.querySelector<HTMLTextAreaElement>('textarea')!
-    input.value = 'Retain through setup'; input.dispatchEvent(new Event('input'))
+    setComposerText(el, 'Retain through setup')
     store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
     const connect = [...el.querySelectorAll<HTMLButtonElement>('button')].find(button => text(button) === 'Connect model')!
     connect.click(); await settle()
@@ -3710,33 +3898,32 @@ describe('authoritative recovery state', () => {
     store.credentials.hasSnapshot = false; store.credentials.loaded = false; store.credentials.loading = true
     store.dispatchEvent(new Event('change')); await settle()
     expect(text(el)).toContain('Loading models…')
-    expect(el.querySelector('textarea')).toBeNull()
+    expect(composerEditor(el)).toBeNull()
     store.credentials.loading = false; store.credentials.error = 'offline'; store.credentials.loaded = true
     store.dispatchEvent(new Event('change')); await settle()
     expect(text(el)).toContain('Models could not be loaded')
-    expect(el.querySelector('textarea')).toBeNull()
+    expect(composerEditor(el)).toBeNull()
   })
   it('blocks a known missing key without blocking discovery-only failures', async () => {
     const { el, store } = await mountChat(scripted([]))
     store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'manual-model', ready: false, secretResolved: true }]
     store.dispatchEvent(new Event('change')); await settle()
-    expect(el.querySelector('textarea')).not.toBeNull()
+    expect(composerEditor(el)).not.toBeNull()
     store.credentials.data[0].secretResolved = false
     store.dispatchEvent(new Event('change')); await settle(12)
-    expect(el.querySelector('textarea')).toBeNull()
+    expect(composerEditor(el)).toBeNull()
     expect(text(el)).toContain('Connect a model to continue')
   })
   it('does not replace the thread or send a queued assisted prompt after recovery', async () => {
     const stream = vi.fn(scripted([]))
     const { el, store } = await mountChat(stream)
-    el.querySelector<HTMLTextAreaElement>('textarea')!.value = 'Retain my draft'
-    el.querySelector('textarea')!.dispatchEvent(new Event('input'))
+    setComposerText(el, 'Retain my draft')
     store.credentials.data = []; store.dispatchEvent(new Event('change')); await settle(12)
     store.setPendingPrompt('scout', 'Queued assisted setup')
     store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'restored' }]
     store.dispatchEvent(new Event('change')); await settle(12)
     expect(stream).not.toHaveBeenCalled()
-    expect(el.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Retain my draft')
+    expect(composerText(el)).toBe('Retain my draft')
     expect(store.takePendingPrompt('scout')).toBe('Queued assisted setup')
   })
 })
@@ -3822,9 +4009,8 @@ it('navigates the overlay chat list, searches, and keeps drafts when starting an
   const view = await mountVue(wrapper, {})
   mounted.push(view)
   await settle(8)
-  const input = view.element.querySelector<HTMLTextAreaElement>('textarea')!
-  input.value = 'Keep this draft'
-  input.dispatchEvent(new Event('input'))
+  const input = composerEditor(view.element)!
+  setComposerText(input, 'Keep this draft')
   host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
   await settle()
   expect(views.at(-1)?.chats).toBe(true)
@@ -3839,13 +4025,13 @@ it('navigates the overlay chat list, searches, and keeps drafts when starting an
   host.dispatchEvent(new Event('railgrid-overlay-new-chat'))
   await settle()
   expect(views.at(-1)?.chats).toBe(false)
-  expect(input.value).toBe('')
+  expect(input.textContent).toBe('')
   host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
   await settle()
   const saved = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('Saved conversation'))!
   saved.click()
   await settle(8)
-  expect(input.value).toBe('Keep this draft')
+  expect(input.textContent).toBe('Keep this draft')
   expect(views.at(-1)?.chats).toBe(false)
   host.remove()
 })
@@ -3868,21 +4054,19 @@ async function mountOverlayDraftTest(extra: Record<string, unknown>) {
   const view = await mountVue(wrapper, {})
   mounted.push(view)
   await settle(8)
-  const input = view.element.querySelector<HTMLTextAreaElement>('textarea')!
+  const input = composerEditor(view.element)!
   return { view, host, input, api }
 }
 
 it('keeps unsent overlay chats accessible after starting another chat and refreshing history', async () => {
   const { view, host, input, api } = await mountOverlayDraftTest({ listSessions: async () => [] })
   try {
-    input.value = 'Unsent original draft'
-    input.dispatchEvent(new Event('input'))
+    setComposerText(input, 'Unsent original draft')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
     host.dispatchEvent(new Event('railgrid-overlay-new-chat'))
     await settle()
-    input.value = 'Second unsent draft'
-    input.dispatchEvent(new Event('input'))
+    setComposerText(input, 'Second unsent draft')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
     const original = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('Unsent original draft'))
@@ -3890,7 +4074,7 @@ it('keeps unsent overlay chats accessible after starting another chat and refres
     const reads = vi.spyOn(api, 'listMessagePage')
     original!.click()
     await settle()
-    expect(input.value).toBe('Unsent original draft')
+    expect(input.textContent).toBe('Unsent original draft')
     expect(reads).not.toHaveBeenCalled()
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
@@ -3898,7 +4082,7 @@ it('keeps unsent overlay chats accessible after starting another chat and refres
     expect(second).toBeDefined()
     second!.click()
     await settle()
-    expect(input.value).toBe('Second unsent draft')
+    expect(input.textContent).toBe('Second unsent draft')
   } finally { host.remove() }
 })
 
@@ -3910,26 +4094,24 @@ it('keeps text typed while the destination overlay chat history is loading', asy
     listMessagePage: async () => delayHistory ? history.promise : { items: [] },
   })
   try {
-    input.value = 'Source draft'
-    input.dispatchEvent(new Event('input'))
+    setComposerText(input, 'Source draft')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
     delayHistory = true
     const destination = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('draft-destination'))!
     destination.click()
     await settle()
-    expect(input.value).toBe('')
-    input.value = 'Typed while loading'
-    input.dispatchEvent(new Event('input'))
+    expect(input.textContent).toBe('')
+    setComposerText(input, 'Typed while loading')
     await settle()
     history.resolve({ items: [] })
     await settle(8)
-    expect(input.value).toBe('Typed while loading')
+    expect(input.textContent).toBe('Typed while loading')
     host.dispatchEvent(new Event('railgrid-overlay-show-chats'))
     await settle()
     const source = [...view.element.querySelectorAll<HTMLButtonElement>('.agents-overlay-chats__row')].find(row => text(row).includes('draft-source'))!
     source.click()
     await settle(8)
-    expect(input.value).toBe('Source draft')
+    expect(input.textContent).toBe('Source draft')
   } finally { history.resolve({ items: [] }); host.remove() }
 })
