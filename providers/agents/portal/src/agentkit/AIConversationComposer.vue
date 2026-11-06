@@ -1,0 +1,1477 @@
+<script setup lang="ts">
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { File as FileIcon, FileText, Image, Lightbulb, SearchCheck, Loader2, Paperclip, Plus, RotateCcw, Upload, X } from 'lucide-vue-next'
+import AICommandPalette from './AICommandPalette.vue'
+import AgentKitAttachmentPreview from './AgentKitAttachmentPreview.vue'
+import AgentKitAttachmentTextPreview from './AgentKitAttachmentTextPreview.vue'
+import {
+  assistantComposerPlainContent,
+  assistantSlashToken,
+  agentKitResourceSelectionKey,
+  MAX_AGENTKIT_COMPOSER_PARTS,
+  MAX_AGENTKIT_COMPOSER_CHIPS,
+  type AgentKitAttachmentReceipt,
+  type AgentKitComposerPart,
+  type AgentKitComposerState,
+  type AgentKitContextResource,
+  type AgentKitResourceDiscoveryResult,
+  type AgentKitResourceProvider,
+  type AgentKitSkill,
+  type AgentKitSlashCommand,
+} from './composer'
+import {
+  ASSISTANT_ATTACHMENT_ACCEPT,
+  ASSISTANT_LARGE_PASTE_BYTES,
+  assistantAttachmentContentTypeKind,
+  assistantAttachmentIsImage,
+  assistantAttachmentKind,
+  assistantAttachmentSizeLabel,
+  assistantAttachmentValidationError,
+  assistantAttachmentPart,
+  agentKitAttachmentReceipt,
+  type AssistantAttachmentStatus,
+} from './composerAttachments'
+import { dragCarriesFiles, droppedFiles } from './attachmentDrag'
+import { useDismissibleAddMenu } from './useDismissibleAddMenu'
+import { useAnchoredPopover } from '../portalkit/useAnchoredPopover'
+import { useAssistantFilePickerFocus } from './useAssistantFilePickerFocus'
+import { removeScopedAttachment, shouldCleanupAttachmentOnScopeSwitch } from './attachmentDeletion'
+import { ensureAgentUIStyles } from '../agentkit/styles'
+
+ensureAgentUIStyles()
+
+export interface AgentKitAttachmentTransport {
+  upload: (file: File, signal: AbortSignal, clientID: string) => Promise<unknown>
+  delete: (attachmentID: string) => Promise<void>
+  isNotFoundError?: (error: unknown) => boolean
+  removeOwnerDraftReceipt?: (scopeKey: string, attachmentID: string) => boolean | Promise<boolean>
+}
+
+const MAX_CHIPS = MAX_AGENTKIT_COMPOSER_CHIPS
+
+const props = withDefaults(defineProps<{
+  modelValue: string
+  responseMode?: string
+  contentParts?: AgentKitComposerPart[]
+  draftScopeKey?: string
+  attachmentOwnerKey?: string
+  attachmentTransport?: AgentKitAttachmentTransport | null
+  skills: AgentKitSkill[]
+  selectedSkills?: AgentKitSkill[]
+  selectedResources?: AgentKitContextResource[]
+  resourceProviders?: AgentKitResourceProvider[]
+  discoverResources?: (provider: AgentKitResourceProvider) => Promise<AgentKitResourceDiscoveryResult>
+  commands?: AgentKitSlashCommand[]
+  disabled?: boolean
+  submitting?: boolean
+  activeRun?: boolean
+  queueingEnabled?: boolean
+  placeholder?: string
+}>(), {
+  responseMode: 'default',
+  contentParts: () => [],
+  draftScopeKey: '',
+  attachmentOwnerKey: '',
+  attachmentTransport: null,
+  selectedSkills: () => [],
+  selectedResources: () => [],
+  resourceProviders: () => [],
+  discoverResources: async () => ({ groups: [], warnings: [] }),
+  commands: () => [
+    { id: 'skill', label: 'Skill', description: 'Attach an enabled skill to this turn' },
+    { id: 'resource', label: 'Resource', description: 'Reference a provider resource' },
+  ],
+  disabled: false,
+  submitting: false,
+  activeRun: false,
+  queueingEnabled: true,
+  placeholder: 'Message',
+})
+
+const emit = defineEmits<{
+  'update:modelValue': [value: string]
+  'update:contentParts': [value: AgentKitComposerPart[]]
+  'update:selectedSkills': [value: AgentKitSkill[]]
+  'update:selectedResources': [value: AgentKitContextResource[]]
+  'update:attachmentsPending': [value: boolean]
+  state: [value: AgentKitComposerState]
+  submit: [value: AgentKitComposerState, intent: 'queue' | 'steer']
+  selectMode: [mode: string]
+}>()
+
+const attachmentActionClass = 'k-agentkit-touch-target inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent'
+const attachmentErrorID = crypto.randomUUID()
+const rootRef = ref<HTMLDivElement | null>(null)
+const addMenuRootRef = ref<HTMLDivElement | null>(null)
+const editorRef = ref<HTMLDivElement | null>(null)
+const commandPaletteOpen = ref(false)
+const commandPaletteFromSlash = ref(false)
+const commandPaletteQuery = ref('')
+const { open: attachmentMenuOpen, triggerRef: attachmentMenuTriggerRef, panelRef: attachmentMenuRef, panelStyle: attachmentMenuStyle } = useAnchoredPopover({ width: 192, gap: 8 })
+const attachmentInputRef = ref<HTMLInputElement | null>(null)
+let scopeGeneration = 0
+let pickerGeneration: number | null = null
+const composing = ref(false)
+const suppressNextInput = ref(false)
+const lastRenderedSignature = ref('')
+const savedSelection = ref<Range | null>(null)
+const slashTokenRef = ref<ReturnType<typeof assistantSlashToken>>(null)
+const localParts = ref<AgentKitComposerPart[]>([])
+const localSkills = ref<AgentKitSkill[]>([])
+const localResources = ref<AgentKitContextResource[]>([])
+let composerMounted = false
+
+interface AssistantAttachmentChip {
+  clientID: string
+  file?: File
+  receipt?: AgentKitAttachmentReceipt
+  /** Provider adapter captured the transport that created the draft. */
+  transport?: AgentKitAttachmentTransport | null
+  /** Agent/session owner for this candidate; cleanup must survive route changes. */
+  ownerKey?: string
+  /** Thread/user/project-UID scope that owns this uncommitted receipt. */
+  draftScopeKey: string
+  /** The accepted turn now owns this receipt; the composer must not delete it. */
+  committed?: boolean
+  /** An upload was sent and may have created a draft even if its reply was lost. */
+  remoteDraft?: boolean
+  status: AssistantAttachmentStatus
+  error?: string
+  retryAction?: 'upload' | 'delete'
+  controller?: AbortController
+}
+
+const attachmentChips = ref<AssistantAttachmentChip[]>([])
+const visibleAttachmentChips = computed(() => attachmentChips.value.filter((chip) => chip.draftScopeKey === props.draftScopeKey))
+
+const { waitForPicker, restorePickerFocus, cancelPickerFocus } = useAssistantFilePickerFocus(() => {
+  const editor = editorRef.value
+  if (editor && editor.contentEditable !== 'false') return editor
+  return attachmentMenuTriggerRef.value
+})
+
+const localAnnotations = computed(() => localParts.value
+  .filter((part): part is Extract<AgentKitComposerPart, { type: 'annotation' }> => part.type === 'annotation')
+  .map((part) => part.annotation))
+
+const attachmentChipsPending = computed(() => visibleAttachmentChips.value.some((chip) => chip.status !== 'ready'))
+
+function attachmentLabel(chip: AssistantAttachmentChip): string {
+  return chip.receipt?.filename || chip.file?.name || 'attachment'
+}
+
+/** Non-image, non-text files are "file" attachments: the model sees only their metadata. */
+function attachmentKind(chip: Pick<AssistantAttachmentChip, 'file' | 'receipt'>) {
+  if (chip.file) return assistantAttachmentKind(chip.file)
+  return assistantAttachmentContentTypeKind(chip.receipt?.contentType ?? '', chip.receipt?.sizeBytes)
+}
+
+function attachmentSize(chip: Pick<AssistantAttachmentChip, 'file' | 'receipt'>): string {
+  return assistantAttachmentSizeLabel(chip.file?.size ?? chip.receipt?.sizeBytes)
+}
+
+function attachmentCleanupIDs(chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt'>): string[] {
+  return [...new Set([chip.receipt?.id, chip.clientID].filter((id): id is string => Boolean(id?.trim())))]
+}
+
+/** Best-effort cleanup for cancelled or ambiguously failed draft uploads. */
+async function bestEffortDeleteAttachment(
+  chip: Pick<AssistantAttachmentChip, 'clientID' | 'receipt' | 'transport'>,
+): Promise<void> {
+  if (!chip.transport) return
+  for (const attachmentID of attachmentCleanupIDs(chip)) {
+    try {
+      await chip.transport.delete(attachmentID)
+    } catch {
+      // A 409 is expected when the receipt was bound by an accepted turn:
+      // bound attachment bytes are immutable. A 404 is expected when a draft
+      // already expired or was removed. Network failures are also swallowed;
+      // lifecycle cleanup must never replace a useful retry with an ambiguous
+      // error state.
+    }
+  }
+}
+
+/**
+ * Release browser-owned candidates without treating immutable receipts as a
+ * lifecycle failure. Each chip retains the adapter that created its receipt.
+ */
+function cleanupAttachmentChips(chips: readonly AssistantAttachmentChip[]) {
+  for (const chip of chips) {
+    chip.controller?.abort()
+    // App commits receipts at the POST acceptance boundary before clearing its
+    // contentParts prop. They are no longer browser-owned, even if the server
+    // has not finished binding them when a route/unmount cleanup runs.
+    if (chip.committed) continue
+    if (chip.status === 'deleting') continue
+    if (!chip.receipt && !chip.remoteDraft) continue
+    void bestEffortDeleteAttachment(chip)
+  }
+}
+
+function isAttachmentAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === 'AbortError'
+    : error instanceof Error && error.name === 'AbortError'
+}
+
+function attachmentStatusLabel(chip: Pick<AssistantAttachmentChip, 'status' | 'retryAction'>): string {
+  if (chip.status === 'staged') return 'Ready to attach'
+  if (chip.status === 'uploading') return 'Uploading'
+  if (chip.status === 'deleting') return 'Removing'
+  if (chip.status === 'error') return chip.retryAction === 'delete' ? 'Removal failed' : chip.retryAction === 'upload' ? 'Upload failed' : 'Cannot attach'
+  return 'Ready'
+}
+
+useDismissibleAddMenu({
+  open: attachmentMenuOpen,
+  root: addMenuRootRef,
+  panel: attachmentMenuRef,
+  trigger: attachmentMenuTriggerRef,
+  onClose: closeAttachmentMenu,
+})
+
+function emitAttachmentPending() {
+  emit('update:attachmentsPending', attachmentChipsPending.value)
+}
+
+function reconcileAttachmentChips(parts: readonly AgentKitComposerPart[]) {
+  const scopeKey = props.draftScopeKey
+  const receipts = parts
+    .filter((part): part is Extract<AgentKitComposerPart, { type: 'attachment' }> => part.type === 'attachment')
+    .map((part) => part.attachment)
+  const receiptIDs = new Set(receipts.map((receipt) => receipt.id))
+  // `contentParts` can be cleared before the project watcher runs (for
+  // example, when accepted-submit state is reset). A receipt handed to an
+  // accepted turn is no longer browser-owned and must not be deleted while the
+  // server finishes binding it. Unsubmitted ready drafts still get a
+  // best-effort cleanup here before they leave the local chip set.
+  for (const chip of attachmentChips.value) {
+    if (chip.draftScopeKey === scopeKey && chip.status === 'ready' && !chip.committed && chip.receipt && !receiptIDs.has(chip.receipt.id)) {
+      void bestEffortDeleteAttachment(chip)
+    }
+  }
+  const retained = attachmentChips.value.filter((chip) => {
+    if (chip.draftScopeKey !== scopeKey) {
+      return (chip.status === 'ready' && Boolean(chip.receipt)) || chip.status === 'deleting' || (chip.status === 'error' && chip.retryAction === 'delete')
+    }
+    return chip.status !== 'ready' || Boolean(chip.receipt && receiptIDs.has(chip.receipt.id))
+  })
+  const knownIDs = new Set(retained
+    .filter((chip) => chip.draftScopeKey === scopeKey)
+    .flatMap((chip) => chip.receipt ? [chip.receipt.id] : []))
+  for (const receipt of receipts) {
+    if (knownIDs.has(receipt.id)) continue
+    retained.push({ clientID: `receipt:${receipt.id}`, receipt, ownerKey: props.attachmentOwnerKey, transport: props.attachmentTransport, draftScopeKey: scopeKey, status: 'ready' })
+    knownIDs.add(receipt.id)
+  }
+  attachmentChips.value = retained
+  emitAttachmentPending()
+}
+
+const selectedSkillIDs = computed(() => localSkills.value.map((skill) => skill.id))
+
+function partSignature(parts: readonly AgentKitComposerPart[]): string {
+  return JSON.stringify(parts)
+}
+
+function stateSignature(content: string, parts: readonly AgentKitComposerPart[], skills: readonly AgentKitSkill[], resources: readonly AgentKitContextResource[]): string {
+  return JSON.stringify({ content, parts, skills: skills.map((skill) => skill.id), resources: resources.map(agentKitResourceSelectionKey) })
+}
+
+function chipLabel(part: AgentKitComposerPart): string {
+  if (part.type === 'skill') return localSkills.value.find((skill) => skill.id === part.skillID)?.name || part.skillID
+  if (part.type === 'resource') return localResources.value[part.resourceIndex]?.resourceRef.name || `resource ${part.resourceIndex + 1}`
+  return ''
+}
+
+function chipKind(part: AgentKitComposerPart): 'skill' | 'resource' {
+  if (part.type === 'resource') return 'resource'
+  return 'skill'
+}
+
+function normalizedParts(): AgentKitComposerPart[] {
+  const incoming = props.contentParts.filter((part) => part && typeof part === 'object')
+  if (incoming.length) return incoming.slice(0, MAX_AGENTKIT_COMPOSER_PARTS)
+  return props.modelValue ? [{ type: 'text', text: props.modelValue }] : []
+}
+
+function createChip(part: Exclude<AgentKitComposerPart, { type: 'text' | 'annotation' | 'attachment' }>): HTMLSpanElement {
+  const chip = document.createElement('span')
+  chip.dataset.assistantChip = chipKind(part)
+  if (part.type === 'skill') chip.dataset.skillID = part.skillID
+  if (part.type === 'resource') chip.dataset.resourceIndex = String(part.resourceIndex)
+  chip.contentEditable = 'false'
+  chip.className = 'assistant-composer-chip k-agentkit-touch-target inline-flex max-w-full cursor-default select-none items-center gap-1 rounded-sm border border-accent/30 bg-accent/10 px-1.5 py-0.5 align-baseline text-[11px] leading-4 text-accent'
+  chip.setAttribute('role', 'button')
+  chip.setAttribute('tabindex', '0')
+  chip.title = `Remove ${chipKind(part)} ${chipLabel(part)}`
+  chip.setAttribute('aria-label', chip.title)
+  chip.setAttribute('aria-keyshortcuts', 'Enter Space')
+  chip.addEventListener('keydown', handleChipKeydown)
+  const icon = document.createElement('span')
+  icon.className = 'assistant-composer-chip-icon'
+  icon.textContent = chipKind(part) === 'skill' ? '@' : '#'
+  const label = document.createElement('span')
+  label.className = 'assistant-composer-chip-label max-w-48 truncate font-mono'
+  label.textContent = chipLabel(part)
+  chip.append(icon, label)
+  return chip
+}
+
+function handleChipKeydown(event: KeyboardEvent): void {
+  if (!['Enter', ' ', 'Spacebar'].includes(event.key)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const chip = event.currentTarget
+  if (chip instanceof HTMLElement) removeChip(chip, true)
+}
+
+function renderParts(
+  parts: readonly AgentKitComposerPart[],
+  content = props.modelValue,
+  skills: readonly AgentKitSkill[] = localSkills.value,
+  resources: readonly AgentKitContextResource[] = localResources.value,
+) {
+  const editor = editorRef.value
+  if (!editor) return
+  // Replacing children detaches every old Range. Do not let a later focus
+  // restore a selection that points into the discarded DOM tree.
+  savedSelection.value = null
+  editor.replaceChildren()
+  for (const part of parts) {
+    if (part.type === 'text') editor.append(document.createTextNode(part.text))
+    // Attachment receipts render in the adjacent receipt row; only editable
+    // skill/resource parts become contenteditable chips. The old equivalent
+    // was: if (part.type !== 'annotation') editor.append(createChip(part))
+    else if (part.type !== 'annotation') {
+      if (part.type !== 'attachment') editor.append(createChip(part))
+    }
+  }
+  if (!editor.childNodes.length) editor.append(document.createTextNode(''))
+  lastRenderedSignature.value = stateSignature(content, parts, skills, resources)
+}
+
+interface Segment {
+  node: Node
+  start: number
+  end: number
+  kind: 'text' | 'chip' | 'break'
+}
+
+function segmentText(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent || ''
+  if (node instanceof HTMLElement && node.dataset.assistantChip) return node.textContent || ''
+  if (node.nodeName === 'BR') return '\n'
+  return node.textContent || ''
+}
+
+function collectSegments(): Segment[] {
+  const root = editorRef.value
+  if (!root) return []
+  const segments: Segment[] = []
+  let offset = 0
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || ''
+      if (text) segments.push({ node, start: offset, end: offset + text.length, kind: 'text' })
+      offset += text.length
+      return
+    }
+    if (node instanceof HTMLElement && node.dataset.assistantChip) {
+      const text = segmentText(node)
+      segments.push({ node, start: offset, end: offset + text.length, kind: 'chip' })
+      offset += text.length
+      return
+    }
+    if (node.nodeName === 'BR') {
+      segments.push({ node, start: offset, end: offset + 1, kind: 'break' })
+      offset += 1
+      return
+    }
+    for (const child of Array.from(node.childNodes)) visit(child)
+  }
+  for (const child of Array.from(root.childNodes)) visit(child)
+  return segments
+}
+
+function contentTextFromDOM(): string {
+  const parts: string[] = []
+  for (const segment of collectSegments()) {
+    if (segment.kind === 'text' || segment.kind === 'break') parts.push(segmentText(segment.node))
+  }
+  return parts.join('')
+}
+
+/** Text used for caret offsets. Chips contribute their rendered label here so
+ * a DOM offset remains stable while the model-visible content omits chips. */
+function visibleTextFromDOM(): string {
+  return collectSegments().map((segment) => segmentText(segment.node)).join('')
+}
+
+function partsFromDOM(): AgentKitComposerPart[] {
+  const parts: AgentKitComposerPart[] = []
+  const append = (part: AgentKitComposerPart) => {
+    const previous = parts[parts.length - 1]
+    if (part.type === 'text' && previous?.type === 'text') previous.text += part.text
+    else if (parts.length < MAX_AGENTKIT_COMPOSER_PARTS && (part.type !== 'text' || part.text)) parts.push(part)
+  }
+  for (const segment of collectSegments()) {
+    if (segment.kind === 'text') append({ type: 'text', text: segmentText(segment.node) })
+    else if (segment.kind === 'break') append({ type: 'text', text: '\n' })
+    else if (segment.node instanceof HTMLElement) {
+      const kind = segment.node.dataset.assistantChip
+      if (kind === 'skill' && segment.node.dataset.skillID) append({ type: 'skill', skillID: segment.node.dataset.skillID })
+      if (kind === 'resource' && segment.node.dataset.resourceIndex) {
+        const resourceIndex = Number(segment.node.dataset.resourceIndex)
+        if (Number.isSafeInteger(resourceIndex) && resourceIndex >= 0) append({ type: 'resource', resourceIndex })
+      }
+    }
+  }
+  // Preview annotations and uploaded receipts are attachments, not editable
+  // prose. Keep them out of the contenteditable DOM so caret movement and
+  // chip deletion remain predictable, then append stable descriptors to the
+  // submitted turn.
+  for (const part of localParts.value) {
+    if (part.type === 'annotation') append(part)
+    else if (part.type === 'attachment') append(part)
+  }
+  return parts
+}
+
+function removeAllAnnotations() {
+  if (!localAnnotations.value.length) return
+  localParts.value = localParts.value.filter((part) => part.type !== 'annotation')
+  emitState()
+  focusEditor(false)
+}
+
+function emitState(): AgentKitComposerState {
+  let parts = partsFromDOM()
+  const usedSkillIDs = new Set(parts.filter((part): part is Extract<AgentKitComposerPart, { type: 'skill' }> => part.type === 'skill').map((part) => part.skillID))
+  localSkills.value = localSkills.value.filter((skill) => usedSkillIDs.has(skill.id))
+  const usedResourceIndices = [...new Set(parts.filter((part): part is Extract<AgentKitComposerPart, { type: 'resource' }> => part.type === 'resource').map((part) => part.resourceIndex))].sort((left, right) => left - right)
+  const resourceIndexMap = new Map<number, number>()
+  const retainedResources: AgentKitContextResource[] = []
+  usedResourceIndices.forEach((index) => {
+    const resource = localResources.value[index]
+    if (!resource) return
+    resourceIndexMap.set(index, retainedResources.length)
+    retainedResources.push(resource)
+  })
+  localResources.value = retainedResources
+  parts = parts.flatMap((part): AgentKitComposerPart[] => {
+    if (part.type !== 'resource') return [part]
+    const nextIndex = resourceIndexMap.get(part.resourceIndex)
+    return nextIndex === undefined ? [] : [{ type: 'resource', resourceIndex: nextIndex }]
+  })
+  if (resourceIndexMap.size) {
+    for (const chip of Array.from(editorRef.value?.querySelectorAll<HTMLElement>('[data-assistant-chip="resource"]') || [])) {
+      const current = Number(chip.dataset.resourceIndex)
+      const next = resourceIndexMap.get(current)
+      if (next === undefined) chip.remove()
+      else chip.dataset.resourceIndex = String(next)
+    }
+  }
+  const content = assistantComposerPlainContent(parts as AgentKitComposerPart[])
+  localParts.value = parts
+  // Input events mutate the contenteditable DOM before this callback runs.
+  // Mark that DOM as rendered before notifying the parent: Vue queues the
+  // resulting prop watcher, and a stale signature there would rebuild the
+  // editor (detaching the native selection and making typing reverse).
+  lastRenderedSignature.value = stateSignature(content, parts, localSkills.value, localResources.value)
+  emit('update:modelValue', content)
+  emit('update:contentParts', parts)
+  emit('update:selectedSkills', [...localSkills.value])
+  emit('update:selectedResources', [...localResources.value])
+  const state: AgentKitComposerState = {
+    content,
+    contentParts: parts as AgentKitComposerPart[],
+    skills: [...localSkills.value],
+    contextResources: [...localResources.value],
+    attachmentsPending: attachmentChipsPending.value,
+  }
+  emit('state', state)
+  return state
+}
+
+function nodeOffset(node: Node, offset: number): number {
+  const segments = collectSegments()
+  const segment = segments.find((candidate) => candidate.node === node)
+  if (segment) return segment.start + Math.max(0, Math.min(offset, segment.end - segment.start))
+  if (node === editorRef.value) {
+    const children = Array.from(node.childNodes)
+    let total = 0
+    for (let index = 0; index < offset; index++) total += segmentText(children[index] || document.createTextNode('')).length
+    return total
+  }
+  return 0
+}
+
+function caretOffset(): number | null {
+  const editor = editorRef.value
+  const selection = window.getSelection()
+  if (!editor || !selection || !selection.rangeCount || !selection.isCollapsed) return null
+  const range = selection.getRangeAt(0)
+  if (!editor.contains(range.startContainer)) return null
+  return nodeOffset(range.startContainer, range.startOffset)
+}
+
+function selectionOffsets(): [number, number] | null {
+  const editor = editorRef.value
+  const selection = window.getSelection()
+  if (!editor || !selection || !selection.rangeCount) return null
+  const range = selection.getRangeAt(0)
+  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) return null
+  return [
+    nodeOffset(range.startContainer, range.startOffset),
+    nodeOffset(range.endContainer, range.endOffset),
+  ]
+}
+
+function boundaryAt(offset: number, preferAfter = false): { node: Node; offset: number } | null {
+  const editor = editorRef.value
+  if (!editor) return null
+  const segments = collectSegments()
+  const bounded = Math.max(0, Math.min(offset, segments.length ? segments[segments.length - 1].end : 0))
+  for (const segment of segments) {
+    const parent = segment.node.parentNode || editor
+    const siblings = Array.from(parent.childNodes) as Node[]
+    const index = siblings.indexOf(segment.node)
+    if (segment.kind === 'chip') {
+      if (bounded === segment.start && !preferAfter) return { node: parent, offset: index }
+      if (bounded === segment.end || (bounded === segment.start && preferAfter)) return { node: parent, offset: index + 1 }
+      if (bounded > segment.start && bounded < segment.end) return preferAfter
+        ? { node: parent, offset: index + 1 }
+        : { node: parent, offset: index }
+    }
+    if (segment.kind === 'text') {
+      if (bounded >= segment.start && bounded <= segment.end) return { node: segment.node, offset: bounded - segment.start }
+    }
+    if (segment.kind === 'break' && bounded === segment.start) return { node: parent, offset: index }
+  }
+  const last = editor.lastChild
+  if (last?.nodeType === Node.TEXT_NODE) return { node: last, offset: last.textContent?.length || 0 }
+  return { node: editor, offset: editor.childNodes.length }
+}
+
+function setCaretOffset(offset: number, preferAfter = false) {
+  const target = boundaryAt(offset, preferAfter)
+  const editor = editorRef.value
+  if (!target || !editor) return
+  const selection = window.getSelection()
+  if (!selection) return
+  const range = document.createRange()
+  range.setStart(target.node, Math.max(0, target.offset))
+  range.collapse(true)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function saveSelection() {
+  const editor = editorRef.value
+  const selection = window.getSelection()
+  if (!editor || !selection || !selection.rangeCount) return
+  const range = selection.getRangeAt(0)
+  if (editor.contains(range.startContainer)) savedSelection.value = range.cloneRange()
+}
+
+function restoreSelection() {
+  const editor = editorRef.value
+  const selection = window.getSelection()
+  const range = savedSelection.value
+  if (!editor || !selection || !range || !editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
+    setCaretOffset(contentTextFromDOM().length)
+    return
+  }
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
+function focusEditor(restore = true) {
+  nextTick(() => {
+    editorRef.value?.focus()
+    if (restore) restoreSelection()
+  })
+}
+
+function rangeForOffsets(start: number, end: number): Range | null {
+  const from = boundaryAt(start)
+  const to = boundaryAt(end, true)
+  if (!from || !to) return null
+  const range = document.createRange()
+  try {
+    range.setStart(from.node, from.offset)
+    range.setEnd(to.node, to.offset)
+  } catch {
+    return null
+  }
+  return range
+}
+
+function replaceOffsets(start: number, end: number, node?: Node): boolean {
+  const range = rangeForOffsets(start, end)
+  if (!range) return false
+  range.deleteContents()
+  if (node) range.insertNode(node)
+  const offset = node ? start + segmentText(node).length : start
+  setCaretOffset(offset, true)
+  saveSelection()
+  return true
+}
+
+function closePalette(restoreFocus = true) {
+  commandPaletteOpen.value = false
+  commandPaletteFromSlash.value = false
+  commandPaletteQuery.value = ''
+  slashTokenRef.value = null
+  if (restoreFocus) focusEditor()
+}
+
+function closeAttachmentMenu() {
+  attachmentMenuOpen.value = false
+}
+
+function openPalette() {
+  if (attachmentsBlocked()) return
+  closeAttachmentMenu()
+  saveSelection()
+  commandPaletteFromSlash.value = false
+  commandPaletteQuery.value = ''
+  commandPaletteOpen.value = true
+}
+
+function toggleAttachmentMenu() {
+  if (attachmentsBlocked()) return
+  closePalette(false)
+  attachmentMenuOpen.value = !attachmentMenuOpen.value
+}
+
+function openAttachmentPicker() {
+  if (attachmentsBlocked()) return
+  closeAttachmentMenu()
+  const input = attachmentInputRef.value
+  if (!input) return
+  input.value = ''
+  pickerGeneration = scopeGeneration
+  waitForPicker()
+  input.click()
+}
+
+function attachmentError(file: File, message: string): AssistantAttachmentChip {
+  return {
+    clientID: `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+    file,
+    ownerKey: props.attachmentOwnerKey,
+    transport: props.attachmentTransport,
+    draftScopeKey: props.draftScopeKey,
+    status: 'error',
+    error: message,
+  }
+}
+
+function appendAttachmentError(file: File, message: string) {
+  if (visibleAttachmentChips.value.length >= MAX_AGENTKIT_COMPOSER_PARTS) return
+  attachmentChips.value = [...attachmentChips.value, attachmentError(file, message)]
+  emitAttachmentPending()
+}
+
+function reportAttachmentPreflightError(file: File, chip: AssistantAttachmentChip | undefined, message: string) {
+  if (!chip) {
+    appendAttachmentError(file, message)
+    return
+  }
+  chip.status = 'error'
+  chip.error = message
+  chip.retryAction = 'upload'
+  emitAttachmentPending()
+}
+
+async function uploadAttachment(file: File, existingClientID?: string, allowWhileInactive = false) {
+  // Capture the adapter before any await. A route switch may change the active
+  // provider/agent while this upload is in flight.
+  const ownerKey = props.attachmentOwnerKey
+  const draftScopeKey = props.draftScopeKey
+  const transport = props.attachmentTransport
+  const existingChip = existingClientID
+    ? visibleAttachmentChips.value.find((candidate) => candidate.clientID === existingClientID)
+    : undefined
+  if (attachmentsBlocked() && !allowWhileInactive) return
+  if (!ownerKey.trim() || !transport) {
+    reportAttachmentPreflightError(file, existingChip, 'Attachments are unavailable for this conversation.')
+    return
+  }
+  const clientID = existingClientID || `attachment:${Date.now()}:${Math.random().toString(36).slice(2)}`
+  const validationCandidates = existingChip
+    ? visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== existingClientID)
+    : visibleAttachmentChips.value
+  const sharedValidationError = assistantAttachmentValidationError(file, validationCandidates)
+  if (sharedValidationError) {
+    reportAttachmentPreflightError(file, existingChip, sharedValidationError)
+    return
+  }
+  const unresolvedCount = visibleAttachmentChips.value.filter((candidate) => candidate.clientID !== clientID && candidate.status !== 'ready').length
+  if (localParts.value.length + unresolvedCount >= MAX_AGENTKIT_COMPOSER_PARTS) {
+    reportAttachmentPreflightError(file, existingChip, `A turn can contain at most ${MAX_AGENTKIT_COMPOSER_PARTS} content parts.`)
+    return
+  }
+  const controller = new AbortController()
+  const chip: AssistantAttachmentChip = existingChip || { clientID, file, ownerKey, transport, draftScopeKey, status: 'uploading', retryAction: 'upload', controller }
+  chip.file = file
+  chip.ownerKey = ownerKey
+  chip.transport = transport
+  chip.draftScopeKey = draftScopeKey
+  chip.committed = false
+  chip.remoteDraft = true
+  chip.status = 'uploading'
+  chip.error = undefined
+  chip.retryAction = 'upload'
+  chip.controller = controller
+  if (!existingChip) attachmentChips.value = [...attachmentChips.value, chip]
+  emitAttachmentPending()
+  try {
+    const receipt = agentKitAttachmentReceipt(await transport.upload(file, controller.signal, clientID))
+    if (!receipt) throw new Error('The attachment upload returned an invalid receipt.')
+    if (!composerMounted || props.attachmentOwnerKey !== ownerKey || props.draftScopeKey !== draftScopeKey) {
+      void bestEffortDeleteAttachment({ ...chip, receipt, transport })
+      return
+    }
+    const current = visibleAttachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    if (!current) {
+      void bestEffortDeleteAttachment({ ...chip, receipt, transport })
+      return
+    }
+    current.receipt = receipt
+    current.status = 'ready'
+    current.controller = undefined
+    current.error = undefined
+    current.retryAction = undefined
+    localParts.value = [...localParts.value, assistantAttachmentPart(receipt)]
+    emitState()
+  } catch (error) {
+    const current = visibleAttachmentChips.value.find((candidate) => candidate.clientID === clientID)
+    if (isAttachmentAbortError(error)) {
+      void bestEffortDeleteAttachment(chip)
+      if (!composerMounted) return
+      if (current && props.attachmentOwnerKey === ownerKey && props.draftScopeKey === draftScopeKey) {
+        current.status = 'staged'
+        current.controller = undefined
+        current.error = undefined
+        current.retryAction = undefined
+        emitAttachmentPending()
+      }
+      return
+    }
+    // Preserve the File candidate after an ambiguous response. The server may
+    // have created a draft even when the browser received an error. Leave that
+    // draft in place so a retry with the same clientID can recover it; a
+    // best-effort DELETE here could race the idempotent retry and delete the
+    // receipt after the UI has marked it ready. Explicit removal and scope
+    // cleanup still release unresolved drafts.
+    if (!composerMounted || !current || props.attachmentOwnerKey !== ownerKey || props.draftScopeKey !== draftScopeKey) {
+      // Scope/unmount cleanup may have run before an abort-ignoring transport
+      // finished persisting its draft. Retry cleanup once the late failure
+      // confirms the upload has settled.
+      void bestEffortDeleteAttachment(chip)
+      return
+    }
+    current.status = 'error'
+    current.controller = undefined
+    current.error = error instanceof Error ? error.message : 'Attachment upload failed.'
+    current.retryAction = 'upload'
+    emitAttachmentPending()
+  }
+}
+
+interface UnavailableAttachmentRecovery {
+  recovered: number
+  removed: number
+  unresolved: number
+}
+
+/**
+ * Replace precise server-rejected receipts with fresh uploads from the
+ * browser-owned File candidates. Receipt-only chips cannot be reconstructed,
+ * so they are removed and the parent leaves the authored prompt ready for an
+ * explicit reattach. This method intentionally does not submit a turn.
+ */
+async function recoverUnavailableAttachments(receiptIDs: readonly string[]): Promise<UnavailableAttachmentRecovery> {
+  const requestedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  if (!requestedIDs.size) return { recovered: 0, removed: 0, unresolved: 0 }
+  const ownerKey = props.attachmentOwnerKey
+  let recovered = 0
+  let removed = 0
+  let unresolved = 0
+
+  for (const chip of [...visibleAttachmentChips.value]) {
+    const receiptID = chip.receipt?.id.trim() || ''
+    if (!receiptID || !requestedIDs.has(receiptID)) continue
+    const previousReceiptID = receiptID
+    const replacementFile = chip.file
+    localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== previousReceiptID)
+    if (!replacementFile) {
+      attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+      removed += 1
+      emitState()
+      continue
+    }
+
+    chip.receipt = undefined
+    chip.controller = undefined
+    const upload = uploadAttachment(replacementFile, chip.clientID, true)
+    emitState()
+    await upload
+    if (props.attachmentOwnerKey !== ownerKey || props.draftScopeKey !== chip.draftScopeKey) return { recovered, removed, unresolved: unresolved + 1 }
+    const replacement = visibleAttachmentChips.value.find((candidate) => candidate.clientID === chip.clientID)
+    if (replacement?.status === 'ready' && replacement.receipt) recovered += 1
+    else unresolved += 1
+  }
+  return { recovered, removed, unresolved }
+}
+
+/**
+ * Transfer selected receipts to the accepted turn before the host clears its
+ * contentParts prop. This is intentionally an exposed imperative seam: the
+ * host's POST acceptance continuation is the only layer that knows when a
+ * submission crossed the durable boundary.
+ */
+function commitAttachments(receiptIDs: readonly string[], ownerScopeKey: string, ownerKey: string) {
+  const committedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  attachmentChips.value = attachmentChips.value.map((chip) =>
+    chip.draftScopeKey === ownerScopeKey && chip.ownerKey === ownerKey && chip.status === 'ready' && chip.receipt && committedIDs.has(chip.receipt.id)
+      ? { ...chip, committed: true }
+      : chip,
+  )
+}
+
+function adoptAttachmentDraftScope(
+  previousScopeKey: string,
+  nextScopeKey: string,
+  ownerKey: string,
+  receiptIDs: readonly string[],
+) {
+  const selectedIDs = new Set(receiptIDs.map((id) => id.trim()).filter(Boolean))
+  attachmentChips.value = attachmentChips.value.map((chip) =>
+    chip.draftScopeKey === previousScopeKey && chip.ownerKey === ownerKey && chip.status === 'ready' && !chip.committed && chip.receipt && selectedIDs.has(chip.receipt.id)
+      ? { ...chip, draftScopeKey: nextScopeKey }
+      : chip,
+  )
+}
+
+async function uploadAttachments(files: readonly File[]) {
+  const generation = scopeGeneration
+  for (const file of files) {
+    if (!composerMounted || generation !== scopeGeneration) break
+    await uploadAttachment(file)
+  }
+}
+
+function handleAttachmentInput(event: Event) {
+  const input = event.target instanceof HTMLInputElement ? event.target : null
+  const files = (pickerGeneration === null || pickerGeneration === scopeGeneration) && input?.files ? Array.from(input.files) : []
+  pickerGeneration = null
+  void uploadAttachments(files)
+  if (input) input.value = ''
+  restorePickerFocus()
+}
+
+// Drag-and-drop is a pointer shortcut for the Files picker; the keyboard path
+// stays the Add menu. dragDepth absorbs enter/leave pairs from child nodes.
+const dropActive = ref(false)
+let dragDepth = 0
+
+function attachmentsBlocked(): boolean {
+  return props.disabled || props.activeRun
+}
+
+function handleDragEnter(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  event.preventDefault()
+  dragDepth += 1
+  dropActive.value = !attachmentsBlocked()
+}
+
+function handleDragOver(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  // Always claim the drop so the browser never navigates to the file.
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = attachmentsBlocked() ? 'none' : 'copy'
+}
+
+function handleDragLeave(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (dragDepth === 0) dropActive.value = false
+}
+
+function handleDrop(event: DragEvent) {
+  if (!dragCarriesFiles(event)) return
+  event.preventDefault()
+  dragDepth = 0
+  dropActive.value = false
+  if (attachmentsBlocked()) return
+  const { files } = droppedFiles(event.dataTransfer)
+  if (!files.length) return
+  closePalette(false)
+  closeAttachmentMenu()
+  void uploadAttachments(files)
+}
+
+// Capture the action's focus owner before its button is removed. Check scope
+// and focus in the same callback that restores it, without another queued tick.
+function attachmentFocusRecovery(chip: AssistantAttachmentChip): () => void {
+  const ownerKey = chip.ownerKey
+  const draftScopeKey = chip.draftScopeKey
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null
+  const ownedFocus = focused && rootRef.value?.contains(focused) &&
+    focused.closest('[data-agentkit-attachment]')?.getAttribute('data-agentkit-attachment') === chip.clientID
+  return () => {
+    if (!ownedFocus) return
+    void nextTick(() => {
+      if (composerMounted && props.draftScopeKey === draftScopeKey && props.attachmentOwnerKey === ownerKey &&
+        (document.activeElement === document.body || document.activeElement === focused)) editorRef.value?.focus({ preventScroll: true })
+    })
+  }
+}
+
+function retryAttachment(chip: AssistantAttachmentChip) {
+  if (chip.status === 'uploading' || chip.status === 'deleting') return
+  if (!chip.retryAction) return
+  if (chip.retryAction === 'delete') {
+    void removeAttachment(chip)
+    return
+  }
+  if (!chip.file) return
+  const restoreFocus = attachmentFocusRecovery(chip)
+  // Keep the stable client identity across retries so a lost upload response
+  // cannot turn one browser candidate into multiple server drafts. Upload
+  // preflight owns the transition to uploading; a blocked or invalid retry
+  // leaves this chip available for correction or removal.
+  void uploadAttachment(chip.file, chip.clientID)
+  restoreFocus()
+}
+
+async function removeAttachment(chip: AssistantAttachmentChip) {
+  const draftScopeKey = chip.draftScopeKey
+  const restoreFocus = attachmentFocusRecovery(chip)
+  if (chip.status === 'uploading') {
+    chip.controller?.abort()
+    void bestEffortDeleteAttachment(chip)
+    attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+    emitAttachmentPending()
+    restoreFocus()
+    return
+  }
+  if (chip.status === 'deleting') return
+  if (chip.receipt) {
+    const receiptID = chip.receipt.id
+    const transport = chip.transport
+    chip.status = 'deleting'
+    chip.error = undefined
+    chip.retryAction = undefined
+    emitAttachmentPending()
+    restoreFocus()
+    await removeScopedAttachment({
+      deleteAttachment: async () => {
+        if (!transport) throw new Error('Attachment removal is unavailable for this conversation.')
+        await transport.delete(receiptID)
+      },
+      isNotFoundError: (error) => transport?.isNotFoundError?.(error) ?? false,
+      isOwnerScopeCurrent: () => composerMounted && props.attachmentOwnerKey === chip.ownerKey && props.draftScopeKey === draftScopeKey,
+      shouldUpdateComposer: () => composerMounted,
+      removeCurrentReceipt: () => {
+        localParts.value = localParts.value.filter((part) => part.type !== 'attachment' || part.attachment.id !== receiptID)
+      },
+      removeOwnerDraftReceipt: () => draftScopeKey
+        ? transport?.removeOwnerDraftReceipt?.(draftScopeKey, receiptID) ?? true
+        : true,
+      onFailure: (error) => {
+        chip.status = 'error'
+        chip.error = error instanceof Error ? error.message : 'Attachment removal failed.'
+        chip.retryAction = 'delete'
+        emitAttachmentPending()
+      },
+      onSuccess: (ownerScopeIsCurrent) => {
+        attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+        if (ownerScopeIsCurrent) emitState()
+        else emitAttachmentPending()
+      },
+    })
+    return
+  }
+  // A rejected client-side candidate never reached the server. Only an
+  // upload whose outcome may be ambiguous needs a best-effort delete by its
+  // client ID.
+  if (chip.remoteDraft) {
+    void bestEffortDeleteAttachment(chip)
+  }
+  attachmentChips.value = attachmentChips.value.filter((candidate) => candidate.clientID !== chip.clientID)
+  emitState()
+  restoreFocus()
+}
+
+function detectSlash() {
+  if (attachmentsBlocked() || composing.value) {
+    if (commandPaletteOpen.value) closePalette(false)
+    return
+  }
+  const caret = caretOffset()
+  if (caret === null) return
+  const token = assistantSlashToken(visibleTextFromDOM(), caret)
+  if (!token) {
+    if (commandPaletteFromSlash.value) closePalette(false)
+    return
+  }
+  slashTokenRef.value = token
+  commandPaletteFromSlash.value = true
+  commandPaletteQuery.value = token.query
+  commandPaletteOpen.value = true
+  saveSelection()
+}
+
+function replaceSlashWithPart(part: Exclude<AgentKitComposerPart, { type: 'text' | 'annotation' | 'attachment' }>) {
+  const token = slashTokenRef.value
+  let start = token?.start
+  let end = token?.end
+  if (!token) {
+    restoreSelection()
+    const selection = selectionOffsets()
+    if (!selection) return
+    start = selection[0]
+    end = selection[1]
+  }
+  const chip = createChip(part)
+  if (start === undefined || end === undefined || !replaceOffsets(start, end, chip)) return
+  emitState()
+  closePalette()
+}
+
+function selectMode(mode: string) {
+  const token = slashTokenRef.value
+  if (token) {
+    replaceOffsets(token.start, token.end)
+    emitState()
+  }
+  emit('selectMode', mode)
+  closePalette()
+}
+
+function chooseSkill(skill: AgentKitSkill) {
+  if (localSkills.value.some((candidate) => candidate.id === skill.id) || localSkills.value.length >= MAX_CHIPS) return
+  localSkills.value = [...localSkills.value, skill]
+  replaceSlashWithPart({ type: 'skill', skillID: skill.id })
+}
+
+function chooseResource(resource: AgentKitContextResource) {
+  if (localResources.value.some((candidate) => agentKitResourceSelectionKey(candidate) === agentKitResourceSelectionKey(resource)) || localResources.value.length >= MAX_CHIPS) return
+  const resourceIndex = localResources.value.length
+  localResources.value = [...localResources.value, resource]
+  replaceSlashWithPart({ type: 'resource', resourceIndex })
+}
+
+function removeChip(chip: HTMLElement, placeAfter = false) {
+  const segments = collectSegments()
+  const segment = segments.find((candidate) => candidate.node === chip)
+  const offset = segment ? (placeAfter ? segment.end : segment.start) : 0
+  const kind = chip.dataset.assistantChip
+  if (kind === 'skill' && chip.dataset.skillID) {
+    localSkills.value = localSkills.value.filter((skill) => skill.id !== chip.dataset.skillID)
+  } else if (kind === 'resource' && chip.dataset.resourceIndex) {
+    const removedIndex = Number(chip.dataset.resourceIndex)
+    if (Number.isSafeInteger(removedIndex) && removedIndex >= 0) {
+      localResources.value = localResources.value.filter((_, index) => index !== removedIndex)
+      for (const candidate of Array.from(editorRef.value?.querySelectorAll<HTMLElement>('[data-assistant-chip="resource"]') || [])) {
+        const index = Number(candidate.dataset.resourceIndex)
+        if (Number.isSafeInteger(index) && index > removedIndex) candidate.dataset.resourceIndex = String(index - 1)
+      }
+    }
+  }
+  chip.remove()
+  emitState()
+  setCaretOffset(offset, placeAfter)
+}
+
+function adjacentChip(offset: number, direction: 'before' | 'after'): HTMLElement | null {
+  const segment = collectSegments().find((candidate) => candidate.kind === 'chip' && (direction === 'before' ? candidate.end === offset : candidate.start === offset))
+  return segment?.node instanceof HTMLElement ? segment.node : null
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (props.disabled || event.defaultPrevented || composing.value || event.isComposing || event.key === 'Process') return
+  if (commandPaletteOpen.value && event.key === 'Enter') {
+    event.preventDefault()
+    return
+  }
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault()
+    if (!commandPaletteOpen.value) {
+      const steer = props.activeRun && ((event.metaKey || event.ctrlKey) || !props.queueingEnabled)
+      emit('submit', emitState(), steer ? 'steer' : 'queue')
+    }
+    return
+  }
+  if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+    const offset = caretOffset()
+    if (offset !== null && event.key === 'Backspace') {
+      const chip = adjacentChip(offset, 'before')
+      if (chip) {
+        event.preventDefault()
+        removeChip(chip)
+        return
+      }
+    }
+    if (offset !== null && event.key === 'Delete') {
+      const chip = adjacentChip(offset, 'after')
+      if (chip) {
+        event.preventDefault()
+        removeChip(chip, true)
+        return
+      }
+    }
+    if (offset !== null && event.key === 'ArrowLeft') {
+      const chip = adjacentChip(offset, 'before')
+      if (chip) {
+        event.preventDefault()
+        const segment = collectSegments().find((candidate) => candidate.node === chip)
+        if (segment) setCaretOffset(segment.start)
+      }
+    } else if (offset !== null && event.key === 'ArrowRight') {
+      const chip = adjacentChip(offset, 'after')
+      if (chip) {
+        event.preventDefault()
+        const segment = collectSegments().find((candidate) => candidate.node === chip)
+        if (segment) setCaretOffset(segment.end, true)
+      }
+    }
+  }
+}
+
+function handleInput() {
+  if (suppressNextInput.value) {
+    suppressNextInput.value = false
+    return
+  }
+  emitState()
+  detectSlash()
+}
+
+function handlePaste(event: ClipboardEvent) {
+  event.preventDefault()
+  const image = Array.from(event.clipboardData?.items || [])
+    .find((item) => item.kind === 'file' && item.type.trim().toLowerCase().startsWith('image/'))
+    ?.getAsFile()
+  if (image) {
+    void uploadAttachment(image.name ? image : new File([image], 'clipboard.png', { type: image.type || 'image/png' }))
+    closePalette(false)
+    return
+  }
+  const text = event.clipboardData?.getData('text/plain') || ''
+  if (!text) return
+  if (new TextEncoder().encode(text).byteLength > ASSISTANT_LARGE_PASTE_BYTES) {
+    void uploadAttachment(new File([text], 'pasted-text.txt', { type: 'text/plain' }))
+    closePalette(false)
+    return
+  }
+  const offsets = selectionOffsets()
+  if (!offsets) return
+  const [start] = offsets
+  const range = rangeForOffsets(start, offsets[1])
+  if (!range) return
+  const selection = window.getSelection()
+  if (!selection?.rangeCount) return
+  range.deleteContents()
+  range.insertNode(document.createTextNode(text))
+  setCaretOffset(start + text.length, true)
+  saveSelection()
+  suppressNextInput.value = true
+  emitState()
+  closePalette(false)
+}
+
+function handleCompositionStart() {
+  composing.value = true
+  if (commandPaletteOpen.value) closePalette(false)
+}
+
+function handleCompositionEnd() {
+  composing.value = false
+  nextTick(() => {
+    emitState()
+    detectSlash()
+  })
+}
+
+function handleClick(event: MouseEvent) {
+  const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-assistant-chip]') : null
+  if (!target || !editorRef.value?.contains(target)) return
+  event.preventDefault()
+  removeChip(target, true)
+}
+
+function syncFromProps() {
+  const nextSkills = props.selectedSkills.slice(0, MAX_CHIPS)
+  const nextResources = props.selectedResources.slice(0, MAX_CHIPS)
+  const parts = normalizedParts()
+  const signature = stateSignature(props.modelValue, parts, nextSkills, nextResources)
+  localSkills.value = nextSkills
+  localResources.value = nextResources
+  reconcileAttachmentChips(parts)
+  if (signature !== lastRenderedSignature.value) {
+    localParts.value = parts
+    renderParts(parts, props.modelValue, nextSkills, nextResources)
+  }
+}
+
+watch(() => [props.modelValue, partSignature(props.contentParts), props.selectedSkills.map((skill) => skill.id).join(','), props.selectedResources.map(agentKitResourceSelectionKey).join(','), props.draftScopeKey], syncFromProps)
+watch(() => [props.attachmentOwnerKey, props.draftScopeKey] as const, ([currentOwner, currentScope], [previousOwner, previousScope]) => {
+  if (currentOwner === previousOwner && currentScope === previousScope) return
+  scopeGeneration++
+  closePalette(false)
+  closeAttachmentMenu()
+  cancelPickerFocus()
+  const pendingFromPreviousScope = attachmentChips.value.filter((chip) =>
+    chip.ownerKey === previousOwner && (
+      !chip.draftScopeKey || (
+        chip.draftScopeKey === previousScope &&
+        shouldCleanupAttachmentOnScopeSwitch(chip.status, chip.retryAction, Boolean(previousScope))
+      )
+    ),
+  )
+  cleanupAttachmentChips(pendingFromPreviousScope)
+  const pendingIDs = new Set(pendingFromPreviousScope.map((chip) => chip.clientID))
+  attachmentChips.value = attachmentChips.value.filter((chip) => !pendingIDs.has(chip.clientID))
+  emitAttachmentPending()
+}, { flush: 'sync' })
+watch(() => [props.disabled, props.activeRun], ([disabled, active]) => {
+  if (disabled || active) {
+    closePalette(false)
+    closeAttachmentMenu()
+  }
+})
+
+onMounted(() => {
+  composerMounted = true
+  syncFromProps()
+  document.addEventListener('selectionchange', saveSelection)
+})
+
+onBeforeUnmount(() => {
+  composerMounted = false
+  document.removeEventListener('selectionchange', saveSelection)
+  const transientChips = attachmentChips.value.filter((chip) =>
+    shouldCleanupAttachmentOnScopeSwitch(chip.status, chip.retryAction, Boolean(chip.draftScopeKey)),
+  )
+  cleanupAttachmentChips(transientChips)
+})
+
+defineExpose({
+  focus: () => focusEditor(false),
+  openPalette,
+  closePalette,
+  recoverUnavailableAttachments,
+  commitAttachments,
+  adoptAttachmentDraftScope,
+})
+</script>
+
+<template>
+  <div
+    ref="rootRef" class="relative min-h-[72px]"
+    :aria-busy="submitting"
+    @dragenter="handleDragEnter"
+    @dragover="handleDragOver"
+    @dragleave="handleDragLeave"
+    @drop="handleDrop"
+  >
+    <div v-if="dropActive" class="pointer-events-none absolute inset-0 z-20 rounded-md bg-surface-raised p-1" aria-hidden="true">
+      <div class="k-dropzone is-dragover h-full">
+        <Paperclip class="h-4 w-4" :stroke-width="1.75" />
+        <span>Drop files to attach</span>
+      </div>
+    </div>
+    <AICommandPalette
+      :open="commandPaletteOpen"
+      :anchor="commandPaletteFromSlash ? editorRef : attachmentMenuTriggerRef"
+      :command-query="commandPaletteQuery"
+      :preserve-composer-focus="commandPaletteFromSlash"
+      :commands="commands"
+      :resource-providers="resourceProviders"
+      :discover-resources="discoverResources"
+      :skills="skills"
+      :selected-skill-i-ds="selectedSkillIDs"
+      :selected-resources="localResources"
+      @close="closePalette"
+      @select-skill="chooseSkill"
+      @select-resource="chooseResource"
+      @select-mode="selectMode"
+    />
+    <!-- Retain draft receipts until acceptance: clearing them while sending
+         would trigger cleanup of files the pending turn still needs. -->
+    <div v-if="visibleAttachmentChips.length" v-show="!submitting" class="relative z-10 flex flex-wrap gap-1.5 px-3 pt-2.5">
+      <template v-for="chip in visibleAttachmentChips" :key="chip.clientID">
+        <AgentKitAttachmentPreview
+          v-if="chip.file && assistantAttachmentIsImage(chip.file)"
+          :data-agentkit-attachment="chip.clientID"
+          :file="chip.file"
+          :label="attachmentLabel(chip)"
+          :status="chip.status"
+          :error="chip.error"
+          :retryable="chip.status === 'error' && !!chip.retryAction"
+          :retry-action="chip.retryAction"
+          @retry="retryAttachment(chip)"
+          @remove="removeAttachment(chip)"
+        />
+        <div
+          v-else
+          :data-agentkit-attachment="chip.clientID"
+          role="group"
+          :aria-label="attachmentLabel(chip)"
+          :aria-describedby="chip.status === 'error' && chip.error ? `${attachmentErrorID}-${chip.clientID}` : undefined"
+          class="flex min-w-0 max-w-full flex-col items-stretch rounded-sm border px-2 py-1 text-[11px] font-mono"
+          :class="chip.status === 'error'
+            ? 'border-danger/40 bg-danger-subtle text-danger'
+            : chip.status === 'ready'
+              ? 'border-accent/30 bg-accent/10 text-accent'
+              : 'border-border-subtle bg-surface-raised text-text-secondary'"
+          :title="chip.error || attachmentStatusLabel(chip)"
+        >
+          <div class="flex min-w-0 items-center gap-1.5">
+            <Loader2 v-if="chip.status === 'uploading' || chip.status === 'deleting'" class="h-3 w-3 shrink-0 animate-spin" :stroke-width="1.75" />
+            <Image v-else-if="(chip.receipt && assistantAttachmentContentTypeKind(chip.receipt.contentType, chip.receipt.sizeBytes) === 'image') || (chip.file && assistantAttachmentIsImage(chip.file))" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <FileIcon v-else-if="attachmentKind(chip) === 'file'" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <FileText v-else class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <span class="max-w-48 truncate">{{ attachmentLabel(chip) }}</span>
+            <span v-if="attachmentKind(chip) === 'file' && attachmentSize(chip)" class="shrink-0 text-[10px] opacity-75">{{ attachmentSize(chip) }}</span>
+            <span class="text-[10px] opacity-75">{{ attachmentStatusLabel(chip) }}</span>
+            <div class="ml-auto flex shrink-0 items-center gap-0.5">
+              <button
+                v-if="chip.status === 'error' && chip.retryAction"
+                type="button"
+                :class="attachmentActionClass"
+                :aria-label="chip.retryAction === 'delete' ? `Retry attachment removal ${attachmentLabel(chip)}` : `Retry attachment upload ${attachmentLabel(chip)}`"
+                :title="chip.retryAction === 'delete' ? 'Retry removal' : 'Retry upload'"
+                @click="retryAttachment(chip)"
+              >
+                <RotateCcw class="h-3 w-3" :stroke-width="1.75" />
+              </button>
+              <button
+                v-if="chip.status !== 'deleting'"
+                type="button"
+                :class="attachmentActionClass"
+                :aria-label="`Remove attachment ${attachmentLabel(chip)}`"
+                title="Remove attachment"
+                @click="removeAttachment(chip)"
+              >
+                <X class="h-3 w-3" :stroke-width="1.75" />
+              </button>
+            </div>
+          </div>
+          <p v-if="chip.status === 'error' && chip.error" :id="`${attachmentErrorID}-${chip.clientID}`" class="k-agentkit-attachment-error" role="status">{{ chip.error }}</p>
+          <AgentKitAttachmentTextPreview
+            v-if="chip.file && !assistantAttachmentIsImage(chip.file)"
+            :file="chip.file"
+            :label="attachmentLabel(chip)"
+          />
+          <div v-else-if="attachmentKind(chip) === 'file'" class="mt-1.5 rounded-lg border border-border-subtle bg-surface px-2 py-1.5 text-[10px] text-text-muted" role="note">
+            Stored file; contents unavailable for analysis
+          </div>
+        </div>
+      </template>
+    </div>
+    <div v-if="localAnnotations.length && $slots.annotations" v-show="!submitting" class="relative z-10 px-3 pt-2.5">
+      <slot name="annotations" :annotations="localAnnotations" :remove-all="removeAllAnnotations" />
+    </div>
+    <div v-if="responseMode !== 'default'" class="k-ai-composer__mode-status">
+      <span class="k-ai-composer__mode-status-label" role="status">
+        <Lightbulb v-if="responseMode === 'plan'" aria-hidden="true" :stroke-width="1.75" />
+        <SearchCheck v-else aria-hidden="true" :stroke-width="1.75" />
+        {{ responseMode === 'plan' ? 'Plan' : 'Review' }}
+      </span>
+      <button
+        type="button"
+        class="k-ai-composer__mode-remove"
+        :disabled="disabled || submitting || activeRun"
+        :aria-label="`Exit ${responseMode} mode`"
+        :title="`Exit ${responseMode} mode`"
+        @click="emit('selectMode', 'default'); focusEditor(false)"
+      >
+        <X aria-hidden="true" :stroke-width="1.75" />
+      </button>
+    </div>
+    <div v-if="submitting" role="status" class="min-h-10 px-3 py-2.5 text-[13px] leading-5 text-text-muted">
+      Sending…
+    </div>
+    <div
+      v-show="!submitting"
+      ref="editorRef"
+      role="textbox"
+      aria-multiline="true"
+      :aria-label="placeholder"
+      :data-placeholder="placeholder"
+      :contenteditable="disabled ? 'false' : 'true'"
+      class="assistant-rich-composer min-h-10 w-full whitespace-pre-wrap break-words rounded-md border-0 bg-transparent px-3 py-2.5 text-[13px] leading-5 text-text-primary outline-none empty:before:pointer-events-none empty:before:text-text-muted empty:before:content-[attr(data-placeholder)]"
+      @keydown="handleKeydown"
+      @input="handleInput"
+      @paste="handlePaste"
+      @compositionstart="handleCompositionStart"
+      @compositionend="handleCompositionEnd"
+      @click="handleClick"
+      @focus="saveSelection"
+    />
+    <input
+      ref="attachmentInputRef"
+      type="file"
+      class="hidden"
+      :accept="ASSISTANT_ATTACHMENT_ACCEPT"
+      multiple
+      @change="handleAttachmentInput"
+      @cancel="restorePickerFocus"
+    />
+    <div class="k-ai-composer__controls k-ai-composer__controls--flow">
+      <div class="k-ai-composer__control-group">
+        <div ref="addMenuRootRef" class="k-ai-composer__add-control">
+          <Teleport to="body">
+            <div v-if="attachmentMenuOpen" ref="attachmentMenuRef" class="k-menu k-ai-composer__add-menu" :style="attachmentMenuStyle" role="menu" aria-label="Add">
+              <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-text-muted">Add</div>
+              <button
+                type="button"
+                class="k-agentkit-touch-target flex w-full k-menu-item text-left"
+                role="menuitem"
+                @click="openAttachmentPicker"
+              >
+                <Paperclip class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Files
+              </button>
+              <button
+                type="button"
+                class="k-agentkit-touch-target flex w-full k-menu-item text-left"
+                role="menuitem"
+                @click="openPalette"
+              >
+                <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+                Skill, resource, or command
+              </button>
+            </div>
+          </Teleport>
+          <button
+            ref="attachmentMenuTriggerRef"
+            type="button"
+            class="k-agentkit-touch-target flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-45"
+            :disabled="disabled"
+            title="Add files, skill, resource, or command"
+            aria-label="Add files or open slash commands"
+            aria-haspopup="menu"
+            :aria-expanded="attachmentMenuOpen"
+            @click="toggleAttachmentMenu"
+          >
+            <Plus class="h-4 w-4" :stroke-width="1.75" />
+          </button>
+        </div>
+        <slot name="controls" />
+      </div>
+      <div class="k-ai-composer__actions">
+        <slot name="actions" />
+      </div>
+    </div>
+  </div>
+</template>

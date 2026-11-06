@@ -11,8 +11,8 @@ test.before(async () => {
 })
 test.after(async () => vite?.close())
 
-test('projects the immutable receipt contract and rejects oversized/malformed receipts', async () => {
-  const { projectAssistantAttachmentReceipt, MAX_ASSISTANT_ATTACHMENT_BYTES } = await vite.ssrLoadModule('/src/assistantAttachments.ts')
+test('projects the immutable receipt contract and treats over-bound images as opaque files', async () => {
+  const { projectAssistantAttachmentReceipt, MAX_ASSISTANT_ATTACHMENT_BYTES, MAX_ASSISTANT_FILE_ATTACHMENT_BYTES } = await vite.ssrLoadModule('/src/assistantAttachments.ts')
   const receipt = {
     id: 'att-1', filename: 'screen.png', contentType: 'image/png', sizeBytes: 12,
     sha256: 'A'.repeat(64), createdAt: '2026-08-31T00:00:00Z', draft: false,
@@ -21,7 +21,15 @@ test('projects the immutable receipt contract and rejects oversized/malformed re
     id: 'att-1', filename: 'screen.png', contentType: 'image/png', sizeBytes: 12,
     sha256: 'a'.repeat(64), createdAt: '2026-08-31T00:00:00Z',
   })
-  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: MAX_ASSISTANT_ATTACHMENT_BYTES + 1 }), null)
+  assert.deepEqual(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: MAX_ASSISTANT_ATTACHMENT_BYTES + 1 }), {
+    id: receipt.id,
+    filename: receipt.filename,
+    contentType: receipt.contentType,
+    sizeBytes: MAX_ASSISTANT_ATTACHMENT_BYTES + 1,
+    sha256: 'a'.repeat(64),
+    createdAt: receipt.createdAt,
+  })
+  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: MAX_ASSISTANT_FILE_ATTACHMENT_BYTES + 1 }), null)
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: 0 }), null)
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sha256: 'not-a-digest' }), null)
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, createdAt: '' }), null)
@@ -91,9 +99,20 @@ test('projects file-kind receipts up to the file limit and derives their kind', 
   })
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, sizeBytes: MAX_ASSISTANT_FILE_ATTACHMENT_BYTES + 1 }), null)
   assert.equal(projectAssistantAttachmentReceipt({ ...receipt, contentType: 'not a type' }), null)
-  assert.equal(projectAssistantAttachmentReceipt({ ...receipt, contentType: 'text/plain', kind: undefined }), null)
+  assert.deepEqual(projectAssistantAttachmentReceipt({ ...receipt, contentType: 'text/plain', kind: undefined }), {
+    id: receipt.id,
+    filename: receipt.filename,
+    contentType: 'text/plain',
+    sizeBytes: receipt.sizeBytes,
+    sha256: 'c'.repeat(64),
+    createdAt: receipt.createdAt,
+  })
   assert.equal(assistantAttachmentContentTypeKind('model/gltf-binary'), 'file')
   assert.equal(assistantAttachmentContentTypeKind('image/png'), 'image')
+  assert.equal(assistantAttachmentContentTypeKind('image/svg+xml'), 'file')
+  assert.equal(assistantAttachmentContentTypeKind('image/gif'), 'file')
+  assert.equal(assistantAttachmentContentTypeKind('image/png', (8 << 20) + 1), 'file')
+  assert.equal(assistantAttachmentContentTypeKind('text/plain', (1 << 20) + 1), 'file')
   assert.equal(assistantAttachmentContentTypeKind('text/markdown'), 'text')
   assert.equal(assistantAttachmentSizeLabel(24 << 20), '24 MiB')
 })
@@ -123,18 +142,18 @@ test('text attachment previews stay bounded, use the first meaningful line, and 
   assert.equal(emojiPreview.text, '😀'.repeat(ASSISTANT_TEXT_PREVIEW_MAX_CHARS))
   assert.equal(emojiPreview.truncated, true)
 
-  const previewSource = await readFile(new URL('./AssistantAttachmentTextPreview.vue', import.meta.url), 'utf8')
+  const previewSource = await readFile(new URL('./agentkit/AgentKitAttachmentTextPreview.vue', import.meta.url), 'utf8')
   assert.match(previewSource, /\{\{ preview\.text \}\}/)
   assert.doesNotMatch(previewSource, /v-html/)
 })
 
 test('attachment actions remain named and expose coarse-pointer hit targets', async () => {
   const [previewSource, richSource, preProjectSource] = await Promise.all([
-    readFile(new URL('./AssistantAttachmentPreview.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AgentKitAttachmentPreview.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8'),
   ])
-  assert.equal((previewSource.match(/app-studio-touch-target/g) ?? []).length, 2)
+  assert.equal((previewSource.match(/k-agentkit-touch-target/g) ?? []).length, 2)
   assert.match(previewSource, /`Remove attachment \$\{label\}`/)
   assert.match(previewSource, /`Retry attachment (?:removal|upload) \$\{label\}`/)
   assert.match(richSource, /`Remove attachment \$\{attachmentLabel\(chip\)\}`/)
@@ -180,9 +199,10 @@ test('identifies missing receipts and limits startup recovery to precise attachm
   assert.equal(isAssistantAttachmentReceiptUnavailableError(new TypeError('network lost')), false)
 })
 
-test('keeps upload protocol and durable-accept clearing explicit in the portal seams', async () => {
-  const [api, composer, app] = await Promise.all([
+test('keeps upload protocol and durable-accept clearing explicit across shared and provider seams', async () => {
+  const [api, composer, appAdapter, app] = await Promise.all([
     readFile(new URL('./api.ts', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
   ])
@@ -196,9 +216,14 @@ test('keeps upload protocol and durable-accept clearing explicit in the portal s
   assert.match(composer, /getAsFile\(\)/)
   assert.match(composer, /Retry attachment upload/)
   assert.match(composer, /bestEffortDeleteAttachment/)
-  assert.match(composer, /isProjectAPINotFoundError/)
+  assert.match(composer, /isNotFoundError\?: \(error: unknown\) => boolean/)
   assert.match(composer, /controller\.signal, clientID/)
   assert.match(composer, /update:attachmentsPending/)
+  assert.match(appAdapter, /api\.uploadAssistantAttachment\(context, projectName, file, signal, clientID\)/)
+  assert.match(appAdapter, /api\.deleteAssistantAttachment\(context, projectName, attachmentID\)/)
+  assert.match(appAdapter, /isNotFoundError: isProjectAPINotFoundError/)
+  assert.match(appAdapter, /removeOwnerDraftReceipt: removeAssistantComposerDraftAttachment/)
+  assert.match(appAdapter, /@update:attachments-pending="emit\('update:attachmentsPending', \$event\)"/)
   const acceptedStart = app.indexOf('startPostAccepted = true', app.indexOf('await api.startAssistantTurn'))
   const acceptedEnd = app.indexOf('\n      if (canonicalThreadID', acceptedStart)
   assert.ok(acceptedStart >= 0 && acceptedEnd > acceptedStart, 'normal accepted POST boundary must remain explicit')
@@ -259,11 +284,16 @@ test('history renders image previews through the scoped API while text stays com
 })
 
 test('image preview lifecycle revokes object URLs and aborts stale scoped requests', async () => {
-  const componentSource = await readFile(new URL('./AssistantMessageAttachments.vue', import.meta.url), 'utf8')
+  const [componentSource, adapterSource] = await Promise.all([
+    readFile(new URL('./agentkit/AIAttachmentReceipts.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./AssistantMessageAttachments.vue', import.meta.url), 'utf8'),
+  ])
   assert.match(componentSource, /URL\.createObjectURL\(blob\)/)
   assert.match(componentSource, /URL\.revokeObjectURL\(preview\.url\)/)
   assert.match(componentSource, /URL\.revokeObjectURL\(url\)/)
+  assert.match(componentSource, /function release\(id: string\)[\s\S]*controllers\.get\(id\)\?\.abort\(\)/)
   assert.match(componentSource, /new AbortController\(\)/)
-  assert.match(componentSource, /api\.getAssistantAttachment\(props\.ctx, props\.projectName, attachment\.id, controller\.signal\)/)
-  assert.match(componentSource, /onBeforeUnmount\(\(\) => \{[\s\S]*releasePreview\(attachmentID\)/)
+  assert.match(componentSource, /if \(controllers\.get\(receipt\.id\) !== controller\) \{[\s\S]*URL\.revokeObjectURL\(url\)/)
+  assert.match(componentSource, /onBeforeUnmount\(\(\) => \{[\s\S]*\) release\(id\)/)
+  assert.match(adapterSource, /api\.getAssistantAttachment\(props\.ctx, props\.projectName, receipt\.id, signal\)/)
 })

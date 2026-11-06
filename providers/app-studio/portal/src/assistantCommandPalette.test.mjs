@@ -192,7 +192,10 @@ test('builds a kube REST list request from validated Provider Action identifiers
 })
 
 test('rejects malformed catalog identifiers and path injection attempts', async () => {
-  const { buildAssistantResourceRequest, parseAssistantBoundResource } = await vite.ssrLoadModule('/src/assistantResources.ts')
+  const [{ buildAssistantResourceRequest }, { parseAgentKitBoundResource: parseAssistantBoundResource }] = await Promise.all([
+    vite.ssrLoadModule('/src/assistantResources.ts'),
+    vite.ssrLoadModule('/src/agentkit/composer.ts'),
+  ])
   const invalid = [
     { apiVersion: 'group/v1 { injected', kind: 'Table', resource: 'tables' },
     { apiVersion: 'group/v1', kind: 'Table } mutation', resource: 'tables' },
@@ -211,7 +214,7 @@ test('rejects malformed catalog identifiers and path injection attempts', async 
 })
 
 test('keeps only Ready providers with valid non-deprecated actions and deduplicates bound types', async () => {
-  const { assistantResourceProviders } = await vite.ssrLoadModule('/src/assistantResources.ts')
+  const { agentKitResourceProviders: assistantResourceProviders } = await vite.ssrLoadModule('/src/agentkit/composer.ts')
   // A bound type is now a property of the export resource entry the actions
   // hang off, so two actions on one kind yield one type without deduplication,
   // a kind whose only action is deprecated yields none, and a verb-only kind is
@@ -235,7 +238,7 @@ test('keeps only Ready providers with valid non-deprecated actions and deduplica
 })
 
 test('sorts resource types deterministically when kind and API version tie', async () => {
-  const { assistantResourceProviders } = await vite.ssrLoadModule('/src/assistantResources.ts')
+  const { agentKitResourceProviders: assistantResourceProviders } = await vite.ssrLoadModule('/src/agentkit/composer.ts')
   const tableResource = (name) => ({ name, apiVersion: 'demo.example.io/v1', kind: 'Table', actions: [{ id: `${name}/v1`, name, version: 'v1' }] })
   const [provider] = assistantResourceProviders([{
     name: 'demo', displayName: 'Demo', ready: true,
@@ -290,6 +293,7 @@ test('keeps only metadata identity from successful resource rows', async () => {
 
 test('renders one responsive accessible listbox and declares keyboard/back/focus behavior', async () => {
   const { default: AssistantCommandPalette } = await vite.ssrLoadModule('/src/AssistantCommandPalette.vue')
+  const context = { teleports: {} }
   const html = await renderToString(createSSRApp(AssistantCommandPalette, {
     open: true,
     commandQuery: '',
@@ -298,24 +302,32 @@ test('renders one responsive accessible listbox and declares keyboard/back/focus
     skills: [],
     selectedSkillIDs: [],
     selectedResources: [],
-  }))
-  assert.match(html, /aria-label="Assistant slash commands"/)
-  assert.match(html, /role="listbox"/)
-  assert.match(html, /\/skill/)
-  assert.match(html, /\/resource/)
-  const source = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
+  }), context)
+  const rendered = `${html}${context.teleports.body ?? ''}`
+  assert.match(rendered, /aria-label="Assistant slash commands"/)
+  assert.match(rendered, /role="listbox"/)
+  assert.match(rendered, /\/skill/)
+  assert.match(rendered, /\/resource/)
+  assert.match(rendered, /\/plan/)
+  assert.match(rendered, /\/review/)
+  const source = await readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8')
   assert.match(source, /event\.key === 'ArrowDown'/)
   assert.match(source, /event\.key === 'Enter'/)
   assert.match(source, /event\.key === 'Escape'/)
   assert.match(source, /searchRef\.value\?\.focus\(\{ preventScroll: true \}\)/)
   assert.match(source, /view\.value === 'resources'.*enterView\('providers'\)/s)
-  assert.match(source, /fixed inset-x-2 bottom-2/)
-  assert.match(source, /md:absolute/)
+  assert.match(source, /class="k-ai-command-palette-panel/)
+  assert.match(source, /useAnchoredPopover\(\{ width: 420, gap: 8, viewportMargin: 8, align: 'start' \}\)/)
+  assert.match(source, /<Teleport to="body">/)
+  assert.match(source, /:style="desktopViewport \? anchoredPanelStyle : undefined"/)
+  const wrapper = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
+  assert.match(wrapper, /filterAssistantSlashCommands\(props\.commandQuery\)/)
+  assert.match(wrapper, /@select-mode="emit\('selectMode', \$event as ProjectAssistantRunMode\)"/)
 })
 
 test('rich composer owns plain paste/IME guards, atomic chips, and bounded contentParts', async () => {
   const [composer, app] = await Promise.all([
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
   ])
   assert.match(composer, /contenteditable/)
@@ -336,8 +348,8 @@ test('rich composer owns plain paste/IME guards, atomic chips, and bounded conte
 })
 
 test('palette guards duplicate/limited selections and cancels stale provider loads on back', async () => {
-  const source = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
-  assert.match(source, /selectedResourceKeys\.value\.has\(assistantResourceSelectionKey\(resource\)\)/)
+  const source = await readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8')
+  assert.match(source, /selectedResourceKeys\.value\.has\(agentKitResourceSelectionKey\(resource\)\)/)
   assert.match(source, /props\.selectedResources\.length >= 8/)
   assert.match(source, /resourceLoadSerial\+\+/)
   assert.match(source, /if \(view\.value === 'resources'\) return enterView\('providers'\)/)
@@ -345,8 +357,8 @@ test('palette guards duplicate/limited selections and cancels stale provider loa
 
 test('consumes palette keys before a closing selection can submit the composer', async () => {
   const [palette, composer] = await Promise.all([
-    readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
   ])
   assert.match(palette, /event\.key === 'Enter'[\s\S]*event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)[\s\S]*activateCurrent\(\)/)
   assert.match(palette, /event\.key === 'Escape'[\s\S]*event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)[\s\S]*back\(\)/)
@@ -355,11 +367,11 @@ test('consumes palette keys before a closing selection can submit the composer',
   assert.match(palette, /view\.value === 'skills'/)
   assert.match(palette, /view\.value === 'providers'/)
   assert.match(palette, /view\.value === 'resources'/)
-  assert.match(composer, /if \(props\.disabled \|\| event\.defaultPrevented\) return/)
+  assert.match(composer, /if \(props\.disabled \|\| event\.defaultPrevented \|\| composing\.value/)
 })
 
 test('owns palette keys at the focused combobox or listbox without a document-wide key guard', async () => {
-  const source = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
+  const source = await readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /document\.addEventListener\('keydown'/)
   assert.match(source, /owner\.addEventListener\('keydown', handleKeydown, true\)/)
   assert.match(source, /externalFocusOwner\.removeEventListener\('keydown', handleKeydown, true\)/)
@@ -368,7 +380,7 @@ test('owns palette keys at the focused combobox or listbox without a document-wi
   assert.match(source, /owner\.setAttribute\('aria-expanded', 'true'\)/)
   assert.match(source, /:aria-activedescendant="activeOptionID"/)
   assert.match(source, /ref="listboxRef"[\s\S]*role="listbox"[\s\S]*@keydown="handleKeydown"/)
-  assert.match(source, /<span class="mb-1 block[^>]*>Filter<\/span>/)
+  assert.match(source, /<span class="k-ai-command-palette__filter-label">Filter<\/span>/)
   assert.match(source, /role="option" tabindex="-1"/)
 
   const activateStart = source.indexOf('function activateCurrent()')
@@ -384,7 +396,7 @@ test('owns palette keys at the focused combobox or listbox without a document-wi
   const keydownEnd = source.indexOf('\n}\n\nonMounted(', keydownStart)
   assert.ok(keydownStart >= 0 && keydownEnd > keydownStart, 'handleKeydown should remain a bounded event guard')
   const keydownBody = source.slice(keydownStart, keydownEnd)
-  assert.match(keydownBody, /if \(!props\.open\) return/)
+  assert.match(keydownBody, /if \(!props\.open \|\| event\.isComposing \|\| event\.keyCode === 229\) return/)
   assert.match(keydownBody, /event\.key === 'Enter'[\s\S]*event\.preventDefault\(\)[\s\S]*event\.stopPropagation\(\)[\s\S]*activateCurrent\(\)/)
   assert.match(keydownBody, /event\.key === 'Home' \|\| event\.key === 'End'[\s\S]*if \(isEditableKeyboardOwner\(event\.currentTarget\)\) return[\s\S]*event\.preventDefault\(\)/)
   assert.match(source, /target instanceof HTMLInputElement[\s\S]*target instanceof HTMLTextAreaElement[\s\S]*target\.isContentEditable/)
@@ -392,8 +404,8 @@ test('owns palette keys at the focused combobox or listbox without a document-wi
 
 test('preserves slash typing focus and lets the composer restore focus on close', async () => {
   const [palette, composer] = await Promise.all([
-    readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8'),
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
   ])
   assert.match(palette, /if \(props\.preserveComposerFocus && paletteOpener\?\.isConnected\)/)
   assert.match(palette, /bindExternalFocusOwner\(paletteOpener\)/)
@@ -407,6 +419,7 @@ test('preserves slash typing focus and lets the composer restore focus on close'
 
 test('slash-triggered palette exposes the listbox directly to its external combobox owner', async () => {
   const { default: AssistantCommandPalette } = await vite.ssrLoadModule('/src/AssistantCommandPalette.vue')
+  const context = { teleports: {} }
   const html = await renderToString(createSSRApp(AssistantCommandPalette, {
     open: true,
     commandQuery: '',
@@ -416,8 +429,9 @@ test('slash-triggered palette exposes the listbox directly to its external combo
     skills: [],
     selectedSkillIDs: [],
     selectedResources: [],
-  }))
-  assert.doesNotMatch(html, /role="dialog"/)
-  assert.match(html, /role="listbox"/)
-  assert.match(html, /aria-label="Assistant commands"/)
+  }), context)
+  const rendered = `${html}${context.teleports.body ?? ''}`
+  assert.doesNotMatch(rendered, /role="dialog"/)
+  assert.match(rendered, /role="listbox"/)
+  assert.match(rendered, /aria-label="Assistant commands"/)
 })

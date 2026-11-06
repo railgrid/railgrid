@@ -141,3 +141,75 @@ page, and authentication settings ceilings remain unchanged.
 
 Future changes still have to pass these fixed budgets and investigate growth;
 the total limit does not track subsequent build output automatically.
+
+The shared AgentKit composer extraction and App Studio reuse measure 1,399,893 B
+raw / 387,753 B gzip across all emitted assets, compared with 1,380,081 B raw /
+381,298 B gzip at the previous passing baseline. The final anchored command
+palette and portable inline-preview controls add shared fixed-layer positioning
+without changing the page limit; the page path measures 1,191,115 B raw /
+323,464 B gzip. A read-only module-cost review found no duplicated large
+dependency closure to remove without changing the feature. The total-assets
+ceiling is 1,400,000 B raw / 388,000 B gzip, leaving 107 B raw / 247 B gzip of
+fixed headroom. This is a measured ~0.5% increase over the previous gzip
+ceiling; the page, dashboard, bootstrap, and authentication-settings limits
+are unchanged.
+
+| Path | Measured raw | Measured gzip | Raw limit | Gzip limit | Gzip headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Page | 1,191,115 B | 323,464 B | 1,230,000 B | 336,000 B | 12,536 B |
+| Total assets | 1,399,893 B | 387,753 B | 1,400,000 B | 388,000 B | 247 B |
+
+The final portable AgentKit receipt and skill-catalog accessibility/recovery
+refinements measure 1,403,842 B raw / 388,421 B gzip across all emitted assets.
+The page path measures 1,195,084 B raw / 324,148 B gzip; dashboard path measures
+189,442 B raw / 57,799 B gzip. The shared catalog and receipt geometry remains
+in the canonical AgentKit stylesheet so Agents and App Studio use the same
+recipes; no provider-specific duplicate was introduced. The total-only ceiling
+is now 1,405,000 B raw / 389,000 B gzip, leaving 1,158 B raw / 579 B gzip of
+fixed headroom. Bootstrap, dashboard, page, and authentication-settings limits
+are unchanged. This is a measured total-assets ceiling amendment, not automatic
+growth with future bundle output.
+
+| Path | Measured raw | Measured gzip | Raw limit | Gzip limit | Gzip headroom |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Dashboard | 189,442 B | 57,799 B | 200,000 B | 62,000 B | 4,201 B |
+| Page | 1,195,084 B | 324,148 B | 1,230,000 B | 336,000 B | 11,852 B |
+| Total assets | 1,403,842 B | 388,421 B | 1,405,000 B | 389,000 B | 579 B |
+
+The subsequent input-geometry correction shares search icon/clear spacing across
+Config, the library and the slash palette, anchors Add to its trigger, and uses
+one composer focus frame. Emitted totals are 1,404,850 B raw / 388,569 B gzip;
+the page path is 1,196,413 B raw / 324,379 B gzip. These fit the existing fixed
+ceilings; no budget was increased for this correction.
+
+The attachment recovery correction adds visible error reasons and scoped focus
+recovery. Removing thumbnail utility declarations already owned by canonical
+AgentKit CSS keeps totals at 1,404,779 B raw / 388,637 B gzip (page path:
+1,195,547 B raw / 324,256 B gzip), within the unchanged ceilings. Touch thumbnails
+are 104px so both 44px actions and their failure label have separate space.
+
+The follow-up focus review shares one recovery guard between Retry and Remove
+and checks focus immediately before restoring it. Final totals are 1,404,944 B
+raw / 388,666 B gzip, within the same 1,405,000 B / 389,000 B ceilings.
+
+The full-branch interaction review adds draft-bound chooser/batch handling and
+IME guards. Removing an unused slash-token computation retains the existing
+ceilings: final total 1,404,801 B raw / 388,635 B gzip.
+
+The next accessibility review isolates palette/error IDs across Vue roots,
+corrects disabled-option navigation, and clarifies chip removal. Consolidating
+empty-state styling and making starter prompts respond to pane width retains
+the existing ceilings: 1,404,776 B raw / 388,673 B gzip across all assets.
+
+The palette lifecycle review adds focus-leave dismissal, guarded internal focus
+transfers/selection commits, and rejected resource-lookup recovery. Shared
+option-class reuse keeps final totals at 1,404,856 B raw / 388,843 B gzip, within
+the unchanged ceilings.
+
+Native picker activation/error feedback and cancellation handling retain the existing ceilings. Reusing the attachment action classes and interaction guard gives final totals of 1,404,916 B raw / 388,964 B gzip.
+
+The shared Add menu now uses PortalKit’s body-mounted anchored popover, with panel-aware dismissal and keyboard handling. Keeping the existing synchronous file-input activation and removing redundant picker-error scaffolding gives 1,404,792 B raw / 388,923 B gzip within the unchanged ceilings. AgentKit style version 48 clears the previous inline-menu offsets on live hosts.
+
+The Skills library split reuses the shared catalog with optional activation indicators. AgentKit style version 49 also hides WebKit’s native search-clear decoration alongside the custom clear action. Final total assets are 1,404,896 B raw / 388,958 B gzip, within the unchanged ceilings.
+
+The ambiguous-upload retry fix retains uncommitted drafts until removal or scope cleanup. Final total assets are 1,404,892 B raw / 388,956 B gzip, within the unchanged ceilings; the YAML parser dependency is confined to Agents.

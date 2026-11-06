@@ -9,12 +9,13 @@ const canonicalAgentKitConversation = await readFile(new URL('../../../../provid
 const studioStyles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
 const aiInterrupt = await readFile(new URL('./agentkit/AIInterrupt.vue', import.meta.url), 'utf8')
 const approvalModePicker = await readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8')
-const commandPalette = await readFile(new URL('./AssistantCommandPalette.vue', import.meta.url), 'utf8')
+const commandPalette = await readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8')
 const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
 const modelPicker = await readFile(new URL('./agentkit/AIModelPicker.vue', import.meta.url), 'utf8')
 const modelsSettings = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
 const preProjectComposer = await readFile(new URL('./AssistantPreProjectComposer.vue', import.meta.url), 'utf8')
 const skillsWorkbench = await readFile(new URL('./SkillsWorkbench.vue', import.meta.url), 'utf8')
+const sharedSkillCatalogList = await readFile(new URL('./agentkit/AISkillCatalogList.vue', import.meta.url), 'utf8')
 const canonicalRailgridUI = await readFile(new URL('../../../../provider-sdk/portalkit/railgrid-ui.css', import.meta.url), 'utf8')
 const railgridUIDestinations = await Promise.all([
   '../../../../portal/src/assets/railgrid-ui.css',
@@ -57,11 +58,14 @@ test('makes the mobile workspace and destructive card action operable', () => {
 })
 
 test('keeps compact controls touch-sized on coarse pointers', () => {
-  assert.ok((commandPalette.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
+  assert.match(commandPalette, /const optionClass = 'k-agentkit-touch-target /)
+  assert.ok((commandPalette.match(/:class="\[optionClass,/g) ?? []).length >= 4)
+  assert.match(commandPalette, /aria-label="Back"/)
   assert.ok(modelPicker.includes('class="k-ai-model-picker__trigger"') && modelPicker.includes('k-ai-model-picker__option'))
   assert.ok((modelsSettings.match(/class="app-studio-touch-target/g) ?? []).length >= 4)
   assert.ok((approvalModePicker.match(/class="[^"\n]*\bapp-studio-touch-target\b/g) ?? []).length >= 4)
-  assert.ok((skillsWorkbench.match(/class="app-studio-touch-target/g) ?? []).length >= 5)
+  assert.ok((sharedSkillCatalogList.match(/class="k-agentkit-touch-target/g) ?? []).length >= 2)
+  assert.ok((skillsWorkbench.match(/class="app-studio-touch-target/g) ?? []).length >= 2)
   assert.match(preProjectComposer, /ref="attachmentMenuTriggerRef"[\s\S]*class="app-studio-touch-target/)
   assert.match(app, /aria-label="Search projects"/)
   assert.match(app, /aria-label="Clear project search"[\s\S]*title="Clear search"[\s\S]*@click="projectQuery = ''"/)

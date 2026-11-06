@@ -390,7 +390,7 @@ function expandRootSpec(repoRoot, spec) {
 function shouldSkipPath(fullPath, repoRoot, config, kind) {
   const relative = normalizeRelativePath(path.relative(repoRoot, fullPath))
   const segments = relative.split('/').filter(Boolean)
-  if (segments.some((segment) => ['.git', 'dist', 'node_modules'].includes(segment))) return true
+  if (segments.some((segment) => ['.git', '.vite', '.vite-cache', 'dist', 'node_modules'].includes(segment))) return true
   if (kind === 'provider' && segments.some((segment) => config.vendoredSegments.includes(segment))) return true
   if (!config.includeTests && (segments.includes('test') || segments.includes('__tests__') || /(?:^|[._-])(test|spec)(?:[._-]|$)/i.test(path.basename(fullPath)))) return true
   return false
@@ -1016,7 +1016,7 @@ function usage() {
     'Usage: node hack/verify-ui-conformance.mjs [options]',
     '',
     'Scans the host portal, Dex, every provider portal, and canonical provider-sdk/portalkit* roots.',
-    'dist, node_modules, and byte-synced provider portalkit copies are excluded.',
+    'Vite caches, dist, node_modules, and byte-synced provider portalkit copies are excluded.',
     '',
     'Options:',
     '  --config PATH          JSON config (default hack/ui-conformance.config.json)',

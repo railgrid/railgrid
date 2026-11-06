@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 36 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 46 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -92,8 +92,24 @@ semantic time with a relative label and full locale value on hover, focus, or
 click; missing or invalid values are omitted. `AITurnProgress` inspects its
 details slot at render time, so an empty slot has no disclosure affordance and a
 later trace update can expose the details.
-Rich composer commands, attachment receipts, project previews, and specialized
-configuration/run workbenches stay with their provider.
+`AIConversationComposer.vue` owns the rich editor, keyboard-safe skill and
+resource chips, slash palette, file picker, drop/paste handling, upload
+receipts, attachment previews, and upload retry/removal presentation. It takes
+neutral content types plus injected resource-discovery and attachment-transport
+callbacks. Providers keep their upload routes, draft/session persistence,
+receipt ownership, accepted-send boundary, and annotation rendering in thin
+adapters. Opaque files render the shared “Stored file; contents unavailable
+for analysis” label; only supported images and text previews enter model
+content. The composer remains mode-agnostic through its command list: App
+Studio supplies Plan/Review modes, while Agents supplies only Skill/Resource
+commands.
+
+`AICommandPalette.vue`, `composer.ts`, and `composerAttachments.ts` are the
+neutral presentation and input contracts used by both portals. Resource
+discovery and skill lifecycle callbacks are supplied by each provider; AgentKit
+does not import provider API types or perform provider requests.
+
+Specialized configuration/run workbenches stay with their provider.
 
 `AIWorkbenchTabs.vue` keeps tab frames at their natural width up to 240px and
 scrolls the strip when it overflows. Previous and next controls appear only
