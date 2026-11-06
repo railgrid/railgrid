@@ -187,6 +187,7 @@ func New(cfg Config, adapter harness.Adapter) (*Runner, error) {
 	verificationCapabilities = appendUnique(verificationCapabilities, RemoteMCPCapability)
 	verificationCapabilities = appendUnique(verificationCapabilities, "cancel-unseen-v1")
 	verificationCapabilities = appendUnique(verificationCapabilities, "warm-environments-v1")
+	verificationCapabilities = appendUnique(verificationCapabilities, InputFilesCapability)
 	// The runner fetches for itself now: it either refreshes the enrolled
 	// checkout or maintains its own clone of a remote it is given, so the
 	// capability no longer depends on an enrollment naming a remote.
@@ -440,6 +441,14 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 		}
 		return Receipt{}, protocolError(ErrorUnavailable, true, err.Error(), nil)
 	}
+	if _, err := r.consumeStagedInputs(workdir, request.AttemptID, request.InputFiles); err != nil {
+		r.releaseResourcesLocked(request.AttemptID, request.Resources)
+		var inputErr *Error
+		if errors.As(err, &inputErr) {
+			return Receipt{}, inputErr
+		}
+		return Receipt{}, protocolError(ErrorUnavailable, true, "consume staged inputs: "+err.Error(), nil)
+	}
 	now := eventNow()
 	receipt := Receipt{
 		ProtocolVersion: ProtocolVersion,
@@ -486,10 +495,18 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 		err = errors.Join(err, r.store.removeEvents(request.AttemptID))
 		delete(r.credentials, request.AttemptID)
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
+		if err := removeMaterializedInputs(workdir, request.AttemptID); err != nil {
+			log.Printf("input staging: remove unaccepted attempt %s: %v", request.AttemptID, err)
+		}
 		return Receipt{}, err
 	}
 	if err := r.persistLocked(); err != nil {
 		return Receipt{}, protocolError(ErrorUnavailable, true, "persist accepted attempt: "+err.Error(), nil)
+	}
+	if len(request.InputFiles) > 0 {
+		if err := os.RemoveAll(stagedInputDir(r.cfg.StateDir, request.AttemptID)); err != nil {
+			log.Printf("input staging: remove accepted staging files for %s: %v", request.AttemptID, err)
+		}
 	}
 	if err := r.startExecutionLocked(request.AttemptID, request.Instructions, request.Model); err != nil {
 		return Receipt{}, protocolError(ErrorUnavailable, true, "persist starting attempt: "+err.Error(), &r.state.Attempts[request.AttemptID].Receipt)
@@ -872,6 +889,10 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 	if !ok || credential.Empty() {
 		return errors.New("attempt has no harness credential in this process; resume it with one")
 	}
+	inputFiles, err := launchInputFiles(attempt.Receipt.Workdir, attemptID, attempt.Start.InputFiles)
+	if err != nil {
+		return err
+	}
 	previousPhase := attempt.Receipt.Phase
 	previousBlocker := attempt.Receipt.Blocker
 	previousUpdatedAt := attempt.Receipt.UpdatedAt
@@ -921,6 +942,7 @@ func (r *Runner) startExecutionLocked(attemptID, instructions, model string) err
 		Model:           model,
 		ReasoningEffort: attempt.Start.ReasoningEffort,
 		Credential:      credential,
+		InputFiles:      inputFiles,
 	}
 	if attempt.Start.AskPermission {
 		// The adapter reaches a human through the runner, which is the only
@@ -1573,6 +1595,9 @@ func validateStartRequest(request StartRequest) error {
 			}
 		}
 	}
+	if len(request.InputFiles) > 0 && workspaceID == "" {
+		return errors.New("inputFiles require a persistent workspace attempt")
+	}
 	if err := validateCommitMessage(request.CommitMessage); err != nil {
 		return err
 	}
@@ -1596,6 +1621,9 @@ func validateStartRequest(request StartRequest) error {
 		if err := validateIdentifier("resource name", resource.Name); err != nil {
 			return err
 		}
+	}
+	if err := validateInputFiles(request.InputFiles); err != nil {
+		return err
 	}
 	resourceNamesSeen := map[string]struct{}{}
 	for _, resource := range request.Resources {
@@ -1914,6 +1942,7 @@ func cloneStartRequest(request StartRequest) StartRequest {
 	request.Verification.Commands = append([]string(nil), request.Verification.Commands...)
 	request.Resources = append([]ResourceRequest(nil), request.Resources...)
 	request.Artifacts = append([]ArtifactSpec(nil), request.Artifacts...)
+	request.InputFiles = append([]InputFile(nil), request.InputFiles...)
 	return request
 }
 

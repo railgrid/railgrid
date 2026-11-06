@@ -20,6 +20,8 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"strconv"
+	"strings"
 )
 
 // Info describes an adapter's executable and readiness state.
@@ -85,6 +87,20 @@ type MCPServer struct {
 	Token string
 }
 
+// InputFile is a verified runner-staged file made available to one harness
+// launch. Path is inside that attempt's managed workdir and is never part of
+// the runner wire manifest.
+type InputFile struct {
+	ID           string
+	Name         string
+	GroupID      string
+	RelativePath string
+	MediaType    string
+	Digest       string
+	Size         int64
+	Path         string
+}
+
 // EnvironmentVariable is one name=value an identity brings to a launch.
 type EnvironmentVariable struct {
 	Name  string
@@ -108,11 +124,45 @@ type Launch struct {
 	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 	// Credential is the identity this turn runs as. It is never serialized.
 	Credential Credential `json:"-"`
+	// InputFiles are the selected files staged for this attempt. The adapter
+	// uses their paths in the user prompt so both supported harnesses can read
+	// images and documents through their normal file tools.
+	InputFiles []InputFile `json:"inputFiles,omitempty"`
 	// Permissions, when set, is how this launch reaches a human for a tool call
 	// the permission mode does not pre-approve. nil means there is nobody to
 	// ask, and an adapter must then keep its harness from prompting at all —
 	// which is what every caller that predates this field gets, unchanged.
 	Permissions PermissionAsker `json:"-"`
+}
+
+// AppendInputFiles adds stable paths for the current turn's selected files to
+// the prompt. Names and paths are quoted so filenames cannot create extra
+// prompt lines; file contents remain in the staged files, not in this text.
+func AppendInputFiles(instructions string, files []InputFile) string {
+	if len(files) == 0 {
+		return instructions
+	}
+	var prompt strings.Builder
+	prompt.WriteString(instructions)
+	prompt.WriteString("\n\nFiles attached to this turn are available at these paths:\n")
+	for _, file := range files {
+		prompt.WriteString("- ")
+		if file.RelativePath != "" {
+			prompt.WriteString("resource group ")
+			prompt.WriteString(strconv.Quote(file.GroupID))
+			prompt.WriteString(" source ")
+			prompt.WriteString(strconv.Quote(file.RelativePath))
+			prompt.WriteString(" -> ")
+		} else {
+			prompt.WriteString(strconv.Quote(file.Name))
+			prompt.WriteString(" at ")
+		}
+		prompt.WriteString(strconv.Quote(file.Path))
+		prompt.WriteString(" (")
+		prompt.WriteString(strconv.Quote(file.MediaType))
+		prompt.WriteString(")\n")
+	}
+	return prompt.String()
 }
 
 // Event is a bounded adapter event forwarded to the runner state engine.

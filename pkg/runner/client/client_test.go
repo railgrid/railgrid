@@ -17,6 +17,7 @@ limitations under the License.
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -68,6 +69,7 @@ type loggedRequest struct {
 	Path   string
 	Query  string
 	Auth   string
+	Header http.Header
 	Body   []byte
 }
 
@@ -87,7 +89,7 @@ func (f *fixture) handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
-		f.requests = append(f.requests, loggedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Body: body})
+		f.requests = append(f.requests, loggedRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.RawQuery, Auth: r.Header.Get("Authorization"), Header: r.Header.Clone(), Body: body})
 		f.mu.Unlock()
 		switch r.URL.Path {
 		case serviceObjectPath():
@@ -402,6 +404,222 @@ func TestStartRoundTripsTypedRequestAndReceipt(t *testing.T) {
 	if seen[2].Path != proxyBase()+"/runner/v1/attempts" {
 		t.Fatalf("start reached %q", seen[2].Path)
 	}
+}
+
+func TestInputFilesAreGatedByRunnerCapabilityAndStreamedBeforeStart(t *testing.T) {
+	data := []byte("selected text attachment")
+	sum := sha256.Sum256(data)
+	file := runner.InputFile{ID: "input-1", Name: "notes.txt", MediaType: "text/plain", Digest: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(data))}
+	service := serviceObject(testService, testEdge, testEdgeKind, proxyBase())
+
+	t.Run("old runner is not sent input requests", func(t *testing.T) {
+		client, fixture := newFixtureClient(t, service, enrolledCapabilities())
+		_, err := client.Start(context.Background(), runner.StartRequest{
+			RequestID: "request-1", TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1,
+			WorkspaceID: "workspace-1", Instructions: "read the file", InputFiles: []runner.InputFile{file},
+		})
+		var protocolErr *runner.Error
+		if !errors.As(err, &protocolErr) || protocolErr.Code != runner.ErrorUnsupportedCapability {
+			t.Fatalf("Start error = %v, want unsupported capability", err)
+		}
+		for _, request := range fixture.seen() {
+			if request.Method == http.MethodPut || request.Method == http.MethodPost {
+				t.Fatalf("old runner received a mutation: %+v", request)
+			}
+		}
+	})
+
+	t.Run("supported runner receives staged bytes then manifest", func(t *testing.T) {
+		caps := enrolledCapabilities()
+		caps.Verification = []string{runner.InputFilesCapability}
+		client, fixture := newFixtureClient(t, service, caps)
+		accepted := runner.Receipt{ProtocolVersion: runner.ProtocolVersion, TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1, Phase: runner.PhaseAccepted}
+		fixture.operation = func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodPut && r.URL.Path == proxyBase()+"/runner/v1/attempts/attempt-1/inputs/input-1":
+				if r.Header.Get("X-Railgrid-Input-Metadata") == "" || r.ContentLength != int64(len(data)) {
+					t.Errorf("input request metadata/length = %q/%d", r.Header.Get("X-Railgrid-Input-Metadata"), r.ContentLength)
+				}
+				w.WriteHeader(http.StatusNoContent)
+			case r.Method == http.MethodPost && r.URL.Path == proxyBase()+"/runner/v1/attempts":
+				writeJSON(w, http.StatusAccepted, accepted)
+			default:
+				http.NotFound(w, r)
+			}
+		}
+		if err := client.StageInput(context.Background(), "attempt-1", file, strings.NewReader(string(data))); err != nil {
+			t.Fatalf("StageInput: %v", err)
+		}
+		if _, err := client.Start(context.Background(), runner.StartRequest{
+			RequestID: "request-1", TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1,
+			WorkspaceID: "workspace-1", Instructions: "read the file", InputFiles: []runner.InputFile{file},
+		}); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		seen := fixture.seen()
+		var put, start *loggedRequest
+		for i := range seen {
+			if seen[i].Method == http.MethodPut {
+				put = &seen[i]
+			}
+			if seen[i].Method == http.MethodPost && strings.HasSuffix(seen[i].Path, "/runner/v1/attempts") {
+				start = &seen[i]
+			}
+		}
+		if put == nil || start == nil {
+			t.Fatalf("requests omit PUT or Start: %+v", seen)
+		}
+		if !bytes.Equal(put.Body, data) || put.Auth != "Bearer tenant-bearer" {
+			t.Fatalf("staged request body/auth = %q/%q", put.Body, put.Auth)
+		}
+		if strings.Index(strings.Join(requestMethods(seen), ","), "PUT") > strings.Index(strings.Join(requestMethods(seen), ","), "POST") {
+			t.Fatalf("Start was sent before input upload: %v", requestMethods(seen))
+		}
+		var manifest runner.StartRequest
+		if err := json.Unmarshal(start.Body, &manifest); err != nil {
+			t.Fatalf("decode Start body: %v", err)
+		}
+		if len(manifest.InputFiles) != 1 || manifest.InputFiles[0] != file {
+			t.Fatalf("Start input manifest = %+v", manifest.InputFiles)
+		}
+	})
+}
+
+func TestPreparedInputStagerChecksCapabilityOnceForTheWholeBatch(t *testing.T) {
+	caps := enrolledCapabilities()
+	caps.Verification = []string{runner.InputFilesCapability}
+	client, fixture := newFixtureClient(t, serviceObject(testService, testEdge, testEdgeKind, proxyBase()), caps)
+	fixture.operation = func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/inputs/") {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		http.NotFound(w, r)
+	}
+
+	stager, err := client.PrepareInputStager(context.Background())
+	if err != nil {
+		t.Fatalf("PrepareInputStager: %v", err)
+	}
+	makeUpload := func(id, name, content string) InputUpload {
+		data := []byte(content)
+		sum := sha256.Sum256(data)
+		return InputUpload{
+			File: runner.InputFile{ID: id, Name: name, MediaType: "text/plain", Digest: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(data))},
+			Data: data,
+		}
+	}
+	if err := stager.StageInputs(context.Background(), "attempt-1", []InputUpload{
+		makeUpload("input-1", "first.txt", "first payload"),
+		makeUpload("input-2", "second.txt", "second payload"),
+	}); err != nil {
+		t.Fatalf("StageInputs: %v", err)
+	}
+
+	seen := fixture.seen()
+	var capabilityReads, uploads int
+	for _, request := range seen {
+		if request.Path == proxyBase()+"/runner/v1/capabilities" {
+			capabilityReads++
+		}
+		if request.Method == http.MethodPut {
+			uploads++
+		}
+	}
+	// Cold discovery performs one identity check; the prepared dispatcher then
+	// performs one current readiness/capability check for the entire batch.
+	if capabilityReads != 2 || uploads != 2 {
+		t.Fatalf("batch made %d capability reads and %d uploads: %+v", capabilityReads, uploads, seen)
+	}
+}
+
+func TestInputBatchRejectsUnsupportedOrInvalidManifestBeforeAnyPut(t *testing.T) {
+	service := serviceObject(testService, testEdge, testEdgeKind, proxyBase())
+	data := []byte("valid input")
+	sum := sha256.Sum256(data)
+	valid := InputUpload{
+		File: runner.InputFile{ID: "input-1", Name: "note.txt", MediaType: "text/plain", Digest: "sha256:" + hex.EncodeToString(sum[:]), Size: int64(len(data))},
+		Data: data,
+	}
+
+	t.Run("unsupported runner", func(t *testing.T) {
+		client, fixture := newFixtureClient(t, service, enrolledCapabilities())
+		err := client.StageInputs(context.Background(), "attempt-1", []InputUpload{valid})
+		var protocolErr *runner.Error
+		if !errors.As(err, &protocolErr) || protocolErr.Code != runner.ErrorUnsupportedCapability {
+			t.Fatalf("StageInputs error = %v, want unsupported capability", err)
+		}
+		for _, request := range fixture.seen() {
+			if request.Method == http.MethodPut {
+				t.Fatalf("unsupported runner received an upload: %+v", request)
+			}
+		}
+	})
+
+	t.Run("bad later file does not partially upload", func(t *testing.T) {
+		caps := enrolledCapabilities()
+		caps.Verification = []string{runner.InputFilesCapability}
+		client, fixture := newFixtureClient(t, service, caps)
+		fixture.operation = func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
+		}
+		stager, err := client.PrepareInputStager(context.Background())
+		if err != nil {
+			t.Fatalf("PrepareInputStager: %v", err)
+		}
+		bad := valid
+		bad.File = runner.InputFile{ID: "input-2", Name: "bad.txt", MediaType: "text/plain", Digest: valid.File.Digest, Size: valid.File.Size}
+		bad.Data = []byte("wrong input")
+		if err := stager.StageInputs(context.Background(), "attempt-1", []InputUpload{valid, bad}); err == nil || !strings.Contains(err.Error(), "digest") {
+			t.Fatalf("StageInputs error = %v, want digest mismatch", err)
+		}
+		for _, request := range fixture.seen() {
+			if request.Method == http.MethodPut {
+				t.Fatalf("invalid batch partially uploaded input: %+v", request)
+			}
+		}
+	})
+
+	t.Run("colliding destinations do not upload", func(t *testing.T) {
+		caps := enrolledCapabilities()
+		caps.Verification = []string{runner.InputFilesCapability}
+		client, fixture := newFixtureClient(t, service, caps)
+		fixture.operation = func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			http.NotFound(w, r)
+		}
+		first := valid
+		first.File.GroupID, first.File.RelativePath = "skill-group", "note.txt"
+		second := valid
+		second.File.ID = "input-2"
+		second.File.GroupID, second.File.RelativePath = "skill-group", "note.txt"
+		err := client.StageInputs(context.Background(), "attempt-1", []InputUpload{first, second})
+		if err == nil || !strings.Contains(err.Error(), "same relative path") {
+			t.Fatalf("StageInputs error = %v, want destination collision", err)
+		}
+		for _, request := range fixture.seen() {
+			if request.Method == http.MethodPut {
+				t.Fatalf("colliding manifest partially uploaded: %+v", request)
+			}
+		}
+	})
+}
+
+func requestMethods(requests []loggedRequest) []string {
+	methods := make([]string, 0, len(requests))
+	for _, request := range requests {
+		if request.Method == http.MethodPut || request.Method == http.MethodPost {
+			methods = append(methods, request.Method)
+		}
+	}
+	return methods
 }
 
 // tokenFile is a bearer-token file that exists, which is what rest.Config

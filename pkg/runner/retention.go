@@ -156,6 +156,12 @@ func (r *Runner) dropAttemptLocked(id string) []string {
 		}
 	}
 	paths = append(paths, artifactDir)
+	paths = append(paths, stagedInputDir(r.cfg.StateDir, id))
+	if attempt.Receipt.Workdir != "" {
+		if err := removeMaterializedInputs(attempt.Receipt.Workdir, id); err != nil {
+			log.Printf("retention: remove materialized inputs for %s: %v", id, err)
+		}
+	}
 	// Only the attempt's OWN worktree is removed, and only when it is exactly
 	// where the runner creates one. A workspace attempt's persistent directory
 	// and a warm environment's checkout live elsewhere under worktrees/ and
@@ -191,6 +197,7 @@ func removeAttemptFiles(paths []string) {
 // acceptance of a new attempt, where the cap is what keeps the state bounded.
 func (r *Runner) purgeLocked(now time.Time) int {
 	removed, paths := r.purgeAttemptsLocked(now)
+	paths = append(paths, r.purgeStagedInputs(now)...)
 	r.lastPurge = now
 	if len(paths) > 0 {
 		r.wg.Add(1)

@@ -351,6 +351,27 @@ func TestRunEmitsBoundedEventsAndCompletes(t *testing.T) {
 	}
 }
 
+func TestRunIncludesSelectedInputPathsInPrompt(t *testing.T) {
+	binary, dir := fakeClaude(t, "success")
+	adapter := testAdapter(t, binary)
+	workdir := t.TempDir()
+	inputPath := filepath.Join(workdir, ".railgrid", "inputs", "attempt-1", "input-1", "diagram.png")
+	launch := launch(func(l *harness.Launch) {
+		l.Workdir = workdir
+		l.InputFiles = []harness.InputFile{{ID: "input-1", Name: "diagram.png", GroupID: "skill-42", RelativePath: "docs/diagram.png", MediaType: "image/png", Digest: "sha256:abc", Size: 5, Path: inputPath}}
+	})
+	if _, err := adapter.Run(context.Background(), launch, nil); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	prompt, err := os.ReadFile(filepath.Join(dir, "prompt"))
+	if err != nil {
+		t.Fatalf("read captured prompt: %v", err)
+	}
+	if !strings.Contains(string(prompt), strconv.Quote("docs/diagram.png")) || !strings.Contains(string(prompt), strconv.Quote(inputPath)) || !strings.Contains(string(prompt), strconv.Quote("image/png")) {
+		t.Fatalf("prompt omitted the source-relative to materialized file mapping: %s", prompt)
+	}
+}
+
 // TestRunResumePassesTheSessionID: without --resume a "continue this work"
 // attempt would silently start a second conversation.
 func TestRunResumePassesTheSessionID(t *testing.T) {

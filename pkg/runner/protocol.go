@@ -79,6 +79,12 @@ const (
 	ErrorUnavailable           = "unavailable"
 )
 
+// InputFilesCapability is the versioned capability for authenticated file
+// staging before Start. A coordinator must check for it before uploading or
+// including InputFiles in a StartRequest; older runners may reject unknown
+// fields and cannot serve the staged bytes to a harness.
+const InputFilesCapability = "input-files-v1"
+
 // HarnessCapability describes an installed harness and its readiness.
 type HarnessCapability struct {
 	Name    string   `json:"name"`
@@ -128,6 +134,25 @@ type VerificationRequirements struct {
 // are names only: the runner never provisions ports, containers, or clusters.
 type ResourceRequest struct {
 	Name string `json:"name"`
+}
+
+// InputFile identifies one immutable file staged for an attempt. The runner
+// verifies Size and Digest both when it receives the bytes and when Start
+// consumes them. Name is a single filename. GroupID and RelativePath preserve
+// a selected resource set's relative layout; files without a group get a
+// private directory of their own.
+type InputFile struct {
+	ID string `json:"id"`
+	// Name is the final path component and a display label.
+	Name string `json:"name"`
+	// GroupID lets related files share a directory for relative links. It is
+	// usually the selected skill's stable ID and is never a filesystem path.
+	GroupID string `json:"groupID,omitempty"`
+	// RelativePath is the safe source path beneath GroupID's private directory.
+	RelativePath string `json:"relativePath,omitempty"`
+	MediaType    string `json:"mediaType"`
+	Digest       string `json:"digest"`
+	Size         int64  `json:"size"`
 }
 
 // ArtifactSpec is an approved logical artifact. Path is relative to the task
@@ -275,6 +300,7 @@ type StartRequest struct {
 	Verification  VerificationRequirements `json:"verification,omitempty"`
 	Resources     []ResourceRequest        `json:"resources,omitempty"`
 	Artifacts     []ArtifactSpec           `json:"artifacts,omitempty"`
+	InputFiles    []InputFile              `json:"inputFiles,omitempty"`
 	Repository    *RepositorySource        `json:"repository,omitempty"`
 }
 
