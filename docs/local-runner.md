@@ -475,12 +475,76 @@ attempt epoch is stale and cannot mutate the newer attempt.
 | Operation | Request |
 | --- | --- |
 | Discover | `GET /runner/v1/capabilities` |
+| Stage one input file | `PUT /runner/v1/attempts/<attempt-id>/inputs/<file-id>` |
 | Start | `POST /runner/v1/attempts` |
 | Inspect | `GET /runner/v1/attempts/<attempt-id>` |
 | Events | `GET /runner/v1/attempts/<attempt-id>/events?after=<cursor>` |
 | Cancel | `POST /runner/v1/attempts/<attempt-id>/cancel` |
 | Resume | `POST /runner/v1/attempts/<attempt-id>/resume` |
 | Artifact | `GET /runner/v1/attempts/<attempt-id>/artifacts/<artifact-id>` |
+
+### Stage files for a persistent workspace attempt
+
+The runner advertises `input-files-v1` in the `verificationCapabilities` field
+from `GET /runner/v1/capabilities`. Check for this capability before uploading
+or including `inputFiles` in `POST /runner/v1/attempts`; older runners may not
+understand the manifest or be able to serve the staged bytes. This feature is
+for persistent workspace attempts only: set `workspaceID` on Start and omit
+`repositoryID`, `baseCommit`, and `environmentID`.
+
+Upload each file before Start with the runner bearer token. The URL's `file-id`
+must equal the metadata object's `id`, and the body contains exactly the file
+bytes:
+
+```text
+PUT http://127.0.0.1:8787/runner/v1/attempts/<attempt-id>/inputs/<file-id>
+Authorization: Bearer <runner-token>
+Content-Type: application/octet-stream
+X-Railgrid-Input-Metadata: <unpadded-base64url-of-one-InputFile-JSON-object>
+
+<file bytes>
+```
+
+The header value is the compact JSON encoding of one `InputFile`, encoded with
+URL-safe Base64 without `=` padding. For example, the decoded JSON has this
+shape:
+
+```json
+{"id":"diagram-1","name":"diagram.png","groupID":"guide-1","relativePath":"assets/diagram.png","mediaType":"image/png","digest":"sha256:<64-lowercase-hex>","size":12345}
+```
+
+`name` is the final filename; when `relativePath` is present it must end in
+that name. The runner checks the declared size and SHA-256 digest against the
+received bytes and checks them again when Start consumes the upload. If the
+request includes `Content-Length`, it must equal `size`. Include the file in
+Start's `inputFiles` array; the manifest supplies the final filename and
+grouping metadata, and its size and digest must match the staged bytes.
+
+The manifest is limited to 1,024 files, at most 32 MiB per file, and 64 MiB in
+total for an attempt. These limits are per attempt; the runner does not impose
+a global staging quota across attempt IDs. Related files can share a `groupID` and safe
+`relativePath` values to preserve their layout; a file cannot also be the
+parent directory of another file in the same input destination. Ungrouped
+files receive private directories based on their file IDs.
+
+Before Start, uploading the same file ID and bytes again is idempotent,
+including when the first response was lost. Reusing that ID with different
+bytes while the staged copy exists is rejected. The `inputFiles` manifest on
+Start supplies the final filename and grouping metadata and must declare the
+same size and digest as the staged bytes. Once Start is accepted, a re-upload
+for that attempt must match the accepted metadata and bytes. If an upload or
+Start has an ambiguous transport outcome, inspect the attempt before repeating
+Start. If Start explicitly reports a retryable missing-input failure, stage the
+same bytes again and retry the same Start request; correct metadata or digest
+errors instead of retrying them.
+
+On accepted Start, the runner copies the files under
+`.railgrid/inputs/<attempt-id>/` in the persistent workspace and removes the
+staging copies under `stateDir`. The files remain available for that attempt's
+resume. Staging data for an attempt that never reaches Start is removed by the
+normal retention sweep after `attemptRetentionHours` (7 days by default).
+When the retained attempt is dropped, its per-attempt input directory is
+removed while the persistent workspace itself stays in place.
 
 A start request must include a `repositoryID`, the full 40-character
 `baseCommit`, non-empty instructions, and a non-empty JSON `approvedInput`

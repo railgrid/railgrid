@@ -79,6 +79,39 @@ func TestRunResumeUsesExactExistingSession(t *testing.T) {
 	}
 }
 
+func TestRunIncludesSelectedInputPathsInTurnPrompt(t *testing.T) {
+	binary := fakeCodexBinary(t, "success")
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
+	workdir := t.TempDir()
+	inputPath := filepath.Join(workdir, ".railgrid", "inputs", "attempt-1", "input-1", "diagram.png")
+	_, err := adapter.Run(context.Background(), harness.Launch{
+		AttemptID:    "attempt-1",
+		Workdir:      workdir,
+		Instructions: "inspect the selected image",
+		Credential:   testCredential(),
+		InputFiles:   []harness.InputFile{{ID: "input-1", Name: "diagram.png", GroupID: "skill-42", RelativePath: "docs/diagram.png", MediaType: "image/png", Digest: "sha256:abc", Size: 5, Path: inputPath}},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	requests := readJSONLines(t, filepath.Join(filepath.Dir(binary), "requests"))
+	var prompt string
+	for _, request := range requests {
+		if request["method"] != "turn/start" {
+			continue
+		}
+		params, _ := request["params"].(map[string]any)
+		input, _ := params["input"].([]any)
+		if len(input) > 0 {
+			first, _ := input[0].(map[string]any)
+			prompt, _ = first["text"].(string)
+		}
+	}
+	if !strings.Contains(prompt, strconv.Quote("docs/diagram.png")) || !strings.Contains(prompt, strconv.Quote(inputPath)) || !strings.Contains(prompt, strconv.Quote("image/png")) {
+		t.Fatalf("turn prompt omitted the source-relative to materialized file mapping: %q", prompt)
+	}
+}
+
 func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 	t.Run("resume response", func(t *testing.T) {
 		binary := fakeCodexBinary(t, "foreign-resume")

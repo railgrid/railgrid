@@ -42,6 +42,8 @@ func (r *Runner) serveHTTP(w http.ResponseWriter, request *http.Request) {
 	switch {
 	case request.Method == http.MethodGet && path == "/runner/v1/capabilities":
 		writeJSON(w, http.StatusOK, r.Capabilities())
+	case request.Method == http.MethodPut && strings.HasPrefix(path, "/runner/v1/attempts/"):
+		r.serveAttemptInputPut(w, request, path)
 	case request.Method == http.MethodPost && path == "/runner/v1/attempts":
 		var body StartRequest
 		if err := decodeJSONBody(request, &body, r.cfg.MaxBodyBytes); err != nil {
@@ -61,6 +63,32 @@ func (r *Runner) serveHTTP(w http.ResponseWriter, request *http.Request) {
 	default:
 		writeHTTPError(w, http.StatusNotFound, protocolError(ErrorUnavailable, false, "runner route not found", nil))
 	}
+}
+
+func (r *Runner) serveAttemptInputPut(w http.ResponseWriter, request *http.Request, path string) {
+	parts := strings.Split(strings.TrimPrefix(path, "/runner/v1/attempts/"), "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] != "inputs" || parts[2] == "" {
+		writeHTTPError(w, http.StatusNotFound, protocolError(ErrorUnavailable, false, "runner route not found", nil))
+		return
+	}
+	ref, err := decodeInputFileHeader(request.Header.Get(inputMetadataHeader))
+	if err != nil {
+		writeHTTPError(w, http.StatusBadRequest, protocolError(ErrorInvalidRequest, false, err.Error(), nil))
+		return
+	}
+	if ref.ID != parts[2] {
+		writeHTTPError(w, http.StatusBadRequest, protocolError(ErrorInvalidRequest, false, "input file ID must match the URL", nil))
+		return
+	}
+	if request.ContentLength >= 0 && request.ContentLength != ref.Size {
+		writeHTTPError(w, http.StatusBadRequest, protocolError(ErrorInvalidRequest, false, "input content length does not match its metadata", nil))
+		return
+	}
+	if err := r.StageInput(request.Context(), parts[0], ref, request.Body); err != nil {
+		writeRunnerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (r *Runner) authorized(request *http.Request) bool {
