@@ -45,7 +45,8 @@ type Backend struct {
 	// that product compacts things, so there is nothing here for the provider to
 	// do on its behalf. nil means an over-budget turn fails rather than silently
 	// dropping the oldest tool results.
-	compact engine.ContextCompactionFunc
+	compact          engine.ContextCompactionFunc
+	hydrateUserInput backend.UserInputHydrator
 }
 
 var _ backend.Backend = (*Backend)(nil)
@@ -57,9 +58,22 @@ func New(e *engine.Engine, model einomodel.BaseChatModel, modelName string, comp
 	return &Backend{engine: e, model: model, modelName: modelName, compact: compact}
 }
 
+// WithUserInputHydrator supplies current authorization and transient upload
+// materialization for this turn, including checkpoint recovery.
+func (b *Backend) WithUserInputHydrator(hydrate backend.UserInputHydrator) *Backend {
+	b.hydrateUserInput = hydrate
+	return b
+}
+
+func (b *Backend) callbacks(sink backend.EventSink) engine.Callbacks {
+	cb := callbacks(sink)
+	cb.HydrateUserInput = b.hydrateUserInput
+	return cb
+}
+
 // Turn answers a fresh conversation.
 func (b *Backend) Turn(ctx context.Context, _ *backend.Run, in backend.Input, sink backend.EventSink) (backend.Outcome, error) {
-	res, err := b.engine.StreamTurnWithTools(ctx, b.model, in.Messages, in.Tools, b.turnConfig(in.Limits), callbacks(sink))
+	res, err := b.engine.StreamTurnWithTools(ctx, b.model, in.Messages, in.Tools, b.turnConfig(in.Limits), b.callbacks(sink))
 	return b.outcome(ctx, res, err, backend.Tokens{})
 }
 
@@ -76,7 +90,7 @@ func (b *Backend) Continue(ctx context.Context, _ *backend.Run, answer backend.A
 	// after its process died: its state holds no gated call, so the engine has
 	// nothing to apply the (absent) decision to.
 	res, err := b.engine.ResumeTurnWithTools(ctx, b.model, ck, answer.Tools, b.turnConfig(answer.Limits),
-		answer.Decided && answer.Approved, answer.Note, callbacks(sink))
+		answer.Decided && answer.Approved, answer.Note, b.callbacks(sink))
 	// The resumed loop's usage accumulator starts from the checkpoint, so what
 	// the run had already spent before it parked is the part not to bill again.
 	return b.outcome(ctx, res, err, ck.Usage)

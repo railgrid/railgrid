@@ -1,0 +1,86 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: skills.agents.railgrid.ai
+spec:
+  group: agents.railgrid.ai
+  names:
+    kind: Skill
+    listKind: SkillList
+    plural: skills
+    singular: skill
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Skill is a custom guidance package shared by agents in one workspace.
+          Presence in the library grants no permissions and does not activate it.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: SkillSpec holds the package document and bounded, named text
+              resources.
+            properties:
+              document:
+                description: Document is a SKILL.md document with name/description
+                  frontmatter.
+                maxLength: 32768
+                minLength: 1
+                type: string
+              resources:
+                description: Resources are supporting text files relative to this
+                  package.
+                items:
+                  description: SkillResource never names a host path; all reads stay
+                    inside its package.
+                  properties:
+                    content:
+                      maxLength: 65536
+                      type: string
+                    name:
+                      maxLength: 1024
+                      minLength: 1
+                      type: string
+                  required:
+                  - content
+                  - name
+                  type: object
+                maxItems: 64
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - document
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources: {}

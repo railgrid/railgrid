@@ -78,7 +78,7 @@ spec:
   resources:
   - group: agents.railgrid.ai
     name: agents
-    schema: v261103-8d04f28c.agents.agents.railgrid.ai
+    schema: v261105-980e97ca4.agents.agents.railgrid.ai
     storage:
       crd: {}
   - group: agents.railgrid.ai
@@ -107,6 +107,11 @@ spec:
     storage:
       crd: {}
   - group: agents.railgrid.ai
+    name: skills
+    schema: v261105-980e97ca4.skills.agents.railgrid.ai
+    storage:
+      crd: {}
+  - group: agents.railgrid.ai
     name: toolsets
     schema: v260919-b1e9b5e6.toolsets.agents.railgrid.ai
     storage:
@@ -124,6 +129,15 @@ spec:
   - group: agents.railgrid.ai
     name: agents/artifacts
     schema: v261023-088a2cfe.artifacts.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/attachments
+    schema: v261105-980e97ca4.attachments.agents.railgrid.ai
     storage:
       virtual:
         reference:
@@ -196,6 +210,24 @@ spec:
   - group: agents.railgrid.ai
     name: agents/sessions
     schema: v260924-87f1980f.sessions.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/skill-catalog
+    schema: v261105-980e97ca4.skill-catalog.agents.railgrid.ai
+    storage:
+      virtual:
+        reference:
+          apiGroup: dataplane.railgrid.ai
+          kind: DataPlaneEndpointSlice
+          name: agents.railgrid.ai
+  - group: agents.railgrid.ai
+    name: agents/skill-detail
+    schema: v261105-980e97ca4.skill-detail.agents.railgrid.ai
     storage:
       virtual:
         reference:

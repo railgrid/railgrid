@@ -87,6 +87,14 @@ type AgentSpec struct {
 	// +optional
 	Backend AgentBackendSpec `json:"backend,omitempty"`
 
+	// Skills opts this agent into workspace or provider-published guidance.
+	// An empty list exposes no skills. Availability applies to future turns.
+	// +optional
+	// +listType=map
+	// +listMapKey=name
+	// +kubebuilder:validation:MaxItems=64
+	Skills []AgentSkillReference `json:"skills,omitempty"`
+
 	// Autonomy is the agent's default posture toward taking action: "suggest"
 	// drafts but never acts, "ask" acts after approval, "auto" acts freely
 	// within the tool policy. Per-trigger requireApproval lists refine it.

@@ -386,7 +386,21 @@ func engineMessagesFromHistory(history []store.Message) []engine.Message {
 			}
 			out = append(out, untrustedLegacyToolMessage(message))
 		case "user":
-			out = append(out, engine.Message{Role: engine.RoleUser, Content: message.Content, ID: message.ID, Sequence: message.Sequence})
+			inputAttachments := agentAttachmentInputsFromTranscript(message)
+			owner, _ := message.Metadata["attachmentOwner"].(string)
+			if strings.TrimSpace(owner) == "" {
+				owner, _ = message.Metadata["actorID"].(string)
+			}
+			bindingID := ""
+			if len(inputAttachments) > 0 {
+				bindingID = message.RunID
+			} else {
+				owner = ""
+			}
+			out = append(out, engine.Message{
+				Role: engine.RoleUser, Content: message.Content, ID: message.ID, Sequence: message.Sequence,
+				InputAttachments: inputAttachments, InputAttachmentOwner: strings.TrimSpace(owner), InputAttachmentBindingID: bindingID,
+			})
 		default:
 			// Persisted system or unknown-role rows are historical data. Only the
 			// current Agent spec contributes system authority to a new request.
@@ -436,7 +450,10 @@ func checkpointHistoryFromEngineMessages(messages []engine.Message) []store.Sess
 		item := store.SessionCheckpointMessage{
 			ID: message.ID, Sequence: message.Sequence,
 			Role: message.Role, Content: message.Content,
-			Name: message.Name, ToolCallID: message.ToolCallID,
+			InputAttachments:         append([]backend.AttachmentReceipt(nil), message.InputAttachments...),
+			InputAttachmentOwner:     message.InputAttachmentOwner,
+			InputAttachmentBindingID: message.InputAttachmentBindingID,
+			Name:                     message.Name, ToolCallID: message.ToolCallID,
 			Continuation: message.Continuation.Clone(),
 		}
 		for _, call := range message.ToolCalls {
@@ -473,7 +490,10 @@ func engineMessagesFromCheckpoint(messages []store.SessionCheckpointMessage) ([]
 		converted := engine.Message{
 			ID: message.ID, Sequence: message.Sequence,
 			Role: message.Role, Content: message.Content,
-			ToolCallID: message.ToolCallID, Name: message.Name,
+			InputAttachments:         append([]backend.AttachmentReceipt(nil), message.InputAttachments...),
+			InputAttachmentOwner:     message.InputAttachmentOwner,
+			InputAttachmentBindingID: message.InputAttachmentBindingID,
+			ToolCallID:               message.ToolCallID, Name: message.Name,
 			Continuation: message.Continuation.Clone(),
 		}
 		if converted.Continuation != nil {

@@ -10,6 +10,8 @@ package harness
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -54,6 +56,18 @@ type fakeRunner struct {
 	startErr         error
 	eventsErrorAfter uint64
 	inspects         int
+}
+
+type stagedInputOrderRunner struct {
+	*fakeRunner
+	staged *bool
+}
+
+func (r stagedInputOrderRunner) Start(ctx context.Context, req runner.StartRequest) (runner.Receipt, error) {
+	if r.staged == nil || !*r.staged {
+		return runner.Receipt{}, errors.New("Start ran before inputs were staged")
+	}
+	return r.fakeRunner.Start(ctx, req)
 }
 
 func (f *fakeRunner) Start(_ context.Context, req runner.StartRequest) (runner.Receipt, error) {
@@ -288,6 +302,120 @@ func TestStartRequestSatisfiesTheProtocolContract(t *testing.T) {
 	}
 	if strings.Contains(req.Instructions, "web_search") {
 		t.Fatal("the provider's toolset must not be described to a harness that ignores it")
+	}
+}
+
+func TestTurnStagesInputBeforeStartAndReferencesManifest(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events:  []runner.Event{event(1, runner.EventCompleted, "", "")},
+	}
+	staged := false
+	cfg := testConfig(f, 1, "")
+	cfg.Runner = stagedInputOrderRunner{fakeRunner: f, staged: &staged}
+	cfg.InputFiles = []StagedInput{{
+		Reference: runner.InputFile{
+			ID: "input-1", Name: "note.txt", MediaType: "text/plain", Size: 5,
+			Digest: "sha256:2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+		},
+		Data: []byte("hello"),
+	}}
+	cfg.StageInput = func(_ context.Context, attemptID string, file runner.InputFile, body io.Reader) error {
+		data, err := io.ReadAll(body)
+		if err != nil {
+			return err
+		}
+		if attemptID != "run-1" || file.ID != "input-1" || string(data) != "hello" {
+			return errors.New("staged input identity or bytes changed")
+		}
+		staged = true
+		return nil
+	}
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "read the attached note"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if out.Status != backend.StatusCompleted {
+		t.Fatalf("status = %s, want completed", out.Status)
+	}
+	if len(f.starts) != 1 || len(f.starts[0].InputFiles) != 1 || f.starts[0].InputFiles[0].ID != "input-1" {
+		t.Fatalf("Start input manifest = %+v, want the staged file reference", f.starts)
+	}
+}
+
+func TestTurnUsesOneBatchCallbackAfterValidatingEveryInput(t *testing.T) {
+	f := &fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted, SessionID: "sess-1"},
+		events:  []runner.Event{event(1, runner.EventCompleted, "", "")},
+	}
+	staged := false
+	cfg := testConfig(f, 1, "")
+	cfg.Runner = stagedInputOrderRunner{fakeRunner: f, staged: &staged}
+	makeInput := func(id, name, content string) StagedInput {
+		data := []byte(content)
+		digest := sha256.Sum256(data)
+		return StagedInput{
+			Reference: runner.InputFile{
+				ID: id, Name: name, MediaType: "text/plain", Size: int64(len(data)),
+				Digest: "sha256:" + hex.EncodeToString(digest[:]),
+			},
+			Data: data,
+		}
+	}
+	cfg.InputFiles = []StagedInput{
+		makeInput("input-1", "first.txt", "hello"),
+		makeInput("input-2", "second.txt", "world"),
+	}
+	var batchCalls int
+	cfg.StageInputs = func(_ context.Context, attemptID string, inputs []StagedInput) error {
+		batchCalls++
+		if attemptID != "run-1" || len(inputs) != 2 || string(inputs[0].Data) != "hello" || string(inputs[1].Data) != "world" {
+			return errors.New("batch input identity or bytes changed")
+		}
+		staged = true
+		return nil
+	}
+	cfg.StageInput = func(context.Context, string, runner.InputFile, io.Reader) error {
+		return errors.New("single-file fallback ran despite an available batch callback")
+	}
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "read both files"}},
+	}, &recordingSink{})
+	if err != nil {
+		t.Fatalf("Turn: %v", err)
+	}
+	if out.Status != backend.StatusCompleted || batchCalls != 1 {
+		t.Fatalf("status=%s batch calls=%d, want completed and one call", out.Status, batchCalls)
+	}
+	if len(f.starts) != 1 || len(f.starts[0].InputFiles) != 2 {
+		t.Fatalf("Start input manifest = %+v, want both batch references", f.starts)
+	}
+}
+
+func TestTurnRejectsInvalidBatchBeforeCallingStagerOrStarting(t *testing.T) {
+	f := &fakeRunner{receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseCompleted}}
+	data := []byte("hello")
+	digest := sha256.Sum256(data)
+	cfg := testConfig(f, 1, "")
+	cfg.InputFiles = []StagedInput{
+		{Reference: runner.InputFile{ID: "input-1", Name: "first.txt", MediaType: "text/plain", Size: int64(len(data)), Digest: "sha256:" + hex.EncodeToString(digest[:])}, Data: data},
+		{Reference: runner.InputFile{ID: "input-2", Name: "second.txt", MediaType: "text/plain", Size: int64(len(data)), Digest: "sha256:" + hex.EncodeToString(digest[:])}, Data: []byte("wrong")},
+	}
+	var batchCalls int
+	cfg.StageInputs = func(context.Context, string, []StagedInput) error {
+		batchCalls++
+		return nil
+	}
+	out, err := New(cfg).Turn(context.Background(), testRun(), backend.Input{
+		Messages: []backend.Message{{Role: backend.RoleUser, Content: "read both files"}},
+	}, &recordingSink{})
+	if err == nil || !strings.Contains(err.Error(), "digest") {
+		t.Fatalf("Turn error = %v, want invalid input digest", err)
+	}
+	if out.Status != backend.StatusFailed || batchCalls != 0 || len(f.starts) != 0 {
+		t.Fatalf("status=%s batch calls=%d starts=%d, want failure before mutation", out.Status, batchCalls, len(f.starts))
 	}
 }
 

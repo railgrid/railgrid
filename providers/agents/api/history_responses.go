@@ -16,6 +16,9 @@ import "github.com/railgrid/provider-agents/store"
 func publicTranscriptMessages(messages []store.Message) []store.Message {
 	out := append([]store.Message(nil), messages...)
 	for index := range out {
+		if content, ok := publicAgentChatText(out[index]); ok {
+			out[index].Content = content
+		}
 		if out[index].Metadata == nil {
 			continue
 		}

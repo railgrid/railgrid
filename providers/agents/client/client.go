@@ -48,6 +48,7 @@ const ProviderName = "agents"
 // GVRs for the agents provider resources.
 var (
 	AgentGVR      = agentsGVR("agents")
+	SkillGVR      = agentsGVR("skills")
 	ConnectionGVR = agentsGVR("connections")
 	ScheduleGVR   = agentsGVR("schedules")
 	TriggerGVR    = agentsGVR("triggers")
@@ -69,6 +70,7 @@ func agentsGVR(resource string) schema.GroupVersionResource {
 }
 
 var (
+	skillResource              = tenant.Resource{GVR: SkillGVR, Kind: "Skill", Plural: "Skills", Namespaced: false}
 	agentResource              = tenant.Resource{GVR: AgentGVR, Kind: "Agent", Plural: "Agents", Namespaced: false}
 	connectionRes              = tenant.Resource{GVR: ConnectionGVR, Kind: "Connection", Plural: "Connections", Namespaced: false}
 	scheduleResource           = tenant.Resource{GVR: ScheduleGVR, Kind: "Schedule", Plural: "Schedules", Namespaced: false}
@@ -97,6 +99,17 @@ func (c *Client) Agents() *TypedResource[agentsv1alpha1.Agent, agentsv1alpha1.Ag
 		scope: c.scope, res: agentResource,
 		gvk: AgentGVR.GroupVersion().WithKind("Agent"),
 	}
+}
+
+// Skills returns this workspace's shared custom skill library.
+func (c *Client) Skills() *TypedResource[agentsv1alpha1.Skill, agentsv1alpha1.SkillList] {
+	return &TypedResource[agentsv1alpha1.Skill, agentsv1alpha1.SkillList]{scope: c.scope, res: skillResource, gvk: SkillGVR.GroupVersion().WithKind("Skill")}
+}
+
+// ReadReferencedResource reads a selected foreign resource through this
+// client's existing caller-scoped transport. It does not mint or retain access.
+func (c *Client) ReadReferencedResource(ctx context.Context, gvr schema.GroupVersionResource, name string) (*unstructured.Unstructured, error) {
+	return c.scope.Dynamic().Resource(gvr).Get(ctx, name, metav1.GetOptions{})
 }
 
 // Connections returns a typed interface for Connection resources.
@@ -405,8 +418,8 @@ func (r *TypedResource[T, L]) Get(ctx context.Context, name string, _ metav1.Get
 	return fromUnstructured[T](u)
 }
 
-func (r *TypedResource[T, L]) List(ctx context.Context, _ metav1.ListOptions) (*L, error) {
-	items, err := r.scope.List(ctx, r.res, "")
+func (r *TypedResource[T, L]) List(ctx context.Context, opts metav1.ListOptions) (*L, error) {
+	items, err := r.scope.ListWithOptions(ctx, r.res, "", opts)
 	if err != nil {
 		return nil, err
 	}

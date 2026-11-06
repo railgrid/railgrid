@@ -341,8 +341,9 @@ those outranks new features.**
 4. **Evals / datasets.** No analog to LangSmith datasets or OpenAI trace
    grading. The run trace (steps + args + results) is now recorded, which is
    the substrate an annotation→dataset flow would build on.
-5. **AgentSkill.** In the schema, no behavior; the cross-tenant skill catalog
-   (the ClawHub analog) lands after the resource does.
+5. **Cross-tenant skill sharing.** Workspace-local `Skill` packages and per-agent
+   activation are implemented (see Conversation inputs below). Publishing skills
+   across tenants remains deferred.
 6. **Native Gemini/Vertex.** `llm.BuildModel` implements only the
    OpenAI-compatible path (covers OpenAI, Anthropic-compat, OpenRouter).
 7. **Agent config versioning/drafts.** CR edits are live immediately; the field
@@ -446,7 +447,7 @@ The [Milestones](#milestones) section lists the full plan.
 | `Trigger` | Event-based firing — the non-time half of automation. `spec.webhookRef` (the Webhook it routes from) + `filter` (`eventType`, `action`, `repository`, `match`, `header.<name>`) + `task` + `agentRef` + `channelRef` + `suspend`. Status: `lastFired`, `lastRunID`, `consecutiveFailures`, `disabledReason`, `lastReceived` / `lastDelivery` (its own route outcome), and `Validated` (reasons include `MissingWebhookRef`, `UnknownWebhookRef`, `UnknownAgentRef`, `UnknownFilterKey`) |
 | `Webhook` | One inbound URL and its delivery sink, routed 1:n to Triggers. `spec.source` (`webhook` / `github`, the sender flavour) + `displayName` + `deliveryRetention` + `recordBodies`. A Trigger from before this kind existed (no `webhookRef`) is migrated by the Trigger reconciler to a Webhook of its own name, so its URL — keyed by name — keeps answering. Status: `webhookPath` (the hub-relative URL, minted by the provider), `routes` (`[{name}]`, the triggers naming it), `lastReceived` / `lastDelivery` (rollup with `routed` / `fired` counts), `Validated`. A finalizer purges the sink on delete |
 | `Toolset` | A shareable bundle of tool grants (families, connections, approval rules) many agents can link, so wiring is written once |
-| `AgentSkill` *(post-v1)* | Markdown instructions + required connection types + tool grants, attachable to agents. Later: shareable across tenants via the catalog — the ClawHub analog, which a single-user OpenClaw cannot do |
+| `Skill` | Workspace-owned SKILL.md guidance and named supporting text resources. `Agent.spec.skills` explicitly enables qualified catalog identities; skill content never grants tool permissions. |
 
 | `Run` | One execution of an Agent: the identity the platform authorizes, lists, watches and garbage-collects it by. `spec` (agentRef, trigger, sessionID, parentRunRef, sourceName, idempotencyKey, a bounded inputPreview) is written once and never edited; `status` (phase, message, owner, startedAt/finishedAt/deadlineAt, transcriptRef, usage) is the provider's alone. The object's NAME is the run id |
 
@@ -670,6 +671,78 @@ remain editable but new entries receive HTTP 429. Deleting a session removes
 its preferences and frees a slot. `DELETE agents/{name}/session/{sessionID}` also
 removes the transcript and generated title.
 
+### Conversation inputs
+
+Agents and App Studio use the canonical AgentKit rich composer, attachment
+presentation, and command palette. Each provider supplies its own transport and
+storage adapter. App Studio retains project-owned skills and filesystem assets;
+Agents has a workspace library and explicit per-agent skill activation. The
+shared Go parser/catalog and attachment format policy live in the provider SDK.
+
+`Skill` is an ordinary workspace CR containing `spec.document` (SKILL.md) and
+`spec.resources[]` (`name`, `content`). Packages are bounded to 512 KiB in total,
+with a 32 KiB document and up to 64 supporting files of 64 KiB each. Invalid
+packages produce bounded catalog warnings and cannot become runtime guidance.
+The workbench supports create/edit/import/export/delete; provider-published
+packages are read-only. `Agent.spec.skills: [{name: "workspace:example"}]` opts
+that agent into the catalog identity for future chat and background turns. An
+empty list exposes no skills. Selected turns pin the complete package digest,
+including supporting resources. Guidance cannot expand tool policy or autonomy.
+Provider-published packages are discovered with the caller or the existing
+Agent-scoped identity. The hub checks its tenant, central identity record,
+provider attestation, and current Agent UID for this read-only catalog access.
+
+`GET agents/{name}/skill-catalog` returns effective availability and
+`GET agents/{name}/skill-detail?skillID=...` returns guidance/resources. The
+catalog and details require workspace library read permission in addition to
+visibility of the Agent. The palette offers skills and provider resource
+references; Plan/Review execution modes are not exposed by Agents.
+
+`agents/{name}/attachments` accepts multipart uploads and lists receipts for a
+session; its single-ID tail downloads or deletes an unbound draft. The server
+checks tenant, current Agent UID, session, and uploader. Collection reads return
+receipt metadata without loading blob bytes and reclaim up to 256 expired,
+unbound drafts from the resolved workspace. Uploads become immutable when the
+user message, Run, and attachment bindings are accepted atomically. Drafts
+expire after 24 hours. Session/Agent cleanup removes their stored files.
+
+Shared sessions retain attachment receipts with their originating uploader.
+History from another uploader is metadata only for the current caller; byte
+reads remain scoped to the original owner, session, and current Agent UID. If a
+different actor approves or resumes a run, the provider drops that run's
+attachment references and continues with metadata-only history. Caller
+identity lookup happens before an inbox decision is changed or a run is claimed,
+so a transient lookup failure leaves the decision available for retry. Denying
+an approval needs no attachment lookup. Deleting a Run also invalidates its
+session's compaction checkpoint before removing bound uploads. A session
+generation fence rejects checkpoint writers that captured history before
+deletion; fresh compaction uses the surviving transcript. Other sessions keep
+their checkpoints.
+Limits match App Studio: eight attachments / 50 MiB per turn, 8 MiB for readable
+images, 1 MiB for readable text, and 25 MiB for an opaque file.
+
+Attended chat continues through the existing MCP `chat` tool and accepts
+optional `contentParts`, `skillRefs`, and `contextResources` alongside the legacy
+message string. Receipts and selected identities are retained with the user
+message; raw upload bytes and caller bearers are not checkpointed. Supported
+images and small text are reopened for model invocations; larger text is read in
+bounded ranges. PDFs and other opaque files are stored but their bytes are not
+supplied for analysis. Resource selections retain coordinates and object UID,
+are checked as the current caller when submitted, and grant no additional tool
+access. Accepted coordinates remain quoted conversation context on continuation;
+any later tool read uses its normal authorization checks.
+
+Harness runners advertise `input-files-v1`. Supported images/text and skill
+packages travel through the existing authenticated edge Service proxy, are
+digest-checked, and are materialized in
+attempt-owned directories; skill resource paths remain relative to their own
+package. All enabled skill packages are available to the harness because it
+does not use the model backend's lazy skill tools; a per-turn skill chip selects
+guidance from that enabled set. Older runners retain plain-text and
+coordinate-only chat for Agents with no enabled skills, and expose an explicit
+unsupported state for file/skill inputs. This does not install skills into a
+user's global harness configuration or alter its permission policy.
+
 ### Why the service-to-service route is gone
 
 `POST /s2s/clusters/{c}/agents/{n}/runs` existed because the rest of the
@@ -743,6 +816,8 @@ plaintext; at-rest encryption is the database's responsibility today
 (application-level encryption is planned, see item 8 above):
 
 - `agents_messages` — chat transcript per session, cursor pagination.
+- `agents_agent_attachments` — immutable uploads scoped to tenant, Agent UID,
+  session, and uploader; draft expiry, quotas, and accepted-run bindings.
 - `agents_runs` — durable runs: phase, trigger, usage/cost, and an **opaque
   JSONB checkpoint** (Eino interrupt/resume state). Claim semantics
   (`ClaimRun`) so exactly one replica resumes an interrupted run.

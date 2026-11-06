@@ -67,6 +67,14 @@ spec:
         apiVersion: agents.railgrid.ai/v1alpha1
         kind: Agent
         verbs:
+          - name: skill-catalog
+            description: "List workspace and provider skills with this agent's availability."
+            readOnly: true
+          - name: skill-detail
+            description: "Read skill guidance and bounded supporting resources."
+            readOnly: true
+          - name: attachments
+            description: "Upload, list, download, and delete caller-owned chat attachment drafts."
           - name: chat
             description: "Credential-less chat turn: the agent runs without the hub's aggregate MCP tools (clusters, servers, instances), because a verb carries no caller bearer. The portal uses the chat tool on the provider's MCP endpoint instead."
             stream: true
