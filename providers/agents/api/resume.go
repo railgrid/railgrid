@@ -107,6 +107,14 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
+	attachmentCaller := ""
+	if !intent.Approval || intent.Approve {
+		attachmentCaller, err = s.resumeAttachmentCaller(ctx, ck, access)
+		if err != nil {
+			return runResult{}, fmt.Errorf("verifying caller for conversation attachments: %w", err)
+		}
+	}
+
 	// Claim so only one resolver resumes (double /approve, portal + channel).
 	var claimed store.Run
 	if intent.FromPhase == store.RunPhaseRunning {
@@ -166,23 +174,7 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, artifactErr.Error())
 		return runResult{}, artifactErr
 	}
-	attachmentCaller := ""
-	if strings.TrimSpace(ck.AttachmentOwner) != "" {
-		if strings.TrimSpace(access.HubToken) != "" {
-			attachmentCaller, err = s.resolveAgentAttachmentOwner(ctx, identity{
-				clusterID: access.ClusterID, orgUUID: agentScope.OrgUUID,
-				workspaceUUID: agentScope.WorkspaceUUID, user: access.CallerUser, token: access.HubToken,
-			})
-			if err != nil {
-				s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "the current caller identity could not be verified for conversation attachments")
-				return runResult{}, err
-			}
-		} else if strings.TrimSpace(access.CallerUser) != "" {
-			// A data-plane approval has no caller bearer. Its gate identity is the
-			// Kubernetes username, the same canonical principal recorded on upload.
-			attachmentCaller = strings.TrimSpace(access.CallerUser)
-		}
-	}
+
 	attachmentOwner, attachmentRefs, skillRefs, resourceOwner, contextResources, inputErr := resumeAgentInputReferences(ck, access.CallerUser, attachmentCaller, intent.FromPhase == store.RunPhaseRunning)
 	if inputErr != nil {
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, inputErr.Error())

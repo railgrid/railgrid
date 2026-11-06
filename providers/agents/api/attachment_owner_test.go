@@ -31,7 +31,7 @@ func TestAttachmentOwnerSurvivesPlainFollowupCheckpoint(t *testing.T) {
 	if resumedOwner != canonical || len(resumedRefs) != 0 {
 		t.Fatalf("resumed owner=%q refs=%+v", resumedOwner, resumedRefs)
 	}
-	if _, _, _, _, _, err := resumeAgentInputReferences(checkpoint, "browser-user-uuid", "system:authenticated:bob", false); err == nil {
-		t.Fatal("resume accepted a different canonical caller")
+	if owner, refs, _, _, _, err := resumeAgentInputReferences(checkpoint, "browser-user-uuid", "system:authenticated:bob", false); err != nil || owner != "" || len(refs) != 0 {
+		t.Fatalf("different approver should resume with metadata-only history: owner=%q refs=%v err=%v", owner, refs, err)
 	}
 }

@@ -202,6 +202,12 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 		req.Response = response
 		payload = append(payload, map[string]any{"answers": req.Answers})
 	}
+	access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user}
+	access, err := s.prepareInboxAttachmentAccess(r.Context(), wsScope, existing, state, access)
+	if err != nil {
+		writeStatus(w, http.StatusServiceUnavailable, "CallerIdentityUnavailable", "the current caller identity could not be verified for conversation attachments; retry this decision")
+		return
+	}
 	var emit func(string, map[string]any)
 	ctx := r.Context()
 	if existing.RunID != "" && existing.Kind == store.InboxKindQuestion && state == store.InboxStateAnswered &&
@@ -233,7 +239,6 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// An APPROVAL resumes on a verdict, and a QUESTION bound to a run resumes on
 	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
-		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user}
 		if emit != nil {
 			started := false
 			res, err := s.continueInboxRun(ctx, wsScope, item, access, true, item.Response, func(event string, data map[string]any) {
@@ -288,4 +293,24 @@ func formatQuestionAnswers(item store.InboxItem, answers map[string]*string) (st
 		fmt.Fprintf(&reply, "%s\n%s\n\n", question.Prompt, value)
 	}
 	return strings.TrimSpace(reply.String()), nil
+}
+
+// prepareInboxAttachmentAccess performs fallible caller authentication before
+// resolving a decision. Its canonical result is carried into the resume so a
+// hub outage cannot consume the inbox item or claim the paused run.
+func (s *Server) prepareInboxAttachmentAccess(ctx context.Context, scope store.Scope, item store.InboxItem, state store.InboxItemState, access runAccess) (runAccess, error) {
+	if state == store.InboxStateDenied || !resolutionResumesRun(item.Kind, state) || item.RunID == "" || access.HubToken == "" || access.CallerUser == "" {
+		return access, nil
+	}
+	scope.AgentName = item.AgentName
+	run, err := s.store.GetRun(ctx, scope, item.RunID)
+	if err != nil {
+		return access, err
+	}
+	var checkpoint runCheckpoint
+	if err := json.Unmarshal(run.Checkpoint, &checkpoint); err != nil {
+		return access, err
+	}
+	access.AttachmentCaller, err = s.resumeAttachmentCaller(ctx, checkpoint, access)
+	return access, err
 }

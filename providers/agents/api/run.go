@@ -295,6 +295,9 @@ type runAccess struct {
 	// request. It is used only to bind resumed saved-result pointers to the user
 	// who attached them; it is not itself source authorization.
 	CallerUser string
+	// AttachmentCaller is a canonical principal verified before resolving an
+	// inbox decision; it avoids a fallible lookup after the run is claimed.
+	AttachmentCaller string
 	// EdgesEndpoint is the hub mcpserver MCP URL ("" → the edges family is
 	// absent, which it is for anything with no caller credential).
 	EdgesEndpoint string
@@ -427,13 +430,9 @@ func resumeAgentInputReferences(checkpoint runCheckpoint, _ string, attachmentCa
 	attachmentCaller = strings.TrimSpace(attachmentCaller)
 	attachmentOwner := strings.TrimSpace(checkpoint.AttachmentOwner)
 	attachmentRefs := append([]store.AgentAttachmentReceipt(nil), checkpoint.AttachmentRefs...)
-	if len(attachmentRefs) == 0 {
-		if attachmentOwner != "" && ((attachmentCaller != "" && attachmentCaller != attachmentOwner) || (attachmentCaller == "" && !recovery)) {
-			return "", nil, nil, "", nil, errors.New("historical attachment access requires the original caller or accepted-run recovery")
-		}
-	} else {
-		if attachmentOwner == "" || (attachmentCaller != "" && attachmentCaller != attachmentOwner) || (attachmentCaller == "" && !recovery) || len(attachmentRefs) > 8 {
-			return "", nil, nil, "", nil, errors.New("uploaded attachments require the original caller or accepted-run recovery")
+	if len(attachmentRefs) > 0 {
+		if attachmentOwner == "" || len(attachmentRefs) > 8 {
+			return "", nil, nil, "", nil, errors.New("uploaded attachment checkpoint is invalid")
 		}
 		seen := map[string]bool{}
 		var total int64
@@ -447,6 +446,11 @@ func resumeAgentInputReferences(checkpoint runCheckpoint, _ string, attachmentCa
 				return "", nil, nil, "", nil, errors.New("uploaded attachments exceed the per-turn limit")
 			}
 		}
+	}
+	if (attachmentCaller != "" && attachmentCaller != attachmentOwner) || (attachmentCaller == "" && !recovery) {
+		// Approval authorizes the gated action, not another user's uploads.
+		// Retain the history markers but omit byte-bearing references.
+		attachmentOwner, attachmentRefs = "", nil
 	}
 
 	skillRefs := append([]agentSkillSelection(nil), checkpoint.SkillRefs...)

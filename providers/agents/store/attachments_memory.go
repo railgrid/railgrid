@@ -83,8 +83,9 @@ func (m *MemoryStore) CreateAgentAttachment(_ context.Context, scope Scope, atta
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	now := attachment.CreatedAt
+	workspacePrefix := tenantKey(scope) + "|"
 	for key, existing := range m.agentAttachments {
-		if attachmentExpired(existing, now) {
+		if hasPrefix(key, workspacePrefix) && attachmentExpired(existing, now) {
 			delete(m.agentAttachments, key)
 		}
 	}
@@ -145,18 +146,26 @@ func (m *MemoryStore) ListAgentAttachments(_ context.Context, scope Scope, agent
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	now := time.Now().UTC()
+	workspacePrefix := tenantKey(scope) + "|"
 	prefix := agentAttachmentScopeKey(scope, agentUID, "")
 	var out []AgentAttachment
+	cleaned := 0
 	for key, item := range m.agentAttachments {
-		if !hasPrefix(key, prefix) || item.SessionID != sessionID {
+		if !hasPrefix(key, workspacePrefix) {
 			continue
 		}
 		if attachmentExpired(item, now) {
-			delete(m.agentAttachments, key)
+			if cleaned < agentAttachmentDraftCleanupBatch {
+				delete(m.agentAttachments, key)
+				cleaned++
+			}
+			continue
+		}
+		if !hasPrefix(key, prefix) || item.SessionID != sessionID {
 			continue
 		}
 		if item.ActorID == actorID {
-			out = append(out, item.clone())
+			out = append(out, item.cloneMetadata())
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -219,63 +228,6 @@ func (m *MemoryStore) DeleteAgentAttachment(_ context.Context, scope Scope, agen
 		return ErrAgentAttachmentImmutable
 	}
 	delete(m.agentAttachments, key)
-	return nil
-}
-
-func (m *MemoryStore) BindAgentAttachments(_ context.Context, scope Scope, agentUID, sessionID string, receipts []AgentAttachmentReceipt, actorID, bindingID string, now time.Time) ([]AgentAttachment, error) {
-	scope = m.normalizeScope(scope)
-	if err := scope.withAgent(); err != nil {
-		return nil, err
-	}
-	if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, sessionID, actorID, bindingID); err != nil {
-		return nil, err
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	scope = m.normalizeScopeLocked(scope)
-	items := make([]AgentAttachment, 0, len(receipts))
-	for _, receipt := range receipts {
-		item, ok := m.agentAttachments[agentAttachmentScopeKey(scope, agentUID, receipt.ID)]
-		if !ok || item.SessionID != sessionID {
-			return nil, ErrAgentAttachmentNotFound
-		}
-		items = append(items, item)
-	}
-	bound, err := bindAgentAttachmentBatch(items, receipts, actorID, bindingID, now.UTC())
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range bound {
-		m.agentAttachments[agentAttachmentScopeKey(scope, agentUID, item.ID)] = item.clone()
-	}
-	return bound, nil
-}
-
-func (m *MemoryStore) RollbackAgentAttachmentBinding(_ context.Context, scope Scope, agentUID, bindingID string) error {
-	scope = m.normalizeScope(scope)
-	if err := scope.withAgent(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	scope = m.normalizeScopeLocked(scope)
-	prefix := agentAttachmentScopeKey(scope, agentUID, "")
-	now := time.Now().UTC()
-	for key, item := range m.agentAttachments {
-		if !hasPrefix(key, prefix) || item.BindingID != bindingID || item.Draft {
-			continue
-		}
-		if item.DraftExpiresAt == nil || !item.DraftExpiresAt.After(now) {
-			delete(m.agentAttachments, key)
-			continue
-		}
-		expires := item.DraftExpiresAt.UTC()
-		item.Draft, item.ExpiresAt, item.BindingID, item.DraftExpiresAt = true, &expires, "", nil
-		m.agentAttachments[key] = item
-	}
 	return nil
 }
 

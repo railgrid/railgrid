@@ -700,13 +700,24 @@ references; Plan/Review execution modes are not exposed by Agents.
 
 `agents/{name}/attachments` accepts multipart uploads and lists receipts for a
 session; its single-ID tail downloads or deletes an unbound draft. The server
-checks tenant, current Agent UID, session, and uploader. Uploads become immutable
-when the user message, Run, and attachment bindings are accepted atomically.
-Drafts expire after 24 hours. Session/Agent cleanup removes their stored files.
-Deleting a Run also invalidates its session's compaction checkpoint before
-removing bound uploads. A session generation fence rejects checkpoint writers
-that captured history before deletion; fresh compaction uses the surviving
-transcript. Other sessions keep their checkpoints.
+checks tenant, current Agent UID, session, and uploader. Collection reads return
+receipt metadata without loading blob bytes and reclaim up to 256 expired,
+unbound drafts from the resolved workspace. Uploads become immutable when the
+user message, Run, and attachment bindings are accepted atomically. Drafts
+expire after 24 hours. Session/Agent cleanup removes their stored files.
+
+Shared sessions retain attachment receipts with their originating uploader.
+History from another uploader is metadata only for the current caller; byte
+reads remain scoped to the original owner, session, and current Agent UID. If a
+different actor approves or resumes a run, the provider drops that run's
+attachment references and continues with metadata-only history. Caller
+identity lookup happens before an inbox decision is changed or a run is claimed,
+so a transient lookup failure leaves the decision available for retry. Denying
+an approval needs no attachment lookup. Deleting a Run also invalidates its
+session's compaction checkpoint before removing bound uploads. A session
+generation fence rejects checkpoint writers that captured history before
+deletion; fresh compaction uses the surviving transcript. Other sessions keep
+their checkpoints.
 Limits match App Studio: eight attachments / 50 MiB per turn, 8 MiB for readable
 images, 1 MiB for readable text, and 25 MiB for an opaque file.
 

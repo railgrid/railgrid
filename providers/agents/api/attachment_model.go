@@ -28,6 +28,10 @@ const agentReadChatAttachmentTool = "read_chat_attachment"
 
 func currentAttachmentPrincipal(run taskRun) string {
 	principal := strings.TrimSpace(run.AttachmentCaller)
+	if principal == "" && run.HubToken != "" && run.CallerUser != "" {
+		// Browser User UUIDs are not verified Kubernetes upload principals.
+		return ""
+	}
 	if principal == "" {
 		principal = strings.TrimSpace(run.CallerUser)
 	}
@@ -59,8 +63,17 @@ func verifyAgentAttachmentData(item store.AgentAttachment) error {
 // owner and run binding, including when replaying older session turns.
 func (s *Server) agentAttachmentInputHydrator(run taskRun, sessionID, modelName string) backend.UserInputHydrator {
 	return func(ctx context.Context, message backend.Message) (backend.UserInputContent, error) {
-		if !authorizedAttachmentOwner(run, message.InputAttachmentOwner) || message.InputAttachmentBindingID == "" {
-			return backend.UserInputContent{}, errors.New("uploaded input requires its current authorized owner and accepted turn")
+		if !authorizedAttachmentOwner(run, message.InputAttachmentOwner) {
+			// Shared sessions retain pointer-only history. A different caller can
+			// continue the conversation without acquiring another uploader's bytes.
+			var metadata strings.Builder
+			for _, receipt := range message.InputAttachments {
+				fmt.Fprintf(&metadata, "\nAttachment %q (%d bytes) is metadata only for this caller; its contents have not been supplied.\n", receipt.Filename, receipt.SizeBytes)
+			}
+			return backend.UserInputContent{Text: metadata.String()}, nil
+		}
+		if message.InputAttachmentBindingID == "" {
+			return backend.UserInputContent{}, errors.New("uploaded input requires an accepted turn")
 		}
 		if len(message.InputAttachments) > attachments.MaxAttachmentsPerTurn {
 			return backend.UserInputContent{}, errors.New("uploaded input exceeds the per-turn attachment limit")

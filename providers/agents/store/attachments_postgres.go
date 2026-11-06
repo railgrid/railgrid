@@ -31,14 +31,27 @@ type attachmentRowScanner interface {
 	Scan(...any) error
 }
 
-const agentAttachmentColumns = `id,agent_name,agent_uid,session_id,owner,filename,content_type,size_bytes,sha256,draft,created_at,expires_at,draft_expires_at,binding_id,data`
+const agentAttachmentMetadataColumns = `id,agent_name,agent_uid,session_id,owner,filename,content_type,size_bytes,sha256,draft,created_at,expires_at,draft_expires_at,binding_id`
+const agentAttachmentColumns = agentAttachmentMetadataColumns + `,data`
 
 func scanAgentAttachment(row attachmentRowScanner) (AgentAttachment, error) {
+	return scanAgentAttachmentFields(row, true)
+}
+
+func scanAgentAttachmentMetadata(row attachmentRowScanner) (AgentAttachment, error) {
+	return scanAgentAttachmentFields(row, false)
+}
+
+func scanAgentAttachmentFields(row attachmentRowScanner, includeData bool) (AgentAttachment, error) {
 	var out AgentAttachment
 	var expires, draftExpires sql.NullTime
-	err := row.Scan(&out.ID, &out.AgentName, &out.AgentUID, &out.SessionID, &out.ActorID,
+	fields := []any{&out.ID, &out.AgentName, &out.AgentUID, &out.SessionID, &out.ActorID,
 		&out.Filename, &out.ContentType, &out.SizeBytes, &out.SHA256, &out.Draft,
-		&out.CreatedAt, &expires, &draftExpires, &out.BindingID, &out.Data)
+		&out.CreatedAt, &expires, &draftExpires, &out.BindingID}
+	if includeData {
+		fields = append(fields, &out.Data)
+	}
+	err := row.Scan(fields...)
 	if err != nil {
 		return AgentAttachment{}, err
 	}
@@ -168,25 +181,48 @@ func (p *PostgresStore) ListAgentAttachments(ctx context.Context, scope Scope, a
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, err := p.db.QueryContext(ctx, `SELECT `+agentAttachmentColumns+`
+	now := time.Now().UTC()
+	if err := p.pruneExpiredAgentAttachmentDrafts(ctx, scope, now); err != nil {
+		return nil, err
+	}
+	rows, err := p.db.QueryContext(ctx, `SELECT `+agentAttachmentMetadataColumns+`
 		FROM agents_agent_attachments
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND session_id=$5 AND owner=$6
 			AND (draft=FALSE OR expires_at>$7)
 		ORDER BY created_at DESC,id ASC LIMIT $8`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, sessionID, actorID, time.Now().UTC(), limit)
+		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, sessionID, actorID, now, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
 	out := make([]AgentAttachment, 0)
 	for rows.Next() {
-		item, scanErr := scanAgentAttachment(rows)
+		item, scanErr := scanAgentAttachmentMetadata(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
 		out = append(out, item)
 	}
 	return out, rows.Err()
+}
+
+// pruneExpiredAgentAttachmentDrafts bounds cleanup work to one batch in the
+// caller's resolved workspace. Listing a collection can therefore reclaim
+// abandoned drafts without adding a global timer sweep.
+func (p *PostgresStore) pruneExpiredAgentAttachmentDrafts(ctx context.Context, scope Scope, now time.Time) error {
+	_, err := p.db.ExecContext(ctx, `
+		WITH expired AS (
+			SELECT ctid FROM agents_agent_attachments
+			WHERE org_uuid=$1 AND workspace_uuid=$2 AND draft=TRUE AND (expires_at IS NULL OR expires_at<=$3)
+			ORDER BY expires_at NULLS FIRST, created_at ASC, id ASC
+			LIMIT $4
+		)
+		DELETE FROM agents_agent_attachments AS attachments
+		USING expired
+		WHERE attachments.ctid=expired.ctid AND attachments.org_uuid=$1 AND attachments.workspace_uuid=$2
+			AND attachments.draft=TRUE AND (attachments.expires_at IS NULL OR attachments.expires_at<=$3)`,
+		scope.OrgUUID, scope.WorkspaceUUID, now, agentAttachmentDraftCleanupBatch)
+	return err
 }
 
 func (p *PostgresStore) GetAgentAttachment(ctx context.Context, scope Scope, agentUID, sessionID, actorID, id string) (AgentAttachment, error) {
@@ -234,95 +270,6 @@ func (p *PostgresStore) DeleteAgentAttachment(ctx context.Context, scope Scope, 
 		return ErrAgentAttachmentImmutable
 	}
 	return ErrAgentAttachmentNotFound
-}
-
-func (p *PostgresStore) BindAgentAttachments(ctx context.Context, scope Scope, agentUID, sessionID string, receipts []AgentAttachmentReceipt, actorID, bindingID string, now time.Time) ([]AgentAttachment, error) {
-	scope = p.normalizeScope(ctx, scope)
-	if err := scope.withAgent(); err != nil {
-		return nil, err
-	}
-	if err := validateAgentAttachmentAdmission(receipts, scope, agentUID, sessionID, actorID, bindingID); err != nil {
-		return nil, err
-	}
-	if now.IsZero() {
-		now = time.Now().UTC()
-	}
-	mutation, err := p.beginScopedMutation(ctx, scope)
-	if err != nil {
-		return nil, err
-	}
-	defer mutation.rollback()
-	scope = mutation.scope
-	if mutation.tx == nil {
-		tx, beginErr := p.db.BeginTx(ctx, nil)
-		if beginErr != nil {
-			return nil, beginErr
-		}
-		mutation.tx, mutation.executor = tx, tx
-	}
-	if err := lockTranscriptSession(ctx, mutation.executor, scope, sessionID); err != nil {
-		return nil, err
-	}
-	items := make([]AgentAttachment, 0, len(receipts))
-	for _, receipt := range receipts {
-		item, scanErr := scanAgentAttachment(mutation.executor.QueryRowContext(ctx, `SELECT `+agentAttachmentColumns+`
-			FROM agents_agent_attachments
-			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND id=$5 AND session_id=$6
-			FOR UPDATE`, scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, receipt.ID, sessionID))
-		if errors.Is(scanErr, sql.ErrNoRows) {
-			return nil, ErrAgentAttachmentNotFound
-		}
-		if scanErr != nil {
-			return nil, scanErr
-		}
-		items = append(items, item)
-	}
-	bound, err := bindAgentAttachmentBatch(items, receipts, actorID, bindingID, now.UTC())
-	if err != nil {
-		return nil, err
-	}
-	for _, item := range bound {
-		if item.BindingID != bindingID || item.Draft {
-			continue
-		}
-		if _, err := mutation.executor.ExecContext(ctx, `UPDATE agents_agent_attachments
-			SET draft=FALSE, expires_at=NULL, draft_expires_at=$8, binding_id=$9
-			WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND id=$5 AND session_id=$6 AND owner=$7`,
-			scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, item.ID, sessionID, actorID, item.DraftExpiresAt, bindingID); err != nil {
-			return nil, err
-		}
-	}
-	if err := mutation.commit(); err != nil {
-		return nil, err
-	}
-	return bound, nil
-}
-
-func (p *PostgresStore) RollbackAgentAttachmentBinding(ctx context.Context, scope Scope, agentUID, bindingID string) error {
-	scope = p.normalizeScope(ctx, scope)
-	if err := scope.withAgent(); err != nil {
-		return err
-	}
-	mutation, err := p.beginScopedMutation(ctx, scope)
-	if err != nil {
-		return err
-	}
-	defer mutation.rollback()
-	scope = mutation.scope
-	if _, err := mutation.executor.ExecContext(ctx, `
-		DELETE FROM agents_agent_attachments
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND binding_id=$5 AND
-			(draft_expires_at IS NULL OR draft_expires_at <= $6)`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, bindingID, time.Now().UTC()); err != nil {
-		return err
-	}
-	if _, err := mutation.executor.ExecContext(ctx, `
-		UPDATE agents_agent_attachments SET draft=TRUE, expires_at=draft_expires_at, draft_expires_at=NULL, binding_id=''
-		WHERE org_uuid=$1 AND workspace_uuid=$2 AND agent_name=$3 AND agent_uid=$4 AND binding_id=$5 AND draft=FALSE`,
-		scope.OrgUUID, scope.WorkspaceUUID, scope.AgentName, agentUID, bindingID); err != nil {
-		return err
-	}
-	return mutation.commit()
 }
 
 func (p *PostgresStore) ReconcileAgentAttachmentBindings(ctx context.Context) error {

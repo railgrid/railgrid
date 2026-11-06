@@ -183,9 +183,46 @@ func runAgentAttachmentStoreTests(t *testing.T, blobs AgentAttachmentStore, admi
 		if err != nil || len(items) != 1 || items[0].ID != "same-id" {
 			t.Fatalf("list exact owner/session/UID returned %+v, err=%v", items, err)
 		}
+		if len(items[0].Data) != 0 {
+			t.Fatalf("list loaded attachment bytes: got %d bytes, want metadata only", len(items[0].Data))
+		}
+		if got, err := blobs.GetAgentAttachment(ctx, scope, "uid-current", "session-a", "alice", "same-id"); err != nil || string(got.Data) != "alice/current" {
+			t.Fatalf("get after metadata-only list returned %q, err=%v", got.Data, err)
+		}
 		otherTenantItem, err := blobs.GetAgentAttachment(ctx, otherTenant, "uid-current", "session-a", "alice", "same-id")
 		if err != nil || string(otherTenantItem.Data) != "other tenant" {
 			t.Fatalf("same-named Agent in another tenant returned %q, err=%v", otherTenantItem.Data, err)
+		}
+	})
+
+	t.Run("collection read reclaims expired workspace drafts", func(t *testing.T) {
+		scope := attachmentTestScope(base, "idle-expiry")
+		otherTenant := scope
+		otherTenant.OrgUUID += "-other"
+		otherTenant.WorkspaceUUID += "-other"
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		createdAt := now.Add(-2 * time.Hour)
+		expiresAt := now.Add(-time.Hour)
+		expired, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-expired", "idle-session", "alice", "idle-expired", []byte("expired"), createdAt, expiresAt))
+		if err != nil {
+			t.Fatalf("create expired draft: %v", err)
+		}
+		foreign, _, err := blobs.CreateAgentAttachment(ctx, otherTenant, testAgentAttachment(otherTenant, "uid-expired", "idle-session", "alice", "foreign-expired", []byte("foreign"), createdAt, expiresAt))
+		if err != nil {
+			t.Fatalf("create other-tenant expired draft: %v", err)
+		}
+		if !attachmentRowExists(t, blobs, scope, expired.ID) || !attachmentRowExists(t, blobs, otherTenant, foreign.ID) {
+			t.Fatal("expired drafts were not stored before the collection read")
+		}
+		items, err := blobs.ListAgentAttachments(ctx, scope, "uid-current", "idle-session", "alice", 50)
+		if err != nil || len(items) != 0 {
+			t.Fatalf("idle collection read returned items %+v, err=%v", items, err)
+		}
+		if attachmentRowExists(t, blobs, scope, expired.ID) {
+			t.Fatal("collection read left the expired workspace draft stored")
+		}
+		if !attachmentRowExists(t, blobs, otherTenant, foreign.ID) {
+			t.Fatal("collection read cleaned an expired draft from another tenant")
 		}
 	})
 
@@ -284,34 +321,6 @@ func runAgentAttachmentStoreTests(t *testing.T, blobs AgentAttachmentStore, admi
 		}
 	})
 
-	t.Run("expired receipt and attachment count reject without partial binding", func(t *testing.T) {
-		scope := attachmentTestScope(base, "batch-limits")
-		now := time.Now().UTC().Truncate(time.Microsecond)
-		var receipts []AgentAttachmentReceipt
-		for i := 0; i < attachments.MaxAttachmentsPerTurn+1; i++ {
-			id := fmt.Sprintf("batch-%02d", i)
-			item, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-batch", "session", "alice", id, []byte("x"), now, now.Add(time.Hour)))
-			if err != nil {
-				t.Fatalf("create batch item %s: %v", id, err)
-			}
-			receipts = append(receipts, item.Receipt())
-		}
-		if _, err := blobs.BindAgentAttachments(ctx, scope, "uid-batch", "session", receipts, "alice", "too-many", now); err == nil {
-			t.Fatal("binding accepted more than the per-turn attachment count")
-		}
-		for _, receipt := range receipts {
-			item, err := blobs.GetAgentAttachment(ctx, scope, "uid-batch", "session", "alice", receipt.ID)
-			if err != nil || !item.Draft || item.BindingID != "" {
-				t.Fatalf("rejected batch partially bound %q: item=%+v err=%v", receipt.ID, item, err)
-			}
-		}
-
-		expired := receipts[0]
-		if _, err := blobs.BindAgentAttachments(ctx, scope, "uid-batch", "session", []AgentAttachmentReceipt{expired}, "alice", "expired-bind", now.Add(2*time.Hour)); !errors.Is(err, ErrAgentAttachmentDraftExpired) {
-			t.Fatalf("expired draft binding error = %v, want ErrAgentAttachmentDraftExpired", err)
-		}
-	})
-
 	t.Run("atomic chat admission rejects forged receipts without writes", func(t *testing.T) {
 		scope := attachmentTestScope(base, "atomic-reject")
 		now := time.Now().UTC().Truncate(time.Microsecond)
@@ -363,7 +372,7 @@ func runAgentAttachmentStoreTests(t *testing.T, blobs AgentAttachmentStore, admi
 
 	t.Run("atomic admission commits message run and attachment bindings together", func(t *testing.T) {
 		scope := attachmentTestScope(base, "atomic-success")
-		now := time.Now().UTC().Truncate(time.Microsecond)
+		now := time.Now().UTC().Truncate(time.Microsecond).Add(-2 * time.Hour)
 		first, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-atomic", "session", "alice", "first", []byte("first"), now, now.Add(time.Hour)))
 		if err != nil {
 			t.Fatalf("create first upload: %v", err)
@@ -398,6 +407,13 @@ func runAgentAttachmentStoreTests(t *testing.T, blobs AgentAttachmentStore, admi
 				t.Fatalf("admitted attachment %q = %+v, err=%v", id, item, err)
 			}
 		}
+		listed, err := blobs.ListAgentAttachments(ctx, scope, "uid-atomic", "session", "alice", 20)
+		if err != nil || len(listed) != 2 {
+			t.Fatalf("collection read removed accepted-run attachments: items=%+v err=%v", listed, err)
+		}
+		if item, err := blobs.GetAgentAttachment(ctx, scope, "uid-atomic", "session", "alice", first.ID); err != nil || string(item.Data) != "first" {
+			t.Fatalf("accepted-run blob was reclaimed after draft expiry: %q err=%v", item.Data, err)
+		}
 
 		if err := (admission.(Store)).DeleteRunData(ctx, scope, runID); err != nil {
 			t.Fatalf("delete admitted run data: %v", err)
@@ -430,56 +446,6 @@ func runAgentAttachmentStoreTests(t *testing.T, blobs AgentAttachmentStore, admi
 		item, err := blobs.GetAgentAttachment(ctx, scope, "uid-rollback", "session", "alice", attachment.ID)
 		if err != nil || !item.Draft || item.BindingID != "" {
 			t.Fatalf("failed atomic admission changed attachment binding: item=%+v err=%v", item, err)
-		}
-	})
-
-	t.Run("binding rollback and orphan reconciliation", func(t *testing.T) {
-		scope := attachmentTestScope(base, "rollback-reconcile")
-		now := time.Now().UTC().Truncate(time.Microsecond)
-		rollback, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-lifecycle", "session", "alice", "rollback", []byte("rollback"), now, now.Add(time.Hour)))
-		if err != nil {
-			t.Fatalf("create rollback upload: %v", err)
-		}
-		if _, err := blobs.BindAgentAttachments(ctx, scope, "uid-lifecycle", "session", []AgentAttachmentReceipt{rollback.Receipt()}, "alice", "rollback-run", now); err != nil {
-			t.Fatalf("bind for rollback: %v", err)
-		}
-		if err := blobs.RollbackAgentAttachmentBinding(ctx, scope, "uid-lifecycle", "rollback-run"); err != nil {
-			t.Fatalf("rollback binding: %v", err)
-		}
-		item, err := blobs.GetAgentAttachment(ctx, scope, "uid-lifecycle", "session", "alice", rollback.ID)
-		if err != nil || !item.Draft || item.BindingID != "" || item.ExpiresAt == nil || item.DraftExpiresAt != nil {
-			t.Fatalf("rolled-back attachment = %+v, err=%v", item, err)
-		}
-
-		orphan, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-lifecycle", "session", "alice", "orphan", []byte("orphan"), now, now.Add(time.Hour)))
-		if err != nil {
-			t.Fatalf("create orphan upload: %v", err)
-		}
-		if _, err := blobs.BindAgentAttachments(ctx, scope, "uid-lifecycle", "session", []AgentAttachmentReceipt{orphan.Receipt()}, "alice", "missing-run", now); err != nil {
-			t.Fatalf("bind orphan: %v", err)
-		}
-		if err := blobs.ReconcileAgentAttachmentBindings(ctx); err != nil {
-			t.Fatalf("reconcile orphan binding: %v", err)
-		}
-		item, err = blobs.GetAgentAttachment(ctx, scope, "uid-lifecycle", "session", "alice", orphan.ID)
-		if err != nil || !item.Draft || item.BindingID != "" || item.ExpiresAt == nil || item.DraftExpiresAt != nil {
-			t.Fatalf("reconciled orphan attachment = %+v, err=%v", item, err)
-		}
-
-		oldCreated := now.Add(-2 * time.Hour)
-		oldExpiry := now.Add(-time.Hour)
-		expiredBound, _, err := blobs.CreateAgentAttachment(ctx, scope, testAgentAttachment(scope, "uid-lifecycle", "session", "alice", "expired-bound", []byte("old"), oldCreated, oldExpiry))
-		if err != nil {
-			t.Fatalf("create expired-bound upload: %v", err)
-		}
-		if _, err := blobs.BindAgentAttachments(ctx, scope, "uid-lifecycle", "session", []AgentAttachmentReceipt{expiredBound.Receipt()}, "alice", "expired-run", oldCreated.Add(time.Minute)); err != nil {
-			t.Fatalf("bind before original draft expiry: %v", err)
-		}
-		if err := blobs.ReconcileAgentAttachmentBindings(ctx); err != nil {
-			t.Fatalf("reconcile expired orphan binding: %v", err)
-		}
-		if _, err := blobs.GetAgentAttachment(ctx, scope, "uid-lifecycle", "session", "alice", expiredBound.ID); !errors.Is(err, ErrAgentAttachmentNotFound) {
-			t.Fatalf("expired orphan attachment error = %v, want not found", err)
 		}
 	})
 

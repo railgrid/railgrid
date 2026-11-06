@@ -54,3 +54,23 @@ func (s *Server) resolveAgentAttachmentOwner(ctx context.Context, id identity) (
 	}
 	return username, nil
 }
+
+// resumeAttachmentCaller is evaluated before claiming a paused run. A failed
+// caller lookup leaves both the run and its decision available for retry.
+func (s *Server) resumeAttachmentCaller(ctx context.Context, checkpoint runCheckpoint, access runAccess) (string, error) {
+	if strings.TrimSpace(checkpoint.AttachmentOwner) == "" {
+		return "", nil
+	}
+	if access.AttachmentCaller != "" {
+		return access.AttachmentCaller, nil
+	}
+	if strings.TrimSpace(access.CallerUser) == "" {
+		// An unattended recovery replays the already accepted owner binding.
+		return "", nil
+	}
+	if strings.TrimSpace(access.HubToken) != "" {
+		return s.resolveAgentAttachmentOwner(ctx, identity{clusterID: access.ClusterID, user: access.CallerUser, token: access.HubToken})
+	}
+	// A data-plane approval carries the canonical kcp username from its gate.
+	return strings.TrimSpace(access.CallerUser), nil
+}

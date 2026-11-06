@@ -32,6 +32,7 @@ const (
 	DefaultAgentAttachmentWorkspaceMaxBytes = attachments.DefaultWorkspaceMaxBytes
 	DefaultAgentAttachmentDraftMaxBytes     = attachments.DefaultDraftOwnerMaxBytes
 	DefaultAgentAttachmentDraftMaxCount     = attachments.DefaultDraftOwnerMaxCount
+	agentAttachmentDraftCleanupBatch        = 256
 )
 
 var (
@@ -88,11 +89,10 @@ type AgentAttachment struct {
 // do not acquire blob persistence requirements.
 type AgentAttachmentStore interface {
 	CreateAgentAttachment(context.Context, Scope, AgentAttachment) (AgentAttachment, bool, error)
+	// ListAgentAttachments returns metadata only; Data is empty. Use GetAgentAttachment for bytes.
 	ListAgentAttachments(context.Context, Scope, string, string, string, int) ([]AgentAttachment, error)
 	GetAgentAttachment(context.Context, Scope, string, string, string, string) (AgentAttachment, error)
 	DeleteAgentAttachment(context.Context, Scope, string, string, string, string) error
-	BindAgentAttachments(context.Context, Scope, string, string, []AgentAttachmentReceipt, string, string, time.Time) ([]AgentAttachment, error)
-	RollbackAgentAttachmentBinding(context.Context, Scope, string, string) error
 	ReconcileAgentAttachmentBindings(context.Context) error
 }
 
@@ -114,7 +114,13 @@ func (a AgentAttachment) Receipt() AgentAttachmentReceipt {
 }
 
 func (a AgentAttachment) clone() AgentAttachment {
-	a.Data = append([]byte(nil), a.Data...)
+	cloned := a.cloneMetadata()
+	cloned.Data = append([]byte(nil), a.Data...)
+	return cloned
+}
+
+func (a AgentAttachment) cloneMetadata() AgentAttachment {
+	a.Data = nil
 	if a.ExpiresAt != nil {
 		at := a.ExpiresAt.UTC()
 		a.ExpiresAt = &at

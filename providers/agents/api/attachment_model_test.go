@@ -82,8 +82,8 @@ func TestModelUploadProjectionIsReadableButOpaqueFilesStayMetadataOnly(t *testin
 		t.Fatal("wrong originating run binding accepted")
 	}
 	run.CallerUser = "bob"
-	if _, err := s.agentAttachmentInputHydrator(run, "session", "gpt-4o")(context.Background(), message); err == nil {
-		t.Fatal("different caller reopened an upload")
+	if content, err := s.agentAttachmentInputHydrator(run, "session", "gpt-4o")(context.Background(), message); err != nil || len(content.Images) != 0 || strings.Contains(content.Text, "hello") || !strings.Contains(content.Text, "metadata only") {
+		t.Fatalf("foreign attachment history was not metadata only: %+v, %v", content, err)
 	}
 }
 
@@ -98,8 +98,8 @@ func TestModelUploadUsesVerifiedPrincipalInsteadOfBrowserUserID(t *testing.T) {
 		t.Fatalf("verified text read rejected: %v", err)
 	}
 	run.AttachmentCaller = "bob"
-	if _, err := s.agentAttachmentInputHydrator(run, "session", "gpt-4o")(context.Background(), message); err == nil {
-		t.Fatal("different verified principal reopened an upload")
+	if content, err := s.agentAttachmentInputHydrator(run, "session", "gpt-4o")(context.Background(), message); err != nil || len(content.Images) != 0 || strings.Contains(content.Text, "hello") || !strings.Contains(content.Text, "metadata only") {
+		t.Fatalf("foreign verified principal received bytes: %+v, %v", content, err)
 	}
 }
 

@@ -174,14 +174,12 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		attachmentOwner := ""
 		if len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0 {
 			attachmentOwner, err = s.resolveAgentAttachmentOwner(ctx, id)
-			if err != nil {
+			if err != nil && len(attachmentRefs) > 0 {
 				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
 			}
-			for _, historicalOwner := range historicalAttachmentOwners {
-				if historicalOwner == "" || historicalOwner != attachmentOwner {
-					return chatRefused(errBadRequest("conversation attachments are available only to the caller who attached them"))
-				}
-			}
+			// History from another uploader (or an unverified caller) is rendered
+			// as metadata by the hydrator, never a reason to lock a shared session.
+
 		}
 		if len(attachmentRefs) > 0 {
 			if err := s.verifyAgentAttachmentReceipts(ctx, id.scope(agent.Name), string(agent.UID), sessionID, attachmentOwner, attachmentRefs); err != nil {

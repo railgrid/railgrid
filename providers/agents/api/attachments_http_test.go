@@ -255,8 +255,17 @@ func TestAgentAttachmentHTTPClientIDRetryAndBoundDelete(t *testing.T) {
 	}
 
 	scope := store.Scope{OrgUUID: store.UnmappedOrg, WorkspaceUUID: cluster, ClusterID: cluster, AgentName: conformanceAgent}
-	if _, err := shared.BindAgentAttachments(context.Background(), scope, agentUID, "chat", []store.AgentAttachmentReceipt{firstReceipt}, user, "accepted-run", time.Now().UTC()); err != nil {
-		t.Fatalf("bind upload to accepted chat run: %v", err)
+	now := time.Now().UTC()
+	message := store.Message{
+		ID: "accepted-message", AgentName: conformanceAgent, SessionID: "chat", RunID: "accepted-run",
+		Role: "user", Content: "inspect this upload", CreatedAt: now,
+	}
+	run := store.Run{
+		ID: "accepted-run", AgentName: conformanceAgent, SessionID: "chat", Trigger: "chat",
+		Phase: store.RunPhasePending, CreatedAt: now, UpdatedAt: now,
+	}
+	if err := shared.CreateAgentChatRun(context.Background(), scope, agentUID, message, run, []store.AgentAttachmentReceipt{firstReceipt}, user, now); err != nil {
+		t.Fatalf("admit chat run and bind upload atomically: %v", err)
 	}
 	deleted := serveAttachmentHTTP(t, handler, http.MethodDelete, attachmentDetailPath(cluster, firstReceipt.ID, "chat"), nil, "", user)
 	if deleted.Code != http.StatusConflict {
