@@ -19,7 +19,6 @@ package providers
 import (
 	"net/url"
 	"testing"
-	"testing/fstest"
 )
 
 func TestRoutingChanged(t *testing.T) {
@@ -41,7 +40,6 @@ func TestRoutingChanged(t *testing.T) {
 		"ui":             func(p *Provider) { p.UIURL = &url.URL{Scheme: "http", Host: "other:1"} },
 		"ui cleared":     func(p *Provider) { p.UIURL = nil },
 		"backend":        func(p *Provider) { p.BackendURL = nil },
-		"localUI":        func(p *Provider) { p.LocalUIAssets = fstest.MapFS{} },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

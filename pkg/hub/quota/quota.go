@@ -85,14 +85,6 @@ func (c Caps) ForUser(user *tenancyv1alpha1.User) Caps {
 	return c
 }
 
-// IsFree reports whether org is on the free plan: spec.plan is empty or
-// names defaultPlan. The hub's metering reconciler keeps the organization's
-// Entitlement in step with spec.plan, so this is the organization's plan
-// without a metering read.
-func IsFree(org *tenancyv1alpha1.Organization, defaultPlan string) bool {
-	return IsFreePlan(org.Spec.Plan, defaultPlan)
-}
-
 // IsFreePlan reports whether plan is the free one: empty, or defaultPlan.
 func IsFreePlan(plan, defaultPlan string) bool {
 	return plan == "" || plan == defaultPlan

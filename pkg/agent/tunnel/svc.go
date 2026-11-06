@@ -379,17 +379,6 @@ func hostWithPort(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), "80")
 }
 
-// isLoopbackHost reports whether host is a loopback address or "localhost".
-// String comparison is not enough (e.g. "127.0.0.1" vs "127.0.0.2"), so parse
-// the IP and check IsLoopback; "localhost" is accepted by name.
-func isLoopbackHost(host string) bool {
-	if host == "localhost" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
 // isClusterDNSHost reports whether host is a Kubernetes cluster-DNS Service
 // name ({name}.{namespace}.svc[.cluster.local]). Such names only resolve inside
 // the cluster's DNS, which is what keeps this from becoming a general proxy:

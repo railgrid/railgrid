@@ -98,18 +98,6 @@ func LoadAgentCredential(edgeName string) (tunnel.Credential, bool, error) {
 	return credential, true, nil
 }
 
-// DeleteAgentCredential removes a saved bundle.
-func DeleteAgentCredential(edgeName string) error {
-	path, err := AgentCredentialPath(edgeName)
-	if err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing %s: %w", path, err)
-	}
-	return nil
-}
-
 // hubConfigFromCredential builds the kcp client config the agent's reporters
 // and reconcilers use, from the bundle rather than from a kubeconfig file.
 //

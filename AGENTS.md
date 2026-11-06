@@ -792,7 +792,6 @@ Each suite has a dedicated Make target. Most spin up their own hub on fixed port
 | `make e2e-oidc` | `oidc` | Dex OIDC auth |
 | `make e2e-external-kcp` | `external_kcp` | kcp via Helm in kind |
 | `make e2e-provider` | `provider` | Provider provisioning (quickstart) |
-| `make e2e-provider-flags` | `providerflags` | `--providers` flag mechanics (dep validation, filtering) |
 | `make e2e-infra-provider` | `infraprovider` | Infrastructure provider: init/serve split, Template/Instance reconcile, data-plane gates |
 | `make e2e-kuery-provider` | `kueryprovider` | Kuery provider: SavedView, `run` verb gates, engagement via hub identity |
 | `make e2e-agents-provider` | `agentsprovider` | Agents provider: Webhook → Trigger fan-out, delivery sink, evaluate/replay verbs, validation conditions |

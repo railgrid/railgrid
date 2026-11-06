@@ -59,7 +59,6 @@ export interface AdminProvider {
   workspaceCluster: string
   registered: boolean
   onboarded: boolean
-  builtin: boolean
 }
 // KubeconfigServer selects which hub address a downloaded provider kubeconfig
 // points at. 'internal' is the hub's in-cluster Service — correct for a provider

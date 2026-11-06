@@ -251,27 +251,6 @@ func (r *AppIdentityKeyRing) CurrentAppIdentitySigningKey(ctx context.Context) (
 	return snapshot.SigningKey, nil
 }
 
-// AppIdentitySubjectKey returns the stable key used to derive app-scoped
-// pseudonymous subjects. It is independent of the signing key and never
-// changes when the signing key rotates.
-func (r *AppIdentityKeyRing) AppIdentitySubjectKey(ctx context.Context) ([]byte, error) {
-	snapshot, err := r.Snapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return snapshot.SubjectKey, nil
-}
-
-// AppIdentityPublicKeys returns the current verification key followed by all
-// prior keys whose overlap window has not expired.
-func (r *AppIdentityKeyRing) AppIdentityPublicKeys(ctx context.Context) ([]AppIdentityPublicKey, error) {
-	snapshot, err := r.Snapshot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return snapshot.PublicKeys, nil
-}
-
 // RotateAppIdentitySigningKey explicitly rotates assertion signing and keeps
 // the previous public key available for 15 minutes. It is deliberately not
 // called from hub startup or request handling.

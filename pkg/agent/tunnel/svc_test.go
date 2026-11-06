@@ -32,28 +32,6 @@ import (
 	"time"
 )
 
-func TestIsLoopbackHost(t *testing.T) {
-	cases := []struct {
-		host string
-		want bool
-	}{
-		{"localhost", true},
-		{"127.0.0.1", true},
-		{"127.0.0.2", true},
-		{"::1", true},
-		{"0.0.0.0", false},
-		{"10.0.0.5", false},
-		{"192.168.1.10", false},
-		{"example.com", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		if got := isLoopbackHost(tc.host); got != tc.want {
-			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
-		}
-	}
-}
-
 func prefixes(t *testing.T, cidrs ...string) []netip.Prefix {
 	t.Helper()
 	out, err := ParseSvcAllowedCIDRs(cidrs)
@@ -61,77 +39,6 @@ func prefixes(t *testing.T, cidrs ...string) []netip.Prefix {
 		t.Fatalf("ParseSvcAllowedCIDRs(%v): %v", cidrs, err)
 	}
 	return out
-}
-
-// TestIsAllowedSvcHost pins the SSRF boundary: loopback always, cluster DNS
-// only in kubernetes mode, literal IPs only inside the allow list, and the
-// link-local / unspecified / multicast classes never — not even when an allow
-// list covers them.
-func TestIsAllowedSvcHost(t *testing.T) {
-	lan := prefixes(t, "192.168.1.0/24")
-	wide := prefixes(t, "0.0.0.0/0", "::/0")
-
-	cases := []struct {
-		name         string
-		host         string
-		allowCluster bool
-		allow        []netip.Prefix
-		want         bool
-	}{
-		// loopback, both modes, no allow list
-		{"loopback v4 server", "127.0.0.1", false, nil, true},
-		{"loopback v4 cluster", "127.0.0.1", true, nil, true},
-		{"loopback name", "localhost", false, nil, true},
-		{"loopback v6", "::1", false, nil, true},
-		{"loopback other octet", "127.0.0.2", true, nil, true},
-
-		// LAN, metadata, internet: false in both modes without an allow list
-		{"lan server", "192.168.1.10", false, nil, false},
-		{"lan cluster", "192.168.1.10", true, nil, false},
-		{"rfc1918 cluster no allow list", "10.0.0.5", true, nil, false},
-		{"rfc1918 server", "10.0.0.5", false, nil, false},
-		{"metadata server", "169.254.169.254", false, nil, false},
-		{"metadata cluster", "169.254.169.254", true, nil, false},
-		{"internet server", "example.com", false, nil, false},
-		{"internet cluster", "example.com", true, nil, false},
-		{"empty", "", false, nil, false},
-
-		// allow list
-		{"lan in allow list", "192.168.1.1", false, lan, true},
-		{"lan outside allow list", "192.168.2.1", false, lan, false},
-		{"metadata inside allow list", "169.254.169.254", false, prefixes(t, "169.254.0.0/16"), false},
-		{"metadata inside 0/0", "169.254.169.254", true, wide, false},
-		{"v6 link-local inside allow list", "fe80::1", false, prefixes(t, "fe80::/10"), false},
-		{"unspecified inside 0/0", "0.0.0.0", false, wide, false},
-		{"multicast inside 0/0", "224.0.0.1", false, wide, false},
-		{"mapped v4 metadata inside allow list", "::ffff:169.254.169.254", false, wide, false},
-		{"mapped v4 lan inside allow list", "::ffff:192.168.1.1", false, lan, true},
-
-		// cloud metadata endpoints that are not link-local: never, even in 0/0
-		{"aws imds v6 inside ::/0", "fd00:ec2::254", false, wide, false},
-		{"alibaba metadata inside 0/0", "100.100.100.200", false, wide, false},
-		{"alibaba metadata inside its /32", "100.100.100.200", true, prefixes(t, "100.100.100.200/32"), false},
-		{"nat64 link-local inside ::/0", "64:ff9b::a9fe:a9fe", false, wide, false},
-		{"nat64 link-local dotted inside ::/0", "64:ff9b::169.254.169.254", true, wide, false},
-		{"nat64 alibaba inside ::/0", "64:ff9b::6464:64c8", false, wide, false},
-		{"nat64 lan inside ::/0", "64:ff9b::c0a8:101", false, wide, true},
-		{"mapped alibaba inside ::/0", "::ffff:100.100.100.200", false, wide, false},
-		{"cgnat neighbour inside 0/0", "100.100.100.201", false, wide, true},
-
-		// cluster DNS only in kubernetes mode
-		{"cluster dns server", "svc.ns.svc.cluster.local", false, nil, false},
-		{"cluster dns cluster", "svc.ns.svc.cluster.local", true, nil, true},
-		{"short cluster dns cluster", "home-assistant.home.svc", true, nil, true},
-		{"cluster dns lookalike", "evil.svc.example.com", true, nil, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := isAllowedSvcHost(tc.host, tc.allowCluster, tc.allow); got != tc.want {
-				t.Errorf("isAllowedSvcHost(%q, allowCluster=%v, allow=%v) = %v, want %v",
-					tc.host, tc.allowCluster, tc.allow, got, tc.want)
-			}
-		})
-	}
 }
 
 func TestIsClusterDNSHost(t *testing.T) {

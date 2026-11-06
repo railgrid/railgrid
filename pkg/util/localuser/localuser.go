@@ -96,13 +96,3 @@ func Resolve(username, homeOverride, groupOverride string) (Account, error) {
 	}
 	return Account{Username: username, Group: group, Home: filepath.Clean(home), UID: uid, GID: gid}, nil
 }
-
-// Current resolves the account the calling process already runs as. It applies
-// the same refusals, so a root process never gets an Account back.
-func Current() (Account, error) {
-	u, err := user.Current()
-	if err != nil {
-		return Account{}, fmt.Errorf("resolving current account: %w", err)
-	}
-	return Resolve(u.Username, "", "")
-}

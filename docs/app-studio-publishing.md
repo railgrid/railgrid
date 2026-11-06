@@ -104,8 +104,8 @@ session (`pkg/hub/appauth`):
    normal `/login` flow and back via the portal's `next` continuation), runs
    **one SubjectAccessReview** against the tenant workspace for the `access`
    subresource, and — when allowed — 302s back to the app callback with a
-   one-use code. Redirects are only ever issued to hosts directly under the
-   configured `--published-apps-domain` zone.
+   one-use code. Redirects are only ever issued to the host stamped on the
+   instance being authorized.
 3. The gate exchanges the code server-to-server
    (`POST /auth/apps/exchange`), receives identity metadata plus a session
    TTL (never a credential), and mints its local session cookie
