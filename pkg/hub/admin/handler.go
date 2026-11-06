@@ -499,10 +499,6 @@ type adminProviderDTO struct {
 	Registered bool `json:"registered"`
 	// Onboarded: a provider workspace exists (admin onboarding has run).
 	Onboarded bool `json:"onboarded"`
-	// Builtin: a first-party provider compiled into the hub (kubernetesedges,
-	// serveredges, mcp). Builtins are bootstrapped by the hub and must NOT be
-	// onboarded via this flow — the UI hides the onboard action for them.
-	Builtin bool `json:"builtin"`
 }
 
 func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
@@ -520,7 +516,6 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 		if p.OrgUUID != "" {
 			continue
 		}
-		_, builtin := providers.BuiltinByName(p.Name)
 		byName[p.Name] = &adminProviderDTO{
 			Name:             p.Name,
 			DisplayName:      p.DisplayName,
@@ -531,15 +526,13 @@ func (h *Handler) listProviders(w http.ResponseWriter, r *http.Request) {
 			APIExportPath:    p.APIExportPath,
 			WorkspaceCluster: p.WorkspaceCluster,
 			Registered:       true,
-			Builtin:          builtin,
 		}
 	}
 	if ws, err := h.svc.ListOnboardedWorkspaces(r.Context()); err == nil {
 		for _, o := range ws {
 			d := byName[o.Name]
 			if d == nil {
-				_, builtin := providers.BuiltinByName(o.Name)
-				d = &adminProviderDTO{Name: o.Name, DisplayName: o.Name, Builtin: builtin}
+				d = &adminProviderDTO{Name: o.Name, DisplayName: o.Name}
 				byName[o.Name] = d
 			}
 			d.Onboarded = true

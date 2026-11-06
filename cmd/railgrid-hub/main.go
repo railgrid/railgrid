@@ -29,11 +29,6 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/railgrid/railgrid/pkg/hub"
-	"github.com/railgrid/railgrid/pkg/hub/providers"
-	// First-party provider registrations. Each package's init() calls
-	// providers.RegisterBuiltin, so the catalog controller can find them
-	// without a central data list. Adding a new builtin = new blank import
-	// here + a providers/<name>/manifest.go file.
 )
 
 func main() {
@@ -62,8 +57,6 @@ func main() {
 	cmd.Flags().StringVar(&opts.ExternalKCPKubeconfig, "external-kcp-kubeconfig", "", "Kubeconfig for external kcp (empty for embedded)")
 	cmd.Flags().StringVar(&opts.IDPIssuerURL, "idp-issuer-url", "", "OIDC identity provider issuer URL")
 	cmd.Flags().StringVar(&opts.IDPBrowserAuthURL, "idp-browser-auth-url", "", "Optional public OIDC authorization endpoint for browser redirects (token exchange and issuer validation still use --idp-issuer-url)")
-	cmd.Flags().StringVar(&opts.PublishedAppsDomain, "published-apps-domain", "", "Deprecated and ignored: published-app sign-in redirects are validated against each instance's own published host, so apps may live under any domain")
-	_ = cmd.Flags().MarkDeprecated("published-apps-domain", "redirects are validated against each instance's own published host; the flag is ignored")
 	cmd.Flags().BoolVar(&opts.DisableTokenLogin, "disable-token-login", false, "Disable the interactive static-token login (endpoint + portal form); static bearer tokens still authenticate API calls")
 	cmd.Flags().StringVar(&opts.IDPClientID, "idp-client-id", "railgrid", "OIDC identity provider client ID")
 	cmd.Flags().StringSliceVar(&opts.IDPLinkVerifiedEmailIssuers, "idp-link-verified-email-issuers", nil, "OIDC issuers (comma-separated or repeated) whose not-yet-known identities are linked onto the single existing User with the same email on first sign-in, provided the ID token has email_verified=true. Keeps accounts across an IdP or Dex-connector change. Listing an issuer trusts it to verify email ownership for every connector it fronts. Empty (default): an unknown identity always gets a new User.")
@@ -83,9 +76,6 @@ func main() {
 	cmd.Flags().StringSliceVar(&opts.StaticAuthTokens, "static-auth-token", nil, "Static bearer tokens for access (can be specified multiple times)")
 	cmd.Flags().StringSliceVar(&opts.TrustedProxyCIDRs, "trusted-proxy-cidrs", nil, "CIDRs of the reverse proxies fronting this hub (comma-separated or repeated, e.g. 10.0.0.0/8,fd00::/8). Only a connection from inside these ranges has its X-Forwarded-For believed when the hub keys its pre-auth rate limits on the client address; unset, proxy headers are ignored and a hub behind a proxy throttles every client as the proxy's one address. REQUIRED when the hub is behind an ingress, load balancer or CDN; never include ranges clients connect from.")
 	cmd.Flags().StringSliceVar(&opts.AdminUsers, "admin-users", nil, "Platform-admin identities (User name, email, or rbacIdentity) allowed to reach /api/admin/* and the portal /bonkers area. Empty disables the admin surface.")
-	cmd.Flags().StringSliceVar(&opts.Providers, "providers", providers.BuiltinNames(),
-		"First-party providers to enable as CatalogEntries (comma-separated or repeat). "+
-			"Defaults to all known builtins. Dependencies are enforced — e.g. mcp requires server-edges.")
 	cmd.Flags().StringVar(&opts.ProviderDelegatedTokens, "provider-delegated-tokens", opts.ProviderDelegatedTokens,
 		"Which providers receive a short-lived workspace-scoped ServiceAccount token instead of the caller's own bearer on the hub's backend proxy (/services/providers/{name}/*: MCP, browser OAuth, webhooks; data-plane verbs are kcp custom subresources under /clusters/{id} and never carry this token): "+
 			"off (platform providers get the caller's bearer; org-owned providers are always delegated), "+

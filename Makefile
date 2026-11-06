@@ -2,7 +2,7 @@
 .PHONY: build-access-proxy docker-build-access-proxy load-access-proxy-image
 .PHONY: test-runner lint-runner fix-lint-runner build-runner build-runner-darwin build-runner-linux
 .PHONY: build-app-studio-provider-go
-.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-static run-hub-embedded run-hub-embedded-static run-hub-standalone run-kcp dev-login dev-login-static dev-create-workload dev dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify help-dev dev-status dev-clean-hooks helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider gen-agents-templates agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-provider-flags e2e-provider-all e2e-kuery-provider e2e-agents-provider
+.PHONY: dev-edge-create dev-run-edge build test lint lint-providers lint-provider-sdk fix-lint codegen crds clean certs dev-setup run-dex run-hub run-hub-embedded run-hub-embedded-static dev-login dev-login-static dev-infra dev-run-kcp path boilerplate verify-boilerplate verify-codegen ldflags tools docker-build docker-build-hub docker-build-agent docker-build-dex docker-build-dev-agent load-dev-agent-image docker-build-universal-dev-image load-universal-dev-image docker-push-dex verify helm-build-local helm-push-local helm-clean build-quickstart-provider build-quickstart-provider-portal build-kuery-provider build-kuery-provider-portal run-provider-kuery kuery-db-up kuery-db-down install-provider-kuery init-provider-kuery uninstall-provider-kuery run-provider-quickstart install-provider-quickstart init-provider-quickstart uninstall-provider-quickstart build-infrastructure-provider build-infrastructure-provider-portal codegen-infrastructure-provider run-provider-infrastructure install-provider-infrastructure init-provider-infrastructure uninstall-provider-infrastructure build-app-studio-provider build-app-studio-provider-portal codegen-app-studio-provider app-studio-preview-bridge-dev-key verify-app-studio-preview-bridge-dev-key verify-app-studio-eval app-studio-db-up app-studio-db-down run-provider-app-studio install-provider-app-studio init-provider-app-studio uninstall-provider-app-studio build-agents-provider build-agents-provider-portal codegen-agents-provider gen-agents-templates agents-db-up agents-db-down run-provider-agents install-provider-agents init-provider-agents uninstall-provider-agents build-code-provider build-code-provider-portal codegen-code-provider run-provider-code install-provider-code init-provider-code uninstall-provider-code dev-kro-up dev-kro-down dev-kro-seed e2e-infrastructure e2e-provider e2e-kuery-provider e2e-agents-provider
 
 BINDIR ?= bin
 GOFLAGS ?=
@@ -927,9 +927,6 @@ else
 		--type=kubernetes
 endif
 
-dev-create-workload: ## Create a demo Workload targeting dev edges
-	kubectl apply -f hack/dev/examples/workload-nginx.yaml
-
 # Export only variables declared by the optional dotenv files. A bare `export`
 # also exports recursive Make variables containing $(shell ...); GNU Make 4.4.1
 # can segfault while expanding those variables for Tilt's local subprocesses.
@@ -1153,10 +1150,6 @@ run-hub: build-hub certs
 	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_OIDC) $(HUB_FLAGS_KCP_EXTERNAL)
 
 ## External KCP + static token auth (requires: make dev-run-kcp)
-run-hub-static: build-hub certs
-	@source $(SERVICE_HOOKS) && require_service kcp "make dev-run-kcp"
-	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EXTERNAL)
-
 ## Embedded KCP + OIDC auth (requires: make run-dex)
 run-hub-embedded: build-hub certs
 	@source $(SERVICE_HOOKS) && require_service dex "make run-dex"
@@ -1169,10 +1162,6 @@ run-hub-embedded-static: build-hub certs
 	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED) $(HUB_FLAGS_PORTAL_DEV)
 
 ## Embedded KCP + static token (fully standalone)
-run-hub-standalone: build-hub certs
-	@source $(SERVICE_HOOKS) && require_service_not_running kcp "embedded kcp mode"
-	$(BINDIR)/railgrid-hub $(HUB_FLAGS_BASE) $(HUB_FLAGS_STATIC) $(HUB_FLAGS_KCP_EMBEDDED)
-
 # Local kcp checkout to iterate against. Defaults to the standard per-user Go
 # workspace path. Override on the CLI or via env:
 #   make tilt-cluster TILT_KCP_DIR=/path/to/kcp
@@ -1368,21 +1357,6 @@ e2e-provider: build-hub build-quickstart-provider ## Run provider e2e suite
 		exit 1; \
 	}
 	go test -count=1 ./test/e2e/suites/provider/... -v -timeout $(E2E_PROVIDER_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
-
-## Run --providers flag mechanics suite (dep validation, unknown name,
-## filtered enable). Each test spawns its own hub on the standard
-## 19443/16443/2380 ports, so this MUST NOT run concurrently with
-## `e2e-provider` — the Makefile checks the port up-front.
-E2E_PROVIDER_FLAGS_TIMEOUT ?= 10m
-e2e-provider-flags: build-hub ## Run --providers flag mechanics suite
-	@test -z "$$(lsof -ti :19443 :16443 :2380 2>/dev/null)" || { \
-		echo "ports 19443/16443/2380 are in use; stop any running railgrid-hub first (e.g. pkill railgrid-hub)"; \
-		exit 1; \
-	}
-	go test -count=1 ./test/e2e/suites/providerflags/... -v -timeout $(E2E_PROVIDER_FLAGS_TIMEOUT) $(if $(E2E_FLAGS),-args $(E2E_FLAGS))
-
-## Run both provider suites back-to-back (sequential — they share port 2380).
-e2e-provider-all: e2e-provider e2e-provider-flags ## Run provider + provider-flags suites sequentially
 
 ## Infrastructure provider e2e (embedded kcp + infrastructure-provider
 ## init/serve subprocesses). Covers the kcp-side surface the kind/kro
@@ -2890,63 +2864,6 @@ dev-kro-down-into: ## Helm-uninstall kro from $KRO_TARGET_KUBECONFIG cluster
 	@test -n "$(KRO_TARGET_KUBECONFIG)" || { echo "KRO_TARGET_KUBECONFIG not set"; exit 1; }
 	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) helm uninstall kro -n $(KRO_NAMESPACE)
 	-KUBECONFIG=$(KRO_TARGET_KUBECONFIG) kubectl delete namespace $(KRO_NAMESPACE) --wait=false
-
-dev-status: ## Show status of dev services (dex, kcp)
-	@source $(SERVICE_HOOKS) && list_services
-
-dev-clean-hooks: ## Clean up stale service hooks
-	@source $(SERVICE_HOOKS) && cleanup_stale_hooks
-	@echo "Hooks cleaned."
-
-# --- Dev environment quick start ---
-# These targets help you get started quickly
-
-help-dev: ## Show development environment options
-	@echo ""
-	@echo "=== Railgrid Hub Development Modes ==="
-	@echo ""
-	@echo "TILT (recommended — one command, portal + hub + providers):"
-	@echo "  make tilt                       - Hub binary, embedded kcp, host-run providers"
-	@echo "  make tilt-cluster               - Multi-shard kcp in kind, hub deployed in-cluster"
-	@echo "                                    Run one or the other, not both."
-	@echo ""
-	@echo "STANDALONE (no external dependencies):"
-	@echo "  make run-hub-standalone         - Embedded kcp + static token"
-	@echo "                                    Just run this and use: make dev-login-static"
-	@echo "  make run-hub-embedded-static    - Embedded kcp + static token + portal dev proxy"
-	@echo ""
-	@echo "WITH DEX (OIDC authentication):"
-	@echo "  Terminal 1: make run-dex"
-	@echo "  Terminal 2: make run-hub-embedded          - Embedded kcp + OIDC"
-	@echo "              make dev-login                 - Login via browser"
-	@echo ""
-	@echo "WITH EXTERNAL KCP:"
-	@echo "  Terminal 1: make dev-run-kcp"
-	@echo "  Terminal 2: make run-dex             - (optional, for OIDC)"
-	@echo "  Terminal 3: make run-hub             - External kcp + OIDC"
-	@echo "          or: make run-hub-static      - External kcp + static token"
-	@echo ""
-	@echo "PROVIDER QUICKSTART (after the hub is running):"
-	@echo "  Terminal A: make install-provider-quickstart   - Apply CatalogEntry"
-	@echo "  Terminal B: make run-provider-quickstart       - Run the provider"
-	@echo "  Then open $(DEV_HUB_URL)/ui/providers (Enable the provider)"
-	@echo ""
-	@echo "APP STUDIO PROVIDER (after the hub is running):"
-	@echo "  Terminal A: make install-provider-app-studio   - Apply CatalogEntry"
-	@echo "  Terminal B: make run-provider-app-studio       - Run the provider"
-	@echo "  Then open $(DEV_HUB_URL)/ui/providers (Enable the provider)"
-	@echo ""
-	@echo "ENVIRONMENT VARIABLES:"
-	@echo "  STATIC_AUTH_TOKEN  - Token for static auth (default: dev-token)"
-	@echo "  KCP_DATA_DIR       - Directory for kcp data (default: .kcp)"
-	@echo "  QUICKSTART_PORT    - Port the quickstart provider listens on (default: 8081)"
-	@echo "  QUICKSTART_HUB_URL - Hub URL the provider heartbeats to (default: $(DEV_HUB_URL))"
-	@echo "  APP_STUDIO_PORT    - Port the App Studio provider listens on (default: 8085)"
-	@echo "  APP_STUDIO_HUB_URL - Hub URL the provider heartbeats to (default: $(DEV_HUB_URL))"
-	@echo "  APP_STUDIO_HUB_PUBLIC_URL - Browser-reachable hub origin for private previews (default: APP_STUDIO_HUB_URL)"
-	@echo "  APP_STUDIO_DEV_DATABASE_URL - Local App Studio Postgres DSN (default: postgres://appstudio:appstudio@localhost:55432/appstudio?sslmode=disable)"
-	@echo "  APP_STUDIO_IN_MEMORY_MESSAGE_STORE=true - Force non-durable App Studio message store"
-	@echo ""
 
 DOCKER_PLATFORM ?= linux/amd64
 

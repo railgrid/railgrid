@@ -54,13 +54,6 @@ type Options struct {
 	// path is disabled. Use with OIDC so humans sign in with a username and
 	// password at the IdP.
 	DisableTokenLogin bool
-	// PublishedAppsDomain is deprecated and ignored. The published-app
-	// authorize/exchange endpoints are always mounted, and sign-in redirects
-	// are pinned per request to the host stamped on the instance being
-	// authorized — so apps under BYO provider zones and customer-owned
-	// domains need no hub-side domain configuration. The flag is kept only
-	// so existing deployments that pass it keep starting.
-	PublishedAppsDomain string
 	// IDPCAFile is a path to a PEM-encoded CA bundle used to verify the IdP's
 	// TLS certificate. Required when IDPIssuerURL is https and uses a cert
 	// not signed by a system trust anchor (e.g. the dev Dex deployment).
@@ -153,14 +146,6 @@ type Options struct {
 	// matches a User CR by name, email, or rbacIdentity (case-insensitive).
 	// Empty disables the admin surface entirely.
 	AdminUsers []string
-
-	// Providers is the list of first-party builtin providers to materialize
-	// into root:railgrid:providers at bootstrap. The flag accepts a comma-
-	// separated list or repeats; see cmd/railgrid-hub/main.go for the default.
-	// Empty/nil enables every known builtin (kcp.BuiltinProviderNames()).
-	// Dependencies between builtins are validated at hub startup — see
-	// pkg/hub/kcp.builtinEntries[].Requires.
-	Providers []string
 
 	// DefaultOrgsPerUser is how many Organizations a User may create
 	// (docs/organizations.md O-5); User.spec.quota.organizations overrides

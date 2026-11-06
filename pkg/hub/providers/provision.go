@@ -19,7 +19,6 @@ package providers
 import (
 	"context"
 	"crypto/x509"
-	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -100,13 +99,6 @@ type ProvisionerOption func(*Provisioner)
 // whichever path ran last.
 func WithWorkspaceClusterAdmin(clusterAdmin bool) ProvisionerOption {
 	return func(p *Provisioner) { p.workspaceClusterAdmin = clusterAdmin }
-}
-
-// WithCredentialGracePeriod overrides how long a rotated-out provider token
-// Secret stays usable before it is swept. Zero or negative restores the
-// default.
-func WithCredentialGracePeriod(d time.Duration) ProvisionerOption {
-	return func(p *Provisioner) { p.credentialGracePeriod = d }
 }
 
 // NewProvisioner returns a Provisioner that performs provider-workspace
@@ -860,14 +852,6 @@ func (p *Provisioner) sweepExpiredTokens(ctx context.Context, cs kubernetes.Inte
 		deleted++
 	}
 	return deleted, nextExpiry, nil
-}
-
-// EncodeKubeconfig is a tiny helper for status reporting — surface the
-// minted kubeconfig as a base64-encoded blob so cluster operators can fish
-// it out of the CatalogEntry status without needing to read a Secret
-// (relevant when --provider-secret-write is disabled).
-func EncodeKubeconfig(kc []byte) string {
-	return base64.StdEncoding.EncodeToString(kc)
 }
 
 // EnsureProviderWorkspace creates root:railgrid:providers/{name} if it does not

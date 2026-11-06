@@ -28,7 +28,6 @@ import (
 	"net/url"
 	"sync/atomic"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -193,22 +192,6 @@ func TestPinUIIntegrityKeepsPinAcrossTransientFailureAndResyncs(t *testing.T) {
 	fail.Store(false)
 	if got, ok := r.pinUIIntegrity(context.Background(), logger, Provider{Name: "cost", OrgUUID: "org", UIURL: ui}, "2"); ok || got != "" {
 		t.Fatalf("org-owned provider pinned: %q, %v", got, ok)
-	}
-}
-
-// First-party providers ship their bundle inside the hub binary; the pin comes
-// straight from the embedded FS, matching what serveLocalAsset writes.
-func TestHashProviderMainJSReadsEmbeddedAssets(t *testing.T) {
-	assets := fstest.MapFS{"main.js": {Data: []byte("customElements.define('x-y', class extends HTMLElement {})")}}
-	got, err := hashProviderMainJS(context.Background(), nil, Provider{Name: "builtin", LocalUIAssets: assets})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if want := wantSRI(t, string(assets["main.js"].Data)); got != want {
-		t.Fatalf("hashProviderMainJS = %q, want %q", got, want)
-	}
-	if _, err := hashProviderMainJS(context.Background(), nil, Provider{Name: "none"}); err == nil {
-		t.Fatal("expected an error for a provider without a hub-served UI")
 	}
 }
 
@@ -502,12 +485,6 @@ func TestObserveMainJSIntegrityCorrectsThePin(t *testing.T) {
 		t.Fatalf("cache record = %+v, want the served pin at 0.1.0 with no validator", rec)
 	}
 
-	// Unknown providers, and providers the hub does not reverse-proxy a bundle
-	// for, are left alone.
+	// Unknown providers are left alone.
 	r.ObserveMainJSIntegrity("nope", "sha384-x")
-	reg.Upsert(Provider{Name: "builtin", LocalUIAssets: fstest.MapFS{}, MainJSIntegrity: "sha384-embedded"})
-	r.ObserveMainJSIntegrity("builtin", "sha384-x")
-	if got, _ := reg.Get("builtin"); got.MainJSIntegrity != "sha384-embedded" {
-		t.Fatalf("embedded provider pin = %q, want it untouched", got.MainJSIntegrity)
-	}
 }

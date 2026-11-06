@@ -50,15 +50,3 @@ var Categories = []Category{
 	{Name: "AI", Icon: "Sparkles", Order: 20},
 	{Name: "Demo", Icon: "Package", Order: 90},
 }
-
-// CategoryByName returns the Category record for name, or zero value
-// (and ok=false) when unknown. Ad-hoc categories used by third-party
-// CatalogEntries surface here with no record.
-func CategoryByName(name string) (Category, bool) {
-	for _, c := range Categories {
-		if c.Name == name {
-			return c, true
-		}
-	}
-	return Category{}, false
-}

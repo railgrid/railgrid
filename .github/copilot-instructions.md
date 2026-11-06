@@ -117,7 +117,7 @@ finalizing a review:
 ## 7. General
 
 - Don't approve changes that weaken an e2e isolation suite under
-  `test/e2e/suites/` (e.g. `provider`, `providerflags`, infrastructure
+  `test/e2e/suites/` (e.g. `provider`, infrastructure
   cross-tenant) without an equivalent replacement.
 - Secrets/tokens must not be logged or returned in API responses.
 

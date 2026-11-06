@@ -28,7 +28,6 @@ const providerRows = computed<Record<string, unknown>[]>(() =>
   admin.providers.map((provider) => ({
     ...provider,
     status: [
-      provider.builtin ? 'core' : '',
       provider.onboarded ? 'provisioned' : '',
       provider.registered ? 'registered' : '',
       provider.registered ? (provider.ready ? 'ready' : 'not ready') : '',
@@ -121,7 +120,7 @@ function providerDisplayName(row: Record<string, unknown>): string {
   return displayName || providerName(row)
 }
 
-function providerFlag(row: Record<string, unknown>, key: 'builtin' | 'onboarded' | 'registered' | 'ready'): boolean {
+function providerFlag(row: Record<string, unknown>, key: 'onboarded' | 'registered' | 'ready'): boolean {
   return row[key] === true
 }
 
@@ -130,7 +129,6 @@ function providerStatus(row: Record<string, unknown>): { label: string; tone: 's
   if (providerFlag(row, 'registered')) return providerFlag(row, 'ready')
     ? { label: 'Ready', tone: 'success' }
     : { label: 'Not ready', tone: 'danger' }
-  if (providerFlag(row, 'builtin')) return { label: 'Core', tone: 'muted' }
   if (providerFlag(row, 'onboarded')) return { label: 'Awaiting registration', tone: 'warning' }
   return { label: 'Not provisioned', tone: 'muted' }
 }
@@ -279,17 +277,13 @@ async function remove(name: string) {
       <template #version="{ value }"><span class="font-mono text-xs text-text-muted">{{ value || '—' }}</span></template>
       <template #actions="{ row }">
         <div class="flex items-center justify-end gap-2">
-          <!-- Builtins are bootstrapped by the hub; they have no Provider object. -->
-          <span v-if="providerFlag(row, 'builtin')" class="text-[11px] text-text-muted">managed by hub</span>
-          <template v-else>
-            <ResourceTableDeleteButton
-              :label="`Delete provider ${providerName(row)}`"
-              :busy-label="`Deleting provider ${providerName(row)}…`"
-              :busy="deletingName === providerName(row)"
-              :disabled="busy"
-              @click="remove(providerName(row))"
-            />
-          </template>
+          <ResourceTableDeleteButton
+            :label="`Delete provider ${providerName(row)}`"
+            :busy-label="`Deleting provider ${providerName(row)}…`"
+            :busy="deletingName === providerName(row)"
+            :disabled="busy"
+            @click="remove(providerName(row))"
+          />
         </div>
       </template>
     </ResourceTable>
@@ -300,7 +294,7 @@ async function remove(name: string) {
         :loaded="!!selectedProvider" :loading="admin.loading" :error="detailError" :stale="!!selectedProvider && !!detailError" retryable @retry="refresh">
         <template v-if="selectedProvider" #status><StatusBadge :status="providerStatus(selectedProvider).label" :tone="providerStatus(selectedProvider).tone" /></template>
         <template v-if="selectedProvider" #meta><span>{{ selectedReference?.scope === 'organization' ? 'Organization-owned provider' : selectedProvider.category || 'Platform provider' }}</span><span v-if="selectedProvider.version">{{ selectedProvider.version }}</span></template>
-        <template v-if="platformDetail && selectedProvider && !providerFlag(selectedProvider, 'builtin')" #actions>
+        <template v-if="platformDetail && selectedProvider" #actions>
           <ActionMenu :label="`Actions for provider ${providerName(selectedProvider)}`" :busy="deletingName === selectedId" :busy-label="`Deleting provider ${selectedId}…`" :disabled="busy || admin.loading || !!detailError"
             :items="[{ id: 'delete', label: 'Delete provider', tone: 'danger' }]" @select="id => id === 'delete' && selectedProvider && remove(providerName(selectedProvider))" />
         </template>
@@ -312,7 +306,7 @@ async function remove(name: string) {
           <dl class="grid gap-4 text-sm sm:grid-cols-2">
             <div>
               <dt class="text-text-muted">Provisioned</dt>
-              <dd class="text-text-primary">{{ providerFlag(selectedProvider, 'builtin') ? 'Managed by hub' : providerFlag(selectedProvider, 'onboarded') ? 'Yes' : 'No' }}</dd>
+              <dd class="text-text-primary">{{ providerFlag(selectedProvider, 'onboarded') ? 'Yes' : 'No' }}</dd>
             </div>
             <div>
               <dt class="text-text-muted">Registered</dt>
@@ -328,7 +322,7 @@ async function remove(name: string) {
             </div>
           </dl>
           </ResourceSectionCard>
-          <ResourceSectionCard v-if="platformDetail && !providerFlag(selectedProvider, 'builtin')" id="provider-access" title="Access credentials" description="Download a kubeconfig for where this provider runs.">
+          <ResourceSectionCard v-if="platformDetail" id="provider-access" title="Access credentials" description="Download a kubeconfig for where this provider runs.">
             <div class="flex flex-wrap gap-2">
               <template v-if="admin.kubeconfigServers.length">
                 <button v-for="server in admin.kubeconfigServers" :key="server" type="button" class="k-btn k-btn--ghost"

@@ -93,18 +93,3 @@ func TestCapsForUser(t *testing.T) {
 		t.Fatalf("free organizations override: %+v", got)
 	}
 }
-
-func TestIsFree(t *testing.T) {
-	o := &tenancyv1alpha1.Organization{}
-	if !IsFree(o, "free") {
-		t.Fatal("empty spec.plan is the default plan")
-	}
-	o.Spec.Plan = "free"
-	if !IsFree(o, "free") {
-		t.Fatal("naming the default plan is free too")
-	}
-	o.Spec.Plan = "team"
-	if IsFree(o, "free") {
-		t.Fatal("another plan is not free")
-	}
-}

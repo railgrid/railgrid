@@ -136,13 +136,6 @@ hub:
   # clients connect from — a peer inside them can choose its own bucket.
   # Example for an in-cluster ingress controller: ["10.244.0.0/16"].
   trustedProxyCIDRs: []
-  # DNS zone published apps are served under (the infrastructure provider's
-  # apps base domain, e.g. apps.example.com). Enables the login-time
-  # published-app authorize/exchange endpoints; sign-in redirects are only
-  # ever issued to hosts directly under this zone. Empty disables private
-  # published-app access (public apps are unaffected — they never touch the
-  # hub).
-  publishedAppsDomain: ""
   # -- Provider hardening. Every key here is unset by default, which leaves
   # the binary's own default for this release; nothing is rendered into the
   # hub args until you set a value. The binary defaults are the soft, staged
@@ -202,7 +195,7 @@ hub:
     allowedShardNames: []
   # -- Extra command-line flags appended to the hub container after the flags
   # the chart renders from the values above, for flags the chart does not
-  # model yet (e.g. "--providers=edges,infrastructure"). The chart refuses an
+  # model yet (e.g. "--v=4"). The chart refuses an
   # entry that repeats a flag it already renders from a value: set the value
   # instead, so the modelled setting stays the single source of truth.
   extraArgs: []

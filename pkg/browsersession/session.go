@@ -33,7 +33,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -468,10 +467,4 @@ func (m *memoryBackend) evictOldestLocked() {
 	if oldestKey != "" {
 		delete(m.sessions, oldestKey)
 	}
-}
-
-// ConstantTimeEqual is a small helper for callers comparing a cookie value
-// against a request-bound value without introducing a second implementation.
-func ConstantTimeEqual(a, b string) bool {
-	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
 }
