@@ -25,12 +25,13 @@ import (
 	"unicode/utf8"
 
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-sdk/attachments"
 )
 
 const (
 	projectAssistantMaxContentParts           = 64
-	projectAssistantMaxAttachmentsPerTurn     = 8
-	projectAssistantMaxAttachmentBytesPerTurn = 50 << 20
+	projectAssistantMaxAttachmentsPerTurn     = attachments.MaxAttachmentsPerTurn
+	projectAssistantMaxAttachmentBytesPerTurn = attachments.MaxBytesPerTurn
 	projectAssistantMaxContentPartBytes       = 64 << 10
 	projectAssistantContentPartTextType       = "text"
 	projectAssistantContentPartSkillType      = "skill"

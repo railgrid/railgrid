@@ -21,8 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/railgrid/provider-app-studio/workspace"
 )
 
 // NewActivationSource wraps a system source with activation policy owned by a
@@ -43,7 +41,7 @@ func NewActivationSource(source Source, activations map[string]Activation, disab
 	copyActivations := make(map[string]Activation, len(activations))
 	for rawPath, activation := range activations {
 		clean, err := cleanPublicPackagePath(rawPath)
-		if err != nil || clean != rawPath || len([]byte(clean)) > workspace.MaxProjectPathBytes {
+		if err != nil || clean != rawPath || len([]byte(clean)) > 1024 {
 			return nil, errors.New("skill activation metadata contains an invalid package identity")
 		}
 		if len([]byte(activation.Version)) > 128 || len([]byte(activation.Digest)) > 128 {
@@ -125,4 +123,16 @@ func activationMatchesPackageVersion(packageEntry Package, activation Activation
 		return digest == strings.TrimSpace(packageEntry.Digest)
 	}
 	return true
+}
+
+// Activation is the owner-scoped availability policy for one skill package.
+type Activation struct {
+	Enabled bool   `json:"enabled"`
+	Version string `json:"version,omitempty"`
+	Digest  string `json:"digest,omitempty"`
+}
+
+// ActivationMatchesPackageVersion rejects activation records for changed packages.
+func ActivationMatchesPackageVersion(p Package, a Activation) bool {
+	return activationMatchesPackageVersion(p, a)
 }

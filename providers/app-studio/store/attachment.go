@@ -21,13 +21,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"mime"
-	"path"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
+
+	"github.com/railgrid/provider-sdk/attachments"
 )
 
 const (
@@ -35,24 +34,24 @@ const (
 	// (a "file" attachment such as a 3D model or font). The HTTP layer applies
 	// this limit before reading the request body, while the store repeats it
 	// for non-HTTP callers.
-	AttachmentMaxBytes = 25 << 20
+	AttachmentMaxBytes = attachments.AttachmentMaxBytes
 	// AttachmentMaxImageBytes bounds images, which are sent to the model.
-	AttachmentMaxImageBytes = 8 << 20
+	AttachmentMaxImageBytes = attachments.AttachmentMaxImageBytes
 	// AttachmentMaxTextBytes keeps text attachments suitable for prompt
 	// selection and prevents a text upload from becoming an unbounded transcript.
-	AttachmentMaxTextBytes     = 1 << 20
-	AttachmentMaxFilenameBytes = 255
-	AttachmentMaxIDBytes       = 128
+	AttachmentMaxTextBytes     = attachments.AttachmentMaxTextBytes
+	AttachmentMaxFilenameBytes = attachments.AttachmentMaxFilenameBytes
+	AttachmentMaxIDBytes       = attachments.AttachmentMaxIDBytes
 	// DefaultAttachmentWorkspaceMaxBytes is the finite hosting protection for
 	// all attachment bytes in one workspace. A configured value of zero means
 	// unlimited workspace storage.
-	DefaultAttachmentWorkspaceMaxBytes = 1 << 30
+	DefaultAttachmentWorkspaceMaxBytes = attachments.DefaultWorkspaceMaxBytes
 	// DefaultAttachmentDraftProjectMaxBytes and
 	// DefaultAttachmentDraftProjectMaxCount protect one project from abandoned
 	// upload drafts. Bound attachments are governed only by the workspace
 	// quota, because their lifetime is tied to a durable conversation turn.
-	DefaultAttachmentDraftProjectMaxBytes = 128 << 20
-	DefaultAttachmentDraftProjectMaxCount = 64
+	DefaultAttachmentDraftProjectMaxBytes = attachments.DefaultDraftOwnerMaxBytes
+	DefaultAttachmentDraftProjectMaxCount = attachments.DefaultDraftOwnerMaxCount
 	// AttachmentProjectMaxBytes and AttachmentProjectMaxCount are retained as
 	// source-compatible aliases for callers that used the former project-wide
 	// quota. They now describe draft-only abuse limits.
@@ -61,7 +60,7 @@ const (
 	// DefaultAttachmentDraftRetention bounds uncommitted composer uploads. A
 	// caller can shorten this through provider configuration, but cannot make a
 	// draft immortal by omitting an expiry.
-	DefaultAttachmentDraftRetention = 24 * time.Hour
+	DefaultAttachmentDraftRetention = attachments.DefaultDraftRetention
 )
 
 var (
@@ -179,14 +178,7 @@ type Attachment struct {
 
 // AttachmentReceipt is the client-carried, immutable metadata used to bind a
 // later assistant turn to an upload. It intentionally has no bytes.
-type AttachmentReceipt struct {
-	ID          string
-	Filename    string
-	ContentType string
-	SizeBytes   int64
-	SHA256      string
-	CreatedAt   time.Time
-}
+type AttachmentReceipt = attachments.Receipt
 
 // AttachmentStore is deliberately separate from Store. This lets existing
 // message-only test doubles continue to compile while a production Store can
@@ -255,12 +247,10 @@ func CreateAttachmentIdempotent(ctx context.Context, attachments AttachmentStore
 }
 
 func attachmentUploadMetadataMatches(existing, candidate Attachment) bool {
-	return existing.ActorID == candidate.ActorID &&
-		existing.Filename == candidate.Filename &&
-		existing.ContentType == candidate.ContentType &&
-		existing.SizeBytes == candidate.SizeBytes &&
-		strings.EqualFold(existing.SHA256, candidate.SHA256) &&
-		bytes.Equal(existing.Data, candidate.Data)
+	return existing.ActorID == candidate.ActorID && attachments.UploadMetadataMatches(
+		attachments.Receipt{ID: existing.ID, Filename: existing.Filename, ContentType: existing.ContentType, SizeBytes: existing.SizeBytes, SHA256: existing.SHA256},
+		attachments.Receipt{ID: candidate.ID, Filename: candidate.Filename, ContentType: candidate.ContentType, SizeBytes: candidate.SizeBytes, SHA256: candidate.SHA256, CreatedAt: candidate.CreatedAt},
+	) && bytes.Equal(existing.Data, candidate.Data)
 }
 
 // VerifyAttachmentReceipt performs the authoritative server-side admission
@@ -304,145 +294,24 @@ func validateAttachmentReceipt(attachment Attachment, receipt AttachmentReceipt,
 	return nil
 }
 
-// Attachment kinds. Images and text are model-visible content; any other
-// file is stored as opaque bytes and reaches the model as metadata only (it
-// can be placed into the project workspace with import_attachment).
 const (
-	AttachmentKindImage = "image"
-	AttachmentKindText  = "text"
-	AttachmentKindFile  = "file"
+	AttachmentKindImage           = attachments.AttachmentKindImage
+	AttachmentKindText            = attachments.AttachmentKindText
+	AttachmentKindFile            = attachments.AttachmentKindFile
+	AttachmentMaxContentTypeBytes = attachments.AttachmentMaxContentTypeBytes
 )
 
-// AttachmentMaxContentTypeBytes bounds a stored media type.
-const AttachmentMaxContentTypeBytes = 127
-
-// AttachmentKind classifies a normalized content type.
-func AttachmentKind(contentType string) string {
-	switch strings.ToLower(strings.TrimSpace(contentType)) {
-	case "image/png", "image/jpeg", "image/webp":
-		return AttachmentKindImage
-	case "text/plain", "text/markdown":
-		return AttachmentKindText
-	default:
-		return AttachmentKindFile
-	}
-}
-
-// NormalizeAttachmentContentType strips parameters and validates a
-// "type/subtype" media type. Image and text types keep their dedicated
-// validation; every other type is an opaque "file" attachment.
+func AttachmentKind(contentType string) string { return attachments.AttachmentKind(contentType) }
 func NormalizeAttachmentContentType(raw string) (string, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return "", fmt.Errorf("attachment content type is required")
-	}
-	contentType, _, err := mime.ParseMediaType(raw)
-	if err != nil {
-		return "", fmt.Errorf("invalid attachment content type: %w", err)
-	}
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	major, minor, ok := strings.Cut(contentType, "/")
-	if !ok || major == "" || minor == "" || len(contentType) > AttachmentMaxContentTypeBytes {
-		return "", fmt.Errorf("unsupported attachment content type %q", contentType)
-	}
-	return contentType, nil
+	return attachments.NormalizeAttachmentContentType(raw)
 }
-
-// AttachmentKindFor classifies an attachment by type and size: an image or
-// text attachment beyond its model-visible bound is an opaque "file" (for
-// example a 12 MiB hero image meant for public/), up to AttachmentMaxBytes.
 func AttachmentKindFor(contentType string, size int64) string {
-	kind := AttachmentKind(contentType)
-	if kind != AttachmentKindFile && size > int64(AttachmentMaxBytesFor(kind)) {
-		return AttachmentKindFile
-	}
-	return kind
+	return attachments.AttachmentKindFor(contentType, size)
 }
-
-// AttachmentMaxBytesFor returns the per-attachment bound for one kind.
-func AttachmentMaxBytesFor(kind string) int {
-	switch kind {
-	case AttachmentKindImage:
-		return AttachmentMaxImageBytes
-	case AttachmentKindText:
-		return AttachmentMaxTextBytes
-	default:
-		return AttachmentMaxBytes
-	}
-}
-
-// ValidateAttachmentID applies the same path-safe bound used by durable
-// attachment rows. Callers that accept a client-chosen upload ID should trim
-// it first, then use this helper so malformed IDs fail as request validation
-// rather than surfacing as a storage conflict.
-func ValidateAttachmentID(id string) error {
-	id = strings.TrimSpace(id)
-	if id == "" || !utf8.ValidString(id) || len([]byte(id)) > AttachmentMaxIDBytes || id == "." || id == ".." {
-		return fmt.Errorf("attachment ID must be a safe non-empty value of at most %d bytes", AttachmentMaxIDBytes)
-	}
-	for _, character := range id {
-		if unicode.IsSpace(character) || unicode.IsControl(character) || strings.ContainsRune("/\\?#", character) {
-			return fmt.Errorf("attachment ID must be a safe non-empty value of at most %d bytes", AttachmentMaxIDBytes)
-		}
-	}
-	return nil
-}
-
-// ValidateAttachmentContent applies the format and size contract independently
-// of HTTP. Image magic bytes prevent a mislabeled executable from becoming a
-// downloadable image; text must be valid UTF-8 and use a .txt/.md filename.
-// Any other ("file") type is opaque bytes: only its name and size are
-// checked, because it is never interpreted — only stored and copied.
+func AttachmentMaxBytesFor(kind string) int { return attachments.AttachmentMaxBytesFor(kind) }
+func ValidateAttachmentID(id string) error  { return attachments.ValidateAttachmentID(id) }
 func ValidateAttachmentContent(filename, contentType string, data []byte) error {
-	contentType, err := NormalizeAttachmentContentType(contentType)
-	if err != nil {
-		return err
-	}
-	filename = strings.TrimSpace(filename)
-	if filename == "" {
-		return fmt.Errorf("attachment filename is required")
-	}
-	if !utf8.ValidString(filename) || len([]byte(filename)) > AttachmentMaxFilenameBytes {
-		return fmt.Errorf("attachment filename must be valid UTF-8 and at most %d bytes", AttachmentMaxFilenameBytes)
-	}
-	if strings.ContainsAny(filename, "/\\"+"\x00\r\n") || filename == "." || filename == ".." || path.Base(filename) != filename {
-		return fmt.Errorf("attachment filename must be a single safe path segment")
-	}
-	if len(data) == 0 {
-		return fmt.Errorf("attachment data is required")
-	}
-	kind := AttachmentKindFor(contentType, int64(len(data)))
-	maxBytes := AttachmentMaxBytesFor(kind)
-	if len(data) > maxBytes {
-		return fmt.Errorf("attachment is %d bytes; maximum is %d", len(data), maxBytes)
-	}
-	if kind == AttachmentKindFile {
-		return nil
-	}
-
-	switch contentType {
-	case "image/png":
-		if !bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}) {
-			return fmt.Errorf("attachment data is not a PNG image")
-		}
-	case "image/jpeg":
-		if len(data) < 3 || data[0] != 0xff || data[1] != 0xd8 || data[2] != 0xff {
-			return fmt.Errorf("attachment data is not a JPEG image")
-		}
-	case "image/webp":
-		if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
-			return fmt.Errorf("attachment data is not a WebP image")
-		}
-	case "text/plain", "text/markdown":
-		ext := strings.ToLower(path.Ext(filename))
-		if ext != ".txt" && ext != ".md" {
-			return fmt.Errorf("text attachments must use a .txt or .md filename")
-		}
-		if !utf8.Valid(data) {
-			return fmt.Errorf("text attachment must be valid UTF-8")
-		}
-	}
-	return nil
+	return attachments.ValidateAttachmentContent(filename, contentType, data)
 }
 
 func prepareAttachment(scope Scope, attachment Attachment) (Attachment, error) {

@@ -184,7 +184,7 @@ func (c *Catalog) loadCandidate(ctx context.Context, source Source, packageEntry
 		Scope:         source.Scope(),
 		PackagePath:   packagePath,
 		Enabled:       true,
-		Editable:      source.Scope() == ScopeProject,
+		Editable:      source.Scope() != ScopeSystem,
 		Version:       contentDigest,
 		Content:       parsed.Content,
 		ContentDigest: contentDigest,
@@ -446,8 +446,8 @@ func appendBoundedWarnings(warnings, additions []Warning, max int) []Warning {
 }
 
 func normalizedScope(scope Scope) Scope {
-	if scope == ScopeProject {
-		return ScopeProject
+	if scope == ScopeProject || scope == ScopeWorkspace {
+		return scope
 	}
 	return ScopeSystem
 }
@@ -570,4 +570,14 @@ func computeSnapshotDigests(snapshot *Snapshot) {
 	writeDigestField(&catalog, snapshot.ContentDigest)
 	writeDigestField(&catalog, snapshot.ResourceDigest)
 	snapshot.CatalogDigest = digestBytes([]byte(catalog.String()))
+}
+
+// BoundReadOptions validates source adapter range requests.
+func BoundReadOptions(opts ResourceReadOptions, defaultLimit int) (ResourceReadOptions, error) {
+	return boundedReadOptions(opts, defaultLimit)
+}
+
+// AppendWarning adds one sanitized warning within its configured bound.
+func AppendWarning(warnings []Warning, warning Warning, max int) []Warning {
+	return appendBoundedWarning(warnings, warning, max)
 }
