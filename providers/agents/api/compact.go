@@ -139,6 +139,14 @@ func (s *Server) contextCompactor(run taskRun, sessionID, modelName string) engi
 		// placeholder text has no durable transcript identity and must not count
 		// as a user request or survive in the session replacement checkpoint.
 		history = withoutEphemeralMessages(history)
+		summarySnapshot, summaryExists, err := s.store.GetSessionSummary(ctx, run.Scope, sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("read compaction generation: %w", err)
+		}
+		checkpointGeneration := summarySnapshot.Generation
+		if !summaryExists && hasCompactionSummary(history) {
+			return nil, fmt.Errorf("session history changed while preparing compaction: %w", store.ErrSessionCheckpointStale)
+		}
 		if err := validateStoredHistoryToolPairing(history); err != nil {
 			return nil, err
 		}
@@ -196,7 +204,7 @@ func (s *Server) contextCompactor(run taskRun, sessionID, modelName string) engi
 		if len(replacement) == 0 {
 			return nil, &engine.ContextBudgetError{Estimate: estimate, Reason: "compaction could not produce a fitting replacement history"}
 		}
-		throughSequence, err := s.persistSessionCheckpoint(ctx, run, sessionID, history, replacement, strings.Join(summaries, "\n\n"))
+		throughSequence, err := s.persistSessionCheckpoint(ctx, run, sessionID, history, replacement, strings.Join(summaries, "\n\n"), checkpointGeneration)
 		if err != nil {
 			return nil, fmt.Errorf("persist session %s compaction checkpoint: %w", sessionID, err)
 		}
@@ -212,6 +220,15 @@ func (s *Server) contextCompactor(run taskRun, sessionID, modelName string) engi
 			run.Agent.Name, sessionID, len(folded), throughSequence, before, after)
 		return replacement, nil
 	}
+}
+
+func hasCompactionSummary(history []engine.Message) bool {
+	for _, message := range history {
+		if isCompactionSummary(message) {
+			return true
+		}
+	}
+	return false
 }
 
 func compactableMessage(message engine.Message) bool {
@@ -593,7 +610,7 @@ func engineHistoryTokens(messages []engine.Message) int {
 	return engine.EstimateHistoryTokens(messages)
 }
 
-func (s *Server) persistSessionCheckpoint(ctx context.Context, run taskRun, sessionID string, source, replacement []engine.Message, summary string) (int64, error) {
+func (s *Server) persistSessionCheckpoint(ctx context.Context, run taskRun, sessionID string, source, replacement []engine.Message, summary string, generation int64) (int64, error) {
 	previous, hasPrevious, err := s.store.GetSessionSummary(ctx, run.Scope, sessionID)
 	if err != nil {
 		return 0, fmt.Errorf("load previous checkpoint: %w", err)
@@ -623,6 +640,8 @@ func (s *Server) persistSessionCheckpoint(ctx context.Context, run taskRun, sess
 				}
 			}
 		}
+	} else if hasCompactionSummary(source) {
+		return 0, fmt.Errorf("session checkpoint was invalidated while compaction was running: %w", store.ErrSessionCheckpointStale)
 	}
 
 	// A newer checkpoint cannot grant coverage to an older in-flight history.
@@ -641,6 +660,15 @@ func (s *Server) persistSessionCheckpoint(ctx context.Context, run taskRun, sess
 		}
 		if !found {
 			return 0, fmt.Errorf("history does not contain the current summary boundary: %w", store.ErrSessionCheckpointStale)
+		}
+	}
+	for _, message := range source {
+		if message.ID == "" || message.Sequence <= priorSequence || isCompactionSummary(message) {
+			continue
+		}
+		row, exists := rowBySequence[message.Sequence]
+		if !exists || row.ID != message.ID {
+			return 0, fmt.Errorf("transcript changed while compaction was running: %w", store.ErrSessionCheckpointStale)
 		}
 	}
 
@@ -730,6 +758,7 @@ func (s *Server) persistSessionCheckpoint(ctx context.Context, run taskRun, sess
 	record := store.SessionSummary{
 		SessionID: sessionID, Summary: strings.TrimSpace(summary), ThroughAt: throughAt,
 		MessageCount: messageCount, CreatedAt: createdAt, UpdatedAt: time.Now().UTC(), Checkpoint: checkpoint,
+		Generation: generation,
 	}
 	if err := s.store.PutSessionSummary(ctx, run.Scope, record); err != nil {
 		return 0, fmt.Errorf("write versioned checkpoint: %w", err)

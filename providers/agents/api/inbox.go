@@ -233,7 +233,7 @@ func (s *Server) resolveInboxItem(w http.ResponseWriter, r *http.Request) {
 	// An APPROVAL resumes on a verdict, and a QUESTION bound to a run resumes on
 	// an answer. A free-standing question carries no run ID and resumes nothing.
 	if item.RunID != "" && resolutionResumesRun(item.Kind, state) {
-		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, CallerUser: id.user}
+		access := runAccess{Creds: c, CR: clientCR{c}, ClusterID: id.clusterID, HubToken: id.token, CallerUser: id.user}
 		if emit != nil {
 			started := false
 			res, err := s.continueInboxRun(ctx, wsScope, item, access, true, item.Response, func(event string, data map[string]any) {

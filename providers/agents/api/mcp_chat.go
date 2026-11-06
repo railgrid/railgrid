@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/railgrid/provider-sdk/attachments"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
@@ -48,10 +49,13 @@ import (
 // between agents is run_agent, unattended by design.
 
 type chatInput struct {
-	Agent        string                         `json:"agent" jsonschema:"Name of the agent to talk to (see list_agents)"`
-	Message      string                         `json:"message" jsonschema:"The message for this turn of the conversation"`
-	SessionID    string                         `json:"sessionId,omitempty" jsonschema:"Chat thread to continue; omit for the default thread"`
-	ArtifactRefs []store.AgentArtifactReference `json:"artifactRefs,omitempty" jsonschema:"Optional user-selected saved result references to attach to this attended turn; pointers only, with no result bytes"`
+	Agent            string                         `json:"agent" jsonschema:"Name of the agent to talk to (see list_agents)"`
+	Message          string                         `json:"message,omitempty" jsonschema:"The message for this turn of the conversation"`
+	SessionID        string                         `json:"sessionId,omitempty" jsonschema:"Chat thread to continue; omit for the default thread"`
+	ArtifactRefs     []store.AgentArtifactReference `json:"artifactRefs,omitempty" jsonschema:"Optional user-selected saved result references to attach to this attended turn; pointers only, with no result bytes"`
+	ContentParts     []agentChatContentPart         `json:"contentParts,omitempty" jsonschema:"Optional structured text, skill, resource, and attachment parts"`
+	SkillRefs        []agentSkillSelection          `json:"skillRefs,omitempty" jsonschema:"Optional enabled skill IDs and their immutable SHA-256 digests"`
+	ContextResources []agentContextResource         `json:"contextResources,omitempty" jsonschema:"Optional provider resource coordinates selected as caller-authorized context"`
 }
 
 // chatEventMetaKey is where a progress notification carries the chat event
@@ -107,9 +111,6 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			return chatRefused(err)
 		}
 		message := strings.TrimSpace(in.Message)
-		if message == "" {
-			return chatRefused(errBadRequest("message is required"))
-		}
 		sessionID := strings.TrimSpace(in.SessionID)
 		if sessionID == "" {
 			sessionID = "default"
@@ -127,12 +128,32 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			}
 			seenArtifacts[ref.ArtifactID] = struct{}{}
 		}
-		if len(in.ArtifactRefs) > 0 {
-			encoded, err := json.Marshal(in.ArtifactRefs)
-			if err != nil {
-				return chatRefused(errBadRequest("saved result references could not be encoded"))
+		parts := append([]agentChatContentPart(nil), in.ContentParts...)
+		if len(parts) == 0 && (len(in.SkillRefs) > 0 || len(in.ContextResources) > 0) {
+			if message != "" {
+				parts = append(parts, agentChatContentPart{Type: "text", Text: message})
 			}
-			message += "\n\nAttached saved result references (pointers only; no result data is included). Use " + openSavedArtifactToolName + " with an exact artifactID and digest to read one: " + string(encoded)
+			for _, ref := range in.SkillRefs {
+				parts = append(parts, agentChatContentPart{Type: "skill", SkillID: ref.ID})
+			}
+			for index := range in.ContextResources {
+				parts = append(parts, agentChatContentPart{Type: "resource", ResourceIndex: index})
+			}
+		} else if len(parts) > 0 && message != "" && !agentChatContentPartsHaveText(parts) {
+			parts = append([]agentChatContentPart{{Type: "text", Text: message}}, parts...)
+		}
+		parts, resources, attachmentRefs, _, err := normalizeAgentChatContentParts(parts, in.SkillRefs, in.ContextResources)
+		if err != nil {
+			return chatRefused(errBadRequest(err.Error()))
+		}
+		task, hasText := renderAgentChatContent(parts, resources)
+		if len(parts) == 0 {
+			task = message
+		} else if !hasText && message != "" {
+			task = strings.TrimSpace(message + "\n\n" + task)
+		}
+		if strings.TrimSpace(task) == "" {
+			return chatRefused(errBadRequest("message or structured contentParts are required"))
 		}
 		id := s.mcpIdentity(ctx, r)
 		if id.workspaceUUID == "" {
@@ -141,6 +162,73 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 		agent, err := c.Agents().Get(ctx, strings.TrimSpace(in.Agent), metav1.GetOptions{})
 		if err != nil {
 			return chatRefused(err)
+		}
+		resolvedResources, resourcePrompt, err := s.resolveAgentContextResources(ctx, c, id, resources)
+		if err != nil {
+			return chatRefused(errBadRequest(err.Error()))
+		}
+		historicalAttachmentOwners, err := s.sessionAttachmentInputOwners(ctx, id.scope(agent.Name), sessionID)
+		if err != nil {
+			return chatRefused(errBadRequest("conversation attachment history could not be verified"))
+		}
+		attachmentOwner := ""
+		if len(attachmentRefs) > 0 || len(historicalAttachmentOwners) > 0 {
+			attachmentOwner, err = s.resolveAgentAttachmentOwner(ctx, id)
+			if err != nil {
+				return chatRefused(errBadRequest("the current caller identity could not be verified for conversation attachments"))
+			}
+			for _, historicalOwner := range historicalAttachmentOwners {
+				if historicalOwner == "" || historicalOwner != attachmentOwner {
+					return chatRefused(errBadRequest("conversation attachments are available only to the caller who attached them"))
+				}
+			}
+		}
+		if len(attachmentRefs) > 0 {
+			if err := s.verifyAgentAttachmentReceipts(ctx, id.scope(agent.Name), string(agent.UID), sessionID, attachmentOwner, attachmentRefs); err != nil {
+				return chatRefused(errBadRequest("an attachment receipt is unavailable or does not match its upload"))
+			}
+		}
+		if agent.Spec.HarnessBacked() {
+			needsFiles := len(agent.Spec.Skills) > 0
+			for _, receipt := range attachmentRefs {
+				if attachments.AttachmentKindFor(receipt.ContentType, receipt.SizeBytes) != attachments.AttachmentKindFile {
+					needsFiles = true
+					break
+				}
+			}
+			if needsFiles {
+				capabilities := s.agentConversationCapabilities(ctx, c, agent, id)
+				if !capabilities.Attachments || !capabilities.Skills {
+					return chatRefused(errBadRequest("the selected harness runner cannot receive attached files or enabled skills; update or reconnect it before starting this turn"))
+				}
+			}
+		}
+		if resourcePrompt != "" {
+			task = strings.TrimSpace(task + "\n\n" + resourcePrompt)
+		}
+		if len(in.ArtifactRefs) > 0 {
+			encoded, err := json.Marshal(in.ArtifactRefs)
+			if err != nil {
+				return chatRefused(errBadRequest("saved result references could not be encoded"))
+			}
+			task += "\n\nAttached saved result references (pointers only; no result data is included). Use " + openSavedArtifactToolName + " with an exact artifactID and digest to read one: " + string(encoded)
+		}
+		if strings.TrimSpace(id.user) == "" {
+			return chatRefused(errBadRequest("an authenticated caller is required to attach conversation inputs"))
+		}
+
+		run := taskRun{
+			Scope: id.scope(agent.Name), Agent: agent,
+			RunID: uuid.NewString(), SessionID: sessionID, Task: task, Trigger: agentsv1alpha1.RunTriggerChat,
+			ArtifactOwner: id.user, ArtifactRefs: append([]store.AgentArtifactReference(nil), in.ArtifactRefs...),
+			AttachmentOwner: attachmentOwner, AttachmentCaller: attachmentOwner,
+			AttachmentRefs: append([]store.AgentAttachmentReceipt(nil), attachmentRefs...),
+			ContentParts:   append([]agentChatContentPart(nil), parts...), SkillRefs: append([]agentSkillSelection(nil), in.SkillRefs...),
+			ContextResourceOwner: id.user, ContextResources: append([]agentContextResource(nil), resolvedResources...),
+		}
+		s.callerAccess(ctx, c, id).applyTo(&run)
+		if _, _, _, err := s.agentSkillRuntime(ctx, run, run.SkillRefs); err != nil {
+			return chatRefused(errBadRequest(err.Error()))
 		}
 
 		// Events ride progress notifications on the call's own stream (the SDK
@@ -162,19 +250,8 @@ func (s *Server) registerChatMCPTool(srv *mcp.Server, r *http.Request) {
 			})
 		}
 
-		runID := uuid.NewString()
+		runID := run.RunID
 		emit("start", map[string]any{"runID": runID, "sessionID": sessionID})
-
-		run := taskRun{
-			Scope: id.scope(agent.Name), Agent: agent,
-			RunID:     runID,
-			SessionID: sessionID, Task: message, Trigger: agentsv1alpha1.RunTriggerChat,
-			ArtifactOwner: id.user, ArtifactRefs: append([]store.AgentArtifactReference(nil), in.ArtifactRefs...),
-		}
-		// The caller's access: their tenant client, and — this being the route
-		// that carries their bearer — the hub's aggregate MCP endpoint for the
-		// edges family.
-		s.callerAccess(ctx, c, id).applyTo(&run)
 
 		// The run outlives the request: a long tool chain is not cancelled
 		// because the browser tab that asked went away (see the verb's

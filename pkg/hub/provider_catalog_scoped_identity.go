@@ -43,6 +43,11 @@ const (
 	projectCatalogOwnerGroup     = "ai.railgrid.ai"
 	projectCatalogOwnerVersion   = "v1alpha1"
 	projectCatalogOwnerResource  = "projects"
+	agentCatalogOwnerProvider    = "agents"
+	agentCatalogOwnerKind        = "Agent"
+	agentCatalogOwnerGroup       = "agents.railgrid.ai"
+	agentCatalogOwnerVersion     = "v1alpha1"
+	agentCatalogOwnerResource    = "agents"
 )
 
 type scopedIdentityRecordGetter interface {
@@ -51,10 +56,10 @@ type scopedIdentityRecordGetter interface {
 
 type providerCatalogTokenReviewer func(context.Context, *rest.Config, string, string) (authnv1.TokenReviewStatus, error)
 
-// providerCatalogScopedIdentityResolver admits a Project-scoped identity to
+// providerCatalogScopedIdentityResolver admits a Project- or Agent-scoped identity to
 // the read-only provider catalog. It never resolves or assigns a human role.
 // The bearer is checked online in the selected child workspace, its name must
-// point at a central hub-owned ScopedIdentity record, and the record's Project
+// point at a central hub-owned ScopedIdentity record, and the record's approved
 // owner is checked live with the hub's owner probe. Tenant headers address the
 // selected workspace only after the authoritative path-to-cluster mapping and
 // the TokenReview agree.
@@ -67,7 +72,7 @@ type providerCatalogScopedIdentityResolver struct {
 }
 
 // providerCatalogWorkloadVerifier keeps the existing online workload and
-// delegated-token contract first. Project-scoped identities get a separate,
+// delegated-token contract first. Project- and Agent-scoped identities get a separate,
 // narrower verification path because their account is recorded centrally but
 // intentionally has none of the workload Project/environment annotations.
 func providerCatalogWorkloadVerifier(workload func(*http.Request) (string, string, error), project *providerCatalogScopedIdentityResolver) func(*http.Request) (string, string, error) {
@@ -95,10 +100,10 @@ func providerCatalogWorkloadVerifier(workload func(*http.Request) (string, strin
 
 func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (string, string, error) {
 	if v == nil || req == nil || v.workspaces == nil || v.records == nil || v.owners == nil || v.clusterID == nil {
-		return "", "", errors.New("project-scoped catalog identity verification is unavailable")
+		return "", "", errors.New("catalog-scoped catalog identity verification is unavailable")
 	}
 	if req.Method != http.MethodGet || req.URL == nil || req.URL.Path != providers.PathListProviders {
-		return "", "", errors.New("project-scoped identities are limited to the provider catalog GET")
+		return "", "", errors.New("catalog-scoped identities are limited to the provider catalog GET")
 	}
 
 	orgUUID, err := oneScopedCatalogHeader(req, headerRailgridOrg)
@@ -118,7 +123,7 @@ func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (stri
 		return "", "", err
 	}
 	if !validScopedCatalogTenantID(orgUUID) || !validScopedCatalogTenantID(workspaceUUID) || !dataplane.IsClusterID(tenantHeader) || !dataplane.IsClusterID(clusterHeader) {
-		return "", "", errors.New("project-scoped catalog identity requires concrete tenant headers")
+		return "", "", errors.New("catalog-scoped catalog identity requires concrete tenant headers")
 	}
 
 	tenantPath := workspacePathRoot + ":" + orgUUID + ":" + workspaceUUID
@@ -127,7 +132,7 @@ func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (stri
 		return "", "", fmt.Errorf("resolving project identity tenant: %w", err)
 	}
 	if !dataplane.IsClusterID(clusterID) || tenantHeader != clusterID || clusterHeader != clusterID {
-		return "", "", errors.New("project-scoped catalog identity tenant headers do not match the selected workspace")
+		return "", "", errors.New("catalog-scoped catalog identity tenant headers do not match the selected workspace")
 	}
 
 	token, err := oneBearerToken(req)
@@ -140,41 +145,41 @@ func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (stri
 	}
 	status, err := review(req.Context(), v.workspaces.ChildWorkspaceConfig(orgUUID, workspaceUUID), token, serviceaccounts.WorkloadIdentityTokenAudience)
 	if err != nil {
-		return "", "", fmt.Errorf("reviewing project-scoped catalog identity: %w", err)
+		return "", "", fmt.Errorf("reviewing catalog-scoped catalog identity: %w", err)
 	}
 	if !providers.TokenReviewMatchesCluster(status, clusterID) || !hasAudience(status.Audiences, serviceaccounts.WorkloadIdentityTokenAudience) {
-		return "", "", errors.New("project-scoped catalog token is not authenticated for the workload audience")
+		return "", "", errors.New("catalog-scoped catalog token is not authenticated for the workload audience")
 	}
-	username, serviceAccountName, ok := parseProjectCatalogServiceAccount(status.User.Username)
+	username, serviceAccountName, ok := parseCatalogScopedServiceAccount(status.User.Username)
 	if !ok {
-		return "", "", errors.New("project-scoped catalog token subject is not a Project identity")
+		return "", "", errors.New("catalog-scoped catalog token subject is not a scoped identity")
 	}
 
 	recordName := identity.RecordName(clusterID, serviceAccountName)
 	record, err := v.records.Get(req.Context(), recordName, metav1.GetOptions{})
 	if err != nil {
-		return "", "", fmt.Errorf("reading project-scoped identity record: %w", err)
+		return "", "", fmt.Errorf("reading catalog-scoped identity record: %w", err)
 	}
-	if !validProjectCatalogIdentityRecord(record, recordName, clusterID, serviceAccountName) {
-		return "", "", errors.New("project-scoped catalog token has no current App Studio Project identity record")
+	if !validCatalogScopedIdentityRecord(record, recordName, clusterID, serviceAccountName) {
+		return "", "", errors.New("catalog-scoped catalog token has no current approved identity record")
 	}
 
 	owner := identity.Owner{
-		Provider:  projectCatalogOwnerProvider,
-		Kind:      projectCatalogOwnerKind,
-		Group:     projectCatalogOwnerGroup,
-		Version:   projectCatalogOwnerVersion,
-		Resource:  projectCatalogOwnerResource,
+		Provider:  record.Spec.Owner.Provider,
+		Kind:      record.Spec.Owner.Kind,
+		Group:     record.Spec.Owner.Group,
+		Version:   record.Spec.Owner.Version,
+		Resource:  record.Spec.Owner.Resource,
 		Name:      record.Spec.Owner.Name,
 		UID:       record.Spec.Owner.UID,
 		ClusterID: clusterID,
 	}
 	found, uid, err := v.owners.Exists(req.Context(), clusterID, owner)
 	if err != nil {
-		return "", "", fmt.Errorf("verifying project-scoped catalog owner: %w", err)
+		return "", "", fmt.Errorf("verifying catalog-scoped catalog owner: %w", err)
 	}
 	if !found || uid == "" || uid != owner.UID {
-		return "", "", errors.New("project-scoped catalog identity owner is no longer current")
+		return "", "", errors.New("catalog-scoped catalog identity owner is no longer current")
 	}
 	return username, tenantPath, nil
 }
@@ -182,7 +187,7 @@ func (v *providerCatalogScopedIdentityResolver) resolve(req *http.Request) (stri
 func oneScopedCatalogHeader(req *http.Request, name string) (string, error) {
 	values := req.Header.Values(name)
 	if len(values) != 1 || strings.TrimSpace(values[0]) == "" || values[0] != strings.TrimSpace(values[0]) || strings.ContainsAny(values[0], "\r\n,") {
-		return "", fmt.Errorf("project-scoped catalog identity requires one %s header", name)
+		return "", fmt.Errorf("catalog-scoped catalog identity requires one %s header", name)
 	}
 	return values[0], nil
 }
@@ -194,11 +199,11 @@ func validScopedCatalogTenantID(value string) bool {
 func oneBearerToken(req *http.Request) (string, error) {
 	values := req.Header.Values("Authorization")
 	if len(values) != 1 {
-		return "", errors.New("project-scoped catalog identity requires one bearer token")
+		return "", errors.New("catalog-scoped catalog identity requires one bearer token")
 	}
 	fields := strings.Fields(values[0])
 	if len(fields) != 2 || !strings.EqualFold(fields[0], "Bearer") || strings.ContainsAny(fields[1], "\r\n") {
-		return "", errors.New("project-scoped catalog identity bearer is malformed")
+		return "", errors.New("catalog-scoped catalog identity bearer is malformed")
 	}
 	return fields[1], nil
 }
@@ -229,7 +234,7 @@ func hasAudience(audiences []string, want string) bool {
 	return false
 }
 
-func parseProjectCatalogServiceAccount(username string) (string, string, bool) {
+func parseCatalogScopedServiceAccount(username string) (string, string, bool) {
 	parts := strings.Split(username, ":")
 	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" || parts[2] != serviceaccounts.Namespace || !strings.HasPrefix(parts[3], projectCatalogIdentityPrefix) || len(parts[3]) != len(projectCatalogIdentityPrefix)+40 {
 		return "", "", false
@@ -242,13 +247,11 @@ func parseProjectCatalogServiceAccount(username string) (string, string, bool) {
 	return username, parts[3], true
 }
 
-func validProjectCatalogIdentityRecord(record *tenancyv1alpha1.ScopedIdentity, expectedName, clusterID, serviceAccountName string) bool {
+func validCatalogScopedIdentityRecord(record *tenancyv1alpha1.ScopedIdentity, expectedName, clusterID, serviceAccountName string) bool {
 	if record == nil || record.DeletionTimestamp != nil || record.Name != expectedName || record.Generation <= 0 ||
 		record.Spec.ClusterID != clusterID || record.Spec.Owner.ClusterID != clusterID ||
 		record.Spec.ServiceAccountName != serviceAccountName ||
-		record.Spec.Owner.Provider != projectCatalogOwnerProvider || record.Spec.Owner.Kind != projectCatalogOwnerKind ||
-		record.Spec.Owner.Group != projectCatalogOwnerGroup || record.Spec.Owner.Version != projectCatalogOwnerVersion ||
-		record.Spec.Owner.Resource != projectCatalogOwnerResource || record.Spec.Owner.Name == "" || record.Spec.Owner.UID == "" ||
+		!allowedCatalogIdentityOwner(record.Spec.Owner) || record.Spec.Owner.Name == "" || record.Spec.Owner.UID == "" ||
 		record.Spec.Attestation.Mode != tenancyv1alpha1.ScopedIdentityAttestationProvider ||
 		record.Spec.Attestation.Subject != providers.ProviderSAUsername ||
 		record.Status.Phase != tenancyv1alpha1.ScopedIdentityReady || record.Status.ServiceAccount != serviceAccountName ||
@@ -256,13 +259,23 @@ func validProjectCatalogIdentityRecord(record *tenancyv1alpha1.ScopedIdentity, e
 		return false
 	}
 	owner := identity.Owner{
-		Provider: projectCatalogOwnerProvider,
-		Kind:     projectCatalogOwnerKind,
-		Group:    projectCatalogOwnerGroup,
-		Version:  projectCatalogOwnerVersion,
-		Resource: projectCatalogOwnerResource,
+		Provider: record.Spec.Owner.Provider,
+		Kind:     record.Spec.Owner.Kind,
+		Group:    record.Spec.Owner.Group,
+		Version:  record.Spec.Owner.Version,
+		Resource: record.Spec.Owner.Resource,
 		Name:     record.Spec.Owner.Name,
 		UID:      record.Spec.Owner.UID,
 	}
 	return identity.ServiceAccountName(owner) == serviceAccountName && identity.RecordName(clusterID, serviceAccountName) == expectedName
+}
+
+// Catalog access is read-only and restricted to these platform-owned kinds.
+// The central record, provider attestation, tenant and live owner UID are still
+// verified for both; other scoped identities gain no catalog admission.
+func allowedCatalogIdentityOwner(owner tenancyv1alpha1.ScopedIdentityOwner) bool {
+	return (owner.Provider == projectCatalogOwnerProvider && owner.Kind == projectCatalogOwnerKind &&
+		owner.Group == projectCatalogOwnerGroup && owner.Version == projectCatalogOwnerVersion && owner.Resource == projectCatalogOwnerResource) ||
+		(owner.Provider == agentCatalogOwnerProvider && owner.Kind == agentCatalogOwnerKind &&
+			owner.Group == agentCatalogOwnerGroup && owner.Version == agentCatalogOwnerVersion && owner.Resource == agentCatalogOwnerResource)
 }

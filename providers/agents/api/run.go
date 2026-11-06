@@ -220,6 +220,14 @@ type runCheckpoint struct {
 	// current caller and revalidates source-backed results before reopening them.
 	ArtifactOwner string                         `json:"artifactOwner,omitempty"`
 	ArtifactRefs  []store.AgentArtifactReference `json:"artifactRefs,omitempty"`
+	// Attachment receipts, skill digest selections, and provider resource
+	// coordinates are immutable input pointers. Their bytes and caller bearer
+	// never enter the checkpoint.
+	AttachmentOwner      string                         `json:"attachmentOwner,omitempty"`
+	AttachmentRefs       []store.AgentAttachmentReceipt `json:"attachmentRefs,omitempty"`
+	SkillRefs            []agentSkillSelection          `json:"skillRefs,omitempty"`
+	ContextResourceOwner string                         `json:"contextResourceOwner,omitempty"`
+	ContextResources     []agentContextResource         `json:"contextResources,omitempty"`
 }
 
 // backendState is the resume state to hand back across the seam: whichever of
@@ -359,6 +367,116 @@ func checkpointArtifactReferences(run taskRun) (string, []store.AgentArtifactRef
 	return owner, refs
 }
 
+func checkpointAgentInputReferences(run taskRun) (string, []store.AgentAttachmentReceipt, []agentSkillSelection, string, []agentContextResource) {
+	attachmentOwner := strings.TrimSpace(run.AttachmentOwner)
+	attachments := make([]store.AgentAttachmentReceipt, 0, len(run.AttachmentRefs))
+	if attachmentOwner != "" && len(run.AttachmentRefs) == 0 && run.Trigger == agentsv1alpha1.RunTriggerChat {
+		// A plain follow-up still needs the current caller identity to hydrate
+		// earlier attachment messages. Preserve the owner pointer so a resumed
+		// checkpoint can revalidate that principal without copying any bytes.
+	} else if attachmentOwner != "" && len(run.AttachmentRefs) > 0 && len(run.AttachmentRefs) <= 8 {
+		seen := map[string]bool{}
+		var total int64
+		for _, receipt := range run.AttachmentRefs {
+			if validateAgentAttachmentReceiptInput(receipt) != nil || seen[receipt.ID] {
+				attachments = nil
+				attachmentOwner = ""
+				break
+			}
+			seen[receipt.ID] = true
+			total += receipt.SizeBytes
+			if total > 50<<20 {
+				attachments = nil
+				attachmentOwner = ""
+				break
+			}
+			attachments = append(attachments, receipt)
+		}
+	} else {
+		attachmentOwner = ""
+	}
+	if len(attachments) == 0 && len(run.AttachmentRefs) > 0 {
+		attachmentOwner = ""
+	}
+
+	skills := make([]agentSkillSelection, 0, len(run.SkillRefs))
+	if len(run.SkillRefs) <= 8 {
+		seen := map[string]bool{}
+		for _, ref := range run.SkillRefs {
+			if ref.ID == "" || !validAgentSkillDigest(ref.SHA256) || seen[ref.ID] {
+				skills = nil
+				break
+			}
+			seen[ref.ID] = true
+			skills = append(skills, ref)
+		}
+	}
+	if len(run.SkillRefs) > 8 {
+		skills = nil
+	}
+
+	resourceOwner := strings.TrimSpace(run.ContextResourceOwner)
+	resources, err := normalizeAgentContextResources(run.ContextResources)
+	if err != nil || len(resources) == 0 {
+		resourceOwner, resources = "", nil
+	}
+	return attachmentOwner, attachments, skills, resourceOwner, resources
+}
+
+func resumeAgentInputReferences(checkpoint runCheckpoint, _ string, attachmentCaller string, recovery bool) (string, []store.AgentAttachmentReceipt, []agentSkillSelection, string, []agentContextResource, error) {
+	attachmentCaller = strings.TrimSpace(attachmentCaller)
+	attachmentOwner := strings.TrimSpace(checkpoint.AttachmentOwner)
+	attachmentRefs := append([]store.AgentAttachmentReceipt(nil), checkpoint.AttachmentRefs...)
+	if len(attachmentRefs) == 0 {
+		if attachmentOwner != "" && ((attachmentCaller != "" && attachmentCaller != attachmentOwner) || (attachmentCaller == "" && !recovery)) {
+			return "", nil, nil, "", nil, errors.New("historical attachment access requires the original caller or accepted-run recovery")
+		}
+	} else {
+		if attachmentOwner == "" || (attachmentCaller != "" && attachmentCaller != attachmentOwner) || (attachmentCaller == "" && !recovery) || len(attachmentRefs) > 8 {
+			return "", nil, nil, "", nil, errors.New("uploaded attachments require the original caller or accepted-run recovery")
+		}
+		seen := map[string]bool{}
+		var total int64
+		for _, receipt := range attachmentRefs {
+			if validateAgentAttachmentReceiptInput(receipt) != nil || seen[receipt.ID] {
+				return "", nil, nil, "", nil, errors.New("uploaded attachments are unavailable")
+			}
+			seen[receipt.ID] = true
+			total += receipt.SizeBytes
+			if total > 50<<20 {
+				return "", nil, nil, "", nil, errors.New("uploaded attachments exceed the per-turn limit")
+			}
+		}
+	}
+
+	skillRefs := append([]agentSkillSelection(nil), checkpoint.SkillRefs...)
+	if len(skillRefs) > 8 {
+		return "", nil, nil, "", nil, errors.New("skill checkpoint exceeds the per-turn selection limit")
+	}
+	seenSkills := map[string]bool{}
+	for _, ref := range skillRefs {
+		if ref.ID == "" || !validAgentSkillDigest(ref.SHA256) || seenSkills[ref.ID] {
+			return "", nil, nil, "", nil, errors.New("skill checkpoint is invalid")
+		}
+		seenSkills[ref.ID] = true
+	}
+
+	resourceOwner := strings.TrimSpace(checkpoint.ContextResourceOwner)
+	resources, err := normalizeAgentContextResources(checkpoint.ContextResources)
+	if err != nil {
+		return "", nil, nil, "", nil, errors.New("provider resource checkpoint is invalid")
+	}
+	if len(resources) == 0 {
+		if resourceOwner != "" {
+			return "", nil, nil, "", nil, errors.New("provider resource checkpoint is incomplete")
+		}
+		resourceOwner = ""
+	} else if resourceOwner == "" {
+		return "", nil, nil, "", nil, errors.New("provider resource checkpoint is incomplete")
+	}
+	return attachmentOwner, attachmentRefs, skillRefs, resourceOwner, resources, nil
+}
+
 // resumeArtifactReferences restores only the attached pointer envelope and
 // requires the same current attended principal. A caller identity mismatch
 // must not turn a checkpointed reference into access to another user's data.
@@ -409,8 +527,21 @@ type taskRun struct {
 	// recheck source authorization; result bytes and credentials stay out.
 	ArtifactOwner string
 	ArtifactRefs  []store.AgentArtifactReference
-	SourceName    string // schedule/trigger/connection that fired this run
-	ParentRunID   string
+	// Content parts and selected references stay pointer-only in durable
+	// messages and checkpoints. Uploaded bytes are reopened by the scoped store
+	// when a model or harness invocation needs them.
+	ContentParts    []agentChatContentPart
+	AttachmentOwner string
+	// AttachmentCaller is the canonical KCP username resolved from the current
+	// caller bearer for attended rich-input turns. CallerUser remains the hub's
+	// user UUID for audit and resource-coordinate checks.
+	AttachmentCaller     string
+	AttachmentRefs       []store.AgentAttachmentReceipt
+	SkillRefs            []agentSkillSelection
+	ContextResourceOwner string
+	ContextResources     []agentContextResource
+	SourceName           string // schedule/trigger/connection that fired this run
+	ParentRunID          string
 
 	// IdempotencyKey is the caller's de-duplication token for an API-invoked run.
 	// Carried here because the lifecycle rewrites the run record from scratch and
@@ -647,10 +778,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Skills are an optional input catalog on every trigger. Explicit turn
+	// selections pin exact digests; the effective enabled catalog is rebuilt for
+	// all future model and harness calls.
+	skillSnapshot, skillGuidance, skillTools, skillErr := s.agentSkillRuntime(ctx, run, run.SkillRefs)
+	if skillErr != nil {
+		return runResult{}, fmt.Errorf("building the Agent skill catalog: %w", skillErr)
+	}
+
 	// WHICH BACKEND. The one branch in the lifecycle, and it is a branch in the
 	// setup rather than in the flow: past this point the turn is a Backend and
 	// everything below — the durable record, the transcript, the checkpoint, the
 	// usage, the terminal phase — is identical for both.
+	var mcpInstructions string
 	var (
 		b         backend.Backend
 		harnessT  *harnessTurn
@@ -659,10 +799,11 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	)
 	if agent.Spec.HarnessBacked() {
 		var resolved harnessTurn
-		if resolved, err = s.harnessBackendFor(ctx, run, sessionID, runID, cont); err != nil {
+		if resolved, err = s.harnessBackendFor(ctx, run, sessionID, runID, cont, skillSnapshot); err != nil {
 			return runResult{}, err
 		}
 		harnessT, b = &resolved, resolved.backend
+		mcpInstructions = skillGuidance
 		log.Printf("agents: run %s (agent %s) dispatching turn %d to %s on service %s",
 			runID, agent.Name, resolved.Session.Turns, resolved.Harness, resolved.Service)
 	} else {
@@ -678,7 +819,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// so spawned workers still inherit the configured Agent defaults.
 		compactionRun := run
 		compactionRun.Agent = agent
-		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(compactionRun, sessionID, modelName))
+		b = backendmodel.New(s.engine, chatModel, modelName, s.contextCompactor(compactionRun, sessionID, modelName)).
+			WithUserInputHydrator(s.agentAttachmentInputHydrator(run, sessionID, modelName))
 	}
 	brun := &backend.Run{ID: runID, SessionID: sessionID, Agent: agent.Name, Trigger: run.Trigger}
 	// Register for POST /api/runs/{id}/cancel and for the Run reconciler's
@@ -747,9 +889,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// the Agent reconciler already reports spec.tools on such an agent as
 	// meaningless rather than letting it read as granted.
 	var (
-		toolset         []backend.Tool
-		mcpInstructions string
-		closeTools      = func() {}
+		toolset    []backend.Tool
+		closeTools = func() {}
 	)
 	if !agent.Spec.HarnessBacked() {
 		toolset, mcpInstructions, closeTools = s.buildToolset(ctx, tools.Deps{
@@ -758,6 +899,11 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			RunID:     runID,
 			DataPlane: s.dataPlaneFor(run),
 		}, run)
+		toolset = append(toolset, skillTools...)
+		if run.Trigger == agentsv1alpha1.RunTriggerChat || len(run.AttachmentRefs) > 0 {
+			toolset = append(toolset, s.agentAttachmentReadTool(ctx, run, sessionID))
+		}
+		mcpInstructions = joinRunGuidance(mcpInstructions, skillGuidance)
 	}
 	defer closeTools()
 
@@ -791,6 +937,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			// of the session's history or the agent's notes — the coordinator
 			// approved the prompt it sent, not the conversation around it.
 			msgs = repositoryTurnMessages(agent, run.Task)
+			if strings.TrimSpace(skillGuidance) != "" {
+				last := msgs[len(msgs)-1]
+				msgs = append(msgs[:len(msgs)-1], backend.Message{Role: backend.RoleSystem, Content: skillGuidance}, last)
+			}
 		} else {
 			msgs, aerr = s.assembleTurnCtx(ctx, run, sessionID, mcpInstructions, hasToolNamed(toolset, "spawn"))
 		}
@@ -803,18 +953,19 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		// is written; queue/model/toolset setup is not worked time.
 		startedAt = time.Now().UTC()
 		taskMessageID := uuid.NewString()
-		if aerr := s.store.AppendMessage(ctx, scope, store.Message{
-			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
-			Role: "user", Content: run.Task, CreatedAt: startedAt,
-			Metadata: map[string]any{"actorID": strings.TrimSpace(run.CallerUser)},
-		}); aerr != nil {
-			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persist agent task message: %w", aerr))
-		}
 		// The active history already contains this request as its final user row.
 		// Attach the durable ID so a compaction checkpoint can prove which stored
 		// message that anchor represents, even though the append API assigns
 		// sequence numbers internally and does not return the updated row.
-		msgs[len(msgs)-1].ID = taskMessageID
+		if len(msgs) > 0 {
+			current := &msgs[len(msgs)-1]
+			current.ID = taskMessageID
+			if current.Role == backend.RoleUser && len(run.AttachmentRefs) > 0 {
+				current.InputAttachments = append([]backend.AttachmentReceipt(nil), run.AttachmentRefs...)
+				current.InputAttachmentOwner = run.AttachmentOwner
+				current.InputAttachmentBindingID = runID
+			}
+		}
 		running := store.Run{
 			ID: runID, AgentName: agent.Name, SessionID: sessionID, Trigger: run.Trigger,
 			ParentRunID: run.ParentRunID, IdempotencyKey: run.IdempotencyKey,
@@ -839,10 +990,31 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 			}
 			running.Checkpoint = checkpoint
 		}
-		if err := s.saveRun(ctx, scope, running); err != nil {
-			// The runner is an external process. Do not dispatch it unless its
-			// attempt coordinates and safe cancel target are already durable.
-			return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+		message := store.Message{
+			ID: taskMessageID, AgentName: agent.Name, SessionID: sessionID, RunID: runID,
+			Role: "user", Content: run.Task, CreatedAt: startedAt,
+			Metadata: agentChatTranscriptMetadata(run),
+		}
+		if len(run.AttachmentRefs) > 0 {
+			admission, ok := s.store.(store.AgentChatAdmissionStore)
+			if !ok {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, errors.New("atomic Agent chat attachment admission is not configured"))
+			}
+			if err := admission.CreateAgentChatRun(ctx, scope, string(agent.UID), message, running, run.AttachmentRefs, run.AttachmentOwner, startedAt); err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("accepting Agent chat input: %w", err))
+			}
+			// The transaction wrote the durable Run and transcript anchor together;
+			// projection is reporting, after the authoritative admission boundary.
+			s.projectRun(ctx, scope, running)
+		} else {
+			if err := s.store.AppendMessage(ctx, scope, message); err != nil {
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persist agent task message: %w", err))
+			}
+			if err := s.saveRun(ctx, scope, running); err != nil {
+				// The runner is an external process. Do not dispatch it unless its
+				// attempt coordinates and safe cancel target are already durable.
+				return s.failBeforeStart(ctx, scope, run, sessionID, startedAt, fmt.Errorf("persisting the running record before dispatch: %w", err))
+			}
 		}
 		var priorHistory []backend.Message
 		if len(msgs) > 0 {
@@ -1043,6 +1215,7 @@ func (s *Server) parkRun(ctx context.Context, run taskRun, sessionID string, sta
 		WorkedDurationMS: tracker.durationMS(),
 	}
 	ck.ArtifactOwner, ck.ArtifactRefs = checkpointArtifactReferences(run)
+	ck.AttachmentOwner, ck.AttachmentRefs, ck.SkillRefs, ck.ContextResourceOwner, ck.ContextResources = checkpointAgentInputReferences(run)
 	if harnessT != nil {
 		if cfg := run.Agent.Spec.Harness(); cfg != nil {
 			ck.HarnessRunner = &harnessCancelTarget{
@@ -1697,6 +1870,17 @@ func hasToolNamed(ts []backend.Tool, name string) bool {
 		}
 	}
 	return false
+}
+
+func joinRunGuidance(first, second string) string {
+	first, second = strings.TrimSpace(first), strings.TrimSpace(second)
+	if first == "" {
+		return second
+	}
+	if second == "" {
+		return first
+	}
+	return first + "\n\n" + second
 }
 
 func (s *Server) assembleTurnCtx(ctx context.Context, run taskRun, sessionID, mcpInstructions string, fanOut bool) ([]backend.Message, error) {

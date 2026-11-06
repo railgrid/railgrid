@@ -24,19 +24,22 @@ import (
 type MemoryStore struct {
 	sessionModels      map[string]memorySessionModel
 	mu                 sync.Mutex
-	messages           map[string][]Message         // key: scope|session
-	sessionTitles      map[string]sessionTitle      // key: scope|session
-	runs               map[string]Run               // key: scope|runID
-	memories           map[string]Memory            // key: scope|memoryID
-	inbox              map[string]InboxItem         // key: scope|itemID
-	toolCalls          map[string][]ToolCall        // key: scope
-	usage              map[string]Usage             // key: scope|agent|windowStart
-	tenants            map[string]TenantRef         // key: clusterID
-	summaries          map[string]SessionSummary    // key: scope|session
-	harness            map[string]HarnessSession    // key: scope|session
-	idempotencyPrimary map[string]bool              // key: scope|runID; one stable winner per tenant/agent/key
-	artifacts          map[string]runArtifactRow    // key: scope|runID|name
-	agentArtifacts     map[string]AgentArtifact     // key: tenant|agent|artifactID
+	messages           map[string][]Message       // key: scope|session
+	sessionTitles      map[string]sessionTitle    // key: scope|session
+	runs               map[string]Run             // key: scope|runID
+	memories           map[string]Memory          // key: scope|memoryID
+	inbox              map[string]InboxItem       // key: scope|itemID
+	toolCalls          map[string][]ToolCall      // key: scope
+	usage              map[string]Usage           // key: scope|agent|windowStart
+	tenants            map[string]TenantRef       // key: clusterID
+	summaries          map[string]SessionSummary  // key: scope|session
+	summaryGenerations map[string]int64           // key: scope|session; survives summary invalidation
+	harness            map[string]HarnessSession  // key: scope|session
+	idempotencyPrimary map[string]bool            // key: scope|runID; one stable winner per tenant/agent/key
+	artifacts          map[string]runArtifactRow  // key: scope|runID|name
+	agentArtifacts     map[string]AgentArtifact   // key: tenant|agent|artifactID
+	agentAttachments   map[string]AgentAttachment // key: tenant|agent|Agent UID|attachmentID
+	attachmentQuota    AgentAttachmentQuota
 	deliveries         map[string][]WebhookDelivery // key: scope|webhookUID, oldest first
 	messageSequence    int64
 	// runScopes remembers each run's scope so ListUnfinishedRuns can report it,
@@ -64,10 +67,13 @@ func NewMemoryStore() *MemoryStore {
 		usage:              map[string]Usage{},
 		tenants:            map[string]TenantRef{},
 		summaries:          map[string]SessionSummary{},
+		summaryGenerations: map[string]int64{},
 		harness:            map[string]HarnessSession{},
 		idempotencyPrimary: map[string]bool{},
 		artifacts:          map[string]runArtifactRow{},
 		agentArtifacts:     map[string]AgentArtifact{},
+		agentAttachments:   map[string]AgentAttachment{},
+		attachmentQuota:    DefaultAgentAttachmentQuota(),
 		deliveries:         map[string][]WebhookDelivery{},
 		mcpSessions:        map[string]HarnessMCPSession{},
 		runScopes:          map[string]Scope{},
@@ -146,6 +152,12 @@ func (m *MemoryStore) PutSessionSummary(_ context.Context, scope Scope, s Sessio
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	k := sessionKey(scope, s.SessionID)
+	if s.Generation != m.summaryGenerations[k] {
+		return ErrSessionCheckpointStale
+	}
+	if err := m.validateCheckpointAttachmentsLocked(scope, s.SessionID, s.Checkpoint); err != nil {
+		return err
+	}
 	if current, ok := m.summaries[k]; ok && current.Checkpoint != nil {
 		if s.Checkpoint == nil || s.Checkpoint.ThroughSequence < current.Checkpoint.ThroughSequence {
 			return ErrSessionCheckpointStale
@@ -162,7 +174,12 @@ func (m *MemoryStore) GetSessionSummary(_ context.Context, scope Scope, sessionI
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	s, ok := m.summaries[sessionKey(scope, sessionID)]
+	k := sessionKey(scope, sessionID)
+	s, ok := m.summaries[k]
+	if !ok {
+		s.SessionID = sessionID
+	}
+	s.Generation = m.summaryGenerations[k]
 	return cloneSessionSummary(s), ok, nil
 }
 
@@ -217,6 +234,28 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		return
 	}
 	moveKey := func(key string) string { return toPrefix + strings.TrimPrefix(key, fromPrefix) }
+	affectedSessions := map[string]struct{}{}
+	collectSession := func(key string) {
+		if !hasPrefix(key, fromPrefix) {
+			return
+		}
+		agentName, sessionID, ok := strings.Cut(strings.TrimPrefix(key, fromPrefix), "|")
+		if ok && agentName != "" && sessionID != "" {
+			affectedSessions[agentName+"\x00"+sessionID] = struct{}{}
+		}
+	}
+	for key := range m.messages {
+		collectSession(key)
+	}
+	for key := range m.summaries {
+		collectSession(key)
+	}
+	for key := range m.sessionModels {
+		collectSession(key)
+	}
+	for key := range m.summaryGenerations {
+		collectSession(key)
+	}
 
 	for key, rows := range m.messages {
 		if !hasPrefix(key, fromPrefix) {
@@ -343,6 +382,26 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 		}
 		delete(m.summaries, key)
 	}
+	for key, generation := range m.summaryGenerations {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if generation > m.summaryGenerations[target] {
+			m.summaryGenerations[target] = generation
+		}
+		delete(m.summaryGenerations, key)
+	}
+	orderedSessions := make([]string, 0, len(affectedSessions))
+	for session := range affectedSessions {
+		orderedSessions = append(orderedSessions, session)
+	}
+	sort.Strings(orderedSessions)
+	for _, session := range orderedSessions {
+		agentName, sessionID, _ := strings.Cut(session, "\x00")
+		target := Scope{OrgUUID: ref.OrgUUID, WorkspaceUUID: ref.WorkspaceUUID, AgentName: agentName}
+		m.summaryGenerations[sessionKey(target, sessionID)]++
+	}
 	for key, session := range m.harness {
 		if !hasPrefix(key, fromPrefix) {
 			continue
@@ -364,6 +423,16 @@ func (m *MemoryStore) migrateUnmappedScope(clusterID string, ref TenantRef) {
 			m.artifacts[target] = row
 		}
 		delete(m.artifacts, key)
+	}
+	for key, attachment := range m.agentAttachments {
+		if !hasPrefix(key, fromPrefix) {
+			continue
+		}
+		target := moveKey(key)
+		if _, exists := m.agentAttachments[target]; !exists {
+			m.agentAttachments[target] = attachment
+		}
+		delete(m.agentAttachments, key)
 	}
 	for key, rows := range m.deliveries {
 		if !hasPrefix(key, fromPrefix) {
@@ -448,12 +517,22 @@ func (m *MemoryStore) hasUnmappedRows(tenant, prefix string) bool {
 			return true
 		}
 	}
+	for key := range m.summaryGenerations {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
 	for key := range m.harness {
 		if hasPrefix(key, prefix) {
 			return true
 		}
 	}
 	for key := range m.artifacts {
+		if hasPrefix(key, prefix) {
+			return true
+		}
+	}
+	for key := range m.agentAttachments {
 		if hasPrefix(key, prefix) {
 			return true
 		}
@@ -576,6 +655,7 @@ func cloneSessionSummary(s SessionSummary) SessionSummary {
 	checkpoint := *s.Checkpoint
 	checkpoint.ReplacementHistory = append([]SessionCheckpointMessage(nil), s.Checkpoint.ReplacementHistory...)
 	for i := range checkpoint.ReplacementHistory {
+		checkpoint.ReplacementHistory[i].InputAttachments = append([]AgentAttachmentReceipt(nil), checkpoint.ReplacementHistory[i].InputAttachments...)
 		checkpoint.ReplacementHistory[i].ToolCalls = append([]SessionCheckpointToolCall(nil), checkpoint.ReplacementHistory[i].ToolCalls...)
 		for j := range checkpoint.ReplacementHistory[i].ToolCalls {
 			extra := checkpoint.ReplacementHistory[i].ToolCalls[j].Extra
@@ -788,12 +868,17 @@ func (m *MemoryStore) DeleteSession(_ context.Context, scope Scope, sessionID st
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
+	m.bumpSessionSummaryGenerationLocked(scope, sessionID)
 	delete(m.messages, sessionKey(scope, sessionID))
 	delete(m.sessionTitles, sessionKey(scope, sessionID))
 	// The summary stands for messages that no longer exist; keeping it would
 	// replay a wiped conversation back into the model after "/new".
-	delete(m.summaries, sessionKey(scope, sessionID))
 	delete(m.sessionModels, sessionKey(scope, sessionID))
+	for key, attachment := range m.agentAttachments {
+		if attachment.AgentName == scope.AgentName && attachment.SessionID == sessionID && hasPrefix(key, tenantKey(scope)+"|") {
+			delete(m.agentAttachments, key)
+		}
+	}
 	// The harness session belongs to the conversation that was just wiped. A
 	// "/new" that kept it would chain the next turn onto a harness session
 	// holding the transcript the user asked to be rid of.
@@ -1609,6 +1694,11 @@ func (m *MemoryStore) DeleteAgentData(_ context.Context, scope Scope, agentName 
 			delete(m.agentArtifacts, k)
 		}
 	}
+	for k, attachment := range m.agentAttachments {
+		if attachment.AgentName == agentName && hasPrefix(k, tk+"|") {
+			delete(m.agentAttachments, k)
+		}
+	}
 	for k, mem := range m.memories {
 		if mem.AgentName == agentName && hasPrefix(k, tk+"|") {
 			delete(m.memories, k)
@@ -1636,15 +1726,43 @@ func (m *MemoryStore) DeleteRunData(_ context.Context, scope Scope, runID string
 	defer m.mu.Unlock()
 	scope = m.normalizeScopeLocked(scope)
 	key := tenantKey(scope) + "|" + runID
+	sessionIDs := map[string]struct{}{}
+	if run, ok := m.runs[key]; ok && strings.TrimSpace(run.SessionID) != "" {
+		sessionIDs[run.SessionID] = struct{}{}
+	}
+	messagePrefix := tenantKey(scope) + "|" + scope.AgentName + "|"
+	for messageKey, messages := range m.messages {
+		if !hasPrefix(messageKey, messagePrefix) {
+			continue
+		}
+		for _, message := range messages {
+			if message.RunID == runID {
+				sessionIDs[strings.TrimPrefix(messageKey, messagePrefix)] = struct{}{}
+				break
+			}
+		}
+	}
+	// A checkpoint can contain summarized prose and attachment receipts from
+	// this run even though its source rows remain append-only. Invalidate it in
+	// the same critical section as the run deletion; the generation fence keeps
+	// any compactor that started earlier from restoring its stale replacement.
+	for sessionID := range sessionIDs {
+		m.bumpSessionSummaryGenerationLocked(scope, sessionID)
+	}
 	delete(m.runs, key)
 	delete(m.runScopes, key)
+	for attachmentKey, attachment := range m.agentAttachments {
+		if attachment.AgentName == scope.AgentName && attachment.BindingID == runID && hasPrefix(attachmentKey, tenantKey(scope)+"|") {
+			delete(m.agentAttachments, attachmentKey)
+		}
+	}
 	for k := range m.artifacts {
 		if hasPrefix(k, key+"|") {
 			delete(m.artifacts, k)
 		}
 	}
 	for k, msgs := range m.messages {
-		if !hasPrefix(k, tenantKey(scope)+"|") {
+		if !hasPrefix(k, messagePrefix) {
 			continue
 		}
 		kept := msgs[:0]

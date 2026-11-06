@@ -166,6 +166,28 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, artifactErr.Error())
 		return runResult{}, artifactErr
 	}
+	attachmentCaller := ""
+	if strings.TrimSpace(ck.AttachmentOwner) != "" {
+		if strings.TrimSpace(access.HubToken) != "" {
+			attachmentCaller, err = s.resolveAgentAttachmentOwner(ctx, identity{
+				clusterID: access.ClusterID, orgUUID: agentScope.OrgUUID,
+				workspaceUUID: agentScope.WorkspaceUUID, user: access.CallerUser, token: access.HubToken,
+			})
+			if err != nil {
+				s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "the current caller identity could not be verified for conversation attachments")
+				return runResult{}, err
+			}
+		} else if strings.TrimSpace(access.CallerUser) != "" {
+			// A data-plane approval has no caller bearer. Its gate identity is the
+			// Kubernetes username, the same canonical principal recorded on upload.
+			attachmentCaller = strings.TrimSpace(access.CallerUser)
+		}
+	}
+	attachmentOwner, attachmentRefs, skillRefs, resourceOwner, contextResources, inputErr := resumeAgentInputReferences(ck, access.CallerUser, attachmentCaller, intent.FromPhase == store.RunPhaseRunning)
+	if inputErr != nil {
+		s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, inputErr.Error())
+		return runResult{}, inputErr
+	}
 	s.projectRun(ctx, agentScope, claimed)
 	legacyRun := run
 	legacyRun.SessionID = effectiveSessionID(run.SessionID, run.Trigger)
@@ -179,6 +201,19 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		s.closeRunNow(ctx, agentScope, run, store.RunPhaseFailed, fmt.Sprintf("loading agent: %v", err))
 		return runResult{}, err
 	}
+	if len(attachmentRefs) > 0 {
+		for _, receipt := range attachmentRefs {
+			if _, err := s.loadBoundAgentAttachment(ctx, agentScope, string(agent.UID), effectiveSessionID(run.SessionID, run.Trigger), attachmentOwner, run.ID, receipt); err != nil {
+				s.closeRunNow(ctx, agentScope, claimed, store.RunPhaseFailed, "uploaded attachments are no longer available to this accepted run")
+				return runResult{}, err
+			}
+		}
+	}
+	// These are coordinate-only prompt references. Admission already resolved
+	// each coordinate through the attended caller and pinned its UID; resuming
+	// carries that accepted context as quoted, untrusted metadata. A resume has
+	// no delegated read capability, and any later tool read is authorized by its
+	// ordinary current-caller path.
 
 	used := false
 	tr := taskRun{
@@ -187,6 +222,8 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		ParentRunID: run.ParentRunID,
 		SourceName:  ck.SourceName, NotifyChannel: ck.NotifyChannel,
 		ArtifactOwner: artifactOwner, ArtifactRefs: artifactRefs,
+		AttachmentOwner: attachmentOwner, AttachmentCaller: attachmentCaller, AttachmentRefs: attachmentRefs,
+		SkillRefs: skillRefs, ContextResourceOwner: resourceOwner, ContextResources: contextResources,
 		// A spawned worker's constraints come back off its checkpoint, so a
 		// resumed sub-task is rebuilt as the worker it was — same narrowed
 		// toolset, same approval class, same tool-turn budget, same model

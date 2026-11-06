@@ -472,7 +472,7 @@ func TestChatModelOverrideDoesNotLeakIntoSpawnedWorkerOrResume(t *testing.T) {
 	// Use the normal resume path, which reloads the configured Agent CR and the
 	// worker state from the checkpoint. Its background purpose must still resolve
 	// to credential A after the chat turn selected B.
-	s.resumeRun(ctx, scope, child.ID, runAccess{Creds: creds, CR: fixedAgentCR{agent: agent}}, resumeIntent{
+	_, _ = s.resumeRun(ctx, scope, child.ID, runAccess{Creds: creds, CR: fixedAgentCR{agent: agent}}, resumeIntent{
 		Approval: true, Approve: true, FromPhase: store.RunPhasePendingApproval,
 	})
 	resumed, err := s.store.GetRun(ctx, scope, child.ID)
