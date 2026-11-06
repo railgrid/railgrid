@@ -857,34 +857,26 @@ export class ApiClient {
   // ---- streams -------------------------------------------------------------
 
   async *answerStream(agent: string, id: string, response: import('./types').QuestionReply | undefined, signal: AbortSignal): AsyncGenerator<SSEEvent> {
-    const path = this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id)
-    const r = await this.fetch(path, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { ...this.headers(true), Accept: 'text/event-stream' },
-      body: JSON.stringify({ decision: 'answer', ...(typeof response === 'object' ? { answers: response } : { response }) }),
-      signal,
-    })
-    if (!r.ok || !r.body) throw await this.fail(r)
-    if (!(r.headers.get('content-type') || '').includes('text/event-stream')) {
-      throw new Error('The question reply did not open a chat stream.')
-    }
-    yield* readSSE(r.body, signal)
+    yield* this.attendedChatStream('answer_chat', {
+      agent, inboxID: id, ...(typeof response === 'object' ? { answers: response } : { response }),
+    }, signal)
   }
 
-  // chatStream sends one conversation turn and yields the chat events as they
-  // arrive. The caller drives the loop and applies deltas/tool events/errors.
-  // `signal` aborts the fetch so a Stop button can drop the stream immediately.
-  //
-  // It is the one request that does NOT ride the kube path. A verb carries no
-  // caller credential, and the turn needs the caller's bearer so the agent can
-  // reach the hub's aggregate MCP endpoint — the workspace's clusters and
-  // servers — as the person typing. The provider's own MCP endpoint is the one
-  // route the hub forwards the bearer on, so the turn is the `chat` tool there:
-  // each event is a progress notification carrying the frame in its _meta,
-  // and the terminal frame (done / error / approval_required) is the call's
-  // result. Both are mapped back onto the same SSEEvent shape the verb used.
   async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal, turn: AgentChatTurnContext = {}): AsyncGenerator<SSEEvent> {
+    yield* this.attendedChatStream('chat', {
+      agent,
+      message,
+      sessionId: sessionID || undefined,
+      ...(turn.contentParts?.length ? { contentParts: turn.contentParts.filter((part) => part.type !== 'annotation') } : {}),
+      ...(turn.contextResources?.length ? { contextResources: turn.contextResources } : {}),
+      ...(turn.skills?.length ? {
+        skillRefs: turn.skills.map((skill) => ({ id: skill.id, sha256: skill.digest || '' })).filter((skill) => skill.sha256),
+      } : {}),
+    }, signal)
+  }
+
+  // The MCP service proxy forwards the caller bearer for both halves of an attended turn.
+  private async *attendedChatStream(name: 'chat' | 'answer_chat', args: Record<string, unknown>, signal?: AbortSignal): AsyncGenerator<SSEEvent> {
     const r = await this.fetch(this.url('/mcp'), {
       method: 'POST',
       credentials: 'same-origin',
@@ -895,17 +887,8 @@ export class ApiClient {
         id: CHAT_CALL_ID,
         method: 'tools/call',
         params: {
-          name: 'chat',
-          arguments: {
-            agent,
-            message,
-            sessionId: sessionID || undefined,
-            ...(turn.contentParts?.length ? { contentParts: turn.contentParts.filter((part) => part.type !== 'annotation') } : {}),
-            ...(turn.contextResources?.length ? { contextResources: turn.contextResources } : {}),
-            ...(turn.skills?.length ? {
-              skillRefs: turn.skills.map((skill) => ({ id: skill.id, sha256: skill.digest || '' })).filter((skill) => skill.sha256),
-            } : {}),
-          },
+          name,
+          arguments: args,
           _meta: { progressToken: CHAT_CALL_ID },
         },
       }),
