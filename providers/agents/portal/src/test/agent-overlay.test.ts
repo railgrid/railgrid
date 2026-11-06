@@ -5,13 +5,13 @@ import { ApiClient } from '../api'
 import { AgentsElement } from '../element'
 import { AppStore } from '../store'
 import type { Credential, RailgridContext } from '../types'
-import { agentFixture, modelBackend } from './helpers'
+import { agentFixture, composerEditor, composerText, modelBackend, setComposerText } from './helpers'
 import { settleVue } from './vue-helper'
 
 if (!customElements.get('railgrid-provider-agents')) customElements.define('railgrid-provider-agents', AgentsElement)
 const context = (workspace = 'workspace'): RailgridContext => ({
   basePath: '/ui/providers/agents', orgUUID: 'org', workspaceUUID: workspace,
-  token: 'token-a', user: { sub: 'alice' },
+  tenant: workspace, token: 'token-a', user: { sub: 'alice' },
 })
 const mounted: AgentsElement[] = []
 beforeEach(() => {
@@ -49,9 +49,7 @@ async function mountOverlay(options: {
   return element
 }
 async function send(element: HTMLElement, text: string) {
-  const textarea = element.querySelector('textarea')!
-  textarea.value = text
-  textarea.dispatchEvent(new Event('input'))
+  setComposerText(element, text)
   await settleVue()
   element.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
   await settleVue(10)
@@ -62,24 +60,23 @@ describe('persistent agent overlay', () => {
     const element = await mountOverlay()
     expect(location.hash).toBe('#/linuxservers/warehouse-west')
     expect(element.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
-    const input = element.querySelector('textarea')!
-    input.value = 'Keep this draft'
-    input.dispatchEvent(new Event('input'))
+    const input = composerEditor(element)!
+    setComposerText(element, 'Keep this draft')
     await settleVue()
     element.overlayState = { agent: 'scout', pageContext: '{"resource":"project"}' }
     history.replaceState(null, '', '#/projects/inventory')
     window.dispatchEvent(new Event('hashchange'))
     element.railgridContext = context()
     await settleVue(10)
-    expect(element.querySelector('textarea')).toBe(input)
-    expect(input.value).toBe('Keep this draft')
+    expect(composerEditor(element)).toBe(input)
+    expect(composerText(element)).toBe('Keep this draft')
     expect(element.querySelector('#overlay-agent-persona-heading')).toBeNull()
     expect(element.route?.kind).toBe('agent')
     expect(location.hash).toBe('#/projects/inventory')
     element.overlayState = { agent: 'scout' }
     await settleVue()
-    expect(element.querySelector('textarea')).toBe(input)
-    expect(input.value).toBe('Keep this draft')
+    expect(composerEditor(element)).toBe(input)
+    expect(composerText(element)).toBe('Keep this draft')
   })
 
   it('shows only chat without mounting a thread rail or workbench', async () => {
@@ -89,7 +86,7 @@ describe('persistent agent overlay', () => {
     element.dispatchEvent(new Event('railgrid-overlay-toggle-threads'))
     await settleVue()
     expect(element.querySelector('.agents-overlay-threads')).toBeNull()
-    const input = element.querySelector('textarea')!
+    const input = composerEditor(element)!
     element.dispatchEvent(new Event('railgrid-overlay-focus-composer'))
     await settleVue()
     expect(document.activeElement).toBe(input)
@@ -102,7 +99,7 @@ describe('persistent agent overlay', () => {
     await settleVue()
     const engage = vi.fn()
     element.addEventListener('railgrid-overlay-engage', engage)
-    element.querySelector('textarea')!.focus()
+    composerEditor(element)!.focus()
     await send(element, '   ')
     expect(engage).not.toHaveBeenCalled()
     await send(element, 'Inspect this instance')
@@ -111,30 +108,27 @@ describe('persistent agent overlay', () => {
 
   it('keeps one composer and draft while collapsing to the assistant bar', async () => {
     const element = await mountOverlay()
-    const input = element.querySelector('textarea')!
-    input.value = 'Keep this draft'
-    input.dispatchEvent(new Event('input'))
+    const input = composerEditor(element)!
+    setComposerText(element, 'Keep this draft')
     const engage = vi.fn()
     element.addEventListener('railgrid-overlay-engage', engage)
     element.overlayState = { agent: 'scout', composerOnly: true }
     await settleVue()
     expect(element.querySelector('.agents-chat-shell--bar')).not.toBeNull()
     expect(engage).not.toHaveBeenCalled()
-    expect(element.querySelector('textarea')).toBe(input)
-    expect(input.value).toBe('Keep this draft')
+    expect(composerEditor(element)).toBe(input)
+    expect(composerText(element)).toBe('Keep this draft')
     input.dispatchEvent(new Event('focus'))
     expect(engage).not.toHaveBeenCalled()
     element.overlayState = { agent: 'scout', composerOnly: false }
     await settleVue()
     expect(element.querySelector('.agents-chat-shell--bar')).toBeNull()
-    expect(element.querySelector('textarea')).toBe(input)
+    expect(composerEditor(element)).toBe(input)
   })
 
   it('hands a draft to the ordinary Agents chat in the same session', async () => {
     const overlay = await mountOverlay()
-    const input = overlay.querySelector('textarea')!
-    input.value = 'Continue in Agents'
-    input.dispatchEvent(new Event('input'))
+    setComposerText(overlay, 'Continue in Agents')
     await settleVue()
     overlay.dispatchEvent(new Event('railgrid-chat-handoff'))
     overlay.remove()
@@ -153,7 +147,7 @@ describe('persistent agent overlay', () => {
     normal.store!.agents.loaded = normal.store!.agents.hasSnapshot = true
     normal.store!.dispatchEvent(new Event('change'))
     await settleVue(12)
-    expect(normal.querySelector('textarea')?.value).toBe('Continue in Agents')
+    expect(composerText(normal)).toBe('Continue in Agents')
     expect(normal.route).toEqual({ kind: 'agent', name: 'scout', tab: 'chat' })
   })
 
@@ -164,6 +158,7 @@ describe('persistent agent overlay', () => {
     const stream = vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* (_agent, _message, session, abort) {
       signal = abort
       yield { event: 'start', data: JSON.stringify({ runID: 'run-a', sessionID: session }) }
+      yield { event: 'run_started', data: JSON.stringify({ runID: 'run-a', sessionID: session, status: 'running' }) }
       yield { event: 'delta', data: JSON.stringify({ text: 'Checking the edge' }) }
       await gate
     })
@@ -207,18 +202,17 @@ describe('overlay model recovery', () => {
   it('replaces stale controls and preserves the draft through model removal and restoration', async () => {
     const element = await mountOverlay()
     const stream = vi.spyOn(element.api!, 'chatStream')
-    const input = element.querySelector('textarea')!
-    input.value = 'Keep this unsent draft'; input.dispatchEvent(new Event('input')); await settleVue()
+    setComposerText(element, 'Keep this unsent draft'); await settleVue()
     element.querySelector<HTMLButtonElement>('.k-ai-model-reasoning-picker__trigger')!.click(); await settleVue()
     expect(document.querySelector('[role=dialog]')).not.toBeNull()
     models(element, []); await settleVue(12)
     expect(element.textContent).toContain('Connect a model to continue')
-    expect(element.querySelector('textarea')).toBeNull()
+    expect(composerEditor(element)).toBeNull()
     expect(element.querySelector('.k-ai-model-reasoning-picker')).toBeNull()
     expect(element.querySelector('form.agents-composer')).toBeNull()
     expect(document.querySelector('[role=dialog]')).toBeNull()
     models(element, [{ name: 'openai', provider: 'openai', model: 'restored' }]); await settleVue(10)
-    expect(element.querySelector('textarea')?.value).toBe('Keep this unsent draft')
+    expect(composerText(element)).toBe('Keep this unsent draft')
     expect(stream).not.toHaveBeenCalled()
   })
   it('requires an explicit replacement selection and keeps the same conversation', async () => {
@@ -235,7 +229,7 @@ describe('overlay model recovery', () => {
     expect(save).toHaveBeenCalledOnce()
     expect(save.mock.calls[0][2]).toMatchObject({ modelCredential: 'replacement' })
     expect(element.querySelector('.agents-model-recovery')).toBeNull()
-    expect(element.querySelector('textarea')).toBeTruthy()
+    expect(composerEditor(element)).toBeTruthy()
   })
   it('offers the current Agent default for a deleted explicit chat model without sending or replacing context', async () => {
     const sessionID = 'existing-chat'
@@ -262,9 +256,7 @@ describe('overlay model recovery', () => {
       saveSessionModel,
     })
     const stream = vi.spyOn(element.api!, 'chatStream')
-    const input = element.querySelector<HTMLTextAreaElement>('textarea')!
-    input.value = 'Keep this unsent draft'
-    input.dispatchEvent(new Event('input'))
+    setComposerText(element, 'Keep this unsent draft')
     await settleVue()
     expect(element.textContent).toContain('Earlier answer')
 
@@ -305,7 +297,7 @@ describe('overlay model recovery', () => {
       'scout', sessionID, expect.objectContaining({ modelCredential: '' }),
     ])
     expect(element.querySelector('.agents-model-recovery')).toBeNull()
-    expect(element.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep this unsent draft')
+    expect(composerText(element)).toBe('Keep this unsent draft')
     expect(element.textContent).toContain('Earlier answer')
     expect(element.querySelector('.k-ai-model-reasoning-picker__trigger')?.getAttribute('aria-label')).toContain('new-haiku')
     expect(vi.mocked(element.api!.listMessagePage)).toHaveBeenCalledTimes(1)
@@ -359,24 +351,25 @@ describe('overlay model recovery', () => {
     element.store!.dispatchEvent(new Event('change')); await settleVue()
     expect(element.textContent).toContain('Model access is restricted')
     expect(element.textContent).toContain('Ask a workspace administrator')
-    expect(element.querySelector('textarea')).toBeNull()
+    expect(composerEditor(element)).toBeNull()
     expect(element.querySelector('.agents-model-recovery button')).toBeNull()
   })
   it('moves focus out of the removed composer and restores it after recovery', async () => {
     const element = await mountOverlay()
-    element.querySelector('textarea')!.focus()
+    composerEditor(element)!.focus()
     models(element, []); await settleVue(12)
     expect(document.activeElement?.id).toBe('overlay-model-recovery-title')
     const connect = [...element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent === 'Connect model')!
     connect.focus()
     models(element, [{ name: 'openai', provider: 'openai', model: 'restored' }]); await settleVue(10)
-    expect(document.activeElement).toBe(element.querySelector('textarea'))
+    expect(document.activeElement).toBe(composerEditor(element))
   })
   it('keeps Stop available when a model disappears during an active reply', async () => {
     let finish!: () => void
     const pending = new Promise<void>(resolve => { finish = resolve })
     vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* () {
       yield { event: 'start', data: JSON.stringify({ runID: 'active-run', sessionID: 'active-session' }) }
+      yield { event: 'run_started', data: JSON.stringify({ runID: 'active-run', sessionID: 'active-session', status: 'running' }) }
       await pending
       yield { event: 'done', data: JSON.stringify({ runID: 'active-run', content: 'Done', status: 'Succeeded' }) }
     })
@@ -401,7 +394,7 @@ describe('overlay model recovery', () => {
       expect(getComputedStyle(recovery).display).not.toBe('none')
       expect(getComputedStyle(element.querySelector('.agents-log')!).display).toBe('none')
       expect(recovery.textContent).toContain('Model needed')
-      expect(element.querySelector('textarea')).toBeNull()
+      expect(composerEditor(element)).toBeNull()
       const engage = vi.fn(() => { element.overlayState = { agent: 'scout', composerOnly: false } })
       element.addEventListener('railgrid-overlay-engage', engage)
       recovery.querySelector<HTMLButtonElement>('button')!.click(); await settleVue(12)

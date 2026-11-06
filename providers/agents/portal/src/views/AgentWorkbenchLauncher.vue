@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { CalendarClock, Gauge, SlidersHorizontal, Wrench } from 'lucide-vue-next'
+import { BookOpen, CalendarClock, Gauge, SlidersHorizontal, Wrench } from 'lucide-vue-next'
 import { computed, ref, watch, type Component } from 'vue'
 import AIWorkbenchLauncher from '../agentkit/AIWorkbenchLauncher.vue'
 import type { AIWorkbenchLauncherItemView } from '../agentkit/ai'
@@ -18,7 +18,7 @@ const emit = defineEmits<{
   select: [tab: AgentWorkbenchBuiltInTab]
 }>()
 
-const builtInOrder: readonly AgentWorkbenchBuiltInTab[] = ['config', 'tools', 'automation', 'runs']
+const builtInOrder: readonly AgentWorkbenchBuiltInTab[] = ['config', 'tools', 'automation', 'runs', 'skills']
 const query = ref('')
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
 
@@ -45,7 +45,8 @@ function tabIcon(kind: AgentWorkbenchBuiltInTab): Component {
   if (kind === 'config') return SlidersHorizontal
   if (kind === 'tools') return Wrench
   if (kind === 'automation') return CalendarClock
-  return Gauge
+  if (kind === 'runs') return Gauge
+  return BookOpen
 }
 
 function launcherItem(tab: AgentWorkbenchTabDescriptor): AIWorkbenchLauncherItemView {

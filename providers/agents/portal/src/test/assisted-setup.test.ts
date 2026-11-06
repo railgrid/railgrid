@@ -561,6 +561,7 @@ describe('auto-send on arrival', () => {
     // assertion below reads the message argument.
     const chatStream = vi.fn(async function* (_agent: string, _message: string) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } }
+      yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running' } }
       yield { event: 'done', data: { runID: 'r1', content: 'on it' } }
     })
     const api = stubApi({ chatStream })

@@ -774,6 +774,7 @@ export class Resources {
         description: body.description,
         systemPrompt: body.systemPrompt,
         autonomy: body.autonomy,
+        skills: body.skills?.map((skill) => ({ name: skill.name.trim() })).filter((skill) => skill.name),
       })
       const backend = createBackend(body)
       if (backend) spec.backend = backend
@@ -874,6 +875,9 @@ export class Resources {
         const channels = normalizeChannels(body.channels)
         if (channels.length > 0) await this.assertChannelsUnclaimed(client, name, channels)
         spec.channels = channels
+      }
+      if (body.skills !== undefined) {
+        spec.skills = body.skills.map((skill) => ({ name: skill.name.trim() })).filter((skill) => skill.name)
       }
       if (body.runOutput !== undefined) {
         // Always is the default, so it is written as the absence of the block
