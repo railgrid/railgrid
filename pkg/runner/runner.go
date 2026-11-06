@@ -443,7 +443,11 @@ func (r *Runner) Start(ctx context.Context, request StartRequest) (Receipt, erro
 	}
 	if _, err := r.consumeStagedInputs(workdir, request.AttemptID, request.InputFiles); err != nil {
 		r.releaseResourcesLocked(request.AttemptID, request.Resources)
-		return Receipt{}, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
+		var inputErr *Error
+		if errors.As(err, &inputErr) {
+			return Receipt{}, inputErr
+		}
+		return Receipt{}, protocolError(ErrorUnavailable, true, "consume staged inputs: "+err.Error(), nil)
 	}
 	now := eventNow()
 	receipt := Receipt{

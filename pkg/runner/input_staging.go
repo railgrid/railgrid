@@ -30,6 +30,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
@@ -66,8 +67,12 @@ func (r *Runner) StageInput(ctx context.Context, attemptID string, ref InputFile
 		_ = os.Remove(tmpPath)
 	}()
 	hash := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tmp, hash), io.LimitReader(body, ref.Size+1))
+	tracked := &inputWriteTracker{writer: tmp}
+	written, err := io.Copy(io.MultiWriter(tracked, hash), io.LimitReader(body, ref.Size+1))
 	if err != nil {
+		if tracked.err != nil {
+			return protocolError(ErrorUnavailable, true, "write staged input: "+tracked.err.Error(), nil)
+		}
 		return protocolError(ErrorInvalidRequest, false, "read staged input: "+err.Error(), nil)
 	}
 	if written != ref.Size || "sha256:"+hex.EncodeToString(hash.Sum(nil)) != ref.Digest {
@@ -128,6 +133,45 @@ func inputRefMatches(files []InputFile, ref InputFile) bool {
 	return false
 }
 
+type inputWriteTracker struct {
+	writer io.Writer
+	err    error
+}
+
+func (w *inputWriteTracker) Write(p []byte) (int, error) {
+	n, err := w.writer.Write(p)
+	if err != nil {
+		w.err = err
+	} else if n != len(p) {
+		w.err = io.ErrShortWrite
+	}
+	return n, err
+}
+
+// inputOperationError keeps caller mistakes and unsafe workspace paths from
+// becoming transient retries, while treating filesystem failures as
+// recoverable runner availability problems.
+func inputOperationError(operation string, err error) *Error {
+	message := operation + ": " + err.Error()
+	if isInputFilesystemError(err) {
+		return protocolError(ErrorUnavailable, true, message, nil)
+	}
+	return protocolError(ErrorInvalidRequest, false, message, nil)
+}
+
+func isInputFilesystemError(err error) bool {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return true
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno)
+}
+
 func stagedInputUsage(dir string) (int, int64, error) {
 	entries, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -163,24 +207,35 @@ func (r *Runner) consumeStagedInputs(workdir, attemptID string, files []InputFil
 		return nil, nil
 	}
 	if err := validateInputFiles(files); err != nil {
-		return nil, err
+		return nil, protocolError(ErrorInvalidRequest, false, err.Error(), nil)
 	}
-	for _, ref := range files {
+	stagedAvailable := make([]bool, len(files))
+	for index, ref := range files {
 		staged := stagedInputPath(r.cfg.StateDir, attemptID, ref.ID)
-		if err := verifyInputFile(staged, ref); err == nil {
+		if err := inspectStagedInput(staged, ref); err == nil {
+			stagedAvailable[index] = true
 			continue
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("staged input %q is invalid: %w", ref.ID, err)
+			return nil, inputOperationError(fmt.Sprintf("staged input %q is invalid", ref.ID), err)
 		}
 		dirComponents := append([]string{".railgrid", "inputs", attemptID}, inputDirectoryComponents(ref)...)
 		dir, err := existingInputDirectory(workdir, dirComponents...)
-		if err != nil || verifyInputFile(filepath.Join(dir, ref.Name), ref) != nil {
-			return nil, fmt.Errorf("staged input %q is missing or invalid: %w", ref.ID, os.ErrNotExist)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, missingStagedInputError(ref)
+		}
+		if err != nil {
+			return nil, inputOperationError(fmt.Sprintf("inspect materialized input %q", ref.ID), err)
+		}
+		if err := verifyInputFile(filepath.Join(dir, path.Base(inputRelativePath(ref))), ref); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, missingStagedInputError(ref)
+			}
+			return nil, inputOperationError(fmt.Sprintf("verify materialized input %q", ref.ID), err)
 		}
 	}
 	_, err := ensureInputDirectory(workdir, ".railgrid", "inputs", attemptID)
 	if err != nil {
-		return nil, fmt.Errorf("prepare input destination: %w", err)
+		return nil, inputOperationError("prepare input destination", err)
 	}
 	materialized := make([]harness.InputFile, 0, len(files))
 	created := make([]InputFile, 0, len(files))
@@ -191,27 +246,24 @@ func (r *Runner) consumeStagedInputs(workdir, attemptID string, files []InputFil
 			}
 		}
 	}
-	for _, ref := range files {
+	for index, ref := range files {
 		staged := stagedInputPath(r.cfg.StateDir, attemptID, ref.ID)
 		dirComponents := append([]string{".railgrid", "inputs", attemptID}, inputDirectoryComponents(ref)...)
 		fileDir, err := ensureInputDirectory(workdir, dirComponents...)
 		if err != nil {
 			rollback()
-			return nil, fmt.Errorf("prepare input %q destination: %w", ref.ID, err)
+			return nil, inputOperationError(fmt.Sprintf("prepare input %q destination", ref.ID), err)
 		}
 		dest := filepath.Join(fileDir, path.Base(inputRelativePath(ref)))
-		if err := verifyInputFile(staged, ref); err == nil {
+		if stagedAvailable[index] {
 			wasCreated, err := materializeInput(staged, dest, ref)
 			if err != nil {
 				rollback()
-				return nil, fmt.Errorf("materialize input %q: %w", ref.ID, err)
+				return nil, inputOperationError(fmt.Sprintf("materialize input %q", ref.ID), err)
 			}
 			if wasCreated {
 				created = append(created, ref)
 			}
-		} else if !errors.Is(err, os.ErrNotExist) || verifyInputFile(dest, ref) != nil {
-			rollback()
-			return nil, fmt.Errorf("staged input %q is missing or invalid: %w", ref.ID, err)
 		}
 		materialized = append(materialized, harness.InputFile{
 			ID:           ref.ID,
@@ -225,6 +277,27 @@ func (r *Runner) consumeStagedInputs(workdir, attemptID string, files []InputFil
 		})
 	}
 	return materialized, nil
+}
+
+func missingStagedInputError(ref InputFile) *Error {
+	return protocolError(ErrorUnavailable, true, fmt.Sprintf("staged input %q is missing; restage its bytes and retry Start", ref.ID), nil)
+}
+
+// inspectStagedInput checks the staged file's type and size without hashing it.
+// StageInput already verified the digest; materializeInput rechecks it while
+// copying, and launchInputFiles verifies the workspace copy before execution.
+func inspectStagedInput(path string, ref InputFile) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("staged input is not a regular file")
+	}
+	if info.Size() != ref.Size {
+		return errors.New("staged input size does not match its manifest")
+	}
+	return nil
 }
 
 func removeMaterializedInputFile(workdir, attemptID string, ref InputFile) error {
@@ -347,11 +420,16 @@ func materializeInput(source, dest string, ref InputFile) (bool, error) {
 	if err := verifyInputFile(dest, ref); err == nil {
 		return false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
+		if isInputFilesystemError(err) {
+			return false, err
+		}
 		if _, statErr := os.Lstat(dest); statErr == nil {
 			return false, errors.New("input destination already exists with different content")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return false, statErr
 		}
 	}
-	in, err := os.Open(source)
+	in, err := openStagedInput(source, ref)
 	if err != nil {
 		return false, err
 	}
@@ -386,6 +464,30 @@ func materializeInput(source, dest string, ref InputFile) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func openStagedInput(path string, ref InputFile) (*os.File, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() != ref.Size {
+		return nil, errors.New("staged input is not the expected regular file")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() || opened.Size() != ref.Size {
+		_ = f.Close()
+		return nil, errors.New("staged input changed while it was opened")
+	}
+	return f, nil
 }
 
 func decodeInputFileHeader(value string) (InputFile, error) {

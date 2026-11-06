@@ -269,7 +269,10 @@ func TestStageInputRejectsMismatchedBytesAndStartWithoutStaging(t *testing.T) {
 	if _, err := r.Start(context.Background(), request); err == nil {
 		t.Fatal("Start accepted a manifest whose bytes were never staged")
 	} else {
-		assertProtocolCode(t, err, ErrorInvalidRequest)
+		var protocolErr *Error
+		if !errors.As(err, &protocolErr) || protocolErr.Code != ErrorUnavailable || !protocolErr.Retryable {
+			t.Fatalf("Start missing staged bytes error = %v, want retryable %s", err, ErrorUnavailable)
+		}
 	}
 }
 

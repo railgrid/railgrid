@@ -96,6 +96,7 @@ func validateInputFiles(files []InputFile) error {
 	}
 	seen := make(map[string]struct{}, len(files))
 	destinations := make(map[string]string, len(files))
+	destinationChildren := make(map[string]string, len(files))
 	var total int64
 	for _, file := range files {
 		if err := ValidateInputFile(file); err != nil {
@@ -114,16 +115,42 @@ func validateInputFiles(files []InputFile) error {
 			relative = file.Name
 		}
 		destination := strings.ToLower(group + "/" + relative)
-		if previous, exists := destinations[destination]; exists {
-			return fmt.Errorf("input files %q and %q target the same relative path", previous, file.ID)
+		if previous := collidingInputDestination(destinations, destinationChildren, destination); previous != "" {
+			return fmt.Errorf("input destination collision: files %q and %q target the same relative path or a file/directory prefix", previous, file.ID)
 		}
 		destinations[destination] = file.ID
+		for parent := path.Dir(destination); parent != "."; parent = path.Dir(parent) {
+			if _, exists := destinationChildren[parent]; !exists {
+				destinationChildren[parent] = file.ID
+			}
+		}
 		if total > MaxInputBytes-file.Size {
 			return fmt.Errorf("input files exceed the %d-byte aggregate limit", MaxInputBytes)
 		}
 		total += file.Size
 	}
 	return nil
+}
+
+// collidingInputDestination returns the file already using destination, or a
+// file whose destination is a parent or child path. A manifest cannot
+// materialize both "assets/logo.png" and "assets/logo.png/metadata.json".
+// destinations, destinationChildren and destination are lowercased by the
+// caller to preserve the case-insensitive collision behavior used for exact
+// paths. The child map lets this check stay proportional to path depth.
+func collidingInputDestination(destinations, destinationChildren map[string]string, destination string) string {
+	if previous, exists := destinations[destination]; exists {
+		return previous
+	}
+	for parent := path.Dir(destination); parent != "."; parent = path.Dir(parent) {
+		if previous, exists := destinations[parent]; exists {
+			return previous
+		}
+	}
+	if previous, exists := destinationChildren[destination]; exists {
+		return previous
+	}
+	return ""
 }
 
 func validateInputRelativePath(value string) error {
@@ -213,7 +240,10 @@ func verifyInputFile(path string, ref InputFile) error {
 	}
 	defer func() { _ = f.Close() }()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) || !opened.Mode().IsRegular() {
 		return errors.New("staged input changed while it was opened")
 	}
 	hash := sha256.New()
