@@ -36,6 +36,9 @@ var ErrSessionCheckpointStale = fmt.Errorf("session compaction checkpoint is sta
 // to associate with a title, or its first-message coordinate is no longer live.
 var ErrSessionNotFound = fmt.Errorf("session not found")
 
+// ErrRunClaimConflict means the run no longer matches the claim conditions.
+var ErrRunClaimConflict = errors.New("run is no longer claimable")
+
 // ErrRecoveryClaimStale means the observed run changed before recovery claimed it.
 var ErrRecoveryClaimStale = fmt.Errorf("recovery claim is stale")
 

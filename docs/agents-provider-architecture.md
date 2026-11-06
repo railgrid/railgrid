@@ -213,7 +213,10 @@ and tools are edited inside the agent, next to a live chat playground.
 - **Approvals + questions over the channel** — approval requests push to the
   agent's channel; `/inbox` lists pending items, `/approve N` / `/deny N`
   resolve approvals (which **resumes the paused run**), `/answer N <text>`
-  answers agent questions — all from Telegram/Slack/Discord.
+  answers agent questions from Telegram/Slack/Discord. For a question group,
+  the channel records the whole reply as free text and passes it to the run.
+  Use the portal to answer or skip each prompt separately and save structured
+  answer history.
 - **Durable approvals (pause/resume)** — a gated tool call raises an engine
   *interrupt*: the loop stops, the conversation + un-executed calls are
   serialized into the run's `checkpoint`, and the run parks in

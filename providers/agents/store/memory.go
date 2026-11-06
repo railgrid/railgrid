@@ -1022,17 +1022,17 @@ func (m *MemoryStore) ClaimRun(_ context.Context, scope Scope, id, requestID str
 	k := tenantKey(scope) + "|" + id
 	run, ok := m.runs[k]
 	if !ok {
-		return Run{}, fmt.Errorf("run %q not found", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	if run.CancelRequested || (run.Phase != RunPhasePending && run.Phase != RunPhasePendingApproval) {
-		return Run{}, fmt.Errorf("run %q is no longer resumable", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	if len(inboxID) > 0 && inboxID[0] != "" {
 		var checkpoint struct {
 			InboxID string `json:"inboxID"`
 		}
 		if run.Phase != RunPhasePendingApproval || json.Unmarshal(run.Checkpoint, &checkpoint) != nil || checkpoint.InboxID != inboxID[0] {
-			return Run{}, fmt.Errorf("run %q is no longer parked on this inbox item", id)
+			return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 		}
 	}
 	run.Phase = RunPhaseRunning

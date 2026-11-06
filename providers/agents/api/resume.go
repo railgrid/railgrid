@@ -120,6 +120,9 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 		claimed, claimErr = s.store.ClaimRun(ctx, agentScope, run.ID, uuid.NewString(), time.Now().UTC(), intent.InboxItem.ID)
 		if claimErr != nil {
 			log.Printf("resume: run %s: %v", run.ID, claimErr)
+			if errors.Is(claimErr, store.ErrRunClaimConflict) {
+				return runResult{}, errResumeConflict
+			}
 			return runResult{}, claimErr
 		}
 	}

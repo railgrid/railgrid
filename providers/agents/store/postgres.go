@@ -1085,9 +1085,12 @@ func (p *PostgresStore) ClaimRun(ctx context.Context, scope Scope, id, _ string,
 	if err != nil {
 		return Run{}, err
 	}
-	n, _ := res.RowsAffected()
+	n, err := res.RowsAffected()
+	if err != nil {
+		return Run{}, err
+	}
 	if n == 0 {
-		return Run{}, fmt.Errorf("run %q not found or already claimed", id)
+		return Run{}, fmt.Errorf("run %q: %w", id, ErrRunClaimConflict)
 	}
 	row := mutation.executor.QueryRowContext(ctx, `SELECT `+runColumns+`
 		FROM agents_runs WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3`, scope.OrgUUID, scope.WorkspaceUUID, id)
