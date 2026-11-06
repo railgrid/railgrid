@@ -147,8 +147,8 @@ test('anchors Share beside the Workbench toggle and preserves its dialog focus c
   assert.match(titlebar.slice(shareButtonStart), /aria-label="Share project"/)
   assert.match(titlebar.slice(shareButtonStart), /:disabled="!selected"/)
   assert.match(titlebar.slice(shareButtonStart), /@click="openShareDialog"/)
-  assert.match(titlebar.slice(shareButtonStart), /border-accent bg-accent/)
-  assert.match(titlebar.slice(shareButtonStart), />\s*<span>Share<\/span>/)
+  assert.match(titlebar.slice(shareButtonStart), /k-btn k-btn--primary k-btn--sm/)
+  assert.match(titlebar.slice(shareButtonStart), />\s*<span class="app-studio-titlebar-share__label">Share<\/span>/)
 
   const workbenchHeaderStart = app.indexOf('<header class="flex h-14')
   const workbenchHeaderEnd = app.indexOf('</header>', workbenchHeaderStart)

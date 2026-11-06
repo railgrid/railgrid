@@ -67,6 +67,9 @@ AGENTKIT_VUE_FILES=(
   ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts ai.ts modelIDSelection.ts
   AIActivityFeed.vue AIExecutionDetails.vue AIConversationTurn.vue AITurnProgress.vue AIPlanDisclosure.vue AIPlanSteps.vue
   conversation.ts AITimestamp.vue clock.ts timestamp.ts
+  AIConversationComposer.vue AICommandPalette.vue AgentKitAttachmentPreview.vue AgentKitAttachmentTextPreview.vue
+  composer.ts composerAttachments.ts composerSkillsSearch.ts attachmentDrag.ts attachmentDeletion.ts
+  useDismissibleAddMenu.ts useAssistantFilePickerFocus.ts AISkillCatalogList.vue AIAttachmentReceipts.vue
 )
 
 # Plain assets from the vanilla kit are shared by both portal styles.
@@ -119,7 +122,7 @@ sync_agentkit_vue_file() {
   local dst="$2"
   local name="$3"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue)
       # Canonical AgentKit resolves core components from the sibling Vue kit.
       # The self-contained portal copy resolves those dependencies from its
       # vendored portalkit directory.
@@ -228,7 +231,7 @@ verify_agentkit_vue_file() {
   local expected
   expected="$(mktemp)"
   case "$name" in
-    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue)
+    ModelConnectionCard.vue|ModelCollection.vue|AIModelReasoningPicker.vue|AICommandPalette.vue|AIConversationComposer.vue)
       sed 's#\.\./portalkit-vue/#../portalkit/#g' "$src/$name" > "$expected"
       ;;
     *)

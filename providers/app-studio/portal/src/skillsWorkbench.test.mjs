@@ -7,15 +7,17 @@ const vite = await createServer({ appType: 'custom', server: { middlewareMode: t
 const { assistantSkillsRequestIsCurrent } = await vite.ssrLoadModule('/src/SkillsWorkbench.vue')
 test.after(async () => vite.close())
 
-const [app, api, workbench] = await Promise.all([
+const [app, api, workbench, skillCatalog] = await Promise.all([
   readFile(new URL('./App.vue', import.meta.url), 'utf8'),
   readFile(new URL('./api.ts', import.meta.url), 'utf8'),
   readFile(new URL('./SkillsWorkbench.vue', import.meta.url), 'utf8'),
+  readFile(new URL('./agentkit/AISkillCatalogList.vue', import.meta.url), 'utf8'),
 ])
 
 test('exposes Skills as a first-class workbench surface', () => {
-  assert.match(workbench, /Installed/)
-  assert.match(workbench, /Search skills/)
+  assert.match(workbench, /<AISkillCatalogList/)
+  assert.match(skillCatalog, /title: 'Installed'/)
+  assert.match(skillCatalog, /placeholder="Search skills"/)
   assert.match(workbench, /role="dialog"/)
   assert.match(workbench, /role="switch"/)
   assert.match(workbench, /aria-modal="true"/)
@@ -47,7 +49,8 @@ test('uses the generic detail and activation routes for focused skills', () => {
 })
 
 test('preserves loading, empty, error, and refresh states', () => {
-  assert.match(workbench, /Loading skills…/)
+  assert.match(skillCatalog, /Loading skills…/)
+  assert.match(workbench, /return 'No skills are installed for this project yet\.'/)
   assert.match(workbench, /No skills are installed for this project yet\./)
   assert.match(workbench, /role="alert"/)
   assert.match(workbench, /aria-label="Refresh skills"/)
@@ -62,9 +65,14 @@ test('preserves loading, empty, error, and refresh states', () => {
 
 test('keeps activation feedback scoped to the changing skill and preserves detail content', () => {
   assert.match(workbench, /const activationSkillID = ref\(''\)/)
-  assert.match(workbench, /activationSkillID === skill\.id/)
+  const activationStart = workbench.indexOf('async function toggleSelectedSkill()')
+  const activationEnd = workbench.indexOf('\nfunction friendlyError', activationStart)
+  const activationBody = workbench.slice(activationStart, activationEnd)
+  assert.match(activationBody, /const skill = selectedSkill\.value/)
+  assert.match(activationBody, /activationSkillID\.value = skill\.id/)
+  assert.match(activationBody, /api\.setAssistantSkillActivation\(props\.ctx, props\.projectName, skill\.id, skill\.enabled === false\)/)
   assert.match(workbench, /Saving…/)
-  assert.match(workbench, /refreshCatalog\(skill\.id, \{ preserveDetail: true \}\)/)
+  assert.match(activationBody, /refreshCatalog\(skill\.id, \{ preserveDetail: true \}\)/)
   assert.match(workbench, /options\.preserveDetail && selectedSkillID\.value === selectSkillID/)
   assert.match(workbench, /:aria-busy="activationSkillID === selectedSkill\.id/)
 })
@@ -81,21 +89,24 @@ test('rejects stale catalog responses when serial, project, or context changes',
 })
 
 test('binds search input to the filtered catalog and exposes a clear action', () => {
-  assert.match(workbench, /v-model="query"/)
-  const searchLabelStart = workbench.indexOf('<label class="relative w-full min-w-0 max-w-sm">')
-  const searchLabelEnd = workbench.indexOf('</label>', searchLabelStart)
+  assert.match(workbench, /:query="query"[\s\S]*@update:query="query = \$event"/)
+  const searchLabelStart = skillCatalog.indexOf('<label class="k-ai-search k-ai-search--clearable">')
+  const searchLabelEnd = skillCatalog.indexOf('</label>', searchLabelStart)
   assert.ok(searchLabelStart >= 0 && searchLabelEnd > searchLabelStart)
-  assert.doesNotMatch(workbench.slice(searchLabelStart, searchLabelEnd), /flex-1/)
-  assert.match(workbench, /class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"/)
-  assert.match(workbench, /filterAssistantSkills\(localSkills\.value, query\.value\)/)
-  assert.match(workbench, /v-for="skill in filteredSkills"/)
-  assert.match(workbench, /aria-label="Clear skill search"/)
-  assert.match(workbench, /@click="query = ''"/)
+  assert.doesNotMatch(skillCatalog.slice(searchLabelStart, searchLabelEnd), /flex-1/)
+  assert.match(skillCatalog, /class="k-input k-ai-search__input"/)
+  assert.match(skillCatalog, /role="status" aria-live="polite">\{\{ loading && skills\.length \? 'Refreshing skills…' : '' \}\}<\/span>/)
+  assert.match(skillCatalog, /class="k-ai-skill-catalog__region" :aria-busy="loading \? 'true' : undefined"/)
+  assert.match(skillCatalog, /filterAssistantSkills\(props\.skills, props\.query\)/)
+  assert.match(skillCatalog, /v-for="skill in filteredSkills"/)
+  assert.match(skillCatalog, /aria-label="Clear skill search"/)
+  assert.match(skillCatalog, /@click="clearSearch"/)
 })
 
 test('keeps skill buttons native and contains detail focus inside the provider overlay', () => {
-  assert.match(workbench, /<ul v-else[\s\S]*<li v-for="skill in filteredSkills"[\s\S]*<button[\s\S]*aria-haspopup="dialog"/)
-  assert.doesNotMatch(workbench, /<button[\s\S]{0,300}role="listitem"/)
+  assert.match(skillCatalog, /<ul v-else[\s\S]*<li v-for="skill in filteredSkills"[\s\S]*<button[\s\S]*:aria-haspopup="detailPresentation === 'dialog' \? 'dialog' : undefined"/)
+  assert.match(workbench, /detail-presentation="dialog"/)
+  assert.doesNotMatch(skillCatalog, /<button[\s\S]{0,300}role="listitem"/)
   assert.match(workbench, /<Teleport to="#app-studio-overlay-root">/)
   assert.match(workbench, /\[z-index:var\(--app-studio-z-modal-backdrop\)\]/)
   assert.match(workbench, /ref="detailDialogRef"[\s\S]*role="dialog"[\s\S]*aria-modal="true"[\s\S]*@keydown="handleDetailKeydown"/)
@@ -107,6 +118,8 @@ test('keeps skill buttons native and contains detail focus inside the provider o
   assert.match(workbench, /document\.querySelector<HTMLElement>\('\[data-app-studio-workspace\]'\)/)
   assert.match(workbench, /inertWorkspace\.inert = true/)
   assert.match(workbench, /if \(inertWorkspace && !workspaceWasInert\) inertWorkspace\.inert = false/)
+  assert.match(workbench, /function retrySkillDetail\(\)[\s\S]*loadDetail\(skill\)/)
+  assert.match(workbench, /class="flex items-center justify-between gap-3[\s\S]*detailError[\s\S]*Retrying…/)
 })
 
 test('keeps the skill switch compact inside a full touch target', () => {

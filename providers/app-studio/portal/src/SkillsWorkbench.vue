@@ -25,18 +25,17 @@ export function assistantSkillsRequestIsCurrent(
 
 <script setup lang="ts">
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
+import AISkillCatalogList from './agentkit/AISkillCatalogList.vue'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Check,
   Loader2,
   RefreshCw,
-  Search,
   Plug,
   TriangleAlert,
   X,
 } from 'lucide-vue-next'
 import { api, ProjectAPIRequestError } from './api'
-import { filterAssistantSkills } from './skillsSearch'
 import type {
   RailgridContext,
   ProjectAssistantSkill,
@@ -113,7 +112,6 @@ watch(() => [props.projectName, props.ctx] as const, () => {
 })
 
 const normalizedQuery = computed(() => query.value.trim().toLowerCase())
-const filteredSkills = computed(() => filterAssistantSkills(localSkills.value, query.value))
 const selectedSkill = computed(() => localSkills.value.find((skill) => skill.id === selectedSkillID.value) ?? focusedSkill.value)
 const selectedDigest = computed(() => selectedDetail.value?.digest || selectedSkill.value?.digest || selectedDetail.value?.contentDigest || selectedSkill.value?.contentDigest || '')
 const detailInstructions = computed(() => selectedDetail.value?.instructions || selectedDetail.value?.content || selectedDetail.value?.authorInstructions || '')
@@ -132,10 +130,6 @@ function packageNameFor(skill: ProjectAssistantSkill | null | undefined): string
 
 function sourceLabel(skill: ProjectAssistantSkill): string {
   return skill.scope?.toLowerCase() === 'system' ? 'System' : 'Project'
-}
-
-function statusLabel(skill: ProjectAssistantSkill): string {
-  return skill.enabled === false ? 'Disabled' : 'Enabled'
 }
 
 function clearManagementError() {
@@ -253,6 +247,11 @@ async function loadDetail(skill: ProjectAssistantSkill) {
   }
 }
 
+function retrySkillDetail() {
+  const skill = focusedSkill.value
+  if (skill && !detailLoading.value) void loadDetail(skill)
+}
+
 async function refreshCatalog(selectSkillID = selectedSkillID.value, options: { preserveDetail?: boolean } = {}): Promise<boolean> {
   const projectName = props.projectName
   const requestContext = props.ctx
@@ -339,26 +338,6 @@ function friendlyError(error: unknown, fallback: string): string {
         Refresh
       </button>
     </template>
-    <label class="relative w-full min-w-0 max-w-sm">
-      <Search class="pointer-events-none absolute left-3 top-2.5 h-3.5 w-3.5 text-text-muted" :stroke-width="1.75" />
-      <input
-        v-model="query"
-        type="search"
-        class="app-studio-touch-target k-input skills-search-input h-9 min-w-0"
-        placeholder="Search skills"
-        aria-label="Search skills"
-      />
-      <button
-        v-if="query"
-        type="button"
-        class="app-studio-touch-target absolute right-2 top-1.5 flex h-6 w-6 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
-        aria-label="Clear skill search"
-        @click="query = ''"
-      >
-        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-    </label>
-
     <div v-if="!projectName" class="rounded-xl border border-warning/30 bg-warning-subtle p-4 text-[12px] leading-5 text-warning" role="status">
       Open an existing project to manage its skills. Bundled skills become available when a project is selected.
     </div>
@@ -379,59 +358,17 @@ function friendlyError(error: unknown, fallback: string): string {
       {{ statusMessage }}
     </div>
 
-    <section class="grid min-h-0 gap-4">
-      <div class="min-h-0">
-        <div class="flex items-center justify-between border-b border-border-subtle pb-2">
-          <h3 class="text-[14px] font-semibold text-text-primary">Installed</h3>
-          <span class="text-[11px] text-text-muted">{{ filteredSkills.length }} skill{{ filteredSkills.length === 1 ? '' : 's' }}</span>
-        </div>
-
-        <div v-if="(props.loading || catalogLoading) && !localSkills.length" class="mt-3 flex min-h-52 items-center justify-center gap-2 rounded-xl border border-dashed border-border-subtle text-[12px] text-text-muted" role="status">
-          <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" />
-          Loading skills…
-        </div>
-        <div v-else-if="!filteredSkills.length" class="mt-3 flex min-h-52 flex-col items-center justify-center rounded-xl border border-dashed border-border-subtle px-5 text-center" role="status">
-          <Plug class="h-7 w-7 text-text-muted" :stroke-width="1.5" />
-          <div class="mt-2 text-[13px] font-medium text-text-secondary">{{ emptyStateText }}</div>
-        </div>
-        <ul v-else class="mt-2 grid gap-x-4 gap-y-0.5 md:grid-cols-2" aria-label="Installed skills">
-          <li v-for="skill in filteredSkills" :key="skill.id" class="min-w-0">
-            <button
-              type="button"
-              class="group flex w-full min-w-0 items-center gap-2.5 rounded-md px-2.5 py-2.5 text-left transition hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-              :class="skill.id === selectedSkillID ? 'bg-accent-subtle' : ''"
-              :disabled="actionBusy"
-              :aria-busy="activationSkillID === skill.id ? 'true' : undefined"
-              :aria-label="`${skill.name}, ${statusLabel(skill)}. Select to view details.`"
-              aria-haspopup="dialog"
-              @click="selectSkill(skill)"
-            >
-              <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-surface-raised text-accent">
-                <Plug class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
-              </span>
-              <span class="min-w-0 flex-1">
-                <span class="flex min-w-0 items-center gap-2">
-                  <span class="truncate text-[13px] font-medium text-text-primary">{{ skill.name }}</span>
-                </span>
-                <span class="mt-0.5 block truncate text-[11px] text-text-secondary">{{ skill.description || 'No description provided.' }}</span>
-                <span class="mt-1 flex min-w-0 items-center gap-1.5 text-[10px] text-text-muted">
-                  <span>{{ sourceLabel(skill) }}</span>
-                  <span aria-hidden="true">·</span>
-                  <code class="truncate font-mono" :title="skill.packageName || skill.id">{{ skill.packageName || skill.id }}</code>
-                </span>
-              </span>
-              <Check v-if="skill.enabled !== false" class="h-5 w-5 shrink-0 text-text-muted" :stroke-width="1.75" aria-label="Enabled" />
-              <span v-else class="h-5 w-5 shrink-0 rounded-full border border-border-default" aria-label="Disabled" />
-              <span v-if="activationSkillID === skill.id" class="flex shrink-0 items-center gap-1 text-[11px] text-accent" role="status" aria-label="Saving skill">
-                <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
-                <span>Saving…</span>
-              </span>
-            </button>
-          </li>
-        </ul>
-      </div>
-
-    </section>
+    <AISkillCatalogList
+      :skills="localSkills"
+      :query="query"
+      :selected-id="selectedSkillID"
+      :loading="props.loading || catalogLoading"
+      :busy="actionBusy"
+      detail-presentation="dialog"
+      :empty-text="emptyStateText"
+      @update:query="query = $event"
+      @select="selectSkill($event)"
+    />
 
     <Teleport to="#app-studio-overlay-root">
       <div v-if="selectedSkill" class="fixed inset-0 flex items-center justify-center bg-surface/60 p-4 [z-index:var(--app-studio-z-modal-backdrop)] backdrop-blur-[2px]" role="presentation" @mousedown.self="closeSkillDetail">
@@ -477,7 +414,7 @@ function friendlyError(error: unknown, fallback: string): string {
           <div class="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle px-6 py-5">
             <div v-if="detailLoading" class="flex min-h-48 items-center justify-center gap-2 text-[12px] text-text-muted" role="status"><Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading skill…</div>
             <div v-else class="grid gap-4">
-              <div v-if="detailError" class="rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">{{ detailError }}</div>
+              <div v-if="detailError" class="flex items-center justify-between gap-3 rounded-xl border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert"><span>{{ detailError }}</span><button type="button" class="k-agentkit-touch-target shrink-0 font-medium underline underline-offset-2" :disabled="detailLoading" @click="retrySkillDetail">{{ detailLoading ? 'Retrying…' : 'Retry' }}</button></div>
               <div class="rounded-xl border border-border-subtle bg-surface p-5">
                 <pre v-if="detailInstructions" class="whitespace-pre-wrap font-sans text-[13px] leading-6 text-text-secondary">{{ detailInstructions }}</pre>
                 <div v-else class="text-[12px] text-text-muted">No author-visible instructions were provided for this skill.</div>
@@ -506,10 +443,6 @@ function friendlyError(error: unknown, fallback: string): string {
 </template>
 
 <style scoped>
-.skills-search-input {
-  padding-inline: 2.25rem;
-}
-
 .skill-detail-dialog {
   container-type: inline-size;
 }

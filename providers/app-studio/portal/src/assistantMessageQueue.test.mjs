@@ -82,7 +82,7 @@ test('persists queueing mode for the exact conversation and defaults safely to e
 
 test('composer and queue controls expose queue-by-default and explicit steering', async () => {
   const [composer, app, queueView] = await Promise.all([
-    readFile(new URL('./AssistantRichComposer.vue', import.meta.url), 'utf8'),
+    readFile(new URL('./agentkit/AIConversationComposer.vue', import.meta.url), 'utf8'),
     readFile(new URL('./App.vue', import.meta.url), 'utf8'),
     readFile(new URL('./AssistantMessageQueue.vue', import.meta.url), 'utf8'),
   ])

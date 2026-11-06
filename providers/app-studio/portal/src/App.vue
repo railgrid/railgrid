@@ -163,7 +163,6 @@ import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import type { AssistantResponseMode } from './assistantResponseMode'
 import AIModelReasoningPicker from './agentkit/AIModelReasoningPicker.vue'
-import AssistantRichComposer from './AssistantRichComposer.vue'
 import AssistantPreProjectComposer from './AssistantPreProjectComposer.vue'
 import AssistantMessageQueue from './AssistantMessageQueue.vue'
 import AssistantMessageAnnotations from './AssistantMessageAnnotations.vue'
@@ -268,6 +267,13 @@ import StatusBadge from './portalkit/StatusBadge.vue'
 import ReleasePipeline from './ReleasePipeline.vue'
 import ProjectHistory from './ProjectHistory.vue'
 const AIWorkbenchLauncher = defineAsyncComponent(() => import('./agentkit/AIWorkbenchLauncher.vue'))
+// The rich composer is used only when an existing project conversation opens.
+const AssistantRichComposer = defineAsyncComponent({
+  loader: () => import('./AssistantRichComposer.vue'),
+  delay: 0,
+  loadingComponent: { render: () => h('div', { class: 'flex min-h-[132px] items-center px-4 text-[12px] text-text-muted', role: 'status' }, 'Loading composer…') },
+  errorComponent: { render: () => h('div', { class: 'flex min-h-[132px] items-center px-4 text-[12px] text-danger', role: 'alert' }, 'Could not load the composer. Reload this page to retry.') },
+})
 // The Code tab loads on first open; its upload/preview tooling stays off the page path.
 const CodeExplorer = defineAsyncComponent({
   loader: () => import('./CodeExplorer.vue'),
@@ -11199,10 +11205,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               <div v-if="!selected" class="shimmer h-2.5 w-48 rounded bg-surface-overlay" aria-hidden="true" />
               <div v-else class="flex min-w-0 items-center gap-1.5 truncate text-[11px] text-text-muted">
                 <span class="truncate">{{ selected.displayName || selected.name || 'Project' }}</span>
-                <span aria-hidden="true">·</span>
-                <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
-                <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-                <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
+                <span class="app-studio-titlebar-git flex min-w-0 items-center gap-1.5">
+                  <span aria-hidden="true">·</span>
+                  <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
+                  <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
+                  <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
+                </span>
               </div>
             </template>
           </AIConversationIdentity>
@@ -11221,15 +11229,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
           <button
             type="button"
-            class="app-studio-touch-target inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-accent bg-accent px-3 text-[12px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-60"
+            class="k-btn k-btn--primary k-btn--sm app-studio-touch-target"
             ref="shareButtonRef"
             title="Share project"
             aria-label="Share project"
             :disabled="!selected"
             @click="openShareDialog"
           >
-            <Users class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <span>Share</span>
+            <Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+            <span class="app-studio-titlebar-share__label">Share</span>
           </button>
         </header>
 
@@ -11391,7 +11399,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
               <div class="mt-4 border-t border-border-subtle pt-4">
                 <div class="mb-2 text-[11px] font-semibold uppercase text-text-muted">Starter prompts</div>
-                <div class="grid gap-2 md:grid-cols-3">
+                <div class="app-studio-starter-prompts grid gap-2">
                   <button
                     type="button"
                     v-for="starterPrompt in starterPrompts"
@@ -11399,7 +11407,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     class="app-studio-touch-target flex min-h-[72px] items-start justify-between gap-3 rounded-md border border-border-subtle bg-surface px-3 py-2 text-left text-[12px] text-text-secondary transition hover:border-accent/30 hover:bg-surface-hover hover:text-text-primary"
                     @click="applyStarterPrompt(starterPrompt)"
                   >
-                    <span class="line-clamp-3">{{ starterPrompt }}</span>
+                    <span>{{ starterPrompt }}</span>
                     <ArrowRight class="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-muted" :stroke-width="1.75" />
                   </button>
                 </div>
@@ -13085,6 +13093,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 </template>
 
 <style scoped>
+.app-studio-starter-prompts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+@media (hover: none), (any-pointer: coarse) {
+  [data-app-studio-titlebar] { gap: 4px; }
+  [data-app-studio-titlebar] > [aria-hidden="true"], .app-studio-titlebar-git, .app-studio-titlebar-share__label { display: none; }
+}
+
 .workbench-pane-enter-active,
 .workbench-pane-leave-active {
   transition: opacity var(--k-ai-pane-enter-duration) ease-out;
