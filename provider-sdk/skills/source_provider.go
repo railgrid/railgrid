@@ -325,6 +325,10 @@ func containsControlChars(value string) bool {
 	return false
 }
 
+// ValidDigest reports whether value is a canonical catalog SHA-256 digest.
+// Catalog digests carry the algorithm prefix, including in activation pins.
+func ValidDigest(value string) bool { return validProviderSkillDigest(value) }
+
 func validProviderSkillDigest(value string) bool {
 	if len(value) != len("sha256:")+64 || !strings.HasPrefix(value, "sha256:") {
 		return false

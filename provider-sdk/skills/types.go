@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package skills contains the framework-neutral App Studio skill catalog.
+// Package skills contains the framework-neutral assistant skill catalog.
 //
 // The package deliberately models only bounded, declarative skill metadata and
 // content. Eino-specific authority fields (context, agent, and model) are
@@ -35,8 +35,9 @@ import (
 type Scope string
 
 const (
-	ScopeSystem  Scope = "system"
-	ScopeProject Scope = "project"
+	ScopeSystem    Scope = "system"
+	ScopeProject   Scope = "project"
+	ScopeWorkspace Scope = "workspace"
 )
 
 // Limits bounds discovery, parsing, and resource materialization. Zero values
@@ -286,7 +287,7 @@ func NewCatalog(opts CatalogOptions) (*Catalog, error) {
 		if source == nil {
 			return nil, errors.New("skill source cannot be nil")
 		}
-		if source.Scope() != ScopeSystem && source.Scope() != ScopeProject {
+		if source.Scope() != ScopeSystem && source.Scope() != ScopeProject && source.Scope() != ScopeWorkspace {
 			return nil, fmt.Errorf("unsupported skill source scope %q", source.Scope())
 		}
 	}
@@ -415,3 +416,6 @@ func cleanRelative(raw, label string) (string, error) {
 	}
 	return clean, nil
 }
+
+// Bounded applies default and hard catalog limits for source adapters.
+func (l Limits) Bounded() Limits { return l.bounded() }

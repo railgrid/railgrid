@@ -32,6 +32,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"github.com/railgrid/provider-app-studio/store"
+	"github.com/railgrid/provider-sdk/attachments"
 )
 
 const (
@@ -42,8 +43,8 @@ const (
 	// Keep this aligned with the portal's large-paste threshold. A text
 	// attachment at or below this bound can be sent as one user message; a
 	// larger receipt remains tool-addressable instead of inflating every prompt.
-	projectAssistantAttachmentInlineTextMaxBytes   = 32 << 10
-	projectAssistantAttachmentReadMaxBytes         = 64 << 10
+	projectAssistantAttachmentInlineTextMaxBytes   = attachments.InlineTextMaxBytes
+	projectAssistantAttachmentReadMaxBytes         = attachments.ReadTextMaxBytes
 	projectAssistantAttachmentImageMaxBytes        = store.AttachmentMaxImageBytes
 	projectAssistantAttachmentMessageKindKey       = "railgrid.app-studio.attachment-message"
 	projectAssistantAttachmentMessageIDKey         = "railgrid.app-studio.attachment-id"
@@ -55,7 +56,7 @@ const (
 	// are retained on their originating messages until normal compaction, so a
 	// conversation may accumulate more images across turns just as Codex does.
 	projectAssistantCurrentImageMaxCount         = projectAssistantMaxAttachmentsPerTurn
-	projectAssistantCurrentImageMaxBytes         = 20 << 20
+	projectAssistantCurrentImageMaxBytes         = attachments.CurrentImageMaxBytes
 	projectAssistantHistoricalTextPromptMaxCount = 32
 )
 
