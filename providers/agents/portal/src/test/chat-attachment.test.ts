@@ -1032,16 +1032,19 @@ it('keeps progress stopped when a metadata-only approval read cannot confirm tra
     if (!options?.requireTrace) return new Promise<RunDetail>(resolve => { finishMetadata = resolve })
     throw new ApiError(403, 'Trace access denied')
   })
+  const listMessagePage = vi.fn(async () => ({ items: [user] }))
   const { el } = await mountChat({
     listSessions: async () => [{ id: 'session', title: 'Current chat' }],
-    listMessagePage: async () => ({ items: [user] }), getRun,
+    listMessagePage, getRun,
   })
   await vi.advanceTimersByTimeAsync(1000)
+  const progressReads = listMessagePage.mock.calls.length
   finishMetadata(run('PendingApproval'))
   await settleVue(24)
   await vi.advanceTimersByTimeAsync(10000)
   expect(text(el)).toContain('Access to run progress is no longer available.')
-  expect(getRun.mock.calls.filter(([, options]) => options?.requireTrace)).toHaveLength(1)
+  // The rail may retry its own status read, but must not restart transcript observation.
+  expect(listMessagePage).toHaveBeenCalledTimes(progressReads)
 })
 
 
@@ -1148,4 +1151,34 @@ describe('composer owns the active run control', () => {
     expect(el.querySelector('.agents-stop')).toBeNull()
     expect(text(el.querySelector('[contenteditable="true"]'))).toContain('Draft survives stopping')
   })
+})
+
+it('preserves a recovered checkpoint across navigation and resumes without events', async () => {
+  vi.useFakeTimers()
+  let detail: RunDetail = { ...run(), pending: { inboxID: 'approval', kind: 'approval', tool: 'shell', args: '{}' } }
+  const { el } = await mountChat({
+    listSessions: async () => [{ id: 'session', title: 'Current chat' }, { id: 'other', title: 'Other chat' }],
+    listRuns: async (filter: { session?: string }) => ({ items: filter.session === 'other' ? [] : [run()] }),
+    listMessagePage: async (_agent: string, session: string) => ({ items: session === 'session' ? [user] : [] }),
+    getRun: async () => detail,
+  })
+  const spinner = () => el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(el.querySelector('.agents-approval')).not.toBeNull()
+  expect(spinner()).toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="other"]')!.click()
+  await settleVue(30)
+  expect(spinner()).toBeNull()
+  detail = { ...run(), progress: [] }
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(spinner()).not.toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="session"]')!.click()
+  await settleVue(30)
+  expect(spinner()).not.toBeNull()
+  detail = run('Succeeded')
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="other"]')!.click()
+  await settleVue(30)
+  expect(spinner()).toBeNull()
 })

@@ -1168,6 +1168,7 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
     // A local stream error can mark the message failed while the backend run
     // is still executing. Only the backend phase can confirm terminal state.
     if (TERMINAL_RUN_PHASES.has(detail.phase || '')) {
+      threadActivity.record(detail)
       closeApprovalRecovery(runID)
       applyRunProgress(detail)
       if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
@@ -1180,6 +1181,7 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
       flushTerminalTranscriptRefresh()
       return
     }
+    if (!detail.pending || target?.approval?.inboxID !== detail.pending.inboxID || !target.approval.resolved) threadActivity.record(detail)
     if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
       acceptRunSnapshot(runID)
       orphanRun.value = detail
@@ -2778,6 +2780,7 @@ watch(
         }
         messages.value = projected
         messagesHasSnapshot.value = true
+        threadActivity.record(detail)
         applyRunProgress(detail)
         const target = messages.value.filter(row => row.role === 'assistant' && row.runID === runID).at(-1)
         if (!approvalRecoveryClosedRunIDs.has(runID) && detail.pending && (target?.approval?.inboxID !== detail.pending.inboxID || !target.approval.resolved)) {

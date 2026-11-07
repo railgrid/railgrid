@@ -8,8 +8,8 @@ import type { RunSummary } from '../types'
 const mounted: MountedVue[] = []
 afterEach(() => { mounted.splice(0).forEach(view => view.unmount()); vi.useRealTimers() })
 const run = (id: string, sessionID: string, phase = 'Running') => ({ id, sessionID, phase, agent: 'coder' } as RunSummary)
-async function setup(listRuns: () => Promise<{ items: RunSummary[] }>) {
-  const api = shallowRef(stubApi({ listRuns }))
+async function setup(listRuns: () => Promise<{ items: RunSummary[] }>, getRun?: unknown) {
+  const api = shallowRef(stubApi({ listRuns, ...(getRun ? { getRun } : {}) }))
   const epoch = ref(0)
   let activity!: ReturnType<typeof useThreadActivity>
   const view = await mountVue(defineComponent({ setup() {
@@ -66,4 +66,91 @@ it('recovers from a hung activity read without blocking future updates', async (
   await vi.advanceTimersByTimeAsync(25000)
   expect(view.element.textContent).toBe('first')
   expect(list).toHaveBeenCalledTimes(2)
+})
+
+it.each(['PendingApproval', 'Running'])('confirms stale collections against known %s activity', async phase => {
+  vi.useFakeTimers()
+  const stale = phase === 'Running' ? 'PendingApproval' : 'Running'
+  let confirmed = { ...run('a', 'first', phase), ...(phase === 'PendingApproval' ? { pending: { inboxID: 'approval', tool: 'shell', args: '{}' } } : {}) }
+  const getRun = vi.fn(async () => confirmed)
+  const { activity, view } = await setup(async () => ({ items: [run('a', 'first', stale)] }), getRun)
+  activity.record(confirmed)
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe(phase === 'Running' ? 'first' : '')
+  expect(getRun).toHaveBeenCalledWith('a', { requireTrace: true })
+  confirmed = { ...run('a', 'first', stale), ...(stale === 'PendingApproval' ? { pending: { inboxID: 'next', tool: 'shell', args: '{}' } } : {}) }
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe(stale === 'Running' ? 'first' : '')
+})
+it('fences terminal snapshots against delayed events and later stale lists', async () => {
+  vi.useFakeTimers()
+  let items = [run('a', 'first', 'Succeeded')]
+  const { activity, view } = await setup(async () => ({ items }))
+  activity.record({ id: 'a', agent: 'coder', phase: 'Running' })
+  await settleVue()
+  expect(view.element.textContent).toBe('')
+  items = [run('a', 'first')]
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe('')
+})
+it('keeps known approval state when trace access fails, then resumes after access returns', async () => {
+  vi.useFakeTimers()
+  const getRun = vi.fn().mockRejectedValueOnce(new Error('Forbidden')).mockResolvedValue(run('a', 'first'))
+  const { activity, view } = await setup(async () => ({ items: [run('a', 'first')] }), getRun)
+  activity.record({ ...run('a', 'first'), pending: { inboxID: 'approval', tool: 'shell', args: '{}' } })
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe('')
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe('first')
+})
+it('does not let a late conflict confirmation undo a newer checkpoint', async () => {
+  vi.useFakeTimers()
+  let finish!: (value: RunSummary) => void
+  const { activity, view } = await setup(async () => ({ items: [run('a', 'first')] }), () => new Promise(resolve => { finish = resolve }))
+  activity.record(run('a', 'first', 'PendingApproval'))
+  await vi.advanceTimersByTimeAsync(10000)
+  activity.record(run('a', 'first', 'Succeeded'))
+  finish(run('a', 'first'))
+  await settleVue(12)
+  expect(view.element.textContent).toBe('')
+})
+it('merges unrelated run snapshots even when another run changes during the read', async () => {
+  vi.useFakeTimers()
+  let finish!: (value: { items: RunSummary[] }) => void
+  const { activity, view } = await setup(() => new Promise(resolve => { finish = resolve }))
+  activity.record(run('a', 'first'))
+  finish({ items: [run('a', 'first', 'PendingApproval'), run('b', 'second')] })
+  await settleVue(12)
+  expect(view.element.textContent).toBe('first,second')
+})
+
+it('times out a disconnected trace and retries without losing the checkpoint', async () => {
+  vi.useFakeTimers()
+  const getRun = vi.fn().mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue(run('a', 'first'))
+  const { activity, view } = await setup(async () => ({ items: [run('a', 'first')] }), getRun)
+  activity.record(run('a', 'first', 'PendingApproval'))
+  await vi.advanceTimersByTimeAsync(25000)
+  expect(view.element.textContent).toBe('')
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(view.element.textContent).toBe('first')
+})
+it('ignores a disconnected trace completing after an authority change', async () => {
+  vi.useFakeTimers()
+  let finish!: (value: RunSummary) => void
+  const { activity, view, api, epoch } = await setup(async () => ({ items: [run('a', 'first')] }), () => new Promise(resolve => { finish = resolve }))
+  activity.record(run('a', 'first', 'PendingApproval'))
+  await vi.advanceTimersByTimeAsync(10000)
+  api.value = stubApi({ listRuns: async () => ({ items: [run('b', 'second')] }) }); epoch.value++
+  await settleVue(12)
+  finish(run('a', 'first'))
+  await settleVue(12)
+  expect(view.element.textContent).toBe('second')
+})
+
+it('does not undo a known resume with PendingApproval metadata lacking a checkpoint', async () => {
+  vi.useFakeTimers()
+  const { activity, view } = await setup(async () => ({ items: [run('a', 'first', 'PendingApproval')] }), async () => run('a', 'first', 'PendingApproval'))
+  activity.record(run('a', 'first'))
+  await vi.advanceTimersByTimeAsync(20000)
+  expect(view.element.textContent).toBe('first')
 })

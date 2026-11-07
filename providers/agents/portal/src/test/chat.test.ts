@@ -2667,7 +2667,7 @@ describe('approval handoff after the chat stream closes', () => {
     event(store, 'Succeeded', 'r-b')
     await settle(12)
 
-    expect(listRuns).toHaveBeenLastCalledWith({ agent: 'scout', session: 's-shared' })
+    expect(listRuns).toHaveBeenCalledWith({ agent: 'scout', session: 's-shared' })
     expect(getRun).toHaveBeenCalledWith('r-a')
     expect(getRun).toHaveBeenCalledWith('r-c')
     expect(getRun).not.toHaveBeenCalledWith('r-b')
