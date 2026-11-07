@@ -192,7 +192,7 @@ func (s *cancelOnRunningStore) SaveRun(ctx context.Context, scope store.Scope, r
 		return err
 	}
 	if run.Phase == store.RunPhaseRunning {
-		return s.RequestCancel(ctx, scope, run.ID, time.Now().UTC())
+		return s.RequestCancel(ctx, scope, run.ID, time.Now().UTC(), "")
 	}
 	return nil
 }

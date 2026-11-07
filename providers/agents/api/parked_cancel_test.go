@@ -298,7 +298,7 @@ type failingRequestCancelStore struct {
 	err error
 }
 
-func (s failingRequestCancelStore) RequestCancel(context.Context, store.Scope, string, time.Time) error {
+func (s failingRequestCancelStore) RequestCancel(context.Context, store.Scope, string, time.Time, string) error {
 	return s.err
 }
 

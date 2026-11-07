@@ -526,7 +526,7 @@ func TestRecoveryResumeGuards(t *testing.T) {
 					t.Fatal(err)
 				}
 				// Keep the revision equal so this specifically exercises the cancel guard.
-				if err := f.s.store.RequestCancel(ctx, f.scope, run.ID, claimed.UpdatedAt); err != nil {
+				if err := f.s.store.RequestCancel(ctx, f.scope, run.ID, claimed.UpdatedAt, ""); err != nil {
 					t.Fatal(err)
 				}
 				intent.RecoveryClaimedAt = claimed.UpdatedAt

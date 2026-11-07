@@ -231,6 +231,9 @@ type Run struct {
 	// RequestCancel; SaveRun never clears it.
 	CancelRequested   bool       `json:"cancelRequested,omitempty"`
 	CancelRequestedAt *time.Time `json:"cancelRequestedAt,omitempty"`
+	// CancelRequestedBy is the authenticated caller of the first stop request.
+	// It is internal attribution evidence, never a public Run field.
+	CancelRequestedBy string `json:"-"`
 }
 
 // RunRepository is what a repository run was asked to run against. The same
@@ -903,7 +906,7 @@ type Store interface {
 	// else, so it cannot race a concurrent checkpoint SaveRun. Idempotent; a
 	// terminal run is left alone. Whoever executes the run — this replica,
 	// another one, or a later resume — observes it through GetRun.
-	RequestCancel(ctx context.Context, scope Scope, id string, now time.Time) error
+	RequestCancel(ctx context.Context, scope Scope, id string, now time.Time, actorID string) error
 	ListRuns(ctx context.Context, scope Scope, limit int) ([]Run, error)
 	// QueryRuns lists runs newest-first with filters and cursor pagination.
 	QueryRuns(ctx context.Context, scope Scope, q RunQuery) (RunPage, error)

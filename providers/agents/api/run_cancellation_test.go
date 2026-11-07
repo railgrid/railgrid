@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -65,6 +66,52 @@ func TestRunTurnStopsRemoteHarnessWhenCallerCancels(t *testing.T) {
 	awaitRunLifecycleSignal(t, dispatcher.cancelReturned, "the remote cancel request to return")
 	if got := dispatcher.cancelCalls.Load(); got != 1 {
 		t.Fatalf("remote cancel calls = %d, want exactly one", got)
+	}
+}
+
+func TestRunTurnStopAttributionSurvivesTerminalFrameWithoutExposingPrincipal(t *testing.T) {
+	for _, actor := range []string{"railgrid:alice", "railgrid:bob", ""} {
+		t.Run(actor, func(t *testing.T) {
+			dispatcher := newBlockingRunLifecycleDispatcher()
+			s, run := newHarnessRunLifecycleFixture(t, dispatcher, 0)
+			run.CallerUser = "railgrid:alice"
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			defer close(dispatcher.releaseCancel)
+			done := runHarnessTurnAsync(ctx, s, run)
+			awaitRunLifecycleSignal(t, dispatcher.eventsOpened, "the harness event stream to open")
+			if err := s.store.RequestCancel(t.Context(), run.Scope, run.RunID, time.Now(), actor); err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			awaitRunLifecycleCancel(t, dispatcher)
+			close(dispatcher.releaseStream)
+			result := awaitRunLifecycleTurn(t, done)
+			if !errors.Is(result.err, context.Canceled) || result.result.Phase != store.RunPhaseAborted {
+				t.Fatalf("expected confirmed cancellation, got %+v, %v", result.result, result.err)
+			}
+			wantByViewer := actor == run.CallerUser
+			if result.result.StoppedByViewer != wantByViewer || result.result.StoppedAfterMS == nil {
+				t.Fatalf("missing stop attribution or elapsed time: %+v", result.result)
+			}
+			frame := s.chatTerminalFrame(run.RunID, result.result, result.err)
+			if frame.Event != "error" || frame.Data["status"] != "aborted" || frame.Data["stoppedByViewer"] != wantByViewer {
+				t.Fatalf("incorrect stream termination: %+v", frame)
+			}
+			elapsed, ok := frame.Data["stoppedAfterMS"].(*int64)
+			if !ok || elapsed == nil || *elapsed != result.result.FinishedAt.Sub(*result.result.StartedAt).Milliseconds() {
+				t.Fatalf("stream lost elapsed stop time: %+v", frame)
+			}
+			for _, value := range []any{frame, result.result} {
+				data, err := json.Marshal(value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(data), "railgrid:") || strings.Contains(string(data), `"stoppedBy":`) {
+					t.Fatalf("public stream/result exposes a cancellation principal: %s", data)
+				}
+			}
+		})
 	}
 }
 

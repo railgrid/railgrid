@@ -316,6 +316,35 @@ between interactive and background authority, between a pending approval and a
 completed step, and between a failed run and its partial output. Use the exact
 run class and phase vocabulary already carried by the API.
 
+## Intentional stops in chat
+
+An acknowledged user stop is a neutral turn outcome. Chat displays **You stopped
+after …** only when the recorded cancellation principal matches the viewer;
+unattributed, historical, and other-user cancellations say **Turn stopped**.
+The duration is server-recorded elapsed turn time, separate from accumulated
+model/tool work. Missing duration remains absent rather than inferred from a
+relative message timestamp or worked-time accumulator.
+
+Partial assistant text and completed activity remain in the same turn. The
+status has no cancellation diagnostic panel or overflow menu; **View run** stays
+in the normal message footer below the output, alongside the standard message
+actions. The inspector retains operational diagnostics.
+Activity disclosure remains available only when the turn has actual activity,
+and an existing disclosure choice survives the stop. A stop with no output
+needs only the status. Chat omits the redundant relative timestamp for this
+outcome.
+
+**Stopping** remains pending until the backend confirms a terminal outcome.
+Timeouts retain their settings guidance; failures and uncertain connections keep
+their own recovery notices. Completion racing with a stop remains completion.
+The composer retains its draft and cancellation never implies that completed
+tool effects were reversed.
+
+Focused verification lives in the Agents chat attachment, progress projection,
+and AgentKit presentation tests, plus API terminal-metadata and store
+cancellation tests. Rendered evidence must be captured separately against the
+running application.
+
 ## Explicit exclusions and gaps
 
 - Agents has no generic confidence or uncertainty vocabulary. Concrete phase,

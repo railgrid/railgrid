@@ -236,7 +236,7 @@ func taskRunForStored(run store.Run) taskRun {
 	return taskRun{RunID: run.ID, SessionID: effectiveSessionID(run.SessionID, run.Trigger), Trigger: run.Trigger, Agent: agent}
 }
 
-func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, status string, content, turnError string) {
+func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, status string, content, turnError string) map[string]any {
 	if tracker == nil {
 		tracker = newTurnProgressTracker(0)
 	}
@@ -247,12 +247,26 @@ func (s *Server) appendTurnTerminal(ctx context.Context, scope store.Scope, run 
 	if run.Agent != nil {
 		agentName = run.Agent.Name
 	}
+	metadata := turnMetadata("terminal", status, startedAt, tracker.durationMS(), 0, turnError)
+	if status == "aborted" {
+		// Read the durable request rather than a possibly stale executor copy.
+		// Missing attribution stays neutral, including historical cancellations.
+		persistCtx, cancel := boundedPersistContext(ctx)
+		defer cancel()
+		if stored, err := s.store.GetRun(persistCtx, scope, run.RunID); err == nil && stored.CancelRequested {
+			metadata["stoppedBy"] = stored.CancelRequestedBy
+		}
+		if !startedAt.IsZero() && !createdAt.Before(startedAt) {
+			metadata["stoppedAfterMS"] = createdAt.Sub(startedAt).Milliseconds()
+		}
+	}
 	_ = s.appendProgressMessage(ctx, scope, store.Message{
 		ID: uuid.NewString(), AgentName: agentName, SessionID: sessionID, RunID: run.RunID,
 		Role: "assistant", Content: safeTruncate(content, maxStoredOutput),
-		Metadata:  turnMetadata("terminal", status, startedAt, tracker.durationMS(), 0, turnError),
+		Metadata:  metadata,
 		CreatedAt: createdAt,
 	})
+	return metadata
 }
 
 func (s *Server) appendTurnFinal(ctx context.Context, scope store.Scope, run taskRun, sessionID string, startedAt, createdAt time.Time, tracker *turnProgressTracker, content string) error {

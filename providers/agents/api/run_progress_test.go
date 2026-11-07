@@ -203,6 +203,12 @@ func TestAppendTurnTerminalPersistsCanceledPartialOutputAndTiming(t *testing.T) 
 	})
 	startedAt := time.Date(2026, 9, 10, 10, 0, 0, 0, time.FixedZone("PDT", -7*60*60))
 	createdAt := startedAt.Add(time.Second)
+	if err := st.SaveRun(ctx, scope, store.Run{ID: run.RunID, AgentName: "scout", Phase: store.RunPhaseRunning, CreatedAt: startedAt}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RequestCancel(ctx, scope, run.RunID, createdAt, "railgrid:alice"); err != nil {
+		t.Fatal(err)
+	}
 
 	s.appendTurnTerminal(ctx, scope, run, "chat", startedAt, createdAt, tracker, "aborted", "", "cancelled by user")
 	page, err := st.ListMessages(ctx, scope, "chat", 10, "")
@@ -215,6 +221,9 @@ func TestAppendTurnTerminalPersistsCanceledPartialOutputAndTiming(t *testing.T) 
 	message := page.Items[0]
 	if message.Content != "partial answer" {
 		t.Fatalf("canceled terminal content = %q, want partial answer", message.Content)
+	}
+	if message.Metadata["stoppedBy"] != "railgrid:alice" || message.Metadata["stoppedAfterMS"] != int64(1000) {
+		t.Fatalf("stop attribution and elapsed time missing: %#v", message.Metadata)
 	}
 	if got := message.Metadata["turnStatus"]; got != "aborted" {
 		t.Fatalf("turnStatus = %#v, want aborted", got)

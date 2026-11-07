@@ -68,7 +68,7 @@ func testClaimRecovery(t *testing.T, st Store, scope Scope) {
 	if err := st.SaveRun(ctx, scope, seed); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RequestCancel(ctx, scope, seed.ID, at.Add(time.Second)); err != nil {
+	if err := st.RequestCancel(ctx, scope, seed.ID, at.Add(time.Second), ""); err != nil {
 		t.Fatal(err)
 	}
 	cancelled, err := st.GetRun(ctx, scope, seed.ID)
