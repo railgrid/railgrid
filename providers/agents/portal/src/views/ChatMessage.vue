@@ -135,10 +135,10 @@ const progressVisible = computed(() => {
   const progress = props.message.progress
   if (props.message.role !== 'assistant') return false
   if (!progress) return fallbackTools.value.length > 0
-  return traceBlocks.value.length > 0 || (!failurePhase.value && progressIsActive(progress.status))
+  return progressIsActive(progress.status) || traceBlocks.value.length > 0
 })
 const progressStatus = computed<AITurnProgressStatus>(() =>
-  failurePhase.value || props.message.progress?.status || (fallbackTools.value.some(tool => tool.pending) ? 'running' : 'completed'),
+  props.message.progress?.status || (fallbackTools.value.some(tool => tool.pending) ? 'running' : 'completed'),
 )
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
