@@ -162,7 +162,6 @@ function progressFromMetadata(metadata: TranscriptMessage['metadata']): ChatProg
   return {
     status,
     ...(typeof metadata?.stoppedByViewer === 'boolean' ? { stoppedByViewer: metadata.stoppedByViewer } : {}),
-    ...(typeof metadata?.stoppedBy === 'string' ? { stoppedBy: metadata.stoppedBy } : {}),
     ...(durationMS(metadata?.stoppedAfterMS) !== undefined ? { stoppedAfterMS: durationMS(metadata?.stoppedAfterMS) } : {}),
     ...(startedAt ? { startedAt } : {}),
     ...(duration !== undefined ? { durationMS: duration } : {}),

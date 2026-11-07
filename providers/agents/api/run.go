@@ -111,7 +111,6 @@ type runResult struct {
 	// callbacks. Approval/recovery idle time is intentionally excluded.
 	DurationMS      int64  `json:"durationMS,omitempty"`
 	StoppedByViewer bool   `json:"stoppedByViewer,omitempty"`
-	StoppedBy       string `json:"stoppedBy,omitempty"`
 	StoppedAfterMS  *int64 `json:"stoppedAfterMS,omitempty"`
 	Usage           struct {
 		InputTokens  int64 `json:"inputTokens"`
@@ -1138,8 +1137,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		res := runResult{RunID: runID, Content: tracker.partialText(), Phase: phase,
 			StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}
-		res.StoppedBy, _ = terminal["stoppedBy"].(string)
-		res.StoppedByViewer = res.StoppedBy != "" && res.StoppedBy == run.CallerUser
+		stoppedBy, _ := terminal["stoppedBy"].(string)
+		res.StoppedByViewer = stoppedBy != "" && stoppedBy == run.CallerUser
 		if elapsed, ok := terminal["stoppedAfterMS"].(int64); ok {
 			res.StoppedAfterMS = &elapsed
 		}

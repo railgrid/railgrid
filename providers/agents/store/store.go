@@ -229,10 +229,11 @@ type Run struct {
 	// resumed later), because the engine loop reads it between tool rounds and
 	// the recovery sweep refuses to resume a run that carries it. Set once by
 	// RequestCancel; SaveRun never clears it.
-	// CancelRequestedBy is the authenticated caller of the first stop request.
-	CancelRequestedBy string     `json:"cancelRequestedBy,omitempty"`
 	CancelRequested   bool       `json:"cancelRequested,omitempty"`
 	CancelRequestedAt *time.Time `json:"cancelRequestedAt,omitempty"`
+	// CancelRequestedBy is the authenticated caller of the first stop request.
+	// It is internal attribution evidence, never a public Run field.
+	CancelRequestedBy string `json:"-"`
 }
 
 // RunRepository is what a repository run was asked to run against. The same

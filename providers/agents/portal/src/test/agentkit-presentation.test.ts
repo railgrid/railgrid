@@ -371,7 +371,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       message: message({
         runID: 'run-stopped', content: 'Partial response', error: 'cancelled by user',
         createdAt: '2026-09-10T10:00:06Z',
-        progress: { status: 'aborted', stoppedBy: 'railgrid:alice@example.com', stoppedByViewer: true, stoppedAfterMS: 6000, durationMS: 1000, trace: [
+        progress: { status: 'aborted', stoppedByViewer: true, stoppedAfterMS: 6000, durationMS: 1000, trace: [
           { id: 'commentary', kind: 'commentary', content: 'I will inspect the repository.' },
         ] },
       }),
@@ -408,9 +408,9 @@ describe('AgentKit timestamp and chat presentation', () => {
   })
 
   it('keeps unattributed and other-user stops neutral and timeouts actionable', async () => {
-    for (const stoppedBy of [undefined, 'railgrid:bob@example.com']) {
+    for (const stoppedByViewer of [undefined, false]) {
       const view = await mountVue(ChatMessage, {
-          message: message({ error: 'cancelled by user', progress: { status: 'aborted', stoppedBy, durationMS: 2000, trace: [] } }),
+          message: message({ error: 'cancelled by user', progress: { status: 'aborted', stoppedByViewer, durationMS: 2000, trace: [] } }),
       })
       expect(text(view.element.querySelector('.k-ai-turn-progress__label'))).toBe('Turn stopped')
       expect(view.element.querySelector('.k-ai-turn-progress__trigger')).toBeNull()

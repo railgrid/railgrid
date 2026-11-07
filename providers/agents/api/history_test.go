@@ -648,6 +648,12 @@ func TestTranscriptStopAttributionIsViewerSpecific(t *testing.T) {
 		if len(got) != 1 || got[0].Metadata["stoppedByViewer"] != (viewer == "railgrid:alice") {
 			t.Fatalf("viewer %q: wrong stop attribution: %#v", viewer, got)
 		}
+		if _, ok := got[0].Metadata["stoppedBy"]; ok {
+			t.Fatalf("public transcript exposes the stopper's principal to %q", viewer)
+		}
+	}
+	if rows[0].Metadata["stoppedBy"] != "railgrid:alice" {
+		t.Fatal("public projection removed stored attribution evidence")
 	}
 	if _, ok := rows[0].Metadata["stoppedByViewer"]; ok {
 		t.Fatal("viewer-specific attribution mutated the stored transcript")

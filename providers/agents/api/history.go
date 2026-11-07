@@ -77,9 +77,10 @@ func transcriptForViewer(messages []store.Message, viewer string) []store.Messag
 		if out[i].Metadata == nil {
 			continue
 		}
+		actor, _ := out[i].Metadata["stoppedBy"].(string)
+		delete(out[i].Metadata, "stoppedBy")
 		delete(out[i].Metadata, "stoppedByViewer")
 		if out[i].Metadata["turnStatus"] == "aborted" {
-			actor, _ := out[i].Metadata["stoppedBy"].(string)
 			out[i].Metadata["stoppedByViewer"] = actor != "" && viewer != "" && actor == viewer
 		}
 	}

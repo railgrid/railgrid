@@ -73,7 +73,7 @@ interface DoneData {
   durationMS?: number
   usage?: { inputTokens: number; outputTokens: number; usdMicros: number }
 }
-interface ErrorData { stoppedByViewer?: boolean; stoppedBy?: string; stoppedAfterMS?: number; runID?: string; message: string; status?: string; startedAt?: string; finishedAt?: string; durationMS?: number }
+interface ErrorData { stoppedByViewer?: boolean; stoppedAfterMS?: number; runID?: string; message: string; status?: string; startedAt?: string; finishedAt?: string; durationMS?: number }
 interface ConversationRailHandle {
   openAndFocus?: () => void
   toggle?: (returnFocus?: HTMLElement | null) => void
@@ -1061,7 +1061,6 @@ function progressPatch(message: ChatMessage, patch: Partial<ChatProgress> & { st
   const status = patch.status || current?.status || 'pending'
   return {
     ...(current?.stoppedByViewer !== undefined ? { stoppedByViewer: current.stoppedByViewer } : {}),
-    ...(current?.stoppedBy !== undefined ? { stoppedBy: current.stoppedBy } : {}),
     ...(current?.stoppedAfterMS !== undefined ? { stoppedAfterMS: current.stoppedAfterMS } : {}),
     ...(current?.startedAt ? { startedAt: current.startedAt } : {}),
     ...(current?.durationMS !== undefined ? { durationMS: current.durationMS } : {}),
@@ -2474,7 +2473,6 @@ async function streamTurn(
             status,
             ...(data.startedAt ? { startedAt: data.startedAt } : {}),
             ...(typeof data.stoppedByViewer === 'boolean' ? { stoppedByViewer: data.stoppedByViewer } : {}),
-            ...(typeof data.stoppedBy === 'string' ? { stoppedBy: data.stoppedBy } : {}),
             ...(validDuration(data.stoppedAfterMS) !== undefined ? { stoppedAfterMS: validDuration(data.stoppedAfterMS) } : {}),
             ...(validDuration(data.durationMS) !== undefined ? { durationMS: validDuration(data.durationMS) } : {}),
           })

@@ -10,6 +10,8 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,5 +104,15 @@ func TestPostgresRequestCancelPreservesFirstActor(t *testing.T) {
 	}
 	if !stored.CancelRequested || stored.CancelRequestedBy != "railgrid:alice" || stored.CancelRequestedAt == nil || !stored.CancelRequestedAt.Equal(now.Truncate(time.Microsecond)) {
 		t.Fatalf("first cancellation must survive retries and stale saves: %#v", stored)
+	}
+}
+
+func TestRunJSONOmitsCancellationPrincipal(t *testing.T) {
+	data, err := json.Marshal(Run{CancelRequested: true, CancelRequestedBy: "railgrid:alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "cancelRequestedBy") || strings.Contains(string(data), "railgrid:alice") {
+		t.Fatalf("public run exposes internal cancellation evidence: %s", data)
 	}
 }

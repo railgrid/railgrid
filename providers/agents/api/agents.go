@@ -711,7 +711,7 @@ func (s *Server) chatTerminalFrame(runID string, res runResult, err error) chatF
 		}
 		return chatFrame{Event: "error", Data: map[string]any{
 			"runID": runID, "message": message, "status": status,
-			"stoppedBy": res.StoppedBy, "stoppedAfterMS": res.StoppedAfterMS, "stoppedByViewer": res.StoppedByViewer,
+			"stoppedAfterMS": res.StoppedAfterMS, "stoppedByViewer": res.StoppedByViewer,
 			"startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
 		}}
 	}
