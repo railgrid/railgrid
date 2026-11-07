@@ -166,6 +166,22 @@ describe('chat streaming', () => {
     expect(threadIDs()).toEqual([newID, 'newer', 'older'])
   })
 
+  it('double-clicks a thread-list row to rename after selection finishes', async () => {
+    const rename = vi.fn()
+    const select = vi.fn()
+    const rail = await mountConversationRail()
+    await rail.setProps({ capabilities: { rename: true }, onRename: rename, onSelect: select })
+    const row = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-older"]')!
+    row.click()
+    expect(select).toHaveBeenCalledExactlyOnceWith('thread-older')
+    await rail.setProps({ selectingThreadID: 'thread-older' })
+    expect(row.disabled).toBe(false)
+    row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, detail: 2 }))
+    expect(rename).not.toHaveBeenCalled()
+    await rail.setProps({ activeThreadID: 'thread-older', selectingThreadID: '' })
+    expect(rename).toHaveBeenCalledExactlyOnceWith('thread-older')
+  })
+
   it('shows a trailing spinner for active work without preventing thread selection', async () => {
     const rail = await mountConversationRail()
     await rail.setProps({ activeThreadID: '', unreadThreadIDs: ['thread-active', 'thread-older'] })
@@ -246,157 +262,58 @@ describe('chat streaming', () => {
     expect(second.el.querySelector('button[aria-label="Unpin thread"]')).toBeNull()
   })
 
-  it('edits the heading inline and updates the saved title', async () => {
+  it('opens the rename modal from the title and saves only on submission', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const renameSession = vi.fn(async (_agent: string, _id: string, title: string) => ({ title }))
     const { el } = await mountChat(scripted([]), {
       listSessions: async () => [session('s1', 'Original title')], renameSession,
     })
-    el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
+    const title = el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!
+    title.focus()
+    title.click()
     await settle()
-    expect(document.querySelector('[role="dialog"]')).toBeNull()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
+    const dialog = document.querySelector<HTMLFormElement>('[role="dialog"]')!
+    const input = dialog.querySelector<HTMLInputElement>('input')!
     expect(document.activeElement).toBe(input)
     expect(input.value).toBe('Original title')
+    expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
     input.value = '  My custom title  '
     input.dispatchEvent(new Event('input'))
-    el.querySelector('.k-ai-conversation-title-input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    input.blur()
+    await settle()
+    expect(renameSession).not.toHaveBeenCalled()
+    dialog.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
     expect(renameSession).toHaveBeenCalledExactlyOnceWith('scout', 's1', 'My custom title')
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.activeElement).toBe(title)
     expect(text(el.querySelector('.agents-chat-title'))).toContain('My custom title')
     expect(text(el.querySelector('[data-thread-id="s1"]'))).toContain('My custom title')
   })
 
-  it.each(['success', 'failure'] as const)('keeps keyboard focus on the title while an Enter save is pending and after %s', async outcome => {
+  it('keeps failed title edits in the modal for retry and blocks duplicate saves', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const pending = deferred<{ title: string }>()
-    const renameSession = vi.fn(() => pending.promise)
+    const renameSession = vi.fn().mockImplementationOnce(() => pending.promise).mockResolvedValueOnce({ title: 'New title' })
     const { el } = await mountChat(scripted([]), { listSessions: async () => [session('s1', 'Original')], renameSession })
     el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
     await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
+    const dialog = document.querySelector<HTMLFormElement>('[role="dialog"]')!
+    const input = dialog.querySelector<HTMLInputElement>('input')!
     input.value = 'New title'
     input.dispatchEvent(new Event('input'))
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    dialog.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
-    const button = el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!
-    expect(document.activeElement).toBe(button)
-    expect(button.getAttribute('aria-disabled')).toBe('true')
-    button.click()
-    await settle()
-    expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
+    dialog.dispatchEvent(new Event('submit', { cancelable: true }))
     expect(renameSession).toHaveBeenCalledTimes(1)
-    if (outcome === 'success') pending.resolve({ title: 'New title' })
-    else pending.reject(new Error('Unable to save'))
-    await settle()
-    expect(document.activeElement).toBe(button)
-    expect(button.hasAttribute('aria-disabled')).toBe(false)
-  })
-
-  it('preserves a later focus choice while an Enter save completes', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const pending = deferred<{ title: string }>()
-    const { el } = await mountChat(scripted([]), {
-      listSessions: async () => [session('s1', 'Original')], renameSession: () => pending.promise,
-    })
-    el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
-    await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
-    input.value = 'New title'
-    input.dispatchEvent(new Event('input'))
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    await settle()
-    const composer = composerEditor(el)!
-    composer.focus()
-    pending.resolve({ title: 'New title' })
-    await settle()
-    expect(document.activeElement).toBe(composer)
-  })
-
-  it('saves inline edits on blur without moving focus back to the title', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const renameSession = vi.fn(async (_agent: string, _id: string, title: string) => ({ title }))
-    const { el } = await mountChat(scripted([]), { listSessions: async () => [session('s1', 'Original')], renameSession })
-    el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
-    await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
-    expect(input.value).toBe('Original')
-    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 'Original'.length])
-    expect(el.querySelector('.agents-chat-title strong')).not.toBeNull()
-    input.value = '  Saved on blur  '
-    input.dispatchEvent(new Event('input'))
-    const composer = composerEditor(el)!
-    composer.focus()
-    await settle()
-    expect(renameSession).toHaveBeenCalledExactlyOnceWith('scout', 's1', 'Saved on blur')
-    expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
-    expect(document.activeElement).toBe(composer)
-    expect(text(el.querySelector('.agents-chat-title'))).toContain('Saved on blur')
-  })
-
-  it('dismisses unchanged and blank inline titles without writing', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const renameSession = vi.fn()
-    const { el } = await mountChat(scripted([]), { listSessions: async () => [session('s1', 'Original')], renameSession })
-    for (const value of [' Original ', '   ']) {
-      el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
-      await settle()
-      const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
-      input.value = value
-      input.dispatchEvent(new Event('input'))
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-      await settle()
-      expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
-      expect(document.activeElement).toBe(el.querySelector('button[aria-label="Rename chat"]'))
-      expect(text(el.querySelector('.agents-chat-title'))).toContain('Original')
-    }
-    expect(renameSession).not.toHaveBeenCalled()
-  })
-
-  it('closes the inline editor before saving and reports failure beside the original title', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const pending = deferred<{ title: string }>()
-    const renameSession = vi.fn(() => pending.promise)
-    const { el, view } = await mountChat(scripted([]), { listSessions: async () => [session('s1', 'Original')], renameSession })
-    el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
-    await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
-    input.value = 'New title'
-    input.dispatchEvent(new Event('input'))
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    await settle()
-    expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
-    expect(el.querySelector('button[aria-label="Rename chat"]')!.getAttribute('aria-disabled')).toBe('true')
     pending.reject(new Error('Unable to save'))
     await settle()
-    expect(text(el.querySelector('.agents-chat-rename-error'))).toContain('Unable to save')
-    expect(text(el.querySelector('.agents-chat-title'))).toContain('Original')
-    expect(el.querySelector('button[aria-label="Rename chat"]')!.hasAttribute('aria-disabled')).toBe(false)
-    expect(renameSession).toHaveBeenCalledTimes(1)
-    await view.setProps({ name: 'other-agent' })
+    expect(text(dialog.querySelector('[role="alert"]'))).toContain('Unable to save')
+    expect(input.value).toBe('New title')
+    dialog.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
-    expect(el.querySelector('.agents-chat-rename-error')).toBeNull()
-  })
-
-  it('does not show a pending inline rename failure beside another chat title', async () => {
-    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
-    const pending = deferred<{ title: string }>()
-    const { el } = await mountChat(scripted([]), {
-      listSessions: async () => [session('s1', 'Original'), session('s2', 'Another chat')],
-      renameSession: () => pending.promise,
-    })
-    el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
-    await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
-    input.value = 'New title'
-    input.dispatchEvent(new Event('input'))
-    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    await settle()
-    await chooseSession(el, 'Another chat')
-    pending.reject(new Error('The old save failed'))
-    await settle()
-    expect(text(el.querySelector('.agents-chat-title'))).toContain('Another chat')
-    expect(el.querySelector('.agents-chat-rename-error')).toBeNull()
+    expect(renameSession).toHaveBeenCalledTimes(2)
+    expect(document.querySelector('[role="dialog"]')).toBeNull()
   })
 
   it('replaces a prior local rename with the persisted title after reconnect', async () => {
@@ -410,10 +327,10 @@ describe('chat streaming', () => {
     await settle()
     el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
     await settle()
-    const input = el.querySelector<HTMLInputElement>('.k-ai-conversation-title-input')!
+    const input = document.querySelector<HTMLInputElement>('[role="dialog"] input')!
     input.value = 'My first rename'
     input.dispatchEvent(new Event('input'))
-    el.querySelector('.k-ai-conversation-title-input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    document.querySelector('[role="dialog"]')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle()
     expect(text(el.querySelector('.agents-chat-title'))).toContain('My first rename')
 
@@ -498,7 +415,7 @@ describe('chat streaming', () => {
     expect(title.classList.contains('k-btn--ghost')).toBe(false)
     title.click()
     await settle()
-    expect(el.querySelector('.k-ai-conversation-title-input')).not.toBeNull()
+    expect(document.querySelector('[role="dialog"] input')).not.toBeNull()
   })
 
   it('renames a different thread through its context menu and retries a failed save', async () => {
@@ -532,13 +449,13 @@ describe('chat streaming', () => {
     expect(text(el.querySelector('[data-thread-id="s2"]'))).toContain('Renamed thread')
   })
 
-  it('cancels inline renaming with Escape without saving', async () => {
+  it('cancels modal renaming with Escape without saving', async () => {
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
     const renameSession = vi.fn()
     const { el } = await mountChat(scripted([]), { listSessions: async () => [session('s1', 'Original')], renameSession })
     el.querySelector<HTMLButtonElement>('button[aria-label="Rename chat"]')!.click()
     await settle()
-    el.querySelector('.k-ai-conversation-title-input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    document.querySelector('[role="dialog"] input')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
     await settle()
     expect(el.querySelector('.k-ai-conversation-title-input')).toBeNull()
     expect(renameSession).not.toHaveBeenCalled()

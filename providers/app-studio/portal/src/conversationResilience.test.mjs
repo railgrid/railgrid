@@ -156,6 +156,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     'releaseThreadMutationLatch',
     'supportedThreadReasoningEffortSnapshot',
     'createAssistantThread',
+    'updateAssistantThreadFromEvent',
     'beginAssistantThreadTitleRename',
     'renameAssistantThread',
     'archiveAssistantThread',
@@ -442,6 +443,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
       releaseThreadMutationLatch,
       beginAssistantThreadTitleRename,
       renameAssistantThread,
+      recoverAssistantConversation,
       archiveAssistantThread,
       sendMessage,
       cancelMessageStream,
@@ -2330,4 +2332,73 @@ test('receipt expiry recovery after navigation cannot edit the newly visible dra
   assert.deepEqual(h.saved, [])
   assert.equal(h.error.value, '')
   assert.equal(h.submission().id, 'rejected-turn')
+})
+
+function threadActivitySnapshotHarness() {
+  const names = new Set(['applyAssistantSnapshot', 'updateAssistantThreadFromEvent', 'replaceAssistantThread'])
+  const outputText = compileStatements(ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text)))
+  return new Function('ref', 'state', `
+    const selected = ref({ name: 'project-a' });
+    const activeAssistantThreadID = ref('thread-a');
+    const assistantThreads = ref([{ id: 'thread-a', title: 'Current', status: 'active' }, { id: 'thread-b', title: 'Background', status: 'active' }]);
+    const messages = ref([]);
+    const assistantRunRevisions = {};
+    let activeAssistantRun;
+    let activeAssistantProject = '';
+    const normalizeSnapshotMessage = message => message;
+    const acceptScopedConversationSnapshot = state.acceptScopedConversationSnapshot;
+    const mergeConversationSnapshot = state.mergeConversationSnapshot;
+    const assistantRunTerminal = state.assistantRunTerminal;
+    const assistantRunRequiresLiveControls = state.assistantRunRequiresLiveControls;
+    const observeAssistantWorkedDuration = () => {};
+    const toProjectMessageView = message => message;
+    const setActiveAssistantRun = run => { activeAssistantRun = run; };
+    const approvalMode = ref('on_request');
+    const messageStreaming = ref(false);
+    const assistantStopRequestedRunID = ref('');
+    const assistantStopError = ref(null);
+    const reviewPanelHold = ref(null);
+    const conversationStatus = ref('');
+    const assistantRunOwners = new Map();
+    const assistantRunController = { disconnect() {}, markHealthySnapshot() {} };
+    ${outputText}
+    return { applyAssistantSnapshot, assistantThreads, selected, messageStreaming };
+  `)(ref, state)
+}
+
+for (const terminal of ['completed', 'failed', 'interrupted', 'aborted']) {
+  test(`accepted ${terminal} snapshot settles the rail without a thread.updated event`, () => {
+    const h = threadActivitySnapshotHarness()
+    assert.equal(h.applyAssistantSnapshot(snapshot(1, 'Working'), 'project-a', 'start').accepted, true)
+    assert.equal(h.assistantThreads.value[0].status, 'active')
+    assert.equal(h.applyAssistantSnapshot(snapshot(2, 'Finished', terminal), 'project-a').accepted, true)
+    assert.equal(h.messageStreaming.value, false)
+    assert.equal(h.assistantThreads.value[0].status, 'idle')
+    assert.equal(h.assistantThreads.value[1].status, 'active', 'other threads are unaffected')
+  })
+}
+
+test('stale terminal snapshots cannot clear a newer run spinner', () => {
+  const h = threadActivitySnapshotHarness()
+  h.applyAssistantSnapshot(snapshot(1, 'Old run'), 'project-a', 'start')
+  h.applyAssistantSnapshot(snapshot(2, 'Old run finished', 'completed'), 'project-a')
+  const next = snapshot(1, 'New run')
+  next.run.id = 'run-2'
+  next.run.activeMessageID = next.message.id = 'a-2'
+  h.applyAssistantSnapshot(next, 'project-a', 'start')
+  assert.equal(h.assistantThreads.value[0].status, 'active')
+  assert.equal(h.applyAssistantSnapshot(snapshot(3, 'Late old run', 'completed'), 'project-a').accepted, false)
+  assert.equal(h.assistantThreads.value[0].status, 'active')
+  assert.equal(h.applyAssistantSnapshot(snapshot(4, 'Different project', 'completed'), 'project-b').accepted, false)
+  assert.equal(h.assistantThreads.value[0].status, 'active')
+})
+
+test('recovery with no active turn clears a stale rail spinner after missed terminal events', async t => {
+  const h = await assistantSubmissionHarness(t, [], { pageOutcomes: [{ items: [] }] })
+  h.assistantThreads.value[0].status = 'active'
+  h.assistantThreads.value[1].status = 'active'
+  await h.recoverAssistantConversation('project-a')
+  assert.equal(h.assistantThreads.value[0].status, 'idle')
+  assert.equal(h.assistantThreads.value[1].status, 'active')
+  assert.equal(h.messageStreaming.value, false)
 })

@@ -26,7 +26,8 @@ The 56px titlebar places the thread side-panel control, an icon-only
 icon, and `AIConversationIdentity`. The back link uses `ctx.basePath` (falling
 back to `/ui/providers/app-studio`) as its real `href` and sends active in-app
 navigation through `navigate('')`. The identity's title slot retains the
-provider-owned editable thread title; its context slot shows the project and
+provider-owned thread-title button, which opens the shared rename modal; its
+context slot shows the project and
 Git repository or the Git connection prompt. Rename and Git behavior remain
 App Studio-owned.
 
@@ -35,6 +36,15 @@ shared interrupt supports both kinds, while other providers may consume only
 the kind their own API and lifecycle expose.
 
 ## Shipped contract
+
+### Thread activity follows the accepted run
+
+The conversation rail settles its spinner from the same accepted run snapshot
+as the transcript. Completed, failed, interrupted, and aborted runs return the
+current thread to idle without requiring a separate `thread.updated` event.
+Recovery that confirms no active turn also clears stale thread activity. Stale
+or foreign-project snapshots cannot clear a newer run's activity. Navigating
+away closes the rename modal and discards its old thread target.
 
 ### Mode is authority
 
