@@ -249,8 +249,19 @@ func TestCTenantEnableAndCRsUsable(t *testing.T) {
 				"metadata":   map[string]any{"name": tc.name},
 				"spec":       map[string]any{},
 			}}
-			if _, err := tenant.Resource(tc.gvr).Create(ctxWithTimeout(t, 10*time.Second), cr, metav1.CreateOptions{}); err != nil {
-				t.Fatalf("create %s: %v", tc.kind, err)
+			// The binding status can become visible before authorization on the
+			// tenant endpoint sees the bound resource.
+			ctx := ctxWithTimeout(t, 30*time.Second)
+			var lastDenied error
+			if err := framework.Poll(ctx, 250*time.Millisecond, 30*time.Second, func(ctx context.Context) (bool, error) {
+				_, err := tenant.Resource(tc.gvr).Create(ctx, cr, metav1.CreateOptions{})
+				if apierrors.IsForbidden(err) {
+					lastDenied = err
+					return false, nil
+				}
+				return err == nil, err
+			}); err != nil {
+				t.Fatalf("create %s: %v (last authorization error: %v)", tc.kind, err, lastDenied)
 			}
 			t.Cleanup(func() {
 				_ = tenant.Resource(tc.gvr).Delete(context.Background(), tc.name, metav1.DeleteOptions{})
