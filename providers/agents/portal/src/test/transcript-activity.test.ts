@@ -89,6 +89,17 @@ describe('transcript activity', () => {
     expect(view.element.querySelector('.k-ai-transcript-activity__list')?.classList.contains('is-bounded')).toBe(false)
   })
 
+  it('keeps shell-separated scripts and unexpanded shell patterns opaque', () => {
+    for (const command of ['ls\nrm x', 'cat a\nrm b', 'ls\r\nrm x', 'cat a\rrm b', "cat 'a\nb'", 'ls *.go', 'ls src/?.ts', 'ls [ab].ts', 'ls ~', 'cat ~/notes', 'cat {a,b}']) {
+      expect(commandActivityPresentation(command)).toEqual({
+        title: `Ran ${command}`, runningTitle: `Running ${command}`, category: 'run', iconKey: 'run',
+      })
+    }
+    expect(commandActivityPresentation("ls '*.go'").title).toBe('Listed files in *.go')
+    expect(commandActivityPresentation("cat '~'").title).toBe('Read ~')
+    expect(commandActivityPresentation('opaque', ['cat', 'a\nb']).title).toBe('Read a\nb')
+  })
+
   it('describes only unambiguous simple commands and preserves compound invocations', () => {
     expect(commandActivityPresentation('ls provider-sdk').title).toBe('Listed files in provider-sdk')
     expect(commandActivityPresentation("cat 'docs/read me.md'").title).toBe('Read docs/read me.md')

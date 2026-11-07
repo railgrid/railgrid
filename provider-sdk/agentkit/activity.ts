@@ -209,6 +209,9 @@ export interface AICommandActivityPresentation {
 export function commandActivityPresentation(command: string, argv?: readonly string[]): AICommandActivityPresentation {
   const fallback = { title: `Ran ${command}`, runningTitle: `Running ${command}`, category: 'run' as const, iconKey: 'run' }
   if (!argv) {
+    // Newlines separate shell commands, even when whitespace tokenization would
+    // otherwise make the script look like one file operation.
+    if (/[\r\n]/.test(command)) return fallback
     const tokens: string[] = []
     const token = /\s*(?:'([^']*)'|"([^"\\$`]*)"|([^\s'"\\;&|<>$`()]+))/gy
     let end = 0
@@ -217,6 +220,9 @@ export function commandActivityPresentation(command: string, argv?: readonly str
       token.lastIndex = end
       const match = token.exec(command)
       if (!match) return fallback
+      // Unquoted expansion syntax is not a literal path or search argument.
+      // Quoted tokens and authoritative argv keep their literal meaning.
+      if (match[3] && /[?*{}~\[\]]/.test(match[3])) return fallback
       tokens.push(match[1] ?? match[2] ?? match[3]!)
       end = token.lastIndex
     }
