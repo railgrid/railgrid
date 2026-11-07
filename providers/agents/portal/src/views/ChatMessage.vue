@@ -18,6 +18,7 @@ import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { pendingIsQuestion } from '../types'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
@@ -128,7 +129,9 @@ function openToolCitation(event: MouseEvent): void {
   if (tool) emit('save-artifact', { runID: props.message.runID, sessionID: props.sessionID, toolCallID: callID, title: formatToolLabel(tool.name) })
 }
 const messageCreatedAt = computed(() => {
-  return props.message.createdAt || null
+  const { role, progress, streaming, createdAt } = props.message
+  if (role === 'assistant' && (progress ? progressIsActive(progress.status) : streaming)) return null
+  return createdAt || null
 })
 const progressVisible = computed(() => {
   const progress = props.message.progress
@@ -547,7 +550,7 @@ onBeforeUnmount(() => { mounted = false })
 
     <AgentVisualization v-for="item in visualizations" :key="item.id" :chart="item.chart" />
 
-    <template v-if="message.role === 'user' || message.approval || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
+    <template v-if="message.approval" #interrupt>
       <AgentQuestionCard
         v-if="message.approval && !message.approval.answerInThread && !questionDocked && pendingIsQuestion(message.approval)"
         :question-id="message.approval.inboxID"
@@ -559,16 +562,25 @@ onBeforeUnmount(() => { mounted = false })
         @answer="response => emit('approval', { inboxID: message.approval!.inboxID, decision: 'answer', response })"
       />
 
-      <AgentApprovalCard
+      <template
         v-else-if="message.approval && !approvalDocked && !pendingIsQuestion(message.approval)"
-        :tool="message.approval.tool"
-        :args="message.approval.args"
-        :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"
-        :disabled="!!approvalBusy"
-        :resolved="message.approval.resolved === 'approve' || message.approval.resolved === 'deny' ? message.approval.resolved : undefined"
-        @decide="decision => emit('approval', { inboxID: message.approval!.inboxID, decision })"
-      />
+      >
+        <details v-if="message.approval.resolved === 'approve' || message.approval.resolved === 'deny'" class="agents-approval-done">
+          <summary>{{ message.approval.resolved === 'approve' ? 'Permission approved' : 'Permission denied' }}</summary>
+          <ApprovalDisclosure :tool="message.approval.tool" :args="message.approval.args" details-only />
+        </details>
+        <AgentApprovalCard
+          v-else
+          :tool="message.approval.tool"
+          :args="message.approval.args"
+          :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"
+          :disabled="!!approvalBusy"
+          @decide="decision => emit('approval', { inboxID: message.approval!.inboxID, decision })"
+        />
+      </template>
+    </template>
 
+    <template v-if="message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
       <div v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
         <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>

@@ -1360,7 +1360,13 @@ describe('chat streaming', () => {
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'approve')
     expect(el.querySelector('.agents-approval-dock')).toBeNull()
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    expect(el.querySelector('.agents-log .agents-approval')).toBeNull()
+    const receipt = el.querySelector<HTMLDetailsElement>('details.agents-approval-done')!
+    expect(text(receipt.querySelector('summary'))).toBe('Permission approved')
+    expect(receipt.open).toBe(false)
+    receipt.querySelector('summary')!.click()
+    expect(receipt.open).toBe(true)
+    expect(text(receipt.querySelector('.agents-approval-args'))).toContain('"name": "api"')
   })
 
   // A harness that cannot proceed asks a question. It names no tool, so the
@@ -1513,7 +1519,7 @@ describe('chat streaming', () => {
 
     resolution.resolve({ id: 'i1', state: 'approved' })
     await settle(4)
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    expect(text(el.querySelector('.agents-approval-done summary'))).toBe('Permission approved')
   })
 
   it('blocks malformed approval disclosure while leaving denial available', async () => {
@@ -1537,6 +1543,7 @@ describe('chat streaming', () => {
     deny.click()
     await settle(4)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'deny')
+    expect(text(el.querySelector('.agents-approval-done summary'))).toBe('Permission denied')
   })
 
   it('does not show a failed approval after the user leaves its session', async () => {
@@ -2467,7 +2474,7 @@ describe('approval handoff after the chat stream closes', () => {
     await settle(6)
 
     expect(resolveInbox).toHaveBeenCalledTimes(2)
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    expect(text(el.querySelector('.agents-approval-done summary'))).toBe('Permission approved')
   })
 
   it('uses the refreshed inbox to reconcile a decision whose response was lost without resending it', async () => {
@@ -2487,7 +2494,7 @@ describe('approval handoff after the chat stream closes', () => {
     expect(listInbox).toHaveBeenCalledTimes(1)
     expect(getRun).toHaveBeenCalledWith('r-approval')
     expect(resolveInbox).toHaveBeenCalledTimes(1)
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('Approved — the run is resuming.')
+    expect(text(el.querySelector('.agents-approval-done summary'))).toBe('Permission approved')
     expect(el.querySelector('.agents-approval-actions')).toBeNull()
     expect(text(el)).not.toContain('sensitive-backend-detail')
   })
@@ -2583,7 +2590,7 @@ describe('approval handoff after the chat stream closes', () => {
     await send(el, 'describe models')
     el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(6)
-    expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
+    expect(text(el.querySelector('.agents-approval-done summary'))).toBe('Permission approved')
     getRun.mockResolvedValue(pending('second'))
     event(store, 'PendingApproval')
     await settle(6)

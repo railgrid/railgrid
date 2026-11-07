@@ -123,6 +123,24 @@ describe('AgentKit timestamp and chat presentation', () => {
     }
   })
 
+  it('puts the turn timestamp in a separate row below the permission decision', async () => {
+    const createdAt = '2026-11-07T10:00:00Z'
+    const view = await mountVue(ChatMessage, {
+      message: message({
+        createdAt,
+        progress: { status: 'completed', trace: [] },
+        approval: { runID: 'run-1', inboxID: 'inbox-1', tool: 'Bash', args: '{"command":"pwd"}', resolved: 'approve' },
+      }),
+    })
+    try {
+      const interrupt = view.element.querySelector('.k-ai-conversation-turn__interrupt')
+      expect(text(interrupt?.querySelector('summary'))).toBe('Permission approved')
+      expect(interrupt?.nextElementSibling?.querySelector('time')?.getAttribute('datetime')).toBe(createdAt)
+    } finally {
+      view.unmount()
+    }
+  })
+
   it('uses truthful progress states without an empty output frame', async () => {
     const running = await mountVue(ChatMessage, {
       message: message({ progress: { status: 'running', trace: [] } }),
