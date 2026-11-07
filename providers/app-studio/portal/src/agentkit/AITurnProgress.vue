@@ -145,18 +145,24 @@ ensureAgentUIStyles()
       <slot name="actions" />
     </div>
 
-    <div
-      v-if="hasDetails()"
-      v-show="expanded"
-      :id="progressRegionID"
-      class="k-ai-turn-progress__details"
-      :role="isRunning ? 'log' : undefined"
-      :aria-live="isRunning ? 'polite' : undefined"
-      :aria-relevant="isRunning ? 'additions' : undefined"
-      aria-atomic="false"
-    >
-      <slot v-if="detailsSlotName() === 'details'" name="details" />
-      <slot v-else />
-    </div>
+    <Transition name="k-ai-disclosure">
+      <div
+        v-if="hasDetails()"
+        v-show="expanded"
+        :id="progressRegionID"
+        class="k-ai-turn-progress__details k-ai-disclosure"
+        :role="isRunning ? 'log' : undefined"
+        :aria-live="isRunning ? 'polite' : undefined"
+        :aria-relevant="isRunning ? 'additions' : undefined"
+        aria-atomic="false"
+      >
+        <div class="k-ai-disclosure__inner">
+          <div class="k-ai-turn-progress__content">
+            <slot v-if="detailsSlotName() === 'details'" name="details" />
+            <slot v-else />
+          </div>
+        </div>
+      </div>
+    </Transition>
   </section>
 </template>

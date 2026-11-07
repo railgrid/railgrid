@@ -1,5 +1,5 @@
 import { Fragment, createCommentVNode, createTextVNode, defineComponent, h, ref } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AIPlanDisclosure from '../agentkit/AIPlanDisclosure.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
@@ -160,7 +160,7 @@ describe('AgentKit conversation turn presentation', () => {
     await settleVue()
     expect(toggles).toEqual([false])
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(details.style.display).toBe('none')
+    await vi.waitFor(() => expect(details.style.display).toBe('none'))
 
     const terminal = await mountVue(AITurnProgress, {
       turnId: 'run/terminal',
