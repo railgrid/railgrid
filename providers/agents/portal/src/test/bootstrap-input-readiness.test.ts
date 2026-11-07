@@ -134,20 +134,36 @@ describe('chat bootstrap input readiness', () => {
   })
 
   it('reruns bootstrap after an initial session-list failure and enables input on recovery', async () => {
+    const pendingRetry = deferred<SessionMeta[]>()
     const listSessions = vi.fn()
       .mockRejectedValueOnce(new Error('sessions unavailable'))
+      .mockReturnValueOnce(pendingRetry.promise)
       .mockResolvedValueOnce([session('recovered-session')])
     const { el } = await mountChat({ listSessions })
 
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('Could not load conversations')
     expect(composerEditor(el)?.getAttribute('contenteditable')).toBe('false')
 
-    el.querySelector<HTMLButtonElement>('.agents-chat-sessions-notice button')!.click()
+    const retry = el.querySelector<HTMLButtonElement>('.agents-chat-sessions-notice button')!
+    retry.focus()
+    retry.click()
+    await settle()
+    expect(retry.isConnected).toBe(true)
+    expect(retry.disabled).toBe(true)
+    expect(retry.textContent).toContain('Retrying…')
+    retry.blur()
+    pendingRetry.reject(new Error('retry failed again'))
+    await settle()
+    expect(el.querySelector('[role="alert"]')?.textContent).toContain('retry failed again')
+    expect(retry.disabled).toBe(false)
+    expect(document.activeElement).toBe(retry)
+
+    retry.click()
     await settle(10)
 
-    expect(listSessions).toHaveBeenCalledTimes(2)
+    expect(listSessions).toHaveBeenCalledTimes(3)
     expect(localStorage.getItem(rememberedSessionKey)).toBe('recovered-session')
     expect(composerEditor(el)?.getAttribute('contenteditable')).toBe('true')
-    expect(el.querySelector('.agents-state-error')).toBeNull()
+    expect(el.querySelector('.agents-chat-sessions-notice')).toBeNull()
   })
 })

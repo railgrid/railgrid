@@ -214,6 +214,7 @@ function resetOlderHistory(): void {
   atBottom.value = true
 }
 watch(sessionID, () => {
+  loadError.value = null
   resetOlderHistory()
   clearArtifactState()
 }, { flush: 'sync' })
@@ -1824,7 +1825,7 @@ const starterPrompts = [
   'Help me plan a task. Ask me about my goal and constraints first.',
 ]
 
-async function openAgent(): Promise<void> {
+async function openAgent(preserveSessionsError = false): Promise<void> {
   const name = props.name
   const api = props.api
   const serial = ++openSerial
@@ -1841,7 +1842,7 @@ async function openAgent(): Promise<void> {
   sessionsReadScope.value = ''
   sessions.value = []
   sessionTitleOverrides.value = new Map()
-  sessionsError.value = null
+  if (!preserveSessionsError) sessionsError.value = null
   sessionsHasSnapshot.value = false
   sessionsLoading.value = false
   sessionID.value = ''
@@ -1918,13 +1919,30 @@ async function openAgent(): Promise<void> {
 function refreshSessions(name = props.name, api = props.api): void {
   if (name !== props.name || api !== props.api) return
   if (!sessionID.value && !sessionsHasSnapshot.value) {
-    void openAgent()
+    void openAgent(true)
     return
   }
   void loadSessions(name, api)
 }
 
-function retrySessions(): void { refreshSessions() }
+async function retrySessions(): Promise<void> {
+  if (sessionID.value || sessionsHasSnapshot.value) {
+    refreshSessions()
+    return
+  }
+
+  const active = document.activeElement
+  const retryButton = active instanceof HTMLButtonElement && active.closest('.agents-chat-sessions-notice') ? active : null
+  const retry = openAgent(true)
+  const serial = openSerial
+  await retry
+  await nextTick()
+  // A disabled button can lose focus during the retry. Restore it after a
+  // failure only when the user has not moved focus to another control.
+  if (serial === openSerial && retryButton?.isConnected && !retryButton.disabled && document.activeElement === document.body) {
+    retryButton.focus({ preventScroll: true })
+  }
+}
 
 function maybeAutoSend(): void {
   if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value || modelSaveError.value || modelRecovery.value !== 'ready') return

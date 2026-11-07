@@ -1969,6 +1969,45 @@ describe('chat read ownership', () => {
     expect(text(view.element)).not.toContain('No messages yet')
   })
 
+  it.each(['switch', 'new'] as const)('clears the old transcript error on %s while a retry is pending', async destination => {
+    localStorage.setItem('railgrid:agents:session:org:ws:scout', 's1')
+    const pendingRetry = deferred<{ items: TranscriptMessage[] }>()
+    const pendingDestination = deferred<{ items: TranscriptMessage[] }>()
+    const listMessagePage = vi.fn()
+      .mockRejectedValueOnce(new Error('first conversation unavailable'))
+      .mockReturnValueOnce(pendingRetry.promise)
+      .mockReturnValueOnce(pendingDestination.promise)
+    const { el } = await mountChat(scripted([]), {
+      listSessions: async () => [session('s1', 'First chat'), session('s2', 'Second chat')],
+      listMessagePage,
+    })
+
+    const retry = el.querySelector<HTMLButtonElement>('.agents-chat-transcript-notice button')!
+    retry.click()
+    await settle()
+    expect(retry.disabled).toBe(true)
+
+    if (destination === 'switch') {
+      await chooseSession(el, 'Second chat')
+      expect(text(el.querySelector('.agents-log'))).toContain('Loading conversation…')
+    } else {
+      el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+      await settle()
+      expect(text(el.querySelector('.agents-log'))).toContain('Start a conversation')
+    }
+    expect(el.querySelector('.agents-chat-transcript-notice')).toBeNull()
+
+    pendingRetry.reject(new Error('late error from first conversation'))
+    await settle()
+    expect(el.querySelector('.agents-chat-transcript-notice')).toBeNull()
+    if (destination === 'switch') {
+      expect(text(el.querySelector('.agents-log'))).toContain('Loading conversation…')
+      pendingDestination.resolve({ items: [] })
+      await settle()
+      expect(text(el.querySelector('.agents-log'))).toContain('Start a conversation')
+    }
+  })
+
   it('does not let initial session discovery replace a new chat the user opened', async () => {
     const sessions = deferred<ReturnType<typeof session>[]>()
     localStorage.setItem('railgrid:agents:session:org:ws:scout', 'remembered-session')
