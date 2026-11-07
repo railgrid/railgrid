@@ -365,12 +365,69 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(viewedRuns).toEqual(['run-9'])
   })
 
+  it('shows a confirmed attributed stop with elapsed time, partial content, and run inspection in the normal footer', async () => {
+    const viewed: string[] = []
+    const view = await mountVue(ChatMessage, {
+      message: message({
+        runID: 'run-stopped', content: 'Partial response', error: 'cancelled by user',
+        createdAt: '2026-09-10T10:00:06Z',
+        progress: { status: 'aborted', stoppedByViewer: true, stoppedAfterMS: 6000, durationMS: 1000, trace: [
+          { id: 'commentary', kind: 'commentary', content: 'I will inspect the repository.' },
+        ] },
+      }),
+      onViewRun: (id: string) => viewed.push(id),
+    })
+    expect(text(view.element.querySelector('.k-ai-turn-progress__label'))).toBe('You stopped after 6s')
+    expect(text(view.element)).toContain('Partial response')
+    expect(text(view.element.querySelector('.k-ai-turn-progress__details'))).toContain('I will inspect the repository.')
+    expect(view.element.querySelector('.agents-run-state')).toBeNull()
+    expect(view.element.querySelector('time')).toBeNull()
+    expect(text(view.element)).not.toContain('cancelled by user')
+    expect(view.element.querySelector('.k-ai-turn-progress__header button[aria-haspopup]')).toBeNull()
+    expect(view.element.querySelector('[aria-label="Turn actions"]')).toBeNull()
+    const footer = view.element.querySelector<HTMLElement>('.agents-message-footer')!
+    const link = footer.querySelector<HTMLButtonElement>('.agents-message-run-link')!
+    expect(text(link)).toBe('View run')
+    expect(view.element.querySelector('.agents-body')!.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    link.click()
+    expect(viewed).toEqual(['run-stopped'])
+  })
+
+  it('preserves a reader’s activity disclosure choice when a turn stops', async () => {
+    for (const collapse of [false, true]) {
+      const progress = { status: 'running' as const, trace: [{ id: 'commentary', kind: 'commentary' as const, content: 'Inspecting the repository.' }] }
+      const view = await mountVue(ChatMessage, { message: message({ progress }) })
+      if (collapse) {
+        view.element.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!.click()
+        await settleVue()
+      }
+      await view.setProps({ message: message({ progress: { ...progress, status: 'aborted' } }) })
+      expect(view.element.querySelector('.k-ai-turn-progress__trigger')?.getAttribute('aria-expanded')).toBe(String(!collapse))
+      view.unmount()
+    }
+  })
+
+  it('keeps unattributed and other-user stops neutral and timeouts actionable', async () => {
+    for (const stoppedByViewer of [undefined, false]) {
+      const view = await mountVue(ChatMessage, {
+          message: message({ error: 'cancelled by user', progress: { status: 'aborted', stoppedByViewer, durationMS: 2000, trace: [] } }),
+      })
+      expect(text(view.element.querySelector('.k-ai-turn-progress__label'))).toBe('Turn stopped')
+      expect(view.element.querySelector('.k-ai-turn-progress__trigger')).toBeNull()
+      view.unmount()
+    }
+    const timeout = await mountVue(ChatMessage, {
+      message: message({ error: 'deadline exceeded', progress: { status: 'aborted', trace: [] } }),
+    })
+    expect(text(timeout.element.querySelector('.agents-run-state'))).toContain('Run timed out')
+  })
+
   it('distinguishes canceled and recovered successful turns from failed runs', async () => {
     const canceled = await mountVue(ChatMessage, {
       message: message({ error: 'operator requested stop', progress: { status: 'aborted', trace: [] } }),
     })
-    expect(canceled.element.querySelector('.agents-run-state [role="status"]')?.getAttribute('role')).toBe('status')
-    expect(text(canceled.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Run canceled')
+    expect(text(canceled.element.querySelector('.k-ai-turn-progress [role="status"]'))).toBe('Turn stopped')
+    expect(canceled.element.querySelector('.agents-run-state')).toBeNull()
     expect(canceled.element.querySelector('.agents-run-state__recovery')).toBeNull()
 
     const completed = await mountVue(ChatMessage, {

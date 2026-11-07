@@ -363,7 +363,7 @@ var (
 // executing here (and so finishes on its own once it observes the cancel).
 func (s *Server) cancelStoredRun(ctx context.Context, c *agentsclient.Client, id identity, run store.Run) (live bool, err error) {
 	scope := store.Scope{OrgUUID: id.orgUUID, WorkspaceUUID: id.workspaceUUID, AgentName: run.AgentName}
-	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC()); err != nil {
+	if err := s.store.RequestCancel(ctx, scope, run.ID, time.Now().UTC(), id.user); err != nil {
 		log.Printf("runs: recording cancel for run %s failed", run.ID)
 		return false, errCancelNotRecorded
 	}

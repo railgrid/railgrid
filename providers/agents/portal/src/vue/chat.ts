@@ -161,6 +161,8 @@ function progressFromMetadata(metadata: TranscriptMessage['metadata']): ChatProg
   const duration = durationMS(metadata?.durationMS)
   return {
     status,
+    ...(typeof metadata?.stoppedByViewer === 'boolean' ? { stoppedByViewer: metadata.stoppedByViewer } : {}),
+    ...(durationMS(metadata?.stoppedAfterMS) !== undefined ? { stoppedAfterMS: durationMS(metadata?.stoppedAfterMS) } : {}),
     ...(startedAt ? { startedAt } : {}),
     ...(duration !== undefined ? { durationMS: duration } : {}),
     trace: [],
