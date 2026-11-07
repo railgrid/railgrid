@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 51;
+  --railgrid-agent-ui-version: 53;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1329,7 +1329,13 @@ button.k-workbench-tab {
 .k-ai-conversation-rail__unread.is-live { background: var(--color-success, #2fd6a0); }
 .k-ai-conversation-rail__unread--empty { background: transparent; }
 .k-ai-conversation-rail__item-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
-.k-ai-conversation-rail__item-spinner { width: 14px; height: 14px; flex: none; color: var(--color-accent, #8b6bff); animation: k-ai-activity-spin .9s linear infinite; }
+.k-ai-conversation-rail__item-spinner { z-index: 2; width: 14px; height: 14px; flex: none; color: var(--color-accent, #8b6bff); animation: k-ai-activity-spin .9s linear infinite; }
+.k-ai-conversation-rail__item.is-running .k-ai-conversation-rail__item-select { padding-right: 26px; }
+.k-ai-conversation-rail__item.is-running .k-ai-conversation-rail__item-spinner { position: absolute; right: 6px; }
+@media (hover: hover) and (pointer: fine) {
+  .k-ai-conversation-rail__item.is-running.has-actions:hover .k-ai-conversation-rail__item-spinner,
+  .k-ai-conversation-rail__item.is-running.has-actions:focus-within .k-ai-conversation-rail__item-spinner { opacity: 0; animation-play-state: paused; }
+}
 .k-ai-conversation-rail__item-fade { pointer-events: none; position: absolute; inset: 0 0 0 auto; z-index: 1; width: 32px; transition: opacity .15s ease; }
 .k-ai-conversation-rail__item:hover .k-ai-conversation-rail__item-fade,
 .k-ai-conversation-rail__item:focus-within .k-ai-conversation-rail__item-fade { opacity: 0; }
@@ -1364,9 +1370,11 @@ button.k-workbench-tab {
 }
 @media (hover: none), (any-pointer: coarse) {
   .k-ai-conversation-rail__item-actions { pointer-events: auto; opacity: 1; }
+  .k-ai-conversation-rail__item.is-running.has-actions .k-ai-conversation-rail__item-spinner { right: 106px; }
   .k-ai-conversation-rail__item.has-actions .k-ai-conversation-rail__item-select,
   .k-ai-conversation-rail__item.has-actions:hover .k-ai-conversation-rail__item-select,
   .k-ai-conversation-rail__item.has-actions:focus-within .k-ai-conversation-rail__item-select { padding-right: 100px; }
+  .k-ai-conversation-rail__item.is-running.has-actions .k-ai-conversation-rail__item-select { padding-right: 122px; }
   .k-ai-conversation-rail__item-action,
   .k-ai-conversation-rail__create,
   .k-ai-conversation-rail__search input,

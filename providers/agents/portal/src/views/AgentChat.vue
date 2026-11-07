@@ -23,7 +23,7 @@ import { hashFor, type Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
-import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type AgentInputCapabilities, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type SessionMeta, type ToolCall, type AgentSkillCatalog, type ModelInfo } from '../types'
+import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type AgentInputCapabilities, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type RunDetail, type SessionMeta, type ToolCall, type AgentSkillCatalog, type ModelInfo } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AgentKitComposerPart, AgentKitContextResource, AgentKitSkill } from '../agentkit/composer'
 import type { AgentProviderResourceCoordinate } from '../api'
@@ -33,6 +33,7 @@ import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentAr
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
 import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
 import { InlineAppLoadCoordinator } from '../vue/inline-app-loads'
+import { useThreadActivity } from '../vue/thread-activity'
 import { waitForAgentConfigSaves } from '../vue/config-save-queue'
 import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModelRequestQueue'
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
@@ -494,7 +495,7 @@ watch(() => props.composerOnly, compact => { if (compact) overlayChatsVisible.va
 // coordinate for automatic retry without claiming the run has been admitted.
 const reconnectRunID = ref('')
 const progressObserverRevision = ref(0)
-const orphanRun = ref<RunSummary | null>(null)
+const orphanRun = ref<(RunSummary & Pick<RunDetail, 'pending'>) | null>(null)
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
 const orphanLoading = ref(false)
@@ -891,6 +892,7 @@ function selectReasoningEffort(effort: string): void {
 }
 function retryChatModel(): void { modelPending = updateChatModel(retryModelPreferences) }
 
+const threadActivity = useThreadActivity(() => props.api, () => props.name, [() => props.store, () => runtime?.authorityEpoch.value])
 const sessionOptions = computed(() => {
   const list = sessions.value.map(session => {
     const title = sessionTitleOverrides.value.get(session.id)?.title
@@ -900,6 +902,13 @@ const sessionOptions = computed(() => {
     for (const [id, text] of overlayDrafts.value) {
       if (!text.trim() || id === sessionID.value || list.some(session => session.id === id)) continue
       list.push({ id, preview: text.trim().slice(0, 80), messageCount: 0, createdAt: '', lastActivity: '' })
+    }
+  }
+  // A run can be admitted before its session-list projection catches up.
+  // Keep that conversation selectable while its work continues elsewhere.
+  for (const id of threadActivity.runningSessions.value) {
+    if (id && !list.some(session => session.id === id)) {
+      list.push({ id, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
     }
   }
   if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
@@ -912,7 +921,11 @@ const conversationItems = computed<AIConversationItem[]>(() => sessionOptions.va
   id: session.id,
   title: sessionLabel(session),
   renameDisabledReason: session.messageCount === 0 ? 'Send a message before renaming this chat' : undefined,
-  status: session.id === sessionID.value && streaming.value ? 'active' : undefined,
+  status: session.id === sessionID.value
+    ? (composerHasActiveRun.value && (composerStopping.value || (orphanRun.value
+      ? ['Pending', 'Running'].includes(orphanRun.value.phase) && !orphanRun.value.pending
+      : !messages.value.some(message => message.approval && !message.approval.resolved))) ? 'active' : undefined)
+    : (threadActivity.runningSessions.value.has(session.id) ? 'active' : undefined),
   createdAt: session.createdAt,
   updatedAt: session.lastActivity,
 })))
@@ -2205,6 +2218,7 @@ async function streamTurn(
       switch (event.event) {
         case 'start': {
           const data = event.data as StartData
+          threadActivity.record({ id: data.runID, agent: name, sessionID: data.sessionID || requestSession, phase: 'Pending' })
           started = true
           // An answered question resumes an already admitted run. Normal chat
           // still waits for run_started before cancellation or draft commit.
@@ -2227,6 +2241,7 @@ async function streamTurn(
         case 'run_started': {
           acceptTurn()
           const data = event.data as RunStartedData
+          threadActivity.record({ id: data.runID, agent: name, sessionID: data.sessionID || requestSession, phase: data.status || 'Running' })
           liveRunStarted = true
           if (data.runID) {
             liveRunID = data.runID
@@ -2347,6 +2362,7 @@ async function streamTurn(
           acceptTurn()
           liveRunStarted = true
           const data = event.data as ApprovalData
+          threadActivity.record({ id: data.runID, agent: name, sessionID: requestSession, phase: 'PendingApproval' })
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
@@ -2373,6 +2389,7 @@ async function streamTurn(
         case 'done': {
           acceptTurn()
           const data = event.data as DoneData
+          threadActivity.record({ id: data.runID || liveRunID, agent: name, sessionID: requestSession, phase: data.status || 'Succeeded' })
           flushNow(serial)
           const current = currentMessage()
           const status = data.status === undefined
@@ -2922,6 +2939,7 @@ function onServerEvent(event: Event): void {
     return
   }
   if (detail.type !== 'run' || !detail.data.id) return
+  threadActivity.record(detail.data)
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
   if (!watched) return

@@ -501,6 +501,7 @@ describe('chat attaches to active runs', () => {
     })
     await vi.advanceTimersByTimeAsync(1000)
     expect(text(el)).toContain('Reconnecting')
+    expect(el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')).not.toBeNull()
     expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Reconnecting')
     expect(el.querySelectorAll('.k-ai-conversation-status .k-ai-conversation-status__dot')).toHaveLength(0)
     expect(el.querySelector('.k-stale')?.getAttribute('role')).toBe('status')
@@ -918,7 +919,8 @@ describe('disconnected approval and discovery recovery', () => {
     })
     const api = stubApi({
       chatStream,
-      listRuns: async () => {
+      listRuns: async (filter: { session?: string } = {}) => {
+        if (!filter.session) return { items: admitted ? [admitted] : [] }
         discoveryReads += 1
         if (admitted && !discoveryFailed) { discoveryFailed = true; throw new ApiError(503, 'Run discovery unavailable') }
         return { items: admitted ? [admitted] : [] }
@@ -1042,6 +1044,26 @@ it('keeps progress stopped when a metadata-only approval read cannot confirm tra
   expect(getRun.mock.calls.filter(([, options]) => options?.requireTrace)).toHaveLength(1)
 })
 
+
+it('restarts the thread spinner after approval resumes before any progress arrives', async () => {
+  vi.useFakeTimers()
+  let detail: RunDetail = { ...run('PendingApproval'), pending: { inboxID: 'resume', kind: 'approval', tool: 'shell', args: '{}' } }
+  const { el } = await mountChat({
+    listSessions: async () => [{ id: 'session', title: 'Current chat' }],
+    listRuns: async () => ({ items: [detail] }),
+    listMessagePage: async () => ({ items: [user] }),
+    getRun: async () => detail,
+  })
+  const spinner = () => el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')
+  expect(spinner()).toBeNull()
+  detail = { ...run(), progress: [] }
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).not.toBeNull()
+  // A checkpoint disclosure wins even when its KCP phase still says Running.
+  detail = { ...run(), pending: { inboxID: 'next', kind: 'approval', tool: 'shell', args: '{}' } }
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).toBeNull()
+})
 
 describe('composer owns the active run control', () => {
   it.each(['Pending', 'Running', 'PendingApproval'] as const)('restores one composer Stop for a selected active run (%s)', async phase => {

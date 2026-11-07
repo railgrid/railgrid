@@ -91,7 +91,7 @@ enforce('App Studio page path', pageArtifacts, { rawBytes: 1_230_000, gzipBytes:
 const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthentication', 'authentication settings')
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_405_000, gzipBytes: 389_000 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_406_000, gzipBytes: 389_500 })
 
 if (budgetFailures.length) {
   console.error('Largest emitted assets (gzip bytes):')

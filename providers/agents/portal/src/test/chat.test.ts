@@ -132,6 +132,21 @@ async function attachTextFile(el: HTMLElement): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('shows a trailing spinner for active work without preventing thread selection', async () => {
+    const rail = await mountConversationRail()
+    const active = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-active"]')!
+    const idle = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-older"]')!
+    expect(active.getAttribute('aria-busy')).toBe('true')
+    expect(active.closest('.k-ai-conversation-rail__item')?.classList.contains('is-running')).toBe(true)
+    expect(active.querySelector('svg[aria-label="Running"]')).not.toBeNull()
+    expect(idle.querySelector('.k-ai-conversation-rail__item-spinner')).toBeNull()
+    expect(active.disabled).toBe(false)
+    await rail.setProps({ threads: [{ id: 'thread-active', title: 'Current work', status: 'waiting' }, { id: 'thread-older', title: 'Previous incident review' }] })
+    expect(active.querySelector('.k-ai-conversation-rail__item-spinner')).toBeNull()
+    expect(active.hasAttribute('aria-busy')).toBe(false)
+    expect(active.closest('.k-ai-conversation-rail__item')?.classList.contains('is-running')).toBe(false)
+  })
+
   it('persists thread pins per agent and keeps delete available beside pin', async () => {
     const listSessions = async () => [session('pinned', 'Pinned conversation')]
     const first = await mountChat(scripted([]), { listSessions })
@@ -707,12 +722,15 @@ describe('chat streaming', () => {
     })
     const { el } = await mountChat(chatStream, { cancelRun })
     await send(el, 'First thread task')
+    const runningThread = el.querySelector('.k-ai-conversation-rail__item-select[aria-busy="true"]')?.getAttribute('data-thread-id')
+    expect(runningThread).toBeTruthy()
     const create = el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!
     expect(create.disabled).toBe(false)
     create.click()
     await settle(6)
     expect(signals[0].aborted).toBe(true)
     expect(cancelRun).not.toHaveBeenCalled()
+    expect(el.querySelector(`[data-thread-id="${runningThread}"] .k-ai-conversation-rail__item-spinner`)).not.toBeNull()
     expect(text(el.querySelector('.agents-log'))).not.toContain('First thread task')
     expect(text(document.querySelector('.k-toast--info'))).toContain('continues in its original thread')
     await send(el, 'Second thread task')
@@ -2341,9 +2359,12 @@ describe('a run still working with nobody attached', () => {
   })
 
   it('keeps a live-run snapshot when a same-session refresh fails', async () => {
-    const listRuns = vi.fn()
-      .mockResolvedValueOnce({ items: [runRow()] })
-      .mockRejectedValueOnce(new Error('run refresh failed'))
+    let lookups = 0
+    const listRuns = vi.fn(async (filter: { session?: string } = {}) => {
+      if (!filter.session) return { items: [] }
+      if (lookups++ === 0) return { items: [runRow()] }
+      throw new Error('run refresh failed')
+    })
     const exposed = ref<{ refreshOrphan: () => Promise<void> } | null>(null)
     const api = stubApi({ listMessagePage: async () => ({ items: await (Promise.resolve([])) }), listRuns })
     const store = makeStore(api)
