@@ -638,3 +638,24 @@ func (c *countingScheduleCR) CreateSchedule(context.Context, *agentsv1alpha1.Sch
 	c.creates++
 	return nil
 }
+
+func TestTranscriptStopAttributionIsViewerSpecific(t *testing.T) {
+	rows := []store.Message{{Role: "assistant", Metadata: map[string]any{
+		"turnPhase": "terminal", "turnStatus": "aborted", "stoppedBy": "railgrid:alice",
+	}}}
+	for _, viewer := range []string{"railgrid:alice", "railgrid:bob", ""} {
+		got := transcriptForViewer(rows, viewer)
+		if len(got) != 1 || got[0].Metadata["stoppedByViewer"] != (viewer == "railgrid:alice") {
+			t.Fatalf("viewer %q: wrong stop attribution: %#v", viewer, got)
+		}
+	}
+	if _, ok := rows[0].Metadata["stoppedByViewer"]; ok {
+		t.Fatal("viewer-specific attribution mutated the stored transcript")
+	}
+	legacy := []store.Message{{Role: "assistant", Metadata: map[string]any{
+		"turnPhase": "terminal", "turnStatus": "aborted", "turnError": "cancelled by user", "stoppedByViewer": true,
+	}}}
+	if got := transcriptForViewer(legacy, "railgrid:alice"); got[0].Metadata["stoppedByViewer"] != false {
+		t.Fatalf("unattributed history must remain neutral: %#v", got)
+	}
+}

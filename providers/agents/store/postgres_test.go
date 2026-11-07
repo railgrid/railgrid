@@ -374,7 +374,7 @@ func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 				t.Fatalf("save run: %v", err)
 			}
 			if tc.requestCancel {
-				if err := ps.RequestCancel(ctx, sc, id, now); err != nil {
+				if err := ps.RequestCancel(ctx, sc, id, now, ""); err != nil {
 					t.Fatalf("request cancel: %v", err)
 				}
 			}

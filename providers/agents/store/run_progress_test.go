@@ -87,7 +87,7 @@ func TestRunProgressConcurrentLifecycleWrites(t *testing.T) {
 					return nil
 				})
 			}
-			launch(func() error { return st.RequestCancel(ctx, scope, stale.ID, now) })
+			launch(func() error { return st.RequestCancel(ctx, scope, stale.ID, now, "") })
 			close(start)
 			workers.Wait()
 			close(failures)
@@ -126,7 +126,7 @@ func TestRunProgressIsolationAndIndependentLifecycleWrites(t *testing.T) {
 			if err := st.PutRunProgress(ctx, scope, "r", []Message{row}); err != nil {
 				t.Fatal(err)
 			}
-			if err := st.RequestCancel(ctx, scope, "r", now); err != nil {
+			if err := st.RequestCancel(ctx, scope, "r", now, ""); err != nil {
 				t.Fatal(err)
 			}
 			// A lifecycle write from a copy predating progress and cancellation

@@ -68,6 +68,24 @@ func publicContinuationTranscriptMessages(messages []store.Message) []store.Mess
 	return out
 }
 
+// transcriptForViewer derives attribution from the authenticated request, never
+// from portal display IDs. The public projection clones metadata before adding
+// viewer-specific fields, so shared transcripts remain identical in the store.
+func transcriptForViewer(messages []store.Message, viewer string) []store.Message {
+	out := publicContinuationTranscriptMessages(publicTranscriptMessages(messages))
+	for i := range out {
+		if out[i].Metadata == nil {
+			continue
+		}
+		delete(out[i].Metadata, "stoppedByViewer")
+		if out[i].Metadata["turnStatus"] == "aborted" {
+			actor, _ := out[i].Metadata["stoppedBy"].(string)
+			out[i].Metadata["stoppedByViewer"] = actor != "" && viewer != "" && actor == viewer
+		}
+	}
+	return out
+}
+
 // storedToolCall is the durable subset of an Eino tool call. Arguments are
 // kept as a JSON string because decoding them into an arbitrary map would lose
 // their original scalar types and can change model-authored input.

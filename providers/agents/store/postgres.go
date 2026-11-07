@@ -160,6 +160,7 @@ var agentsSchema = []string{
 	// stale in-memory copy cannot un-cancel a run.
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ`,
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS cancel_requested_by TEXT NOT NULL DEFAULT ''`,
 	// Where the run executed and, for a harness-backed one, the runner attempt
 	// and harness session it IS. Migrated in place (idempotent): every existing
 	// row is a model-backed run, which an empty backend column reads as.
@@ -1149,7 +1150,7 @@ func (p *PostgresStore) SaveRun(ctx context.Context, scope Scope, run Run) error
 // change cannot drift one query out of step with scanRun.
 const runColumns = `id, agent_name, session_id, trigger_kind, parent_run_id, phase, attempt, input, output, sources, idempotency_key, delivery, message,
 		       checkpoint, input_tokens, output_tokens, usd_micros, created_at, updated_at, started_at, finished_at, worked_duration_ms,
-		       cancel_requested, cancel_requested_at, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings, model_settings`
+		       cancel_requested, cancel_requested_at, cancel_requested_by, backend, attempt_id, harness_session_id, repository, result, retries, retry_at, harness_settings, model_settings`
 
 func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run, error) {
 	scope = p.normalizeScope(ctx, scope)
@@ -1167,7 +1168,7 @@ func (p *PostgresStore) GetRun(ctx context.Context, scope Scope, id string) (Run
 	return run, err
 }
 
-func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id string, now time.Time) error {
+func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id string, now time.Time, actorID string) error {
 	mutation, err := p.beginScopedMutation(ctx, scope)
 	if err != nil {
 		return err
@@ -1180,10 +1181,11 @@ func (p *PostgresStore) RequestCancel(ctx context.Context, scope Scope, id strin
 	// Only the cancel columns move: phase, checkpoint and the rest belong to
 	// whoever is executing the run, and this must not race their writes.
 	res, err := mutation.executor.ExecContext(ctx, `
-		UPDATE agents_runs SET cancel_requested=TRUE, cancel_requested_at=COALESCE(cancel_requested_at, $4)
+		UPDATE agents_runs SET cancel_requested=TRUE, cancel_requested_at=COALESCE(cancel_requested_at, $4),
+		    cancel_requested_by=CASE WHEN cancel_requested THEN cancel_requested_by ELSE $8 END
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND id=$3 AND phase IN ($5,$6,$7)`,
 		scope.OrgUUID, scope.WorkspaceUUID, id, now.UTC(),
-		string(RunPhasePending), string(RunPhaseRunning), string(RunPhasePendingApproval))
+		string(RunPhasePending), string(RunPhaseRunning), string(RunPhasePendingApproval), actorID)
 	if err != nil {
 		return err
 	}
@@ -1415,7 +1417,7 @@ func scanScopedRun(r rowScanner, sc *Scope) (Run, error) {
 	}
 	dest = append(dest, &run.ID, &run.AgentName, &run.SessionID, &run.Trigger, &run.ParentRunID, &phase, &run.Attempt,
 		&run.Input, &run.Output, &sources, &run.IdempotencyKey, &delivery, &run.Message, &checkpoint, &run.InputTokens, &run.OutputTokens, &run.USDMicros,
-		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt,
+		&run.CreatedAt, &run.UpdatedAt, &started, &finished, &worked, &run.CancelRequested, &cancelAt, &run.CancelRequestedBy,
 		&run.Backend, &run.AttemptID, &run.HarnessSessionID, &repository, &result, &run.Retries, &retryAt, &harnessSettings, &modelSettings)
 	if err := r.Scan(dest...); err != nil {
 		return Run{}, err

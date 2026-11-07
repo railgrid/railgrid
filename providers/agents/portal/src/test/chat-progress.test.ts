@@ -23,6 +23,19 @@ function session(id: string) {
 }
 
 describe('typed chat progress projection', () => {
+  it('restores stop attribution and elapsed time independently of measured work', () => {
+    const messages = rebuildTranscript([
+      { id: 'u1', role: 'user', runID: 'r1', content: 'Compute pi' },
+      { id: 'a1', role: 'assistant', runID: 'r1', content: 'Partial answer', metadata: {
+        turnPhase: 'terminal', turnStatus: 'aborted', stoppedBy: 'railgrid:alice', stoppedByViewer: true, stoppedAfterMS: 6000,
+        durationMS: 1000, turnError: 'cancelled by user',
+      } },
+    ])
+    expect(messages[1]).toMatchObject({ content: 'Partial answer', progress: {
+      status: 'aborted', stoppedBy: 'railgrid:alice', stoppedByViewer: true, stoppedAfterMS: 6000, durationMS: 1000,
+    } })
+  })
+
   it('hides an empty structured assistant row while keeping its tool card on the answer', () => {
     const messages = rebuildTranscript([
       { id: 'u1', role: 'user', content: 'Find the price', runID: 'r1' },

@@ -489,7 +489,7 @@ func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 		writeStatus(w, http.StatusInternalServerError, "InternalError", err.Error())
 		return
 	}
-	writeList(w, publicContinuationTranscriptMessages(publicTranscriptMessages(page.Items)), map[string]any{"nextCursor": page.NextCursor})
+	writeList(w, transcriptForViewer(page.Items, id.user), map[string]any{"nextCursor": page.NextCursor})
 }
 
 // listSessions returns up to 100 conversations and 100 saved empty chats,
@@ -711,6 +711,7 @@ func (s *Server) chatTerminalFrame(runID string, res runResult, err error) chatF
 		}
 		return chatFrame{Event: "error", Data: map[string]any{
 			"runID": runID, "message": message, "status": status,
+			"stoppedBy": res.StoppedBy, "stoppedAfterMS": res.StoppedAfterMS, "stoppedByViewer": res.StoppedByViewer,
 			"startedAt": res.StartedAt, "finishedAt": res.FinishedAt, "durationMS": res.DurationMS,
 		}}
 	}

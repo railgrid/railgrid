@@ -549,6 +549,7 @@ func mergeMigratedRun(current, incoming Run) Run {
 			incoming.CancelRequested = true
 			if incoming.CancelRequestedAt == nil || (current.CancelRequestedAt != nil && current.CancelRequestedAt.Before(*incoming.CancelRequestedAt)) {
 				incoming.CancelRequestedAt = current.CancelRequestedAt
+				incoming.CancelRequestedBy = current.CancelRequestedBy
 			}
 		}
 		if incoming.IdempotencyKey == "" {
@@ -563,6 +564,7 @@ func mergeMigratedRun(current, incoming Run) Run {
 		current.CancelRequested = true
 		if current.CancelRequestedAt == nil || (incoming.CancelRequestedAt != nil && incoming.CancelRequestedAt.Before(*current.CancelRequestedAt)) {
 			current.CancelRequestedAt = incoming.CancelRequestedAt
+			current.CancelRequestedBy = incoming.CancelRequestedBy
 		}
 	}
 	if current.IdempotencyKey == "" {
@@ -1025,6 +1027,7 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	// so a save from a copy read before the cancel keeps the flag.
 	if old, ok := m.runs[key]; ok && old.CancelRequested {
 		run.CancelRequested, run.CancelRequestedAt = true, old.CancelRequestedAt
+		run.CancelRequestedBy = old.CancelRequestedBy
 	}
 	if old, ok := m.runs[key]; ok && old.HarnessSettings != nil {
 		run.HarnessSettings = old.HarnessSettings
@@ -1059,7 +1062,7 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 	return nil
 }
 
-func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, now time.Time) error {
+func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, now time.Time, actorID string) error {
 	scope = m.normalizeScope(scope)
 	if err := scope.validate(); err != nil {
 		return err
@@ -1080,6 +1083,7 @@ func (m *MemoryStore) RequestCancel(_ context.Context, scope Scope, id string, n
 	if !run.CancelRequested {
 		t := now.UTC()
 		run.CancelRequested, run.CancelRequestedAt = true, &t
+		run.CancelRequestedBy = actorID
 		m.runs[k] = run
 	}
 	return nil

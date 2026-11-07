@@ -820,6 +820,12 @@ export type ChatTraceBlock =
 
 /** Provider-owned turn progress projected for AgentKit presentation. */
 export interface ChatProgress {
+  /** Authenticated principal who requested cancellation, when recorded. */
+  readonly stoppedBy?: string
+  /** Viewer-specific attribution computed by the authenticated backend. */
+  readonly stoppedByViewer?: boolean
+  /** Server-measured elapsed turn time at termination, distinct from worked time. */
+  readonly stoppedAfterMS?: number
   readonly status: AITurnProgressStatus
   readonly startedAt?: string
   /** Active model/tool milliseconds; waiting/recovery time is excluded. */
@@ -919,6 +925,9 @@ export interface TranscriptMessage {
     startedAt?: string
     segmentDurationMS?: number
     turnError?: string
+    stoppedBy?: string
+    stoppedByViewer?: boolean
+    stoppedAfterMS?: number
     /** Structured history row with no user-visible assistant prose. */
     modelOnly?: boolean
     toolCallID?: string
