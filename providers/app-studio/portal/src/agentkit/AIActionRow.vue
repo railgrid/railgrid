@@ -9,6 +9,7 @@
 -->
 <script setup lang="ts">
 import { ChevronRight, Circle, Loader2, Square, X } from 'lucide-vue-next'
+import { useDisclosureScroll } from './useDisclosureScroll'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import type { AIActionStatus } from './ai'
 
@@ -45,6 +46,8 @@ const emit = defineEmits<{
   toggle: []
 }>()
 
+const compensateDisclosure = useDisclosureScroll()
+
 ensureAgentUIStyles()
 
 function stateLabel(): string {
@@ -60,6 +63,7 @@ function stateLabel(): string {
 <template>
   <div
     :id="id || undefined"
+    @click.capture="compensateDisclosure"
     class="k-ai-action-row"
     :class="{
       'k-ai-action-row--busy': busy,

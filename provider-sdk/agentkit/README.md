@@ -170,3 +170,10 @@ Providers place turn activity inside Worked for, which opens during execution.
 Receipts without progress metadata use the same disclosure boundary. Providers own
 expandable work details and transport metadata; display-only command descriptions never
 change tool risk, authorization, or execution.
+
+User-opened tool, activity, and Worked for disclosures share
+`useDisclosureScroll`: it reveals overflow inside the owning transcript as the
+existing disclosure transition grows, capped to keep the trigger visible for
+tall panels. It leaves panels that fit alone, never starts on streaming or
+automatic expansion, and yields to wheel, touch, pointer, or scroll-key input.
+The same geometry correction handles reduced motion without adding an animation.
