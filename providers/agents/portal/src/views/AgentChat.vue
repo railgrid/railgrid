@@ -901,7 +901,12 @@ const sessionOptions = computed(() => {
   const list = sessions.value.map(session => {
     const title = sessionTitleOverrides.value.get(session.id)?.title
     return title ? { ...session, title } : session
-  })
+  }).sort((a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0))
+  // Keep the selected new chat first while its initial turn is being saved.
+  if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
+    const title = sessionTitleOverrides.value.get(sessionID.value)?.title
+    list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
+  }
   if (props.overlay) {
     for (const [id, text] of overlayDrafts.value) {
       if (!text.trim() || id === sessionID.value || list.some(session => session.id === id)) continue
@@ -914,10 +919,6 @@ const sessionOptions = computed(() => {
     if (id && !list.some(session => session.id === id)) {
       list.push({ id, preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
     }
-  }
-  if (sessionID.value && !list.some(session => session.id === sessionID.value)) {
-    const title = sessionTitleOverrides.value.get(sessionID.value)?.title
-    list.unshift({ id: sessionID.value, ...(title ? { title } : {}), preview: 'New chat', messageCount: 0, createdAt: '', lastActivity: '' })
   }
   return list
 })
@@ -3515,7 +3516,7 @@ defineExpose({
                 :disabled="!sessionInputReady || !hasModel || !composerHasContent || attachmentsPending || composerSubmitting || modelSaving || Boolean(modelSaveError) || invalidEffort || imageModelUnsupported || harnessInputsUnsupported"
               />
             </template>
-            <template v-if="imageModelUnsupported || harnessInputsUnsupported || (!composerOnly && isModelBackend && (store.credentials.loading || store.credentials.error || !modelChoices.length))" #help>
+            <template v-if="imageModelUnsupported || harnessInputsUnsupported || (!composerOnly && isModelBackend && (store.credentials.loading ? !hasModel : store.credentials.error || !modelChoices.length))" #help>
               <span v-if="imageModelUnsupported" role="status">{{ knownModelInfo?.label || knownModelInfo?.id || 'This model' }} does not support images. Choose a vision capable model or remove the image attachments.</span>
               <span v-else-if="harnessInputsUnsupported" role="status">{{ harnessInputHelp }}</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>
