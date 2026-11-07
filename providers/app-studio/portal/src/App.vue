@@ -9899,10 +9899,11 @@ function assistantWorkedLabel(message: ProjectMessageView): string {
   const status = assistantTurnProgressStatus(message)
   if (status === 'pending' || status === 'waiting') return ''
   const measured = message.metadata?.assistantWorkedDurationMS
-  const duration = typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 0
-    ? measured
-    : message.progress?.workedDurationMs
-  return duration === undefined ? '' : formatAssistantWorkedDuration(duration)
+  if (typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 0) {
+    return formatAssistantWorkedDuration(measured)
+  }
+  const legacy = message.progress?.workedDurationMs
+  return legacy ? formatAssistantWorkedDuration(legacy) : ''
 }
 
 function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[] {

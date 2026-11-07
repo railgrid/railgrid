@@ -509,8 +509,9 @@ type projectAssistantProgressSnapshot struct {
 	Version          int      `json:"version"`
 	Messages         []string `json:"messages"`
 	MessageSequences []int    `json:"messageSequences"`
-	// Legacy elapsed estimate, retained only when reading historical snapshots.
-	WorkedDurationMS int64 `json:"workedDurationMs,omitempty"`
+	// Historical snapshots may contain an elapsed estimate. Keep emitting a zero
+	// placeholder for new snapshots so older portals can still read the trace.
+	WorkedDurationMS int64 `json:"workedDurationMs"`
 }
 
 func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status string, provisional, preview bool, toolCalls []projectToolCallStreamEvent, plan *projectAssistantPlanSnapshot) map[string]any {

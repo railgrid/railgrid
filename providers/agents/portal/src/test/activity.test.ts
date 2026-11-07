@@ -1125,7 +1125,7 @@ describe('RunDetail.vue', () => {
     })) })
     const conversation = await mount(RunDetail, { store: makeStore(conversationApi), api: conversationApi, runId: 'r5' })
     expect(conversation.element.querySelector('.k-ai-turn-progress')).toBeNull()
-    expect(text(conversation.element.querySelector('.agents-runmeta'))).toContain('model and tool time3.4s')
+    expect(text(conversation.element.querySelector('.agents-runmeta'))).toContain('total model and tool time3.4s')
 
     const pendingApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
       phase: 'Pending', workedDurationMS: undefined, durationMS: undefined, startedAt: undefined,

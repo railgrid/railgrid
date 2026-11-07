@@ -136,7 +136,8 @@ type AssistantRun struct {
 	Audit           json.RawMessage         `json:"audit,omitempty"`
 	Error           json.RawMessage         `json:"error,omitempty"`
 	AbortReason     AssistantRunAbortReason `json:"abortReason,omitempty"`
-	// WorkedDurationMS is measured model and tool time. Nil means unknown.
+	// WorkedDurationMS sums measured model and tool durations, including
+	// overlapping operations. Nil means unknown.
 	WorkedDurationMS *int64    `json:"workedDurationMS,omitempty"`
 	CreatedAt        time.Time `json:"createdAt"`
 	UpdatedAt        time.Time `json:"updatedAt"`

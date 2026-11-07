@@ -168,6 +168,13 @@ func (m *projectEinoAssistantBoundedModel) Stream(
 	finishTiming := measureProjectAssistantWork(ctx)
 	started := time.Now()
 	modelCtx, cancel := context.WithCancel(ctx)
+	streamStarted := false
+	defer func() {
+		if !streamStarted {
+			finishTiming()
+			cancel()
+		}
+	}()
 	resultCh := make(chan result)
 	go func() {
 		reader, err := m.BaseChatModel.Stream(modelCtx, input, opts...)
@@ -183,24 +190,17 @@ func (m *projectEinoAssistantBoundedModel) Stream(
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		finishTiming()
-		cancel()
 		return nil, ctx.Err()
 	case <-timer.C:
-		finishTiming()
-		cancel()
 		return nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: m.firstResponseTimeout}
 	case result := <-resultCh:
 		if result.err != nil {
-			finishTiming()
-			cancel()
 			return nil, result.err
 		}
 		if result.reader == nil {
-			finishTiming()
-			cancel()
 			return nil, errors.New("assistant model returned no response stream")
 		}
+		streamStarted = true
 		remaining := m.firstResponseTimeout - time.Since(started)
 		return projectEinoAssistantBoundedStream(
 			ctx,

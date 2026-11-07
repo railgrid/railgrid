@@ -26,8 +26,9 @@ import (
 
 type projectAssistantWorkTimingKey struct{}
 
-// The prior measurement comes from the last durable checkpoint. Completed
-// operations add to it once, even when tools execute concurrently.
+// The prior measurement comes from the last durable checkpoint. Each completed
+// operation contributes its own duration once. Concurrent operations contribute
+// overlapping time, so the total can exceed elapsed wall time.
 type projectAssistantWorkTiming struct {
 	mu       sync.Mutex
 	prior    *int64

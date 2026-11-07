@@ -16,7 +16,14 @@ limitations under the License.
 
 package api
 
-import "testing"
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"testing"
+
+	"github.com/railgrid/provider-app-studio/store"
+)
 
 func TestProjectEinoAssistantProgressAvailabilityUsesCallbackAndTurnProfile(t *testing.T) {
 	req := projectAssistantRunRequest{
@@ -56,5 +63,35 @@ func TestProjectEinoAssistantProgressAvailabilityUsesCallbackAndTurnProfile(t *t
 	runState.SetTurnPolicy(projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileDebugging))
 	if projectEinoAssistantProgressEnabled(req, runState) {
 		t.Fatal("report_progress available for read-only run state")
+	}
+}
+
+func TestProjectEinoAssistantProgressToolRecordsTiming(t *testing.T) {
+	timing := &projectAssistantWorkTiming{}
+	ctx := context.WithValue(context.Background(), projectAssistantWorkTimingKey{}, timing)
+	state := &projectAssistantDurableMetadataState{workTiming: timing}
+	tool := projectEinoAssistantProgressTool{req: projectAssistantRunRequest{
+		StreamCallbacks: projectAssistantStreamCallbacks{
+			OnProgress: func(message string) { state.appendProgress(message) },
+		},
+	}}
+	if _, err := tool.InvokableRun(ctx, `{"message":"I inspected the project."}`); err != nil {
+		t.Fatal(err)
+	}
+	run := store.AssistantRun{}
+	timing.updateRun(&run)
+	if run.WorkedDurationMS == nil {
+		t.Fatal("report_progress did not record a timing measurement")
+	}
+	progress := state.progressSnapshot()
+	if progress == nil || len(progress.Messages) != 1 {
+		t.Fatalf("progress = %#v, want one progress message", progress)
+	}
+	raw, err := json.Marshal(progress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(raw, []byte(`"workedDurationMs":0`)) {
+		t.Fatalf("progress = %s, want the required legacy duration placeholder", raw)
 	}
 }
