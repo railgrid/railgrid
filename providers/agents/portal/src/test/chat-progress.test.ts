@@ -141,7 +141,7 @@ describe('typed chat progress projection', () => {
     const api = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
       listMessagePage: async () => ({ items: await (Promise.resolve([{
-        id: 'a1', role: 'assistant', content: 'Still working', runID: 'r1',
+        id: 'a1', role: 'assistant', content: 'Still working', runID: 'r1', createdAt: startedAt,
         metadata: { turnPhase: 'terminal', turnStatus: 'running', startedAt, durationMS: 1250 },
       }])) }),
       listRuns: vi.fn().mockResolvedValue({
@@ -167,6 +167,7 @@ describe('typed chat progress projection', () => {
     const progress = view.element.querySelector('.k-ai-turn-progress')
     expect(progress?.getAttribute('data-status')).toBe('running')
     expect(text(progress?.querySelector('.k-ai-turn-progress__label'))).toBe('Working for 1s')
+    expect(progress?.closest('.agents-msg')?.querySelector('time')).toBeNull()
   })
 })
 
@@ -231,16 +232,22 @@ describe('AgentChat loading and draft behavior', () => {
     await settleVue(5, 1)
   })
 
-  it('uses server-owned timestamps for live user and assistant rows', async () => {
+  it.each(['completed', 'failed'])('shows the assistant timestamp after a %s turn', async status => {
     const startedAt = '2026-09-10T10:00:00.123Z'
+    const commentaryAt = '2026-09-10T10:00:01.234Z'
     const finishedAt = '2026-09-10T10:00:04.567Z'
+    const gate = deferred<void>()
     const chatStream = vi.fn(async function* (_agent: string, _message: string, _session: string) {
       yield { event: 'start', data: { runID: 'r1', sessionID: 's1' } } as SSEEvent
       yield { event: 'run_started', data: { runID: 'r1', sessionID: 's1', status: 'running', startedAt } } as SSEEvent
-      yield { event: 'delta', data: { text: 'answer' } } as SSEEvent
       yield {
-        event: 'done',
-        data: { runID: 'r1', content: 'answer', status: 'completed', startedAt, finishedAt, durationMS: 1250 },
+        event: 'assistant_message',
+        data: { phase: 'commentary', content: 'Still working', createdAt: commentaryAt },
+      } as SSEEvent
+      await gate.promise
+      yield {
+        event: status === 'completed' ? 'done' : 'error',
+        data: { runID: 'r1', content: 'answer', message: 'Run failed', status, startedAt, finishedAt, durationMS: 1250 },
       } as SSEEvent
     })
     const { view } = await mountChat(chatStream)
@@ -253,8 +260,13 @@ describe('AgentChat loading and draft behavior', () => {
     const messages = view.element.querySelectorAll('.agents-msg')
     expect(messages).toHaveLength(2)
     expect(messages[0].querySelector('time')?.getAttribute('datetime')).toBe(startedAt)
+    expect(text(messages[1])).toContain('Still working')
+    expect(messages[1].querySelector('time')).toBeNull()
+
+    gate.resolve()
+    await settleVue(8, 1)
     expect(messages[1].querySelector('time')?.getAttribute('datetime')).toBe(finishedAt)
-    expect(text(messages[1])).toContain('answer')
+    if (status === 'completed') expect(text(messages[1])).toContain('answer')
     expect(text(messages[1].querySelector('.k-ai-turn-progress__label'))).toBe('Worked for 1s')
   })
 })
