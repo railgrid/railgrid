@@ -64,7 +64,7 @@ AGENTKIT_VUE_FILES=(
   AIConversationRail.vue AIInterrupt.vue AIMessage.vue AIPrimaryAction.vue
   AITranscript.vue AIWorkbenchPane.vue AIWorkbenchTab.vue AIWorkbenchTabs.vue AIWorkbenchLauncher.vue AIWorkspace.vue AIPaneDivider.vue
   ModelCollection.vue ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
-  ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts ai.ts modelIDSelection.ts
+  ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts threadReadState.ts ai.ts modelIDSelection.ts
   AIActivityFeed.vue AIExecutionDetails.vue AIConversationTurn.vue AIConversationStatus.vue AITurnProgress.vue AIPlanDisclosure.vue AIPlanSteps.vue
   conversation.ts AITimestamp.vue clock.ts timestamp.ts
   AIConversationComposer.vue AICommandPalette.vue AgentKitAttachmentPreview.vue AgentKitAttachmentTextPreview.vue

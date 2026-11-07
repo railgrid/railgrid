@@ -134,17 +134,66 @@ async function attachTextFile(el: HTMLElement): Promise<void> {
 describe('chat streaming', () => {
   it('shows a trailing spinner for active work without preventing thread selection', async () => {
     const rail = await mountConversationRail()
+    await rail.setProps({ activeThreadID: '', unreadThreadIDs: ['thread-active', 'thread-older'] })
     const active = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-active"]')!
     const idle = rail.element.querySelector<HTMLButtonElement>('[data-thread-id="thread-older"]')!
     expect(active.getAttribute('aria-busy')).toBe('true')
     expect(active.closest('.k-ai-conversation-rail__item')?.classList.contains('is-running')).toBe(true)
     expect(active.querySelector('svg[aria-label="Running"]')).not.toBeNull()
+    expect(active.querySelector('[aria-label="Unread thread"]')).toBeNull()
+    expect(idle.querySelector('[aria-label="Unread thread"]')).not.toBeNull()
     expect(idle.querySelector('.k-ai-conversation-rail__item-spinner')).toBeNull()
     expect(active.disabled).toBe(false)
     await rail.setProps({ threads: [{ id: 'thread-active', title: 'Current work', status: 'waiting' }, { id: 'thread-older', title: 'Previous incident review' }] })
     expect(active.querySelector('.k-ai-conversation-rail__item-spinner')).toBeNull()
     expect(active.hasAttribute('aria-busy')).toBe(false)
     expect(active.closest('.k-ai-conversation-rail__item')?.classList.contains('is-running')).toBe(false)
+    await rail.setProps({ threads: [{ id: 'thread-active', title: 'Current work', status: 'idle' }, { id: 'thread-older', title: 'Previous incident review' }] })
+    expect(active.querySelector('[aria-label="Unread thread"]')).not.toBeNull()
+  })
+
+  it('marks background updates unread, persists them, and clears them when opened', async () => {
+    const initial = '2026-11-07T10:00:00Z'
+    let activity = initial
+    const listSessions = async () => [
+      { ...session('read-current', 'Current conversation'), lastActivity: initial },
+      { ...session('read-background', 'Background conversation'), lastActivity: activity },
+    ]
+    const first = await mountChat(scripted([]), { listSessions })
+    const dot = (el: HTMLElement) => el.querySelector('[data-thread-id="read-background"] .k-ai-conversation-rail__unread[aria-label="Unread thread"]')
+    expect(dot(first.el)).toBeNull()
+    activity = '2026-11-07T10:01:00Z'
+    first.store.dispatchEvent(new CustomEvent('server', {
+      detail: { type: 'run', data: { id: 'background-completed', agent: 'scout', sessionID: 'read-background', phase: 'Succeeded' } },
+    }))
+    await settle(6)
+    expect(dot(first.el)).not.toBeNull()
+    first.view.unmount()
+    const second = await mountChat(scripted([]), { listSessions })
+    expect(dot(second.el)).not.toBeNull()
+    await chooseSession(second.el, 'Background conversation')
+    expect(dot(second.el)).toBeNull()
+    await chooseSession(second.el, 'Current conversation')
+    expect(dot(second.el)).toBeNull()
+  })
+
+  it('keeps updates to the open conversation read and scopes unread state per agent', async () => {
+    let activity = '2026-11-07T11:00:00Z'
+    const listSessions = async () => [
+      { ...session('read-open', 'Open conversation'), lastActivity: activity },
+      { ...session('read-other', 'Other conversation'), lastActivity: activity },
+    ]
+    const { el, store, view } = await mountChat(scripted([]), { listSessions })
+    activity = '2026-11-07T11:01:00Z'
+    store.dispatchEvent(new CustomEvent('server', {
+      detail: { type: 'run', data: { id: 'other-completed', agent: 'scout', sessionID: 'read-other', phase: 'Succeeded' } },
+    }))
+    await settle(6)
+    expect(el.querySelector('[data-thread-id="read-open"] [aria-label="Unread thread"]')).toBeNull()
+    expect(el.querySelector('[data-thread-id="read-other"] [aria-label="Unread thread"]')).not.toBeNull()
+    await view.setProps({ name: 'nova' })
+    await settle(6)
+    expect(el.querySelector('[aria-label="Unread thread"]')).toBeNull()
   })
 
   it('persists thread pins per agent and keeps delete available beside pin', async () => {

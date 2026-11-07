@@ -4,7 +4,7 @@ import test from 'node:test'
 
 import ts from 'typescript'
 
-const source = await readFile(new URL('./assistantThreadReadState.ts', import.meta.url), 'utf8')
+const source = await readFile(new URL('./agentkit/threadReadState.ts', import.meta.url), 'utf8')
 const { outputText } = ts.transpileModule(source, {
   compilerOptions: {
     module: ts.ModuleKind.ES2022,

@@ -713,7 +713,7 @@ defineExpose({
                       @click="selectThread(thread.id)"
                       @keydown="handleThreadKeydown($event, thread.id)"
                     >
-                      <span v-if="unreadThreadIDSet.has(thread.id)" class="k-ai-conversation-rail__unread" :class="thread.status === 'active' ? 'is-live' : ''" :aria-label="labels.unread" />
+                      <span v-if="unreadThreadIDSet.has(thread.id) && thread.status !== 'active'" class="k-ai-conversation-rail__unread" :aria-label="labels.unread" />
                       <span v-else class="k-ai-conversation-rail__unread k-ai-conversation-rail__unread--empty" aria-hidden="true" />
                       <AIOverflowTitle class="k-ai-conversation-rail__item-title" :text="displayTitle(thread)" :active="hoveredThreadID === thread.id || focusedThreadID === thread.id" />
                       <Loader2 v-if="threadIsBusy(thread)" class="k-ai-conversation-rail__item-spinner" :stroke-width="1.75" :aria-label="thread.status === 'active' ? 'Running' : labels.updating" />
