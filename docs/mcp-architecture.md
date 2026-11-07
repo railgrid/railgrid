@@ -379,6 +379,13 @@ cli := newProviderMCPClient(cfg.BearerToken, cfg.Cluster)
   on every federated call — the same pair the hub backend proxy injects, so a
   provider sees one identity contract whichever way it is reached.
 
+The aggregate and backend proxy forward the Hub's configured external URL as
+`X-Railgrid-Portal-Origin`. The backend proxy replaces any caller-supplied value.
+When a tool creates a resource with a portal view, include its absolute portal
+URL in the success result. Build the link from that configured origin and the
+authenticated workspace, and include the immutable resource identity where the
+view supports it.
+
 So the identity flows end-to-end:
 
 ```

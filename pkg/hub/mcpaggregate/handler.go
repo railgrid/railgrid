@@ -74,8 +74,8 @@ type Options struct {
 	// Providers enumerates the live Ready providers to federate for a
 	// verified caller. Required.
 	Providers ProviderEnumerator
-	// ExternalURL is the hub's externally reachable base URL, used only to
-	// self-describe the endpoint in the railgrid://about resource. Optional.
+	// ExternalURL is the hub's externally reachable base URL, used to
+	// self-describe the endpoint and build provider portal links. Optional.
 	ExternalURL string
 	// Logger is used for federation diagnostics. Optional.
 	Logger logr.Logger
@@ -328,7 +328,9 @@ func buildServer(ctx context.Context, p buildParams) *mcp.Server {
 	// federation client forwards it as BOTH X-Railgrid-Tenant and X-Railgrid-Cluster,
 	// the same pair the hub backend proxy injects on /services/providers/*
 	// (this federation path POSTs directly, so it sets them itself).
-	found := p.discovery.discover(ctx, p.log, newProviderMCPClient(p.token, p.cluster), targets)
+	client := newProviderMCPClient(p.token, p.cluster)
+	client.portalOrigin = p.externalURL
+	found := p.discovery.discover(ctx, p.log, client, targets)
 
 	// Merge each provider's own instructions (e.g. a Home Assistant Service's
 	// operator-authored entity/room guidance) into the aggregate's instructions,

@@ -53,6 +53,8 @@ import (
 
 	"github.com/go-logr/logr"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/railgrid/railgrid/pkg/apiurl"
 )
 
 // errNoMCPEndpoint marks a provider that returns 404 for its /mcp path — it
@@ -397,6 +399,7 @@ type providerMCPClient struct {
 	// as both X-Railgrid-Tenant and X-Railgrid-Cluster. Workspace paths are never
 	// sent: the ID is the only tenant identity a provider receives.
 	clusterID        string
+	portalOrigin     string
 	discoveryTimeout time.Duration
 	callTimeout      time.Duration
 	// maxResponseBytes bounds one response body; see
@@ -557,6 +560,9 @@ func (c *providerMCPClient) rpc(ctx context.Context, mcpURL, method string, para
 	req.Host = "localhost"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
+	if c.portalOrigin != "" {
+		req.Header.Set(apiurl.HeaderPortalOrigin, c.portalOrigin)
+	}
 	if c.bearerToken != "" {
 		req.Header.Set("Authorization", "Bearer "+c.bearerToken)
 	}

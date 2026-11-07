@@ -376,6 +376,7 @@ func TestUnauthorizedAndBadPath(t *testing.T) {
 // its tool shows up namespaced as "<provider>__<tool>" in the aggregate, and
 // that calling it proxies through.
 func TestFederatesReadyProvider(t *testing.T) {
+	const portalOrigin = "https://console.example.test"
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Method string          `json:"method"`
@@ -387,6 +388,9 @@ func TestFederatesReadyProvider(t *testing.T) {
 		case "tools/list":
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"provision","description":"make a thing","inputSchema":{"type":"object"}}]}}`))
 		case "tools/call":
+			if got := r.Header.Get("X-Railgrid-Portal-Origin"); got != portalOrigin {
+				t.Errorf("portal origin = %q, want %q", got, portalOrigin)
+			}
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"provisioned"}]}}`))
 		default:
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{}}`))
@@ -396,7 +400,7 @@ func TestFederatesReadyProvider(t *testing.T) {
 
 	h := New(Options{Providers: func(context.Context, Caller) []ProviderTarget {
 		return []ProviderTarget{{Name: "infra", DisplayName: "Infrastructure", MCPURL: provider.URL}}
-	}, Verifier: allowAll})
+	}, Verifier: allowAll, ExternalURL: portalOrigin})
 
 	result, code := jsonrpc(t, h, "tools/list", `{}`)
 	if code != http.StatusOK {

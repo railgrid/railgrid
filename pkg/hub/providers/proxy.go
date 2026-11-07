@@ -128,6 +128,10 @@ func NewBackendProxy(reg *Registry, log logr.Logger) *ProviderProxy {
 		req.Header.Del("X-Railgrid-User")
 		req.Header.Del("X-Railgrid-Tenant")
 		req.Header.Del("X-Railgrid-Cluster")
+		req.Header.Del(apiurl.HeaderPortalOrigin)
+		if p.portalOrigin != "" {
+			req.Header.Set(apiurl.HeaderPortalOrigin, p.portalOrigin)
+		}
 		stripShardIdentityHeaders(req.Header)
 		if p.tenantResolver == nil {
 			// V(2) so tests / non-bootstrapper hubs don't spam, but
@@ -327,9 +331,15 @@ type ProviderProxy struct {
 	kcpFrontDoor *url.URL
 	kcpTransport http.RoundTripper
 
+	portalOrigin          string
 	boundCopy             BoundCopyResolver
 	agentIngress          AgentIngressResolver
 	agentIngressAdmission *agentIngressAdmission
+}
+
+// SetPortalOrigin configures the browser origin forwarded by the backend proxy.
+func (p *ProviderProxy) SetPortalOrigin(origin string) {
+	p.portalOrigin = origin
 }
 
 // SetKCPFrontDoor tells the backend proxy where kcp is and how to

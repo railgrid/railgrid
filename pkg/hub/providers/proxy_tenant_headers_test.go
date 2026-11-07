@@ -34,8 +34,8 @@ import (
 // neither as the tenant header nor as a fallback when the ID is unavailable.
 
 type headerUpstream struct {
-	user, tenant, cluster string
-	hasTenant, hasCluster bool
+	user, tenant, cluster, portalOrigin string
+	hasTenant, hasCluster               bool
 }
 
 func newPlatformProxyRecordingHeaders(t *testing.T) (*ProviderProxy, *headerUpstream) {
@@ -43,6 +43,7 @@ func newPlatformProxyRecordingHeaders(t *testing.T) (*ProviderProxy, *headerUpst
 	rec := &headerUpstream{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec.user = r.Header.Get("X-Railgrid-User")
+		rec.portalOrigin = r.Header.Get("X-Railgrid-Portal-Origin")
 		rec.tenant, rec.hasTenant = r.Header.Get("X-Railgrid-Tenant"), r.Header.Values("X-Railgrid-Tenant") != nil
 		rec.cluster, rec.hasCluster = r.Header.Get("X-Railgrid-Cluster"), r.Header.Values("X-Railgrid-Cluster") != nil
 		w.WriteHeader(http.StatusOK)
@@ -64,12 +65,14 @@ func newPlatformProxyRecordingHeaders(t *testing.T) (*ProviderProxy, *headerUpst
 func TestBackendProxySendsClusterIDInBothTenantHeaders(t *testing.T) {
 	proxy, rec := newPlatformProxyRecordingHeaders(t)
 	proxy.SetClusterResolver(testClusterResolver)
+	proxy.SetPortalOrigin("https://console.example.test")
 
 	req := httptest.NewRequest(http.MethodGet, "/services/providers/quickstart/api/hello", nil)
 	req.Header.Set("Authorization", "Bearer "+callerBearer)
 	// A caller-supplied identity must be stripped, not merged.
 	req.Header.Set("X-Railgrid-Tenant", "root:railgrid:tenants:someone-else")
 	req.Header.Set("X-Railgrid-Cluster", "forged-cluster")
+	req.Header.Set("X-Railgrid-Portal-Origin", "https://forged.example.test")
 	w := httptest.NewRecorder()
 	proxy.ServeHTTP(w, req)
 
@@ -77,6 +80,9 @@ func TestBackendProxySendsClusterIDInBothTenantHeaders(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (body %q)", w.Code, w.Body.String())
 	}
 	want := testClusterIDFor("root:railgrid:tenants:" + testOrg + ":" + testWS)
+	if rec.portalOrigin != "https://console.example.test" {
+		t.Errorf("forwarded portal origin = %q, want configured Hub origin", rec.portalOrigin)
+	}
 	if rec.user != "alice" {
 		t.Errorf("X-Railgrid-User = %q, want alice", rec.user)
 	}

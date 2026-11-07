@@ -518,6 +518,7 @@ func (s *Server) Run(ctx context.Context) error {
 	// works — it just forwards without injecting X-Railgrid-User /
 	// X-Railgrid-Tenant, which is the Phase 1A behaviour.
 	backendProxy := providers.NewBackendProxy(providerRegistry, logger)
+	backendProxy.SetPortalOrigin(s.opts.HubExternalURL)
 	router.PathPrefix(apiurl.PathPrefixProvidersProxy + "/").Handler(backendProxy)
 	// Held so the optional tenant middleware can be installed below, once the
 	// auth stack exists. Without it the catalog is global-only; with it, an Org's

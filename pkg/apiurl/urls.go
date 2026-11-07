@@ -25,6 +25,9 @@ import (
 	"strings"
 )
 
+// HeaderPortalOrigin carries the Hub's configured browser origin to providers.
+const HeaderPortalOrigin = "X-Railgrid-Portal-Origin"
+
 // Path prefix constants for railgrid virtual-workspace services and auth endpoints.
 // Hub-specific endpoints live under /services and /auth — distinct from
 // kcp's native /clusters, /apis/<group>, /api/v1 paths, which are forwarded
