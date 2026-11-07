@@ -3,7 +3,7 @@ import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Search, ChevronRight, ArrowDown, ArrowUpRight, MessageSquare, PanelLeft, X } from 'lucide-vue-next'
+import { Search, ChevronRight, ArrowDown, ArrowUpRight, MessageSquare, PanelLeft, TriangleAlert, X } from 'lucide-vue-next'
 import { ResourceError } from '../resources'
 import { ApiError, type ApiClient, type SessionModelPreferences, type SSEEvent } from '../api'
 import InlineNotification from '../portalkit/InlineNotification.vue'
@@ -3430,6 +3430,10 @@ defineExpose({
           <button v-else-if="modelRecovery !== 'loading'" type="button" class="k-btn k-btn--text agents-model-recovery__review" @click="reviewModelRecovery">{{ modelRecovery === 'connect' ? 'Review setup' : modelRecovery === 'choose' ? 'Choose model' : 'View details' }}</button>
         </section>
         <form v-else class="agents-composer k-ai-composer-dock" @submit.prevent="send">
+          <p v-if="harnessInputsUnsupported" class="agents-composer-warning" role="status">
+            <TriangleAlert :size="14" :stroke-width="1.75" aria-hidden="true" />
+            <span>{{ harnessInputHelp }}</span>
+          </p>
           <AIComposer :compact="composerOnly" class="agents-composer-surface k-ai-composer--adaptive" :disabled="!sessionInputReady || !hasModel">
             <template #editor>
               <AgentRichComposer
@@ -3499,9 +3503,8 @@ defineExpose({
                 :disabled="!sessionInputReady || !hasModel || !composerHasContent || attachmentsPending || composerSubmitting || modelSaving || Boolean(modelSaveError) || invalidEffort || imageModelUnsupported || harnessInputsUnsupported"
               />
             </template>
-            <template v-if="imageModelUnsupported || harnessInputsUnsupported || (!composerOnly && isModelBackend && (store.credentials.loading ? !hasModel : store.credentials.error || !modelChoices.length))" #help>
+            <template v-if="imageModelUnsupported || (!composerOnly && isModelBackend && (store.credentials.loading ? !hasModel : store.credentials.error || !modelChoices.length))" #help>
               <span v-if="imageModelUnsupported" role="status">{{ knownModelInfo?.label || knownModelInfo?.id || 'This model' }} does not support images. Choose a vision capable model or remove the image attachments.</span>
-              <span v-else-if="harnessInputsUnsupported" role="status">{{ harnessInputHelp }}</span>
               <span v-else-if="store.credentials.loading">Loading models…</span>
               <button v-else-if="store.credentials.error" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="store.load('credentials')">Retry loading models</button>
               <button v-else-if="!modelChoices.length" type="button" class="k-btn k-btn--ghost k-btn--sm" @click="emit('navigate', { kind: 'menu', menu: 'models' })">Connect a model</button>
