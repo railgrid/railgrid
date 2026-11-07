@@ -449,11 +449,6 @@ restored. A separate approval-resume attempt failed before execution; the
 command-output checks used the normal `on_request` policy and do not establish
 approval-resume correctness.
 
-Rendered evidence: [Agents desktop](../evidence/command-output/command-output-agents-1440-light.png),
-[Agents phone](../evidence/command-output/command-output-agents-390-dark.png),
-[App Studio desktop](../evidence/command-output/command-output-studio-1440-light.png),
-and [App Studio phone](../evidence/command-output/command-output-studio-390-dark.png).
-
 Worked for contains the ordered commentary, tool groups, and command output. It opens during execution so streamed tool starts are visible, and
 preserves explicit reader choices across updates. Single actions have no count wrapper; multiple actions share one semantic summary
 (such as Edited files, read files, ran commands) with a call count and aligned
@@ -464,7 +459,8 @@ screenshots, use Inspected resources rather than claiming to read files. Only
 explicit file operations use Read files.
 The shared presentation classifies only unambiguous simple command arguments
 for labels such as Listed files, Read, and Searched for; compound shell
-programs retain their exact command description. Unknown, blocked, and canceled
+programs, newline-separated scripts, and unquoted shell expansions retain their
+exact command description. Unknown, blocked, and canceled
 outcomes do not acquire successful-execution labels. Active groups open as calls
 arrive, unless the reader explicitly closes them; long active lists follow new
 calls until the reader scrolls up. Group and row text stays at 12px. Transcript command cards omit internal
@@ -475,8 +471,6 @@ commands while turns were still running, 12px group/row text, tool output inside
 Worked for details, and desktop/phone light/dark views. The source metadata block no
 longer appears beneath App Studio command cards.
 
-The App Studio preview transcript regression is covered by the
-[corrected three-call group](../evidence/command-output/preview-group-corrected.png).
 Live verification confirmed two delayed commands appeared before completion,
 expanded output survived completion and group/Worked for collapse and reopen,
 and no tool rows appeared outside Worked for.
