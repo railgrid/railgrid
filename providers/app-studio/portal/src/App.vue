@@ -46,6 +46,7 @@ import InlineNotification from './portalkit/InlineNotification.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import Tabs from './portalkit/Tabs.vue'
 import AIConversationTurn from './agentkit/AIConversationTurn.vue'
+import AIConversationStatus from './agentkit/AIConversationStatus.vue'
 import AITurnProgress from './agentkit/AITurnProgress.vue'
 import AITimestamp from './agentkit/AITimestamp.vue'
 import AIInterrupt from './agentkit/AIInterrupt.vue'
@@ -11656,25 +11657,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 />
               </template>
             </AIConversationTurn>
-            <div
-              v-if="conversationWorkingLabel"
-              class="flex w-full justify-start"
-              role="status"
-              aria-live="polite"
-              aria-atomic="true"
-            >
-              <div class="flex min-w-0 items-center gap-2 py-1 text-[13px] leading-6 text-text-muted">
-                <span
-                  class="font-medium text-text-secondary"
-                  :class="conversationWorkingLabel === 'Running' ? 'conversation-running-ripple' : undefined"
-                >{{ conversationWorkingLabel }}</span>
-                <span v-if="conversationWorkingLabel === 'Running'" class="flex items-center gap-0.5 text-text-muted" aria-hidden="true">
-                  <span class="h-1 w-1 animate-pulse motion-reduce:animate-none rounded-full bg-current"></span>
-                  <span class="h-1 w-1 animate-pulse motion-reduce:animate-none rounded-full bg-current [animation-delay:120ms]"></span>
-                  <span class="h-1 w-1 animate-pulse motion-reduce:animate-none rounded-full bg-current [animation-delay:240ms]"></span>
-                </span>
-              </div>
-            </div>
+            <AIConversationStatus :label="conversationWorkingLabel" />
           </AITranscript>
           </div>
 

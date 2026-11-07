@@ -354,6 +354,7 @@ describe('chat attaches to active runs', () => {
       listRuns: async () => ({ items: [detail] }), getRun, answerStream, chatStream,
       listInbox: async () => { throw new ApiError(503, 'Inbox temporarily unavailable') },
     })
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Waiting for your answer')
     const card = el.querySelector('.agents-question-card')!
     const input = card.querySelector<HTMLInputElement>('input[type="text"]')!
     input.value = 'Continue'
@@ -391,9 +392,11 @@ describe('chat attaches to active runs', () => {
     vi.useFakeTimers()
     await send(el)
     history = [user]
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Waiting for approval')
     el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settleVue(24)
     await vi.advanceTimersByTimeAsync(1000)
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Running')
     expect(resolveInbox).toHaveBeenCalledWith('approve', 'approve')
     expect(chatStream).toHaveBeenCalledTimes(1)
     expect(text(el.querySelector('.agents-log'))).toContain(partial.content)
@@ -498,12 +501,15 @@ describe('chat attaches to active runs', () => {
     })
     await vi.advanceTimersByTimeAsync(1000)
     expect(text(el)).toContain('Reconnecting')
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Reconnecting')
+    expect(el.querySelectorAll('.k-ai-conversation-status .k-ai-conversation-status__dot')).toHaveLength(0)
     expect(el.querySelector('.k-stale')?.getAttribute('role')).toBe('status')
     expect(el.querySelector('.agents-composer .agents-stop')).not.toBeNull()
     await vi.advanceTimersByTimeAsync(2000)
     expect(text(el.querySelector('.agents-log'))).toContain(partial.content)
     expect(text(el)).not.toContain('Reconnecting')
     expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Running')
   })
 
   it.each([401, 403, 404].flatMap(status => [false, true].map(resource => ({ status, resource }))))('stops observing unavailable progress and explains why (%j)', async ({ status, resource }) => {
@@ -1047,6 +1053,7 @@ describe('composer owns the active run control', () => {
       listMessagePage: async () => ({ items: finished ? [{ ...partial, content: 'Finished run', metadata: { turnPhase: 'final', turnStatus: 'completed' } }, user] : [user] }),
       getRun: async () => run(finished ? 'Succeeded' : phase), chatStream,
     })
+    expect(text(el.querySelector('.k-ai-conversation-status'))).toBe(phase === 'PendingApproval' ? 'Waiting for approval' : 'Running')
     expect(el.querySelectorAll('.agents-stop')).toHaveLength(1)
     expect(el.querySelector('.agents-composer .agents-stop')?.getAttribute('aria-label')).toBe('Stop run')
     expect(el.querySelector('.agents-run-stop')).toBeNull()
@@ -1061,6 +1068,7 @@ describe('composer owns the active run control', () => {
     store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'run', phase: 'Succeeded' } } }))
     await settleVue(30)
     expect(el.querySelector('.agents-stop')).toBeNull()
+    expect(el.querySelector('.k-ai-conversation-status')).toBeNull()
     expect(el.querySelector('.agents-composer button[type="submit"]')).not.toBeNull()
     expect(text(el.querySelector('[contenteditable="true"]'))).toContain('Keep this draft')
   })
