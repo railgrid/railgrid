@@ -1004,3 +1004,41 @@ test('starter prompt stays before its response through completion, live merge, a
   const optimistic = { id: 'optimistic-next', role: 'user', content: 'Next', createdAt: '2026-11-07T11:59:00Z' }
   assert.deepEqual(orderConversationMessages([optimistic, ...merged]).map(message => message.id), [...expected, optimistic.id])
 })
+
+test('mixed history keeps legacy durable rows and stream placeholders between sequenced messages', async () => {
+  const { orderConversationMessages } = await vite.ssrLoadModule('/src/conversationResilience.ts')
+  const row = (id, createdAt, sequence, role = 'assistant') => ({ id, role, createdAt, metadata: sequence === undefined ? {} : { assistantThreadSequence: sequence } })
+  const legacy = row('legacy-durable', '2026-11-07T10:00:00Z')
+  const user = row('user', '2026-11-07T11:00:00Z', 2, 'user')
+  const placeholder = row('assistant-placeholder', '2026-11-07T11:00:01Z')
+  const later = row('later-durable', '2026-11-07T12:00:00Z', 8)
+  const pending = row('optimistic-next', '2026-11-07T09:00:00Z', undefined, 'user')
+  const temp = row('temp-project-user', '2026-11-07T08:00:00Z', undefined, 'user')
+  const source = [later, pending, legacy, user, placeholder, temp]
+  assert.deepEqual(orderConversationMessages(source).map(row => row.id), [legacy.id, user.id, placeholder.id, later.id, pending.id, temp.id])
+  assert.deepEqual(source.map(row => row.id), [later.id, pending.id, legacy.id, user.id, placeholder.id, temp.id])
+  const skewed = [{ ...later, createdAt: '2026-11-07T09:00:00Z' }, legacy, user, placeholder]
+  const ordered = orderConversationMessages(skewed)
+  assert.deepEqual(ordered.filter(row => row.metadata.assistantThreadSequence).map(row => row.id), [user.id, later.id])
+  assert.deepEqual(ordered.filter(row => !row.metadata.assistantThreadSequence).map(row => row.id), [legacy.id, placeholder.id])
+})
+
+test('live completed message uses the thread event sequence when the inline item sequence is zero', async () => {
+  const { assistantThreadMessageCoordinates } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { orderConversationMessages } = await vite.ssrLoadModule('/src/conversationResilience.ts')
+  const item = { id: 'response', type: 'agentMessage', status: 'completed', sequence: 0, createdAt: '2026-11-07T12:00:00Z' }
+  const event = { type: 'item.completed', sequence: 9, createdAt: '2026-11-07T12:00:18Z' }
+  const coordinates = assistantThreadMessageCoordinates(item, event, { createdAt: '2026-11-07T12:00:01Z' })
+  assert.deepEqual(coordinates, { assistantThreadSequence: 9, createdAt: item.createdAt })
+  const response = { id: item.id, role: 'assistant', createdAt: coordinates.createdAt, metadata: { assistantThreadSequence: coordinates.assistantThreadSequence } }
+  const user = { id: 'user', role: 'user', createdAt: '2026-11-07T12:00:00.025Z', metadata: { assistantThreadSequence: 2 } }
+  assert.deepEqual(orderConversationMessages([response, user]).map(row => row.id), [user.id, response.id])
+  assert.equal(assistantThreadMessageCoordinates({ ...item, sequence: 7 }, event).assistantThreadSequence, 7)
+  assert.equal(assistantThreadMessageCoordinates({ ...item, createdAt: '' }, event, { createdAt: user.createdAt }).createdAt, user.createdAt)
+  assert.equal(assistantThreadMessageCoordinates({ ...item, createdAt: '' }, event).createdAt, event.createdAt)
+  assert.equal(assistantThreadMessageCoordinates(item, { ...event, sequence: 0 }, { createdAt: user.createdAt, metadata: { assistantThreadSequence: 8 } }).assistantThreadSequence, 8)
+  const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
+  assert.match(app, /const coordinates = assistantThreadMessageCoordinates\(rawItem, event, existing\)/)
+  assert.match(app, /assistantThreadSequence: coordinates\.assistantThreadSequence/)
+  assert.match(app, /createdAt: coordinates\.createdAt/)
+})

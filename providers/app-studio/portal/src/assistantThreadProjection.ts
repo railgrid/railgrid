@@ -4,6 +4,7 @@ import type {
   ProjectAssistantSkill,
   ProjectAssistantRun,
   ProjectAssistantRunStatus,
+  ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
   ProjectMessage,
 } from './types'
@@ -331,6 +332,26 @@ function mergeActionFeeds(
     else merged.push(value)
   }
   return merged
+}
+
+/**
+ * Message item sequences and their SSE event cursors come from the same
+ * per-thread store counter. Inline mirror payloads may leave item.sequence at
+ * zero; materialized item pages fill it from the event. Progress/commentary
+ * domain sequences are separate and must never be used for message ordering.
+ */
+export function assistantThreadMessageCoordinates(
+  item: Pick<ProjectAssistantThreadItem, 'sequence' | 'createdAt'>,
+  event: Pick<ProjectAssistantThreadEvent, 'sequence' | 'createdAt'>,
+  existing?: Pick<ProjectMessage, 'createdAt' | 'metadata'>,
+): { assistantThreadSequence: number | undefined; createdAt: string } {
+  const valid = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+  return {
+    assistantThreadSequence: valid(item.sequence) ? item.sequence
+      : valid(event.sequence) ? event.sequence
+      : valid(existing?.metadata?.assistantThreadSequence) ? existing.metadata.assistantThreadSequence : undefined,
+    createdAt: item.createdAt || existing?.createdAt || event.createdAt,
+  }
 }
 
 /**

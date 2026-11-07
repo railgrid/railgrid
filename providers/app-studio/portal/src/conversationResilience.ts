@@ -497,30 +497,39 @@ export function replaceOptimisticUserMessage<TMessage extends ProjectMessage>(
 }
 
 // Thread sequence is authoritative, including when clocks disagree. Pending
-// local messages have no sequence yet and remain after the durable transcript.
+// local user messages have no sequence yet and remain after durable messages.
 // Legacy conversations without thread items retain their timestamp ordering.
 export function orderConversationMessages<TMessage extends ProjectMessage>(messages: TMessage[]): TMessage[] {
   const sequence = (message: ProjectMessage): number | undefined => {
     const value = message.metadata?.assistantThreadSequence
     return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
   }
-  if (messages.some(message => sequence(message) !== undefined)) {
-    return [...messages].sort((left, right) => {
-      const leftSequence = sequence(left)
-      const rightSequence = sequence(right)
-      if (leftSequence === undefined) return rightSequence === undefined ? 0 : 1
-      if (rightSequence === undefined) return -1
-      return leftSequence - rightSequence
-    })
-  }
-  return [...messages].sort((left, right) => {
+  const byTimestamp = (left: ProjectMessage, right: ProjectMessage): number => {
     const leftAt = Date.parse(left.createdAt)
     const rightAt = Date.parse(right.createdAt)
     if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) return leftAt - rightAt
     if (left.createdAt !== right.createdAt) return 0
     if (left.role === right.role) return 0
     return left.role === 'user' ? -1 : 1
-  })
+  }
+  const sequenced = messages.filter(message => sequence(message) !== undefined)
+  if (!sequenced.length) return [...messages].sort(byTimestamp)
+  sequenced.sort((left, right) => sequence(left)! - sequence(right)!)
+  const pending = (message: ProjectMessage) => message.role === 'user' &&
+    (message.id.startsWith('optimistic-') || message.id.startsWith('temp-'))
+  const unsequenced = messages.filter(message => sequence(message) === undefined)
+  const durable = unsequenced.filter(message => !pending(message)).sort(byTimestamp)
+  const result: TMessage[] = []
+  let index = 0
+  // Insert older durable rows and not-yet-sequenced stream placeholders by
+  // timestamp into the ordered server spine. A mixed pairwise comparator can
+  // form cycles when sequence order disagrees with timestamps; merging keeps
+  // every sequenced pair in server order, and fallback rows in timestamp order.
+  for (const message of durable) {
+    while (index < sequenced.length && byTimestamp(sequenced[index], message) <= 0) result.push(sequenced[index++])
+    result.push(message)
+  }
+  return [...result, ...sequenced.slice(index), ...unsequenced.filter(pending)]
 }
 
 interface ConversationRunTransport {
