@@ -517,7 +517,7 @@ railgrid-provider-agents .agents-chat-title strong { font-size: 13px; font-weigh
 railgrid-provider-agents .agents-chat-title .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
 railgrid-provider-agents .agents-log { flex: 1 1 auto; min-height: 0; }
 railgrid-provider-agents .agents-msg { display: flex; flex-direction: column; gap: 4px; }
-railgrid-provider-agents .agents-body {
+railgrid-provider-agents .agents-body.k-ai-prose {
   word-break: break-word;
 }
 railgrid-provider-agents .agents-msg.user { align-items: flex-end; }
