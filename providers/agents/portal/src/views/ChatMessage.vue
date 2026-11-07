@@ -3,7 +3,6 @@ import type { QuestionReply } from '../types'
 import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
-  ArrowRight,
   ChevronDown,
   CircleHelp,
   FileSearch,
@@ -589,7 +588,7 @@ onBeforeUnmount(() => { mounted = false })
             type="button"
             @click="emit('view-run', message.runID!)"
           >
-            View run <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+            View run
           </button>
         </template>
       </RunFailureNotice>

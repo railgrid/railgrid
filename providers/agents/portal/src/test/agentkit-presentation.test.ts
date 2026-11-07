@@ -321,10 +321,10 @@ describe('AgentKit timestamp and chat presentation', () => {
     const state = view.element.querySelector<HTMLElement>('.agents-run-state')!
     const progress = view.element.querySelector<HTMLElement>('.k-ai-turn-progress')!
     const partialOutput = view.element.querySelector<HTMLElement>('.agents-body')!
-    const details = state.querySelector<HTMLButtonElement>('.agents-technical__toggle')!
+    const details = state.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
 
-    expect(state.getAttribute('role')).toBe('alert')
-    expect(text(state.querySelector('h3'))).toBe('The model rejected a reasoning setting')
+    expect(state.querySelector('[role="alert"]')).not.toBeNull()
+    expect(text(details)).toBe('The model rejected a reasoning setting')
     expect(details.getAttribute('aria-expanded')).toBe('false')
     expect(Boolean(progress.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     expect(Boolean(partialOutput.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
@@ -350,8 +350,8 @@ describe('AgentKit timestamp and chat presentation', () => {
     const canceled = await mountVue(ChatMessage, {
       message: message({ error: 'operator requested stop', progress: { status: 'aborted', trace: [] } }),
     })
-    expect(canceled.element.querySelector('.agents-run-state')?.getAttribute('role')).toBe('status')
-    expect(text(canceled.element.querySelector('.agents-run-state h3'))).toBe('Run canceled')
+    expect(canceled.element.querySelector('.agents-run-state [role="status"]')?.getAttribute('role')).toBe('status')
+    expect(text(canceled.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Run canceled')
     expect(canceled.element.querySelector('.agents-run-state__recovery')).toBeNull()
 
     const completed = await mountVue(ChatMessage, {
@@ -365,7 +365,7 @@ describe('AgentKit timestamp and chat presentation', () => {
     const interrupted = await mountVue(ChatMessage, {
       message: message({ error: 'Chat failed: connection closed', progress: { status: 'interrupted', trace: [] } }),
     })
-    expect(interrupted.element.querySelector('.agents-run-state')?.getAttribute('role')).toBe('status')
-    expect(text(interrupted.element.querySelector('.agents-run-state h3'))).toBe('Chat connection interrupted')
+    expect(interrupted.element.querySelector('.agents-run-state [role="status"]')).not.toBeNull()
+    expect(text(interrupted.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Chat connection interrupted')
   })
 })
