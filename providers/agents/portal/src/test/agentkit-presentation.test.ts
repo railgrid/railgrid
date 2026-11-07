@@ -1,6 +1,7 @@
 import { defineComponent, h } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import AITimestamp from '../agentkit/AITimestamp.vue'
+import AIMessage from '../agentkit/AIMessage.vue'
 import ChatMessage from '../views/ChatMessage.vue'
 import { formatAIWorkedDuration } from '../agentkit/conversation'
 import { formatFullTime, formatRelativeTime } from '../agentkit/timestamp'
@@ -27,6 +28,31 @@ describe('AgentKit timestamp and chat presentation', () => {
     }
     expect(runFailurePresentation('failed', 'OpenAI API key is invalid').recovery?.target).toBe('model-connections')
   })
+  it('copies the provider-supplied visible message text and confirms success', async () => {
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    try {
+      const view = await mountVue(AIMessage, { role: 'user', copyText: 'Visible text' })
+      const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      button.click()
+      await settleVue()
+      expect(write).toHaveBeenCalledWith('Visible text')
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Copied')
+      expect(button.title).toBe('Copied')
+    } finally { write.mockRestore() }
+  })
+
+  it('exposes copy failure feedback and omits the control for empty text', async () => {
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
+    try {
+      const view = await mountVue(AIMessage, { role: 'assistant', copyText: 'Response' })
+      view.element.querySelector<HTMLButtonElement>('[aria-label="Copy response"]')!.click()
+      await settleVue()
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Try again.')
+      const empty = await mountVue(AIMessage, { role: 'user', copyText: '  ' })
+      expect(empty.element.querySelector('.k-ai-message-copy')).toBeNull()
+    } finally { write.mockRestore() }
+  })
+
   it('omits missing or invalid timestamps', async () => {
     const missing = await mountVue(AITimestamp, { value: '' })
     expect(missing.element.querySelector('.k-ai-timestamp')).toBeNull()
@@ -146,7 +172,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       message: message({ progress: { status: 'running', trace: [] } }),
     })
     expect(running.element.querySelector('.k-ai-turn-progress')?.getAttribute('data-status')).toBe('running')
-    expect(text(running.element.querySelector('.k-ai-turn-progress'))).toBe('Working')
+    expect(text(running.element.querySelector('.k-ai-turn-progress__label'))).toBe('Working')
     expect(running.element.querySelector('.agents-thinking')).toBeNull()
     expect(running.element.querySelector('.agents-caret')).toBeNull()
     expect(running.element.querySelector('.k-ai-message__content')).toBeNull()
@@ -158,7 +184,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       }),
     })
     expect(waiting.element.querySelector('.k-ai-turn-progress')?.getAttribute('data-status')).toBe('waiting')
-    expect(text(waiting.element.querySelector('.k-ai-turn-progress'))).toBe('Waiting')
+    expect(text(waiting.element.querySelector('.k-ai-turn-progress__label'))).toBe('Waiting')
 
     const tool = { id: 'tool-1', name: 'search', result: 'ok', pending: false }
     const completed = await mountVue(ChatMessage, {
@@ -181,22 +207,16 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(text(completed.element.querySelector('.k-ai-turn-progress'))).toContain('Worked for 3s')
     expect(text(completed.element.querySelector('.k-ai-message__content'))).toContain('Answer')
 
-    const progressTrigger = completed.element.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!
-    expect(progressTrigger.getAttribute('aria-expanded')).toBe('false')
-    progressTrigger.click()
-    await settleVue()
-    expect(progressTrigger.getAttribute('aria-expanded')).toBe('true')
+    expect(completed.element.querySelector('.k-ai-turn-progress__trigger')).not.toBeNull()
     const details = completed.element.querySelector<HTMLElement>('.k-ai-turn-progress__details')!
+    expect(details.closest('.k-ai-turn-progress')).not.toBeNull()
     const detailsText = text(details)
     expect(detailsText.indexOf('Checking the request.')).toBeLessThan(detailsText.indexOf('Search'))
     expect(detailsText.indexOf('Search')).toBeLessThan(detailsText.indexOf('The answer is ready.'))
-
-    const progressActivity = details.querySelector<HTMLElement>('.k-ai-activity')!
-    const activityTrigger = progressActivity.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!
-    activityTrigger.click()
-    await settleVue()
+    const progressActivity = details.querySelector<HTMLElement>('.k-ai-transcript-activity')!
+    expect(progressActivity.querySelector('.k-ai-transcript-activity__toggle')).toBeNull()
     const progressRow = progressActivity.querySelector<HTMLElement>('.k-ai-action-row')!
-    expect(progressRow.querySelector('.k-ai-activity-feed__row-icon')).not.toBeNull()
+    expect(progressRow.querySelector('.k-ai-action-row__icon')).not.toBeNull()
     progressRow.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settleVue()
     const progressToolDetails = progressRow.querySelector<HTMLElement>('.k-ai-execution-details')!
@@ -212,17 +232,16 @@ describe('AgentKit timestamp and chat presentation', () => {
       pending: false,
     }
     const inferred = await mountVue(ChatMessage, { message: message({ tools: [fallbackTool] }) })
-    expect(inferred.element.querySelector('.k-ai-turn-progress')).toBeNull()
-    const unclassifiedActivity = inferred.element.querySelector('.k-ai-activity')
+    expect(inferred.element.querySelector('.k-ai-turn-progress')).not.toBeNull()
+    const unclassifiedActivity = inferred.element.querySelector('.k-ai-transcript-activity')
     expect(unclassifiedActivity).not.toBeNull()
-    expect(text(unclassifiedActivity?.querySelector('.k-ai-activity__trigger'))).toContain('1 action')
-    expect(text(inferred.element)).not.toContain('Worked')
+    expect(unclassifiedActivity?.querySelector('.k-ai-transcript-activity__toggle')).toBeNull()
+    expect(text(inferred.element)).toContain('Worked')
+    expect(unclassifiedActivity?.closest('.k-ai-turn-progress__details')).not.toBeNull()
 
     const fallbackRow = inferred.element.querySelector<HTMLElement>('.k-ai-action-row')!
     expect(text(fallbackRow.querySelector('.k-ai-action-row__title'))).toBe('Memory list')
-    expect(fallbackRow.querySelector('.k-ai-activity-feed__row-icon')).not.toBeNull()
-    unclassifiedActivity!.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!.click()
-    await settleVue()
+    expect(fallbackRow.querySelector('.k-ai-action-row__icon')).not.toBeNull()
     fallbackRow.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settleVue()
     const fallbackDetails = fallbackRow.querySelector<HTMLElement>('.k-ai-execution-details')!

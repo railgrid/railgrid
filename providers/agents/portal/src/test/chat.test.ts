@@ -1238,11 +1238,13 @@ describe('chat streaming', () => {
     const sending = send(el, 'inspect the queue')
     await settle(6)
 
-    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!
+    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+    trigger.click()
+    await settle(3)
     expect(trigger.getAttribute('aria-expanded')).toBe('true')
     trigger.click()
     await settle(3)
-    // Match Studio: automatic expansion yields to the user's explicit choice.
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
 
     release.resolve(undefined)
@@ -1267,21 +1269,18 @@ describe('chat streaming', () => {
     ]))
     await send(el, 'inspect the queue')
 
-    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-activity__trigger')!
+    const trigger = el.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
     const card = el.querySelector<HTMLElement>('.k-ai-action-row')!
-    expect(trigger.getAttribute('aria-expanded')).toBe('true')
-    expect(trigger.querySelector('.k-ai-activity__status--error')).not.toBeNull()
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
     expect(card.classList.contains('k-ai-action-row--error')).toBe(true)
-
+    trigger.click()
+    await settle(3)
+    expect(trigger.getAttribute('aria-expanded')).toBe('true')
     trigger.click()
     await settle(3)
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
-    expect(trigger.querySelector('.k-ai-activity__status--error')).not.toBeNull()
+    expect(card.classList.contains('k-ai-action-row--error')).toBe(true)
     trigger.click()
-    await settle(3)
-    expect(trigger.getAttribute('aria-expanded')).toBe('true')
-
-    card.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settle(3)
     expect(text(card.querySelector('.k-ai-action-row__details'))).toContain('permission denied')
   })
@@ -2558,7 +2557,7 @@ describe('approval handoff after the chat stream closes', () => {
 
     expect(getRun).toHaveBeenCalledWith('r-approval')
     expect(el.querySelector('.agents-approval')).toBeNull()
-    expect(el.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+    expect(el.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
     expect(text(el)).not.toContain('Waiting for approval')
 
     finalTranscript.resolve([{
@@ -2568,7 +2567,7 @@ describe('approval handoff after the chat stream closes', () => {
     await settle(6)
 
     expect(text(el)).toContain('Authoritative final answer')
-    expect(el.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+    expect(el.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
   })
 
   it('keeps approval recovery closed after an accepted cancellation without a terminal event', async () => {
@@ -2743,7 +2742,7 @@ describe('approval handoff after the chat stream closes', () => {
     expect(text(el)).not.toContain('inbox-r-b')
     const terminalMessage = [...el.querySelectorAll<HTMLElement>('.agents-ai-message')]
       .find(message => message.id === 'k-ai-conversation-turn-massistant-b')
-    expect(terminalMessage?.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Worked')
+    expect(terminalMessage?.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
   })
 
   it.each(['cancel', 'navigate'] as const)('discards a pending disclosure fetched before %s', async reason => {

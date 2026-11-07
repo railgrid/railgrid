@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 50 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 57 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -153,3 +153,20 @@ supplies their markup and owns mode semantics, save state, and run locking;
 AgentKit owns their reusable presentation. The coarse-pointer action reserve
 is `--k-ai-composer-action-reserve`: 44px action + 8px inset + 8px gap. Update
 this token alongside changes to the primary-action size or placement.
+
+Command activity uses one terminal surface in `AIExecutionDetails`: a copy control,
+optional line wrapping, a twelve-line output preview with explicit expansion,
+and a quiet status/duration receipt. Expansion reveals only the supplied output;
+server-truncated output remains labeled. Provider adapters own shell recognition
+and command summaries; arbitrary tools keep labeled arguments and output. Approval
+disclosures and App Studio source provenance retain their authority information.
+
+`AITranscriptActivity` renders one row directly or one semantic group for a
+contiguous block of calls. Calls retain their IDs and chronological order,
+including repeated reads. Long groups use a bounded list with an explicit
+Show all activities control; opening output removes the list bound. User
+expansion survives lifecycle updates and promotion from one call to a group.
+Providers place turn activity inside Worked for, which opens during execution.
+Receipts without progress metadata use the same disclosure boundary. Providers own
+expandable work details and transport metadata; display-only command descriptions never
+change tool risk, authorization, or execution.
