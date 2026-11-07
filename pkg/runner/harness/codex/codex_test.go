@@ -146,6 +146,47 @@ func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T
 	}
 }
 
+func TestRunForwardsGitHubCredentialToShellPolicy(t *testing.T) {
+	const token = "synthetic-launch-token"
+	envFile := filepath.Join(t.TempDir(), "env.json")
+	binary := fakeCodexBinaryWithEnvFile(t, "success", envFile)
+	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
+	credential := testCredential()
+	credential.Environment = []harness.EnvironmentVariable{
+		{Name: "GH_TOKEN", Value: token},
+		{Name: "GITHUB_TOKEN", Value: token},
+	}
+	result, err := adapter.Run(context.Background(), harness.Launch{
+		Workdir: t.TempDir(), Instructions: "say hello", Credential: credential,
+	}, nil)
+	if err != nil || result.Phase != "completed" {
+		t.Fatalf("Run: phase=%s, error=%v", result.Phase, err)
+	}
+	env := readJSONFile(t, envFile)
+	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+		if env[name] != token {
+			t.Errorf("%s was not forwarded", name)
+		}
+	}
+	rawArgs, err := os.ReadFile(filepath.Join(filepath.Dir(binary), "argv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(rawArgs)
+	if strings.Contains(args, token) {
+		t.Fatal("credential value was passed in CLI arguments")
+	}
+	for _, expected := range []string{
+		"shell_environment_policy.ignore_default_excludes=true",
+		"shell_environment_policy.include_only=",
+		`"GH_TOKEN"`, `"GITHUB_TOKEN"`,
+	} {
+		if !strings.Contains(args, expected) {
+			t.Errorf("missing shell environment policy argument %q", expected)
+		}
+	}
+}
+
 func TestRunEnablesDefaultModeRequestUserInputForStartAndResume(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -493,7 +534,7 @@ func TestFakeAppServerProcess(t *testing.T) {
 	requestsFile := os.Getenv("RAILGRID_FAKE_CODEX_REQUESTS")
 	if envFile := os.Getenv("RAILGRID_FAKE_CODEX_ENV_FILE"); envFile != "" {
 		env := map[string]string{}
-		for _, name := range []string{"PATH", "PLAYWRIGHT_BROWSERS_PATH", "GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR", "RAILGRID_MCP_TOKEN_AGENT_CONFIG"} {
+		for _, name := range []string{"GH_TOKEN", "PATH", "PLAYWRIGHT_BROWSERS_PATH", "GITHUB_TOKEN", "GITHUB_ACTIONS", "CODEX_HOME", "HOME", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL", "SSH_AUTH_SOCK", "GOPATH", "GOBIN", "GOCACHE", "GOMODCACHE", "npm_config_cache", "TMPDIR", "RAILGRID_MCP_TOKEN_AGENT_CONFIG"} {
 			env[name] = os.Getenv(name)
 		}
 		writeJSONFile(envFile, env)

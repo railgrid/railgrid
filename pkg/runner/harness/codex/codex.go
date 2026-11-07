@@ -38,6 +38,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -154,7 +155,7 @@ func (a *Adapter) Probe(ctx context.Context) (harness.Info, error) {
 		info.Reasons = append(info.Reasons, fmt.Sprintf("expected Codex %s, found %s", a.cfg.ExpectedVersion, version))
 	}
 
-	proc, err := a.startServer(ctx, "", nil, nil)
+	proc, err := a.startServer(ctx, "", nil, nil, nil)
 	if err != nil {
 		return info, err
 	}
@@ -208,7 +209,18 @@ func (a *Adapter) probeVersion(ctx context.Context) (string, error) {
 func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.Emit) (result harness.Result, err error) {
 	// Registered first so it runs last, after every other deferred step has
 	// had its chance to set result or err.
-	if secrets := mcpSecrets(launch.Credential.MCPServers); len(secrets) > 0 {
+	secrets := mcpSecrets(launch.Credential.MCPServers)
+	var githubEnv []string
+	for _, variable := range launch.Credential.Environment {
+		switch variable.Name {
+		case "GH_TOKEN", "GITHUB_TOKEN":
+			githubEnv = append(githubEnv, variable.Name+"="+variable.Value)
+			secrets = append(secrets, variable.Value)
+		default:
+			return result, errors.New("unsupported Codex credential environment variable")
+		}
+	}
+	if len(secrets) > 0 {
 		emit = redactingEmit(emit, secrets)
 		defer func() { result, err = redactResult(result, err, secrets) }()
 	}
@@ -275,7 +287,7 @@ func (a *Adapter) Run(ctx context.Context, launch harness.Launch, emit harness.E
 			err = errors.Join(err, removeErr)
 		}
 	}()
-	proc, err := a.startServer(ctx, launch.Workdir, mcpArgs, mcpEnv)
+	proc, err := a.startServer(ctx, launch.Workdir, mcpArgs, mcpEnv, githubEnv)
 	if err != nil {
 		return result, err
 	}
@@ -612,18 +624,23 @@ type serverProcess struct {
 }
 
 // startServer starts one app-server. mcpArgs and mcpEnv attach the launch's
-// remote MCP servers (see mcp.go); Probe passes neither.
-func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv []string) (*serverProcess, error) {
+// remote MCP servers (see mcp.go). githubEnv is scoped to the turn.
+func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv, githubEnv []string) (*serverProcess, error) {
 	// The -c overrides are root-level options of the codex CLI, so they come
 	// before the subcommand.
-	args := append(append([]string(nil), mcpArgs...), "app-server", "--listen", "stdio://",
+	shellEnv := append(a.launchEnv(), githubEnv...)
+	args := append([]string(nil), mcpArgs...)
+	if len(githubEnv) > 0 {
+		args = append(args, shellEnvironmentPolicyArgs(shellEnv)...)
+	}
+	args = append(args, "app-server", "--listen", "stdio://",
 		// Keep extension execution policy independent of whether Codex has
 		// created its cache directories. Apply it to probes, new sessions, and
 		// resumed ones.
 		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
 	cmd := exec.Command(a.cfg.Binary, args...)
-	cmd.Env = append(a.launchEnv(), mcpEnv...)
+	cmd.Env = append(shellEnv, mcpEnv...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -649,6 +666,25 @@ func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpE
 		return nil, ctx.Err()
 	}
 	return proc, nil
+}
+
+// shellEnvironmentPolicyArgs explicitly preserve the already-sanitized
+// app-server environment for shell tools. The allowlist contains variable
+// names only; credential values stay in the process environment.
+func shellEnvironmentPolicyArgs(env []string) []string {
+	names := make([]string, 0, len(env))
+	for _, item := range env {
+		name, _, ok := strings.Cut(item, "=")
+		if ok {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	quoted := make([]string, 0, len(names))
+	for _, name := range names {
+		quoted = append(quoted, strconv.Quote(name))
+	}
+	return []string{"-c", "shell_environment_policy.ignore_default_excludes=true", "-c", "shell_environment_policy.include_only=[" + strings.Join(quoted, ",") + "]"}
 }
 
 func (p *serverProcess) stop() error {
