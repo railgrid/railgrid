@@ -4,7 +4,7 @@
 // the observed UID/resourceVersion, and connection edits reserve immutable key
 // versions. Read APIs and public read types live in ./llmRegistryRead so page
 // startup can load settings without downloading this mutation code.
-import { isKubeConflict, isKubeNotFound, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
+import { isKubeConflict, isKubeNotFound, KubeError, type KubeClient, type KubeObject, type KubeResourceRef } from './portalkit/kube'
 import {
   CREDENTIAL_KEY,
   CONNECTION_DISPLAY_NAME_ANNOTATION,
@@ -355,31 +355,51 @@ async function activateConnectionSecret(
   secret: { id: string; name: string },
   displayName?: string,
 ): Promise<ModelProviderConnectionObject> {
-  const current = await client.get<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name)
-  if (current.metadata.uid !== uid || current.metadata.deletionTimestamp
-    || current.metadata.annotations?.[PENDING_SECRET_ANNOTATION] !== secret.name
-    || !current.spec || !sameJSONValue(current.spec, originalSpec)
-    || !current.metadata.resourceVersion) {
-    throw new LLMRegistryError('The provider connection changed while its key was being saved. Refresh and try again.')
+  let current = await client.get<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name)
+  let activated: ModelProviderConnectionObject
+  for (let attempt = 1; ; attempt += 1) {
+    if (current.metadata.uid !== uid || current.metadata.deletionTimestamp
+      || current.metadata.annotations?.[PENDING_SECRET_ANNOTATION] !== secret.name
+      || !current.spec || !sameJSONValue(current.spec, originalSpec)
+      || !current.metadata.resourceVersion) {
+      throw new LLMRegistryError('The provider connection changed while its key was being saved. Refresh and try again.')
+    }
+    // Recheck after creating the staged key: model edits during verification or
+    // staging must not turn a successful connection save into a blocked rollover.
+    await assertConnectionRolloverCapacity(client, name)
+    const operations: Array<Record<string, unknown>> = [
+      { op: 'test', path: '/metadata/uid', value: uid },
+      { op: 'test', path: '/metadata/resourceVersion', value: current.metadata.resourceVersion },
+      { op: 'test', path: `/metadata/annotations/${PENDING_SECRET_ANNOTATION.replace(/\//g, '~1')}`, value: secret.name },
+      { op: 'test', path: '/spec', value: current.spec },
+      { op: 'replace', path: '/spec', value: desiredSpec },
+      { op: 'add', path: `/metadata/annotations/${GENERATED_SECRET_ANNOTATION.replace(/\//g, '~1')}`, value: secret.id },
+      { op: 'remove', path: `/metadata/annotations/${PENDING_SECRET_ANNOTATION.replace(/\//g, '~1')}` },
+    ]
+    const displayPath = `/metadata/annotations/${CONNECTION_DISPLAY_NAME_ANNOTATION.replace(/\//g, '~1')}`
+    const label = displayName?.trim()
+    if (label) operations.push({ op: 'add', path: displayPath, value: label })
+    else if (current.metadata.annotations?.[CONNECTION_DISPLAY_NAME_ANNOTATION]) operations.push({ op: 'remove', path: displayPath })
+    try {
+      activated = await client.patch<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name, operations, { type: 'json' })
+      break
+    } catch (error) {
+      // Kubernetes reports a failed JSON Patch test as 422. Retry only when a
+      // fresh read confirms the version changed without changing write authority.
+      if (!(error instanceof KubeError) || (error.status !== 409 && error.status !== 422)) throw error
+      const latest = await client.get<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name)
+      if (latest.metadata.resourceVersion === current.metadata.resourceVersion) throw error
+      const { resourceVersion: _currentVersion, managedFields: _currentFields, ...currentMetadata } = current.metadata
+      const { resourceVersion: _latestVersion, managedFields: _latestFields, ...latestMetadata } = latest.metadata
+      if (!sameJSONValue(latestMetadata, currentMetadata) || !sameJSONValue(latest.spec, current.spec)) {
+        throw new LLMRegistryError('The provider connection changed while its key was being saved. Refresh and try again.')
+      }
+      if (attempt >= 4) {
+        throw new LLMRegistryError('The provider connection status is still updating. Refresh and try again.')
+      }
+      current = latest
+    }
   }
-  // Recheck after creating the staged key: model edits during verification or
-  // staging must not turn a successful connection save into a blocked rollover.
-  await assertConnectionRolloverCapacity(client, name)
-  const operations: Array<Record<string, unknown>> = [
-    { op: 'test', path: '/metadata/uid', value: uid },
-    { op: 'test', path: '/metadata/resourceVersion', value: current.metadata.resourceVersion },
-    { op: 'test', path: `/metadata/annotations/${PENDING_SECRET_ANNOTATION.replace(/\//g, '~1')}`, value: secret.name },
-    { op: 'test', path: '/spec', value: current.spec },
-    { op: 'replace', path: '/spec', value: desiredSpec },
-    { op: 'add', path: `/metadata/annotations/${GENERATED_SECRET_ANNOTATION.replace(/\//g, '~1')}`, value: secret.id },
-    { op: 'remove', path: `/metadata/annotations/${PENDING_SECRET_ANNOTATION.replace(/\//g, '~1')}` },
-  ]
-  const displayPath = `/metadata/annotations/${CONNECTION_DISPLAY_NAME_ANNOTATION.replace(/\//g, '~1')}`
-  const label = displayName?.trim()
-  if (label) operations.push({ op: 'add', path: displayPath, value: label })
-  else if (current.metadata.annotations?.[CONNECTION_DISPLAY_NAME_ANNOTATION]) operations.push({ op: 'remove', path: displayPath })
-
-  const activated = await client.patch<ModelProviderConnectionObject>(MODEL_PROVIDER_CONNECTION_RESOURCE, name, operations, { type: 'json' })
   if (activated.metadata.uid !== uid
     || activated.spec?.secretRef?.name !== secret.name
     || activated.metadata.annotations?.[GENERATED_SECRET_ANNOTATION] !== secret.id
