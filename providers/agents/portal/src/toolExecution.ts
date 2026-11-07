@@ -16,8 +16,8 @@ export function toolCommand(tool: ToolCall): string | undefined {
     if (/^[{[]/.test(tool.args.trim())) return undefined
   }
   if (typeof command !== 'string' || !command.trim()) return undefined
-  // A simple quoted shell wrapper is presentation noise; retain the original
-  // invocation in Execution details. Complex quoting is displayed verbatim.
+  // A simple quoted shell wrapper is presentation noise. Complex quoting
+  // is displayed verbatim.
   const wrapped = command.match(/^(?:\/[^\s]+\/)?(?:ba|z)?sh -[a-z]*c\s+'([^']*)'$/s)
   return wrapped?.[1] || command
 }

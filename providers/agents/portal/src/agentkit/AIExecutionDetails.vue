@@ -157,12 +157,6 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
           <ExternalLink :stroke-width="2" aria-hidden="true" />
         </a>
       </div>
-      <details v-if="view.fields?.length" class="k-ai-execution-details__metadata">
-        <summary>Execution details</summary>
-        <dl class="k-ai-execution-details__fields">
-          <template v-for="(field, index) in view.fields" :key="index"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template>
-        </dl>
-      </details>
       <div class="k-ai-execution-details__footer">
         <button v-if="hasMoreOutput" type="button" :aria-expanded="expandedOutput" @click="expandedOutput = !expandedOutput">{{ expandedOutput ? 'Show less output' : 'Show full output' }}</button>
         <span v-else />

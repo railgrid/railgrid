@@ -270,3 +270,20 @@
 .k-ai-execution-details__metadata { margin-top: 10px; }
 .k-ai-execution-details__metadata summary { cursor: pointer; }
 .k-ai-execution-details__metadata dl { margin-top: 8px; }
+
+.k-ai-transcript-activity { min-width: 0; margin-block: 8px; font-size: 12px; line-height: 1.25rem; }
+.k-ai-transcript-activity .k-ai-action-row__toggle { font: inherit; }
+.k-ai-transcript-activity__toggle { display: flex; align-items: center; gap: 6px; max-width: 100%; min-height: 32px; border: 0; padding: 4px 0; background: transparent; color: var(--color-text-secondary); font: inherit; text-align: left; cursor: pointer; }
+.k-ai-transcript-activity__summary { min-width: 0; overflow-wrap: anywhere; }
+.k-ai-transcript-activity__icon, .k-ai-transcript-activity__chevron { width: 14px; height: 14px; flex: none; }
+.k-ai-transcript-activity__chevron.is-expanded { transform: rotate(90deg); }
+.k-ai-transcript-activity__icon.is-busy { animation: k-ai-activity-spin .9s linear infinite; }
+.k-ai-transcript-activity__icon.is-attention { color: var(--color-warning); }
+.k-ai-transcript-activity__list { min-width: 0; }
+.k-ai-transcript-activity__list.is-grouped { padding-inline-start: 0; }
+.k-ai-transcript-activity__list.is-bounded { max-height: 272px; overflow-y: auto; padding-bottom: 28px; mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%); }
+.k-ai-transcript-activity__more { min-height: 32px; border: 0; background: transparent; color: var(--color-text-secondary); font: inherit; cursor: pointer; }
+.k-ai-transcript-activity :is(button, pre):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+@media (hover: hover) { .k-ai-execution-details__controls { opacity: 0; } .k-ai-execution-details:is(:hover, :focus-within) .k-ai-execution-details__controls { opacity: 1; } }
+@media (pointer: coarse) { .k-ai-transcript-activity :is(button, summary), .k-ai-execution-details--activity button { min-height: 44px; } }
+@media (prefers-reduced-motion: reduce) { .k-ai-transcript-activity__icon.is-busy { animation: none; } }

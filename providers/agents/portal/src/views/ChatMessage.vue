@@ -4,15 +4,10 @@ import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
   ChevronDown,
-  CircleHelp,
   FileSearch,
-  GitCommitHorizontal,
-  Pencil,
-  Plug,
-  TerminalSquare,
 } from 'lucide-vue-next'
 import { attachCodeCopy, sanitizedMarkdown, sanitizedMarkdownWithToolCitations, type InlineToolCitation } from '../vue/chat'
-import type { AIActivityGroup } from '../agentkit/activity'
+import { commandActivityPresentation, type AIActivityRow } from '../agentkit/activity'
 import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ToolCall } from '../types'
 import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { pendingIsQuestion } from '../types'
@@ -22,11 +17,11 @@ import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
-import { toolCommandTitle, toolCommand } from '../toolExecution'
+import { toolCommand } from '../toolExecution'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
-import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
+import AITranscriptActivity from '../agentkit/AITranscriptActivity.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AIAttachmentReceipts from '../agentkit/AIAttachmentReceipts.vue'
 import type { AgentKitAttachmentReceipt } from '../agentkit/composer'
@@ -106,6 +101,8 @@ const inlineAppTools = computed(() => {
 
 const root = ref<HTMLElement | null>(null)
 const expanded = ref(new Set<string>())
+const progressChoice = ref<boolean>()
+const progressExpanded = computed(() => progressChoice.value ?? progressIsActive(progressStatus.value))
 const assistantHTML = computed(() => {
   if (props.message.role !== 'assistant') return ''
   return sanitizedMarkdownWithToolCitations(props.message.content, citationTools.value)
@@ -136,7 +133,8 @@ const messageCreatedAt = computed(() => {
 })
 const progressVisible = computed(() => {
   const progress = props.message.progress
-  if (props.message.role !== 'assistant' || !progress) return false
+  if (props.message.role !== 'assistant') return false
+  if (!progress) return props.message.tools.length > 0
   // A startup failure has no worked state unless the server recorded work.
   // Keep actual trace details and durations available after a failed turn.
   const hasRecordedDuration = typeof progress.durationMS === 'number'
@@ -144,7 +142,7 @@ const progressVisible = computed(() => {
     && progress.durationMS > 0
   return !failurePhase.value || progress.trace.length > 0 || hasRecordedDuration
 })
-const progressStatus = computed<AITurnProgressStatus>(() => props.message.progress?.status || 'pending')
+const progressStatus = computed<AITurnProgressStatus>(() => props.message.progress?.status || (props.message.tools.some(tool => tool.pending) ? 'running' : 'completed'))
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
   const status = props.message.progress?.status
@@ -169,18 +167,10 @@ const fallbackTools = computed(() => {
   if (props.message.role !== 'assistant' || props.message.progress) return []
   return props.message.tools
 })
-const progressExpanded = ref(false)
-const progressCollapsedWhileActive = ref(false)
 function progressIsActive(status: AITurnProgressStatus): boolean {
   return status === 'pending' || status === 'running' || status === 'waiting' || status === 'stopping'
 }
 
-const progressOpen = computed(() => {
-  if (progressIsActive(progressStatus.value)) {
-    return !progressCollapsedWhileActive.value
-  }
-  return progressExpanded.value
-})
 let mounted = false
 
 function toggle(id: string): void {
@@ -271,19 +261,6 @@ function toolIconKey(name: string): AgentToolIconKey {
   return 'other'
 }
 
-function toolIcon(key?: string) {
-  switch (key) {
-    case 'inspect': return FileSearch
-    case 'edit': return Pencil
-    case 'run': return TerminalSquare
-    case 'commit': return GitCommitHorizontal
-    case 'clarify': return CircleHelp
-    default: return Plug
-  }
-}
-
-const activityExpanded = ref(new Set<string>())
-const activityCollapsed = ref(new Set<string>())
 const toolsByID = computed(() => {
   const result = new Map<string, ToolCall>()
   for (const block of progressTrace.value) {
@@ -293,61 +270,27 @@ const toolsByID = computed(() => {
   return result
 })
 
-function activityGroupsFor(block: Extract<TracePresentation, { kind: 'tools' }>): AIActivityGroup[] {
-  return [{
-    key: block.id, label: '',
-    rows: block.tools.map(tool => ({
+function activityRowsFor(block: Extract<TracePresentation, { kind: 'tools' }>): AIActivityRow[] {
+  return block.tools.map(tool => {
+    const command = toolCommand(tool)
+    const activity = command ? commandActivityPresentation(command) : undefined
+    const status = actionStatus(tool)
+    return {
       id: tool.id,
-      title: toolCommandTitle(tool) || formatToolLabel(tool.name),
-      iconKey: toolCommand(tool) ? 'run' : toolIconKey(tool.name),
-      status: actionStatus(tool),
-      statusLabel: actionStatusLabel(tool), outcome: actionOutcome(tool),
+      title: activity ? status === 'succeeded' ? activity.title : status === 'running' ? activity.runningTitle : `${actionStatusLabel(tool)} ${command}` : formatToolLabel(tool.name),
+      category: activity?.category,
+      iconKey: activity?.iconKey || toolIconKey(tool.name),
+      status, statusLabel: actionStatusLabel(tool),
+      outcome: command ? '' : actionOutcome(tool),
       busy: toolBusy(tool), error: !!tool.error,
       expandable: Boolean(tool.args || tool.result || tool.error),
       detailsId: `agents-action-details-${tool.id}`,
-    })),
-  }]
+    }
+  })
 }
 
 function activityPanelID(message: ChatMessage, blockID: string): string {
   return `agents-activity-${message.id}-${blockID}`
-}
-
-function activityOpen(blockID: string, tools: readonly ToolCall[]): boolean {
-  return !activityCollapsed.value.has(blockID) && (activityExpanded.value.has(blockID) || tools.some(tool => tool.pending || !!tool.error))
-}
-
-function activitySummary(tools: readonly ToolCall[]): string {
-  const pending = tools.filter(tool => tool.pending).length
-  const failed = tools.filter(tool => !!tool.error).length
-  if (pending) {
-    const first = tools.find(tool => tool.pending)!
-    return toolBusy(first) ? `${pending} running` : actionStatusLabel(first)
-  }
-  if (failed) return `${failed} failed`
-  return 'Completed'
-}
-
-function toggleActivity(blockID: string, tools: readonly ToolCall[]): void {
-  const next = new Set(activityExpanded.value)
-  const collapsed = new Set(activityCollapsed.value)
-  if (activityOpen(blockID, tools)) {
-    next.delete(blockID)
-    collapsed.add(blockID)
-  } else {
-    next.add(blockID)
-    collapsed.delete(blockID)
-  }
-  activityExpanded.value = next
-  activityCollapsed.value = collapsed
-}
-
-function toggleProgress(expanded: boolean): void {
-  if (progressIsActive(progressStatus.value)) {
-    progressCollapsedWhileActive.value = !expanded
-    return
-  }
-  progressExpanded.value = expanded
 }
 
 function wireCopyActions(): void {
@@ -389,80 +332,51 @@ onBeforeUnmount(() => { mounted = false })
           :turn-id="message.id"
           :status="progressStatus"
           :duration="progressDuration"
-          :expanded="progressOpen"
-          @toggle="toggleProgress"
+          :expanded="progressExpanded"
+          @toggle="progressChoice = $event"
         >
           <template v-if="message.runID && showRunLink && progressIsActive(progressStatus)" #actions>
             <div class="agents-progress-actions" role="group" aria-label="Run controls">
               <button class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
             </div>
           </template>
-          <template v-if="traceBlocks.length" #details>
+          <template #details>
             <template v-for="block in traceBlocks" :key="block.id">
               <div
                 v-if="block.kind === 'commentary'"
                 class="agents-body agents-trace-commentary k-ai-prose"
                 v-html="sanitizedMarkdown(block.content)"
               ></div>
-              <AIActivityFeed
+              <AITranscriptActivity
                 v-else
                 :panel-id="activityPanelID(message, block.id)"
-                :groups="activityGroupsFor(block)"
-                :count="block.tools.length"
-                :summary="activitySummary(block.tools)"
-                :expanded="activityOpen(block.id, block.tools)"
+                :rows="activityRowsFor(block)"
                 :expanded-row-keys="[...expanded]"
-                :busy="block.tools.some(toolBusy)"
-                :error="block.tools.some(tool => !!tool.error)"
-                @toggle="toggleActivity(block.id, block.tools)"
                 @toggle-row="toggle"
               >
-                <template #row-icon="{ row }">
-                  <component
-                    :is="toolIcon(row.iconKey)"
-                    class="k-ai-activity-feed__row-icon"
-                    :stroke-width="1.75"
-                    aria-hidden="true"
-                  />
-                </template>
                 <template #details="{ row }">
                   <template v-for="tool in [toolsByID.get(row.id)]" :key="row.id">
                     <AgentToolDetails v-if="tool" :tool="tool" />
                   </template>
                 </template>
-              </AIActivityFeed>
+              </AITranscriptActivity>
             </template>
+
+            <AITranscriptActivity
+              v-if="fallbackTools.length"
+              :panel-id="activityPanelID(message, fallbackActivity.id)"
+              :rows="activityRowsFor(fallbackActivity)"
+              :expanded-row-keys="[...expanded]"
+              @toggle-row="toggle"
+            >
+              <template #details="{ row }">
+                <template v-for="tool in [toolsByID.get(row.id)]" :key="row.id">
+                  <AgentToolDetails v-if="tool" :tool="tool" />
+                </template>
+              </template>
+            </AITranscriptActivity>
           </template>
         </AITurnProgress>
-      </template>
-
-      <template v-if="fallbackTools.length" #trace>
-        <AIActivityFeed
-          :panel-id="activityPanelID(message, fallbackActivity.id)"
-          :groups="activityGroupsFor(fallbackActivity)"
-          :count="fallbackTools.length"
-          :summary="activitySummary(fallbackTools)"
-          :expanded="activityOpen(fallbackActivity.id, fallbackTools)"
-          :expanded-row-keys="[...expanded]"
-          :busy="fallbackTools.some(toolBusy)"
-          :error="fallbackTools.some(tool => !!tool.error)"
-          @toggle="toggleActivity(fallbackActivity.id, fallbackTools)"
-          @toggle-row="toggle"
-        >
-          <template #row-icon="{ row }">
-            <component
-              :is="toolIcon(row.iconKey)"
-              class="k-ai-activity-feed__row-icon"
-              :stroke-width="1.75"
-              aria-hidden="true"
-            />
-          </template>
-          <template #details="{ row }">
-            <template v-for="tool in [toolsByID.get(row.id)]" :key="row.id">
-              <AgentToolDetails v-if="tool" :tool="tool" />
-            </template>
-          </template>
-        </AIActivityFeed>
       </template>
 
     <div

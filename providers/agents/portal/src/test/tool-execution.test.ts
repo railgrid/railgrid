@@ -13,7 +13,7 @@ describe('command receipts', () => {
     expect(toolCommand({ id: '1', name: 'shell', pending: false, args: '{"command":[]}' })).toBeUndefined()
   })
 
-  it('shows compact shell output, retains the exact invocation, and copies the complete receipt', async () => {
+  it('shows compact shell output without redundant metadata and copies the complete receipt', async () => {
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
     const output = Array.from({ length: 24 }, (_, i) => `line ${i}  <script>literal</script>`).join('\n')
     const view = await mountVue(AgentToolDetails, { tool: { id: '1', name: 'commandExecution', args: "/bin/zsh -lc 'pwd'", result: output, pending: false, durationMS: 3900 } })
@@ -35,7 +35,8 @@ describe('command receipts', () => {
     wrap.click()
     await settleVue()
     expect(el.querySelector('pre')?.classList.contains('is-wrapped')).toBe(true)
-    expect(text(el.querySelector('details'))).toContain("/bin/zsh -lc 'pwd'")
+    expect(el.querySelector('details')).toBeNull()
+    expect(text(el)).not.toContain('Execution details')
     view.unmount()
   })
 

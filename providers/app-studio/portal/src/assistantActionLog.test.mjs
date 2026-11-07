@@ -22,11 +22,10 @@ test('renders a compact bounded log without execution mechanics', async () => {
       { id: 'check-1', kind: 'run', status: 'succeeded', title: 'Checked development preview', outcome: 'Ready', severity: 'normal' },
     ],
   }))
-  assert.match(html, /2 actions/)
+  assert.match(html, /Read files, ran commands/)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-1"/)
-  assert.match(html, /Inspected the project/)
-  assert.match(html, /Ran checks/)
+  assert.doesNotMatch(html, /k-ai-activity-feed__group-toggle/)
   assert.doesNotMatch(html, /action-chain-fade/)
   assert.doesNotMatch(html, /tool call|tool result|args:|offset|limit|read_file/)
   assert.doesNotMatch(html, /rounded-xl border border-border-subtle bg-surface/)
@@ -55,12 +54,27 @@ test('renders exec_command as the same compact action row with details collapsed
       },
     }],
   }))
-  assert.match(html, /Ran commands/)
+  assert.doesNotMatch(html, /k-ai-transcript-activity__toggle/)
   assert.match(html, /Ran go test \.\/\.\.\./)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-exec-exec-1-exec"/)
   assert.doesNotMatch(html, /Sanitized argv|Relative cwd|Duration|Exit status|stdout|stderr|COMMAND_OUTPUT|COMMAND_WARNING|Shell/)
   assert.doesNotMatch(html, /bg-surface-raised\/70 p-2\.5/)
+})
+
+test('describes real successful mixed command activity without nesting category groups', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const html = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'mixed-commands',
+    items: [
+      {id:'list',kind:'run',status:'succeeded',title:'Command',severity:'normal',exec:{argv:['ls','src'],status:'succeeded',exitCode:0}},
+      {id:'run',kind:'run',status:'succeeded',title:'Command',severity:'normal',exec:{argv:['node','--version'],status:'succeeded',exitCode:0}},
+    ],
+  }))
+  assert.match(html, /Read files, ran commands/)
+  assert.match(html, /Listed files in src/)
+  assert.doesNotMatch(html, /k-ai-activity-feed__group-toggle/)
+  assert.equal((html.match(/k-ai-transcript-activity__toggle/g)||[]).length, 1)
 })
 
 test('keeps the studio-sandbox shell disclosure inside the click-only expansion', async () => {
@@ -160,9 +174,9 @@ test('keeps structured failure diagnostics out of the user-visible action histor
       diagnostic: { category: 'timeout', message: 'Preview readiness timed out.', referenceID: 'run-2' },
     }],
   }))
-  assert.match(html, /aria-expanded="false"[^>]+aria-controls="app-studio-assistant-actions-/)
-  assert.match(html, /text-danger/)
-  assert.match(html, /class="k-ai-activity__panel"/)
+  assert.doesNotMatch(html, /k-ai-transcript-activity__toggle/)
+  assert.match(html, /k-ai-action-row--error/)
+  assert.match(html, /k-ai-transcript-activity__list/)
   assert.doesNotMatch(html, /max-h-\[min\(40vh,320px\)\]/)
   assert.doesNotMatch(html, /class="grid max-h-\[min\(40vh,320px\)\] overflow-auto"/)
   assert.match(html, /Failed:/)
@@ -193,8 +207,8 @@ test('renders preview assertion mismatches as attention rather than runtime erro
   }))
   assert.match(html, /Preview assertions did not match/)
   assert.match(html, /Needs attention:/)
-  assert.match(html, /text-warning/)
-  assert.doesNotMatch(html, /text-danger/)
+  assert.match(html, /k-ai-action-row--attention/)
+  assert.doesNotMatch(html, /k-ai-action-row--error/)
 })
 
 test('renders retrying and recovered lifecycle labels without exposing correlation IDs', async () => {
@@ -213,7 +227,7 @@ test('renders retrying and recovered lifecycle labels without exposing correlati
   assert.doesNotMatch(html, /prior-1/)
 })
 
-test('keeps active work collapsed with a visible progress summary', async () => {
+test('shows active tool rows before completion with a visible progress summary', async () => {
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const html = await renderToString(createSSRApp(AssistantActionLog, {
     messageId: 'assistant-active',
@@ -222,11 +236,11 @@ test('keeps active work collapsed with a visible progress summary', async () => 
       { id: 'search-2', kind: 'inspect', status: 'succeeded', title: 'Searched for App.vue', target: 'src/App.vue', severity: 'normal' },
     ],
   }))
-  assert.match(html, /aria-expanded="false"[^>]+aria-controls="app-studio-assistant-actions-/)
-  assert.match(html, /Inspecting the project/)
+  assert.match(html, /aria-expanded="true"[^>]+aria-controls="app-studio-assistant-actions-/)
+  assert.match(html, /Reading files/)
   assert.match(html, /Searching project files/)
   assert.match(html, /Searched for App.vue/)
-  assert.match(html, /animate-spin/)
+  assert.match(html, /is-busy/)
 })
 
 test('renders image model-input actions with image-specific group labels and icon', async () => {
@@ -240,7 +254,7 @@ test('renders image model-input actions with image-specific group labels and ico
   }))
   assert.match(viewing, /Viewing image/)
   assert.doesNotMatch(viewing, /Inspecting the project/)
-  assert.match(viewing, /lucide-image/)
+  assert.match(viewing, /lucide-loader/)
 
   const viewed = await renderToString(createSSRApp(AssistantActionLog, {
     messageId: 'assistant-image-viewed',
@@ -258,10 +272,10 @@ test('aligns group headers and child actions while bounding long call chains wit
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const html = await renderToString(createSSRApp(AssistantActionLog, {
     messageId: 'assistant-long-chain',
-    items: Array.from({ length: 8 }, (_, index) => ({
+    items: Array.from({ length: 12 }, (_, index) => ({
       id: `read-${index}`,
       kind: 'inspect',
-      status: index === 7 ? 'running' : 'succeeded',
+      status: index === 11 ? 'running' : 'succeeded',
       title: `Read file ${index + 1}`,
       target: `src/file-${index + 1}.ts`,
       groupKey: 'inspect:files',
@@ -269,14 +283,14 @@ test('aligns group headers and child actions while bounding long call chains wit
       severity: 'normal',
     })),
   }))
-  assert.match(html, /k-ai-activity-feed__group-rows--scrollable/)
+  assert.match(html, /is-bounded/)
   const activityCSS = readFileSync(new URL('./agentkit/activity.css', import.meta.url), 'utf8')
-  assert.match(activityCSS, /\.k-ai-activity-feed__group-rows--scrollable\s*\{[^}]*max-height: 240px;[^}]*overflow-y: auto;[^}]*mask-image:/)
+  assert.match(activityCSS, /\.k-ai-transcript-activity__list\.is-bounded\s*\{[^}]*max-height: 272px;[^}]*overflow-y: auto;[^}]*mask-image:/)
   assert.doesNotMatch(html, /assistant-long-chain-inspect-\d+" class="ml-5/)
   assert.doesNotMatch(html, /class="mt-1 grid max-h-\[min\(40vh,320px\)\]/)
   assert.doesNotMatch(html, /max-h-\[min\(40vh,320px\)\] gap-1.5/)
-  assert.match(html, /Read file 8/)
-  assert.match(html, /Read files/)
+  assert.match(html, /Read file 12/)
+  assert.match(html, /Reading files/)
 })
 
 test('keeps a streamed group panel identity when an earlier group appears', async () => {
@@ -302,103 +316,43 @@ test('keeps a streamed group panel identity when an earlier group appears', asyn
     severity: 'normal',
   }
 
-  const panelFor = (html, label) => {
-    const labelMarker = `k-ai-activity-feed__group-label">${label}</span>`
-    const labelOffset = html.indexOf(labelMarker)
-    assert.notEqual(labelOffset, -1, `missing group label: ${label}`)
-    const buttonOffset = html.lastIndexOf('<button', labelOffset)
-    const control = html.slice(buttonOffset, labelOffset).match(/aria-controls="([^"]+)"/)
-    assert.ok(control, `missing group panel control: ${label}`)
-    return control[1]
+  const initial = await renderToString(createSSRApp(AssistantActionLog, { messageId: 'assistant-streaming-groups', items: [target] }))
+  const afterEarlierGroup = await renderToString(createSSRApp(AssistantActionLog, { messageId: 'assistant-streaming-groups', items: [prefix, target] }))
+  for (const html of [initial, afterEarlierGroup]) {
+    assert.match(html, /id="stable-read-1"/)
+    assert.match(html, /id="app-studio-assistant-actions-assistant-streaming-groups"/)
   }
+  assert.doesNotMatch(initial, /k-ai-transcript-activity__toggle/)
+  assert.match(afterEarlierGroup, /Read files, ran commands/)
+  assert.ok(afterEarlierGroup.indexOf('id="streamed-prefix-1"') < afterEarlierGroup.indexOf('id="stable-read-1"'))
 
-  const initial = await renderToString(createSSRApp(AssistantActionLog, {
-    messageId: 'assistant-streaming-groups',
-    items: [target],
-  }))
-  const afterEarlierGroup = await renderToString(createSSRApp(AssistantActionLog, {
-    messageId: 'assistant-streaming-groups',
-    items: [prefix, target],
-  }))
-
-  assert.equal(panelFor(initial, 'Read files'), panelFor(afterEarlierGroup, 'Read files'))
-  assert.match(panelFor(initial, 'Read files'), /stable-read-1/)
 })
 
 
-test('preserves user disclosure choices across tool starts, completion, and failures', async () => {
+test('preserves individual calls and projects refreshed authoritative execution states', async () => {
   const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
   const props = reactive({ messageId: 'lifecycle', items: [], stopping: false })
-  // Mount the real setup in a Vue instance so lifecycle watchers run on updates.
-  const renderer = createRenderer({
-    createComment: () => ({}), insert() {}, remove() {},
-    parentNode: () => null, nextSibling: () => null,
-  })
+  const renderer = createRenderer({ createComment: () => ({}), insert() {}, remove() {}, parentNode: () => null, nextSibling: () => null })
   let state
-  const app = renderer.createApp({
-    setup() {
-      state = AssistantActionLog.setup(props, { expose() {} })
-      return () => null
-    },
-  })
-  app.provide(ssrContextKey, {})
-  app.mount({})
+  const app = renderer.createApp({ setup() { state = AssistantActionLog.setup(props, { expose() {} }); return () => null } })
+  app.provide(ssrContextKey, {}); app.mount({})
   try {
-    const update = async (status, severity = 'normal') => {
-      props.items = [{ id: 'tool', kind: 'run', status, severity, title: 'Build' }]
-      await nextTick()
+    const item = (id, status) => ({ id, kind: 'run', status: 'succeeded', severity: 'normal', title: 'Command', exec: { argv: ['npm', 'test'], status, ...(status === 'succeeded' ? { exitCode: 0 } : status === 'failed' ? { exitCode: 1 } : {}) } })
+    props.items = [item('first', 'succeeded')]; await nextTick()
+    for (const status of ['running', 'failed', 'succeeded']) {
+      props.items = [item('first', 'succeeded'), item('second', status)]; await nextTick()
+      const rows = unref(state.rows)
+      assert.deepEqual(rows.map(row => row.id), ['first', 'second'])
+      assert.equal(rows[1].busy, status === 'running')
+      assert.equal(rows[1].error, status === 'failed')
     }
-    await update('running')
-    assert.equal(unref(state.expanded), false)
-    assert.equal(unref(state.hasBusyAction), true)
-    state.toggleLog()
-    await update('succeeded')
-    assert.equal(unref(state.expanded), true)
-    await update('running')
-    assert.equal(unref(state.expanded), true)
-    state.toggleLog()
-    await update('succeeded')
-    await update('running')
-    assert.equal(unref(state.expanded), false)
-    await update('failed', 'error')
-    assert.equal(unref(state.expanded), false)
-    assert.equal(unref(state.hasErrorAction), true)
-
-    // Reproduce the missing path: append a NEW active call to a collapsed
-    // completed group, rather than only changing one existing call's status.
-    for (const exec of [false, true]) {
-      const item = (id, status) => ({
-        id, kind: 'run', status, severity: 'normal', title: 'Build',
-        ...(exec ? { exec: { argv: ['npm', 'run', 'build'], status } } : {}),
-      })
-      props.items = [item('completed', 'succeeded')]
-      await nextTick()
-      const key = unref(state.activityGroups)[0].key
-      if (unref(state.collapsedGroups).has(key)) state.toggleGroupByKey(key)
-      state.toggleGroupByKey(key)
-      for (const status of ['running', 'retrying', 'failed', 'succeeded']) {
-        props.items = [item('completed', 'succeeded'), item('new-call', status)]
-        await nextTick()
-        const groups = unref(state.activityGroups)
-        assert.equal(groups.length, 1, 'new calls must not split off an expanded group')
-        assert.equal(groups[0].key, key)
-        assert.equal(unref(state.collapsedGroups).has(key), true)
-        assert.equal(groups[0].rows.length, 2)
-      }
-      state.toggleGroupByKey(key)
-      props.items = [...props.items, item('another-call', 'running')]
-      await nextTick()
-      assert.equal(unref(state.activityGroups).length, 1)
-      assert.equal(unref(state.activityGroups)[0].busy, true)
-      assert.equal(unref(state.activityGroups)[0].rows.length, 3)
-      assert.equal(unref(state.collapsedGroups).has(key), false)
-    }
-  } finally {
-    app.unmount()
-  }
+    props.items = [{id:'read-1',kind:'inspect',status:'succeeded',title:'Read App.vue',target:'App.vue',groupKey:'inspect:files',groupTitle:'Read files',severity:'normal'}, {id:'read-2',kind:'inspect',status:'succeeded',title:'Read App.vue',target:'App.vue',groupKey:'inspect:files',groupTitle:'Read files',severity:'normal'}]
+    await nextTick()
+    assert.equal(unref(state.rows).length, 2, 'repeated reads stay separate')
+  } finally { app.unmount() }
 })
 
-test('the work section opens for active turns and collapses on completion, with manual control in each phase', () => {
+test('Worked for opens while running, closes after completion, and preserves manual choices', () => {
   const source = readFileSync(new URL('./App.vue', import.meta.url), 'utf8')
   const implementation = source.match(/function assistantProgressExpanded\(message: ProjectMessageView\): boolean \{[\s\S]*?\n\}/)?.[0]
   assert.ok(implementation)
@@ -409,7 +363,7 @@ test('the work section opens for active turns and collapses on completion, with 
   for (const expanded of [false, true]) {
     choices.value.set('turn', { closed: false, expanded })
     assert.equal(isExpanded({ id: 'turn', closed: false }), expanded)
-    assert.equal(isExpanded({ id: 'turn', closed: true }), false)
+    assert.equal(isExpanded({ id: 'turn', closed: true }), expanded)
   }
   choices.value.set('turn', { closed: true, expanded: true })
   assert.equal(isExpanded({ id: 'turn', closed: true }), true)

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import ChatMessageView from '../views/ChatMessage.vue'
 import type { ChatMessage } from '../types'
-import { mountVue, type MountedVue } from './vue-helper'
+import { mountVue, settleVue, type MountedVue } from './vue-helper'
 const views: MountedVue[] = []
 afterEach(() => { while (views.length) views.pop()?.unmount() })
 describe('tool activity follows the run lifecycle', () => {
@@ -16,16 +16,18 @@ describe('tool activity follows the run lifecycle', () => {
     const progress = view.element.querySelector('.k-ai-turn-progress--divided')!
     expect(progress.textContent).toContain('Worked for 4s')
     expect(view.element.querySelector('.agents-body')?.textContent?.trim()).toBe(withDetails ? 'Checking the result.' : 'The answer.')
+    const trigger = progress.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')
     if (withDetails) {
-      const trigger = progress.querySelector<HTMLButtonElement>('button')!
-      expect(trigger.getAttribute('aria-expanded')).toBe('false')
-      trigger.click()
+      expect(trigger!.getAttribute('aria-expanded')).toBe('false')
+      trigger!.click()
+      await settleVue()
+      expect(trigger!.getAttribute('aria-expanded')).toBe('true')
+      const trace = view.element.querySelector('.k-ai-turn-progress__details')!
+      expect(trace.closest('.k-ai-turn-progress')).not.toBeNull()
+      expect(trace.textContent).toContain('Checking the result.')
       await view.setProps({ message: { ...message } })
-      expect(trigger.getAttribute('aria-expanded')).toBe('true')
-      expect(progress.classList.contains('k-ai-turn-progress--divided')).toBe(true)
-    } else {
-      expect(progress.querySelector('button')).toBeNull()
-    }
+      expect(trigger!.getAttribute('aria-expanded')).toBe('true')
+    } else expect(trigger).toBeNull()
     expect(view.element.querySelector('.agents-message-run-link')?.textContent).toBe('View run')
     expect(view.element.querySelector('.agents-turn-usage')?.textContent).toContain('100 in')
     expect(view.element.textContent).toContain('The answer.')
@@ -38,13 +40,11 @@ describe('tool activity follows the run lifecycle', () => {
     const tool = { id: 't1', name: 'describe_model', args: '{}', pending: true }
     const message: ChatMessage = { id: 'm1', role: 'assistant', content: '', tools: [tool], progress: { status, trace: [{ kind: 'tool', id: 't1', tool }] } }
     const view = await mountVue(ChatMessageView, { message }); views.push(view)
-    // Terminal turns collapse their trace, but the activity projection is still
-    // rendered and must never claim the unfinished call succeeded or is busy.
-    const progress = view.element.querySelector<HTMLButtonElement>('.k-ai-turn-progress__toggle')
-    if (status !== 'waiting') progress?.click()
+    // Transcript activity stays visible and never turns an unfinished call
+    // into a successful result or a running spinner after terminal settlement.
     await view.setProps({ message: { ...message } })
     expect(view.element.textContent).toContain(label)
-    expect(view.element.querySelector('.k-ai-activity-feed [aria-busy="true"]')).toBeNull()
+    expect(view.element.querySelector('.k-ai-action-row--busy')).toBeNull()
     expect(view.element.textContent).not.toContain('1 running')
   })
 })

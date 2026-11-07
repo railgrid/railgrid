@@ -20,7 +20,6 @@ const execution = computed<AIExecutionView>(() => {
   return {
     ...(command ? {
       command,
-      fields: [{ label: 'Tool', value: props.tool.name }, { label: 'Invocation', value: props.tool.args || '' }],
     } : {}),
     heading: command ? 'Shell' : `Tool · ${props.tool.name}`,
     ...(!command && props.tool.args ? { input: prettyJSON(props.tool.args), inputLabel: 'Arguments' } : {}),

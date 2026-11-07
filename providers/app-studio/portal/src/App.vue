@@ -9876,7 +9876,7 @@ function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgres
 }
 
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
-  return Boolean(message.progress || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
+  return Boolean(message.progress || message.actionFeed?.length || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
 
 function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
@@ -9884,11 +9884,8 @@ function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
 }
 
 function assistantProgressExpanded(message: ProjectMessageView): boolean {
-  const closed = assistantProgressClosed(message)
-  const choice = assistantProgressDisclosureChoices.value.get(message.id)
-  // Manual choices apply within the current phase. Finishing a turn starts
-  // a collapsed phase, independently of its tool-call disclosures.
-  return choice?.closed === closed ? choice.expanded : !closed
+  // Reveal streamed work immediately; an explicit reader choice survives updates.
+  return assistantProgressDisclosureChoices.value.get(message.id)?.expanded ?? !assistantProgressClosed(message)
 }
 
 function toggleAssistantProgress(message: ProjectMessageView): void {
@@ -9930,8 +9927,7 @@ function assistantWorkedLabel(message: ProjectMessageView): string {
 }
 
 function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[] {
-  if (!message.progress) return []
-  return buildAssistantTrace(message.progress, message.actionFeed ?? [])
+  return buildAssistantTrace(message.progress ?? { version: 1, messages: [], messageSequences: [], workedDurationMs: 0 }, message.actionFeed ?? [])
 }
 
 function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined {
@@ -11410,7 +11406,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
               <template v-if="message.role === 'assistant' && assistantProgressHeaderVisible(message)" #progress>
                 <AITurnProgress
-                  v-if="message.progress"
                   class="k-ai-turn-progress--divided"
                   :turn-id="message.id"
                   :region-id="assistantProgressRegionID(message.id)"
@@ -11439,17 +11434,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     </template>
                   </template>
                 </AITurnProgress>
-                <AITurnProgress
-                  v-else
-                  class="k-ai-turn-progress--divided"
-                  :turn-id="message.id"
-                  :status="assistantTurnProgressStatus(message)"
-                  :duration="assistantWorkedLabel(message)"
-                  :interrupted="message.viewStatus === 'interrupted'"
-                />
+
               </template>
               <template
-                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || (message.actionFeed?.length && !message.progress) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
+                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
                 #default
               >
                 <div
@@ -11464,12 +11452,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :message-id="message.id"
                     :plan="message.plan!"
                   />
-                  <AssistantActionLog
-                    v-if="message.actionFeed?.length && !message.progress"
-                    :message-id="message.id"
-                    :items="message.actionFeed"
-                    :stopping="assistantProgressStopping(message)"
-                  />
+
                   <div
                     v-if="hasAssistantResponseContent(message)"
                     class="k-ai-prose"

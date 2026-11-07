@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 54;
+  --railgrid-agent-ui-version: 57;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
