@@ -501,6 +501,7 @@ describe('chat attaches to active runs', () => {
     })
     await vi.advanceTimersByTimeAsync(1000)
     expect(text(el)).toContain('Reconnecting')
+    expect(el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')).not.toBeNull()
     expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Reconnecting')
     expect(el.querySelectorAll('.k-ai-conversation-status .k-ai-conversation-status__dot')).toHaveLength(0)
     expect(el.querySelector('.k-stale')?.getAttribute('role')).toBe('status')
@@ -918,7 +919,8 @@ describe('disconnected approval and discovery recovery', () => {
     })
     const api = stubApi({
       chatStream,
-      listRuns: async () => {
+      listRuns: async (filter: { session?: string } = {}) => {
+        if (!filter.session) return { items: admitted ? [admitted] : [] }
         discoveryReads += 1
         if (admitted && !discoveryFailed) { discoveryFailed = true; throw new ApiError(503, 'Run discovery unavailable') }
         return { items: admitted ? [admitted] : [] }
@@ -1030,18 +1032,41 @@ it('keeps progress stopped when a metadata-only approval read cannot confirm tra
     if (!options?.requireTrace) return new Promise<RunDetail>(resolve => { finishMetadata = resolve })
     throw new ApiError(403, 'Trace access denied')
   })
+  const listMessagePage = vi.fn(async () => ({ items: [user] }))
   const { el } = await mountChat({
     listSessions: async () => [{ id: 'session', title: 'Current chat' }],
-    listMessagePage: async () => ({ items: [user] }), getRun,
+    listMessagePage, getRun,
   })
   await vi.advanceTimersByTimeAsync(1000)
+  const progressReads = listMessagePage.mock.calls.length
   finishMetadata(run('PendingApproval'))
   await settleVue(24)
   await vi.advanceTimersByTimeAsync(10000)
   expect(text(el)).toContain('Access to run progress is no longer available.')
-  expect(getRun.mock.calls.filter(([, options]) => options?.requireTrace)).toHaveLength(1)
+  // The rail may retry its own status read, but must not restart transcript observation.
+  expect(listMessagePage).toHaveBeenCalledTimes(progressReads)
 })
 
+
+it('restarts the thread spinner after approval resumes before any progress arrives', async () => {
+  vi.useFakeTimers()
+  let detail: RunDetail = { ...run('PendingApproval'), pending: { inboxID: 'resume', kind: 'approval', tool: 'shell', args: '{}' } }
+  const { el } = await mountChat({
+    listSessions: async () => [{ id: 'session', title: 'Current chat' }],
+    listRuns: async () => ({ items: [detail] }),
+    listMessagePage: async () => ({ items: [user] }),
+    getRun: async () => detail,
+  })
+  const spinner = () => el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')
+  expect(spinner()).toBeNull()
+  detail = { ...run(), progress: [] }
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).not.toBeNull()
+  // A checkpoint disclosure wins even when its KCP phase still says Running.
+  detail = { ...run(), pending: { inboxID: 'next', kind: 'approval', tool: 'shell', args: '{}' } }
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).toBeNull()
+})
 
 describe('composer owns the active run control', () => {
   it.each(['Pending', 'Running', 'PendingApproval'] as const)('restores one composer Stop for a selected active run (%s)', async phase => {
@@ -1126,4 +1151,34 @@ describe('composer owns the active run control', () => {
     expect(el.querySelector('.agents-stop')).toBeNull()
     expect(text(el.querySelector('[contenteditable="true"]'))).toContain('Draft survives stopping')
   })
+})
+
+it('preserves a recovered checkpoint across navigation and resumes without events', async () => {
+  vi.useFakeTimers()
+  let detail: RunDetail = { ...run(), pending: { inboxID: 'approval', kind: 'approval', tool: 'shell', args: '{}' } }
+  const { el } = await mountChat({
+    listSessions: async () => [{ id: 'session', title: 'Current chat' }, { id: 'other', title: 'Other chat' }],
+    listRuns: async (filter: { session?: string }) => ({ items: filter.session === 'other' ? [] : [run()] }),
+    listMessagePage: async (_agent: string, session: string) => ({ items: session === 'session' ? [user] : [] }),
+    getRun: async () => detail,
+  })
+  const spinner = () => el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(el.querySelector('.agents-approval')).not.toBeNull()
+  expect(spinner()).toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="other"]')!.click()
+  await settleVue(30)
+  expect(spinner()).toBeNull()
+  detail = { ...run(), progress: [] }
+  await vi.advanceTimersByTimeAsync(10000)
+  expect(spinner()).not.toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="session"]')!.click()
+  await settleVue(30)
+  expect(spinner()).not.toBeNull()
+  detail = run('Succeeded')
+  await vi.advanceTimersByTimeAsync(2000)
+  expect(spinner()).toBeNull()
+  el.querySelector<HTMLButtonElement>('[data-thread-id="other"]')!.click()
+  await settleVue(30)
+  expect(spinner()).toBeNull()
 })

@@ -178,6 +178,10 @@ const threadSections = computed(() => {
 })
 const contextMenuThread = computed(() => props.threads.find((thread) => thread.id === contextMenu.value?.threadID))
 
+function threadIsBusy(thread: AIConversationItem): boolean {
+  return thread.status === 'active' || props.selectingThreadID === thread.id || props.actioningThreadID === thread.id
+}
+
 function displayTitle(thread: AIConversationItem): string {
   return thread.title?.trim() || labels.value.create
 }
@@ -691,7 +695,7 @@ defineExpose({
                 <li v-for="thread in section.threads" :key="thread.id">
                   <div
                     class="k-ai-conversation-rail__item"
-                    :class="{ 'is-active': activeThreadID === thread.id, 'has-actions': capabilities.pin || capabilities.archive || capabilities.delete }"
+                    :class="{ 'is-active': activeThreadID === thread.id, 'is-running': thread.status === 'active', 'has-actions': capabilities.pin || capabilities.archive || capabilities.delete }"
                     @mouseenter="hoveredThreadID = thread.id"
                     @mouseleave="hoveredThreadID = ''"
                     @focusin="focusedThreadID = thread.id"
@@ -704,7 +708,7 @@ defineExpose({
                       class="k-ai-conversation-rail__item-select"
                       :disabled="disabled || busy || Boolean(selectingThreadID)"
                       :aria-current="activeThreadID === thread.id ? 'page' : undefined"
-                      :aria-busy="selectingThreadID === thread.id || actioningThreadID === thread.id ? 'true' : undefined"
+                      :aria-busy="threadIsBusy(thread) ? 'true' : undefined"
                       :title="displayTitle(thread)"
                       @click="selectThread(thread.id)"
                       @keydown="handleThreadKeydown($event, thread.id)"
@@ -712,7 +716,7 @@ defineExpose({
                       <span v-if="unreadThreadIDSet.has(thread.id)" class="k-ai-conversation-rail__unread" :class="thread.status === 'active' ? 'is-live' : ''" :aria-label="labels.unread" />
                       <span v-else class="k-ai-conversation-rail__unread k-ai-conversation-rail__unread--empty" aria-hidden="true" />
                       <AIOverflowTitle class="k-ai-conversation-rail__item-title" :text="displayTitle(thread)" :active="hoveredThreadID === thread.id || focusedThreadID === thread.id" />
-                      <Loader2 v-if="selectingThreadID === thread.id || actioningThreadID === thread.id" class="k-ai-conversation-rail__item-spinner" :stroke-width="1.75" :aria-label="labels.updating" />
+                      <Loader2 v-if="threadIsBusy(thread)" class="k-ai-conversation-rail__item-spinner" :stroke-width="1.75" :aria-label="thread.status === 'active' ? 'Running' : labels.updating" />
                     </button>
                     <div aria-hidden="true" class="k-ai-conversation-rail__item-fade" :style="{ backgroundImage: activeThreadID === thread.id ? ACTIVE_THREAD_FADE : RESTING_THREAD_FADE }" />
                     <div v-if="capabilities.pin || capabilities.archive || capabilities.delete" class="k-ai-conversation-rail__item-actions">
