@@ -299,6 +299,8 @@ describe('chat attaches to active runs', () => {
     } })
     const reads = listRuns.mock.calls.length
     await send(el)
+    el.querySelector<HTMLButtonElement>('.agents-run-state--failed .k-ai-action-row__toggle')!.click()
+    await settleVue()
     expect(text(el)).toContain('Backend failure details')
     expect(text(el)).not.toContain('stream closed before')
     expect(listRuns).toHaveBeenCalledTimes(reads)
@@ -504,7 +506,7 @@ describe('chat attaches to active runs', () => {
     expect(el.querySelector('[data-thread-id="session"] .k-ai-conversation-rail__item-spinner[aria-label="Running"]')).not.toBeNull()
     expect(text(el.querySelector('.k-ai-conversation-status'))).toBe('Reconnecting')
     expect(el.querySelectorAll('.k-ai-conversation-status .k-ai-conversation-status__dot')).toHaveLength(0)
-    expect(el.querySelector('.k-stale')?.getAttribute('role')).toBe('status')
+    expect(el.querySelector('.agents-chat-run-notice')?.getAttribute('role')).toBe('status')
     expect(el.querySelector('.agents-composer .agents-stop')).not.toBeNull()
     await vi.advanceTimersByTimeAsync(2000)
     expect(text(el.querySelector('.agents-log'))).toContain(partial.content)
@@ -526,13 +528,13 @@ describe('chat attaches to active runs', () => {
     })
     await vi.advanceTimersByTimeAsync(1000)
     expect(getRun).toHaveBeenCalledWith('run', { requireTrace: true })
-    expect(text(el.querySelector('.k-stale'))).toContain('Access to run progress is no longer available.')
+    expect(text(el.querySelector('.agents-chat-run-notice'))).toContain('Access to run progress is no longer available.')
     expect(text(el.querySelector('.agents-log'))).toContain(user.content)
     const calls = getRun.mock.calls.length
     await vi.advanceTimersByTimeAsync(5000)
     expect(getRun).toHaveBeenCalledTimes(calls)
     unavailable = false
-    el.querySelector<HTMLButtonElement>('.k-stale button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-chat-run-notice button')!.click()
     await settleVue(24)
     await vi.advanceTimersByTimeAsync(1000)
     expect(text(el.querySelector('.agents-log'))).toContain(partial.content)

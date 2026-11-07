@@ -31,13 +31,18 @@ describe('run failure recovery and diagnostics', () => {
       onViewRun: viewRun,
     })
     const notice = view.element.querySelector('.agents-run-state')!
-    expect(notice.getAttribute('role')).toBe('alert')
-    expect(text(notice.querySelector('h3'))).toBe('Couldn’t start this run')
-    expect(text(notice.querySelector('p'))).toBe('Runner “book-codex” wasn’t found.')
-    expect(notice.querySelector('details')!.open).toBe(false)
+    expect(text(notice.querySelector('[role="alert"]'))).toBe('Couldn’t start this run')
+    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    expect(text(toggle)).toBe('Couldn’t start this run')
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    expect(notice.querySelector('.agents-run-state__summary')).toBeNull()
+    toggle.click()
+    await settleVue()
+    expect(text(notice.querySelector('.agents-run-state__summary'))).toBe('Runner “book-codex” wasn’t found.')
     expect(view.element.querySelector('.k-ai-turn-progress')).toBeNull()
     notice.querySelector<HTMLButtonElement>('.agents-run-state__recovery')!.click()
-    view.element.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
+    expect(view.element.querySelectorAll('.agents-message-run-link')).toHaveLength(1)
+    notice.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
     expect(recovery).toHaveBeenCalledWith('agent-config')
     expect(viewRun).toHaveBeenCalledWith('run-start')
   })
@@ -61,6 +66,32 @@ describe('run failure recovery and diagnostics', () => {
     details.querySelector('summary')!.click()
     await settleVue()
     expect(text(details.querySelector('pre'))).toBe('Short runner error')
+  })
+
+  it('expands inline details below the failure and copies from the diagnostic block', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const diagnostic = 'starting the harness turn: runner HTTP 502: failed to connect to edge agent'
+    const view = await mountVue(ChatMessage, {
+      message: { id: 'unclear', role: 'assistant', content: '', tools: [], runID: 'run-502', error: diagnostic },
+    })
+    const notice = view.element.querySelector('.agents-run-state')!
+    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    expect(text(toggle)).toBe('Run status is unclear')
+    const detailsId = toggle.getAttribute('aria-controls')!
+    expect(document.getElementById(detailsId)).toBeNull()
+    toggle.click()
+    await settleVue()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    const body = document.getElementById(detailsId)!
+    expect(text(body.querySelector('pre'))).toBe(diagnostic)
+    body.querySelector<HTMLButtonElement>('[aria-label="Copy details"]')!.click()
+    await settleVue()
+    expect(writeText).toHaveBeenCalledWith(diagnostic)
+    expect(text(body.querySelector('[role="status"]'))).toBe('Technical details copied.')
+    toggle.click()
+    await settleVue()
+    expect(document.getElementById(detailsId)).toBeNull()
   })
 
   it('copies only the sanitized diagnostic and clears feedback when it changes', async () => {
@@ -94,9 +125,11 @@ describe('run failure recovery and diagnostics', () => {
     expect(view.element.querySelector<HTMLDetailsElement>('details')!.open).toBe(true)
   })
 
-  it('omits the disclosure when there is no useful diagnostic', async () => {
+  it('shows the summary without a diagnostic block when the diagnostic is empty', async () => {
     const view = await mountVue(RunFailureNotice, { phase: 'failed', diagnostic: '  ' })
-    expect(view.element.querySelector('details')).toBeNull()
+    view.element.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    await settleVue()
+    expect(view.element.querySelector('pre')).toBeNull()
     expect(text(view.element)).not.toContain('partial output')
   })
 })
