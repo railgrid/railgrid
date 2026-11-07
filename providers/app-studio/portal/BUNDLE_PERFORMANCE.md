@@ -223,3 +223,14 @@ No library dependency or duplicated dependency closure is introduced. Total asse
 measure 1,404,923 B raw / 388,995 B gzip, compared with 1,404,917 B raw / 388,996 B
 gzip before extraction. All existing bundle ceilings remain unchanged. These are
 local production bundle measurements, not browser timing evidence.
+
+
+The shared conversation rail now renders its existing indeterminate spinner for
+active runs as well as thread updates. Consolidating the busy-state predicate
+keeps both the busy announcement and spinner consistent. Its fixed trailing slot
+reserves title space and yields to hover/focus actions. No new runtime library
+is introduced. With the current model-picker readiness changes, total assets
+measure 1,405,384 B raw / 389,145 B gzip, compared with 1,404,617 B raw / 388,998 B
+gzip before the thread spinner. The fixed total-only ceilings are 1,406,000 B raw
+and 389,500 B gzip, leaving 355 B gzip headroom instead of relying on the previous
+2 B margin. All path-specific limits remain unchanged.
