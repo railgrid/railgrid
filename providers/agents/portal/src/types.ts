@@ -762,6 +762,8 @@ export interface RunHarnessInfo {
 }
 
 export interface RunDetail extends RunSummary {
+  /** Presentation overlay for an executing run; stable transcript row IDs. */
+  progress?: TranscriptMessage[]
   harnessSettings?: { model?: string; reasoningEffort?: string }
   input?: string
   // The run's answer, kept on the run record so a reader doesn't have to go to
@@ -920,6 +922,7 @@ export interface TranscriptMessage {
     /** Structured history row with no user-visible assistant prose. */
     modelOnly?: boolean
     toolCallID?: string
+    pending?: boolean
     sources?: AgentArtifactSource[]
     hasMcpApp?: boolean
     savedCapture?: SavedCaptureCitation

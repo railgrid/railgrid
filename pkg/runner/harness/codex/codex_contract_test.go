@@ -112,7 +112,7 @@ func TestRunIncludesSelectedInputPathsInTurnPrompt(t *testing.T) {
 	}
 }
 
-func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
+func TestRunRejectsForeignResumeAndRequiresRootCompletion(t *testing.T) {
 	t.Run("resume response", func(t *testing.T) {
 		binary := fakeCodexBinary(t, "foreign-resume")
 		adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
@@ -144,8 +144,8 @@ func TestRunRejectsForeignResumeResponseAndCompletion(t *testing.T) {
 			Instructions: "run the approved turn",
 			Credential:   testCredential(),
 		}, nil)
-		if err != nil {
-			t.Fatalf("Run: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "EOF") {
+			t.Fatalf("Run error = %v, want EOF without root completion", err)
 		}
 		if result.Phase != "failed" {
 			t.Fatalf("foreign completion result = %+v, want failed", result)

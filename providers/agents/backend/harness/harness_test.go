@@ -697,7 +697,7 @@ func TestProgressMapsOntoTheSinkAsThePayloadsAllow(t *testing.T) {
 		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "test it"}}}, sink); err != nil {
 		t.Fatal(err)
 	}
-	if len(sink.deltas) != 1 || sink.deltas[0] != "thinking about it" {
+	if len(sink.deltas) != 1 || sink.deltas[0] != "thinking about it\n" {
 		t.Fatalf("deltas = %v, want the prose only", sink.deltas)
 	}
 	if len(sink.toolStarts) != 1 || sink.toolStarts[0] != "i1:command_execution" {

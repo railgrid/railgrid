@@ -92,7 +92,7 @@ function responseError(value: unknown, fallbackStatus: number, fallbackReason: s
   return new ApiError(status, failure.message, failure.technicalDiagnostic, reason)
 }
 
-function waitForAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+export function waitForAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(new DOMException('The attended tool request was aborted.', 'AbortError'))
   return new Promise((resolve, reject) => {
     const cleanup = () => signal.removeEventListener('abort', onAbort)

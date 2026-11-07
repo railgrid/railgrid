@@ -633,6 +633,14 @@ func (o *sinkObserver) ToolEnd(t dispatch.ToolResult) {
 	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed, Duration: t.Duration})
 }
 
+// Message classifies completed commentary immediately, before subsequent tool
+// activity. Final text and measured work still use the terminal Assistant call.
+func (o *sinkObserver) Message(message dispatch.Message) {
+	if message.Phase == "commentary" {
+		o.sink.Assistant(backend.AssistantMessage{Content: message.Content, Phase: "commentary", PresentationOnly: true, Complete: true})
+	}
+}
+
 func (o *sinkObserver) Assistant(a dispatch.AssistantResult) {
 	o.sink.Assistant(backend.AssistantMessage{Content: a.Content, Complete: a.Complete, Duration: a.Duration})
 }

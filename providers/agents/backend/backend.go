@@ -276,6 +276,11 @@ func (e ToolEvent) HasMCPApp() bool {
 // partial and must not be treated as an answer. Duration is the active model
 // time for this response.
 type AssistantMessage struct {
+	// Phase is explicit for harness messages; models infer it from tool calls.
+	Phase string
+	// PresentationOnly boundaries carry no independent model timing evidence.
+	PresentationOnly bool
+
 	Content      string
 	HasToolCalls bool
 	ToolCalls    []schema.ToolCall
@@ -284,6 +289,12 @@ type AssistantMessage struct {
 	Continuation *ContinuationMetadata `json:"-"`
 	Complete     bool
 	Duration     time.Duration
+}
+
+// IsCommentary reports a completed progress response independently of whether
+// the backend owns its tools (model) or delegates them to a coding harness.
+func (m AssistantMessage) IsCommentary() bool {
+	return m.Phase == "commentary" || m.HasToolCalls || len(m.ToolCalls) > 0
 }
 
 // Limits bound one turn. Zero values mean "the backend's default", so a caller

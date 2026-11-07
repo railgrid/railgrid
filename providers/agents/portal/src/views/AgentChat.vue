@@ -3,7 +3,8 @@ import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Search, ChevronRight, ArrowDown, ArrowUpRight, AlertCircle, Clock, LoaderCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { Search, ChevronRight, ArrowDown, ArrowUpRight, AlertCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { ResourceError } from '../resources'
 import { ApiError, type ApiClient, type SessionModelPreferences, type SSEEvent } from '../api'
 import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
@@ -17,7 +18,7 @@ import { readAssistantThreadPins, toggleAssistantThreadPin, removeAssistantThrea
 import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
 import AITranscript from '../agentkit/AITranscript.vue'
 import { toast } from '../portalkit/toast'
-import type { Route } from '../router'
+import { hashFor, type Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
@@ -26,7 +27,7 @@ import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
 import type { AgentKitComposerPart, AgentKitContextResource, AgentKitSkill } from '../agentkit/composer'
 import type { AgentProviderResourceCoordinate } from '../api'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from '../agentkit/conversation'
-import { rebuildTranscript } from '../vue/chat'
+import { rebuildTranscript, transcriptWithProgress } from '../vue/chat'
 import { parseAgentArtifactSources, parseSavedCaptureCitation } from '../agentArtifacts'
 import { artifactIdentityMatches, artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from '../artifactIntegrity'
 import { findSavedCaptureReceipt, savedCaptureReceiptIsCurrent } from '../artifactTrust'
@@ -36,6 +37,7 @@ import { chatModelRequestKey, serializeChatModelRequest } from '../vue/chatModel
 import { useAgentsRuntime, useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import ChatMessageView from './ChatMessage.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import McpAppViewer from '../components/McpAppViewer.vue'
 import RenameChatDialog from '../components/RenameChatDialog.vue'
@@ -112,13 +114,15 @@ const artifactPanelElement = ref<HTMLElement | null>(null)
 let artifactDetailSerial = 0
 
 const messages = ref<ChatMessage[]>([])
-const dockedQuestion = computed(() => {
+const dockedInterrupt = computed(() => {
   if (props.composerOnly) return
   for (let i = messages.value.length - 1; i >= 0; i--) {
     const question = messages.value[i].approval
-    if (question && !question.resolved && pendingIsQuestion(question)) return question
+    if (question && !question.resolved) return question
   }
 })
+const dockedQuestion = computed(() => dockedInterrupt.value && pendingIsQuestion(dockedInterrupt.value) ? dockedInterrupt.value : undefined)
+const dockedApproval = computed(() => dockedInterrupt.value && !pendingIsQuestion(dockedInterrupt.value) ? dockedInterrupt.value : undefined)
 const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
 // A title event can arrive while a session-list read is in flight. Keep the
@@ -485,13 +489,11 @@ function createOverlayChat(): void {
   newChat()
 }
 watch(() => props.composerOnly, compact => { if (compact) overlayChatsVisible.value = false })
+// A disconnected request can lose its first status read as well. Retain its
+// coordinate for automatic retry without claiming the run has been admitted.
+const reconnectRunID = ref('')
+const progressObserverRevision = ref(0)
 const orphanRun = ref<RunSummary | null>(null)
-const recoveringQuestionRun = computed(() => {
-  const run = orphanRun.value
-  if (!run || run.phase !== 'Running' || streaming.value) return undefined
-  if (messages.value.some(message => message.runID === run.id && message.approval && !message.approval.resolved)) return undefined
-  return messages.value.some(message => message.runID === run.id && message.questionPrompt !== undefined)
-})
 const orphanError = ref<string | null>(null)
 const orphanHasSnapshot = ref(false)
 const orphanLoading = ref(false)
@@ -503,6 +505,14 @@ function submittingQuestionReply(message: ChatMessage): boolean {
   return !!approval && pendingIsQuestion(approval) && approvalBusy.value[approval.inboxID] === 'answer'
 }
 const orphanCancelBusyID = ref('')
+const composerRunID = computed(() => orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)
+  ? orphanRun.value.id : reconnectRunID.value)
+const composerHasActiveRun = computed(() => streaming.value || Boolean(composerRunID.value))
+const composerStopping = computed(() => Boolean(
+  (streaming.value && stopRequested.value)
+  || (composerRunID.value && (orphanCancelBusyID.value === composerRunID.value || cancelingRunID.value === composerRunID.value
+    || messages.value.some(message => message.runID === composerRunID.value && message.progress?.status === 'stopping'))),
+))
 const deletingSessionID = ref('')
 const mobileRailOpen = ref(false)
 const mobileRailTrigger = ref<HTMLButtonElement | null>(null)
@@ -531,13 +541,18 @@ let openSerial = 0
 let sessionReadSerial = 0
 let messageReadSerial = 0
 let orphanReadSerial = 0
+let runStateSerial = 0
+let progressUnavailableRunID = ''
 let approvalReadSerial = 0
 const approvalReadGenerations = new Map<string, number>()
 const approvalRecoveryClosedRunIDs = new Set<string>()
 let streamSerial = 0
 let chatOwnershipSerial = 0
 let liveCancellationSerial = 0
-let terminalTranscriptRefresh: { name: string; api: ApiClient; session: string } | null = null
+let orphanRetryTimer = 0
+let terminalRefreshTimer = 0
+let terminalTranscriptRead: object | null = null
+let terminalTranscriptRefresh: { name: string; api: ApiClient; session: string; authority: ReturnType<typeof captureAuthority> } | null = null
 let traceSequence = 0
 
 const agent = computed(() => {
@@ -586,7 +601,7 @@ const inheritedModelLabel = computed(() => {
   const model = choice.model === 'Provider default' ? '' : choice.model
   return model && !choice.name.toLowerCase().includes(model.toLowerCase()) ? `${choice.name} · ${model}` : choice.name
 })
-const modelInteractionLocked = computed(() => streaming.value || Boolean(orphanRun.value && LIVE_RUN_PHASES.has(orphanRun.value.phase)))
+const modelInteractionLocked = computed(() => composerHasActiveRun.value)
 const modelSwitchDisabled = computed(() => modelSaving.value || modelInteractionLocked.value || !sessionInputReady.value)
 
 // A remembered name is not an available model. Keep running work stoppable,
@@ -930,10 +945,10 @@ const activeSessionLabel = computed(() => {
 })
 watch([overlayChatsVisible, () => activeSessionLabel.value], publishOverlayView, { flush: 'post' })
 const primaryActionState = computed<AIPrimaryActionState>(() => {
-  if (!streaming.value) return 'send'
-  return stopRequested.value ? 'stopping' : 'stop'
+  if (!composerHasActiveRun.value) return 'send'
+  return composerStopping.value ? 'stopping' : 'stop'
 })
-const composerHelp = computed(() => streaming.value
+const composerHelp = computed(() => composerHasActiveRun.value
   ? 'Draft your next message while the agent works.'
   : 'Enter to send · Shift+Enter for a new line')
 const composerHasContent = computed(() => Boolean(draft.value.trim()) || contentParts.value.some((part) => part.type !== 'text' || Boolean(part.text.trim())))
@@ -1038,8 +1053,12 @@ function syncLiveToolTrace(messageID: string, tool: ToolCall): void {
 }
 
 function applyRunProgress(run: RunSummary): void {
-  const status = progressStatusForRunPhase(run.phase)
+  const status = approvalRecoveryClosedRunIDs.has(run.id) && !TERMINAL_RUN_PHASES.has(run.phase)
+    ? 'stopping' : progressStatusForRunPhase(run.phase)
   if (!status) return
+  if (LIVE_RUN_PHASES.has(run.phase) && !messages.value.some(message => message.role === 'assistant' && message.runID === run.id)) {
+    messages.value.push({ id: `active-run-${run.id}`, role: 'assistant', runID: run.id, content: '', tools: [], progress: { status, trace: [] } })
+  }
   messages.value = messages.value.map(message => {
     if (message.role !== 'assistant' || message.runID !== run.id) return message
     return {
@@ -1063,13 +1082,43 @@ function invalidateApprovalRead(runID: string): void {
   approvalReadGenerations.set(runID, (approvalReadGenerations.get(runID) || 0) + 1)
 }
 
+// Both readers accept snapshots through the same generation boundary. The
+// first accepted result invalidates other in-flight results in either reader.
+function acceptRunSnapshot(runID: string): void {
+  runStateSerial += 1
+  invalidateApprovalRead(runID)
+}
+
+function restoreProgressAccess(runID: string): void {
+  if (progressUnavailableRunID !== runID) return
+  progressUnavailableRunID = ''
+  orphanError.value = null
+  progressObserverRevision.value += 1
+}
+
 function closeApprovalRecovery(runID: string): void {
   if (!runID) return
+  if (progressUnavailableRunID === runID) progressUnavailableRunID = ''
+  if (reconnectRunID.value === runID) reconnectRunID.value = ''
   approvalRecoveryClosedRunIDs.add(runID)
   invalidateApprovalRead(runID)
   messages.value = messages.value.map(message => message.role === 'assistant' && message.runID === runID
     ? { ...message, approval: undefined }
     : message)
+}
+
+function followCancellation(runID: string): void {
+  closeApprovalRecovery(runID)
+  // Closing approval recovery must not close observation of the runner's
+  // acknowledgement. The event feed may be disconnected or on another replica.
+  reconnectRunID.value = runID
+  orphanReadSerial += 1
+  orphanRun.value = null
+  orphanError.value = null
+  orphanHasSnapshot.value = true
+  orphanLoading.value = false
+  messages.value = messages.value.map(message => message.role === 'assistant' && message.runID === runID
+    ? { ...message, progress: progressPatch(message, { status: 'stopping' }) } : message)
 }
 
 function resetApprovalRecovery(): void {
@@ -1104,11 +1153,12 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
       orphanError.value = null
       orphanHasSnapshot.value = true
       orphanLoading.value = false
-      terminalTranscriptRefresh = { name, api: authority.api, session }
+      terminalTranscriptRefresh = { name, api: authority.api, session, authority }
       flushTerminalTranscriptRefresh()
       return
     }
     if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
+      acceptRunSnapshot(runID)
       orphanRun.value = detail
       orphanError.value = null
       orphanHasSnapshot.value = true
@@ -1116,9 +1166,15 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
       if (target?.error?.startsWith('Chat failed:')) patchMessage(target.id, { error: undefined })
     }
     if (!detail.pending) return
+    // A disclosure proves the trace read succeeded; metadata-only fallbacks
+    // cannot establish that access to progress has returned.
+    restoreProgressAccess(runID)
     // The checkpoint can precede its KCP phase projection. Its pending ID is
     // the current approval identity even if that projection still says Running.
     if (target?.approval?.inboxID === detail.pending.inboxID && target.approval.resolved) return
+    // This successful disclosure supersedes progress reads already in flight,
+    // even when the lifecycle event stream is disconnected.
+    acceptRunSnapshot(runID)
     const approval = { runID, ...detail.pending }
     if (target) {
       patchMessage(target.id, {
@@ -1140,6 +1196,12 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
 
 function contextIsCurrent(name: string, api: ApiClient): boolean {
   return mounted && props.name === name && props.api === api
+}
+
+function conversationAuthorityIsCurrent(authority: ReturnType<typeof captureAuthority>): boolean {
+  // Workbench tabs retain the same conversation. Only the route may change;
+  // the original store, API, epoch and host must still own the read.
+  return authorityIsCurrent({ ...authority, routeKey: captureAuthority().routeKey })
 }
 
 function cacheArtifactMetadata(artifact: AgentArtifact): AgentArtifact {
@@ -1382,6 +1444,9 @@ function cancelFrame(): void {
 }
 
 function invalidateReads(): void {
+  progressUnavailableRunID = ''
+  clearTerminalTranscriptRefresh()
+  window.clearTimeout(orphanRetryTimer)
   approvalReadSerial += 1
   approvalReadGenerations.clear()
   openSerial += 1
@@ -1396,6 +1461,8 @@ function clearDetachedStarts(): void {
 }
 
 function invalidateStream(preserveUnacknowledgedStart = false): void {
+  progressUnavailableRunID = ''
+  reconnectRunID.value = ''
   resetApprovalRecovery()
   streamSerial += 1
   liveCancellationSerial += 1
@@ -1409,7 +1476,7 @@ function invalidateStream(preserveUnacknowledgedStart = false): void {
   streaming.value = false
   stopRequested.value = false
   cancelingRunID.value = ''
-  terminalTranscriptRefresh = null
+  clearTerminalTranscriptRefresh()
   cancelFrame()
 }
 
@@ -1421,7 +1488,12 @@ function claimChatOwnership(): void {
   initializedFor = props.name
 }
 
-function resetOrphanRead(): void {
+function resetOrphanRead(preserveTerminalRefresh = false): void {
+  progressUnavailableRunID = ''
+  if (preserveTerminalRefresh) window.clearTimeout(terminalRefreshTimer)
+  else clearTerminalTranscriptRefresh()
+  window.clearTimeout(orphanRetryTimer)
+  reconnectRunID.value = ''
   orphanReadSerial += 1
   orphanRun.value = null
   orphanError.value = null
@@ -1463,8 +1535,10 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
   }
 }
 
-async function findOrphanRun(session: string, name = props.name, api = props.api): Promise<void> {
+async function findOrphanRun(session: string, name = props.name, api = props.api, recoverSettled = false): Promise<void> {
+  window.clearTimeout(orphanRetryTimer)
   const serial = ++orphanReadSerial
+  const authority = captureAuthority()
   if (streaming.value) {
     orphanRun.value = null
     orphanError.value = null
@@ -1476,6 +1550,7 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
     const page = await api.listRuns({ agent: name, session })
     if (
       serial !== orphanReadSerial ||
+      !conversationAuthorityIsCurrent(authority) ||
       !contextIsCurrent(name, api) ||
       sessionID.value !== session ||
       streaming.value
@@ -1484,6 +1559,11 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
       LIVE_RUN_PHASES.has(run.phase) && !approvalRecoveryClosedRunIDs.has(run.id)
     ))
     orphanRun.value = liveRuns[0] ?? null
+    if (recoverSettled && liveRuns.length === 0 && page.items.some(run => TERMINAL_RUN_PHASES.has(run.phase))) {
+      // A fast response can finish before discovery after its acknowledgement
+      // was lost. Hydrate the canonical transcript without resending the draft.
+      void loadMessages(session, name, api)
+    }
     for (const run of liveRuns) {
       applyRunProgress(run)
       void refreshRunApproval(run.id)
@@ -1491,12 +1571,26 @@ async function findOrphanRun(session: string, name = props.name, api = props.api
     orphanHasSnapshot.value = true
     orphanError.value = null
   } catch (error) {
-    if (serial === orphanReadSerial && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) {
-      orphanError.value = (error as Error).message
+    if (serial === orphanReadSerial && conversationAuthorityIsCurrent(authority) && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) {
+      orphanError.value = orphanHasSnapshot.value ? `Could not refresh run status. Showing the last loaded status. ${(error as Error).message}` : (error as Error).message
+      const unavailable = (error instanceof ApiError || error instanceof ResourceError) && [401, 403, 404].includes(error.status)
+      if (!unavailable) orphanRetryTimer = window.setTimeout(() => {
+        if (mounted && conversationAuthorityIsCurrent(authority) && serial === orphanReadSerial && conversationAuthorityIsCurrent(authority) && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) {
+          void findOrphanRun(session, name, api, recoverSettled)
+        }
+      }, 2000)
     }
   } finally {
-    if (serial === orphanReadSerial && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) orphanLoading.value = false
+    if (serial === orphanReadSerial && conversationAuthorityIsCurrent(authority) && contextIsCurrent(name, api) && sessionID.value === session && !streaming.value) orphanLoading.value = false
   }
+}
+
+async function retryRunProgress(): Promise<void> {
+  const name = props.name
+  const api = props.api
+  const session = sessionID.value
+  await findOrphanRun(session, name, api)
+  if (contextIsCurrent(name, api) && sessionID.value === session) progressObserverRevision.value += 1
 }
 
 function isNarrowViewport(): boolean {
@@ -1547,7 +1641,7 @@ function syncMobileRailViewport(): void {
   if (mobileRailOpen.value && !isNarrowViewport()) mobileRailOpen.value = false
 }
 
-async function loadMessages(session: string, name = props.name, api = props.api): Promise<boolean> {
+async function loadMessages(session: string, name = props.name, api = props.api, onFailure?: (error: unknown) => void): Promise<boolean> {
   const serial = ++messageReadSerial
   if (streaming.value || !session) return false
   messagesLoading.value = true
@@ -1581,6 +1675,7 @@ async function loadMessages(session: string, name = props.name, api = props.api)
   } catch (error) {
     if (serial !== messageReadSerial || !contextIsCurrent(name, api) || sessionID.value !== session) return false
     loadError.value = (error as Error).message
+    onFailure?.(error)
     return false
   } finally {
     if (serial === messageReadSerial && contextIsCurrent(name, api) && sessionID.value === session) {
@@ -1842,12 +1937,31 @@ function streamIsCurrent(serial: number, controller: AbortController, name: stri
   return serial === streamSerial && abort === controller && contextIsCurrent(name, api)
 }
 
+function clearTerminalTranscriptRefresh(): void {
+  window.clearTimeout(terminalRefreshTimer)
+  terminalTranscriptRefresh = null
+}
+
 function flushTerminalTranscriptRefresh(): void {
   const pending = terminalTranscriptRefresh
-  if (!pending || streaming.value) return
-  terminalTranscriptRefresh = null
-  if (!contextIsCurrent(pending.name, pending.api) || sessionID.value !== pending.session) return
-  void loadMessages(pending.session, pending.name, pending.api)
+  if (!pending || streaming.value || terminalTranscriptRead === pending) return
+  window.clearTimeout(terminalRefreshTimer)
+  const current = () => terminalTranscriptRefresh === pending && conversationAuthorityIsCurrent(pending.authority)
+    && contextIsCurrent(pending.name, pending.api) && sessionID.value === pending.session
+  if (!current()) { clearTerminalTranscriptRefresh(); return }
+  terminalTranscriptRead = pending
+  let unavailable = false
+  // Terminal status can beat both history commit and a transient history outage.
+  // Keep this request independent of the now-closed run-progress observer.
+  void loadMessages(pending.session, pending.name, pending.api, error => {
+    unavailable = (error instanceof ApiError || error instanceof ResourceError) && [401, 403, 404].includes(error.status)
+  }).then(loaded => {
+    if (!current()) return
+    if (loaded || unavailable) clearTerminalTranscriptRefresh()
+    else terminalRefreshTimer = window.setTimeout(flushTerminalTranscriptRefresh, 2000)
+  }).finally(() => {
+    if (terminalTranscriptRead === pending) terminalTranscriptRead = null
+  })
 }
 
 function recoverableRun(runID: string, session: string, name: string): RunSummary {
@@ -1887,15 +2001,7 @@ async function cancelLiveRun(
     if (!requestIsCurrent()) return
     // A successful cancellation request closes this run to approval recovery,
     // even when the executor still has to publish its terminal phase.
-    closeApprovalRecovery(runID)
-    orphanReadSerial += 1
-    orphanRun.value = null
-    orphanError.value = null
-    orphanHasSnapshot.value = true
-    orphanLoading.value = false
-    // Keep watching the successfully cancelled run until the server publishes
-    // its terminal event. That event is what refreshes the transcript with the
-    // authoritative final state.
+    followCancellation(runID)
   } catch (error) {
     if (!requestIsCurrent()) return
     // The client stream is stopped below, but the server rejected cancellation.
@@ -1927,7 +2033,7 @@ async function send(): Promise<void> {
     toast('error', harnessInputHelp.value || 'The selected runner cannot receive these inputs. Update or reconnect the runner.')
     return
   }
-  if ((!draftText && !hasParts) || attachmentsPending.value || streaming.value || recoveringQuestionRun.value || composerSubmitting.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
+  if ((!draftText && !hasParts) || attachmentsPending.value || composerHasActiveRun.value || composerSubmitting.value || modelSaving.value || modelSaveError.value || invalidEffort.value || !hasModel.value || modelRecovery.value !== 'ready') return
   if (recoveryInterruptedPrompt) { props.store.takePendingPrompt(props.name); recoveryInterruptedPrompt = false }
   engageOverlay()
   // Snapshot before awaiting. This is quoted user context, never system policy
@@ -1990,6 +2096,7 @@ async function streamTurn(
   const api = props.api
   const store = props.store
   const requestSession = sessionID.value
+  const previousRun = orphanRun.value || (reconnectRunID.value ? recoverableRun(reconnectRunID.value, requestSession, name) : null)
   const requestDraftStorageKey = agentChatDraftStorageKey(api.contextAuthority(), name, requestSession)
   // send() has cleared only the text field so far; attachments, skills, and
   // resources stay in the composer until admission. Snapshot that exact
@@ -2008,7 +2115,7 @@ async function streamTurn(
   liveRunID = ''
   liveRunSessionID = ''
   liveRunStarted = false
-  resetOrphanRead()
+  resetOrphanRead(Boolean(submittedDraft))
   const assistantID = `a${++messageSequence}`
   streamingID = assistantID
   messages.value.push({
@@ -2026,6 +2133,7 @@ async function streamTurn(
   const acceptTurn = () => {
     if (turnAccepted || !submittedDraft) return
     turnAccepted = true
+    clearTerminalTranscriptRefresh()
     const receiptIDs = submittedDraft.contentParts.flatMap((part) => part.type === 'attachment' ? [part.attachment.id] : [])
     clearAgentChatDraft(requestDraftStorageKey)
     // The captured composer owns these receipts even if the user has moved to
@@ -2043,7 +2151,20 @@ async function streamTurn(
   }
 
   let started = false
+  let terminalErrorReceived = false
   let skillSendRejected = false
+  let admissionRefused = false
+  let quietTimer = 0
+  const watchQuietStream = () => {
+    window.clearTimeout(quietTimer)
+    if (!liveRunStarted || !liveRunID) return
+    quietTimer = window.setTimeout(() => {
+      if (!streamIsCurrent(serial, controller, name, api)) return
+      const runID = liveRunID
+      releaseLiveObserver()
+      reconnectRunID.value = runID
+    }, 15000)
+  }
   try {
     for await (const event of events(controller.signal)) {
       if (!streamIsCurrent(serial, controller, name, api)) {
@@ -2235,6 +2356,7 @@ async function streamTurn(
           })
           liveRunID = data.runID
           liveRunSessionID = sessionID.value
+          orphanRun.value = { ...recoverableRun(data.runID, requestSession, name), phase: 'PendingApproval' }
           void store.load('inbox')
           break
         }
@@ -2267,6 +2389,7 @@ async function streamTurn(
           break
         }
         case 'error': {
+          terminalErrorReceived = true
           const data = event.data as ErrorData
           flushNow(serial)
           const status = data.status === undefined
@@ -2285,14 +2408,17 @@ async function streamTurn(
           break
         }
       }
+      watchQuietStream()
     }
     if (onAnswerAccepted && !started) throw new Error('The question reply stream closed before the run continued.')
+    if (!started && !turnAccepted && !terminalErrorReceived) throw new Error('The chat stream closed before the run was acknowledged.')
   } catch (error) {
     if (detachedStarts.has(controller) && contextIsCurrent(name, api)) {
       toast('error', `The original thread could not start: ${(error as Error).message}`)
     }
     if (!streamIsCurrent(serial, controller, name, api)) return
     if (onAnswerAccepted && !started) throw error
+    admissionRefused = error instanceof ApiError && [400, 401, 403, 404, 409, 422, 429].includes(error.status)
     if (!started && submittedDraft?.skills.length && error instanceof ApiError && error.status === 400) {
       skillSendRejected = true
       void loadSkillCatalog(name, api)
@@ -2306,6 +2432,7 @@ async function streamTurn(
     })
     patchProgress(assistantID, { status: clientStopped ? 'stopping' : 'failed' })
   } finally {
+    window.clearTimeout(quietTimer)
     if (streamIsCurrent(serial, controller, name, api)) composerSubmitting.value = false
     if (submittedDraft && !turnAccepted && streamIsCurrent(serial, controller, name, api)) {
       const currentDraft = currentComposerDraft()
@@ -2335,15 +2462,40 @@ async function streamTurn(
         patchMessage(assistantID, { streaming: false })
       }
       void loadSessions(name, api)
+      if (submittedDraft && !turnAccepted && previousRun && !approvalRecoveryClosedRunIDs.has(previousRun.id)) {
+        // A refused second prompt must not discard the first run's observer.
+        // A provisional start is not admission; only run_started accepts it.
+        orphanRun.value = previousRun
+        reconnectRunID.value = previousRun.id
+      }
+      if (!started && !turnAccepted && !terminalErrorReceived && submittedDraft && !admissionRefused && !stopRequested.value) {
+        // The server may have admitted the prompt before the first frame was
+        // lost. Discover this session's active run without resubmitting text.
+        // Keep the restored draft: without an acknowledgement we cannot prove
+        // which request was accepted, especially with another observer open.
+        void findOrphanRun(requestSession, name, api, true)
+      }
       flushTerminalTranscriptRefresh()
+      if (liveRunID && !stopRequested.value && messages.value.find(message => message.id === assistantID)?.approval) {
+        // An approval resume may execute through an inbox request on another
+        // replica, with no replacement chat stream. Keep observing this run.
+        orphanRun.value = { ...recoverableRun(liveRunID, requestSession, name), phase: 'PendingApproval' }
+      }
       if (liveRunID && !stopRequested.value && !messages.value.find(message => message.id === assistantID)?.approval) {
         // A clean EOF can still truncate the response. The server owns the run's
         // state; recover its progress and controls just as reopening a chat does.
         patchProgress(assistantID, { status: 'interrupted' })
+        reconnectRunID.value = liveRunID
         void refreshRunApproval(liveRunID, true)
       }
     }
   }
+}
+
+async function stopActiveRun(): Promise<void> {
+  if (composerStopping.value) return
+  if (streaming.value) await stop()
+  else await cancelOrphan()
 }
 
 async function stop(): Promise<void> {
@@ -2427,6 +2579,11 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
   } catch (error) {
     if (requestIsCurrent()) {
       toast('error', approvalResolutionFailureMessage(error instanceof ApiError ? error.status : undefined))
+      // A question answer stream may disconnect before its start frame. It
+      // cleared the original observer, but the run was already admitted. Keep
+      // following that known run even if the inbox/status confirmation fails.
+      const runID = target?.approval?.runID
+      if (runID && !approvalRecoveryClosedRunIDs.has(runID)) reconnectRunID.value = runID
       // A failed response can race with a server-side decision. Re-read both
       // authorities while the approval is still attached to this session; keep
       // the card busy until the inbox read confirms whether it remains pending.
@@ -2442,7 +2599,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
         showResolution(confirmedDecision, inboxItem?.response, undefined, inboxItem?.payload?.answers)
       }
       if (target?.approval?.runID) {
-        await refreshRunApproval(target.approval.runID, false, true)
+        await refreshRunApproval(target.approval.runID, true, true)
       }
     }
   } finally {
@@ -2458,34 +2615,45 @@ function approvalStatusReadFailureMessage(status?: number): string {
 }
 
 async function cancelOrphan(): Promise<void> {
-  const run = orphanRun.value
+  const runID = composerRunID.value
   const name = props.name
   const session = sessionID.value
   const api = props.api
   const store = props.store
-  if (!run || orphanCancelBusyID.value) return
+  if (!runID || orphanCancelBusyID.value === runID) return
+  const run = orphanRun.value || recoverableRun(runID, session, name)
   orphanCancelBusyID.value = run.id
   const requestIsCurrent = () => (
     contextIsCurrent(name, api) &&
     props.store === store &&
     sessionID.value === session &&
-    orphanRun.value?.id === run.id
+    composerRunID.value === run.id
   )
   try {
     await api.cancelRun(run.id)
     if (!requestIsCurrent()) return
-    closeApprovalRecovery(run.id)
-    orphanReadSerial += 1
-    orphanRun.value = null
-    orphanError.value = null
-    orphanHasSnapshot.value = true
-    orphanLoading.value = false
+    followCancellation(run.id)
     toast('ok', 'Stopping the run…')
   } catch (error) {
     if (requestIsCurrent()) toast('error', `Could not stop it: ${(error as Error).message}`)
   } finally {
     if (orphanCancelBusyID.value === run.id) orphanCancelBusyID.value = ''
   }
+}
+
+// A quiet or terminal observer must not hold the transcript hostage. Fence its
+// queued frames before aborting only the transport; execution stays server-owned.
+function releaseLiveObserver(): void {
+  if (!streaming.value) return
+  flushNow(streamSerial)
+  streamSerial += 1
+  abort?.abort()
+  abort = null
+  messages.value = messages.value.map(message => message.streaming ? { ...message, streaming: false } : message)
+  streamingID = ''
+  streaming.value = false
+  composerSubmitting.value = false
+  flushTerminalTranscriptRefresh()
 }
 
 function detachConversationStream(): void {
@@ -2527,6 +2695,97 @@ async function switchSession(id: string, loadHistory = true): Promise<void> {
     if (selectingSessionID.value === id) selectingSessionID.value = ''
   }
 }
+
+// The original chat request is only one observer. Follow any active run
+// independently after EOF, navigation/reload, or an inbox approval resume.
+// Read sequentially with bounded retries, including while awaiting approval:
+// the event bus is a hint and may be connected to another provider replica.
+watch(
+  // AgentDetail retains chat while navigating its workbench. Route changes
+  // invalidate captured authority, so they must also restart this observer.
+  [() => props.store, () => props.api, () => props.name, () => runtime?.authorityEpoch.value, () => runtime && hashFor(runtime.route.value), sessionID, () => orphanRun.value?.id || reconnectRunID.value, streaming, progressObserverRevision],
+  (_value, _previous, onCleanup) => {
+    const runID = orphanRun.value?.id || reconnectRunID.value
+    if (!runID || streaming.value || !mounted) return
+    const authority = captureAuthority()
+    const name = props.name
+    const session = sessionID.value
+    let stopped = false
+    let timer = 0
+    let failures = 0
+    const current = () => !stopped && authorityIsCurrent(authority) && contextIsCurrent(name, authority.api)
+      && sessionID.value === session && (orphanRun.value?.id || reconnectRunID.value) === runID
+      && !streaming.value
+    onCleanup(() => { stopped = true; window.clearTimeout(timer) })
+    const refresh = async () => {
+      const readSerial = messageReadSerial
+      const stateSerial = runStateSerial
+      try {
+        // Read history first: a later snapshot contains any command boundary
+        // committed during that read, with the same row ID for reconciliation.
+        const page = await authority.api.listMessagePage(name, session)
+        if (!current() || readSerial !== messageReadSerial || stateSerial !== runStateSerial) return
+        const detail = await authority.api.getRun(runID, { requireTrace: true })
+        if (!current() || readSerial !== messageReadSerial || stateSerial !== runStateSerial) return
+        acceptRunSnapshot(runID)
+        if (progressUnavailableRunID === runID) progressUnavailableRunID = ''
+        const fresh = page.items.slice().reverse()
+        const freshIDs = new Set(fresh.map(row => row.id))
+        historyItems = [...historyItems.filter(row => !freshIDs.has(row.id)), ...fresh]
+        const progress = detail.phase === 'Running'
+          ? (detail.progress || []).filter(row => row.runID === runID) : []
+        const projected = rebuildTranscript(transcriptWithProgress(historyItems, progress))
+        // Preserve other runs' approval disclosures and the resolution receipt
+        // of an approval just accepted locally while its KCP phase catches up.
+        for (const message of messages.value) {
+          if (!message.approval) continue
+          const target = projected.find(row => row.id === message.id)
+            || projected.filter(row => row.role === 'assistant' && row.runID === message.runID).at(-1)
+          if (target && (message.runID !== runID || message.approval.resolved)) target.approval = message.approval
+        }
+        // Older servers may not provide a progress overlay before the first
+        // persisted assistant row. Keep the local partial output in that gap.
+        if (!projected.some(row => row.role === 'assistant' && row.runID === runID)) {
+          const partial = messages.value.filter(row => row.role === 'assistant' && row.runID === runID).at(-1)
+          if (partial) projected.push({ ...partial, error: undefined })
+        }
+        messages.value = projected
+        messagesHasSnapshot.value = true
+        applyRunProgress(detail)
+        const target = messages.value.filter(row => row.role === 'assistant' && row.runID === runID).at(-1)
+        if (!approvalRecoveryClosedRunIDs.has(runID) && detail.pending && (target?.approval?.inboxID !== detail.pending.inboxID || !target.approval.resolved)) {
+          if (target) target.approval = { runID, ...detail.pending }
+          else messages.value.push({ id: `approval-${runID}`, role: 'assistant', runID, content: '', tools: [], approval: { runID, ...detail.pending } })
+        }
+        orphanError.value = null
+        failures = 0
+        if (TERMINAL_RUN_PHASES.has(detail.phase)) {
+          closeApprovalRecovery(runID)
+          orphanRun.value = null
+          // The terminal transcript can commit after the history read above.
+          terminalTranscriptRefresh = { name, api: authority.api, session, authority }
+          flushTerminalTranscriptRefresh()
+          void loadSessions(name, authority.api)
+          return
+        }
+        if (!approvalRecoveryClosedRunIDs.has(runID)) orphanRun.value = detail
+      } catch (error) {
+        if (!current() || readSerial !== messageReadSerial || stateSerial !== runStateSerial) return
+        orphanError.value = 'Live progress disconnected. Reconnecting…'
+        failures += 1
+        if ((error instanceof ApiError || error instanceof ResourceError) && [401, 403, 404].includes(error.status)) {
+          orphanError.value = 'Access to run progress is no longer available.'
+          progressUnavailableRunID = runID
+          stopped = true
+          return
+        }
+      } finally {
+        if (current()) timer = window.setTimeout(refresh, Math.min(1000 * 2 ** failures, 10000))
+      }
+    }
+    timer = window.setTimeout(refresh, 1000)
+  },
+)
 
 function newChat(): void {
   detachConversationStream()
@@ -2656,6 +2915,7 @@ function onServerEvent(event: Event): void {
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
   if (!watched) return
+  runStateSerial += 1
   const terminal = TERMINAL_RUN_PHASES.has(detail.data.phase || '')
   if (!terminal && approvalRecoveryClosedRunIDs.has(detail.data.id)) return
   if (!terminal) {
@@ -2682,6 +2942,7 @@ function onServerEvent(event: Event): void {
     }
     return
   }
+  if (watchedLive && streaming.value && !cancelingRunID.value) releaseLiveObserver()
   closeApprovalRecovery(detail.data.id)
   const status = progressStatusForRunPhase(detail.data.phase)
   if (status) {
@@ -2707,14 +2968,10 @@ function onServerEvent(event: Event): void {
   orphanError.value = null
   orphanHasSnapshot.value = true
   orphanLoading.value = false
-  if (streaming.value) {
-    // A terminal event can beat the response from POST /cancel. Loading now
-    // would be rejected by loadMessages' stream guard, so retain the refresh
-    // until the stream has closed and cancellation has settled.
-    terminalTranscriptRefresh = { name: props.name, api: props.api, session: sessionID.value }
-  } else {
-    void loadMessages(sessionID.value)
-  }
+  // A terminal event can beat POST /cancel. Queue history until the stream
+  // closes, then retry transient failures independently of run observation.
+  terminalTranscriptRefresh = { name: props.name, api: props.api, session: sessionID.value, authority: captureAuthority() }
+  flushTerminalTranscriptRefresh()
 }
 
 function bindServer(store: AppStore | null): void {
@@ -2949,36 +3206,15 @@ defineExpose({
           </button>
         </div>
 
-        <div v-if="orphanRun && !streaming && !recoveringQuestionRun" class="agents-orphan-banner" role="status">
-          <Clock aria-hidden="true" />
-          <span class="agents-orphan-text">
-            This conversation has an active background run. Its reply will appear here when it finishes.
-          </span>
-          <button class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: orphanRun.id })">
-            View progress
-          </button>
-          <button
-            class="k-btn k-btn--ghost secondary"
-            type="button"
-            aria-label="Stop run: active background run"
-            :disabled="orphanCancelBusyID === orphanRun.id"
-            :aria-busy="orphanCancelBusyID === orphanRun.id ? 'true' : undefined"
-            @click="cancelOrphan"
-          >
-            <LoaderCircle v-if="orphanCancelBusyID === orphanRun.id" class="agents-spinner k-spin" aria-hidden="true" />
-            {{ orphanCancelBusyID === orphanRun.id ? 'Stopping…' : 'Stop run' }}
-          </button>
-        </div>
-
         <div v-if="orphanError && !orphanHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
           <span><AlertCircle aria-hidden="true" /> Could not check for an active run: {{ orphanError }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="retryRunProgress">
             <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
           </button>
         </div>
         <div v-else-if="orphanError" class="k-stale" role="status">
-          Could not refresh run status. Showing the last loaded status. {{ orphanError }}
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="findOrphanRun(sessionID)">
+          {{ orphanError }}
+          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="retryRunProgress">
             <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
           </button>
         </div>
@@ -3021,6 +3257,7 @@ defineExpose({
                 :inspection-open="artifactPanelOpen && !!selectedSavedCapture"
                 :announce="message.role === 'assistant' && message.streaming"
                 :show-run-link="runLinkMessageIDs.has(message.id)"
+                :approval-docked="!!dockedApproval && message.approval?.inboxID === dockedApproval.inboxID"
                 :question-docked="!!dockedQuestion && message.approval?.inboxID === dockedQuestion.inboxID"
                 :approval-busy="message.approval ? approvalBusy[message.approval.inboxID] : undefined"
                 @approval="resolveApproval($event.inboxID, $event.decision, $event.response)"
@@ -3075,6 +3312,15 @@ defineExpose({
             :busy="approvalBusy[dockedQuestion.inboxID] === 'answer'"
             :disabled="!!approvalBusy[dockedQuestion.inboxID]"
             @answer="resolveApproval(dockedQuestion.inboxID, 'answer', $event)"
+          />
+        </div>
+        <div v-if="dockedApproval" class="agents-approval-dock k-ai-composer-dock">
+          <AgentApprovalCard
+            :tool="dockedApproval.tool"
+            :args="dockedApproval.args"
+            :busy="approvalBusy[dockedApproval.inboxID] === 'approve' ? 'approve' : approvalBusy[dockedApproval.inboxID] === 'deny' ? 'deny' : undefined"
+            :disabled="!!approvalBusy[dockedApproval.inboxID]"
+            @decide="resolveApproval(dockedApproval.inboxID, $event)"
           />
         </div>
         <div v-if="!sessionInputReady" class="k-ai-composer-dock">
@@ -3159,12 +3405,14 @@ defineExpose({
             </template>
             <template #primary>
               <AIPrimaryAction
-                v-if="streaming || recoveringQuestionRun"
+                v-if="composerHasActiveRun"
                 class="agents-composer-primary agents-stop is-stop"
-                :state="recoveringQuestionRun ? (orphanCancelBusyID ? 'stopping' : 'stop') : primaryActionState"
+                :state="primaryActionState"
+                :aria-label="composerStopping ? 'Stop requested' : 'Stop run'"
+                :title="composerStopping ? 'Stopping run…' : 'Stop run'"
                 type="button"
-                :disabled="stopRequested || !!orphanCancelBusyID"
-                @click="recoveringQuestionRun ? cancelOrphan() : stop()"
+                :disabled="composerStopping"
+                @click="stopActiveRun"
               />
               <AIPrimaryAction
                 v-else

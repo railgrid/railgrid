@@ -733,11 +733,13 @@ describe('chat streaming', () => {
     const listMessagePage = vi.fn(async (_agent: string, sessionID: string) => ({ items: await (sessionID === 'other'
       ? [{ id: 'other-reply', role: 'assistant', content: 'Other thread history' }]
       : [{ id: 'original-reply', runID: 'running-original', role: 'assistant', content: 'Original progress' }]) }))
-    const listRuns = vi.fn(async ({ session: sessionID }: { session: string }) => ({ items: sessionID === 'original'
+    let active = false
+    const listRuns = vi.fn(async ({ session: sessionID }: { session: string }) => ({ items: active && sessionID === 'original'
       ? [{ id: 'running-original', sessionID: 'original', phase: 'Running', agent: 'scout' }]
       : [] }))
     let signal!: AbortSignal
     const chatStream = async function* (_agent: string, _message: string, _session: string, controller: AbortSignal) {
+      active = true
       signal = controller
       yield { event: 'start', data: { runID: 'running-original', sessionID: 'original' } } as SSEEvent
       yield { event: 'run_started', data: { runID: 'running-original', sessionID: 'original', status: 'running' } } as SSEEvent
@@ -755,7 +757,7 @@ describe('chat streaming', () => {
     await chooseSession(el, 'Original thread')
     await settle(6)
     expect(text(el.querySelector('.agents-log'))).toContain('Original progress')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
+    expect(text(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)'))).toContain('Working')
     gate.resolve()
   })
 
@@ -773,8 +775,9 @@ describe('chat streaming', () => {
     await settle(6)
 
     expect(getRun).toHaveBeenCalledWith('r-disconnected')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('Stop run')
+    expect(text(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)'))).toContain('Working')
+    expect(el.querySelector('.agents-composer .agents-stop')).not.toBeNull()
+    expect(el.querySelector('.agents-run-stop')).toBeNull()
     expect(text(el.querySelector('.agents-log'))).toContain('Partial reply')
   })
 
@@ -791,7 +794,7 @@ describe('chat streaming', () => {
     expect(listMessagePage).toHaveBeenCalledWith('scout', 's1')
     expect(text(el.querySelector('.agents-log'))).toContain('Complete saved reply')
     expect(text(el.querySelector('.agents-log'))).not.toContain('Partial reply')
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
   })
 
   it('preserves partial output and offers recovery when disconnected run status cannot be read', async () => {
@@ -806,7 +809,7 @@ describe('chat streaming', () => {
     expect(text(el)).toContain('Could not recover the disconnected run.')
     expect(text(el)).toContain('network unavailable')
     expect(text(el.querySelector('.agents-log'))).toContain('Partial reply')
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
   })
 
   it('keeps Stop available when a live Running event supersedes stream recovery', async () => {
@@ -822,8 +825,8 @@ describe('chat streaming', () => {
     recovery.resolve({ id: 'r1', phase: 'Failed' })
     await settle(6)
 
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
-    const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')].find(button => text(button) === 'Stop run')!
+    expect(text(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)'))).toContain('Working')
+    const stop = el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')!
     stop.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r1')
@@ -1279,13 +1282,17 @@ describe('chat streaming', () => {
     await send(el, 'delete the pod')
 
     const card = el.querySelector('.agents-approval')!
+    expect(el.querySelector('.agents-approval-dock')?.contains(card)).toBe(true)
+    expect(el.querySelector('.agents-log .agents-approval')).toBeNull()
+    expect(el.querySelectorAll('.agents-approval')).toHaveLength(1)
     expect(text(card)).toContain('edges__pods_delete')
     expect(card.querySelector('.agents-approval-head')).toBeNull()
     expect(text(card.querySelector('.agents-approval-tool'))).toBe('edges__pods_delete')
 
-    card.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    card.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(6)
     expect(resolveInbox).toHaveBeenCalledWith('i1', 'approve')
+    expect(el.querySelector('.agents-approval-dock')).toBeNull()
     expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
   })
 
@@ -1337,7 +1344,7 @@ describe('chat streaming', () => {
     await settle(2)
     store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r1', phase: 'Running' } } }))
     await settle(2)
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.agents-composer .agents-stop')).not.toBeNull()
     admitted.resolve()
     await settle(6)
     expect(answerStream).toHaveBeenCalledWith('scout', 'i1', 'the acme/app one', expect.any(AbortSignal))
@@ -1348,10 +1355,10 @@ describe('chat streaming', () => {
     const reply = el.querySelector('.agents-answer-context')?.parentElement
     expect(text(reply)).toContain('Which repository should I open the pull request against?')
     expect(text(reply)).toContain('the acme/app one')
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.agents-composer .agents-stop')).toBeTruthy()
     expect(text(el.querySelector('.agents-log'))).toContain('Working')
     expect(text(el.querySelector('.agents-log'))).toContain('Opening the pull request')
-    el.querySelector<HTMLButtonElement>('.agents-composer button[aria-label="Stop generating"]')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-composer button[aria-label="Stop run"]')!.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r1')
     close.resolve()
@@ -1424,14 +1431,14 @@ describe('chat streaming', () => {
     )
     await send(el, 'delete it')
 
-    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.k-ai-interrupt__actions button')]
+    const [deny, approve] = [...el.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')]
     approve.click()
     await settle(2)
 
     expect(approve.disabled).toBe(true)
     expect(deny.disabled).toBe(true)
     expect(approve.getAttribute('aria-busy')).toBe('true')
-    expect(deny.getAttribute('aria-busy')).toBe('true')
+    expect(deny.getAttribute('aria-busy')).toBeNull()
     expect(text(approve)).toContain('Approving')
     deny.click()
     expect(resolveInbox).toHaveBeenCalledTimes(1)
@@ -1456,7 +1463,7 @@ describe('chat streaming', () => {
     )
     await send(el, 'delete it')
 
-    const [approve, deny] = [...el.querySelectorAll<HTMLButtonElement>('.k-ai-interrupt__actions button')]
+    const [deny, approve] = [...el.querySelectorAll<HTMLButtonElement>('.agents-approval-actions button')]
     expect(approve.disabled).toBe(true)
     expect(deny.disabled).toBe(false)
     expect(text(el.querySelector('.agents-approval-disclosure-error'))).toContain('Approval details are unavailable or malformed')
@@ -1478,7 +1485,7 @@ describe('chat streaming', () => {
       { resolveInbox: () => resolution.promise },
     )
     await send(el, 'delete it')
-    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(2)
     el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
     await settle(2)
@@ -1609,16 +1616,15 @@ describe('chat streaming', () => {
     cancellation.reject(new Error('provider unavailable'))
     await settle(6)
 
-    const banner = el.querySelector('.agents-orphan-banner')
+    const banner = el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')
     expect(banner).not.toBeNull()
-    expect(text(banner)).toContain('active background run')
+    expect(text(banner)).toContain('Working')
     expect(text(document.querySelector('.k-toast--error'))).toContain('provider unavailable')
-    const retry = [...banner!.querySelectorAll<HTMLButtonElement>('button')]
-      .find(button => text(button).includes('Stop run'))!
+    const retry = el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')!
     retry.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledTimes(2)
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')?.disabled).toBe(true)
   })
 
   it('does not show a failed stream cancellation after the user leaves its session', async () => {
@@ -2078,7 +2084,7 @@ describe('chat read ownership', () => {
     firstRuns.resolve({ items: [runRowForRead()] })
     await settle(4)
 
-    expect(view.element.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(view.element.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
   })
 })
 
@@ -2187,9 +2193,7 @@ describe('transcript rehydration', () => {
   })
 })
 
-// A run outlives the stream that started it, so reopening a chat can find work
-// still in flight. Saying so is what stops the reply looking lost — and stops the
-// user re-asking and paying for the same research twice.
+// Reopened chats show active work and run controls in the progress header.
 describe('a run still working with nobody attached', () => {
   const runRow = (over: Record<string, unknown> = {}) => ({
     id: 'r-live',
@@ -2218,10 +2222,11 @@ describe('a run still working with nobody attached', () => {
 
   it('announces a Running run and offers the run view', async () => {
     const { el } = await mountWith('Running')
-    const banner = el.querySelector('.agents-orphan-banner')
+    const banner = el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')
     expect(banner).toBeTruthy()
-    expect(text(banner!)).toContain('active background run')
-    expect(text(banner!)).toContain('View progress')
+    expect(text(banner!)).toContain('Working')
+    expect(text(banner!)).toContain('View run')
+    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
   })
 
   it('keeps the composer Stop control when reopening a running question reply', async () => {
@@ -2233,59 +2238,58 @@ describe('a run still working with nobody attached', () => {
         ? [{ id: 'final', role: 'assistant', content: 'I updated the README.', runID: 'r-live' }, answer]
         : [answer] }),
     })
-    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeTruthy()
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.agents-composer button[aria-label="Stop run"]')).toBeTruthy()
+    expect(el.querySelector('.agents-composer .agents-stop')).toBeTruthy()
     finished = true
     store.dispatchEvent(new CustomEvent('server', { detail: { type: 'run', data: { id: 'r-live', phase: 'Succeeded' } } }))
     await settle(6)
-    expect(el.querySelector('.agents-composer button[aria-label="Stop generating"]')).toBeNull()
+    expect(el.querySelector('.agents-composer button[aria-label="Stop run"]')).toBeNull()
     expect(text(el.querySelector('.agents-log'))).toContain('I updated the README.')
   })
 
   it('counts a run waiting on approval as still working', async () => {
     const { el } = await mountWith('PendingApproval')
-    expect(el.querySelector('.agents-orphan-banner')).toBeTruthy()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeTruthy()
   })
 
   it('says nothing when the session has no live run', async () => {
     const { el } = await mountWith('Succeeded')
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
   })
 
-  it('can stop the run, which clears the banner', async () => {
+  it('can stop a recovered run from the composer', async () => {
     const cancelRun = vi.fn().mockResolvedValue({ id: 'r-live', cancelling: true })
     const { el } = await mountWith('Running', { cancelRun })
-    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop run')) as HTMLButtonElement
+    const stop = el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')!
     stop.click()
     await settle(4)
     expect(cancelRun).toHaveBeenCalledWith('r-live')
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')?.disabled).toBe(true)
   })
 
   it('keeps orphan cancellation single-flight while the request is pending', async () => {
     const cancellation = deferred<{ id: string; cancelling: boolean }>()
     const cancelRun = vi.fn(() => cancellation.promise)
     const { el } = await mountWith('Running', { cancelRun })
-    const stop = [...el.querySelectorAll<HTMLButtonElement>('.agents-orphan-banner button')]
-      .find(button => text(button).includes('Stop run'))!
+    const stop = el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')!
 
     stop.click()
     await settle(2)
     expect(stop.disabled).toBe(true)
     expect(stop.getAttribute('aria-busy')).toBe('true')
-    expect(text(stop)).toContain('Stopping')
+    expect(stop.getAttribute('aria-label')).toBe('Stop requested')
     stop.click()
     expect(cancelRun).toHaveBeenCalledTimes(1)
 
     cancellation.resolve({ id: 'r-live', cancelling: true })
     await settle(4)
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')?.disabled).toBe(true)
   })
 
   it('does not show a failed stop from a run after the user leaves its session', async () => {
     const cancellation = deferred<{ id: string; cancelling: boolean }>()
     const { el } = await mountWith('Running', { cancelRun: () => cancellation.promise })
-    const stop = [...el.querySelectorAll('.agents-orphan-banner button')].find((b) => b.textContent?.includes('Stop run')) as HTMLButtonElement
+    const stop = el.querySelector<HTMLButtonElement>('.agents-composer .agents-stop')!
     stop.click()
     await settle(2)
     el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
@@ -2297,10 +2301,9 @@ describe('a run still working with nobody attached', () => {
     expect(text(document.querySelector('.k-toast--error'))).not.toContain('old run failure')
   })
 
-  it('clears the banner and reloads the transcript when the run finishes', async () => {
+  it('finishes progress and reloads the transcript when the run finishes', async () => {
     const listMessagePage = vi.fn().mockResolvedValue({ items: [] })
-    // Running while the banner is up, terminal once it has finished — the
-    // re-check after the reload has to agree, or the banner would reappear.
+    // The re-check after the terminal transcript reload must also be terminal.
     let phase = 'Running'
     const listRuns = vi.fn().mockImplementation(() => Promise.resolve({ items: [runRow({ phase })] }))
     const api = stubApi({ listMessagePage, listRuns })
@@ -2310,7 +2313,7 @@ describe('a run still working with nobody attached', () => {
     mounted.push(view)
     const el = view.element
     await settle(4)
-    expect(el.querySelector('.agents-orphan-banner')).toBeTruthy()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeTruthy()
     const before = listMessagePage.mock.calls.length
     phase = 'Succeeded'
 
@@ -2319,7 +2322,7 @@ describe('a run still working with nobody attached', () => {
     )
     await settle(4)
 
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
     expect(listMessagePage.mock.calls.length).toBeGreaterThan(before)
   })
 
@@ -2332,7 +2335,7 @@ describe('a run still working with nobody attached', () => {
     mounted.push(view)
     const el = view.element
     await settle(4)
-    expect(el.querySelector('.agents-orphan-banner')).toBeNull()
+    expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
     expect(text(el)).toContain('hi')
     expect(text(el)).toContain('Could not check for an active run: unavailable')
   })
@@ -2349,11 +2352,11 @@ describe('a run still working with nobody attached', () => {
     mounted.push(view)
     await settle(4)
 
-    expect(view.element.querySelector('.agents-orphan-banner')).toBeTruthy()
+    expect(view.element.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeTruthy()
     await exposed.value!.refreshOrphan()
     await settle(4)
 
-    expect(view.element.querySelector('.agents-orphan-banner')).toBeTruthy()
+    expect(view.element.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeTruthy()
     expect(text(view.element)).toContain('Could not refresh run status. Showing the last loaded status.')
     expect(text(view.element)).toContain('run refresh failed')
   })
@@ -2378,7 +2381,7 @@ describe('approval handoff after the chat stream closes', () => {
     await send(el, 'describe models')
     listInbox.mockClear()
 
-    const approve = () => el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!
+    const approve = () => el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!
     approve().click()
     await settle(6)
 
@@ -2408,14 +2411,14 @@ describe('approval handoff after the chat stream closes', () => {
     await send(el, 'describe models')
     listInbox.mockClear()
 
-    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(6)
 
     expect(listInbox).toHaveBeenCalledTimes(1)
     expect(getRun).toHaveBeenCalledWith('r-approval')
     expect(resolveInbox).toHaveBeenCalledTimes(1)
     expect(text(el.querySelector('.agents-approval-done'))).toContain('Approved — the run is resuming.')
-    expect(el.querySelector('.k-ai-interrupt__actions')).toBeNull()
+    expect(el.querySelector('.agents-approval-actions')).toBeNull()
     expect(text(el)).not.toContain('sensitive-backend-detail')
   })
 
@@ -2427,7 +2430,7 @@ describe('approval handoff after the chat stream closes', () => {
     const getRun = vi.fn().mockResolvedValue(pending('recovered'))
     const { el, store } = await mountChat(chatStream, { getRun })
     await send(el, 'describe models')
-    expect(text(el.querySelector('.agents-orphan-banner'))).toContain('active background run')
+    expect(text(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)'))).toContain('Waiting')
 
     event(store, 'PendingApproval')
     await settle(6)
@@ -2508,7 +2511,7 @@ describe('approval handoff after the chat stream closes', () => {
     const resolveInbox = vi.fn().mockResolvedValue({})
     const { el, store } = await mountChat(scripted(frames), { getRun, resolveInbox })
     await send(el, 'describe models')
-    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(6)
     expect(text(el.querySelector('.agents-approval-done'))).toContain('resuming')
     getRun.mockResolvedValue(pending('second'))
@@ -2516,7 +2519,7 @@ describe('approval handoff after the chat stream closes', () => {
     await settle(6)
     expect(el.querySelector('.agents-approval-done')).toBeNull()
     expect(text(el.querySelector('.agents-approval'))).toContain('second')
-    el.querySelector<HTMLButtonElement>('.k-ai-interrupt__actions button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
     await settle(6)
     expect(resolveInbox).toHaveBeenLastCalledWith('second', 'approve')
   })
@@ -2543,9 +2546,10 @@ describe('approval handoff after the chat stream closes', () => {
     const first = deferred<ReturnType<typeof pending>>()
     const second = deferred<ReturnType<typeof pending>>()
     const getRun = vi.fn((runID: string) => runID === 'r-1' ? first.promise : second.promise)
-    const { el, store } = await mountChat(chatStream, { getRun })
-    await send(el, 'first run')
-    await send(el, 'second run')
+    const { el, store } = await mountChat(chatStream, {
+      getRun, listSessions: async () => [session('s-shared', 'Existing runs')],
+      listMessagePage: async () => ({ items: ['r-1', 'r-2'].map(runID => ({ id: runID, runID, role: 'assistant', content: runID })) }),
+    })
 
     getRun.mockClear() // Ignore the status reads started by stream recovery.
     event(store, 'PendingApproval', 'r-1')
@@ -2570,9 +2574,10 @@ describe('approval handoff after the chat stream closes', () => {
     })
     const lookup = deferred<ReturnType<typeof pending>>()
     const getRun = vi.fn(() => lookup.promise)
-    const { el, store } = await mountChat(chatStream, { getRun })
-    await send(el, 'first run')
-    await send(el, 'second run')
+    const { el, store } = await mountChat(chatStream, {
+      getRun, listSessions: async () => [session('s-shared', 'Existing runs')],
+      listMessagePage: async () => ({ items: ['r-1', 'r-2'].map(runID => ({ id: runID, runID, role: 'assistant', content: runID })) }),
+    })
 
     event(store, 'PendingApproval', 'r-1')
     event(store, phase, 'r-2')
@@ -2621,16 +2626,13 @@ describe('approval handoff after the chat stream closes', () => {
       { id: 'user-c', runID: 'r-c', role: 'user', content: 'third run' },
       { id: 'assistant-c', runID: 'r-c', role: 'assistant', content: '', metadata: { turnPhase: 'terminal', turnStatus: 'waiting' } },
     ]
-    let persistedRuns: Array<{ id: string; phase: string; sessionID: string }> = []
+    let persistedRuns: Array<{ id: string; phase: string; sessionID: string }> = runIDs.map(id => ({ id, phase: 'PendingApproval', sessionID: 's-shared' }))
     const listRuns = vi.fn((query: { limit?: number }) => Promise.resolve({
       items: query.limit ? persistedRuns.slice(0, query.limit) : persistedRuns,
     }))
-    const listMessagePage = vi.fn(async () => ({ items: await (Promise.resolve([] as TranscriptMessage[])) }))
+    const listMessagePage = vi.fn(async () => ({ items: transcript.slice().reverse() }))
     const getRun = vi.fn((runID: string) => Promise.resolve(pending('inbox-' + runID, runID)))
-    const { el, store } = await mountChat(chatStream, { listMessagePage, listRuns, getRun })
-    await send(el, 'first run')
-    await send(el, 'second run')
-    await send(el, 'third run')
+    const { el, store } = await mountChat(chatStream, { listMessagePage, listRuns, getRun, listSessions: async () => [session('s-shared', 'Existing runs')] })
     expect(el.querySelectorAll('.agents-approval')).toHaveLength(3)
 
     listMessagePage.mockResolvedValue({ items: transcript.slice().reverse() })
@@ -2640,6 +2642,7 @@ describe('approval handoff after the chat stream closes', () => {
       { id: 'r-c', phase: 'PendingApproval', sessionID: 's-shared' },
       { id: 'r-a', phase: 'PendingApproval', sessionID: 's-shared' },
     ]
+    getRun.mockClear()
     event(store, 'Succeeded', 'r-b')
     await settle(12)
 

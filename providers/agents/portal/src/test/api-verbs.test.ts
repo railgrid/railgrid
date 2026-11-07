@@ -3,7 +3,7 @@
 // spelling left: only /oauth/providers and the chat turn — the `chat` tool on
 // the provider's /mcp, the one route that carries the caller's bearer — go
 // through the service proxy.
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiClient } from '../api'
 
@@ -41,7 +41,116 @@ function clientWithRecorder(body: unknown = { items: [] }): { api: ApiClient; ca
 
 describe('verbs are kube paths', () => {
   const realFetch = globalThis.fetch
-  afterEach(() => { globalThis.fetch = realFetch })
+  afterEach(() => { globalThis.fetch = realFetch; vi.useRealTimers() })
+
+  it('does not dispatch an already-aborted question reply', async () => {
+    const { api, calls } = clientWithRecorder()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(api.answerStream('scout', 'question', 'Continue', controller.signal).next()).rejects.toMatchObject({ name: 'AbortError' })
+    expect(calls).toHaveLength(0)
+  })
+
+  it('releases a stalled question reply immediately when its observer aborts', async () => {
+    vi.useFakeTimers()
+    const { api } = clientWithRecorder()
+    globalThis.fetch = (() => new Promise<Response>(() => {})) as typeof fetch
+    const controller = new AbortController()
+    const stream = api.answerStream('scout', 'question', 'Continue', controller.signal)
+    const result = stream.next()
+    const checked = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+    controller.abort()
+    await checked
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([false, true])('bounds question reply admission before start (headers arrived=%s)', async headersArrived => {
+    vi.useFakeTimers()
+    const { api } = clientWithRecorder()
+    let transportSignal: AbortSignal | undefined
+    globalThis.fetch = (async (_input, init) => {
+      transportSignal = init?.signal ?? undefined
+      if (!headersArrived) return new Promise<Response>(() => {})
+      return new Response(new ReadableStream({ start() {} }), { headers: { 'Content-Type': 'text/event-stream' } })
+    }) as typeof fetch
+    const stream = api.answerStream('scout', 'question', 'Continue', new AbortController().signal)
+    const result = stream.next().then(() => 'fulfilled', () => 'rejected')
+    await vi.advanceTimersByTimeAsync(31000)
+    expect(await Promise.race([result, Promise.resolve('still pending')])).toBe('rejected')
+    expect(transportSignal?.aborted).toBe(true)
+  })
+
+  it('keeps a question continuation streaming beyond the admission deadline after start', async () => {
+    vi.useFakeTimers()
+    const { api } = clientWithRecorder()
+    let responseStream!: ReadableStreamDefaultController<Uint8Array>
+    let transportSignal: AbortSignal | undefined
+    globalThis.fetch = (async (_input, init) => {
+      transportSignal = init?.signal ?? undefined
+      return new Response(new ReadableStream({ start(controller) { responseStream = controller } }), { headers: { 'Content-Type': 'text/event-stream' } })
+    }) as typeof fetch
+    const stream = api.answerStream('scout', 'question', 'Continue', new AbortController().signal)
+    const first = stream.next()
+    await vi.advanceTimersByTimeAsync(1)
+    const frame = (event: string, data: unknown) => new TextEncoder().encode('data: ' + JSON.stringify({ method: 'notifications/progress', params: { progressToken: 1, _meta: { event, data } } }) + '\n\n')
+    responseStream.enqueue(frame('start', { runID: 'r1', sessionID: 'session' }))
+    expect((await first).value?.event).toBe('start')
+    const next = stream.next()
+    await vi.advanceTimersByTimeAsync(45000)
+    expect(transportSignal?.aborted).toBe(false)
+    responseStream.enqueue(frame('delta', { text: 'Still working' }))
+    expect((await next).value?.event).toBe('delta')
+    responseStream.close()
+    expect((await stream.next()).done).toBe(true)
+  })
+
+  it.each(['history', 'object', 'trace', 'inbox', 'decision', 'run-list'] as const)('bounds a stalled %s request, including its response body', async endpoint => {
+    for (const bodyOnly of [false, true]) {
+      vi.useFakeTimers()
+      const { api } = clientWithRecorder()
+      let requestSignal: AbortSignal | undefined
+      globalThis.fetch = (async (input, init) => {
+        const url = String(input)
+        const target = endpoint === 'history' ? url.includes('/messages?')
+          : endpoint === 'trace' ? url.endsWith('/trace')
+          : endpoint === 'inbox' ? url.endsWith('/inbox')
+          : endpoint === 'decision' ? url.includes('/inbox-resolve/')
+          : endpoint === 'run-list' ? url.split('?')[0].endsWith('/runs') : url.endsWith('/runs/r1')
+        if (target) {
+          requestSignal = init?.signal ?? undefined
+          // Simulate a host transport that ignores cancellation, including
+          // headers arriving successfully before the body stalls forever.
+          if (!bodyOnly) return new Promise<Response>(() => {})
+          return { ok: true, status: 200, json: () => new Promise(() => {}), text: () => new Promise(() => {}) } as unknown as Response
+        }
+        return new Response(JSON.stringify(url.split('?')[0].endsWith('/agents') ? { items: [{ metadata: { name: 'scout' }, spec: {} }] }
+          : url.endsWith('/inbox') ? { items: [{ id: 'pending', agentName: 'scout' }] }
+          : { metadata: { name: 'r1' }, spec: { agentRef: 'scout' }, status: { phase: 'Running' } }))
+      }) as typeof fetch
+      const request = endpoint === 'history' ? api.listMessagePage('scout', 'session')
+        : endpoint === 'inbox' ? api.listInbox() : endpoint === 'decision' ? api.resolveInbox('pending', 'approve')
+        : endpoint === 'run-list' ? api.listRuns({ agent: 'scout' }) : api.getRun('r1', { requireTrace: true })
+      const outcome = request.then(() => 'fulfilled', () => 'rejected')
+      await vi.advanceTimersByTimeAsync(16000)
+      expect(await Promise.race([outcome, Promise.resolve('still pending')])).toBe('rejected')
+      expect(requestSignal?.aborted).toBe(true)
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([403, 404])('surfaces trace access failures to an active observer (status=%s)', async status => {
+    const { api } = clientWithRecorder()
+    globalThis.fetch = (async input => {
+      const trace = String(input).endsWith('/trace')
+      return new Response(JSON.stringify(trace
+        ? { kind: 'Status', message: 'Trace unavailable', code: status }
+        : { metadata: { name: 'r1' }, spec: { agentRef: 'scout' }, status: { phase: 'Running' } }),
+      { status: trace ? status : 200, headers: { 'Content-Type': 'application/json' } })
+    }) as typeof fetch
+    // Ordinary run views may still show the readable object without its trace.
+    expect((await api.getRun('r1')).phase).toBe('Running')
+    await expect(api.getRun('r1', { requireTrace: true })).rejects.toMatchObject({ status })
+  })
 
   it('retains the history cursor and requests 200 messages by default', async () => {
     const { api, calls } = clientWithRecorder({ items: [{ id: 'm1' }], nextCursor: 'next-page' })

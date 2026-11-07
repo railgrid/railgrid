@@ -54,7 +54,7 @@ when unused Vue components can be eliminated by the bundler.
 
 Core PortalKit uses `--railgrid-ui-core-version: 36` (the
 `RAILGRID_UI_CORE_VERSION` constant in `../portalkit/styles.ts`); the current
-AgentKit presentation style/runtime version is 46 (the `AGENT_UI_VERSION`
+AgentKit presentation style/runtime version is 50 (the `AGENT_UI_VERSION`
 constant in `styles.ts`), and the versioning remains independent. PortalKit
 does not import AgentKit or include its optional styles.
 CSS selectors remain `k-ai-*` and `k-model-*`, preserving the shared visual
@@ -91,7 +91,7 @@ phase, and authority decisions.
 semantic time with a relative label and full locale value on hover, focus, or
 click; missing or invalid values are omitted. `AITurnProgress` inspects its
 details slot at render time, so an empty slot has no disclosure affordance and a
-later trace update can expose the details.
+later trace update can expose the details. Its `actions` slot keeps run controls beside the status, outside the disclosure button.
 `AIConversationComposer.vue` owns the rich editor, keyboard-safe skill and
 resource chips, slash palette, file picker, drop/paste handling, upload
 receipts, attachment previews, and upload retry/removal presentation. It takes

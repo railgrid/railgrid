@@ -34,19 +34,21 @@ import (
 // stream gains record types between Claude Code releases, and a runner that
 // failed a turn because it saw a new one would be useless.
 type streamRecord struct {
-	Type      string          `json:"type"`
-	Subtype   string          `json:"subtype"`
-	SessionID string          `json:"session_id"`
-	IsError   bool            `json:"is_error"`
-	NumTurns  int             `json:"num_turns"`
-	Result    string          `json:"result"`
-	Message   json.RawMessage `json:"message"`
-	Model     string          `json:"model"`
+	ParentToolUseID string          `json:"parent_tool_use_id"`
+	Type            string          `json:"type"`
+	Subtype         string          `json:"subtype"`
+	SessionID       string          `json:"session_id"`
+	IsError         bool            `json:"is_error"`
+	NumTurns        int             `json:"num_turns"`
+	Result          string          `json:"result"`
+	Message         json.RawMessage `json:"message"`
+	Model           string          `json:"model"`
 }
 
 // assistantMessage is the Anthropic message envelope carried by assistant and
 // user records.
 type assistantMessage struct {
+	ID      string           `json:"id"`
 	Role    string           `json:"role"`
 	Content []messageContent `json:"content"`
 }
@@ -125,6 +127,14 @@ func (s *runState) handle(record streamRecord, raw []byte) error {
 			Data:      s.boundedData(raw),
 		})
 	case "assistant":
+		// Claude forwards subagent messages on the session stream with this
+		// attribution field (including nested agents). They are not root prose
+		// and must not supply lastText, our fallback final answer/clarification.
+		// Unlike Codex's thread notifications, this does not require accepting
+		// records from a different session.
+		if record.ParentToolUseID != "" {
+			return nil
+		}
 		return s.handleAssistant(record)
 	case "result":
 		return s.handleResult(record, raw)
@@ -141,18 +151,35 @@ func (s *runState) handleAssistant(record streamRecord) error {
 	if len(record.Message) == 0 || json.Unmarshal(record.Message, &message) != nil {
 		return nil
 	}
+	phase := "final"
 	for _, content := range message.Content {
+		if content.Type == "tool_use" {
+			phase = "commentary"
+			break
+		}
+	}
+	for index, content := range message.Content {
 		switch content.Type {
 		case "text":
-			text := strings.TrimSpace(content.Text)
-			if text == "" {
+			text := content.Text
+			if strings.TrimSpace(text) == "" {
 				continue
 			}
 			s.lastText = text
+			text = boundedText(redact(text, s.credential))
+			id := message.ID
+			if id != "" {
+				id = fmt.Sprintf("%s:%d", id, index)
+			}
+			data, err := json.Marshal(map[string]string{"type": "railgrid.assistant_message", "id": id, "phase": phase, "text": text})
+			if err != nil {
+				return err
+			}
 			if err := s.emitEvent(harness.Event{
 				Type:      "message",
 				SessionID: s.sessionID,
-				Message:   boundedText(redact(text, s.credential)),
+				Message:   text,
+				Data:      s.boundedData(data),
 			}); err != nil {
 				return err
 			}
@@ -161,10 +188,16 @@ func (s *runState) handleAssistant(record streamRecord) error {
 			if name == "" {
 				name = "tool"
 			}
+			name = boundedText(redact(name, s.credential))
+			data, err := json.Marshal(map[string]string{"type": "railgrid.tool_use", "name": name})
+			if err != nil {
+				return err
+			}
 			if err := s.emitEvent(harness.Event{
 				Type:      "tool_use",
 				SessionID: s.sessionID,
-				Message:   boundedText(redact(name, s.credential)),
+				Message:   name,
+				Data:      s.boundedData(data),
 			}); err != nil {
 				return err
 			}

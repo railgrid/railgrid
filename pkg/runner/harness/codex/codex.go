@@ -861,11 +861,15 @@ type runState struct {
 	phase       string
 	blocker     string
 	done        bool
+	children    map[string]*childThread
 }
 
 func (s *runState) handle(msg wireMessage) error {
 	if msg.Method == "" {
 		return nil
+	}
+	if handled, err := s.routeThreadEvent(msg); handled || err != nil {
+		return err
 	}
 	if msg.Method == "item/completed" {
 		if payload, matched := normalizeAsyncQuestion(msg.Params); matched {
@@ -960,6 +964,27 @@ func (s *runState) handle(msg wireMessage) error {
 		}); err != nil {
 			return err
 		}
+	case "item/started", "item/completed":
+		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
+			return err
+		}
+		// The runner normalizes event types to progress. Keep the lifecycle
+		// boundary beside the original payload so consumers can distinguish a
+		// started item from its completed canonical text.
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(msg.Params, &payload); err != nil {
+			return err
+		}
+		if payload == nil {
+			return errors.New("codex item notification has no payload")
+		}
+		payload["_railgridEvent"], _ = json.Marshal(msg.Method)
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		return s.emitEvent(harness.Event{Type: msg.Method, SessionID: s.sessionID,
+			TurnID: turnIDFromParams(msg.Params, s.turnID), Data: boundedData(data)})
 	case "error":
 		if err := s.observeSessionID(threadIDFromParams(msg.Params)); err != nil {
 			return err
@@ -1054,6 +1079,10 @@ func (s *runState) emitEvent(event harness.Event) error {
 // handleApprovalRequest parks the live attempt on a permission verdict, then
 // sends that verdict to the server request so Codex can continue this turn.
 func (s *runState) handleApprovalRequest(msg wireMessage) error {
+	return s.handleThreadApprovalRequest(msg, s.sessionID, s.turnID)
+}
+
+func (s *runState) handleThreadApprovalRequest(msg wireMessage, sessionID, turnID string) error {
 	if s.conn == nil {
 		return errors.New("codex approval request has no app-server connection")
 	}
@@ -1065,12 +1094,18 @@ func (s *runState) handleApprovalRequest(msg wireMessage) error {
 		if err := s.conn.respondError(msg.ID, -32601, message); err != nil {
 			return err
 		}
+		if sessionID != s.sessionID {
+			return nil
+		}
 		return errors.New(message)
 	}
-	request, err := codexPermissionRequest(s.attemptID, s.sessionID, s.turnID, msg)
+	request, err := codexPermissionRequest(s.attemptID, sessionID, turnID, msg)
 	if err != nil {
 		if responseErr := s.conn.respond(msg.ID, map[string]string{"decision": "decline"}); responseErr != nil {
 			return errors.Join(err, responseErr)
+		}
+		if sessionID != s.sessionID {
+			return nil
 		}
 		return err
 	}

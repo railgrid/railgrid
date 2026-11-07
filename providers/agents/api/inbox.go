@@ -89,29 +89,13 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 		if len(answerPayload) > 0 {
 			payload = answerPayload[0]
 		}
-		resolved, err := s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: payload})
-		if state == store.InboxStateAnswered && errors.Is(err, store.ErrInboxAlreadyResolved) {
-			// The first request may have saved its reply without dispatching a
-			// resume. Use the saved reply if this exact question still parks
-			// the run. ClaimRun fences concurrent and delayed dispatches.
-			if saved, readErr := s.store.GetInboxItem(ctx, scope, id); readErr == nil && saved.State == store.InboxStateAnswered && saved.RunID != "" {
-				agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: saved.AgentName}
-				run, runErr := s.store.GetRun(ctx, agentScope, saved.RunID)
-				if runErr == nil && run.Phase == store.RunPhasePendingApproval && !run.CancelRequested {
-					var checkpoint runCheckpoint
-					if json.Unmarshal(run.Checkpoint, &checkpoint) == nil && checkpoint.InboxID == saved.ID {
-						return saved, nil
-					}
-				}
-			}
-		}
-		return resolved, err
+		return s.resolveInboxDecisionOnce(ctx, scope, id, state, response, now, store.InboxResolution{QuestionPayload: payload})
 	}
 	if state == store.InboxStateAnswered {
 		return store.InboxItem{}, &requestError{code: http.StatusBadRequest, reason: "InvalidInboxDecision", msg: "only questions accept answers"}
 	}
 	if state != store.InboxStateApproved {
-		return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
+		return s.resolveInboxDecisionOnce(ctx, scope, id, state, response, now, store.InboxResolution{PendingOnly: item.Kind == store.InboxKindApproval})
 	}
 	if item.Kind == store.InboxKindApproval && !approvalDisclosureAvailable(item) {
 		return store.InboxItem{}, &requestError{
@@ -133,7 +117,32 @@ func (s *Server) resolveInboxDecision(ctx context.Context, scope store.Scope, id
 		}
 		response = strings.TrimSpace(strings.TrimSpace(response) + "\n" + result)
 	}
-	return s.store.ResolveInboxItem(ctx, scope, id, state, response, now, store.InboxResolution{})
+	return s.resolveInboxDecisionOnce(ctx, scope, id, state, response, now, store.InboxResolution{PendingOnly: item.Kind == store.InboxKindApproval})
+}
+
+// resolveInboxDecisionOnce atomically preserves the first approval verdict.
+// If a request saved a decision but failed before dispatch, its exact retry can
+// resume the same parked checkpoint. The saved note is authoritative, and
+// ClaimRun still fences concurrent dispatches. Opposite or stale replies fail.
+func (s *Server) resolveInboxDecisionOnce(ctx context.Context, scope store.Scope, id string, state store.InboxItemState, response string, now time.Time, resolution store.InboxResolution) (store.InboxItem, error) {
+	resolved, err := s.store.ResolveInboxItem(ctx, scope, id, state, response, now, resolution)
+	if !errors.Is(err, store.ErrInboxAlreadyResolved) {
+		return resolved, err
+	}
+	saved, readErr := s.store.GetInboxItem(ctx, scope, id)
+	if readErr != nil || saved.State != state || saved.RunID == "" || !resolutionResumesRun(saved.Kind, state) {
+		return resolved, err
+	}
+	agentScope := store.Scope{OrgUUID: scope.OrgUUID, WorkspaceUUID: scope.WorkspaceUUID, AgentName: saved.AgentName}
+	run, runErr := s.store.GetRun(ctx, agentScope, saved.RunID)
+	if runErr != nil || run.Phase != store.RunPhasePendingApproval || run.CancelRequested {
+		return resolved, err
+	}
+	var checkpoint runCheckpoint
+	if json.Unmarshal(run.Checkpoint, &checkpoint) == nil && checkpoint.InboxID == saved.ID {
+		return saved, nil
+	}
+	return resolved, err
 }
 
 // resolutionResumesRun reports whether resolving an item this way continues the

@@ -104,13 +104,13 @@ import type {
 import { kubeVerbPath, type KubeResourceRef } from './portalkit/kube'
 import { unpricedRunCount } from './usage'
 import { providerFetch, readTenant, serviceBase, tenantHeaders, type Tenant } from './portalkit/tenant'
-import { AGENTS, CONNECTIONS, createBoundedProbeFetch, MODELCREDENTIALS, MODELPROVIDERCONNECTIONS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
+import { AGENTS, CONNECTIONS, createBoundedProbeFetch, createBoundedRequestFetch, AGENT_PROGRESS_REQUEST_TIMEOUT_MS, MODELCREDENTIALS, MODELPROVIDERCONNECTIONS, RUNS, Resources, SCHEDULES, TRIGGERS, WEBHOOKS, type TemplateCreateResult } from './resources'
 import type { AgentTemplate } from './agent-template'
 import { presentRequestFailure } from './request-errors'
 import { parseAgentArtifact, parseAgentArtifactMcpApp } from './agentArtifacts'
 import { artifactMetadataForRevalidation, mcpAppIdentityMatches, verifyArtifactContentDigests } from './artifactIntegrity'
 import { ApiError } from './api-error'
-import { callAttendedMcpTool, readSSE, type SSEEvent } from './attendedMcp'
+import { callAttendedMcpTool, readSSE, waitForAbort, type SSEEvent } from './attendedMcp'
 
 export type { Tenant }
 export { ResourceError } from './resources'
@@ -123,6 +123,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const MODEL_PROBE_REQUEST_TIMEOUT_MS = 40 * 1000
+const QUESTION_REPLY_ADMISSION_TIMEOUT_MS = 30 * 1000
 
 export interface MessagePage {
   items: TranscriptMessage[]
@@ -395,22 +396,30 @@ export class ApiClient {
     return this.sendURL(method, this.url(path), body, signal)
   }
 
-  private getVerb<T>(path: string): Promise<T> {
-    return this.getURL(path)
+  private progressFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    return createBoundedRequestFetch((request, options) => this.fetch(request, options), {
+      timeoutMs: AGENT_PROGRESS_REQUEST_TIMEOUT_MS, timeoutMessage: 'Agent request timed out',
+    })(input, init)
   }
 
-  private sendVerb<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    return this.sendURL(method, path, body, signal)
+  private getVerb<T>(path: string, bounded = false): Promise<T> {
+    return this.getURL(path, bounded)
   }
 
-  private async getURL<T>(url: string): Promise<T> {
-    const r = await this.fetch(url, { credentials: 'same-origin', headers: this.headers(false) })
+  private sendVerb<T>(method: string, path: string, body?: unknown, signal?: AbortSignal, bounded = false): Promise<T> {
+    return this.sendURL(method, path, body, signal, bounded)
+  }
+
+  private async getURL<T>(url: string, bounded = false): Promise<T> {
+    const fetcher = bounded ? this.progressFetch.bind(this) : this.fetch.bind(this)
+    const r = await fetcher(url, { credentials: 'same-origin', headers: this.headers(false) })
     if (!r.ok) throw await this.fail(r)
     return r.json() as Promise<T>
   }
 
-  private async sendURL<T>(method: string, url: string, body?: unknown, signal?: AbortSignal): Promise<T> {
-    const r = await this.fetch(url, {
+  private async sendURL<T>(method: string, url: string, body?: unknown, signal?: AbortSignal, bounded = false): Promise<T> {
+    const fetcher = bounded ? this.progressFetch.bind(this) : this.fetch.bind(this)
+    const r = await fetcher(url, {
       method,
       credentials: 'same-origin',
       headers: this.headers(body !== undefined),
@@ -444,8 +453,8 @@ export class ApiClient {
 
   // listVerb unwraps the standard { items: [...] } list envelope a verb
   // answers with, tolerating a missing body.
-  private async listVerb<T>(path: string): Promise<T[]> {
-    const res = await this.getVerb<{ items?: T[] }>(path)
+  private async listVerb<T>(path: string, bounded = false): Promise<T[]> {
+    const res = await this.getVerb<{ items?: T[] }>(path, bounded)
     return res.items || []
   }
 
@@ -547,7 +556,7 @@ export class ApiClient {
   deleteSession = (agent: string, session: string): Promise<void> =>
     this.sendVerb('DELETE', this.verbTail(this.verb(AGENTS, agent, 'session'), session))
   listMessagePage = async (agent: string, session: string, cursor = '', limit = 200): Promise<MessagePage> => {
-    const page = await this.getVerb<MessagePage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit, ...(cursor ? { cursor } : {}) } }))
+    const page = await this.getVerb<MessagePage>(this.verb(AGENTS, agent, 'messages', { query: { session, limit, ...(cursor ? { cursor } : {}) } }), true)
     return { items: page.items || [], nextCursor: page.nextCursor }
   }
 
@@ -748,7 +757,7 @@ export class ApiClient {
 
   listInbox = async (): Promise<InboxItem[]> => {
     const pages = await this.settleAll((agent) =>
-      this.listVerb<InboxItem>(this.verb(AGENTS, agent, 'inbox')),
+      this.listVerb<InboxItem>(this.verb(AGENTS, agent, 'inbox'), true),
     )
     const items = pages.flat()
     for (const item of items) if (item.id && item.agentName) this.inboxAgents.set(item.id, item.agentName)
@@ -756,7 +765,7 @@ export class ApiClient {
   }
   resolveInbox = async (id: string, decision: 'approve' | 'deny' | 'answer', response?: import('./types').QuestionReply): Promise<InboxItem> => {
     const agent = await this.agentForInboxItem(id)
-    return this.sendVerb('POST', this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id), { decision, ...(typeof response === 'object' ? { answers: response } : { response }) })
+    return this.sendVerb('POST', this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id), { decision, ...(typeof response === 'object' ? { answers: response } : { response }) }, undefined, true)
   }
 
   // Runs are objects. Listing them, reading one and deleting one are kube
@@ -780,7 +789,7 @@ export class ApiClient {
     return { items: f.limit ? items.slice(0, f.limit) : items }
   }
 
-  getRun = async (id: string): Promise<RunDetail> => {
+  getRun = async (id: string, options: { requireTrace?: boolean } = {}): Promise<RunDetail> => {
     // Two halves, one shape. The object is authoritative for phase, timings and
     // cost; the trace verb supplies what is not on it — the answer, the step
     // trace, the pending-approval disclosure and the children.
@@ -788,8 +797,11 @@ export class ApiClient {
     const summary = runSummaryFromObject(object)
     let trace: Partial<RunDetail> = {}
     try {
-      trace = await this.getVerb<RunDetail>(this.verb(RUNS, id, 'trace'))
+      trace = await this.getVerb<RunDetail>(this.verb(RUNS, id, 'trace'), true)
     } catch (e) {
+      // Live observers need to distinguish an unavailable trace from a
+      // successful snapshot with no progress. Other views can show metadata.
+      if (options.requireTrace) throw e
       // A run whose rows have been purged, or a caller without the trace grant,
       // still gets the object. An empty trace is a true statement about what we
       // can see; failing the whole read would hide the run itself.
@@ -857,9 +869,34 @@ export class ApiClient {
   // ---- streams -------------------------------------------------------------
 
   async *answerStream(agent: string, id: string, response: import('./types').QuestionReply | undefined, signal: AbortSignal): AsyncGenerator<SSEEvent> {
-    yield* this.attendedChatStream('answer_chat', {
+    // Only admission is bounded. Once the server acknowledges this already
+    // admitted run, its continuation can stream for the agent's full timeout.
+    const controller = new AbortController()
+    const onAbort = () => controller.abort(signal.reason)
+    if (signal.aborted) throw new DOMException('Question reply was aborted.', 'AbortError')
+    signal.addEventListener('abort', onAbort, { once: true })
+    const timer = setTimeout(() => controller.abort(new DOMException('Question reply acknowledgement timed out.', 'TimeoutError')), QUESTION_REPLY_ADMISSION_TIMEOUT_MS)
+    const stream = this.attendedChatStream('answer_chat', {
       agent, inboxID: id, ...(typeof response === 'object' ? { answers: response } : { response }),
-    }, signal)
+    }, controller.signal)
+    try {
+      for (;;) {
+        const next = await waitForAbort(stream.next(), controller.signal)
+        if (next.done) return
+        if (next.value.event === 'start') clearTimeout(timer)
+        yield next.value
+      }
+    } catch (error) {
+      if (controller.signal.reason instanceof Error && controller.signal.reason.name === 'TimeoutError') throw controller.signal.reason
+      throw error
+    } finally {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', onAbort)
+      controller.abort()
+      // A host may ignore cancellation of a pending fetch. Don't make closing
+      // this observer depend on that transport eventually settling.
+      void stream.return(undefined).catch(() => undefined)
+    }
   }
 
   async *chatStream(agent: string, message: string, sessionID: string, signal?: AbortSignal, turn: AgentChatTurnContext = {}): AsyncGenerator<SSEEvent> {

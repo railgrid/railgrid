@@ -194,8 +194,12 @@ func TestAsyncNativeQuestionProducesBoundClarification(t *testing.T) {
 	if len(events) != 1 || events[0].Clarification == nil {
 		t.Fatalf("missing structured event: %+v", events)
 	}
+	prior := len(events)
+	foreign := json.RawMessage(strings.Replace(string(payload), `"threadId":"thread-1"`, `"threadId":"foreign"`, 1))
+	if err := state.handle(wireMessage{Method: "item/completed", Params: foreign}); err != nil || len(events) != prior {
+		t.Fatalf("foreign question affected root: %v, events=%+v", err, events[prior:])
+	}
 	for _, data := range []json.RawMessage{
-		json.RawMessage(strings.Replace(string(payload), `"threadId":"thread-1"`, `"threadId":"foreign"`, 1)),
 		json.RawMessage(strings.Replace(string(payload), `"options":null`, `"options":null,"isSecret":true`, 1)),
 		json.RawMessage(strings.Replace(string(payload), `"Which greeting?"`, `""`, 1)),
 	} {

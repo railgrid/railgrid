@@ -31,7 +31,7 @@ func TestAuthFailureEventsExcludeCredentialPayloads(t *testing.T) {
 
 	t.Run("native auth notification", func(t *testing.T) {
 		var event harness.Event
-		state := &runState{emit: func(got harness.Event) error {
+		state := &runState{sessionID: "thread-1", emit: func(got harness.Event) error {
 			event = got
 			return nil
 		}}
@@ -79,7 +79,7 @@ func TestAuthFailureEventsRedactNestedCredentialFields(t *testing.T) {
 	secrets := []string{"nested-client-secret", "nested-api-key", "nested-bearer-token"}
 	params := json.RawMessage(`{"reason":"expired","details":{"CLIENT_SECRET":"nested-client-secret","items":[{"api-key":"nested-api-key","Authorization":"nested-bearer-token"}]},"safe":"retain"}`)
 	var event harness.Event
-	state := &runState{emit: func(got harness.Event) error {
+	state := &runState{sessionID: "thread-1", emit: func(got harness.Event) error {
 		event = got
 		return nil
 	}}
@@ -104,7 +104,7 @@ func TestTurnCompletedAuthFailureRedactsCredentialFields(t *testing.T) {
 	const secret = "turn-refresh-token-secret"
 	params := json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"authentication required","accessToken":"turn-access-token-secret","refreshToken":"turn-refresh-token-secret"}}}`)
 	var event harness.Event
-	state := &runState{emit: func(got harness.Event) error {
+	state := &runState{sessionID: "thread-1", emit: func(got harness.Event) error {
 		event = got
 		return nil
 	}}
@@ -154,7 +154,7 @@ func TestAuthFailureEventsMalformedAndOversizedPayloadsStayBounded(t *testing.T)
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var event harness.Event
-			state := &runState{emit: func(got harness.Event) error {
+			state := &runState{sessionID: "thread-1", emit: func(got harness.Event) error {
 				event = got
 				return nil
 			}}

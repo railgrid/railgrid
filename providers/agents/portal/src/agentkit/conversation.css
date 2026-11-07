@@ -43,6 +43,13 @@
   line-height: 1.25rem;
 }
 
+.k-ai-turn-progress__header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+}
+
 .k-ai-turn-progress__trigger,
 .k-ai-turn-progress__status {
   display: inline-flex;
@@ -68,8 +75,7 @@
 }
 
 /* Keep the divider immediately below the header, even with details open. */
-.k-ai-turn-progress--divided > .k-ai-turn-progress__trigger,
-.k-ai-turn-progress--divided > .k-ai-turn-progress__status {
+.k-ai-turn-progress--divided > .k-ai-turn-progress__header {
   width: 100%;
   border-block-end: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
   padding-block-end: 8px;

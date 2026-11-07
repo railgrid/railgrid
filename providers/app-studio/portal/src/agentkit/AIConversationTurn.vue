@@ -55,9 +55,7 @@ function hasRenderableNodes(nodes: readonly unknown[]): boolean {
       return Array.isArray(vnode.children) && hasRenderableNodes(vnode.children)
     }
     if (vnode.type === Text) {
-      return typeof vnode.children === 'string'
-        ? vnode.children.trim().length > 0
-        : hasRenderableNodes(Array.isArray(vnode.children) ? vnode.children : [vnode.children])
+      return hasRenderableNodes(Array.isArray(vnode.children) ? vnode.children : [vnode.children])
     }
     return true
   })

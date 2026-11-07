@@ -3276,3 +3276,36 @@ fix-lint-agents-harness-routing: $(GOLANGCI_LINT) ## Format harness routing sour
 
 lint-agents-harness-routing: $(GOLANGCI_LINT) ## Lint harness routing packages
 	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./internal/edgeref ./api ./controller/agent
+
+# Persisted chat progress and automatic attachment (standalone Agents module).
+AGENTS_CHAT_PROGRESS_GO := api/inbox.go api/inbox_resume_retry_test.go api/live_progress.go api/live_progress_test.go api/run.go api/runs.go store/run_progress.go store/run_progress_test.go store/store.go store/memory.go store/postgres.go
+.PHONY: test-agents-chat-progress fix-lint-agents-chat-progress lint-agents-chat-progress
+test-agents-chat-progress: ## Verify chat attachment, approval resumes, and persisted progress
+	cd providers/agents && go test -count=1 ./api ./store
+	cd providers/agents/portal && npm test -- src/test/chat-attachment.test.ts src/test/chat.test.ts src/test/chat-progress.test.ts
+
+fix-lint-agents-chat-progress: $(GOLANGCI_LINT) ## Format and auto-fix chat progress packages
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt $(AGENTS_CHAT_PROGRESS_GO)
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run --fix ./api ./store
+
+lint-agents-chat-progress: $(GOLANGCI_LINT) ## Lint chat progress packages
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./api ./store
+
+# Structured harness commentary, paragraph boundaries and existing chat rendering.
+HARNESS_MESSAGE_GO := pkg/runner/dispatch/messages.go pkg/runner/dispatch/messages_test.go pkg/runner/dispatch/events.go pkg/runner/dispatch/dispatch_test.go pkg/runner/harness/codex/codex.go pkg/runner/harness/codex/message_boundaries_test.go pkg/runner/harness/claude/stream.go pkg/runner/harness/claude/message_boundaries_test.go
+AGENTS_HARNESS_MESSAGE_GO := backend/backend.go backend/harness/harness.go backend/harness/harness_test.go backend/harness/messages_test.go api/agents.go api/run.go api/run_progress.go api/live_progress.go api/live_progress_test.go
+.PHONY: test-harness-messages fix-lint-harness-messages lint-harness-messages
+test-harness-messages: ## Verify harness text classification through dispatch and Agents
+	go test -count=1 ./pkg/runner/dispatch ./pkg/runner/harness/codex ./pkg/runner/harness/claude
+	cd providers/agents && go test -count=1 ./backend/... ./api
+	cd providers/agents/portal && npm test -- src/test/chat.test.ts src/test/chat-progress.test.ts src/test/chat-attachment.test.ts
+
+fix-lint-harness-messages: $(GOLANGCI_LINT) ## Format and auto-fix structured harness messages
+	$(abspath $(GOLANGCI_LINT)) fmt $(HARNESS_MESSAGE_GO)
+	$(abspath $(GOLANGCI_LINT)) run --fix ./pkg/runner/dispatch ./pkg/runner/harness/codex ./pkg/runner/harness/claude
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) fmt $(AGENTS_HARNESS_MESSAGE_GO)
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run --fix ./backend/... ./api
+
+lint-harness-messages: $(GOLANGCI_LINT) ## Lint structured harness message packages
+	$(abspath $(GOLANGCI_LINT)) run ./pkg/runner/dispatch ./pkg/runner/harness/codex ./pkg/runner/harness/claude
+	cd providers/agents && $(abspath $(GOLANGCI_LINT)) run ./backend/... ./api

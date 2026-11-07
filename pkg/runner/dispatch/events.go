@@ -33,7 +33,10 @@ import (
 // attempt produced (Summary.Text), the presentation answer (Summary.Final), and
 // what it cost (Summary.Usage).
 type stream struct {
-	obs Observer
+	obs                Observer
+	messages           map[string]bool
+	lastTextID         string
+	lastTextClassified bool
 
 	text  strings.Builder
 	final string
@@ -86,6 +89,9 @@ type toolSnapshot struct {
 }
 
 type streamSnapshot struct {
+	Messages                 map[string]bool         `json:"messages,omitempty"`
+	LastTextID               string                  `json:"lastTextID,omitempty"`
+	LastTextClassified       bool                    `json:"lastTextClassified,omitempty"`
 	Version                  int                     `json:"version"`
 	Text                     string                  `json:"text,omitempty"`
 	Final                    string                  `json:"final,omitempty"`
@@ -105,7 +111,7 @@ func newStream(obs Observer, cursor uint64) *stream {
 	if obs == nil {
 		obs = Noop{}
 	}
-	return &stream{obs: obs, tools: map[string]toolInFlight{}, cursor: cursor}
+	return &stream{obs: obs, tools: map[string]toolInFlight{}, messages: map[string]bool{}, cursor: cursor}
 }
 
 func restoreStream(obs Observer, snap Snapshot) (*stream, error) {
@@ -124,6 +130,11 @@ func restoreStream(obs Observer, snap Snapshot) (*stream, error) {
 	}
 	s.text.WriteString(restored.Text)
 	s.final = restored.Final
+	if restored.Messages != nil {
+		s.messages = restored.Messages
+	}
+	s.lastTextID = restored.LastTextID
+	s.lastTextClassified = restored.LastTextClassified
 	s.tools = make(map[string]toolInFlight, len(restored.Tools))
 	for id, tool := range restored.Tools {
 		s.tools[id] = toolInFlight{name: tool.Name, args: tool.Args, ended: tool.Ended}
@@ -147,6 +158,7 @@ func (s *stream) snapshot(pos Position) Snapshot {
 		tools[id] = toolSnapshot{Name: tool.name, Args: tool.args, Ended: tool.ended}
 	}
 	state := streamSnapshot{
+		Messages: s.messages, LastTextID: s.lastTextID, LastTextClassified: s.lastTextClassified,
 		Version: streamSnapshotVersion, Text: s.text.String(), Final: s.final, Tools: tools,
 		ToolDurationNS: int64(s.toolDuration), TurnDurationNS: int64(s.turnDuration),
 		CodexTurnID: s.codexTurnID, TurnStarted: s.turnStarted,
@@ -184,14 +196,9 @@ func usageDelta(total, start Usage) Usage {
 // observe maps one protocol event onto the observer and the accumulators, and
 // reports whether it was terminal.
 //
-// The mapping is limited by what the wire carries, deliberately and not as a
-// simplification. The runner records an adapter event as (type, message, data)
-// and collapses every type it does not itself define onto `progress`
-// (pkg/runner/runner.go handleHarnessEvent), so Claude Code's `message` and
-// `tool_use` events arrive in the SAME shape: a progress event with a string.
-// There is no field left that would tell prose from a tool name, so progress
-// becomes Text unless its DATA names a tool item — which is what Codex sends,
-// and which is why the tool mapping exists at all rather than being left out.
+// The runner normalizes adapter event types to progress. Native payloads and
+// explicit message markers retain the semantic boundaries; legacy progress
+// without that structure stays line-oriented text.
 func (s *stream) observe(event runner.Event) (terminal bool) {
 	s.cursor = event.Cursor
 	switch event.Type {
@@ -277,14 +284,33 @@ func (s *stream) progress(event runner.Event) {
 	if permissionLifecycleMessage(event.Message) {
 		return
 	}
-	// Codex's app-server exposes the final assistant message as a completed
-	// item after streaming its text through item/agentMessage/delta. Keep that
-	// canonical message for Outcome.Final, but do not stream or append it again:
-	// the deltas already make up the transcript text.
-	if text, ok := assistantMessageItem(event.Data); ok {
-		if text != "" {
-			s.final = text
+	// Classify completed assistant messages without replaying Codex deltas.
+	if message, ok := completedMessage(event.Data); ok {
+		if message.ID != "" && s.messages[s.codexTurnID+"/"+message.ID] {
+			return
 		}
+		// Claude sends complete text blocks, not deltas. Its normalized shape
+		// carries no command inputs or private reasoning blocks.
+		var record struct {
+			Type string `json:"type"`
+		}
+		_ = json.Unmarshal(event.Data, &record)
+		if record.Type == "railgrid.assistant_message" {
+			text := message.Content
+			if !strings.HasSuffix(text, "\n") {
+				text += "\n"
+			}
+			s.text.WriteString(text)
+			s.obs.Text(text)
+		}
+		s.message(message)
+		return
+	}
+	var record struct {
+		Type string `json:"type"`
+	}
+	_ = json.Unmarshal(event.Data, &record)
+	if record.Type == "railgrid.tool_use" {
 		return
 	}
 	if item, ok := toolItem(event.Data); ok {
@@ -306,16 +332,30 @@ func (s *stream) progress(event runner.Event) {
 			return
 		}
 		if delta != "" {
+			id := deltaMessageID(event.Data)
+			if id != "" {
+				id = s.codexTurnID + "/" + id
+			}
+			if id != "" && s.lastTextID != "" && id != s.lastTextID {
+				s.text.WriteString("\n\n")
+				if _, structured := s.obs.(MessageObserver); !structured || !s.lastTextClassified {
+					s.obs.Text("\n\n")
+				}
+			}
+			if id != "" && id != s.lastTextID {
+				s.lastTextID = id
+				s.lastTextClassified = false
+			}
 			s.text.WriteString(delta)
 			s.obs.Text(delta)
 		}
 		return
 	}
 	if text := event.Message; strings.TrimSpace(text) != "" {
-		s.text.WriteString(text)
 		if !strings.HasSuffix(text, "\n") {
-			s.text.WriteString("\n")
+			text += "\n"
 		}
+		s.text.WriteString(text)
 		s.obs.Text(text)
 	}
 }
@@ -344,36 +384,6 @@ func codexMessageDelta(data json.RawMessage) (string, bool) {
 		return "", false
 	}
 	return *rec.Delta, true
-}
-
-// assistantMessageItem recognizes Codex's canonical completed assistant item.
-// It is retained as the answer boundary without being replayed as a second
-// delta. Codex uses phase=final_answer on this record; status is accepted for
-// app-server versions that report an explicit completed state instead.
-func assistantMessageItem(data json.RawMessage) (string, bool) {
-	if len(data) == 0 {
-		return "", false
-	}
-	var rec struct {
-		Item *struct {
-			Type   string `json:"type"`
-			Text   string `json:"text"`
-			Phase  string `json:"phase"`
-			Status string `json:"status"`
-		} `json:"item"`
-	}
-	if json.Unmarshal(data, &rec) != nil || rec.Item == nil {
-		return "", false
-	}
-	if rec.Item.Type != "agentMessage" && rec.Item.Type != "assistant_message" && rec.Item.Type != "assistantMessage" {
-		return "", false
-	}
-	phase := strings.ToLower(strings.TrimSpace(rec.Item.Phase))
-	status := strings.ToLower(strings.TrimSpace(rec.Item.Status))
-	if phase != "final_answer" && phase != "finalanswer" && status != "completed" && status != "complete" {
-		return "", false
-	}
-	return rec.Item.Text, true
 }
 
 // codexSessionStarted recognizes the thread/start result in the Codex

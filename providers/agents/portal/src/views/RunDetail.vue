@@ -2,7 +2,6 @@
 import type { QuestionReply } from '../types'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
-  Check,
   ChevronDown,
   Circle,
   Copy,
@@ -18,7 +17,6 @@ import { hashFor, type Route } from '../router'
 import type { AppStore, ServerEvent } from '../store'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
-import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -40,8 +38,7 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import { toast } from '../ui/toast'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
-import { approvalDisclosureAvailable } from '../approval-disclosure'
-import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
@@ -591,23 +588,16 @@ onBeforeUnmount(() => {
                 :disabled="!!resolvingInboxID"
                 @answer="response => resolve(run!.pending!.inboxID, 'answer', response)"
               />
-              <AIInterrupt
+              <AgentApprovalCard
                 v-else-if="run.phase === 'PendingApproval' && run.pending"
-                class="agents-approval"
-                :status="resolvingInboxID ? 'busy' : 'pending'"
-                :busy="!!resolvingInboxID"
-                :invalid="!approvalDisclosureAvailable(run.pending.tool, run.pending.args)"
-                title="Approval required"
-                aria-label="Tool approval required"
-              >
-                <ApprovalDisclosure :tool="run.pending.tool" :args="run.pending.args" paused details-only />
-                <template #actions>
-                  <div class="agents-approval-actions">
-                    <button class="k-btn k-btn--primary" type="button" :disabled="!!resolvingInboxID || !approvalDisclosureAvailable(run.pending.tool, run.pending.args)" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' || undefined" @click="resolve(run.pending.inboxID, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
-                    <button class="k-btn k-btn--ghost secondary" type="button" :disabled="!!resolvingInboxID" :aria-busy="resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' || undefined" @click="resolve(run.pending.inboxID, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInboxID === run.pending.inboxID && resolvingDecision === 'deny' ? 'Denying…' : 'Deny' }}</button>
-                  </div>
-                </template>
-              </AIInterrupt>
+                :tool="run.pending.tool"
+                :args="run.pending.args"
+                :busy="resolvingInboxID === run.pending.inboxID && (resolvingDecision === 'approve' || resolvingDecision === 'deny') ? resolvingDecision : undefined"
+                :disabled="!!resolvingInboxID"
+                approve-label="Approve & resume"
+                approve-busy-label="Approving & resuming…"
+                @decide="resolve(run!.pending!.inboxID, $event)"
+              />
             </section>
             <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">View failed steps</button>
             <section v-if="!runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">

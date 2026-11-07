@@ -19,6 +19,7 @@ import type { ActivityTab, Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
+import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
@@ -497,7 +498,7 @@ onBeforeUnmount(() => {
           <div
             v-for="item in inboxDetails"
             :key="item.id"
-            :class="viewingInbox ? 'agents-inbox-detail' : item.kind === 'question' ? 'agents-question-inbox' : 'agents-approval-row k-card'"
+            :class="viewingInbox ? 'agents-inbox-detail' : item.kind === 'question' || item.kind === 'approval' ? 'agents-question-inbox' : 'agents-approval-row k-card'"
           >
             <template v-if="viewingInbox">
               <div class="agents-inbox-mobile-nav">
@@ -514,7 +515,7 @@ onBeforeUnmount(() => {
             <div :class="viewingInbox ? 'agents-inbox-detail-content' : 'agents-inbox-legacy-detail'">
               <div v-if="!viewingInbox || item.kind !== 'question' || item.runID" class="agents-approval-body">
                 <div v-if="item.kind !== 'question' && !viewingInbox" class="agents-approval-prompt">{{ item.prompt }}</div>
-                <ApprovalDisclosure v-if="item.kind === 'approval' || item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
+                <ApprovalDisclosure v-if="item.kind === 'change'" :tool="item.payload?.tool" :args="item.payload?.args" />
                 <div class="agents-approval-meta">
                   <template v-if="!viewingInbox">
                     <span class="k-badge agents-badge">{{ item.agentName }}</span>
@@ -523,7 +524,7 @@ onBeforeUnmount(() => {
                   <button v-if="item.runID" class="k-dashboard-action" type="button" @click="emit('navigate', { kind: 'run', id: item.runID! })">View run</button>
                 </div>
               </div>
-              <div v-if="item.kind !== 'question'" class="agents-approval-actions">
+              <div v-if="item.kind === 'change'" class="agents-approval-actions">
                 <!--
                   A change is a self-configuration edit a harness session asked
                   for. It parks no run: approving it is what applies it.
@@ -532,11 +533,19 @@ onBeforeUnmount(() => {
                   <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Applying…' : 'Apply change' }}</button>
                   <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
                 </template>
-                <template v-else-if="item.kind === 'approval'">
-                  <button class="k-btn k-btn--primary" type="button" :disabled="locked(item.id) || !approvalDisclosureAvailable(item.payload?.tool, item.payload?.args)" :aria-busy="resolvingInbox.get(item.id) === 'approve' || undefined" @click="resolve(item, 'approve')"><Check :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'approve' ? 'Approving & resuming…' : 'Approve & resume' }}</button>
-                  <button class="k-btn k-btn--ghost secondary" type="button" :disabled="locked(item.id)" :aria-busy="resolvingInbox.get(item.id) === 'deny' || undefined" @click="resolve(item, 'deny')"><X :stroke-width="1.75" aria-hidden="true" /> {{ resolvingInbox.get(item.id) === 'deny' ? 'Denying…' : 'Deny' }}</button>
-                </template>
+
               </div>
+              <AgentApprovalCard
+                v-else-if="item.kind === 'approval'"
+                :heading-level="!viewingInbox && agent ? 4 : 3"
+                :tool="item.payload?.tool"
+                :args="item.payload?.args"
+                :busy="resolvingInbox.get(item.id) === 'approve' ? 'approve' : resolvingInbox.get(item.id) === 'deny' ? 'deny' : undefined"
+                :disabled="locked(item.id)"
+                approve-label="Approve & resume"
+                approve-busy-label="Approving & resuming…"
+                @decide="resolve(item, $event)"
+              />
               <AgentQuestionCard
                 v-else
                 :question-id="item.id"

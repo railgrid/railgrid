@@ -196,6 +196,7 @@ function appendTrace(message: ChatMessage, block: ChatTraceBlock, metadata?: Tra
 }
 
 function appendTool(message: ChatMessage, tool: ToolCall, createdAt?: string): void {
+  if (tool.pending && !message.progress) message.progress = { status: 'running', trace: [] }
   const index = message.tools.findIndex(candidate => candidate.id === tool.id)
   if (index === -1) message.tools.push(tool)
   else message.tools[index] = { ...message.tools[index], ...tool }
@@ -237,6 +238,11 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
         role: 'assistant',
         content: '',
         tools: pending.map(item => item.tool),
+        ...(pending.every(item => item.runID === pending[0].runID) ? { runID: pending[0].runID } : {}),
+        ...(pending.some(item => item.tool.pending) ? { progress: {
+          status: 'running' as const,
+          trace: pending.map(item => ({ id: `tool-${item.tool.id}`, kind: 'tool' as const, tool: item.tool })),
+        } } : {}),
       })
     }
     pending = []
@@ -289,7 +295,7 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
           ...(metadata.hasMcpApp === true && sources?.length ? { hasMcpApp: true } : {}),
           ...(savedCapture ? { savedCapture } : {}),
           durationMS: durationMS(metadata.durationMS),
-          pending: false,
+          pending: metadata.pending === true,
         },
         createdAt: item.createdAt,
         runID: item.runID,
@@ -331,6 +337,18 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
       applyProgressMetadata(message, item.metadata)
       continue
     }
+    if (phase === 'streaming') {
+      const message = ensureAssistant(item, true)
+      flush(message)
+      // A harness permission resume can continue without a user transcript
+      // row. Retain its earlier partial segment in the ordered activity trace.
+      if (message.content && message.content !== item.content) {
+        appendTrace(message, { id: `prior-${message.id}`, kind: 'commentary', content: message.content }, item.metadata)
+      }
+      message.content = item.content
+      applyProgressMetadata(message, item.metadata)
+      continue
+    }
     if (phase === 'terminal') {
       const message = ensureAssistant(item, true)
       flush(message)
@@ -357,4 +375,22 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
   }
   flush()
   return out
+}
+
+/** Reconcile a replaceable progress snapshot with persisted transcript rows.
+ * Completed rows share IDs with their provisional versions. A snapshot never
+ * enters stored history or model replay, and repeated reads are idempotent.
+ */
+export function transcriptWithProgress(history: TranscriptMessage[], progress: TranscriptMessage[]): TranscriptMessage[] {
+  const rows = new Map(history.map(row => [row.id, row]))
+  for (const row of progress) {
+    // A completed transcript row wins over an older in-flight snapshot.
+    if (rows.has(row.id)) continue
+    rows.set(row.id, row)
+  }
+  return [...rows.values()].sort((a, b) => {
+    if (!a.createdAt || !b.createdAt) return 0
+    const delta = Date.parse(a.createdAt) - Date.parse(b.createdAt)
+    return Number.isFinite(delta) ? delta : 0
+  })
 }

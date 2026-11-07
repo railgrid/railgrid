@@ -146,6 +146,9 @@ type HarnessSettings struct {
 // JSON payload (Eino interrupt/resume state) so the store needs no knowledge of
 // chat/tool types. ParentRunID links sub-agent runs for delegation lineage.
 type Run struct {
+	// progress is presentation-only, updated independently of lifecycle saves.
+	progress json.RawMessage
+
 	ID          string   `json:"id"`
 	AgentName   string   `json:"agentName"`
 	SessionID   string   `json:"sessionID,omitempty"`
@@ -878,6 +881,11 @@ type Store interface {
 	NextHarnessTurn(ctx context.Context, scope Scope, sessionID string, now time.Time, identity HarnessIdentity) (HarnessSession, error)
 	PutHarnessSession(ctx context.Context, scope Scope, s HarnessSession) error
 	GetHarnessSession(ctx context.Context, scope Scope, sessionID string) (HarnessSession, bool, error)
+
+	// Live progress snapshots are presentation only, never model replay or execution
+	// checkpoints. Replacing a snapshot must not change the Run lifecycle revision.
+	PutRunProgress(ctx context.Context, scope Scope, runID string, messages []Message) error
+	GetRunProgress(ctx context.Context, scope Scope, runID string) ([]Message, error)
 
 	// Runs (durable, resumable).
 	SaveRun(ctx context.Context, scope Scope, run Run) error
