@@ -111,7 +111,7 @@ const guidanceValues = computed(() => {
 })
 
 const slice = computed(() => { revision.value; return { ...props.store.webhooks } })
-const showFirstRun = computed(() => slice.value.hasSnapshot && slice.value.data.length === 0)
+const showFirstRun = computed(() => slice.value.hasSnapshot && !slice.value.loading && !slice.value.error && slice.value.data.length === 0)
 const current = computed(() => slice.value.data.find(item => item.metadata.name === props.editName))
 const editTitle = computed(() => current.value?.spec.displayName || current.value?.metadata.name || props.editName)
 const editReadError = computed(() => {
@@ -189,6 +189,7 @@ function hydrateEdit(item: Webhook): void {
 
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
   if (!props.editRoute || !props.editName) return
+  if (editValuesFor.value !== props.editName && (slice.value.loading || slice.value.error)) return
   const item = props.store.webhooks.data.find(webhook => webhook.metadata.name === props.editName)
   if (!item) return
   if (editValuesFor.value !== props.editName) hydrateEdit(item)
@@ -401,7 +402,7 @@ function cancel(): void {
       :title="editTitle"
       kind="Webhook"
       subtitle="The URL a sender posts to, the triggers routing from it, and what each delivery became."
-      :loaded="slice.hasSnapshot"
+      :loaded="slice.hasSnapshot && (editValuesFor === editName || (!slice.loading && !slice.error))"
       :loading="slice.loading"
       :error="editReadError"
       :stale="slice.hasSnapshot && !!slice.error"

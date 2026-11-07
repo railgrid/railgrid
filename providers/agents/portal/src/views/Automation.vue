@@ -623,6 +623,7 @@ watch([() => props.createRoute, () => props.editName, () => revision.value], () 
 		}
 		return
 	}
+	if (editing.value !== props.editName && (slice.value.loading || slice.value.error)) return
 	if (currentEdit.value && editing.value !== props.editName) hydrateEdit(currentEdit.value)
 }, { immediate: true })
 
@@ -683,14 +684,14 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
       <p class="k-create-description">{{ meta.blurb }}</p>
     </header>
 
-    <div v-if="!createRoute && slice.error && slice.hasSnapshot" class="k-stale" role="status">
+    <div v-if="!createRoute && editing && slice.error && slice.hasSnapshot" class="k-stale" role="status">
       Could not refresh {{ meta.title.toLowerCase() }}. Showing the last loaded data. {{ slice.error }}
       <button class="k-dashboard-action" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
-    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.hasSnapshot ? 'agents-state-empty' : slice.error ? 'agents-state-error' : 'k-loading-reveal'" :role="slice.error && !slice.hasSnapshot ? 'alert' : 'status'">
-      <p class="muted">{{ slice.hasSnapshot ? (slice.error ? `The last loaded data did not include ${meta.one} “${editName}”.` : `No ${meta.one} named “${editName}” belongs to this agent.`) : slice.error ? `Could not load this ${meta.one}. ${slice.error}` : `Loading ${meta.one}…` }}</p>
-      <button v-if="slice.error && !slice.hasSnapshot" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
+    <div v-if="!createRoute && !editing" class="k-card agents-state" :class="slice.error ? 'agents-state-error' : slice.loading || !slice.hasSnapshot ? 'k-loading-reveal' : 'agents-state-empty'" :role="slice.error ? 'alert' : 'status'">
+      <p class="muted">{{ slice.error ? `Could not load this ${meta.one}. ${slice.error}` : slice.loading || !slice.hasSnapshot ? `Loading ${meta.one}…` : `No ${meta.one} named “${editName}” belongs to this agent.` }}</p>
+      <button v-if="slice.error" class="k-btn k-btn--ghost secondary" type="button" :disabled="slice.loading" @click="store.load(kind === 'schedule' ? 'schedules' : 'triggers')">{{ slice.loading ? 'Retrying…' : 'Retry' }}</button>
     </div>
 
     <!-- The trigger form carries the GitHub event grid and the filter tester

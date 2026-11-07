@@ -204,6 +204,24 @@ describe('WebhookDeliveryLog.vue', () => {
 })
 
 describe('Webhooks.vue', () => {
+  it('shows loading and refresh errors instead of presenting a stale empty snapshot as first run', async () => {
+    let reject!: (error: Error) => void
+    const listWebhooks = vi.fn(() => new Promise<Webhook[]>((_resolve, fail) => { reject = fail }))
+    const api = stubApi({ listWebhooks })
+    const store = makeStore(api)
+    store.webhooks.hasSnapshot = true
+    store.webhooks.loaded = true
+    void store.load('webhooks')
+    const view = await mount(Webhooks, { store, api })
+    expect(store.webhooks.loading).toBe(true)
+    expect(text(view.element)).not.toContain('Create your first webhook')
+
+    reject(new Error('Webhooks temporarily unavailable'))
+    await settleVue()
+    expect(text(view.element)).toContain('Webhooks temporarily unavailable')
+    expect(text(view.element)).not.toContain('Create your first webhook')
+  })
+
   it('lists webhooks with sender, routed trigger count, last delivery and a URL copy action', async () => {
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
     const api = stubApi()

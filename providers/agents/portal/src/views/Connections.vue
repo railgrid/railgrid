@@ -131,6 +131,7 @@ watch(() => props.createSession, () => {
 })
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
   if (!props.editRoute || !props.editName || editValuesFor.value === props.editName) return
+  if (connections.value.loading || connections.value.error) return
   const item = props.store.connections.data.find(connection => connection.metadata.name === props.editName)
   if (!item) return
   hydrateEdit(item)
@@ -323,7 +324,7 @@ function forwardCreate(detail: CreateSuccessDetail & Partial<Fence>): void { emi
       :title="editTitle"
       kind="Connection"
       subtitle="Update this connection without exposing its stored credential."
-      :loaded="connections.hasSnapshot"
+      :loaded="connections.hasSnapshot && (editValuesFor === editName || (!connections.loading && !connections.error))"
       :loading="connections.loading"
       :error="editReadError"
       :stale="connections.hasSnapshot && !!connections.error"

@@ -4,8 +4,8 @@
 // Two things changed versus the load-once model:
 //   1. every collection is a Slice<T> — {data, loading, error} — so a failing
 //      API renders as an error instead of an innocent "nothing yet";
-//   2. the store subscribes to GET /api/events (SSE) and refreshes the affected
-//      slice on push, with a 30s poll as the fallback when the stream dies.
+//   2. the store subscribes to server events and refreshes affected slices on
+//      push, with a 30s reconciliation poll for writes that emit no event.
 //
 // It is an EventTarget: components listen for 'change' (any slice mutated) and
 // 'server' (a raw run/inbox push, for views that track their own run lists).
@@ -122,9 +122,8 @@ export class AppStore extends EventTarget {
   toolsets = slice<Toolset[]>([])
   schedules = slice<Schedule[]>([])
   triggers = slice<Trigger[]>([])
-  // Workspace-level inbound endpoints triggers route from. Reloaded when a
-  // webhook object is written, not on every delivery: the delivery log
-  // follows the 'webhook-delivery' push itself.
+  // Workspace-level inbound endpoints triggers route from. The event stream
+  // does not report Kubernetes writes, so poll even while it is connected.
   webhooks = slice<Webhook[]>([])
   credentials = slice<Credential[]>([])
   inbox = slice<InboxItem[]>([])
@@ -165,6 +164,7 @@ export class AppStore extends EventTarget {
   }
   private acknowledgedInboxIDs = new Set<string>()
   private nextLoadID = 0
+  private agentWriteLocks = new Map<string, number>()
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
   private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
 
@@ -274,6 +274,28 @@ export class AppStore extends EventTarget {
   }
 
   // ---- loading -------------------------------------------------------------
+
+  // A queued config write owns its optimistic row until it settles. Reads
+  // still refresh other agents; the queue performs its own read after release.
+  protectAgentWrites(name: string): () => void {
+    this.agentWriteLocks.set(name, (this.agentWriteLocks.get(name) ?? 0) + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const remaining = (this.agentWriteLocks.get(name) ?? 1) - 1
+      if (remaining) this.agentWriteLocks.set(name, remaining)
+      else this.agentWriteLocks.delete(name)
+    }
+  }
+
+  // Revalidate snapshots, including empty ones, without stacking requests
+  // while a previous read is still in flight.
+  refreshCollections(keys: readonly SliceKey[] = Object.keys(LOADERS) as SliceKey[]): void {
+    for (const key of keys) {
+      if (!this[key].loading) void this.load(key)
+    }
+  }
 
   loadAll(): void {
     if (this.retired) return
@@ -424,12 +446,15 @@ export class AppStore extends EventTarget {
 
   private mergeNewerAgentRows(rows: unknown[]): unknown[] {
     const currentByName = new Map(this.agents.data.map((agent) => [agent.metadata.name, agent]))
-    return rows.map((row) => {
+    const present = new Set<string>()
+    const merged = rows.map((row) => {
       if (!row || typeof row !== 'object') return row
       const incoming = row as Agent
       const name = incoming.metadata?.name
       if (!name) return row
+      present.add(name)
       const current = currentByName.get(name)
+      if (current && this.agentWriteLocks.has(name)) return current
       if (!current || current.metadata.uid !== incoming.metadata?.uid || !current.metadata.uid) return row
       const currentGeneration = current.metadata.generation
       const incomingGeneration = incoming.metadata?.generation
@@ -440,6 +465,10 @@ export class AppStore extends EventTarget {
       ) return current
       return row
     })
+    for (const [name, current] of currentByName) {
+      if (this.agentWriteLocks.has(name) && !present.has(name)) merged.push(current)
+    }
+    return merged
   }
 
   private pruneAdoptedItems(key: SliceKey): void {
@@ -486,14 +515,9 @@ export class AppStore extends EventTarget {
     this.abort = ac
     void this.pump(ac)
     this.poll = setInterval(() => {
-      // Polling only matters while the stream is down; when it's live the
-      // pushes already keep us fresh.
-      if (!this.live) {
-        void this.load('inbox')
-        void this.load('schedules')
-        void this.load('triggers')
-        void this.load('webhooks')
-      }
+      // Kubernetes writes made by agents or other clients do not emit an
+      // SSE event. A healthy stream must not disable collection refresh.
+      this.refreshCollections()
     }, POLL_MS)
   }
 

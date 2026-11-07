@@ -253,6 +253,57 @@ describe('create-result adoption refresh races', () => {
 })
 
 describe('server-push freshness', () => {
+  it('polls every collection with a healthy event stream and stops on retirement', async () => {
+    vi.useFakeTimers()
+    const listWebhooks = vi.fn().mockResolvedValue([])
+    const otherLoaders = Object.fromEntries([
+      'listAgents', 'listConnections', 'listToolsets', 'listSchedules',
+      'listTriggers', 'listCredentials', 'listInbox', 'listEdges',
+    ].map(name => [name, vi.fn().mockResolvedValue([])]))
+    const store = makeStore(stubApi({
+      ...otherLoaders,
+      listWebhooks,
+      eventStream: async function* (signal: AbortSignal, onOpen: () => void) {
+        onOpen()
+        await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }))
+      },
+    }))
+    try {
+      store.connect()
+      expect(store.live).toBe(true)
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(listWebhooks).toHaveBeenCalledTimes(1)
+      for (const loader of Object.values(otherLoaders)) expect(loader).toHaveBeenCalledTimes(1)
+
+      const created = { metadata: { name: 'created-by-agent' }, spec: { source: 'webhook' } }
+      listWebhooks.mockResolvedValue([created])
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(store.webhooks.data).toEqual([created])
+
+      store.retire()
+      await vi.advanceTimersByTimeAsync(30_000)
+      expect(listWebhooks).toHaveBeenCalledTimes(2)
+      for (const loader of Object.values(otherLoaders)) expect(loader).toHaveBeenCalledTimes(2)
+    } finally {
+      store.retire()
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not overlap navigation and periodic reads of an in-flight collection', async () => {
+    const pending = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValue(pending.promise)
+    const store = makeStore(stubApi({ listAgents }))
+    store.refreshCollections(['agents'])
+    store.refreshCollections(['agents'])
+    expect(listAgents).toHaveBeenCalledTimes(1)
+    pending.resolve([{ metadata: { name: 'external-agent' }, spec: {} }])
+    await pending.promise
+    expect(store.agents.data[0]?.metadata.name).toBe('external-agent')
+    store.refreshCollections(['agents'])
+    expect(listAgents).toHaveBeenCalledTimes(2)
+  })
+
   it('reloads the inbox slice on an inbox event and re-broadcasts it', async () => {
     let items: InboxItem[] = []
     const store = makeStore(stubApi({ listInbox: () => Promise.resolve(items) }))
