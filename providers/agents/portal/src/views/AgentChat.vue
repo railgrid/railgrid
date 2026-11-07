@@ -44,7 +44,7 @@ import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import McpAppViewer from '../components/McpAppViewer.vue'
-import RenameChatDialog from '../components/RenameChatDialog.vue'
+import RenameChatDialog from '../agentkit/AIConversationRenameDialog.vue'
 import ChatTitleControl from '../components/ChatTitleControl.vue'
 import { agentChatDraftStorageKey, clearAgentChatDraft, readAgentChatDraft, writeAgentChatDraft, type AgentChatDraft } from '../chatDraft'
 import { assistantAttachmentContentTypeKind } from '../agentkit/composerAttachments'
@@ -133,42 +133,26 @@ const sessionsReadScope = ref('')
 // A title event can arrive while a session-list read is in flight. Keep the
 // latest event value over that read so an older snapshot cannot undo it.
 const sessionTitleOverrides = ref(new Map<string, { title: string }>())
-const renameTarget = ref<{ id: string; title: string; inline: boolean } | null>(null)
+const renameTarget = ref<{ id: string; title: string } | null>(null)
 const renameBusy = ref(false)
 const renameError = ref('')
-const inlineTitle = ref('')
 const canRenameActive = computed(() => sessions.value.some(item => item.id === sessionID.value && item.messageCount > 0))
 watch([() => props.api, () => props.store, () => props.name, () => runtime?.authorityEpoch.value], () => { renameTarget.value = null; renameError.value = '' })
 
-function startRename(id = sessionID.value, inline = false): void {
+function startRename(id = sessionID.value): void {
   if (renameBusy.value) return
   const session = sessionOptions.value.find(item => item.id === id)
   if (!session || session.messageCount === 0 || !sessions.value.some(item => item.id === id)) return
   const title = sessionLabel(session)
-  renameTarget.value = { id, title, inline }
-  inlineTitle.value = title
+  renameTarget.value = { id, title }
   renameError.value = ''
 }
 function cancelRename(): void { renameTarget.value = null }
-function commitInlineRename(): void {
-  const target = renameTarget.value
-  if (!target?.inline) return
-  const title = inlineTitle.value.trim()
-  // Close before saving, as Studio does: blank and unchanged edits just dismiss.
-  renameTarget.value = null
-  if (!title || title === target.title.trim()) return
-  void saveRename(title, target)
-}
 const titleControl = computed(() => ({
   title: activeSessionLabel.value,
-  editing: Boolean(renameTarget.value?.inline),
-  modelValue: inlineTitle.value,
   disabled: !canRenameActive.value,
   busy: renameBusy.value,
-  onStart: () => startRename(sessionID.value, true),
-  'onUpdate:modelValue': (value: string) => { inlineTitle.value = value },
-  onCommit: commitInlineRename,
-  onCancel: cancelRename,
+  onStart: () => startRename(),
 }))
 async function saveRename(title: string, target = renameTarget.value): Promise<void> {
   if (!target || renameBusy.value || !title.trim()) return
@@ -184,7 +168,7 @@ async function saveRename(title: string, target = renameTarget.value): Promise<v
     sessionTitleOverrides.value = overrides
     if (renameTarget.value === target) cancelRename()
   } catch (error) {
-    if (authorityIsCurrent(authority) && props.name === name && ((target.inline && sessionID.value === target.id) || renameTarget.value === target)) renameError.value = `Could not rename chat: ${(error as Error).message}`
+    if (authorityIsCurrent(authority) && props.name === name && renameTarget.value === target) renameError.value = `Could not rename chat: ${(error as Error).message}`
   } finally { renameBusy.value = false }
 }
 
@@ -194,7 +178,6 @@ const sessionsLoading = ref(false)
 const sessionID = ref('')
 const selectingSessionID = ref('')
 watch(sessionID, () => {
-  if (renameTarget.value?.inline) renameTarget.value = null
   renameError.value = ''
 })
 const streaming = ref(false)
@@ -3187,7 +3170,7 @@ defineExpose({
 
 <template>
   <div class="agents-chat-shell" :class="{ 'agents-chat-shell--compact': compact, 'agents-chat-shell--bar': composerOnly }">
-    <RenameChatDialog v-if="renameTarget && !renameTarget.inline" :title="renameTarget.title" :busy="renameBusy" :error="renameError" @save="saveRename($event)" @close="cancelRename" />
+    <RenameChatDialog v-if="renameTarget" :title="renameTarget.title" :busy="renameBusy" :error="renameError" @save="saveRename($event)" @close="cancelRename" />
     <AIConversationHeader
       v-if="!compact"
       class="agents-chat-head"

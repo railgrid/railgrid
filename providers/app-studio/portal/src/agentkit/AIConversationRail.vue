@@ -75,6 +75,7 @@ const emit = defineEmits<{
 
 ensureAgentUIStyles()
 
+const pendingRenameThreadID = ref('')
 const hoveredThreadID = ref('')
 const focusedThreadID = ref('')
 function leaveThreadFocus(event: FocusEvent): void {
@@ -457,9 +458,27 @@ function archiveThread(threadID: string): void {
   closeContextMenu(true)
 }
 
+// A double-click can arrive while its first click is still loading history.
+// Keep that row enabled and wait for selection before opening its title editor.
+function doubleClickThread(threadID: string): void {
+  if (props.selectingThreadID === threadID) {
+    pendingRenameThreadID.value = threadID
+    return
+  }
+  renameThread(threadID)
+}
+
+watch(() => props.selectingThreadID, (selectingThreadID) => {
+  const threadID = pendingRenameThreadID.value
+  if (!threadID || selectingThreadID === threadID) return
+  pendingRenameThreadID.value = ''
+  if (!selectingThreadID && props.activeThreadID === threadID) renameThread(threadID)
+})
+
 function renameThread(threadID: string): void {
   if (!capabilities.value.rename || props.disabled || props.busy || props.actioningThreadID) return
-  if (props.threads.find(thread => thread.id === threadID)?.renameDisabledReason) return
+  const thread = props.threads.find(thread => thread.id === threadID)
+  if (!thread || thread.renameDisabledReason) return
   const returnFocus = contextMenuReturnFocus.value
   closeContextMenu()
   returnFocus?.focus()
@@ -706,11 +725,12 @@ defineExpose({
                       type="button"
                       :data-thread-id="thread.id"
                       class="k-ai-conversation-rail__item-select"
-                      :disabled="disabled || busy || Boolean(selectingThreadID)"
+                      :disabled="disabled || busy || Boolean(selectingThreadID && selectingThreadID !== thread.id)"
                       :aria-current="activeThreadID === thread.id ? 'page' : undefined"
                       :aria-busy="threadIsBusy(thread) ? 'true' : undefined"
                       :title="displayTitle(thread)"
                       @click="selectThread(thread.id)"
+                      @dblclick.stop.prevent="doubleClickThread(thread.id)"
                       @keydown="handleThreadKeydown($event, thread.id)"
                     >
                       <span v-if="unreadThreadIDSet.has(thread.id) && thread.status !== 'active'" class="k-ai-conversation-rail__unread" :aria-label="labels.unread" />
