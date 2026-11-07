@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { ArrowLeft, Check, Cpu, Loader2, Pencil, Play, Plus, RefreshCw, Star, Trash2, X } from 'lucide-vue-next'
+import { ArrowLeft, Check, Cpu, Loader2, Pencil, Play, Plus, RefreshCw, Star, Trash2 } from 'lucide-vue-next'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableActionButton from './portalkit/ResourceTableActionButton.vue'
@@ -15,6 +15,7 @@ import ModelUsageSection from './agentkit/ModelUsageSection.vue'
 import ReasoningEffortControl from './ReasoningEffortControl.vue'
 import FirstRunGuide from './portalkit/FirstRunGuide.vue'
 import InlineNotification from './portalkit/InlineNotification.vue'
+import { toast } from './portalkit/toast'
 import { api, ProjectAPIRequestError } from './api'
 import { llmProviderSelection, type LLMProviderPreset } from './llmDiscovery'
 import type {
@@ -120,7 +121,7 @@ const emit = defineEmits<{
 const MODELS_ROUTE = '~models'
 const CONNECTIONS_ROUTE = '~models/provider-connections'
 const USAGE_ROUTE = '~models/usage'
-const connectionSuccess = ref<ProjectModelProviderConnection | null>(null)
+const pendingConnection = ref<ProjectModelProviderConnection | null>(null)
 const connectionEditorOpen = ref(false)
 const connectionStage = ref<'details' | 'verify'>('details')
 const connectionOriginal = ref<ProjectModelProviderConnection | null>(null)
@@ -167,9 +168,9 @@ const connectionRows = computed(() => {
   return current.sort((a, b) => (a.displayName || a.name).localeCompare(b.displayName || b.name))
 })
 watch(() => props.connections, connections => {
-  const saved = connectionSuccess.value
+  const saved = pendingConnection.value
   if (saved && !connections.some(connection => connection.name === saved.name && connection.uid === saved.uid && !connection.deleting)) {
-    connectionSuccess.value = null
+    pendingConnection.value = null
   }
 })
 const connectionTableRows = computed(() => connectionRows.value.map(connection => {
@@ -344,7 +345,7 @@ function invalidateConnectionProbe() {
 function openConnectionEditor(saved?: ProjectModelProviderConnection) {
   invalidateConnectionProbe()
   connectionOriginal.value = saved ?? null
-  connectionSuccess.value = null
+  pendingConnection.value = null
   connectionPreset.value = saved ? providerPresetFor(saved.provider, saved.baseURL) : 'openai'
   const selection = saved ? { provider: saved.provider, baseURL: saved.baseURL } : llmProviderSelection('openai')
   connectionProvider.value = selection.provider
@@ -379,7 +380,7 @@ watch(() => props.usageRoute, active => {
   connectionEditorOpen.value = false
   connectionOriginal.value = null
   connectionAPIKey.value = ''
-  connectionSuccess.value = null
+  pendingConnection.value = null
 }, { flush: 'sync' })
 
 function chooseConnectionProvider(value: string) {
@@ -493,7 +494,8 @@ async function continueConnection() {
 }
 
 function acceptSavedConnection(connection: ProjectModelProviderConnection, fingerprint: string) {
-  connectionSuccess.value = connection
+  const editing = connectionOriginal.value !== null
+  pendingConnection.value = connection.activationPending ? connection : null
   connectionAPIKey.value = ''
   connectionEditorOpen.value = false
   connectionOriginal.value = null
@@ -502,6 +504,7 @@ function acceptSavedConnection(connection: ProjectModelProviderConnection, finge
   // The parent adds the acknowledged connection before refreshing the list.
   connectionVerifiedFingerprint.value = fingerprint
   emit('connectionsChanged', connection)
+  if (!connection.activationPending) toast('ok', editing ? 'Provider connection updated.' : 'Provider connected.')
   // A provider connection created from the model form is a detour in that
   // binding flow. Return to the draft as soon as the save is acknowledged.
   if (props.providerDetourActive) emit('continueModelWithProvider', connection)
@@ -670,11 +673,7 @@ function startProviderDetour() {
     </template>
 
     <template v-else-if="providerConnectionsRoute && !connectionEditorOpen">
-      <InlineNotification v-if="connectionSuccess?.activationPending" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="connectionSuccess = null" />
-      <section v-else-if="connectionSuccess" class="grid gap-3 rounded-xl border border-success/30 bg-success-subtle p-4" aria-live="polite">
-        <div class="flex items-start justify-between gap-3"><div class="grid gap-1"><h3 class="text-[14px] font-semibold text-text-primary">Provider connected</h3><p class="text-[12px] leading-5 text-text-secondary">{{ connectionSuccess.displayName || connectionSuccess.name }} is saved. Its key stays in the workspace and can be reused by multiple model bindings.</p></div><button type="button" class="k-icon-action" aria-label="Dismiss provider connected message" @click="connectionSuccess = null"><X class="h-4 w-4" :stroke-width="1.75" /></button></div>
-        <div class="flex flex-wrap gap-2"><button type="button" class="k-btn k-btn--primary" @click="providerDetourActive ? emit('continueModelWithProvider', connectionSuccess) : addModelFor(connectionSuccess)"><Plus class="h-3.5 w-3.5" /> {{ providerDetourActive ? 'Use provider' : 'Add model' }}</button><button type="button" class="k-btn k-btn--ghost" @click="providerDetourActive ? emit('cancelProviderDetour') : connectionSuccess = null">{{ providerDetourActive ? 'Return to model setup' : 'Done' }}</button></div>
-      </section>
+      <InlineNotification v-if="pendingConnection" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="pendingConnection = null" />
       <div v-if="connectionsLoading && !connections.length" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
         <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading provider connections…
       </div>

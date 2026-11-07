@@ -5,7 +5,7 @@ import test from 'node:test'
 import ts from 'typescript'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, nextTick, ref, watch } from 'vue'
+import { computed, createSSRApp, nextTick, ref, watch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({
@@ -86,38 +86,157 @@ test('retains initial and stale model errors with one disabled busy retry action
   }
 })
 
-test('a pending model retry keeps its previous error until the read succeeds', async () => {
+async function modelSettingsLoader() {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
   const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const load = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'loadLLMSettings')
-  assert.ok(load)
-  const { outputText } = ts.transpileModule(load.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
-  const state = new Function('ref', `
-    const props = { ctx: { token: 'token' } };
+  const statements = ast.statements.filter(node =>
+    (ts.isFunctionDeclaration(node) && ['loadLLMSettings', 'invalidateLLMSettingsLoad'].includes(node.name?.text)) ||
+    node.getText(ast).startsWith('watch(selectedNameFromPath,'),
+  )
+  assert.equal(statements.length, 3)
+  const { outputText } = ts.transpileModule(statements.map(node => node.getText(ast)).join('\n'), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022 },
+  })
+  const createState = new Function('ref', 'watch', 'computed', 'projectName', `
+    const props = { ctx: { workspace: 'first' } };
+    const selectedNameFromPath = ref(projectName);
+    const pendingFirstProjectSubmission = null;
     const hasProjectRequestTransport = () => true;
-    let llmSettingsLoadSerial = 0;
-    const llmSettings = ref(null);
-    const llmSettingsLoading = ref(false);
+    let llmSettingsLoadSerial = 0, llmSettingsLoadProject = '';
+    const llmSettings = ref(null), llmSettingsLoading = ref(false), llmActionError = ref(null);
     const llmSettingsError = ref('Previous read failed');
-    const llmStatus = ref(null);
-    const llmActionError = ref(null);
-    let resolveRead;
-    const api = { getLLMSettings: () => new Promise(resolve => { resolveRead = resolve; }) };
+    const llmConfigured = computed(() => llmSettings.value?.models.some(model => model.configured));
+    const reads = [], timers = [];
+    let initializationRetries = 0;
+    const api = { getLLMSettings: ctx => new Promise((resolve, reject) => {
+      reads.push({ workspace: ctx.workspace, resolve, reject });
+    }) };
+    const setTimeout = resolve => timers.push(resolve);
     const applyLLMSettings = settings => { llmSettings.value = settings; };
-    const handleProjectAPIInitializing = () => false;
+    const handleProjectAPIInitializing = () => { initializationRetries += 1; return true; };
     ${outputText}
-    return { loadLLMSettings, llmSettings, llmSettingsLoading, llmSettingsError,
-      resolveRead: settings => resolveRead(settings) };
-  `)(ref)
+    return {
+      loadLLMSettings, invalidateLLMSettingsLoad, llmSettings, llmSettingsLoading, llmSettingsError,
+      reads, timers, selectedNameFromPath, props,
+      get initializationRetries() { return initializationRetries; },
+    };
+  `)
+  return { app, createState: (projectName = '') => createState(ref, watch, computed, projectName) }
+}
+
+test('a pending model retry keeps its previous error until the read succeeds', async () => {
+  const { createState } = await modelSettingsLoader()
+  const state = createState()
   const pending = state.loadLLMSettings()
   assert.equal(state.llmSettingsLoading.value, true)
   assert.equal(state.llmSettingsError.value, 'Previous read failed')
-  state.resolveRead({ models: [] })
+  state.reads.shift().resolve({ models: [] })
   await pending
   assert.equal(state.llmSettingsLoading.value, false)
   assert.equal(state.llmSettingsError.value, null)
   assert.deepEqual(state.llmSettings.value, { models: [] })
+})
+
+const pendingModel = { id: 'new-model', configured: false }
+const readyModel = { id: 'ready-model', configured: true }
+
+for (const existingModels of [[], [readyModel]]) {
+  test(`project model settings retry a saved binding with ${existingModels.length} other ready models`, async () => {
+    const { createState } = await modelSettingsLoader()
+    const state = createState('existing-project')
+    state.llmSettings.value = { models: existingModels }
+    const pending = state.loadLLMSettings()
+    assert.equal(state.llmSettingsLoading.value, existingModels.length === 0)
+    state.reads.shift().resolve({ models: [...existingModels, pendingModel] })
+    await nextTick()
+    assert.equal(state.llmSettingsLoading.value, existingModels.length === 0)
+    assert.equal(state.timers.length, 1)
+    state.timers.shift()()
+    await nextTick()
+    state.reads.shift().resolve({ models: [...existingModels, { ...pendingModel, configured: true }] })
+    await pending
+    assert.equal(state.llmSettingsLoading.value, false)
+    assert.deepEqual(state.llmSettings.value.models.filter(model => model.configured).map(model => model.id),
+      [...existingModels.map(model => model.id), pendingModel.id])
+  })
+}
+
+async function startInFlightModelRetry(state) {
+  const completion = state.loadLLMSettings()
+  state.reads.shift().resolve({ models: [pendingModel] })
+  await nextTick()
+  state.timers.shift()()
+  await nextTick()
+  return { completion, retry: state.reads.shift() }
+}
+
+test('switching projects discards a late retry without releasing the new project load', async () => {
+  const { createState } = await modelSettingsLoader()
+  const state = createState('project-a')
+  const { completion, retry } = await startInFlightModelRetry(state)
+  state.selectedNameFromPath.value = 'project-b'
+  await nextTick()
+  assert.equal(state.reads.length, 1)
+  retry.resolve({ models: [readyModel] })
+  await completion
+  assert.equal(state.llmSettingsLoading.value, true)
+  assert.deepEqual(state.llmSettings.value.models, [pendingModel])
+  state.reads.shift().resolve({ models: [] })
+  await nextTick()
+  assert.equal(state.llmSettingsLoading.value, false)
+  assert.deepEqual(state.llmSettings.value.models, [])
+})
+
+test('leaving a project releases loading and a late retry cannot overwrite a model mutation', async () => {
+  const { createState } = await modelSettingsLoader()
+  const state = createState('project-a')
+  const { completion, retry } = await startInFlightModelRetry(state)
+  state.selectedNameFromPath.value = ''
+  await nextTick()
+  assert.equal(state.llmSettingsLoading.value, false)
+  state.llmSettings.value = { models: [] }
+  retry.resolve({ models: [readyModel] })
+  await completion
+  assert.deepEqual(state.llmSettings.value.models, [])
+  assert.equal(state.timers.length, 0)
+})
+
+test('workspace invalidation fences a retry when the destination project has the same name', async () => {
+  const { app, createState } = await modelSettingsLoader()
+  assert.match(app, /function invalidateProjectContextState\(\) \{[\s\S]*?invalidateLLMSettingsLoad\(\)/)
+  assert.match(app, /invalidateProjectContextState\(\)\s+if \(isCreateModelRoute.value\)[\s\S]*?void loadLLMSettings\(\)/)
+  const state = createState('same-project')
+  const { completion, retry } = await startInFlightModelRetry(state)
+  assert.equal(retry.workspace, 'first')
+  state.props.ctx = { workspace: 'second' }
+  state.invalidateLLMSettingsLoad()
+  state.llmSettings.value = null
+  const replacement = state.loadLLMSettings()
+  retry.resolve({ models: [readyModel] })
+  await completion
+  assert.equal(state.llmSettings.value, null)
+  const second = state.reads.shift()
+  assert.equal(second.workspace, 'second')
+  second.resolve({ models: [pendingModel] })
+  await nextTick()
+  state.timers.shift()()
+  await nextTick()
+  state.reads.shift().resolve({ models: [{ ...pendingModel, configured: true }] })
+  await replacement
+  assert.equal(state.llmSettings.value.models[0].configured, true)
+})
+
+test('workspace remount prevents an old retry error from restarting initialization', async () => {
+  const { app, createState } = await modelSettingsLoader()
+  assert.match(app, /onBeforeUnmount\(\(\) => \{\s*appComponentMounted = false\s*invalidateLLMSettingsLoad\(\)/)
+  const state = createState('project-a')
+  const { completion, retry } = await startInFlightModelRetry(state)
+  state.invalidateLLMSettingsLoad()
+  retry.reject(new Error('Workspace still initializing'))
+  await completion
+  assert.equal(state.initializationRetries, 0)
+  assert.equal(state.timers.length, 0)
 })
 
 test('selecting a saved provider clears stale verification and preserves the model draft', async () => {
@@ -614,41 +733,57 @@ test('provider detours preserve the original Models or project route and the mod
   assert.ok(accept)
   const compiledAccept = ts.transpileModule(accept.getText(settingsAST), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const acceptedConnection = { name: 'new-provider', provider: 'anthropic', baseURL: 'https://api.anthropic.com/v1' }
-  const buildAcceptance = providerDetourActive => {
+  const buildAcceptance = (providerDetourActive, original = null) => {
     const events = []
-    const state = new Function('ref', 'props', 'emit', `
-      const connectionSuccess = ref(null)
+    const state = new Function('ref', 'props', 'emit', 'toast', 'original', `
+      const pendingConnection = ref(null)
       const connectionAPIKey = ref('typed-secret')
       const connectionEditorOpen = ref(true)
-      const connectionOriginal = ref({ name: 'old-provider' })
+      const connectionOriginal = ref(original)
       const connectionNotice = ref('saved')
       const connectionError = ref('stale error')
       const connectionVerifiedFingerprint = ref('')
       ${compiledAccept}
-      return { acceptSavedConnection, connectionSuccess, connectionAPIKey,
+      return { acceptSavedConnection, pendingConnection, connectionAPIKey,
         connectionEditorOpen, connectionOriginal, connectionNotice, connectionError,
         connectionVerifiedFingerprint }
-    `)(ref, { providerDetourActive }, (...args) => events.push(args))
+    `)(ref, { providerDetourActive }, (...args) => events.push(args), (...args) => events.push(['toast', ...args]), original)
     return { ...state, events }
   }
   const detour = buildAcceptance(true)
   detour.acceptSavedConnection(acceptedConnection, 'new-fingerprint')
   assert.deepEqual(detour.events, [
     ['connectionsChanged', acceptedConnection],
+    ['toast', 'ok', 'Provider connected.'],
     ['continueModelWithProvider', acceptedConnection],
   ])
   assert.equal(detour.connectionAPIKey.value, '')
   assert.equal(detour.connectionVerifiedFingerprint.value, 'new-fingerprint')
   const standalone = buildAcceptance(false)
   standalone.acceptSavedConnection(acceptedConnection, 'new-fingerprint')
-  assert.deepEqual(standalone.events, [['connectionsChanged', acceptedConnection]])
+  assert.deepEqual(standalone.events, [
+    ['connectionsChanged', acceptedConnection],
+    ['toast', 'ok', 'Provider connected.'],
+  ])
+  assert.equal(standalone.pendingConnection.value, null)
+
+  const editing = buildAcceptance(false, acceptedConnection)
+  editing.acceptSavedConnection(acceptedConnection, 'new-fingerprint')
+  assert.deepEqual(editing.events.at(-1), ['toast', 'ok', 'Provider connection updated.'])
+
+  const pending = buildAcceptance(false)
+  const pendingConnection = { ...acceptedConnection, activationPending: true }
+  pending.acceptSavedConnection(pendingConnection, 'new-fingerprint')
+  assert.deepEqual(pending.events, [['connectionsChanged', pendingConnection]])
+  assert.deepEqual(pending.pendingConnection.value, pendingConnection)
 
   assert.match(app, /if \(!modelsReturnRoute\.value && isProviderConnectionsRoute\.value\) modelsReturnRoute\.value = MODEL_PROVIDER_CONNECTIONS_ROUTE/)
   assert.match(settings, /Need another provider\? <button[^>]*@click="startProviderDetour"/)
   assert.match(settings, /No provider connections are saved yet\.[\s\S]*@click="startProviderDetour"/)
   assert.match(settings, /This model uses a legacy direct credential\. Select a saved provider connection to migrate it/)
   assert.match(settings, /No provider connections are saved yet\.[\s\S]*@click="startProviderDetour"/)
-  assert.match(settings, /providerDetourActive \? 'Use provider' : 'Add model'/)
+  assert.match(settings, /@click="addModelFor\(connectionFromTableRow\(row\)\)"/)
+  assert.doesNotMatch(settings, /Dismiss provider connected message/)
   assert.match(app, /@continue-model-with-provider="continueModelWithProvider"/)
 })
 
@@ -763,7 +898,7 @@ test('saved provider connections open on cached models with the existing label v
   }).join('\n')
   const { outputText } = ts.transpileModule(declarations, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
   const state = {
-    connectionOriginal: ref(null), connectionSuccess: ref(null), connectionPreset: ref('openai'),
+    connectionOriginal: ref(null), pendingConnection: ref(null), connectionPreset: ref('openai'),
     connectionProvider: ref(''), connectionBaseURL: ref(''), connectionCredentialMode: ref('api-key'),
     connectionWorkspaceID: ref(''), connectionAPIKey: ref(''), connectionDisplayName: ref(''),
     connectionVerificationModel: ref(''), connectionDiscoveredModels: ref([]),
@@ -1387,6 +1522,50 @@ test('provider key activation rejects insufficient revision capacity before chan
   assert.equal(reservations, 0, 'the initial capacity check must leave the existing connection untouched')
 })
 
+test('key activation retries a status-only race and stops on a concurrent edit', async () => {
+  const { KubeError } = await vite.ssrLoadModule('/src/portalkit/kube.ts')
+  const source = await readFile(new URL('./llmRegistry.ts', import.meta.url), 'utf8')
+  const ast = ts.createSourceFile('registry.ts', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const fn = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'activateConnectionSecret')
+  const { outputText } = ts.transpileModule(fn.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const pending = 'ai.railgrid.ai/pending-key-secret', generated = 'ai.railgrid.ai/generated-secret-id'
+  const activate = new Function('KubeError', 'MODEL_PROVIDER_CONNECTION_RESOURCE', 'PENDING_SECRET_ANNOTATION',
+    'GENERATED_SECRET_ANNOTATION', 'CONNECTION_DISPLAY_NAME_ANNOTATION', 'LLMRegistryError', 'sameJSONValue',
+    'assertConnectionRolloverCapacity', `${outputText}; return activateConnectionSecret`)(
+    KubeError, {}, pending, generated, 'display-name', Error,
+    (a, b) => JSON.stringify(a) === JSON.stringify(b), async () => {},
+  )
+  const spec = { provider: 'openai-compatible', baseURL: 'https://provider.example/v1', secretRef: { name: 'old-key' } }
+  const desired = { ...spec, secretRef: { name: 'new-key' } }
+  const secret = { id: 'new-id', name: 'new-key' }
+  for (const race of ['status', 'spec', 'label', 'same-version']) {
+    let current = { metadata: { name: 'primary', uid: 'uid', resourceVersion: '1', generation: 1, annotations: { [pending]: secret.name } }, spec }
+    const versions = []
+    const rejected = new KubeError('PATCH', '/connection', 422, null, 'the server rejected our request due to an error in our request')
+    const client = { get: async () => current, patch: async (_resource, _name, ops) => {
+      versions.push(ops.find(op => op.path === '/metadata/resourceVersion').value)
+      if (versions.length === 1) {
+        current = { ...current, metadata: { ...current.metadata, resourceVersion: race === 'same-version' ? '1' : '2' } }
+        if (race === 'status') current.status = { observedGeneration: 1 }
+        if (race === 'spec') current.spec = { ...spec, baseURL: 'https://other.example/v1' }
+        if (race === 'label') current.metadata.annotations = { ...current.metadata.annotations, 'display-name': 'Concurrent label' }
+        throw rejected
+      }
+      current = { metadata: { ...current.metadata, resourceVersion: '3', generation: 2, annotations: { [generated]: secret.id } }, spec: desired,
+        status: { observedGeneration: 2, connectionFingerprint: 'fp', activeSnapshot: { secretRef: desired.secretRef, generatedSecretID: secret.id, connectionFingerprint: 'fp' } } }
+      return current
+    } }
+    const result = activate(client, 'primary', 'uid', spec, desired, secret)
+    if (race === 'status') {
+      assert.deepEqual((await result).spec, desired)
+      assert.deepEqual(versions, ['1', '2'])
+    } else {
+      await assert.rejects(result, race === 'same-version' ? error => error === rejected : /connection changed/)
+      assert.deepEqual(versions, ['1'])
+    }
+  }
+})
+
 test('pending activation uses warning copy and does not offer an unadmitted binding', async () => {
   const html = await render({ routePage: true, providerConnectionsRoute: true, connections: [{ ...savedConnection, activationPending: true, ready: false }] })
   assert.match(html, /Changes pending/)
@@ -1518,7 +1697,7 @@ test('discovery survives equivalent list refreshes and clears when configuration
   } finally { stop() }
 })
 
-test('deleting an acknowledged connection removes its row and saved-success action', async () => {
+test('deleting a pending connection removes its row and activation warning', async () => {
   const app = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
   const ast = ts.createSourceFile('ModelsSettings.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -1527,18 +1706,18 @@ test('deleting an acknowledged connection removes its row and saved-success acti
   const declarations = ts.transpileModule(`${rows.getText(ast)}\nconst stop = ${watcher.getText(ast)}`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   const props = { connections: ref([{ ...savedConnection }]) }
   const reactiveProps = { get connections() { return props.connections.value } }
-  const success = ref({ ...savedConnection })
+  const pending = ref({ ...savedConnection, activationPending: true })
   const computed = fn => ({ get value() { return fn() } })
-  const state = new Function('props', 'connectionSuccess', 'computed', 'watch', `${declarations}; return { rows: connectionRows, stop }`)(reactiveProps, success, computed, watch)
+  const state = new Function('props', 'pendingConnection', 'computed', 'watch', `${declarations}; return { rows: connectionRows, stop }`)(reactiveProps, pending, computed, watch)
   try {
     assert.equal(state.rows.value.length, 1)
     props.connections.value = [{ ...savedConnection }]
     await nextTick()
-    assert.ok(success.value, 'successful collection refresh retains the follow-up action')
+    assert.ok(pending.value, 'collection refresh retains the pending warning')
     props.connections.value = []
     await nextTick()
     assert.deepEqual(state.rows.value, [])
-    assert.equal(success.value, null)
+    assert.equal(pending.value, null)
     props.connections.value = []
     await nextTick()
     assert.deepEqual(state.rows.value, [])

@@ -1041,6 +1041,7 @@ const llmCreateRouteSession = ref(false)
 const llmSettingsLoading = ref(false)
 const llmSettingsError = ref<string | null>(null)
 let llmSettingsLoadSerial = 0
+let llmSettingsLoadProject = ''
 const llmDiscoveredModels = ref<ProjectLLMDiscoveredModel[]>([])
 const llmDiscoveryComplete = ref(false)
 const llmDiscoveryLoading = ref(false)
@@ -1605,7 +1606,7 @@ function invalidateProjectContextState() {
   importRepositoriesLoadSerial += 1
   developmentTemplatesLoadSerial += 1
   providerCatalogLoadSerial += 1
-  llmSettingsLoadSerial += 1
+  invalidateLLMSettingsLoad()
   createReadinessLoadSerial += 1
   toolLoadSerial += 1
   developmentPreviewAuthorizationSerial += 1
@@ -1721,7 +1722,6 @@ function invalidateProjectContextState() {
   createReadinessLoading.value = false
   importRepositoriesLoading.value = false
   developmentTemplatesLoading.value = false
-  llmSettingsLoading.value = false
   toolState.value = 'idle'
   toolError.value = null
   projectCreateGeneration += 1
@@ -3498,6 +3498,8 @@ watch(
 )
 
 watch(selectedNameFromPath, (projectName) => {
+  if (projectName) void loadLLMSettings()
+  else if (llmSettingsLoadProject) invalidateLLMSettingsLoad()
   if (
     pendingFirstProjectSubmission &&
     projectName !== pendingFirstProjectSubmission.projectName &&
@@ -3601,6 +3603,7 @@ useEscapeKey(() => {
 
 onBeforeUnmount(() => {
   appComponentMounted = false
+  invalidateLLMSettingsLoad()
   projectCreationSubmit.invalidate()
   developmentPreviewComponentMounted = false
   developmentPreviewRefreshController.dispose()
@@ -4003,27 +4006,46 @@ watch(
   { immediate: true },
 )
 
+function invalidateLLMSettingsLoad() {
+  llmSettingsLoadSerial += 1
+  llmSettingsLoadProject = ''
+  llmSettingsLoading.value = false
+}
+
 async function loadLLMSettings() {
   const serial = ++llmSettingsLoadSerial
+  const projectName = llmSettingsLoadProject = selectedNameFromPath.value
+  const isCurrent = () => serial === llmSettingsLoadSerial && (!projectName || selectedNameFromPath.value === projectName)
   if (!hasProjectRequestTransport(props.ctx)) {
     llmSettingsLoading.value = false
     llmSettings.value = null
     llmSettingsError.value = null
     return
   }
-  llmSettingsLoading.value = true
+  llmSettingsLoading.value = !projectName || !llmConfigured.value
   llmActionError.value = null
   try {
-    const settings = await api.getLLMSettings(props.ctx)
-    if (serial !== llmSettingsLoadSerial) return
-    llmSettingsError.value = null
-    applyLLMSettings(settings)
+    for (let attempt = 0; ; attempt += 1) {
+      const settings = await api.getLLMSettings(props.ctx)
+      if (!isCurrent()) return
+      llmSettingsError.value = null
+      applyLLMSettings(settings)
+      // A newly saved binding can precede the Studio controller's status.
+      // Give project chat a bounded chance to see the ready model.
+      if (!projectName || settings.models.every(model => model.configured) || attempt >= 6) return
+      llmSettingsLoading.value = !llmConfigured.value
+      await new Promise(resolve => setTimeout(resolve, 500))
+      if (!isCurrent()) return
+    }
   } catch (e) {
-    if (serial !== llmSettingsLoadSerial) return
+    if (!isCurrent()) return
     if (handleProjectAPIInitializing(e)) return
     llmSettingsError.value = e instanceof Error ? e.message : String(e)
   } finally {
-    if (serial === llmSettingsLoadSerial) llmSettingsLoading.value = false
+    if (serial === llmSettingsLoadSerial) {
+      llmSettingsLoadProject = ''
+      llmSettingsLoading.value = false
+    }
   }
 }
 
