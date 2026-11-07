@@ -374,11 +374,8 @@ test('empty effort is serialized for turn and review, and the first send awaits 
   assert.ok(preferenceSaveIndex >= 0 && preferenceSaveIndex < send.indexOf('prompt.value = \'\'', preferenceSaveIndex))
   assert.match(send, /reasoningEffort: payload\.reasoningEffort \?\? ''/)
   assert.match(send, /if \(!steeringActiveRun && assistantReasoningPreferenceError\.value\)/)
-  assert.match(app, /function toggleAssistantProgress[\s\S]*loadAssistantTurnDetail\(message\)/)
-  assert.match(app, /data-testid="assistant-run-effective-settings"/)
-  assert.match(app, /Conversation preference or model default/)
-  assert.match(app, /Resolved effort:/)
-  assert.match(app, /actualReasoningLabel\(assistantTurnReasoning\(message\)\?\.effectiveEffort\)/)
+  assert.doesNotMatch(app, /assistant-run-effective-settings/)
+  assert.doesNotMatch(app, /loadAssistantTurnDetail/)
   assert.doesNotMatch(app, /Saved default:/)
 })
 
