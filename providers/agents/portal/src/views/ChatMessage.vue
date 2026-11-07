@@ -581,7 +581,7 @@ onBeforeUnmount(() => { mounted = false })
         :diagnostic="message.error"
         @recovery="emit('recovery', $event)"
       >
-        <template v-if="message.runID && showRunLink" #actions>
+        <template v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" #actions>
           <button
             :id="`agents-view-run-${message.id}`"
             class="k-ai-message-metadata__button agents-message-run-link agents-run-notice-link"

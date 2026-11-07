@@ -44,7 +44,7 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
     </div>
   </section>
 
-  <section v-else class="agents-run-state agents-run-state--inline">
+  <section v-else class="agents-run-state agents-run-state--inline" :class="`agents-run-state--${phase}`">
     <span class="sr-only" :role="phase === 'failed' ? 'alert' : 'status'">{{ presentation.title }}</span>
     <div class="agents-run-state__line">
       <AIActionRow

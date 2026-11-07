@@ -368,4 +368,13 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(interrupted.element.querySelector('.agents-run-state [role="status"]')).not.toBeNull()
     expect(text(interrupted.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Chat connection interrupted')
   })
+
+  it('keeps View run in the active progress controls when the chat stream is interrupted', async () => {
+    const view = await mountVue(ChatMessage, {
+      message: message({ runID: 'run-live', error: 'Chat failed: connection closed', progress: { status: 'running', durationMS: 1000, trace: [] } }),
+    })
+    expect(text(view.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Chat connection interrupted')
+    expect(view.element.querySelectorAll('.agents-message-run-link')).toHaveLength(1)
+    expect(view.element.querySelector('.agents-progress-actions .agents-message-run-link')).not.toBeNull()
+  })
 })
