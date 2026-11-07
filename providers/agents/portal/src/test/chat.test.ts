@@ -1159,7 +1159,8 @@ describe('chat streaming', () => {
 
     await send(el, 'hello')
 
-    expect(text(el)).toContain('Could not refresh conversations. Showing the last loaded conversations.')
+    expect(text(el.querySelector('.agents-chat-sessions-notice strong'))).toBe('Could not refresh conversations')
+    expect(text(el.querySelector('.agents-chat-sessions-notice'))).toContain('Showing the last loaded conversations.')
     expect(text(el)).toContain('session refresh failed')
     await chooseSession(el, 'Second chat')
     expect(text(el.querySelector('.k-ai-conversation-rail'))).toContain('Second chat')
@@ -1782,7 +1783,7 @@ describe('chat streaming', () => {
     ]), { listSessions, deleteSession: vi.fn().mockResolvedValue(undefined) })
 
     await send(el, 'refresh the list')
-    const stale = el.querySelector<HTMLElement>('.k-stale')!
+    const stale = el.querySelector<HTMLElement>('.agents-chat-sessions-notice')!
     const retry = stale.querySelector<HTMLButtonElement>('button')!
     retry.click()
     await settle(2)
@@ -1910,9 +1911,13 @@ describe('chat read ownership', () => {
     expect(text(sessionFailure.element)).not.toContain('No messages yet')
     expect(text(sessionFailure.element.querySelector('.k-ai-conversation-rail'))).not.toContain('New chat')
 
+    const pendingRetry = deferred<{ items: [] }>()
+    const listMessagePage = vi.fn()
+      .mockRejectedValueOnce(new Error('transcript unavailable'))
+      .mockReturnValueOnce(pendingRetry.promise)
     const messageAPI = stubApi({
       listSessions: () => Promise.resolve([session('s1')]),
-      listMessagePage: async () => ({ items: await (Promise.reject(new Error('transcript unavailable'))) }),
+      listMessagePage,
     })
     const messageStore = makeStore(messageAPI)
     messageStore.agents.data = [agentFixture('scout')]
@@ -1920,8 +1925,22 @@ describe('chat read ownership', () => {
     mounted.push(messageFailure)
     await settle(4)
 
-    expect(text(messageFailure.element.querySelector('[role="alert"]'))).toContain('transcript unavailable')
+    const notice = messageFailure.element.querySelector('.agents-chat-transcript-notice')!
+    expect(notice.getAttribute('role')).toBe('alert')
+    expect(text(notice.querySelector('strong'))).toBe('Could not load this conversation')
+    expect(text(notice)).toContain('transcript unavailable')
     expect(text(messageFailure.element)).not.toContain('No messages yet')
+
+    const retry = notice.querySelector<HTMLButtonElement>('button')!
+    retry.click()
+    await settle(4)
+    expect(retry.disabled).toBe(true)
+    expect(text(retry)).toBe('Retrying…')
+    expect(text(messageFailure.element)).not.toContain('Loading conversation…')
+    pendingRetry.resolve({ items: [] })
+    await settle(4)
+    expect(messageFailure.element.querySelector('.agents-chat-transcript-notice')).toBeNull()
+    expect(text(messageFailure.element)).toContain('Start a conversation')
   })
 
   it('retains a loaded transcript when a background refresh fails', async () => {
@@ -1945,8 +1964,8 @@ describe('chat read ownership', () => {
     await settle(4)
 
     expect(text(view.element)).toContain('keep this message')
-    expect(text(view.element.querySelector('.k-stale'))).toContain('Showing the last loaded transcript')
-    expect(text(view.element.querySelector('.k-stale'))).toContain('transcript refresh unavailable')
+    expect(text(view.element.querySelector('.agents-chat-transcript-notice'))).toContain('Showing the last loaded transcript')
+    expect(text(view.element.querySelector('.agents-chat-transcript-notice'))).toContain('transcript refresh unavailable')
     expect(text(view.element)).not.toContain('No messages yet')
   })
 
@@ -2411,7 +2430,8 @@ describe('a run still working with nobody attached', () => {
     await settle(4)
     expect(el.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeNull()
     expect(text(el)).toContain('hi')
-    expect(text(el)).toContain('Could not check for an active run: unavailable')
+    expect(text(el.querySelector('.agents-chat-run-notice strong'))).toBe('Could not check for an active run')
+    expect(text(el.querySelector('.agents-chat-run-notice'))).toContain('unavailable')
   })
 
   it('keeps a live-run snapshot when a same-session refresh fails', async () => {
@@ -2434,7 +2454,7 @@ describe('a run still working with nobody attached', () => {
     await settle(4)
 
     expect(view.element.querySelector('.k-ai-turn-progress__header:has(.agents-progress-actions)')).toBeTruthy()
-    expect(text(view.element)).toContain('Could not refresh run status. Showing the last loaded status.')
+    expect(text(view.element.querySelector('.agents-chat-run-notice'))).toContain('Could not refresh run status. Showing the last loaded status.')
     expect(text(view.element)).toContain('run refresh failed')
   })
 })

@@ -142,7 +142,7 @@ describe('chat bootstrap input readiness', () => {
     expect(el.querySelector('[role="alert"]')?.textContent).toContain('Could not load conversations')
     expect(composerEditor(el)?.getAttribute('contenteditable')).toBe('false')
 
-    el.querySelector<HTMLButtonElement>('.agents-state-error button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-chat-sessions-notice button')!.click()
     await settle(10)
 
     expect(listSessions).toHaveBeenCalledTimes(2)
