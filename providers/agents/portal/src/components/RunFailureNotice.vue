@@ -26,22 +26,37 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 <template>
   <section
     class="agents-run-state"
-    :class="[{ 'agents-run-state--inspection': inspection }, `agents-run-state--${phase}`]"
+    :class="[inspection ? 'agents-run-state--inspection' : 'agents-run-state--inline', `agents-run-state--${phase}`]"
     :role="phase === 'failed' ? 'alert' : 'status'"
   >
     <TriangleAlert class="agents-run-state__icon" :stroke-width="1.9" aria-hidden="true" />
     <div class="agents-run-state__body">
-      <h3>{{ presentation.title }}</h3>
-      <p>{{ presentation.summary }}</p>
+      <div class="agents-run-state__copy">
+        <h3>{{ presentation.title }}</h3>
+        <span v-if="!inspection" class="agents-run-state__separator" aria-hidden="true"> · </span>
+        <p>{{ presentation.summary }}</p>
+      </div>
       <button
-        v-if="presentation.recovery"
+        v-if="inspection && presentation.recovery"
         class="k-btn k-btn--primary agents-run-state__recovery"
         type="button"
         @click="emit('recovery', presentation.recovery.target)"
       >
         {{ presentation.recovery.label }}
       </button>
-      <TechnicalDetails class="agents-run-state__details" :diagnostic="safeDiagnostic" compact copyable />
+      <TechnicalDetails class="agents-run-state__details" :diagnostic="safeDiagnostic" :inline="!inspection" compact copyable>
+        <template v-if="!inspection && ($slots.actions || presentation.recovery)" #actions>
+          <slot name="actions" />
+          <button
+            v-if="presentation.recovery"
+            class="k-ai-message-metadata__button agents-run-state__recovery agents-run-state__action"
+            type="button"
+            @click="emit('recovery', presentation.recovery.target)"
+          >
+            {{ presentation.recovery.label }}
+          </button>
+        </template>
+      </TechnicalDetails>
     </div>
   </section>
 </template>
@@ -89,4 +104,37 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 
 .agents-run-state__details { min-width: 0; margin-block-start: 12px; }
 
+.agents-run-state--inline {
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.agents-run-state--inline .agents-run-state__icon {
+  width: 16px;
+  height: 16px;
+  margin-block-start: 2px;
+}
+
+.agents-run-state--inline .agents-run-state__copy {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.agents-run-state--inline h3,
+.agents-run-state--inline p { display: inline; }
+.agents-run-state--inline p { margin: 0; }
+.agents-run-state__separator { margin-inline: 2px; }
+.agents-run-state--inline .agents-run-state__details { margin-block-start: 2px; }
+
+.agents-run-state__action {
+  min-height: 28px;
+  margin: 0;
+  padding-inline: 0;
+  color: var(--color-accent);
+}
+
+@media (hover: none), (any-pointer: coarse) {
+  .agents-run-state__action { min-height: 44px; }
+}
 </style>

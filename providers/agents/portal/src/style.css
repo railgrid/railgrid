@@ -515,6 +515,15 @@ railgrid-provider-agents .agents-body {
 railgrid-provider-agents .agents-msg.user { align-items: flex-end; }
 railgrid-provider-agents .agents-msg.user .agents-body { white-space: pre-wrap; }
 railgrid-provider-agents .agents-message-footer { display: flex; align-items: center; gap: 8px; }
+railgrid-provider-agents .agents-run-notice-link {
+  gap: 5px;
+  min-height: 28px;
+  padding-inline: 0;
+  color: var(--color-accent);
+}
+@media (hover: none), (any-pointer: coarse) {
+  railgrid-provider-agents .agents-run-notice-link { min-height: 44px; }
+}
 railgrid-provider-agents .agents-turn-usage { font-size: 11px; color: var(--color-text-muted, #5d5f78); font-family: var(--agents-mono); }
 
 /* Code-copy is provider behavior; prose geometry and typography come from the shared kit. */

@@ -34,10 +34,11 @@ describe('run failure recovery and diagnostics', () => {
     expect(notice.getAttribute('role')).toBe('alert')
     expect(text(notice.querySelector('h3'))).toBe('Couldn’t start this run')
     expect(text(notice.querySelector('p'))).toBe('Runner “book-codex” wasn’t found.')
-    expect(notice.querySelector('details')!.open).toBe(false)
+    expect(notice.querySelector('.agents-technical__toggle')?.getAttribute('aria-expanded')).toBe('false')
     expect(view.element.querySelector('.k-ai-turn-progress')).toBeNull()
     notice.querySelector<HTMLButtonElement>('.agents-run-state__recovery')!.click()
-    view.element.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
+    expect(view.element.querySelectorAll('.agents-message-run-link')).toHaveLength(1)
+    notice.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
     expect(recovery).toHaveBeenCalledWith('agent-config')
     expect(viewRun).toHaveBeenCalledWith('run-start')
   })
@@ -61,6 +62,32 @@ describe('run failure recovery and diagnostics', () => {
     details.querySelector('summary')!.click()
     await settleVue()
     expect(text(details.querySelector('pre'))).toBe('Short runner error')
+  })
+
+  it('expands inline details below the failure and copies from the diagnostic block', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('navigator', { clipboard: { writeText } })
+    const diagnostic = 'starting the harness turn: runner HTTP 502: failed to connect to edge agent'
+    const view = await mountVue(ChatMessage, {
+      message: { id: 'unclear', role: 'assistant', content: '', tools: [], runID: 'run-502', error: diagnostic },
+    })
+    const notice = view.element.querySelector('.agents-run-state')!
+    expect(text(notice.querySelector('h3'))).toBe('Run status is unclear')
+    const toggle = notice.querySelector<HTMLButtonElement>('.agents-technical__toggle')!
+    const body = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    expect(body.style.display).toBe('none')
+    toggle.click()
+    await settleVue()
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(body.style.display).not.toBe('none')
+    expect(text(body.querySelector('pre'))).toBe(diagnostic)
+    body.querySelector<HTMLButtonElement>('[aria-label="Copy details"]')!.click()
+    await settleVue()
+    expect(writeText).toHaveBeenCalledWith(diagnostic)
+    expect(text(body.querySelector('[role="status"]'))).toBe('Technical details copied.')
+    toggle.click()
+    await settleVue()
+    expect(body.style.display).toBe('none')
   })
 
   it('copies only the sanitized diagnostic and clears feedback when it changes', async () => {
@@ -96,7 +123,7 @@ describe('run failure recovery and diagnostics', () => {
 
   it('omits the disclosure when there is no useful diagnostic', async () => {
     const view = await mountVue(RunFailureNotice, { phase: 'failed', diagnostic: '  ' })
-    expect(view.element.querySelector('details')).toBeNull()
+    expect(view.element.querySelector('.agents-technical__toggle')).toBeNull()
     expect(text(view.element)).not.toContain('partial output')
   })
 })

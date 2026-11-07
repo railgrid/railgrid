@@ -321,17 +321,17 @@ describe('AgentKit timestamp and chat presentation', () => {
     const state = view.element.querySelector<HTMLElement>('.agents-run-state')!
     const progress = view.element.querySelector<HTMLElement>('.k-ai-turn-progress')!
     const partialOutput = view.element.querySelector<HTMLElement>('.agents-body')!
-    const details = state.querySelector<HTMLDetailsElement>('details')!
+    const details = state.querySelector<HTMLButtonElement>('.agents-technical__toggle')!
 
     expect(state.getAttribute('role')).toBe('alert')
     expect(text(state.querySelector('h3'))).toBe('The model rejected a reasoning setting')
-    expect(details.open).toBe(false)
-    expect(Boolean(state.compareDocumentPosition(progress) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
-    expect(Boolean(state.compareDocumentPosition(partialOutput) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(details.getAttribute('aria-expanded')).toBe('false')
+    expect(Boolean(progress.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(Boolean(partialOutput.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
 
-    details.querySelector('summary')!.click()
+    details.click()
     await settleVue()
-    const diagnosticText = text(details.querySelector('pre'))
+    const diagnosticText = text(state.querySelector('pre'))
     expect(diagnosticText).toContain('reasoning_effort')
     expect(diagnosticText).toContain('model.example')
     expect(diagnosticText).not.toContain(bearer)

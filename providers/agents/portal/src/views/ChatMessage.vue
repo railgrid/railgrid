@@ -3,6 +3,7 @@ import type { QuestionReply } from '../types'
 import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
+  ArrowRight,
   ChevronDown,
   CircleHelp,
   FileSearch,
@@ -378,14 +379,8 @@ onBeforeUnmount(() => { mounted = false })
       :bubble="message.role === 'user' && userHasBubbleContent"
       :aria-label="message.role === 'user' ? `Message from ${messageAuthor}` : 'Assistant message'"
     >
-      <template v-if="failurePhase || (message.role === 'user' && messageAttachments.length)" #before>
-        <AIAttachmentReceipts v-if="message.role === 'user' && messageAttachments.length" :attachments="messageAttachments" :load-attachment="loadAttachment" />
-        <RunFailureNotice
-          v-if="failurePhase"
-          :phase="failurePhase"
-          :diagnostic="message.error"
-          @recovery="emit('recovery', $event)"
-        />
+      <template v-if="message.role === 'user' && messageAttachments.length" #before>
+        <AIAttachmentReceipts :attachments="messageAttachments" :load-attachment="loadAttachment" />
       </template>
 
       <template v-if="progressVisible" #progress>
@@ -580,8 +575,25 @@ onBeforeUnmount(() => { mounted = false })
       </template>
     </template>
 
-    <template v-if="message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
-      <div v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
+    <template v-if="failurePhase || message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
+      <RunFailureNotice
+        v-if="failurePhase"
+        :phase="failurePhase"
+        :diagnostic="message.error"
+        @recovery="emit('recovery', $event)"
+      >
+        <template v-if="message.runID && showRunLink" #actions>
+          <button
+            :id="`agents-view-run-${message.id}`"
+            class="k-ai-message-metadata__button agents-message-run-link agents-run-notice-link"
+            type="button"
+            @click="emit('view-run', message.runID!)"
+          >
+            View run <ArrowRight :size="14" :stroke-width="1.75" aria-hidden="true" />
+          </button>
+        </template>
+      </RunFailureNotice>
+      <div v-if="!failurePhase && message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
         <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>
       <div v-if="message.usage" class="k-ai-message-metadata agents-turn-usage">
