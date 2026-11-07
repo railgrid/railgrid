@@ -168,5 +168,5 @@ Show all activities control; opening output removes the list bound. User
 expansion survives lifecycle updates and promotion from one call to a group.
 Providers place turn activity inside Worked for, which opens during execution.
 Receipts without progress metadata use the same disclosure boundary. Providers own
-expandable run details, settings, and transport metadata; display-only command descriptions never
+expandable work details and transport metadata; display-only command descriptions never
 change tool risk, authorization, or execution.

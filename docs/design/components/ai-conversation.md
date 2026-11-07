@@ -454,8 +454,7 @@ Rendered evidence: [Agents desktop](../evidence/command-output/command-output-ag
 [App Studio desktop](../evidence/command-output/command-output-studio-1440-light.png),
 and [App Studio phone](../evidence/command-output/command-output-studio-390-dark.png).
 
-Worked for contains the ordered commentary, tool groups, command output, and run
-settings. It opens during execution so streamed tool starts are visible, and
+Worked for contains the ordered commentary, tool groups, and command output. It opens during execution so streamed tool starts are visible, and
 preserves explicit reader choices across updates. Single actions have no count wrapper; multiple actions share one semantic summary
 (such as Edited files, read files, ran commands) without category subgroups.
 The shared presentation classifies only unambiguous simple command arguments
