@@ -202,6 +202,11 @@ An approval pause shows the tool and disclosed arguments with **Approve &
 resume** and **Deny**. A missing or malformed disclosure is a reason to stop
 and report, not a reason to reconstruct or guess the operation.
 
+In chat, a resolved permission request becomes a collapsed disclosure labeled
+**Permission approved** or **Permission denied**. Its request details remain
+available on expansion. Turn metadata, including any timestamp, appears below
+the interruption.
+
 Activity retains PortalKit's queryable `ResourceTable` for filters, cursor
 pagination, read states, and keyboard row navigation. The primary cell groups
 the input preview with the agent; phase, trigger/class, duration, usage, and
@@ -280,9 +285,11 @@ from observed work without counting the idle pause.
 
 Agents maps the resulting `durationMS` through the shared
 `formatAIWorkedDuration` helper and passes the rounded label to `AITurnProgress`.
-The shared `AITimestamp` presents each valid server-created message timestamp as
-semantic time with relative and full values. AgentKit owns this presentation;
-Agents owns the server projection, lifecycle phase, and timing evidence.
+The shared `AITimestamp` presents valid message timestamps as semantic time with
+relative and full values. Agents hides the assistant footer timestamp while the
+turn is pending, running, waiting, or stopping. AgentKit owns timestamp
+presentation. Agents owns the server projection, lifecycle phase, and timing
+evidence.
 
 The rendered fixture evidence for this contract came from built bundles with
 mocked APIs at desktop and mobile sizes in light and dark themes, including the

@@ -2460,7 +2460,10 @@ async function streamTurn(
             ? 'failed'
             : progressStatusForRunPhase(data.status) || 'failed'
           if (data.status !== undefined && ['completed', 'aborted', 'failed', 'interrupted'].includes(status)) closeApprovalRecovery(data.runID || liveRunID)
-          patchMessage(assistantID, { error: data.message || 'stream error' })
+          patchMessage(assistantID, {
+            error: data.message || 'stream error',
+            ...(data.finishedAt ? { createdAt: data.finishedAt } : {}),
+          })
           patchProgress(assistantID, {
             status,
             ...(data.startedAt ? { startedAt: data.startedAt } : {}),

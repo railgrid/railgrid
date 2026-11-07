@@ -533,6 +533,9 @@ railgrid-provider-agents .agents-approval-head svg { width: 14px; height: 14px; 
 railgrid-provider-agents .agents-approval-tool { color: var(--color-text-secondary, #8a8ca6); font-size: 12px; }
 railgrid-provider-agents .agents-approval-args { max-width: 100%; overflow: auto; white-space: pre-wrap; }
 railgrid-provider-agents .agents-approval-done { font-size: 12.5px; color: var(--color-text-secondary, #8a8ca6); }
+railgrid-provider-agents details.agents-approval-done { min-width: 0; max-width: 100%; }
+railgrid-provider-agents details.agents-approval-done > summary { width: fit-content; cursor: pointer; }
+railgrid-provider-agents details.agents-approval-done .agents-approval-args { max-block-size: 24dvh; overflow-wrap: anywhere; }
 railgrid-provider-agents .agents-approval-question { margin: 0; max-width: 72ch; }
 railgrid-provider-agents .agents-approval-answer { min-width: 0; flex: 1 1 16rem; }
 
