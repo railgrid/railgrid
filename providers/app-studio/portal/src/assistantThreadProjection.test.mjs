@@ -408,7 +408,7 @@ test('projects bounded public skill provenance onto durable user messages', asyn
   assert.deepEqual(assistantThreadItemsToMessages([{
     id: 'legacy-user', type: 'userMessage', status: 'completed', content: 'No selection', sequence: 1,
     createdAt: '2026-08-02T17:42:09Z',
-  }], 'demo')[0].metadata, {})
+  }], 'demo')[0].metadata, { assistantThreadSequence: 1 })
 })
 
 test('projects typed commentary items without erasing the owner trace', async () => {
@@ -981,4 +981,26 @@ test('attributes optimistic user messages immediately when an account has no ema
   assert.equal(optimisticAIMessageActor({ email: '', userId: 'static-user-alice' }), 'static-user-alice')
   assert.equal(optimisticAIMessageActor({ email: 'alice@example.com', userId: 'user-alice' }), 'alice@example.com')
   assert.equal(optimisticAIMessageActor(null), 'You')
+})
+
+test('starter prompt stays before its response through completion, live merge, and reload despite reversed timestamps', async () => {
+  const { assistantThreadItemsToMessages, mergeLiveAssistantThreadMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
+  const { orderConversationMessages, mergeConversationSnapshot } = await vite.ssrLoadModule('/src/conversationResilience.ts')
+  const user = { id: 'starter-user', turnID: 'starter-turn', type: 'userMessage', sequence: 2, status: 'completed', content: 'Summarize this project and suggest the next best step.', createdAt: '2026-11-07T12:00:00.025Z' }
+  const assistant = { id: 'starter-response', turnID: 'starter-turn', type: 'agentMessage', sequence: 8, status: 'completed', content: 'Project summary', createdAt: '2026-11-07T12:00:00.000Z' }
+  const canonical = assistantThreadItemsToMessages([assistant, user], 'project')
+  const expected = ['starter-user', 'starter-response']
+  assert.deepEqual(orderConversationMessages(canonical).map(message => message.id), expected)
+  const { metadata, ...response } = canonical[1]
+  const completed = mergeConversationSnapshot({ messages: [...canonical].reverse(), runs: {} }, {
+    run: { id: 'starter-turn', revision: 9, status: 'completed', activeMessageID: assistant.id },
+    message: { ...response, metadata: { assistantStatus: 'completed' } },
+  })
+  assert.equal(completed.messages.find(message => message.id === assistant.id).metadata.assistantThreadSequence, 8)
+  assert.deepEqual(orderConversationMessages(completed.messages).map(message => message.id), expected)
+  const merged = mergeLiveAssistantThreadMessages(completed.messages, canonical, new Set())
+  assert.deepEqual(merged.map(message => message.id), expected)
+  assert.deepEqual(orderConversationMessages(assistantThreadItemsToMessages([assistant, user], 'project')).map(message => message.id), expected)
+  const optimistic = { id: 'optimistic-next', role: 'user', content: 'Next', createdAt: '2026-11-07T11:59:00Z' }
+  assert.deepEqual(orderConversationMessages([optimistic, ...merged]).map(message => message.id), [...expected, optimistic.id])
 })

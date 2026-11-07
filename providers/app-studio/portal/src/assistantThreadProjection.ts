@@ -8,6 +8,7 @@ import type {
   ProjectMessage,
 } from './types'
 import { projectAssistantComposerParts } from './assistantCommandPalette'
+import { orderConversationMessages } from './conversationResilience'
 import { parseAssistantProgress } from './assistantProgress'
 
 export const MAX_ASSISTANT_SKILLS = 8
@@ -370,14 +371,7 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
   for (const message of current) {
     if (!seen.has(message.id)) merged.push(message)
   }
-  return merged.sort((left, right) => {
-    const leftAt = Date.parse(left.createdAt)
-    const rightAt = Date.parse(right.createdAt)
-    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) return leftAt - rightAt
-    if (left.createdAt !== right.createdAt) return 0
-    if (left.role === right.role) return 0
-    return left.role === 'user' ? -1 : 1
-  })
+  return orderConversationMessages(merged)
 }
 
 /**
@@ -446,7 +440,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
   for (const item of ordered) {
     if (item.type !== 'userMessage' && item.type !== 'agentMessage') continue
     const role = item.type === 'userMessage' ? 'user' : 'assistant'
-    const metadata: Record<string, unknown> = {}
+    const metadata: Record<string, unknown> = { assistantThreadSequence: item.sequence }
     if (role === 'user') {
       const assistantSkills = assistantSkillsFromThreadItem(item)
       if (assistantSkills.length) metadata.assistantSkills = assistantSkills

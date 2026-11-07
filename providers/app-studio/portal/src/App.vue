@@ -9678,6 +9678,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const userContentParts = role === 'user' ? assistantContentPartsFromThreadItem(rawItem) : []
       const metadata: Record<string, unknown> = {
         ...(existing?.metadata ?? {}),
+        assistantThreadSequence: rawItem.sequence > 0 ? rawItem.sequence : event.sequence,
         ...(userAssistantSkills.length ? { assistantSkills: userAssistantSkills } : {}),
         ...(userContextResources.length ? { assistantContextResources: userContextResources } : {}),
         ...(userContentParts.length ? { assistantContentParts: userContentParts } : {}),
@@ -9700,7 +9701,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         role,
         content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
         metadata,
-        createdAt: event.createdAt,
+        createdAt: rawItem.createdAt || existing?.createdAt || event.createdAt,
       })
       messages.value = existing
         ? messages.value.map((message) => message.id === existing.id ? projected : message)
