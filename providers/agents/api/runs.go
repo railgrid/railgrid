@@ -191,9 +191,10 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	if run.Phase == store.RunPhaseRunning {
 		progress, err := s.store.GetRunProgress(ctx, scope, runID)
 		if err != nil {
-			return runDetail{}, err
+			log.Printf("agents: reading live progress for run %s: %v", runID, err)
+		} else {
+			detail.Progress = progress
 		}
-		detail.Progress = progress
 	}
 	detail.Repository, detail.Result = run.Repository, run.Result
 	detail.HarnessSettings = run.HarnessSettings

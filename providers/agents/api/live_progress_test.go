@@ -9,7 +9,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -306,4 +308,75 @@ func TestLiveProgressEvictsCompletedRowsBeforePendingCommands(t *testing.T) {
 		}
 	}
 	t.Fatal("still-running command was evicted in favor of completed rows")
+}
+
+func TestLiveProgressSettlesToolAfterTranscriptWriteFailure(t *testing.T) {
+	for _, backendType := range []string{agentsv1alpha1.AgentBackendHarness, agentsv1alpha1.AgentBackendModel} {
+		t.Run(backendType, func(t *testing.T) {
+			ctx := t.Context()
+			base := store.NewMemoryStore()
+			st := &failRoleAppendStore{Store: base, failRole: "tool"}
+			scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+			now := time.Now().UTC()
+			if err := st.SaveRun(ctx, scope, store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhaseRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+				t.Fatal(err)
+			}
+			agent := &agentsv1alpha1.Agent{}
+			agent.Name = "coder"
+			sink := (&Server{store: st}).turnSink(ctx, taskRun{Scope: scope, Agent: agent, RunID: "run"}, "session", now, backendType, nil)
+			sink.ToolStart("call", "shell", "{}")
+			before, err := base.GetRunProgress(ctx, scope, "run")
+			if err != nil || len(before) != 1 || before[0].Metadata["pending"] != true {
+				t.Fatalf("pending progress = %+v, %v", before, err)
+			}
+			sink.ToolEnd(backend.ToolEvent{ID: "call", Name: "shell", Result: "PASS"})
+			if sink.run.transcriptWrites.failure() == nil {
+				t.Fatal("transcript failure was not recorded")
+			}
+			page, err := base.ListMessages(ctx, scope, "session", 10, "")
+			if err != nil || len(page.Items) != 0 {
+				t.Fatalf("failed transcript unexpectedly persisted: %+v, %v", page, err)
+			}
+			after, err := base.GetRunProgress(ctx, scope, "run")
+			if err != nil || len(after) != 1 || after[0].ID != before[0].ID || after[0].Content != "PASS" || after[0].Metadata["pending"] == true {
+				t.Fatalf("completed command remained pending after transcript failure: %+v, %v", after, err)
+			}
+		})
+	}
+}
+
+type failingProgressReadStore struct {
+	store.Store
+	fail bool
+}
+
+func (s *failingProgressReadStore) GetRunProgress(ctx context.Context, scope store.Scope, runID string) ([]store.Message, error) {
+	if s.fail {
+		return nil, errors.New("injected progress read failure")
+	}
+	return s.Store.GetRunProgress(ctx, scope, runID)
+}
+
+func TestRunDetailSurvivesProgressReadFailureAndRecovers(t *testing.T) {
+	ctx := t.Context()
+	st := &failingProgressReadStore{Store: store.NewMemoryStore(), fail: true}
+	scope := store.Scope{OrgUUID: "org", WorkspaceUUID: "ws", AgentName: "coder"}
+	now := time.Now().UTC()
+	if err := st.SaveRun(ctx, scope, store.Run{ID: "run", AgentName: "coder", Phase: store.RunPhaseRunning, Input: "request", Output: "saved answer", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AppendToolCall(ctx, scope, store.ToolCall{ID: "audit", AgentName: "coder", RunID: "run", Tool: "shell", Result: "PASS", CreatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{store: st}
+	s.newLiveProgress(ctx, taskRun{Scope: scope, RunID: "run"}, "session", now).delta("Live commentary")
+	detail, err := s.runDetailFor(ctx, scope, "run")
+	if err != nil || detail.ID != "run" || detail.Phase != string(store.RunPhaseRunning) || detail.Input != "request" || detail.Output != "saved answer" || len(detail.Steps) != 1 || detail.Steps[0].Result != "PASS" || len(detail.Progress) != 0 {
+		t.Fatalf("progress failure hid durable run detail: %+v, %v", detail, err)
+	}
+	st.fail = false
+	detail, err = s.runDetailFor(ctx, scope, "run")
+	if err != nil || len(detail.Progress) != 1 || detail.Progress[0].Content != "Live commentary" {
+		t.Fatalf("progress did not recover on next read: %+v, %v", detail.Progress, err)
+	}
 }

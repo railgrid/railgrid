@@ -1621,11 +1621,13 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 		Role: "tool", Content: ev.Result,
 		Metadata: metadata, CreatedAt: time.Now().UTC(),
 	}
-	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, row); err != nil {
-		k.run.transcriptWrites.record(fmt.Errorf("persist tool result %q: %w", ev.ID, err))
+	persistErr := k.s.appendProgressMessage(k.ctx, k.run.Scope, row)
+	// Execution completed even if the durable transcript write failed.
+	k.progress.completed(row)
+	if persistErr != nil {
+		k.run.transcriptWrites.record(fmt.Errorf("persist tool result %q: %w", ev.ID, persistErr))
 		return
 	}
-	k.progress.completed(row)
 	if k.run.OnTool != nil {
 		k.run.OnTool(ev)
 	}
