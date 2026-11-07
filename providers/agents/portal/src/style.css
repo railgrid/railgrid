@@ -567,6 +567,21 @@ railgrid-provider-agents .agents-approval-dock {
 railgrid-provider-agents .agents-question-dock + .agents-composer,
 railgrid-provider-agents .agents-approval-dock + .agents-composer { padding-top: 8px; }
 railgrid-provider-agents .agents-composer-surface { min-width: 0; }
+railgrid-provider-agents .agents-composer-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-block: 0 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+railgrid-provider-agents .agents-composer-warning svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-warning, #f0a63a);
+}
 
 /* --- connection picker + type-driven form --- */
 railgrid-provider-agents .agents-conn-picker { display: flex; flex-direction: column; gap: 12px; }
