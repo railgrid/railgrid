@@ -11722,6 +11722,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
               <template #actions>
                 <AIModelReasoningPicker
+                  compact
                   :models="configuredLLMModels"
                   :selected-i-d="selectedLLMModel?.id || ''"
                   :effort="assistantReasoningEffort"
