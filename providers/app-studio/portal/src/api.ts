@@ -23,7 +23,6 @@ import type {
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
   ProjectAssistantTurn,
-  ProjectAssistantTurnDetail,
   ProjectLLMSettings,
   ProjectModelProviderConnection,
   ProjectModelProviderConnectionDraft,
@@ -1682,10 +1681,6 @@ export const api = {
     if (res.status === 204) return undefined
     if (!res.ok) throw new Error(`active assistant turn failed: ${res.status} ${res.statusText}`)
     return res.json() as Promise<ProjectAssistantTurn>
-  },
-
-  async getAssistantTurnDetail(ctx: RailgridContext | null, name: string, threadID: string, turnID: string): Promise<ProjectAssistantTurnDetail> {
-    return sessionRequest<ProjectAssistantTurnDetail>(ctx, name, threadID, 'turn-status', 'GET', undefined, [turnID])
   },
 
   async steerAssistantTurn(ctx: RailgridContext | null, name: string, threadID: string, turnID: string, body: { content: string; clientUserMessageID: string }): Promise<ProjectAssistantTurn> {
