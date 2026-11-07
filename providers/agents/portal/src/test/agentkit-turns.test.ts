@@ -1,4 +1,4 @@
-import { createCommentVNode, defineComponent, h, ref } from 'vue'
+import { Fragment, createCommentVNode, createTextVNode, defineComponent, h, ref } from 'vue'
 import { describe, expect, it } from 'vitest'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AIPlanDisclosure from '../agentkit/AIPlanDisclosure.vue'
@@ -153,19 +153,36 @@ describe('AgentKit conversation turn presentation', () => {
   })
 
   it('omits the details affordance when a declared conditional slot is empty', async () => {
+    let toggles = 0
+    const detail = ref(' ')
     const view = await mountVue(defineComponent({
       setup: () => () => h(AITurnProgress, {
         turnId: 'conditional-details',
+        onToggle: () => { toggles += 1 },
         status: 'running',
         expanded: true,
       }, {
-        details: () => createCommentVNode('v-if'),
+        details: () => h(Fragment, [createCommentVNode('v-if'), createTextVNode(detail.value)]),
       }),
     }), {})
 
     expect(view.element.querySelector('.k-ai-turn-progress__trigger')).toBeNull()
     expect(view.element.querySelector('.k-ai-turn-progress__details')).toBeNull()
-    expect(view.element.querySelector('.k-ai-turn-progress__status')?.getAttribute('aria-label')).toBe('Working')
+    const status = view.element.querySelector<HTMLElement>('.k-ai-turn-progress__status')!
+    expect(status.tagName).toBe('SPAN')
+    expect(status.getAttribute('aria-label')).toBe('Working')
+    expect(status.hasAttribute('aria-expanded')).toBe(false)
+    expect(status.hasAttribute('aria-controls')).toBe(false)
+    expect(status.hasAttribute('type')).toBe(false)
+    expect(status.querySelector('.k-ai-turn-progress__chevron')).toBeNull()
+    status.click()
+    await settleVue()
+    expect(toggles).toBe(0)
+
+    detail.value = 'Live progress'
+    await settleVue()
+    expect(view.element.querySelector('.k-ai-turn-progress__trigger')).not.toBeNull()
+    expect(text(view.element.querySelector('.k-ai-turn-progress__details'))).toBe('Live progress')
   })
 
   it('does not present waiting or pending work as active or timed', async () => {
