@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 53;
+  --railgrid-agent-ui-version: 54;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -759,6 +759,7 @@ button.k-workbench-tab {
 }
 .k-ai-message__content--bubble {
   width: auto;
+  overflow-wrap: anywhere;
   border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07));
   border-radius: 6px;
   background: var(--color-surface-overlay, #171927);
