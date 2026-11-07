@@ -160,6 +160,7 @@ import { useUserLabels } from './portalkit/useUserLabels'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from './agentkit/conversation'
 import SkillsWorkbench from './SkillsWorkbench.vue'
 import AIConversationRail from './agentkit/AIConversationRail.vue'
+import AIConversationRenameDialog from './agentkit/AIConversationRenameDialog.vue'
 import ProjectShareDialog from './ProjectShareDialog.vue'
 import ApprovalModePicker from './ApprovalModePicker.vue'
 import type { AssistantResponseMode } from './assistantResponseMode'
@@ -667,7 +668,6 @@ const activeAssistantThreadTitle = computed(() => activeAssistantThread.value?.t
 const editingAssistantThreadTitle = ref(false)
 const editingAssistantThreadID = ref('')
 const assistantThreadTitleDraft = ref('')
-const assistantThreadTitleInput = ref<HTMLInputElement | null>(null)
 const unreadAssistantThreadIDs = ref<string[]>([])
 const pinnedAssistantThreadIDs = ref<string[]>([])
 const threadMutationBusy = ref(false)
@@ -7200,16 +7200,17 @@ async function createAssistantThread() {
   }
 }
 
-function beginAssistantThreadTitleRename() {
-  const thread = activeAssistantThread.value
+function renameAssistantThreadFromRail(threadID: string) {
+  beginAssistantThreadTitleRename(threadID)
+}
+
+function beginAssistantThreadTitleRename(threadID = activeAssistantThreadID.value) {
+  const thread = assistantThreads.value.find((candidate) => candidate.id === threadID)
   if (!thread || threadActionsDisabled.value) return
   editingAssistantThreadID.value = thread.id
   assistantThreadTitleDraft.value = thread.title?.trim() || ''
+  threadError.value = null
   editingAssistantThreadTitle.value = true
-  void nextTick(() => {
-    assistantThreadTitleInput.value?.focus()
-    assistantThreadTitleInput.value?.select()
-  })
 }
 
 function cancelAssistantThreadTitleRename() {
@@ -7231,24 +7232,30 @@ async function renameAssistantThread(threadID: string, title: string) {
   threadError.value = null
   try {
     const thread = await api.patchAssistantThread(props.ctx, projectName, threadID, { title: normalizedTitle })
-    if (!renameIsCurrent()) return
+    if (!renameIsCurrent()) return false
     replaceAssistantThread(thread)
+    return true
   } catch (e) {
     if (renameIsCurrent()) threadError.value = e instanceof Error ? e.message : String(e)
+    return false
   } finally {
     releaseThreadMutationLatch(threadMutationLatchOwner)
   }
 }
 
-async function commitAssistantThreadTitleRename() {
-  if (!editingAssistantThreadTitle.value) return
+async function commitAssistantThreadTitleRename(title: string) {
+  if (!editingAssistantThreadTitle.value || threadMutationBusy.value) return
   const threadID = editingAssistantThreadID.value
   const thread = assistantThreads.value.find((candidate) => candidate.id === threadID)
   const currentTitle = thread?.title?.trim() || ''
-  const normalizedTitle = assistantThreadTitleDraft.value.trim()
-  cancelAssistantThreadTitleRename()
-  if (!thread || !normalizedTitle || normalizedTitle === currentTitle) return
-  await renameAssistantThread(threadID, normalizedTitle)
+  const normalizedTitle = title.trim()
+  if (!thread || !normalizedTitle) return
+  if (normalizedTitle === currentTitle) {
+    cancelAssistantThreadTitleRename()
+    return
+  }
+  const saved = await renameAssistantThread(threadID, normalizedTitle)
+  if (saved && editingAssistantThreadID.value === threadID) cancelAssistantThreadTitleRename()
 }
 
 function toggleThreadPin(threadID: string) {
@@ -10488,6 +10495,18 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 </script>
 
 <template>
+  <AIConversationRenameDialog
+    v-if="editingAssistantThreadTitle"
+    :key="editingAssistantThreadID"
+    :title="assistantThreadTitleDraft"
+    :busy="threadMutationBusy"
+    :error="threadError || ''"
+    heading="Rename thread"
+    input-label="Thread title"
+    overlay-target="#app-studio-overlay-root"
+    @save="commitAssistantThreadTitleRename"
+    @close="cancelAssistantThreadTitleRename"
+  />
   <div class="sr-only" aria-live="polite" aria-atomic="true">{{ assistantPlanAnnouncement }}</div>
 
   <div v-if="initializing && !loading && !selectedNameFromPath" class="flex h-full min-h-0 items-center justify-center bg-surface px-6 text-text-primary" role="status" aria-live="polite" aria-busy="true">
@@ -11106,18 +11125,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </template>
             <template #title>
               <div v-if="!selected" class="shimmer h-3.5 w-32 rounded bg-surface-overlay" aria-hidden="true" />
-              <input
-                v-if="editingAssistantThreadTitle"
-                ref="assistantThreadTitleInput"
-                v-model="assistantThreadTitleDraft"
-                type="text"
-                class="app-studio-touch-target h-7 w-full min-w-0 border-0 bg-transparent p-0 text-[13px] font-semibold text-text-primary outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-                aria-label="Rename thread"
-                :disabled="threadMutationBusy"
-                @keydown.enter.exact.prevent="commitAssistantThreadTitleRename"
-                @keydown.esc.stop.prevent="cancelAssistantThreadTitleRename"
-                @blur="commitAssistantThreadTitleRename"
-              />
               <button
                 v-else
                 type="button"
@@ -11125,7 +11132,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 :disabled="!activeAssistantThread || threadActionsDisabled"
                 :title="activeAssistantThread ? `Rename thread: ${activeAssistantThreadTitle}` : undefined"
                 aria-label="Rename thread"
-                @click="beginAssistantThreadTitleRename"
+                @click="beginAssistantThreadTitleRename()"
               >
                 <span class="truncate">{{ activeAssistantThreadTitle }}</span>
               </button>
@@ -11182,7 +11189,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :actioning-thread-i-d="threadActioningID"
             :disabled="threadNavigationDisabled"
             :busy="threadMutationBusy"
-            :capabilities="{ create: true, pin: true, unread: true, archive: !messageStreaming }"
+            :capabilities="{ create: true, rename: !threadActionsDisabled, pin: true, unread: true, archive: !messageStreaming }"
             :labels="{
               heading: 'Threads',
               create: 'New thread',
@@ -11213,6 +11220,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @select="selectAssistantThread"
             @create="createAssistantThread"
             @archive="archiveAssistantThread"
+            @rename="renameAssistantThreadFromRail"
             @toggle-pin="toggleThreadPin"
             @set-unread="setThreadUnread"
           />

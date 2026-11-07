@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import ts from 'typescript'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
@@ -9,9 +10,9 @@ test('mounts the shared conversation rail against App Studio lifecycle handlers'
   assert.match(app, /<AIConversationRail[\s\S]*:threads="assistantThreads"[\s\S]*:active-thread-i-d="activeAssistantThreadID"/)
   assert.match(app, /<AIConversationRail[\s\S]*:unread-thread-i-ds="unreadAssistantThreadIDs"/)
   assert.match(app, /<AIConversationRail[\s\S]*:pinned-thread-i-ds="pinnedAssistantThreadIDs"/)
-  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, pin: true, unread: true, archive: !messageStreaming \}"/)
+  assert.match(app, /<AIConversationRail[\s\S]*:capabilities="\{ create: true, rename: !threadActionsDisabled, pin: true, unread: true, archive: !messageStreaming \}"/)
   assert.match(app, /<AIConversationRail[\s\S]*@select="selectAssistantThread"[\s\S]*@create="createAssistantThread"/)
-  assert.match(app, /<AIConversationRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
+  assert.match(app, /<AIConversationRail[\s\S]*@archive="archiveAssistantThread"[\s\S]*@rename="renameAssistantThreadFromRail"[\s\S]*@toggle-pin="toggleThreadPin"[\s\S]*@set-unread="setThreadUnread"/)
   assert.match(app, /<AIConversationRail[\s\S]*:storage-scope="assistantConversationRailStorageScope"/)
   assert.match(app, /<AIConversationRail[\s\S]*overlay-target="#app-studio-overlay-root"[\s\S]*panel-id="app-studio-thread-rail"/)
   assert.doesNotMatch(app, /Manage threads|manageAssistantThreads|@manage=/)
@@ -137,13 +138,14 @@ test('keeps identity and thread controls in one workspace-wide title bar', () =>
   assert.match(app, /focusThread\?: \(threadID: string\) => void/)
   assert.match(app, /function previewThreadPanel\(\)[\s\S]*threadRailRef\.value\?\.previewEnter\?\.\(\)/)
   assert.match(app, /function closeThreadPanelPreview\(\)[\s\S]*threadRailRef\.value\?\.previewLeave\?\.\(\)/)
-  assert.match(app, /function beginAssistantThreadTitleRename\(\)[\s\S]*assistantThreadTitleInput\.value\?\.focus\(\)/)
+  assert.match(app, /import AIConversationRenameDialog from '\.\/agentkit\/AIConversationRenameDialog\.vue'/)
   assert.match(app, /function renameAssistantThread\(threadID: string, title: string\)[\s\S]*api\.patchAssistantThread\(props\.ctx, projectName, threadID, \{ title: normalizedTitle \}\)/)
   assert.match(app, /const editingAssistantThreadID = ref\(''\)/)
-  assert.match(app, /function beginAssistantThreadTitleRename\(\)[\s\S]*editingAssistantThreadID\.value = thread\.id/)
-  assert.match(app, /function commitAssistantThreadTitleRename\(\)[\s\S]*const threadID = editingAssistantThreadID\.value[\s\S]*assistantThreads\.value\.find\(\(candidate\) => candidate\.id === threadID\)[\s\S]*renameAssistantThread\(threadID, normalizedTitle\)/)
-  assert.match(app, /aria-label="Rename thread"[\s\S]*@click="beginAssistantThreadTitleRename"/)
-  assert.match(app, /ref="assistantThreadTitleInput"[\s\S]*@keydown\.enter\.exact\.prevent="commitAssistantThreadTitleRename"[\s\S]*@keydown\.esc\.stop\.prevent="cancelAssistantThreadTitleRename"[\s\S]*@blur="commitAssistantThreadTitleRename"/)
+  assert.match(app, /function beginAssistantThreadTitleRename\(threadID = activeAssistantThreadID\.value\)[\s\S]*editingAssistantThreadID\.value = thread\.id/)
+  assert.match(app, /function commitAssistantThreadTitleRename\(title: string\)[\s\S]*const threadID = editingAssistantThreadID\.value[\s\S]*assistantThreads\.value\.find\(\(candidate\) => candidate\.id === threadID\)[\s\S]*renameAssistantThread\(threadID, normalizedTitle\)/)
+  assert.match(app, /aria-label="Rename thread"[\s\S]*@click="beginAssistantThreadTitleRename\(\)"/)
+  assert.match(app, /<AIConversationRenameDialog[\s\S]*:title="assistantThreadTitleDraft"[\s\S]*:busy="threadMutationBusy"[\s\S]*:error="threadError \|\| ''"[\s\S]*@save="commitAssistantThreadTitleRename"[\s\S]*@close="cancelAssistantThreadTitleRename"/)
+  assert.doesNotMatch(app, /assistantThreadTitleInput|@blur="commitAssistantThreadTitleRename"/)
   assert.match(app, /v-if="threadError"[\s\S]*role="alert"[\s\S]*aria-live="assertive"[\s\S]*\{\{ threadError \}\}/)
   assert.match(app, /<span class="truncate">\{\{ activeAssistantThreadTitle \}\}<\/span>/)
   assert.match(app, /selected\.displayName \|\| selected\.name \|\| 'Project'/)
@@ -164,4 +166,61 @@ test('keeps identity and thread controls in one workspace-wide title bar', () =>
 test('uses the thread side panel as the only conversation-switching surface', () => {
   assert.doesNotMatch(app, /Open conversation threads|openConversationThreads|Switch thread:/)
   assert.doesNotMatch(app, /Switch conversations, rename threads|builtInTab: 'threads'/)
+})
+
+
+function renameHarness(saveResult = true) {
+  const names = new Set(['beginAssistantThreadTitleRename', 'cancelAssistantThreadTitleRename', 'commitAssistantThreadTitleRename', 'renameAssistantThreadFromRail'])
+  const ast = ts.createSourceFile('App.ts', app.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const source = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.has(node.name?.text)).map(node => node.getText(ast)).join('\n')
+  const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const state = {
+    activeAssistantThreadID: { value: 'current' },
+    assistantThreads: { value: [{ id: 'current', title: 'Current title' }, { id: 'other', title: 'Other title' }] },
+    editingAssistantThreadID: { value: '' }, editingAssistantThreadTitle: { value: false },
+    assistantThreadTitleDraft: { value: '' }, threadActionsDisabled: { value: false },
+    threadMutationBusy: { value: false }, threadError: { value: null },
+  }
+  const calls = []
+  const renameAssistantThread = async (...args) => { calls.push(args); return saveResult }
+  const actions = new Function(...Object.keys(state), 'renameAssistantThread', `${outputText}; return { beginAssistantThreadTitleRename, commitAssistantThreadTitleRename, cancelAssistantThreadTitleRename, renameAssistantThreadFromRail }`)(...Object.values(state), renameAssistantThread)
+  return { ...state, ...actions, calls }
+}
+
+test('rail rename opens a modal for the clicked thread without navigating', async () => {
+  const h = renameHarness()
+  h.renameAssistantThreadFromRail('other')
+  assert.equal(h.activeAssistantThreadID.value, 'current')
+  assert.equal(h.editingAssistantThreadID.value, 'other')
+  assert.equal(h.assistantThreadTitleDraft.value, 'Other title')
+  assert.equal(h.editingAssistantThreadTitle.value, true)
+  await h.commitAssistantThreadTitleRename('  New title  ')
+  assert.deepEqual(h.calls, [['other', 'New title']])
+  assert.equal(h.editingAssistantThreadTitle.value, false)
+})
+
+test('failed modal saves retain the editor and target for retry', async () => {
+  const h = renameHarness(false)
+  h.beginAssistantThreadTitleRename()
+  await h.commitAssistantThreadTitleRename('Updated title')
+  assert.equal(h.editingAssistantThreadTitle.value, true)
+  assert.equal(h.editingAssistantThreadID.value, 'current')
+  await h.commitAssistantThreadTitleRename('Updated title')
+  assert.equal(h.calls.length, 2)
+  h.cancelAssistantThreadTitleRename()
+  assert.equal(h.editingAssistantThreadTitle.value, false)
+})
+
+test('modal ignores blank and duplicate saves and cancels unchanged titles', async () => {
+  const h = renameHarness()
+  h.beginAssistantThreadTitleRename()
+  await h.commitAssistantThreadTitleRename('  ')
+  assert.equal(h.editingAssistantThreadTitle.value, true)
+  h.threadMutationBusy.value = true
+  await h.commitAssistantThreadTitleRename('Updated title')
+  assert.deepEqual(h.calls, [])
+  h.threadMutationBusy.value = false
+  await h.commitAssistantThreadTitleRename('Current title')
+  assert.equal(h.editingAssistantThreadTitle.value, false)
+  assert.deepEqual(h.calls, [])
 })

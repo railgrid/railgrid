@@ -61,7 +61,7 @@ AGENTKIT_FILES=(activity.css activity.ts agent-ui.css conversation.css styles.ts
 AGENTKIT_VUE_FILES=(
   AIActionRow.vue AIActivityDisclosure.vue AIComposer.vue AIModelPicker.vue AIModelReasoningPicker.vue
   AIConversationHeader.vue AIConversationIdentity.vue AIConversationLayout.vue
-  AIConversationRail.vue AIInterrupt.vue AIMessage.vue AIPrimaryAction.vue
+  AIConversationRail.vue AIConversationRenameDialog.vue AIInterrupt.vue AIMessage.vue AIPrimaryAction.vue
   AITranscript.vue AIWorkbenchPane.vue AIWorkbenchTab.vue AIWorkbenchTabs.vue AIWorkbenchLauncher.vue AIWorkspace.vue AIPaneDivider.vue
   ModelCollection.vue ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
   ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts threadReadState.ts ai.ts modelIDSelection.ts
