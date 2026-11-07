@@ -478,9 +478,6 @@ railgrid-provider-agents .agents-chat-read-notice {
   margin: 8px auto 0;
   border-color: var(--color-border-default);
 }
-railgrid-provider-agents .agents-chat-read-notice .k-inline-notification__message {
-  color: var(--color-text-secondary);
-}
 railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { flex: 1 1 56%; }
 railgrid-provider-agents .agents-artifact-panel {
   display: flex; min-width: 360px; min-height: 0; flex: 0 1 44%; flex-direction: column; gap: 12px; overflow: auto;

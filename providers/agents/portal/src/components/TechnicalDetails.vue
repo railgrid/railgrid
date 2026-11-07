@@ -31,7 +31,7 @@ async function copyDetails(): Promise<void> {
       <span class="k-resource-technical__summary-label">Technical details</span>
       <ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" />
     </summary>
-    <div class="k-resource-technical__body">
+    <div class="k-resource-technical__body" :class="{ 'agents-technical__panel': embedded }">
       <template v-if="copyable">
         <button
           class="agents-technical__copy"
@@ -51,7 +51,7 @@ async function copyDetails(): Promise<void> {
           {{ copyState === 'copied' ? 'Technical details copied.' : copyState === 'failed' ? (embedded ? 'Could not copy details. Select the diagnostic text to copy it.' : 'Could not copy details. Select the text below to copy it.') : '' }}
         </p>
       </template>
-      <pre class="k-resource-technical__pre" tabindex="0" aria-label="Technical error details">{{ safeDiagnostic }}</pre>
+      <pre class="k-resource-technical__pre" :class="{ 'agents-technical__diagnostic': embedded }" tabindex="0" aria-label="Technical error details">{{ safeDiagnostic }}</pre>
     </div>
   </component>
 </template>
@@ -61,7 +61,7 @@ async function copyDetails(): Promise<void> {
 .agents-technical__feedback { margin: 0; color: var(--color-text-secondary); font-size: 12px; }
 .agents-technical__feedback:empty { display: none; }
 
-.agents-technical--embedded .k-resource-technical__body {
+.agents-technical--embedded .agents-technical__panel {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 4px 12px;
@@ -72,7 +72,7 @@ async function copyDetails(): Promise<void> {
   background: var(--color-surface-overlay);
 }
 
-.agents-technical--embedded .k-resource-technical__pre {
+.agents-technical--embedded .agents-technical__diagnostic {
   grid-area: 1 / 1;
   padding: 4px 0;
   background: transparent;

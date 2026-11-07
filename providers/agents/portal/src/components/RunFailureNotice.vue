@@ -116,11 +116,6 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
 
 .agents-run-state__details { min-width: 0; margin-block-start: 12px; }
 
-.agents-run-state--inline :deep(.k-ai-action-row__title) {
-  overflow-wrap: anywhere;
-  white-space: normal;
-}
-
 .agents-run-state__line {
   display: flex;
   align-items: center;
@@ -143,7 +138,4 @@ const presentation = computed(() => runFailurePresentation(props.phase, safeDiag
   margin: 0;
 }
 
-@media (hover: none), (any-pointer: coarse) {
-  .agents-run-state--inline :deep(.k-ai-action-row__toggle) { min-height: 44px; }
-}
 </style>
