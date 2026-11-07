@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import ts from 'typescript'
+import { effectScope, ref, watch } from 'vue'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 
@@ -223,4 +224,24 @@ test('modal ignores blank and duplicate saves and cancels unchanged titles', asy
   await h.commitAssistantThreadTitleRename('Current title')
   assert.equal(h.editingAssistantThreadTitle.value, false)
   assert.deepEqual(h.calls, [])
+})
+
+test('route changes dismiss the old project rename modal and discard its target', () => {
+  const ast = ts.createSourceFile('App.ts', app.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1], ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+  const cancel = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'cancelAssistantThreadTitleRename')
+  const watcher = ast.statements.find(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression) && node.expression.expression.getText(ast) === 'watch' && node.expression.arguments[1]?.getText(ast) === 'cancelAssistantThreadTitleRename')
+  assert.ok(watcher)
+  const { outputText } = ts.transpileModule(cancel.getText(ast) + '\n' + watcher.getText(ast), { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
+  const context = ref({ subPath: '/project-a' })
+  const editing = ref(true), target = ref('thread-a'), draft = ref('Unsaved title')
+  const scope = effectScope()
+  try {
+    scope.run(() => new Function('props', 'editingAssistantThreadTitle', 'editingAssistantThreadID', 'assistantThreadTitleDraft', 'watch', outputText)(
+      { get ctx() { return context.value } }, editing, target, draft, watch,
+    ))
+    context.value = { subPath: '/' }
+    assert.equal(editing.value, false)
+    assert.equal(target.value, '')
+    assert.equal(draft.value, '')
+  } finally { scope.stop() }
 })

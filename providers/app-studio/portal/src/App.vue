@@ -668,6 +668,7 @@ const activeAssistantThreadTitle = computed(() => activeAssistantThread.value?.t
 const editingAssistantThreadTitle = ref(false)
 const editingAssistantThreadID = ref('')
 const assistantThreadTitleDraft = ref('')
+watch(() => props.ctx?.subPath ?? '', cancelAssistantThreadTitleRename, { flush: 'sync' })
 const unreadAssistantThreadIDs = ref<string[]>([])
 const pinnedAssistantThreadIDs = ref<string[]>([])
 const threadMutationBusy = ref(false)
@@ -7414,6 +7415,11 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   const acceptedTerminal = assistantRunTerminal(normalized.run.status) && (!previousRun || !assistantRunTerminal(previousRun.status) || normalized.run.revision > previousRun.revision)
   const requiresLiveControls = assistantRunRequiresLiveControls(normalized.run)
   setActiveAssistantRun(normalized.run)
+  // The canonical turn stream carries no thread.updated event on completion.
+  // Keep the rail in sync with the same accepted snapshot as the transcript.
+  updateAssistantThreadFromEvent(activeAssistantThreadID.value, {
+    status: assistantRunTerminal(normalized.run.status) ? 'idle' : 'active',
+  })
   if (!assistantRunTerminal(normalized.run.status) && normalized.run.approvalMode) {
     approvalMode.value = normalized.run.approvalMode
   }
@@ -7521,6 +7527,7 @@ async function recoverAssistantConversation(
   // owner, then clear every scoped live control so no stale spinner or input
   // panel survives reload/reconnect.
   if (!turn) {
+    updateAssistantThreadFromEvent(threadID, { status: 'idle' })
     const materializedRuns = assistantThreadItemsToRuns(items) as Record<string, AssistantRun>
     for (const run of Object.values(materializedRuns)) {
       if (!assistantRunTerminal(run.status)) continue
