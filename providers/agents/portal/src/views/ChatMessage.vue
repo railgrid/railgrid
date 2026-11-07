@@ -3,24 +3,20 @@ import type { QuestionReply } from '../types'
 import { splitPageContext } from '../pageContext'
 import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
 import {
-  Check,
   ChevronDown,
   CircleHelp,
   FileSearch,
   GitCommitHorizontal,
-  LoaderCircle,
   Pencil,
   Plug,
   TerminalSquare,
-  X,
 } from 'lucide-vue-next'
 import { attachCodeCopy, sanitizedMarkdown, sanitizedMarkdownWithToolCitations, type InlineToolCitation } from '../vue/chat'
 import type { AIActivityGroup } from '../agentkit/activity'
 import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ToolCall } from '../types'
 import { parseSavedCaptureCitation } from '../agentArtifacts'
-import { approvalDisclosureAvailable } from '../approval-disclosure'
 import { pendingIsQuestion } from '../types'
-import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
+import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
@@ -29,7 +25,6 @@ import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
-import AIInterrupt from '../agentkit/AIInterrupt.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AIAttachmentReceipts from '../agentkit/AIAttachmentReceipts.vue'
 import type { AgentKitAttachmentReceipt } from '../agentkit/composer'
@@ -45,6 +40,7 @@ const props = withDefaults(defineProps<{
   sessionID?: string
   announce?: boolean
   questionDocked?: boolean
+  approvalDocked?: boolean
   approvalBusy?: 'approve' | 'deny' | 'answer'
   /** The parent chooses one stable message per run for navigation metadata. */
   showRunLink?: boolean
@@ -172,7 +168,7 @@ const fallbackTools = computed(() => {
 const progressExpanded = ref(false)
 const progressCollapsedWhileActive = ref(false)
 function progressIsActive(status: AITurnProgressStatus): boolean {
-  return status === 'running' || status === 'waiting' || status === 'stopping'
+  return status === 'pending' || status === 'running' || status === 'waiting' || status === 'stopping'
 }
 
 const progressOpen = computed(() => {
@@ -398,6 +394,11 @@ onBeforeUnmount(() => { mounted = false })
           :expanded="progressOpen"
           @toggle="toggleProgress"
         >
+          <template v-if="message.runID && showRunLink && progressIsActive(progressStatus)" #actions>
+            <div class="agents-progress-actions" role="group" aria-label="Run controls">
+              <button class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
+            </div>
+          </template>
           <template v-if="traceBlocks.length" #details>
             <template v-for="block in traceBlocks" :key="block.id">
               <div
@@ -558,44 +559,17 @@ onBeforeUnmount(() => { mounted = false })
         @answer="response => emit('approval', { inboxID: message.approval!.inboxID, decision: 'answer', response })"
       />
 
-      <AIInterrupt
-        v-else-if="message.approval && !pendingIsQuestion(message.approval)"
-        class="agents-approval"
-        :status="message.approval.resolved ? 'resolved' : approvalBusy ? 'busy' : 'pending'"
-        :busy="!!approvalBusy"
-        :invalid="!approvalDisclosureAvailable(message.approval.tool, message.approval.args)"
-        title="Approval required"
-        aria-label="Tool approval required"
-      >
-        <ApprovalDisclosure :tool="message.approval.tool" :args="message.approval.args" details-only />
-        <div v-if="message.approval.resolved" class="agents-approval-done">
-          {{ message.approval.resolved === 'approve' ? 'Approved — the run is resuming.' : 'Denied — the agent was told no.' }}
-        </div>
-        <template v-if="!message.approval.resolved" #actions>
-          <button
-            class="k-btn k-btn--primary"
-            type="button"
-            :disabled="!!approvalBusy || !approvalDisclosureAvailable(message.approval.tool, message.approval.args)"
-            :aria-busy="approvalBusy ? 'true' : undefined"
-            @click="emit('approval', { inboxID: message.approval!.inboxID, decision: 'approve' })"
-          >
-            <LoaderCircle v-if="approvalBusy === 'approve'" class="agents-spinner k-spin" aria-hidden="true" />
-            <Check v-else aria-hidden="true" /> {{ approvalBusy === 'approve' ? 'Approving…' : 'Approve' }}
-          </button>
-          <button
-            class="k-btn k-btn--ghost secondary"
-            type="button"
-            :disabled="!!approvalBusy"
-            :aria-busy="approvalBusy ? 'true' : undefined"
-            @click="emit('approval', { inboxID: message.approval!.inboxID, decision: 'deny' })"
-          >
-            <LoaderCircle v-if="approvalBusy === 'deny'" class="agents-spinner k-spin" aria-hidden="true" />
-            <X v-else aria-hidden="true" /> {{ approvalBusy === 'deny' ? 'Denying…' : 'Deny' }}
-          </button>
-        </template>
-      </AIInterrupt>
+      <AgentApprovalCard
+        v-else-if="message.approval && !approvalDocked && !pendingIsQuestion(message.approval)"
+        :tool="message.approval.tool"
+        :args="message.approval.args"
+        :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"
+        :disabled="!!approvalBusy"
+        :resolved="message.approval.resolved === 'approve' || message.approval.resolved === 'deny' ? message.approval.resolved : undefined"
+        @decide="decision => emit('approval', { inboxID: message.approval!.inboxID, decision })"
+      />
 
-      <div v-if="message.runID && showRunLink" class="k-ai-message-metadata agents-message-footer">
+      <div v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
         <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>
       <div v-if="message.usage" class="k-ai-message-metadata agents-turn-usage">

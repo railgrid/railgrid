@@ -296,6 +296,37 @@ transcript and inbox, Factory's approved envelope and delivery.
 The agents provider's harness backend is now an adapter over it. Factory
 follows.
 
+## Subagents inside a harness turn
+
+The runner retains one root session ID for each attempt. The Codex adapter
+establishes it from the `thread/start` or `thread/resume` response, then routes
+thread notifications before interpreting completion, authentication, approvals,
+or questions. A child is recognized by `thread/started` ancestry:
+`parentThreadId`, or the older `source.subAgent.thread_spawn.parent_thread_id`
+shape (`subagent` is accepted too). Nested announcements can arrive before their
+parents; they become eligible only when their ancestry reaches the root.
+Ancestry storage is capped at 256 threads per launch.
+
+Verified child notifications are bounded `subagent_progress` events, with the
+root session/turn on the harness event and the originating method, thread, turn,
+and payload inside its data envelope. They cannot supply the root's final
+answer, usage, or terminal phase. Unrelated notifications are dropped. Child
+command/file approvals use the existing permission broker with the child's
+active turn and exact call coordinates; unknown or stale calls are declined.
+Start/resume response mismatches and the runner's session checks remain fatal.
+
+Child question RPCs are explicitly rejected: the current durable question flow
+stops the process and resumes the root, so it cannot answer a child's pending
+request. The parent harness must handle that rejection. This does not prevent
+root questions or child tool approvals.
+
+Claude Code identifies forwarded child assistant messages with
+`parent_tool_use_id` (see its [subagent stream documentation](https://code.claude.com/docs/en/agent-sdk/subagents#detect-subagent-invocation)).
+The adapter excludes those messages from root prose and its fallback answer;
+it continues to require the root session ID. This was checked against the
+documented stream shape with parser regression fixtures, not a live Claude
+binary.
+
 ## Two attempt shapes
 
 `runner/v1` serves both a coding coordinator and a conversational agent:

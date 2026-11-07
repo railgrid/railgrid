@@ -1018,6 +1018,9 @@ func (m *MemoryStore) SaveRun(_ context.Context, scope Scope, run Run) error {
 			}
 		}
 	}
+	if old, ok := m.runs[key]; ok {
+		run.progress = old.progress
+	}
 	// Mirror the Postgres upsert: the cancel columns are RequestCancel's alone,
 	// so a save from a copy read before the cancel keeps the flag.
 	if old, ok := m.runs[key]; ok && old.CancelRequested {

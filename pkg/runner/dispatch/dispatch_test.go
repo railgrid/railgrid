@@ -216,7 +216,7 @@ func TestFollowReadsTextToolsAndCostOffTheStream(t *testing.T) {
 	if !out.Completed() {
 		t.Fatalf("phase = %s, want completed", out.Receipt.Phase)
 	}
-	if got := strings.Join(rec.text, "|"); got != "Looking at the repo." {
+	if got := strings.Join(rec.text, "|"); got != "Looking at the repo.\n" {
 		t.Errorf("text streamed = %q", got)
 	}
 	if len(rec.toolStarts) != 1 || rec.toolStarts[0] != "c1:command_execution" || len(rec.toolEnds) != 1 || rec.toolEnds[0].Result != "README.md" {
@@ -249,7 +249,7 @@ func TestFollowDropsClaudeSessionLifecycleFromText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Follow: %v", err)
 	}
-	if got := strings.Join(rec.text, "|"); got != "I took no action." {
+	if got := strings.Join(rec.text, "|"); got != "I took no action.\n" {
 		t.Errorf("streamed text = %q, want only assistant content", got)
 	}
 	if out.Summary.Text != "I took no action." || out.Summary.Final != "I took no action." {
@@ -404,7 +404,7 @@ func TestCursorGapReconcilesThroughInspect(t *testing.T) {
 	if !out.Completed() {
 		t.Fatalf("phase = %s", out.Receipt.Phase)
 	}
-	if strings.Join(rec.text, "") != "after the gap" {
+	if strings.Join(rec.text, "") != "after the gap\n" {
 		t.Errorf("text after reconcile = %q", rec.text)
 	}
 }
@@ -488,7 +488,7 @@ func TestRejoinTailsFromTheCursorInsteadOfReStreaming(t *testing.T) {
 	if !out.Completed() {
 		t.Fatalf("phase = %s", out.Receipt.Phase)
 	}
-	if strings.Join(rec.text, "|") != "new" {
+	if strings.Join(rec.text, "|") != "new\n" {
 		t.Errorf("re-streamed text = %q, want only what came after the cursor", rec.text)
 	}
 	if len(f.streams) == 0 || f.streams[0] != 2 {
@@ -621,7 +621,7 @@ func TestCursorGapReconcilesThroughInspectOnOpen(t *testing.T) {
 	if !out.Completed() {
 		t.Fatalf("phase = %s", out.Receipt.Phase)
 	}
-	if strings.Join(rec.text, "") != "after the gap" {
+	if strings.Join(rec.text, "") != "after the gap\n" {
 		t.Errorf("text after reconcile = %q", rec.text)
 	}
 }
@@ -643,5 +643,27 @@ func TestRejoinSnapshotRejectsUnavailableHistoryOnOpen(t *testing.T) {
 	out, err := RejoinSnapshot(ctxWithTimeout(t), f, snap, &recorder{})
 	if err == nil || !strings.Contains(err.Error(), "event history is incomplete after saved cursor 1") {
 		t.Fatalf("RejoinSnapshot error = %v, outcome %+v; want an explicit incomplete-history error", err, out)
+	}
+}
+
+// The runner flattens adapter event types into progress. Child payloads must
+// stay in their envelope so their finals, usage and tool calls cannot be read
+// as the parent conversation by the shared dispatch layer.
+func TestSubagentProgressDoesNotChangeRootSummary(t *testing.T) {
+	rec := &messageRecorder{}
+	s := newStream(rec, 0)
+	for _, e := range []runner.Event{
+		event(1, runner.EventProgress, "", `{"threadId":"root","turn":{"id":"parent-turn","status":"inProgress"}}`),
+		event(2, runner.EventProgress, "parent answer", `{"delta":"parent answer"}`),
+		event(3, runner.EventProgress, "", `{"method":"item/completed","threadId":"child","params":{"item":{"id":"child-final","type":"agentMessage","phase":"final_answer","text":"child answer"}}}`),
+		event(4, runner.EventProgress, "", `{"method":"turn/completed","threadId":"child","params":{"turn":{"id":"child-turn","status":"failed","durationMs":9000},"usage":{"input_tokens":999}}}`),
+		event(5, runner.EventProgress, "", `{"method":"item/started","threadId":"child","params":{"item":{"type":"command_execution","id":"child-command","command":"ls","status":"in_progress"}}}`),
+	} {
+		if s.observe(e) {
+			t.Fatal("child progress ended root stream")
+		}
+	}
+	if s.text.String() != "parent answer" || s.final != "" || s.codexTurnID != "parent-turn" || s.usage.InputTokens != 0 || len(s.tools) != 0 || s.turnDuration != 0 || len(rec.messages) != 0 {
+		t.Fatalf("child progress contaminated summary: %+v", s)
 	}
 }

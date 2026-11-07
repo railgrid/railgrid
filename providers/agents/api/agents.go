@@ -660,13 +660,14 @@ func bindChatStream(run *taskRun, emit func(string, map[string]any)) {
 			return
 		}
 		phase := "final"
-		if message.HasToolCalls {
+		if message.IsCommentary() {
 			phase = "commentary"
 		}
-		emit("assistant_message", map[string]any{
-			"runID": runID, "phase": phase, "content": message.Content,
-			"createdAt": createdAt, "segmentDurationMS": message.Duration.Milliseconds(),
-		})
+		data := map[string]any{"runID": runID, "phase": phase, "content": message.Content, "createdAt": createdAt}
+		if !message.PresentationOnly {
+			data["segmentDurationMS"] = message.Duration.Milliseconds()
+		}
+		emit("assistant_message", data)
 	}
 	run.OnDelta = func(delta string) {
 		emit("delta", map[string]any{"text": delta})
