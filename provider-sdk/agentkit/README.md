@@ -92,6 +92,11 @@ semantic time with a relative label and full locale value on hover, focus, or
 click; missing or invalid values are omitted. `AITurnProgress` inspects its
 details slot at render time, so an empty slot has no disclosure affordance and a
 later trace update can expose the details. Its `actions` slot keeps run controls beside the status, outside the disclosure button.
+`AIConversationStatus.vue` renders a provider-owned conversation status below the
+transcript. Only the exact `Running` label gets three staggered, decorative
+opacity pulses; reduced motion keeps the dots static. Waiting, reconnecting,
+and stopping labels have no pulse, and an empty label removes the status.
+The provider derives the label from its selected run and connection state.
 `AIConversationComposer.vue` owns the rich editor, keyboard-safe skill and
 resource chips, slash palette, file picker, drop/paste handling, upload
 receipts, attachment previews, and upload retry/removal presentation. It takes

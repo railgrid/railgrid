@@ -17,6 +17,7 @@ import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { readAssistantThreadPins, toggleAssistantThreadPin, removeAssistantThreadPin } from '../agentkit/threadPins'
 import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
 import AITranscript from '../agentkit/AITranscript.vue'
+import AIConversationStatus from '../agentkit/AIConversationStatus.vue'
 import { toast } from '../portalkit/toast'
 import { hashFor, type Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
@@ -513,6 +514,15 @@ const composerStopping = computed(() => Boolean(
   || (composerRunID.value && (orphanCancelBusyID.value === composerRunID.value || cancelingRunID.value === composerRunID.value
     || messages.value.some(message => message.runID === composerRunID.value && message.progress?.status === 'stopping'))),
 ))
+const conversationWorkingLabel = computed(() => {
+  if (!composerHasActiveRun.value) return ''
+  if (composerStopping.value) return 'Stopping…'
+  if (orphanError.value) return orphanError.value.includes('Reconnecting') ? 'Reconnecting' : ''
+  const pending = [...messages.value].reverse().find(message => message.approval && !message.approval.resolved)?.approval
+  if (pending) return pendingIsQuestion(pending) ? 'Waiting for your answer' : 'Waiting for approval'
+  if (orphanRun.value?.phase === 'PendingApproval') return 'Waiting for approval'
+  return 'Running'
+})
 const deletingSessionID = ref('')
 const mobileRailOpen = ref(false)
 const mobileRailTrigger = ref<HTMLButtonElement | null>(null)
@@ -3289,6 +3299,7 @@ defineExpose({
               </div>
               <p v-if="starterPromptHelp" :id="domID('agents-starter-help')" class="muted agents-starter-help">{{ starterPromptHelp }}</p>
             </section>
+            <AIConversationStatus :label="conversationWorkingLabel" />
           </AITranscript>
         </div>
 

@@ -213,3 +213,13 @@ The shared Add menu now uses PortalKit’s body-mounted anchored popover, with p
 The Skills library split reuses the shared catalog with optional activation indicators. AgentKit style version 49 also hides WebKit’s native search-clear decoration alongside the custom clear action. Final total assets are 1,404,896 B raw / 388,958 B gzip, within the unchanged ceilings.
 
 The ambiguous-upload retry fix retains uncommitted drafts until removal or scope cleanup. Final total assets are 1,404,892 B raw / 388,956 B gzip, within the unchanged ceilings; the YAML parser dependency is confined to Agents.
+
+
+Extracting the conversation Running indicator into shared AgentKit replaces the
+App Studio-only markup and keeps three staggered opacity pulses, reduced-motion
+support, and live status semantics. Sizing and animation now come from canonical
+AgentKit CSS so the indicator also works in providers without Tailwind utilities.
+No library dependency or duplicated dependency closure is introduced. Total assets
+measure 1,404,923 B raw / 388,995 B gzip, compared with 1,404,917 B raw / 388,996 B
+gzip before extraction. All existing bundle ceilings remain unchanged. These are
+local production bundle measurements, not browser timing evidence.
