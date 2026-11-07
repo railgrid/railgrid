@@ -266,8 +266,12 @@ export function activitySummaryTitle(rows: readonly AIActivityRow[]): string {
   const neutral: Record<AIActivityCategory, string> = { edit: 'File edits', inspect: 'File reads', run: 'Commands', commit: 'Commits', other: 'Tools' }
   const labels = (category: AIActivityCategory): string => {
     const matching = rows.filter(row => activityCategory(row) === category)
-    if (matching.some(row => row.busy)) return present[category]
-    return matching.some(row => row.status === 'succeeded' || row.status === 'recovered') ? past[category] : neutral[category]
+    // Inspect includes browsers, previews, and other resources. Only explicit
+    // file-operation icons justify describing the whole category as file reads.
+    const resources = category === 'inspect' && matching.some(row => !['read', 'list', 'search'].includes(row.iconKey || ''))
+    if (matching.some(row => row.busy)) return resources ? 'Inspecting resources' : present[category]
+    const succeeded = matching.some(row => row.status === 'succeeded' || row.status === 'recovered')
+    return resources ? succeeded ? 'Inspected resources' : 'Resource inspections' : succeeded ? past[category] : neutral[category]
   }
   return (['edit', 'inspect', 'run', 'commit', 'other'] as const)
     .filter(category => categories.has(category))

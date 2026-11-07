@@ -29,7 +29,7 @@ describe('transcript activity', () => {
   it('uses one semantic group, keeps every call in order, and preserves user choices across phase updates', async () => {
     const rows = [row('read-a', 'read'), row('edit', 'edit'), row('pwd'), row('read-b', 'search')]
     const view = await mountVue(AITranscriptActivity, { panelId: 'mixed', rows })
-    expect(text(groupButton(view.element))).toBe('Edited files, read files, ran commands')
+    expect(text(groupButton(view.element))).toBe('Edited files, read files, ran commands · 4 calls')
     expect(groupButton(view.element).getAttribute('aria-expanded')).toBe('false')
     expect(view.element.querySelectorAll('.k-ai-transcript-activity__toggle')).toHaveLength(1)
     groupButton(view.element).click()
@@ -37,7 +37,7 @@ describe('transcript activity', () => {
     expect([...view.element.querySelectorAll('.k-ai-action-row')].map(el => el.id)).toEqual(rows.map(row => row.id))
     await view.setProps({ rows: rows.map(row => ({ ...row, status: 'running', busy: true })) })
     expect(groupButton(view.element).getAttribute('aria-expanded')).toBe('true')
-    expect(text(groupButton(view.element))).toBe('Editing files, reading files, running commands')
+    expect(text(groupButton(view.element))).toBe('Editing files, reading files, running commands · 4 calls')
     await view.setProps({ rows })
     expect(groupButton(view.element).getAttribute('aria-expanded')).toBe('true')
   })
@@ -57,6 +57,22 @@ describe('transcript activity', () => {
     await settleVue()
     await view.setProps({ rows: [first, row('slow'), row('next')] })
     expect(groupButton(view.element).getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('labels preview inspection groups independently of the first call and retains all calls', async () => {
+    const rows = ['Inspected preview', 'Captured preview screenshot', 'Captured preview screenshot'].map((title, i) => ({ ...row(`preview-${i}`, 'inspect'), category: 'inspect' as const, title, expandable: false }))
+    const view = await mountVue(AITranscriptActivity, { panelId: 'preview', rows })
+    expect(text(groupButton(view.element))).toBe('Inspected resources · 3 calls')
+    groupButton(view.element).click()
+    await settleVue()
+    expect([...view.element.querySelectorAll('.k-ai-action-row__title')].map(el => el.textContent)).toEqual(rows.map(row => row.title))
+    expect(view.element.querySelectorAll('.k-ai-action-row')).toHaveLength(3)
+    expect(view.element.querySelectorAll('.k-ai-action-row__toggle')).toHaveLength(0)
+    await view.setProps({ rows: rows.map(row => ({ ...row, busy: true, status: 'running' })) })
+    expect(text(groupButton(view.element))).toBe('Inspecting resources · 3 calls')
+    groupButton(view.element).click()
+    await settleVue()
+    expect(groupButton(view.element).getAttribute('aria-expanded')).toBe('false')
   })
 
   it('bounds long call lists, exposes all activities, and removes the bound while a row is expanded', async () => {

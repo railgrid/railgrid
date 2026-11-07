@@ -280,7 +280,7 @@
 .k-ai-transcript-activity__icon.is-busy { animation: k-ai-activity-spin .9s linear infinite; }
 .k-ai-transcript-activity__icon.is-attention { color: var(--color-warning); }
 .k-ai-transcript-activity__list { min-width: 0; }
-.k-ai-transcript-activity__list.is-grouped { padding-inline-start: 0; }
+.k-ai-transcript-activity__list.is-grouped { padding-inline-start: 20px; }
 .k-ai-transcript-activity__list.is-bounded { max-height: 272px; overflow-y: auto; padding-bottom: 28px; mask-image: linear-gradient(to bottom, black 0, black calc(100% - 28px), transparent 100%); }
 .k-ai-transcript-activity__more { min-height: 32px; border: 0; background: transparent; color: var(--color-text-secondary); font: inherit; cursor: pointer; }
 .k-ai-transcript-activity :is(button, pre):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }

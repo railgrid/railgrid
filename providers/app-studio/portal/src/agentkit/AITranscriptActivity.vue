@@ -23,7 +23,7 @@ const failures = computed(() => props.rows.filter(row => row.error || row.cancel
 const attention = computed(() => props.rows.some(row => row.attention))
 const title = computed(() => activitySummaryTitle(props.rows))
 const categories = computed(() => new Set(props.rows.map(activityCategory)))
-const summaryIcon = computed(() => categories.value.has('edit') ? Pencil : categories.value.has('inspect') ? Folder : categories.value.has('run') ? TerminalSquare : Plug)
+const summaryIcon = computed(() => categories.value.has('edit') ? Pencil : categories.value.has('inspect') ? (props.rows.some(row => activityCategory(row) === 'inspect' && !['read', 'list', 'search'].includes(row.iconKey || '')) ? Search : Folder) : categories.value.has('run') ? TerminalSquare : Plug)
 const open = computed(() => manualOpen.value ?? (busy.value || props.rows.some(isExpanded)))
 const bounded = computed(() => props.rows.length > 8 && !showAll.value && !props.rows.some(isExpanded))
 function isExpanded(row: AIActivityRow): boolean {
@@ -69,7 +69,7 @@ ensureAgentUIStyles()
       <Loader2 v-if="busy" class="k-ai-transcript-activity__icon is-busy" aria-hidden="true" />
       <TriangleAlert v-else-if="failures || attention" class="k-ai-transcript-activity__icon is-attention" aria-hidden="true" />
       <component :is="summaryIcon" v-else class="k-ai-transcript-activity__icon" aria-hidden="true" />
-      <span class="k-ai-transcript-activity__summary">{{ title }}<span v-if="failures"> · {{ failures }} failed or canceled</span><span v-else-if="attention"> · Needs attention</span></span>
+      <span class="k-ai-transcript-activity__summary">{{ title }} · {{ rows.length }} calls<span v-if="failures"> · {{ failures }} failed or canceled</span><span v-else-if="attention"> · Needs attention</span></span>
       <ChevronRight class="k-ai-transcript-activity__chevron" :class="{ 'is-expanded': open }" aria-hidden="true" />
     </button>
     <div ref="list" v-show="single || open" :id="panelId" @scroll="onScroll" class="k-ai-transcript-activity__list" :class="{ 'is-bounded': bounded, 'is-grouped': !single }">

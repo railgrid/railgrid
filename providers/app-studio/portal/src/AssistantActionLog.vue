@@ -22,7 +22,7 @@ const rows = computed<AIActivityRow[]>(() => props.items.map(item => {
     id: item.id,
     title: activity ? status?.label === 'Ran' ? activity.title : status?.label === 'Running' ? activity.runningTitle : `${status?.label || 'Command'} ${command}` : item.title,
     category: activity?.category || (item.kind === 'inspect' || item.kind === 'edit' || item.kind === 'run' || item.kind === 'commit' ? item.kind : 'other'),
-    iconKey: item.mediaKind === 'image' ? 'image' : activity?.iconKey || item.kind,
+    iconKey: item.mediaKind === 'image' ? 'image' : activity?.iconKey || (item.groupKey === 'inspect:files' ? 'read' : item.kind),
     status: status?.state === 'ran' ? 'succeeded' : status?.state || item.status,
     statusLabel: status?.label || assistantActionStatusLabel(item.status, item.severity),
     target: item.exec ? '' : item.target,

@@ -22,13 +22,26 @@ test('renders a compact bounded log without execution mechanics', async () => {
       { id: 'check-1', kind: 'run', status: 'succeeded', title: 'Checked development preview', outcome: 'Ready', severity: 'normal' },
     ],
   }))
-  assert.match(html, /Read files, ran commands/)
+  assert.match(html, /Inspected resources, ran commands/)
   assert.match(html, /aria-expanded="false"/)
   assert.match(html, /aria-controls="app-studio-assistant-actions-assistant-1"/)
   assert.doesNotMatch(html, /k-ai-activity-feed__group-toggle/)
   assert.doesNotMatch(html, /action-chain-fade/)
   assert.doesNotMatch(html, /tool call|tool result|args:|offset|limit|read_file/)
   assert.doesNotMatch(html, /rounded-xl border border-border-subtle bg-surface/)
+})
+
+test('summarizes preview inspections as a group and keeps all three real call titles', async () => {
+  const { default: AssistantActionLog } = await vite.ssrLoadModule('/src/AssistantActionLog.vue')
+  const titles = ['Inspected preview', 'Captured preview screenshot', 'Captured preview screenshot']
+  const html = await renderToString(createSSRApp(AssistantActionLog, {
+    messageId: 'preview-calls',
+    items: titles.map((title, i) => ({ id: `preview-${i}`, kind: 'inspect', status: 'succeeded', title, severity: 'normal' })),
+  }))
+  assert.match(html, /Inspected resources · 3 calls/)
+  assert.doesNotMatch(html, /Read files/)
+  assert.equal((html.match(/class="k-ai-action-row"/g) || []).length, 3)
+  assert.equal((html.match(/k-ai-action-row__title">Captured preview screenshot/g) || []).length, 2)
 })
 
 test('renders exec_command as the same compact action row with details collapsed', async () => {
@@ -237,7 +250,7 @@ test('shows active tool rows before completion with a visible progress summary',
     ],
   }))
   assert.match(html, /aria-expanded="true"[^>]+aria-controls="app-studio-assistant-actions-/)
-  assert.match(html, /Reading files/)
+  assert.match(html, /Inspecting resources/)
   assert.match(html, /Searching project files/)
   assert.match(html, /Searched for App.vue/)
   assert.match(html, /is-busy/)
