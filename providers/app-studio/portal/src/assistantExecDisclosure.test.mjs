@@ -447,3 +447,23 @@ test('does not present success when the execution has a failed exit code', async
   assert.match(html, /Failed · exit 2/)
   assert.doesNotMatch(html, /Success|k-ai-execution-details__status--success/)
 })
+
+
+test('shared conversation status exposes activity only for a running label', async () => {
+  const { default: Status } = await vite.ssrLoadModule('/src/agentkit/AIConversationStatus.vue')
+  for (const label of ['', 'Running', 'Reconnecting', 'Waiting for approval', 'Waiting for your answer', 'Stopping…']) {
+    const html = await renderToString(createSSRApp({ render: () => h(Status, { label }) }))
+    if (!label) {
+      assert.doesNotMatch(html, /role="status"|k-ai-conversation-status__dot/)
+      continue
+    }
+    assert.match(html, /role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
+    assert.ok(html.includes(label))
+    assert.equal((html.match(/class="k-ai-conversation-status__dot"/g) || []).length, label === 'Running' ? 3 : 0)
+    if (label === 'Running') {
+      assert.match(html, /animation-delay:120ms/)
+      assert.match(html, /animation-delay:240ms/)
+      assert.match(html, /aria-hidden="true"/)
+    }
+  }
+})

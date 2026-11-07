@@ -390,3 +390,38 @@
     min-height: 44px;
   }
 }
+
+/* Conversation-level activity remains visible while trace details are closed. */
+.k-ai-conversation-status {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding-block: 4px;
+  color: var(--color-text-secondary, #8a8ca6);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+.k-ai-conversation-status__dots {
+  display: flex;
+  gap: 2px;
+  color: var(--color-text-muted, #8587a1);
+}
+
+.k-ai-conversation-status__dot {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: k-ai-conversation-pulse 2s cubic-bezier(.4, 0, .6, 1) infinite;
+}
+
+@keyframes k-ai-conversation-pulse {
+  50% { opacity: .5; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .k-ai-conversation-status__dot { animation: none; }
+}

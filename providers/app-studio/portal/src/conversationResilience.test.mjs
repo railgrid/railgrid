@@ -2154,7 +2154,7 @@ test('App latches one stable theme-colored stop control until interruption settl
   assert.match(primaryAction, /<ArrowUp v-else/)
   assert.doesNotMatch(primaryAction, /Loader2|animate-spin/)
   assert.equal((appSource.match(/:type="assistantComposerShowsStop \? 'button' : 'submit'"/g) ?? []).length, 1)
-  assert.match(appSource, /v-if="conversationWorkingLabel === 'Running'"/)
+  assert.match(appSource, /<AIConversationStatus :label="conversationWorkingLabel"/)
   assert.match(primaryStyles, /\.k-ai-primary-action--stop,\s*\.k-ai-primary-action--stopping[\s\S]*?background: var\(--color-accent/)
   assert.match(primaryStyles, /\.k-ai-primary-action--stopping:disabled[\s\S]*?background: var\(--color-accent/)
   assert.doesNotMatch(primaryStyles, /\.k-ai-primary-action--(?:stop|stopping)[^{]*\{[^}]*danger/)

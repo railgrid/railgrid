@@ -115,10 +115,6 @@ details[open] > summary .landing-prompt-chevron {
   transform: none;
 }
 
-.conversation-running-ripple {
-  color: var(--color-text-secondary);
-}
-
 @media (prefers-reduced-motion: reduce) {
   :scope,
   :scope *,

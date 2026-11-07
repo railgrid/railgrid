@@ -20,7 +20,6 @@ test('targets root-owned and descendant behavior without nesting the scope roots
   assert.match(css, /:scope,\s*:scope \*,\s*:scope \*::before,\s*:scope \*::after\s*\{\s*box-sizing: border-box;/)
   assert.match(css, /:scope\s*\{[\s\S]*--app-studio-z-dropdown:[\s\S]*--app-studio-z-tooltip:/)
   assert.match(css, /\.app-studio-overlay-root\s*\{\s*display: contents;/)
-  assert.match(css, /\.conversation-running-ripple\s*\{\s*color: var\(--color-text-secondary\);/)
 
   const reducedMotion = css.match(/@media \(prefers-reduced-motion: reduce\) \{([\s\S]*?)\n\}/)?.[1] ?? ''
   assert.match(reducedMotion, /:scope,\s*:scope \*,\s*:scope \*::before,\s*:scope \*::after/)

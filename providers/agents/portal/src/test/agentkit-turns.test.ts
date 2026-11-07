@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
 import AIPlanDisclosure from '../agentkit/AIPlanDisclosure.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
+import AIConversationStatus from '../agentkit/AIConversationStatus.vue'
 import type { AIPlanView } from '../agentkit/conversation'
 import { mountVue, settleVue, text } from './vue-helper'
 
@@ -15,6 +16,29 @@ const plan: AIPlanView = {
 }
 
 describe('AgentKit conversation turn presentation', () => {
+  it('animates only active running status and removes settled status', async () => {
+    const label = ref('Running')
+    const view = await mountVue(defineComponent({ setup: () => () => h(AIConversationStatus, { label: label.value }) }), {})
+    const status = () => view.element.querySelector('.k-ai-conversation-status')
+    expect(status()?.getAttribute('role')).toBe('status')
+    expect(status()?.getAttribute('aria-live')).toBe('polite')
+    expect(status()?.getAttribute('aria-atomic')).toBe('true')
+    expect(view.element.querySelectorAll('.k-ai-conversation-status__dot')).toHaveLength(3)
+    const dots = [...view.element.querySelectorAll<HTMLElement>('.k-ai-conversation-status__dot')]
+    expect(dots[1].style.animationDelay).toBe('120ms')
+    expect(dots[2].style.animationDelay).toBe('240ms')
+    expect(view.element.querySelector('.k-ai-conversation-status__dot')?.parentElement?.getAttribute('aria-hidden')).toBe('true')
+    for (const state of ['Reconnecting', 'Waiting for approval', 'Waiting for your answer', 'Stopping…']) {
+      label.value = state
+      await settleVue()
+      expect(text(status())).toBe(state)
+      expect(view.element.querySelectorAll('.k-ai-conversation-status__dot')).toHaveLength(0)
+    }
+    label.value = ''
+    await settleVue()
+    expect(status()).toBeNull()
+  })
+
   it('keeps run actions outside the progress disclosure', async () => {
     const expanded = ref(false)
     let stops = 0
