@@ -66,7 +66,7 @@ AGENTKIT_VUE_FILES=(
   ModelCollection.vue ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
   ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts threadReadState.ts ai.ts modelIDSelection.ts
   AIActivityFeed.vue AITranscriptActivity.vue AIExecutionDetails.vue AIConversationTurn.vue AIConversationStatus.vue AITurnProgress.vue AIPlanDisclosure.vue AIPlanSteps.vue
-  conversation.ts AITimestamp.vue clock.ts timestamp.ts
+  useDisclosureScroll.ts conversation.ts AITimestamp.vue clock.ts timestamp.ts
   AIConversationComposer.vue AICommandPalette.vue AgentKitAttachmentPreview.vue AgentKitAttachmentTextPreview.vue
   composer.ts composerAttachments.ts composerSkillsSearch.ts attachmentDrag.ts attachmentDeletion.ts
   useDismissibleAddMenu.ts useAssistantFilePickerFocus.ts AISkillCatalogList.vue AIAttachmentReceipts.vue

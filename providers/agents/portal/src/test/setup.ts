@@ -2,6 +2,7 @@
 // anything stubbed here is something a test can't assert on.
 
 import { afterEach, vi } from 'vitest'
+import { nextTick } from 'vue'
 import { clearToasts } from '../ui/toast'
 import { unmountVueApps } from './vue-helper'
 
@@ -35,22 +36,33 @@ if (!navigator.clipboard) {
   Object.defineProperty(navigator, 'clipboard', { value: { writeText: () => Promise.resolve() }, writable: true })
 }
 
-// The chat batches deltas onto animation frames; running them as microtasks
-// keeps tests deterministic without sprinkling raf waits everywhere.
+// Track frame timers so Vue transition callbacks cannot outlive the jsdom
+// environment. Unmounting alone does not cancel Vue's double-frame callbacks.
+const pendingFrames = new Set<ReturnType<typeof setTimeout>>()
 vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-  const id = setTimeout(() => cb(performance.now()), 0)
+  const id = setTimeout(() => {
+    pendingFrames.delete(id)
+    cb(performance.now())
+  }, 0)
+  pendingFrames.add(id)
   return id as unknown as number
 })
-vi.stubGlobal('cancelAnimationFrame', (id: number) => clearTimeout(id))
+vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+  clearTimeout(id)
+  pendingFrames.delete(id as unknown as ReturnType<typeof setTimeout>)
+})
 
 if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView = () => undefined
 
-afterEach(() => {
+afterEach(async () => {
   unmountVueApps()
   // Toasts own real auto-dismiss timers. Clear them before the jsdom document
   // is replaced so a callback cannot run after the test environment is torn
   // down and dereference an unavailable document.
   clearToasts()
+  await nextTick()
+  for (const id of pendingFrames) clearTimeout(id)
+  pendingFrames.clear()
   document.body.replaceChildren()
   localStorage.clear()
 })

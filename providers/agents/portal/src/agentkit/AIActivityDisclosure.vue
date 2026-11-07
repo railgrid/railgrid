@@ -9,6 +9,7 @@
 -->
 <script setup lang="ts">
 import { Check, ChevronRight, CircleAlert, Loader2 } from 'lucide-vue-next'
+import { useDisclosureScroll } from './useDisclosureScroll'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 
 const props = withDefaults(defineProps<{
@@ -33,6 +34,8 @@ const emit = defineEmits<{
   toggle: []
 }>()
 
+const compensateDisclosure = useDisclosureScroll()
+
 ensureAgentUIStyles()
 
 function countLabel(): string {
@@ -42,7 +45,7 @@ function countLabel(): string {
 </script>
 
 <template>
-  <div class="k-ai-activity">
+  <div class="k-ai-activity" @click.capture="compensateDisclosure">
     <button
       type="button"
       class="k-ai-activity__trigger"

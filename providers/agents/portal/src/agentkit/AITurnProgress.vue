@@ -8,6 +8,7 @@
 <script setup lang="ts">
 import { Comment, Fragment, Text, computed, useSlots, type VNode } from 'vue'
 import { ChevronRight, TriangleAlert } from 'lucide-vue-next'
+import { useDisclosureScroll } from './useDisclosureScroll'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import type { AITurnProgressStatus } from './conversation'
 import { aiTurnProgressLabel, isAITurnProgressRunning, safeConversationID } from './conversation'
@@ -102,12 +103,15 @@ function sanitizeStatusClass(status: AITurnProgressStatus): string {
   return status.toLowerCase().replace(/[^a-z0-9_-]+/g, '-') || 'pending'
 }
 
+const compensateDisclosure = useDisclosureScroll()
+
 ensureAgentUIStyles()
 </script>
 
 <template>
   <section
     class="k-ai-turn-progress"
+    @click.capture="compensateDisclosure"
     :class="[`k-ai-turn-progress--${statusClass}`, { 'k-ai-turn-progress--interrupted': isInterrupted }]"
     :data-status="status"
   >

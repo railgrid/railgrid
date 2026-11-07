@@ -4,10 +4,12 @@ import type {
   ProjectAssistantSkill,
   ProjectAssistantRun,
   ProjectAssistantRunStatus,
+  ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
   ProjectMessage,
 } from './types'
 import { projectAssistantComposerParts } from './assistantCommandPalette'
+import { orderConversationMessages } from './conversationResilience'
 import { parseAssistantProgress } from './assistantProgress'
 
 export const MAX_ASSISTANT_SKILLS = 8
@@ -333,6 +335,26 @@ function mergeActionFeeds(
 }
 
 /**
+ * Message item sequences and their SSE event cursors come from the same
+ * per-thread store counter. Inline mirror payloads may leave item.sequence at
+ * zero; materialized item pages fill it from the event. Progress/commentary
+ * domain sequences are separate and must never be used for message ordering.
+ */
+export function assistantThreadMessageCoordinates(
+  item: Pick<ProjectAssistantThreadItem, 'sequence' | 'createdAt'>,
+  event: Pick<ProjectAssistantThreadEvent, 'sequence' | 'createdAt'>,
+  existing?: Pick<ProjectMessage, 'createdAt' | 'metadata'>,
+): { assistantThreadSequence: number | undefined; createdAt: string } {
+  const valid = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value > 0
+  return {
+    assistantThreadSequence: valid(item.sequence) ? item.sequence
+      : valid(event.sequence) ? event.sequence
+      : valid(existing?.metadata?.assistantThreadSequence) ? existing.metadata.assistantThreadSequence : undefined,
+    createdAt: item.createdAt || existing?.createdAt || event.createdAt,
+  }
+}
+
+/**
  * Merge a freshly loaded durable projection into live messages. A stream can
  * deliver a replacement segment delta while the list request is in flight;
  * retaining a longer prefix prevents that first delta from being overwritten
@@ -370,14 +392,7 @@ export function mergeAssistantThreadMessages(current: ProjectMessage[], projecte
   for (const message of current) {
     if (!seen.has(message.id)) merged.push(message)
   }
-  return merged.sort((left, right) => {
-    const leftAt = Date.parse(left.createdAt)
-    const rightAt = Date.parse(right.createdAt)
-    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) return leftAt - rightAt
-    if (left.createdAt !== right.createdAt) return 0
-    if (left.role === right.role) return 0
-    return left.role === 'user' ? -1 : 1
-  })
+  return orderConversationMessages(merged)
 }
 
 /**
@@ -446,7 +461,7 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
   for (const item of ordered) {
     if (item.type !== 'userMessage' && item.type !== 'agentMessage') continue
     const role = item.type === 'userMessage' ? 'user' : 'assistant'
-    const metadata: Record<string, unknown> = {}
+    const metadata: Record<string, unknown> = { assistantThreadSequence: item.sequence }
     if (role === 'user') {
       const assistantSkills = assistantSkillsFromThreadItem(item)
       if (assistantSkills.length) metadata.assistantSkills = assistantSkills

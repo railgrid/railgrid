@@ -3,6 +3,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { BookOpen, ChevronRight, Folder, GitCommitHorizontal, Image, Loader2, Pencil, Plug, Search, TerminalSquare, TriangleAlert } from 'lucide-vue-next'
 import { activityCategory, activitySummaryTitle, type AIActivityRow } from '../agentkit/activity'
+import { useDisclosureScroll } from './useDisclosureScroll'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import AIActionRow from './AIActionRow.vue'
 
@@ -60,11 +61,13 @@ function icon(row: AIActivityRow) {
     default: return Plug
   }
 }
+const compensateDisclosure = useDisclosureScroll()
+
 ensureAgentUIStyles()
 </script>
 
 <template>
-  <section v-if="rows.length" class="k-ai-transcript-activity" :class="{ 'k-ai-transcript-activity--single': single }" aria-label="Activity">
+  <section v-if="rows.length" @click.capture="compensateDisclosure" class="k-ai-transcript-activity" :class="{ 'k-ai-transcript-activity--single': single }" aria-label="Activity">
     <button v-if="!single" type="button" class="k-ai-transcript-activity__toggle" :aria-expanded="open" :aria-controls="panelId" @click="toggleGroup">
       <Loader2 v-if="busy" class="k-ai-transcript-activity__icon is-busy" aria-hidden="true" />
       <TriangleAlert v-else-if="failures || attention" class="k-ai-transcript-activity__icon is-attention" aria-hidden="true" />
