@@ -147,6 +147,9 @@ func TestRunLifecycleStartsSessionBeforeTurnAndSanitizesEnvironment(t *testing.T
 }
 
 func TestRunForwardsGitHubCredentialToShellPolicy(t *testing.T) {
+	t.Setenv("NPM_TOKEN", "synthetic-runner-token")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "synthetic-runner-key")
+	t.Setenv("CREDENTIAL_secret", "synthetic-runner-secret")
 	const token = "synthetic-launch-token"
 	envFile := filepath.Join(t.TempDir(), "env.json")
 	binary := fakeCodexBinaryWithEnvFile(t, "success", envFile)
@@ -175,6 +178,11 @@ func TestRunForwardsGitHubCredentialToShellPolicy(t *testing.T) {
 	args := string(rawArgs)
 	if strings.Contains(args, token) {
 		t.Fatal("credential value was passed in CLI arguments")
+	}
+	for _, name := range []string{"NPM_TOKEN", "AWS_SECRET_ACCESS_KEY", "CREDENTIAL_secret"} {
+		if strings.Contains(args, name) {
+			t.Errorf("inherited secret-shaped variable %s was included in the shell policy", name)
+		}
 	}
 	for _, expected := range []string{
 		"shell_environment_policy.ignore_default_excludes=true",

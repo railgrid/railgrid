@@ -628,10 +628,10 @@ type serverProcess struct {
 func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpEnv, githubEnv []string) (*serverProcess, error) {
 	// The -c overrides are root-level options of the codex CLI, so they come
 	// before the subcommand.
-	shellEnv := append(a.launchEnv(), githubEnv...)
+	launchEnv := a.launchEnv()
 	args := append([]string(nil), mcpArgs...)
 	if len(githubEnv) > 0 {
-		args = append(args, shellEnvironmentPolicyArgs(shellEnv)...)
+		args = append(args, shellEnvironmentPolicyArgs(launchEnv, githubEnv)...)
 	}
 	args = append(args, "app-server", "--listen", "stdio://",
 		// Keep extension execution policy independent of whether Codex has
@@ -640,7 +640,7 @@ func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpE
 		"--enable", "default_mode_request_user_input",
 		"--disable", "apps", "--disable", "plugins", "--disable", "hooks")
 	cmd := exec.Command(a.cfg.Binary, args...)
-	cmd.Env = append(shellEnv, mcpEnv...)
+	cmd.Env = append(append(launchEnv, githubEnv...), mcpEnv...)
 	if workdir != "" {
 		cmd.Dir = workdir
 	}
@@ -668,16 +668,25 @@ func (a *Adapter) startServer(ctx context.Context, workdir string, mcpArgs, mcpE
 	return proc, nil
 }
 
-// shellEnvironmentPolicyArgs explicitly preserve the already-sanitized
-// app-server environment for shell tools. The allowlist contains variable
-// names only; credential values stay in the process environment.
-func shellEnvironmentPolicyArgs(env []string) []string {
-	names := make([]string, 0, len(env))
-	for _, item := range env {
+// shellEnvironmentPolicyArgs keeps Codex's default secret exclusions for
+// inherited variables while allowing the GitHub credentials supplied for this
+// turn. Only variable names appear in the arguments.
+func shellEnvironmentPolicyArgs(inherited, githubEnv []string) []string {
+	names := make([]string, 0, len(inherited)+len(githubEnv))
+	for _, item := range inherited {
 		name, _, ok := strings.Cut(item, "=")
-		if ok {
-			names = append(names, name)
+		if !ok {
+			continue
 		}
+		upper := strings.ToUpper(name)
+		if strings.Contains(upper, "KEY") || strings.Contains(upper, "SECRET") || strings.Contains(upper, "TOKEN") {
+			continue
+		}
+		names = append(names, name)
+	}
+	for _, item := range githubEnv {
+		name, _, _ := strings.Cut(item, "=")
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	quoted := make([]string, 0, len(names))
