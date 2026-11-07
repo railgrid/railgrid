@@ -9683,6 +9683,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         ...(userContentParts.length ? { assistantContentParts: userContentParts } : {}),
         ...(role === 'assistant' ? {
           assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
+          ...(rawItem.createdAt ? { assistantMessageCreatedAt: rawItem.createdAt } : {}),
           assistantMessageID: rawItem.assistantMessageID || messageID,
           ...(rawItem.turnID ? { assistantTurnID: rawItem.turnID } : {}),
           ...(itemRun ? { assistantMode: itemRun.mode, assistantRevision: itemRun.revision } : {}),
@@ -9839,6 +9840,11 @@ function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<t
   return assistantMessageOwnsActiveRun(message) && activeRun
     ? normalizeAssistantRunStatus(activeRun.status)
     : projectMessageAssistantStatus(message)
+}
+
+function assistantMessageTimestamp(message: ProjectMessageView): string {
+  const recorded = message.metadata?.assistantMessageCreatedAt
+  return typeof recorded === 'string' ? recorded : message.createdAt
 }
 
 function assistantProgressClosed(message: ProjectMessageView): boolean {
@@ -11552,6 +11558,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-if="isValidTimestamp(message.createdAt)"
                   :value="message.createdAt"
                 />
+              </template>
+              <template v-else-if="message.role === 'assistant' && assistantProgressClosed(message)" #after>
+                <AITimestamp :value="assistantMessageTimestamp(message)" />
               </template>
             </AIConversationTurn>
             <AIConversationStatus :label="conversationWorkingLabel" />
