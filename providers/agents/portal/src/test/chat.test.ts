@@ -132,6 +132,40 @@ async function attachTextFile(el: HTMLElement): Promise<void> {
 }
 
 describe('chat streaming', () => {
+  it('orders threads by creation time and keeps a new thread first through its first turn', async () => {
+    const older = { ...session('older'), createdAt: '2026-11-05T10:00:00Z', lastActivity: '2026-11-07T10:00:00Z' }
+    const newer = { ...session('newer'), createdAt: '2026-11-06T10:00:00Z', lastActivity: '2026-11-06T10:00:00Z' }
+    const finish = deferred<void>()
+    let saved: SessionMeta | undefined
+    async function* chatStream(_agent: string, _message: string, sessionID: string) {
+      yield { event: 'start', data: { runID: 'first-run', sessionID } } as SSEEvent
+      yield { event: 'run_started', data: { runID: 'first-run', sessionID, status: 'Running' } } as SSEEvent
+      await finish.promise
+      saved = { ...session(sessionID), createdAt: '2026-11-07T11:00:00Z', lastActivity: '2026-11-07T11:00:01Z' }
+      yield { event: 'done', data: { runID: 'first-run', content: 'Reply' } } as SSEEvent
+    }
+    const { el } = await mountChat(chatStream, { listSessions: async () => saved ? [saved, older, newer] : [older, newer] })
+    const threadIDs = () => [...el.querySelectorAll('.k-ai-conversation-rail__item-select')]
+      .map(row => row.getAttribute('data-thread-id'))
+
+    expect(threadIDs()).toEqual(['newer', 'older'])
+    el.querySelector<HTMLButtonElement>('.k-ai-conversation-rail__create')!.click()
+    await settle()
+    const newID = threadIDs()[0]
+    expect(newID).toBeTruthy()
+    expect(threadIDs()).toEqual([newID, 'newer', 'older'])
+
+    await send(el, 'First message')
+    try {
+      expect(el.querySelector(`[data-thread-id="${newID}"]`)?.getAttribute('aria-busy')).toBe('true')
+      expect(threadIDs()).toEqual([newID, 'newer', 'older'])
+    } finally {
+      finish.resolve()
+    }
+    await settle(8)
+    expect(threadIDs()).toEqual([newID, 'newer', 'older'])
+  })
+
   it('shows a trailing spinner for active work without preventing thread selection', async () => {
     const rail = await mountConversationRail()
     await rail.setProps({ activeThreadID: '', unreadThreadIDs: ['thread-active', 'thread-older'] })
@@ -4032,6 +4066,18 @@ describe('dedicated chat model recovery', () => {
 })
 
 describe('authoritative recovery state', () => {
+  it('hides the loading notice during a background refresh when the selected model is usable', async () => {
+    const { el, store } = await mountChat(scripted([]))
+    store.credentials.loading = true
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    expect(text(el)).not.toContain('Loading models…')
+    setComposerText(el, 'Ready to send')
+    await settle()
+    expect(el.querySelector<HTMLButtonElement>('.agents-composer button[type="submit"]')?.disabled).toBe(false)
+  })
+
   it('keeps unknown credentials in loading and a failed first read in recovery', async () => {
     const { el, store } = await mountChat(scripted([]))
     store.credentials.hasSnapshot = false; store.credentials.loaded = false; store.credentials.loading = true
