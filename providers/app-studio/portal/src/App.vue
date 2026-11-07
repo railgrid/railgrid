@@ -110,6 +110,7 @@ import {
   assistantContextResourcesFromThreadItem,
   assistantSkillsFromThreadItem,
   assistantThreadItemToRun,
+  assistantThreadMessageCoordinates,
   assistantThreadItemsToMessages,
   assistantThreadItemsToRuns,
   hideCommentaryRepresentedInTrace,
@@ -9676,8 +9677,10 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
       const userAssistantSkills = role === 'user' ? assistantSkillsFromThreadItem(rawItem) : []
       const userContextResources = role === 'user' ? assistantContextResourcesFromThreadItem(rawItem) : []
       const userContentParts = role === 'user' ? assistantContentPartsFromThreadItem(rawItem) : []
+      const coordinates = assistantThreadMessageCoordinates(rawItem, event, existing)
       const metadata: Record<string, unknown> = {
         ...(existing?.metadata ?? {}),
+        assistantThreadSequence: coordinates.assistantThreadSequence,
         ...(userAssistantSkills.length ? { assistantSkills: userAssistantSkills } : {}),
         ...(userContextResources.length ? { assistantContextResources: userContextResources } : {}),
         ...(userContentParts.length ? { assistantContentParts: userContentParts } : {}),
@@ -9700,7 +9703,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         role,
         content: existingContent.length >= itemContent.length && existingContent.startsWith(itemContent) ? existingContent : itemContent,
         metadata,
-        createdAt: event.createdAt,
+        createdAt: coordinates.createdAt,
       })
       messages.value = existing
         ? messages.value.map((message) => message.id === existing.id ? projected : message)
