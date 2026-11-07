@@ -1554,8 +1554,10 @@ describe('Automation.vue', () => {
     store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * *' } }]
     store.schedules.loaded = true
     store.schedules.hasSnapshot = true
-    store.schedules.error = 'temporary refresh failure'
     const existing = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'daily' })
+    store.schedules.error = 'temporary refresh failure'
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
 
     expect(existing.element.querySelector('form')).not.toBeNull()
     expect(text(existing.element.querySelector('.k-stale'))).toContain('Showing the last loaded data')
@@ -1563,8 +1565,8 @@ describe('Automation.vue', () => {
 
     const missing = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', editName: 'missing' })
     expect(missing.element.querySelector('form')).toBeNull()
-    expect(text(missing.element.querySelector('.k-stale'))).toContain('temporary refresh failure')
-    expect(text(missing.element)).toContain('The last loaded data did not include schedule “missing”')
+    expect(text(missing.element)).toContain('temporary refresh failure')
+    expect(text(missing.element)).toContain('Could not load this schedule')
     expect(text(missing.element)).not.toContain('No schedule named')
   })
 

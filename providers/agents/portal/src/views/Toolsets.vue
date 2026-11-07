@@ -119,6 +119,7 @@ function hydrateEdit(item: Toolset): void {
 }
 watch([() => props.editRoute, () => props.editName, () => revision.value], () => {
   if (!props.editRoute || !props.editName || editValuesFor.value === props.editName) return
+  if (slice.value.loading || slice.value.error) return
   const item = props.store.toolsets.data.find(toolset => toolset.metadata.name === props.editName)
   if (!item) return
   hydrateEdit(item)
@@ -213,7 +214,7 @@ function cancelCreate(): void {
       :title="editTitle"
       kind="Toolset"
       subtitle="Update this toolset and its reusable tool assignments."
-      :loaded="slice.hasSnapshot"
+      :loaded="slice.hasSnapshot && (editValuesFor === editName || (!slice.loading && !slice.error))"
       :loading="slice.loading"
       :error="editReadError"
       :stale="slice.hasSnapshot && !!slice.error"

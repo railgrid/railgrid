@@ -14,6 +14,7 @@ import {
   parseHash,
   questionRunForSubPath,
   routeForSubPath,
+  resourceSlicesForRoute,
   syncHash,
   writeHash,
   type CreateSuccessDetail,
@@ -90,6 +91,11 @@ watch(
   { flush: 'post' },
 )
 const active = computed(() => activeMenu(route.value))
+// Initial hydration and authority rotations call loadAll. Subsequent route
+// entries must also revalidate cached collections, including empty snapshots.
+watch(() => hashFor(route.value), () => {
+  if (api.value.hasWorkspace()) store.value.refreshCollections(resourceSlicesForRoute(route.value))
+})
 const menuCounts = computed<Record<MenuKey, number>>(() => {
   storeRevision.value
   return {
