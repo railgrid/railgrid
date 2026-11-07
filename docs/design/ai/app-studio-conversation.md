@@ -119,6 +119,8 @@ On coarse pointers, the reset, model, and back controls have targets of at least
 This is provider-owned behavior composed through AgentKit's shared picker and
 PortalKit's anchored-popup geometry and menu vocabulary. Reasoning effort controls model execution;
 it does not add reasoning text to the transcript.
+Completed-turn activity disclosures show elapsed time and activity details,
+without a model, reasoning-effort, or transport settings summary.
 
 ### Approval is a separate policy
 

@@ -377,7 +377,6 @@ import type {
   ProjectAssistantThread,
   ProjectAssistantThreadEvent,
   ProjectAssistantThreadItem,
-  ProjectAssistantEffectiveSettings,
   ProjectAssistantTurn,
   ProjectAssistantRunStart,
   ProjectAssistantUIComponent,
@@ -1814,11 +1813,6 @@ async function loadAssistantSkills(projectName: string) {
 }
 
 const assistantRunRevisions: Record<string, AssistantRun> = {}
-const assistantTurnDetails = ref<Record<string, {
-  loading: boolean
-  effectiveSettings?: ProjectAssistantEffectiveSettings
-  error?: string
-}>>({})
 const conversationConnectionState = ref<ConversationConnectionState>('idle')
 const reviewPanelHold = ref<{
   kind: 'approval' | 'follow_up'
@@ -6485,7 +6479,6 @@ function invalidateAssistantReasoningPreferenceState(clearWorkspace: boolean) {
   assistantThreadReasoningEventSequences.clear()
   assistantReasoningPreferencesHydrating.value = false
   assistantReasoningPreferencePreparing.value = false
-  assistantTurnDetails.value = {}
   if (clearWorkspace) {
     unthreadedReasoningEfforts.value = {}
     landingReasoningEfforts.value = {}
@@ -7368,92 +7361,6 @@ function assistantRunForMessage(messageID: string): AssistantRun | undefined {
   return Object.values(assistantRunRevisions).find((run) =>
     run.activeMessageID === messageID || (!!assistantMessageID && run.activeMessageID === assistantMessageID),
   )
-}
-
-function assistantTurnDetailKey(projectName: string, threadID: string, turnID: string): string {
-  return JSON.stringify([appContextFingerprint(props.ctx), projectName, threadID, turnID])
-}
-
-function assistantTurnDetailState(message: ProjectMessageView) {
-  const projectName = message.projectID
-  const threadID = activeAssistantThreadID.value
-  const turnID = typeof message.metadata?.assistantTurnID === 'string' ? message.metadata.assistantTurnID : ''
-  if (!projectName || !threadID || !turnID) return undefined
-  return assistantTurnDetails.value[assistantTurnDetailKey(projectName, threadID, turnID)]
-}
-
-function assistantTurnDetailVisible(message: ProjectMessageView): boolean {
-  const run = assistantRunForMessage(message.id)
-  return Boolean(assistantTurnDetailState(message) || (run && assistantRunTerminal(run.status)))
-}
-
-function assistantTurnEffectiveSettings(message: ProjectMessageView): ProjectAssistantEffectiveSettings | undefined {
-  return assistantTurnDetailState(message)?.effectiveSettings
-}
-
-function assistantTurnReasoning(message: ProjectMessageView): NonNullable<ProjectAssistantEffectiveSettings['reasoning']> | undefined {
-  return assistantTurnEffectiveSettings(message)?.reasoning
-}
-
-function assistantTurnRequestedReasoningLabel(message: ProjectMessageView): string {
-  const reasoning = assistantTurnReasoning(message)
-  return reasoning ? requestedReasoningLabel(reasoning) : ''
-}
-
-function requestedReasoningLabel(reasoning: NonNullable<ProjectAssistantEffectiveSettings['reasoning']>): string {
-  if (!Object.prototype.hasOwnProperty.call(reasoning, 'requestedEffort')) return 'Conversation preference or model default'
-  return reasoning.requestedEffort ? reasoningEffortLabel(reasoning.requestedEffort) : 'Model default'
-}
-
-function assistantTurnResolvedReasoningLabel(message: ProjectMessageView): string {
-  const reasoning = assistantTurnReasoning(message)
-  if (!reasoning || reasoning.configuredEffort === reasoning.effectiveEffort) return ''
-  return reasoning.configuredEffort ? reasoningEffortLabel(reasoning.configuredEffort) : 'Automatic'
-}
-
-function actualReasoningLabel(effort: string | undefined): string {
-  return effort ? reasoningEffortLabel(effort) : 'Automatic'
-}
-
-function transportLabel(transport: string): string {
-  if (transport === 'responses') return 'Responses API'
-  if (transport === 'chat-completions') return 'Chat Completions'
-  if (transport === 'gemini') return 'Gemini'
-  return transport || 'Unknown'
-}
-
-async function loadAssistantTurnDetail(message: ProjectMessageView, retry = false): Promise<void> {
-  const run = assistantRunForMessage(message.id)
-  const projectName = message.projectID
-  const threadID = activeAssistantThreadID.value
-  const turnID = typeof message.metadata?.assistantTurnID === 'string' ? message.metadata.assistantTurnID : run?.id ?? ''
-  if (!run || !assistantRunTerminal(run.status) || !projectName || !threadID || !turnID) return
-  const key = assistantTurnDetailKey(projectName, threadID, turnID)
-  const existing = assistantTurnDetails.value[key]
-  if (existing?.loading || (!retry && (existing?.effectiveSettings || existing?.error))) return
-  const contextFingerprint = appContextFingerprint(props.ctx)
-  const projectUID = selected.value?.uid ?? ''
-  assistantTurnDetails.value = { ...assistantTurnDetails.value, [key]: { loading: true } }
-  try {
-    const detail = await api.getAssistantTurnDetail(props.ctx, projectName, threadID, turnID)
-    if (
-      contextFingerprint !== appContextFingerprint(props.ctx) ||
-      selected.value?.name !== projectName ||
-      (selected.value?.uid ?? '') !== projectUID ||
-      activeAssistantThreadID.value !== threadID ||
-      !messages.value.some((candidate) => candidate.id === message.id)
-    ) return
-    assistantTurnDetails.value = {
-      ...assistantTurnDetails.value,
-      [key]: { loading: false, effectiveSettings: detail.effectiveSettings },
-    }
-  } catch {
-    if (contextFingerprint !== appContextFingerprint(props.ctx) || selected.value?.name !== projectName || activeAssistantThreadID.value !== threadID) return
-    assistantTurnDetails.value = {
-      ...assistantTurnDetails.value,
-      [key]: { loading: false, error: 'Run settings could not be loaded.' },
-    }
-  }
 }
 
 function assistantRunErrorForMessage(messageID: string): string {
@@ -9978,7 +9885,6 @@ function toggleAssistantProgress(message: ProjectMessageView): void {
     expanded: expanding,
   })
   assistantProgressDisclosureChoices.value = choices
-  if (expanding) void loadAssistantTurnDetail(message)
 }
 
 function assistantProgressRegionID(messageID: string): string {
@@ -11499,27 +11405,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   :expanded="assistantProgressExpanded(message)"
                   @toggle="toggleAssistantProgress(message)"
                 >
-                  <template v-if="assistantTraceBlocks(message).length || assistantTurnDetailVisible(message)" #details>
-                    <section v-if="assistantTurnDetailVisible(message)" class="mb-3 rounded-md border border-border-subtle bg-surface/50 px-3 py-2 text-[11px] leading-5" data-testid="assistant-run-effective-settings" aria-label="Run settings">
-                      <div class="mb-1 font-semibold text-text-secondary">Run settings</div>
-                      <p v-if="assistantTurnDetailState(message)?.loading" class="text-text-muted" role="status" aria-live="polite">Loading run settings…</p>
-                      <div v-else-if="assistantTurnDetailState(message)?.error" class="flex flex-wrap items-center gap-2 text-danger" role="alert">
-                        <span>{{ assistantTurnDetailState(message)?.error }}</span>
-                        <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadAssistantTurnDetail(message, true)">Retry</button>
-                      </div>
-                      <template v-else-if="assistantTurnEffectiveSettings(message)">
-                        <p v-if="assistantTurnEffectiveSettings(message)?.provider || assistantTurnEffectiveSettings(message)?.model" class="text-text-muted">
-                          Model: <span class="font-medium text-text-secondary">{{ [assistantTurnEffectiveSettings(message)?.provider, assistantTurnEffectiveSettings(message)?.model].filter(Boolean).join(' · ') }}</span>
-                        </p>
-                        <template v-if="assistantTurnReasoning(message)">
-                          <p class="text-text-muted">Requested: <span class="font-medium text-text-secondary">{{ assistantTurnRequestedReasoningLabel(message) }}</span></p>
-                          <p v-if="assistantTurnResolvedReasoningLabel(message)" class="text-text-muted">Resolved effort: <span class="font-medium text-text-secondary">{{ assistantTurnResolvedReasoningLabel(message) }}</span></p>
-                          <p class="text-text-muted">Effective: <span class="font-medium text-text-secondary">{{ actualReasoningLabel(assistantTurnReasoning(message)?.effectiveEffort) }} · {{ transportLabel(assistantTurnReasoning(message)?.transport ?? '') }}</span></p>
-                        </template>
-                        <p v-else class="text-text-muted">No reasoning effort was recorded for this run.</p>
-                      </template>
-                      <p v-else class="text-text-muted">No reasoning audit is available for this run.</p>
-                    </section>
+                  <template v-if="assistantTraceBlocks(message).length" #details>
                     <template
                       v-for="(traceBlock, traceIndex) in assistantTraceBlocks(message)"
                       :key="traceBlock.key"

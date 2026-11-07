@@ -234,22 +234,6 @@ export interface ProjectAssistantTurn {
   error?: { message?: string; errorInfo?: string }
 }
 
-export interface ProjectAssistantEffectiveSettings {
-  provider?: string
-  model?: string
-  reasoning?: {
-    requestedEffort?: string
-    configuredEffort?: string
-    effectiveEffort: string
-    transport: 'responses' | 'chat-completions' | 'gemini' | string
-  }
-}
-
-export interface ProjectAssistantTurnDetail {
-  turn: ProjectAssistantTurn
-  effectiveSettings?: ProjectAssistantEffectiveSettings
-}
-
 export interface ProjectAssistantThreadEvent {
   threadID: string
   turnID?: string
