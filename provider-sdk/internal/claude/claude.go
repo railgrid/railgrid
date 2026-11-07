@@ -749,8 +749,8 @@ func (cm *ChatModel) populateInput(params *anthropic.MessageNewParams, sysInstru
 		msgParams = append(msgParams, msgParam)
 	}
 
+	msgParams = placeSystemMessagesAfterUserTurn(msgParams)
 	msgParams = mergeAdjacentToolResults(msgParams)
-	msgParams = mergeAdjacentSystemMessages(msgParams)
 
 	if !hasSetMsgBreakPoint && specOptions.AutoCacheControl != nil {
 		lastMsgParam := msgParams[len(msgParams)-1]
@@ -782,21 +782,26 @@ func mergeAdjacentToolResults(msgParams []anthropic.MessageParam) []anthropic.Me
 	return result
 }
 
-// mergeAdjacentSystemMessages merges consecutive system messages into a single
-// message with multiple content blocks, because Claude only allows a system
-// message immediately before a user or assistant message.
-func mergeAdjacentSystemMessages(msgParams []anthropic.MessageParam) []anthropic.MessageParam {
-	if len(msgParams) <= 1 {
-		return msgParams
-	}
-
+// placeSystemMessagesAfterUserTurn keeps guidance after the full user turn.
+// Consecutive user messages form one turn, including client tool results.
+// Buffering system blocks until that turn ends preserves their order without
+// splitting a tool call from its results or changing the stored history.
+func placeSystemMessagesAfterUserTurn(msgParams []anthropic.MessageParam) []anthropic.MessageParam {
 	result := make([]anthropic.MessageParam, 0, len(msgParams))
-	for _, mp := range msgParams {
-		if len(result) > 0 && mp.Role == anthropic.MessageParamRoleSystem && result[len(result)-1].Role == anthropic.MessageParamRoleSystem {
-			result[len(result)-1].Content = append(result[len(result)-1].Content, mp.Content...)
-		} else {
-			result = append(result, mp)
+	var pending []anthropic.ContentBlockParamUnion
+	for _, msg := range msgParams {
+		if msg.Role == anthropic.MessageParamRoleSystem {
+			pending = append(pending, msg.Content...)
+			continue
 		}
+		if msg.Role != anthropic.MessageParamRoleUser && len(pending) != 0 {
+			result = append(result, anthropic.MessageParam{Role: anthropic.MessageParamRoleSystem, Content: pending})
+			pending = nil
+		}
+		result = append(result, msg)
+	}
+	if len(pending) != 0 {
+		result = append(result, anthropic.MessageParam{Role: anthropic.MessageParamRoleSystem, Content: pending})
 	}
 	return result
 }
