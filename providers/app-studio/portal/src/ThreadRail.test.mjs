@@ -40,14 +40,40 @@ test('renders the project-scoped shared rail with lifecycle actions and no manag
   assert.match(html, /Add toast notifications/)
   assert.match(html, /Fix authentication/)
   assert.match(html, /aria-current="page"/)
-  assert.match(html, /class="is-active has-actions k-ai-conversation-rail__item"/)
+  assert.match(html, /class="[^"]*\bis-active\b[^"]*\bis-running\b[^"]*\bhas-actions\b[^"]*\bk-ai-conversation-rail__item\b[^"]*"/)
   assert.match(html, /aria-label="Unread thread"/)
   assert.match(html, /Pinned/)
   assert.match(html, /title="Unpin thread"/)
   assert.match(html, /aria-label="Archive thread"/)
   assert.match(html, /class="k-ai-conversation-rail__create"/)
-  assert.doesNotMatch(html, /Manage threads|Running|Archived/)
+  assert.doesNotMatch(html, /Manage threads|Archived/)
+  assert.match(html, /k-ai-conversation-rail__item-spinner[^>]*aria-label="Running"/)
   assert.doesNotMatch(html, /border-t border-border-subtle p-2/)
+})
+
+test('shows activity for selected and background runs while idle and waiting threads stay selectable', async () => {
+  const html = await renderRail({
+    threads: [
+      { id: 'selected', title: 'Selected running thread', status: 'active' },
+      { id: 'background', title: 'Background running thread', status: 'active' },
+      { id: 'idle', title: 'Idle thread', status: 'idle' },
+      { id: 'waiting', title: 'Waiting for approval', status: 'waiting' },
+    ],
+    activeThreadID: 'selected',
+    unreadThreadIDs: [],
+    pinnedThreadIDs: [],
+  })
+  for (const id of ['selected', 'background', 'idle', 'waiting']) {
+    const row = html.match(new RegExp(`<button[^>]*data-thread-id="${id}"[^>]*>[\\s\\S]*?</button>`))?.[0]
+    assert.ok(row, `Missing thread ${id}`)
+    assert.doesNotMatch(row, /\sdisabled(?:[ =>])/)
+    if (id === 'selected' || id === 'background') {
+      assert.match(row, /aria-busy="true"/)
+      assert.match(row, /k-ai-conversation-rail__item-spinner[^>]*aria-label="Running"/)
+    } else {
+      assert.doesNotMatch(row, /aria-busy="true"|k-ai-conversation-rail__item-spinner/)
+    }
+  }
 })
 
 test('exposes shared anchored, mobile, focus, and project-scoped persistence behavior', () => {
