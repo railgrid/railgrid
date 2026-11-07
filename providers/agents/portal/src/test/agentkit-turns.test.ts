@@ -15,6 +15,29 @@ const plan: AIPlanView = {
 }
 
 describe('AgentKit conversation turn presentation', () => {
+  it('keeps run actions outside the progress disclosure', async () => {
+    const expanded = ref(false)
+    let stops = 0
+    const view = await mountVue(defineComponent({ setup: () => () => h(AITurnProgress, {
+      status: 'running', expanded: expanded.value,
+      onToggle: (value: boolean) => { expanded.value = value },
+    }, {
+      details: () => h('p', 'Live commentary'),
+      actions: () => h('button', { type: 'button', onClick: () => { stops += 1 } }, 'Stop'),
+    }) }), {})
+    const header = view.element.querySelector('.k-ai-turn-progress__header')!
+    const stop = [...header.querySelectorAll('button')].find(button => text(button) === 'Stop')!
+    stop.click()
+    await settleVue()
+    expect(stops).toBe(1)
+    expect(expanded.value).toBe(false)
+    expect(stop.closest('.k-ai-turn-progress__trigger')).toBeNull()
+    header.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!.click()
+    await settleVue()
+    expect(expanded.value).toBe(true)
+    expect(stops).toBe(1)
+  })
+
   it('renders caller-owned turn slots inside the neutral AIMessage frame', async () => {
     const view = await mountVue(defineComponent({
       setup: () => () => h(AIConversationTurn, {

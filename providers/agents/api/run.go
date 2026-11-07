@@ -1077,6 +1077,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	} else {
 		out, err = b.Continue(ctx, brun, answer, sink)
 	}
+	sink.progress.flushPending()
 	end := time.Now().UTC()
 	if harnessT != nil && run.Repository == nil {
 		// The next chat reads the session row, not this run's display metadata.
@@ -1513,6 +1514,7 @@ type turnSink struct {
 	startedAt   time.Time
 	tracker     *turnProgressTracker
 	backendType string
+	progress    *liveProgress
 	// record persists a mid-turn recovery checkpoint; abort reads the durable
 	// cancel flag. Both are built once so their throttling and closures live for
 	// the whole turn.
@@ -1536,6 +1538,7 @@ func (s *Server) turnSink(ctx context.Context, run taskRun, sessionID string, st
 	return &turnSink{
 		s: s, ctx: ctx, run: run, sessionID: sessionID, startedAt: startedAt, tracker: tracker,
 		backendType: backendType,
+		progress:    s.newLiveProgress(ctx, run, sessionID, startedAt),
 		// Periodic checkpoints make a long run recoverable: if this replica dies,
 		// the Run reconciler resumes from the last one instead of losing the work.
 		// A resumed run keeps checkpointing too, so a replica that dies again picks
@@ -1546,6 +1549,7 @@ func (s *Server) turnSink(ctx context.Context, run taskRun, sessionID string, st
 }
 
 func (k *turnSink) Delta(text string) {
+	k.progress.delta(text)
 	k.tracker.delta(text)
 	if k.run.OnDelta != nil {
 		k.run.OnDelta(text)
@@ -1554,9 +1558,10 @@ func (k *turnSink) Delta(text string) {
 
 func (k *turnSink) Assistant(message backend.AssistantMessage) {
 	k.tracker.assistant(message)
+	messageID := k.progress.assistant(message)
 	at := time.Now().UTC()
 	persisted := true
-	if message.Complete && (message.HasToolCalls || len(message.ToolCalls) > 0) {
+	if message.Complete && message.IsCommentary() {
 		metadata := turnMetadata("commentary", "running", k.startedAt, 0, message.Duration.Milliseconds(), "")
 		metadata[historyToolCallsKey] = storedToolCalls(message.ToolCalls)
 		if continuation := storedResponsesContinuation(message.ToolCalls); continuation != nil {
@@ -1567,7 +1572,7 @@ func (k *turnSink) Assistant(message backend.AssistantMessage) {
 			metadata[backend.ContinuationMetadataEnvelopeKey] = message.Continuation.Clone()
 		}
 		if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
-			ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
+			ID: messageID, AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 			Role: "assistant", Content: message.Content,
 			Metadata:  metadata,
 			CreatedAt: at,
@@ -1582,6 +1587,7 @@ func (k *turnSink) Assistant(message backend.AssistantMessage) {
 }
 
 func (k *turnSink) ToolStart(id, name, args string) {
+	k.progress.toolStart(id, name, args)
 	if k.run.OnToolStart != nil {
 		k.run.OnToolStart(id, name, args)
 	}
@@ -1610,15 +1616,16 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 		}
 	}
 	metadata := persistedToolMetadata(k.run, ev)
-	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, store.Message{
-		ID: uuid.NewString(), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
+	row := store.Message{
+		ID: k.progress.toolID(ev.ID), AgentName: k.run.Agent.Name, SessionID: k.sessionID, RunID: k.run.RunID,
 		Role: "tool", Content: ev.Result,
-		Metadata:  metadata,
-		CreatedAt: time.Now().UTC(),
-	}); err != nil {
+		Metadata: metadata, CreatedAt: time.Now().UTC(),
+	}
+	if err := k.s.appendProgressMessage(k.ctx, k.run.Scope, row); err != nil {
 		k.run.transcriptWrites.record(fmt.Errorf("persist tool result %q: %w", ev.ID, err))
 		return
 	}
+	k.progress.completed(row)
 	if k.run.OnTool != nil {
 		k.run.OnTool(ev)
 	}

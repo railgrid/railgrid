@@ -82,6 +82,8 @@ type runStep struct {
 type runDetail struct {
 	runSummary
 	Input string `json:"input,omitempty"`
+	// Progress overlays incomplete presentation rows on the saved transcript.
+	Progress []store.Message `json:"progress,omitempty"`
 	// Output is the run's answer, so a caller that polled the phase reads the
 	// result from the same object rather than the session transcript.
 	Output   string       `json:"output,omitempty"`
@@ -185,6 +187,13 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 	// machine that was never involved.
 	if run.Backend == agentsv1alpha1.AgentBackendHarness && (run.AttemptID != "" || run.HarnessSessionID != "") {
 		detail.Harness = &runHarnessInfo{AttemptID: run.AttemptID, SessionID: run.HarnessSessionID}
+	}
+	if run.Phase == store.RunPhaseRunning {
+		progress, err := s.store.GetRunProgress(ctx, scope, runID)
+		if err != nil {
+			return runDetail{}, err
+		}
+		detail.Progress = progress
 	}
 	detail.Repository, detail.Result = run.Repository, run.Result
 	detail.HarnessSettings = run.HarnessSettings

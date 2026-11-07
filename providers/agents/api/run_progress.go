@@ -81,13 +81,13 @@ func (t *turnProgressTracker) delta(value string) {
 }
 
 func (t *turnProgressTracker) assistant(message backend.AssistantMessage) {
-	if t != nil {
+	if t != nil && !message.PresentationOnly {
 		// A backend reports one attempt for every model response, including a
 		// zero-duration one. Seeing that report is authoritative evidence that
 		// measured work was observed, even when it measured zero.
 		t.workedKnown = true
 	}
-	if message.Duration > 0 {
+	if !message.PresentationOnly && message.Duration > 0 {
 		t.worked += message.Duration
 	}
 	if !message.Complete {
@@ -96,7 +96,7 @@ func (t *turnProgressTracker) assistant(message backend.AssistantMessage) {
 		// answer merely because the model callback ended.
 		return
 	}
-	if message.HasToolCalls {
+	if message.IsCommentary() {
 		// The completed commentary response has its own persisted row. Any
 		// streamed deltas are now classified, so the unclassified buffer can be
 		// reused for the next response.

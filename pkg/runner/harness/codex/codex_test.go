@@ -358,47 +358,60 @@ func TestRunRequestUserInputProducesBoundedStableClarification(t *testing.T) {
 }
 
 func TestRunCancellationInterruptsAndStopsProcess(t *testing.T) {
-	binary := fakeCodexBinary(t, "cancel")
-	adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	started := make(chan struct{})
-	resultCh := make(chan harness.Result, 1)
-	errCh := make(chan error, 1)
-	go func() {
-		result, err := adapter.Run(ctx, harness.Launch{
-			Workdir:      t.TempDir(),
-			Instructions: "wait",
-			Credential:   testCredential(),
-		}, func(event harness.Event) error {
-			if event.Type == "turn_started" {
-				close(started)
+	for _, scenario := range []string{"cancel", "subagents-cancel"} {
+		t.Run(scenario, func(t *testing.T) {
+			binary := fakeCodexBinary(t, scenario)
+			adapter := New(Config{Binary: binary, Home: t.TempDir(), ExpectedVersion: "0.155.1"})
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			started := make(chan struct{})
+			var startOnce sync.Once
+			resultCh := make(chan harness.Result, 1)
+			errCh := make(chan error, 1)
+			go func() {
+				result, err := adapter.Run(ctx, harness.Launch{
+					Workdir:      t.TempDir(),
+					Instructions: "wait",
+					Credential:   testCredential(),
+				}, func(event harness.Event) error {
+					if scenario == "cancel" && event.Type == "turn_started" || scenario == "subagents-cancel" && event.Type == "subagent_progress" && strings.Contains(string(event.Data), `"grandchild"`) {
+						startOnce.Do(func() { close(started) })
+					}
+					return nil
+				})
+				resultCh <- result
+				errCh <- err
+			}()
+			select {
+			case <-started:
+			case <-time.After(2 * time.Second):
+				t.Fatal("session did not start")
 			}
-			return nil
+			cancel()
+			select {
+			case result := <-resultCh:
+				if result.Phase != "cancelled" {
+					t.Fatalf("result = %+v", result)
+				}
+				if err := <-errCh; err != nil {
+					t.Fatalf("Run: %v", err)
+				}
+			case <-time.After(4 * time.Second):
+				t.Fatal("Run did not stop after cancellation")
+			}
+			methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
+			if !strings.Contains(strings.Join(methods, ","), "turn/interrupt") {
+				t.Fatalf("methods = %v, want turn/interrupt", methods)
+			}
+			for _, request := range readJSONLines(t, filepath.Join(filepath.Dir(binary), "requests")) {
+				if request["method"] == "turn/interrupt" {
+					params, _ := request["params"].(map[string]any)
+					if params["threadId"] != "thread-1" || params["turnId"] != "turn-1" {
+						t.Fatalf("interrupted child instead of parent: %v", params)
+					}
+				}
+			}
 		})
-		resultCh <- result
-		errCh <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("session did not start")
-	}
-	cancel()
-	select {
-	case result := <-resultCh:
-		if result.Phase != "cancelled" {
-			t.Fatalf("result = %+v", result)
-		}
-		if err := <-errCh; err != nil {
-			t.Fatalf("Run: %v", err)
-		}
-	case <-time.After(4 * time.Second):
-		t.Fatal("Run did not stop after cancellation")
-	}
-	methods := readMethods(t, filepath.Join(filepath.Dir(binary), "methods"))
-	if !strings.Contains(strings.Join(methods, ","), "turn/interrupt") {
-		t.Fatalf("methods = %v, want turn/interrupt", methods)
 	}
 }
 
@@ -522,6 +535,10 @@ func TestFakeAppServerProcess(t *testing.T) {
 		case "model/list":
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"data": []any{map[string]any{"id": "gpt-6-luna", "model": "gpt-6-luna", "supportedReasoningEfforts": []any{map[string]any{"reasoningEffort": "max"}, map[string]any{"reasoningEffort": "low"}}}}}})
 		case "thread/start":
+			if strings.HasPrefix(scenario, "subagents") {
+				writeNotification("thread/started", map[string]any{"thread": map[string]any{"id": "unrelated"}})
+				writeNotification("thread/started", map[string]any{"thread": map[string]any{"id": "early-child", "parentThreadId": "thread-1"}})
+			}
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"model": "gpt-6-luna", "thread": map[string]any{"id": "thread-1"}}})
 		case "thread/resume":
 			if scenario == "missing-resume" {
@@ -535,6 +552,14 @@ func TestFakeAppServerProcess(t *testing.T) {
 				writeResponse(map[string]any{"id": id, "result": map[string]any{"model": "gpt-6-luna", "thread": map[string]any{"id": resumeID}}})
 			}
 		case "turn/start":
+			if strings.HasPrefix(scenario, "subagents") {
+				// Notifications may be interleaved before the turn/start response.
+				params, _ := request["params"].(map[string]any)
+				root, _ := params["threadId"].(string)
+				writeNotification("turn/started", map[string]any{"threadId": root, "turn": map[string]any{"id": "turn-1"}})
+				writeNotification("thread/started", map[string]any{"thread": map[string]any{"id": "child", "parentThreadId": root}})
+				writeNotification("turn/started", map[string]any{"threadId": "child", "turn": map[string]any{"id": "child-turn"}})
+			}
 			writeResponse(map[string]any{"id": id, "result": map[string]any{"turn": map[string]any{"id": "turn-1", "status": "inProgress"}}})
 			params, _ := request["params"].(map[string]any)
 			threadID, _ := params["threadId"].(string)
@@ -542,6 +567,21 @@ func TestFakeAppServerProcess(t *testing.T) {
 				threadID = "thread-1"
 			}
 			switch scenario {
+			case "subagents", "subagents-cancel":
+				writeNotification("thread/started", map[string]any{"thread": map[string]any{"id": "grandchild", "source": map[string]any{"subAgent": map[string]any{"thread_spawn": map[string]any{"parent_thread_id": "child"}}}}})
+				writeNotification("turn/started", map[string]any{"threadId": "grandchild", "turn": map[string]any{"id": "grandchild-turn"}})
+				writeNotification("item/agentMessage/delta", map[string]any{"threadId": "grandchild", "turnId": "grandchild-turn", "delta": "child-only text"})
+				writeNotification("turn/completed", map[string]any{"threadId": "grandchild", "turn": map[string]any{"id": "grandchild-turn", "status": "failed", "error": map[string]any{"message": "child failed"}}})
+				writeNotification("turn/completed", map[string]any{"threadId": "unrelated", "turn": map[string]any{"id": "foreign-turn", "status": "completed"}})
+				if scenario == "subagents-cancel" {
+					continue
+				}
+				writeNotification("turn/completed", map[string]any{"threadId": "child", "turn": map[string]any{"id": "child-turn", "status": "completed"}})
+				writeNotification("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": "turn-1", "delta": "parent final"})
+				writeNotification("turn/completed", map[string]any{"threadId": threadID, "turn": map[string]any{"id": "turn-1", "status": "completed"}})
+			case "subagents-approval":
+				writeRequest("item/commandExecution/requestApproval", "approval-1", map[string]any{"itemId": "child-command", "threadId": "child", "turnId": "child-turn", "command": "uname"})
+				approvalPending = true
 			case "success", "foreign-completion":
 				writeNotification("item/agentMessage/delta", map[string]any{"threadId": threadID, "turnId": "turn-1", "itemId": "item-1", "delta": "hello"})
 				completionThreadID := threadID
@@ -549,6 +589,9 @@ func TestFakeAppServerProcess(t *testing.T) {
 					completionThreadID = "thread-foreign"
 				}
 				writeNotification("turn/completed", map[string]any{"threadId": completionThreadID, "turn": map[string]any{"id": "turn-1", "status": "completed", "error": nil}})
+				if scenario == "foreign-completion" {
+					os.Exit(0)
+				}
 			case "approval":
 				writeRequest("item/commandExecution/requestApproval", "approval-1", map[string]any{"itemId": "item-1", "threadId": "thread-1", "turnId": "turn-1", "command": "uname"})
 				approvalPending = true

@@ -93,6 +93,81 @@ chat frees a preference slot. Reload after deleting visible drafts to reveal
 older drafts outside the displayed 100. Opening a new chat never silently evicts
 another chat’s saved choices.
 
+## Harness message presentation
+
+Harness commentary uses the same ordered activity timeline as model-backed
+Agents. Native message boundaries retain paragraphs and Markdown, completed
+commentary precedes the commands it introduces, and the final answer stays in
+its own answer body. Codex item IDs prevent repeated completed messages from
+being displayed again after reconnect or checkpoint recovery. Legacy runners
+without native message boundaries retain line breaks in live progress.
+
+## Active run attachment
+
+Chat automatically follows an active run after its original request disconnects,
+a conversation is reopened, or an approval resumes through the inbox. While the
+request stream is detached, the portal reads progress once per second, with
+backoff on connection failures. Partial harness text and running commands remain
+visible; completed rows share IDs with the transcript to prevent duplication.
+The observer stops on completion, navigation, or lost access. A connection failure
+does not cancel or restart the run, and Stop remains available while reconnecting. A Stop
+request keeps observation active until the runner confirms a terminal state, even
+when lifecycle events are unavailable.
+
+Run status, trace, history, inbox, and approval decision requests have a 15-second
+request budget, including response bodies and transports that ignore cancellation.
+A stalled read enters the existing reconnect path. A stalled decision checks saved
+inbox state before releasing its controls; it never automatically repeats the decision.
+
+Question replies retain their admitted run as a reconnect target if the answer
+stream closes before acknowledgement, even when inbox verification is unavailable.
+Their acknowledgement has a 30-second deadline; the deadline is removed after
+`start`, so a long continuation is not cut short. Recovery observes the existing
+run and never submits another answer or chat request.
+If an initial chat acknowledgement is lost, ambiguous failures discover active
+runs in the selected session or reload a response that already completed. Explicit
+admission refusals do not trigger this recovery. The unacknowledged draft is kept
+because the client cannot prove which submission was accepted. Transient discovery
+failures retry within that session across workbench tabs; thread and authority
+changes invalidate those retries.
+An admitted stream with no events for 15 seconds switches to the independent run
+observer. Terminal lifecycle events release stalled streams immediately, except
+while a Stop request is settling. Neither path cancels or resubmits execution.
+Both Kubernetes resource errors and verb errors stop observation on lost access. Final
+history hydration retries transient failures after run observation closes, including
+when a terminal event races with a delayed Stop response. These retries survive
+navigation within the same agent workbench, but stop on a thread or authority
+change or lost access. New prompts pause terminal recovery until admission;
+refusals resume it, including after a provisional start. A refused new prompt
+also restores the previous active run observer. Lifecycle events invalidate older
+progress reads so stale snapshots cannot reopen a consumed approval or hide a
+new approval during a disconnect. Successful approval-detail refreshes also
+invalidate older progress snapshots, including when events are unavailable.
+Superseded progress errors cannot stop an observer that has newer state.
+Approval and progress readers share a snapshot-acceptance boundary in both
+directions, so an older approval read cannot restore a consumed permission or
+question after newer progress was accepted. A fresh approval disclosure clears
+an earlier access notice and restarts stopped progress observation, even without
+lifecycle events. Metadata-only fallbacks do not prove trace access has returned.
+
+Active runs use the composer primary action for Stop, including after a reload,
+reconnect, or before the first assistant message. The same button cancels the
+existing run and remains disabled while stopping until terminal confirmation.
+The progress status retains View run. Drafts remain editable and are preserved;
+Enter does not submit another prompt while the selected conversation is active. Notices appear only when progress
+is reconnecting or a run lookup fails. Normal attachment has no background banner.
+
+## Permission requests
+
+Permission requests use the same card and composer dock pattern as questions.
+Chat docks the newest unresolved request above the composer and leaves a receipt
+in its original turn after approval or denial. Run details and Activity use the
+same `AgentApprovalCard`. Command requests show the command, working directory,
+and reason, with the complete server disclosure available under Full request.
+Generic tools show their exact name and disclosed inputs. Missing or malformed
+inputs disable approval; denial remains available. Decisions use the existing
+inbox endpoint and retain its ownership, single-flight, and recovery checks.
+
 ## MCP Apps result views
 
 Successful tool results may include a provider-owned MCP App view. The portal

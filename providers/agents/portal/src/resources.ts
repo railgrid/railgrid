@@ -300,6 +300,10 @@ export function createBoundedProbeFetch(fetcher: ProviderFetch, options: Bounded
   return createBoundedRequestFetch(fetcher, options)
 }
 
+// A stalled observer must fail so chat can reconnect, even when headers
+// arrived or the host transport ignores AbortSignal.
+export const AGENT_PROGRESS_REQUEST_TIMEOUT_MS = 15 * 1000
+
 export const AGENT_PATCH_TIMEOUT_MS = 15 * 1000
 export const AGENT_RECONCILE_TIMEOUT_MS = 15 * 1000
 
@@ -734,10 +738,21 @@ export class Resources {
    * narrowing for `agent` via a label selector, and there is no provider route
    * involved at all.
    */
-  listRuns = (agent?: string): Promise<KubeRun[]> =>
-    this.run((c) => c.listAll<KubeRun & KubeObject>(RUNS, agent ? { labelSelector: `${LABEL_AGENT}=${agent}` } : {}))
+  listRuns = (agent?: string): Promise<KubeRun[]> => {
+    const context = this.ctx
+    return this.run((c) => c.listAll<KubeRun & KubeObject>(RUNS, agent ? { labelSelector: `${LABEL_AGENT}=${agent}` } : {}), () => this.client(context,
+      createBoundedRequestFetch(providerFetch(context), {
+        timeoutMs: AGENT_PROGRESS_REQUEST_TIMEOUT_MS, timeoutMessage: 'Run discovery request timed out',
+      })))
+  }
 
-  getRun = (name: string): Promise<KubeRun> => this.run((c) => c.get<KubeRun & KubeObject>(RUNS, name))
+  getRun = (name: string): Promise<KubeRun> => {
+    const context = this.ctx
+    return this.run((c) => c.get<KubeRun & KubeObject>(RUNS, name), () => this.client(context,
+      createBoundedRequestFetch(providerFetch(context), {
+        timeoutMs: AGENT_PROGRESS_REQUEST_TIMEOUT_MS, timeoutMessage: 'Run status request timed out',
+      })))
+  }
 
   /** deleteRun discards a run. The object's finalizer purges its store rows. */
   deleteRun = (name: string): Promise<void> => this.run(async (c) => {

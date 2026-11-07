@@ -441,6 +441,7 @@ describe('agent resource detail conformance', () => {
       ['H2', 'Start a conversation with Scout'],
       ['H2', 'Runs'],
       ['H3', 'Needs your attention (1)'],
+      ['H4', 'Allow this action?'],
     ])
   })
 

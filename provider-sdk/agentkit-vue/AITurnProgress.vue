@@ -113,36 +113,39 @@ ensureAgentUIStyles()
     :class="[`k-ai-turn-progress--${statusClass}`, { 'k-ai-turn-progress--interrupted': isInterrupted }]"
     :data-status="status"
   >
-    <button
-      v-if="hasDetails()"
-      type="button"
-      class="k-ai-turn-progress__trigger"
-      :aria-expanded="expanded"
-      :aria-controls="progressRegionID"
-      :aria-label="accessibleLabel()"
-      @click="toggle"
-    >
-      <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
-      <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
-        <span aria-hidden="true">·</span>
-        <TriangleAlert :stroke-width="2" aria-hidden="true" />
-        <span>Interrupted</span>
+    <div class="k-ai-turn-progress__header">
+      <button
+        v-if="hasDetails()"
+        type="button"
+        class="k-ai-turn-progress__trigger"
+        :aria-expanded="expanded"
+        :aria-controls="progressRegionID"
+        :aria-label="accessibleLabel()"
+        @click="toggle"
+      >
+        <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
+        <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
+          <span aria-hidden="true">·</span>
+          <TriangleAlert :stroke-width="2" aria-hidden="true" />
+          <span>Interrupted</span>
+        </span>
+        <ChevronRight
+          class="k-ai-turn-progress__chevron"
+          :class="{ 'is-expanded': expanded }"
+          :stroke-width="1.75"
+          aria-hidden="true"
+        />
+      </button>
+      <span v-else class="k-ai-turn-progress__status" :aria-label="accessibleLabel()">
+        <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
+        <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
+          <span aria-hidden="true">·</span>
+          <TriangleAlert :stroke-width="2" aria-hidden="true" />
+          <span>Interrupted</span>
+        </span>
       </span>
-      <ChevronRight
-        class="k-ai-turn-progress__chevron"
-        :class="{ 'is-expanded': expanded }"
-        :stroke-width="1.75"
-        aria-hidden="true"
-      />
-    </button>
-    <span v-else class="k-ai-turn-progress__status" :aria-label="accessibleLabel()">
-      <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
-      <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
-        <span aria-hidden="true">·</span>
-        <TriangleAlert :stroke-width="2" aria-hidden="true" />
-        <span>Interrupted</span>
-      </span>
-    </span>
+      <slot name="actions" />
+    </div>
 
     <div
       v-if="hasDetails()"

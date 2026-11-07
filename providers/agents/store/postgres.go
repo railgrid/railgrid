@@ -142,6 +142,7 @@ var agentsSchema = []string{
 	)`,
 	// Runs predating the result-on-the-run-record change carry neither column;
 	// migrate in place (idempotent).
+	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS progress JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS output TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS sources JSONB`,
 	`ALTER TABLE agents_runs ADD COLUMN IF NOT EXISTS idempotency_key TEXT NOT NULL DEFAULT ''`,
