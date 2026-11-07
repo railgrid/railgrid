@@ -22,6 +22,7 @@ import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
+import { toolCommandTitle, toolCommand } from '../toolExecution'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
@@ -297,8 +298,8 @@ function activityGroupsFor(block: Extract<TracePresentation, { kind: 'tools' }>)
     key: block.id, label: '',
     rows: block.tools.map(tool => ({
       id: tool.id,
-      title: formatToolLabel(tool.name),
-      iconKey: toolIconKey(tool.name),
+      title: toolCommandTitle(tool) || formatToolLabel(tool.name),
+      iconKey: toolCommand(tool) ? 'run' : toolIconKey(tool.name),
       status: actionStatus(tool),
       statusLabel: actionStatusLabel(tool), outcome: actionOutcome(tool),
       busy: toolBusy(tool), error: !!tool.error,

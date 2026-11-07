@@ -92,7 +92,7 @@ const execution = computed<AIExecutionView | undefined>(() => {
   return {
     ...(command.value ? { command: command.value } : {}),
     ...(exec.argv ? { argv: exec.argv } : {}),
-    ...(fields.value ? { fields: fields.value } : {}),
+    ...(props.variant === 'approval' && fields.value ? { fields: fields.value } : {}),
     ...(output.value ? { output: output.value } : {}),
     status: executionStatusFor(status.state),
     statusLabel: status.label,

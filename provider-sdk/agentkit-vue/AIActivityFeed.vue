@@ -113,7 +113,7 @@ function rowDetailsID(row: AIActivityRow): string | undefined {
 }
 
 function isGroupScrollable(group: AIActivityGroup): boolean {
-  return group.scrollable ?? group.rows.length > 6
+  return !group.rows.some(isRowExpanded) && (group.scrollable ?? group.rows.length > 6)
 }
 </script>
 

@@ -259,7 +259,7 @@ describe('chat attaches to active runs', () => {
     expect(text(el.querySelector('.agents-log'))).toContain(partial.content)
     expect(text(el.querySelector('.agents-log'))).not.toContain('Chat failed:')
     expect(el.querySelectorAll('.k-ai-action-row')).toHaveLength(1)
-    expect(text(el.querySelector('.k-ai-action-row'))).toContain('Shell')
+    expect(text(el.querySelector('.k-ai-action-row__title'))).toBe('Running go test')
 
     const completed = { ...command, content: 'PASS', metadata: { ...command.metadata, pending: false } }
     detail = { ...detail, progress: [partial, completed] }

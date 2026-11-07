@@ -234,3 +234,16 @@ measure 1,405,384 B raw / 389,145 B gzip, compared with 1,404,617 B raw / 388,99
 gzip before the thread spinner. The fixed total-only ceilings are 1,406,000 B raw
 and 389,500 B gzip, leaving 355 B gzip headroom instead of relying on the previous
 2 B margin. All path-specific limits remain unchanged.
+
+### Shared command receipts
+
+The command-output presentation adds copy feedback, optional line wrapping,
+explicit preview expansion and invocation metadata in shared AgentKit. After
+removing the obsolete nested output styles, the measured build is 1,199,450 B
+raw / 325,179 B gzip on the page and 1,408,399 B raw / 389,861 B gzip total.
+Against the preceding main build (1,405,366 B raw / 389,131 B gzip total), this
+is 3,033 B raw / 730 B gzip of feature growth. No dependency was added; both
+providers use the same canonical component and synchronized stylesheet.
+Only the total ceiling increases, by 4,000 B raw / 1,000 B gzip, to account for
+these controls. Bootstrap, dashboard, page and authentication limits stay fixed.
+This is a local production-size measurement, not browser performance evidence.

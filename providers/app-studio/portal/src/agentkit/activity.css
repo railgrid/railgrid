@@ -105,7 +105,7 @@
   line-height: 1.25rem;
 }
 .k-ai-execution-details--approval { padding: 10px; }
-.k-ai-execution-details--activity { padding: 10px 12px; }
+.k-ai-execution-details--activity { padding: 12px; }
 .k-ai-execution-details__heading {
   display: flex;
   min-width: 0;
@@ -184,16 +184,17 @@
   font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
 }
 .k-ai-execution-details__output {
-  max-height: 192px;
-  overflow: auto;
-  margin: 8px 0 0;
-  border: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
-  border-radius: 4px;
-  background: var(--color-surface, #0a0b12);
-  padding: 8px;
+  overflow-x: auto;
+  margin: 12px 0 0;
   color: var(--color-text-secondary, #8a8ca6);
-  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
 }
+.k-ai-execution-details__output.is-wrapped { white-space: pre-wrap; overflow-wrap: anywhere; }
+
 .k-ai-execution-details__no-output {
   margin-top: 8px;
   color: var(--color-text-muted, #8587a1);
@@ -252,3 +253,20 @@
   .k-ai-activity-feed__group-chevron,
   .k-ai-execution-details__status-icon--running { transition: none; animation: none; }
 }
+
+/* Command receipts use one surface; expansion participates in transcript scroll. */
+.k-ai-activity-feed > .k-ai-activity__panel { max-height: none; overflow: visible; }
+
+.k-ai-execution-details__toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; }
+.k-ai-execution-details__controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.k-ai-execution-details--activity button { display: inline-flex; align-items: center; gap: 4px; min-height: 28px; border: 0; padding: 2px 0; background: transparent; color: var(--color-text-secondary); font: inherit; cursor: pointer; }
+.k-ai-execution-details--activity button:hover { color: var(--color-text-primary); }
+.k-ai-execution-details--activity :is(button, summary, pre):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.k-ai-execution-details--activity .k-ai-execution-details__command { max-height: none; border: 0; border-radius: 0; background: transparent; padding: 0; font-size: 12px; line-height: 1.5; }
+.k-ai-execution-details--activity .k-ai-execution-details__command { margin-top: 10px; white-space: pre-wrap; }
+.k-ai-execution-details--activity .k-ai-execution-details__footer { border-top: 1px solid var(--color-border-subtle); padding-top: 8px; flex-wrap: wrap; }
+.k-ai-execution-details--activity .k-ai-execution-details__status { margin-inline-start: auto; }
+.k-ai-execution-details--activity .k-ai-execution-details__status--success { color: var(--color-text-secondary); }
+.k-ai-execution-details__metadata { margin-top: 10px; }
+.k-ai-execution-details__metadata summary { cursor: pointer; }
+.k-ai-execution-details__metadata dl { margin-top: 8px; }

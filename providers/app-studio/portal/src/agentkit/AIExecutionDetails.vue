@@ -8,8 +8,8 @@
   component only escapes text and applies the same-origin link guard.
 -->
 <script setup lang="ts">
-import { computed } from 'vue'
-import { Check, CircleHelp, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
+import { computed, ref, watch } from 'vue'
+import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import {
   executionStatusPresentation,
@@ -51,6 +51,25 @@ const statusIcon = computed(() => {
     default: return CircleHelp
   }
 })
+
+const expandedOutput = ref(false)
+const wrapOutput = ref(false)
+const copyState = ref('')
+watch(() => [view.value?.command, view.value?.input], () => {
+  expandedOutput.value = false
+  copyState.value = ''
+})
+const fullOutput = computed(() => outputLines(view.value).join('\n'))
+const previewOutput = computed(() => fullOutput.value.split('\n').slice(0, 12).map(line => line.slice(0, 2000)).join('\n'))
+const hasMoreOutput = computed(() => previewOutput.value !== fullOutput.value)
+async function copyExecution(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText([view.value?.command || view.value?.input, fullOutput.value].filter(Boolean).join('\n\n'))
+    copyState.value = 'Copied'
+  } catch {
+    copyState.value = 'Could not copy'
+  }
+}
 
 function durationLabel(execution?: AIExecutionView): string {
   if (!execution) return ''
@@ -101,7 +120,14 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
     </template>
 
     <template v-else>
-      <div class="k-ai-execution-details__heading">{{ view.heading || 'Shell' }}</div>
+      <div class="k-ai-execution-details__toolbar">
+        <span>{{ view.heading || 'Shell' }}</span>
+        <div class="k-ai-execution-details__controls">
+          <button type="button" :aria-pressed="wrapOutput" @click="wrapOutput = !wrapOutput">Wrap lines</button>
+          <button type="button" aria-label="Copy command and output" @click="copyExecution"><Copy :size="14" aria-hidden="true" /> Copy</button>
+          <span role="status">{{ copyState }}</span>
+        </div>
+      </div>
       <div v-if="view.input" class="k-ai-execution-details__section">
         <div v-if="view.inputLabel" class="k-ai-execution-details__label">{{ view.inputLabel }}</div>
         <pre class="k-ai-execution-details__command">{{ view.input }}</pre>
@@ -111,9 +137,9 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
       </div>
       <div v-if="outputLines(view).length" class="k-ai-execution-details__section">
         <div v-if="view.outputLabel" class="k-ai-execution-details__label">{{ view.outputLabel }}</div>
-        <pre class="k-ai-execution-details__output">{{ outputLines(view).join('\n') }}</pre>
+        <pre class="k-ai-execution-details__output" :class="{ 'is-wrapped': wrapOutput }" tabindex="0" aria-label="Command output">{{ expandedOutput ? fullOutput : previewOutput }}</pre>
       </div>
-      <div v-else class="k-ai-execution-details__no-output">No output</div>
+      <div v-else class="k-ai-execution-details__no-output">{{ status.busy ? 'Waiting for output…' : 'No output' }}</div>
       <div v-if="view.outputTruncated" class="k-ai-execution-details__truncated">Output truncated to the latest bounded lines.</div>
       <div v-if="view.detail || detailURL" class="k-ai-execution-details__detail">
         <span v-if="view.detail">{{ view.detail }}</span>
@@ -128,8 +154,15 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
           <ExternalLink :stroke-width="2" aria-hidden="true" />
         </a>
       </div>
+      <details v-if="view.fields?.length" class="k-ai-execution-details__metadata">
+        <summary>Execution details</summary>
+        <dl class="k-ai-execution-details__fields">
+          <template v-for="(field, index) in view.fields" :key="index"><dt>{{ field.label }}</dt><dd>{{ field.value }}</dd></template>
+        </dl>
+      </details>
       <div class="k-ai-execution-details__footer">
-        <span>{{ durationLabel(view) }}</span>
+        <button v-if="hasMoreOutput" type="button" :aria-expanded="expandedOutput" @click="expandedOutput = !expandedOutput">{{ expandedOutput ? 'Show less output' : 'Show full output' }}</button>
+        <span v-else />
         <span class="k-ai-execution-details__status" :class="`k-ai-execution-details__status--${status.tone}`">
           <component
             :is="statusIcon"
@@ -138,7 +171,7 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
             :stroke-width="1.75"
             aria-hidden="true"
           />
-          {{ statusLabel }}
+          {{ statusLabel }}<template v-if="durationLabel(view)"> · {{ durationLabel(view) }}</template>
         </span>
       </div>
     </template>

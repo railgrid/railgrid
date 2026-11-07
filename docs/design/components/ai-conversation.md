@@ -425,3 +425,30 @@ App Studio also passed four built-bundle fixture cases (desktop/mobile,
 light/dark) for the shared picker, existing-tab selection, close, and drag
 reorder. Final settled screenshots are under
 `/tmp/agent-studio-workbench-browser-v7/`; parent reviewed both providers.
+
+### Command output receipts
+
+`AIExecutionDetails` presents command activity as one terminal surface with a
+quiet Shell label, copy and line-wrap controls, preserved output whitespace,
+and status plus duration. Long output starts with a twelve-line preview;
+Show full output reveals the provider-supplied content in the transcript's
+scroll area. A provider-truncated result remains explicitly marked. Generic
+tools retain labeled arguments; execution metadata stays in a separate
+disclosure. Approval authority and App Studio source-provenance warnings
+remain provider-owned. Agents recognizes only known shell tools when
+projecting readable command summaries.
+
+Live verification on 2026-11-07 used the existing Tilt stack: saved Agents
+command results and an App Studio temporary project executing real commands
+with exit codes 0 and 7. Both portals passed light/dark desktop and phone-width
+checks. App Studio additionally passed preview expansion/collapse, complete
+output copying, and line wrapping. The temporary project, development instance,
+model binding, and credential copy were removed and original model settings
+restored. A separate approval-resume attempt failed before execution; the
+command-output checks used the normal `on_request` policy and do not establish
+approval-resume correctness.
+
+Rendered evidence: [Agents desktop](../evidence/command-output/command-output-agents-1440-light.png),
+[Agents phone](../evidence/command-output/command-output-agents-390-dark.png),
+[App Studio desktop](../evidence/command-output/command-output-studio-1440-light.png),
+and [App Studio phone](../evidence/command-output/command-output-studio-390-dark.png).
