@@ -255,7 +255,7 @@ test('renders completed activity status, duration, and bounded stdout/stderr', a
   assert.match(html, /failed/)
   assert.match(html, /Failed · exit 2/)
   assert.match(html, /Output truncated/)
-  assert.doesNotMatch(html, /Direct command|Sanitized argv|Relative cwd|Exit status|stdout|stderr|web/)
+  assert.doesNotMatch(html, /Direct command|Sanitized argv|Exit status|stdout|stderr/)
 })
 
 test('renders reported exit codes without upgrading unknown or stale-source outcomes', async () => {
@@ -268,10 +268,6 @@ test('renders reported exit codes without upgrading unknown or stale-source outc
   })
   assert.match(succeeded, /Ran · exit 0/)
   assert.match(succeeded, /k-ai-execution-details__status--success/)
-  assert.match(succeeded, /Source revision/)
-  assert.match(succeeded, />26</)
-  assert.match(succeeded, /Source digest/)
-  assert.match(succeeded, /Sync status/)
 
   const failed = await render({ argv: ['npm', 'test'], status: 'failed', exitCode: 7 })
   assert.match(failed, /Failed · exit 7/)
@@ -296,9 +292,6 @@ test('renders reported exit codes without upgrading unknown or stale-source outc
   })
   assert.match(stale, /Unverified · exit 0/)
   assert.match(stale, /changed during execution/)
-  assert.match(stale, /Source revision/)
-  assert.match(stale, /Source digest/)
-  assert.match(stale, /Sync status/)
   assert.doesNotMatch(stale, /k-ai-execution-details__status--success|Success/)
 })
 
@@ -372,7 +365,7 @@ test('renders shared command status labels for blocked, skipped, unknown, and te
   }
 })
 
-test('renders source provenance in activity and approval disclosures', async () => {
+test('omits transcript metadata while keeping approval context visible', async () => {
   const { default: AssistantExecDetails } = await vite.ssrLoadModule('/src/AssistantExecDetails.vue')
   const sourceDigest = `sha256:${'a'.repeat(64)}`
   const exec = {
@@ -386,12 +379,16 @@ test('renders source provenance in activity and approval disclosures', async () 
   }
   for (const variant of ['activity', 'approval']) {
     const html = await renderToString(createSSRApp(AssistantExecDetails, { exec, variant }))
-    assert.match(html, /Source revision/)
-    assert.match(html, />42</)
-    assert.match(html, /Source digest/)
-    assert.match(html, new RegExp(sourceDigest))
-    assert.match(html, /Sync status/)
-    assert.match(html, />stale</)
+    if (variant === 'activity') {
+      assert.doesNotMatch(html, /Source revision|Source digest|Sync status|Execution details|<details/)
+    } else {
+      assert.match(html, /Source revision/)
+      assert.match(html, />42</)
+      assert.match(html, /Source digest/)
+      assert.match(html, new RegExp(sourceDigest))
+      assert.match(html, /Sync status/)
+      assert.match(html, />stale</)
+    }
   }
 })
 

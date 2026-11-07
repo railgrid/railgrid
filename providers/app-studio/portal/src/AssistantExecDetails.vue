@@ -92,7 +92,7 @@ const execution = computed<AIExecutionView | undefined>(() => {
   return {
     ...(command.value ? { command: command.value } : {}),
     ...(exec.argv ? { argv: exec.argv } : {}),
-    ...(fields.value ? { fields: fields.value } : {}),
+    ...(props.variant === 'approval' && fields.value ? { fields: fields.value } : {}),
     ...(output.value ? { output: output.value } : {}),
     status: executionStatusFor(status.state),
     statusLabel: status.label,
@@ -110,39 +110,4 @@ const execution = computed<AIExecutionView | undefined>(() => {
 
 <template>
   <AIExecutionDetails :execution="execution" :variant="variant" />
-  <dl
-    v-if="variant === 'activity' && sourceFields.length"
-    class="k-ai-execution-details__fields k-ai-execution-details__section assistant-exec-details__provenance"
-    aria-label="Source provenance"
-  >
-    <template v-for="(field, index) in sourceFields" :key="`${field.label}-${index}`">
-      <dt>{{ field.label }}</dt>
-      <dd>{{ field.value }}</dd>
-    </template>
-  </dl>
 </template>
-
-<style scoped>
-.assistant-exec-details__provenance {
-  margin: 8px 0 0;
-  border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, .07));
-  padding-top: 8px;
-  font-size: 11px;
-  line-height: 1.25rem;
-}
-.assistant-exec-details__provenance dt {
-  color: var(--color-text-muted, #8587a1);
-  font-weight: 500;
-}
-.assistant-exec-details__provenance dd {
-  min-width: 0;
-  margin: 0;
-  overflow-wrap: anywhere;
-  color: var(--color-text-primary, #e9e9f2);
-  font-family: var(--font-mono, "IBM Plex Mono", ui-monospace, monospace);
-}
-@media (max-width: 480px) {
-  .assistant-exec-details__provenance { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .assistant-exec-details__provenance dd { margin-bottom: 4px; }
-}
-</style>

@@ -9683,6 +9683,7 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
         ...(userContentParts.length ? { assistantContentParts: userContentParts } : {}),
         ...(role === 'assistant' ? {
           assistantStatus: itemRun?.status ?? (rawItem.phase === 'commentary' && rawItem.status === 'completed' ? 'completed' : 'running'),
+          ...(rawItem.createdAt ? { assistantMessageCreatedAt: rawItem.createdAt } : {}),
           assistantMessageID: rawItem.assistantMessageID || messageID,
           ...(rawItem.turnID ? { assistantTurnID: rawItem.turnID } : {}),
           ...(itemRun ? { assistantMode: itemRun.mode, assistantRevision: itemRun.revision } : {}),
@@ -9841,6 +9842,11 @@ function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<t
     : projectMessageAssistantStatus(message)
 }
 
+function assistantMessageTimestamp(message: ProjectMessageView): string {
+  const recorded = message.metadata?.assistantMessageCreatedAt
+  return typeof recorded === 'string' ? recorded : message.createdAt
+}
+
 function assistantProgressClosed(message: ProjectMessageView): boolean {
   return assistantRunTerminal(assistantRunStatusForMessage(message))
 }
@@ -9876,7 +9882,7 @@ function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgres
 }
 
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
-  return Boolean(message.progress || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
+  return Boolean(message.progress || message.actionFeed?.length || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
 
 function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
@@ -9884,11 +9890,8 @@ function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
 }
 
 function assistantProgressExpanded(message: ProjectMessageView): boolean {
-  const closed = assistantProgressClosed(message)
-  const choice = assistantProgressDisclosureChoices.value.get(message.id)
-  // Manual choices apply within the current phase. Finishing a turn starts
-  // a collapsed phase, independently of its tool-call disclosures.
-  return choice?.closed === closed ? choice.expanded : !closed
+  // Reveal streamed work immediately; an explicit reader choice survives updates.
+  return assistantProgressDisclosureChoices.value.get(message.id)?.expanded ?? !assistantProgressClosed(message)
 }
 
 function toggleAssistantProgress(message: ProjectMessageView): void {
@@ -9930,8 +9933,7 @@ function assistantWorkedLabel(message: ProjectMessageView): string {
 }
 
 function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[] {
-  if (!message.progress) return []
-  return buildAssistantTrace(message.progress, message.actionFeed ?? [])
+  return buildAssistantTrace(message.progress ?? { version: 1, messages: [], messageSequences: [], workedDurationMs: 0 }, message.actionFeed ?? [])
 }
 
 function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined {
@@ -10354,6 +10356,18 @@ function assistantAttachmentsForMessage(message: ProjectMessageView) {
   return assistantContentPartsForMessage(message)
     .filter((part): part is Extract<ProjectAssistantContentPart, { type: 'attachment' }> => part.type === 'attachment')
     .map((part) => part.attachment)
+}
+
+function messageCopyText(message: ProjectMessageView): string {
+  if (message.role === 'assistant') return assistantResponseContent(message)
+  const parts = assistantContentPartsForMessage(message)
+  if (!parts.length) return message.content || ''
+  return parts.map((part) => {
+    if (part.type === 'text') return part.text
+    if (part.type === 'skill') return `@ ${assistantSkillsForMessage(message).find(skill => skill.id === part.skillID)?.name || part.skillID}`
+    if (part.type === 'resource') return `# ${assistantContextResourcesForMessage(message)[part.resourceIndex]?.resourceRef.name || ''}`
+    return ''
+  }).join('')
 }
 
 function userMessageHasVisibleContent(message: ProjectMessageView): boolean {
@@ -11393,6 +11407,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :key="message.id"
               :turn-id="message.id"
               :role="message.role"
+              :copy-text="messageCopyText(message)"
               :bubble="message.role === 'user' && userMessageHasVisibleContent(message)"
               :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(userLabel(message.actorID))}` : 'Assistant message'"
             >
@@ -11410,7 +11425,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
               <template v-if="message.role === 'assistant' && assistantProgressHeaderVisible(message)" #progress>
                 <AITurnProgress
-                  v-if="message.progress"
                   class="k-ai-turn-progress--divided"
                   :turn-id="message.id"
                   :region-id="assistantProgressRegionID(message.id)"
@@ -11439,17 +11453,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     </template>
                   </template>
                 </AITurnProgress>
-                <AITurnProgress
-                  v-else
-                  class="k-ai-turn-progress--divided"
-                  :turn-id="message.id"
-                  :status="assistantTurnProgressStatus(message)"
-                  :duration="assistantWorkedLabel(message)"
-                  :interrupted="message.viewStatus === 'interrupted'"
-                />
+
               </template>
               <template
-                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || (message.actionFeed?.length && !message.progress) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
+                v-if="(message.role === 'user' && userMessageHasVisibleContent(message)) || (message.role === 'assistant' && (assistantPlanDisclosureVisible(message) || hasAssistantResponseContent(message) || assistantRunErrorForMessage(message.id) || canImplementPlan(message)))"
                 #default
               >
                 <div
@@ -11464,12 +11471,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :message-id="message.id"
                     :plan="message.plan!"
                   />
-                  <AssistantActionLog
-                    v-if="message.actionFeed?.length && !message.progress"
-                    :message-id="message.id"
-                    :items="message.actionFeed"
-                    :stopping="assistantProgressStopping(message)"
-                  />
+
                   <div
                     v-if="hasAssistantResponseContent(message)"
                     class="k-ai-prose"
@@ -11556,6 +11558,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   v-if="isValidTimestamp(message.createdAt)"
                   :value="message.createdAt"
                 />
+              </template>
+              <template v-else-if="message.role === 'assistant' && assistantProgressClosed(message)" #after>
+                <AITimestamp :value="assistantMessageTimestamp(message)" />
               </template>
             </AIConversationTurn>
             <AIConversationStatus :label="conversationWorkingLabel" />
