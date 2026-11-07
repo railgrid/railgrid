@@ -55,10 +55,13 @@ const statusIcon = computed(() => {
 const expandedOutput = ref(false)
 const wrapOutput = ref(false)
 const copyState = ref('')
-watch(() => [view.value?.command, view.value?.input], () => {
-  expandedOutput.value = false
-  copyState.value = ''
-})
+watch(
+  [() => view.value?.command, () => view.value?.input],
+  () => {
+    expandedOutput.value = false
+    copyState.value = ''
+  },
+)
 const fullOutput = computed(() => outputLines(view.value).join('\n'))
 const previewOutput = computed(() => fullOutput.value.split('\n').slice(0, 12).map(line => line.slice(0, 2000)).join('\n'))
 const hasMoreOutput = computed(() => previewOutput.value !== fullOutput.value)

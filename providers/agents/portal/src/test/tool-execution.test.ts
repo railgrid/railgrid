@@ -39,6 +39,34 @@ describe('command receipts', () => {
     view.unmount()
   })
 
+  it.each(['command', 'input'] as const)('preserves expansion across equivalent %s execution refreshes and resets for a different execution', async source => {
+    vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const output = Array.from({ length: 13 }, (_, index) => `line ${index + 1}`)
+    const execution = { [source]: 'node verify', output, status: 'succeeded' }
+    const view = await mountVue(AIExecutionDetails, { execution })
+    const el = view.element
+    const button = (label: string) => [...el.querySelectorAll('button')].find(item => item.textContent === label)!
+    expect(el.querySelector('pre.k-ai-execution-details__output')?.textContent).not.toContain('line 13')
+    button('Show full output').click()
+    el.querySelector<HTMLButtonElement>('[aria-label="Copy command and output"]')!.click()
+    await settleVue()
+
+    await view.setProps({ execution: { ...execution, output: [...output] } })
+    expect(el.querySelector('pre.k-ai-execution-details__output')?.textContent).toContain('line 13')
+    expect(button('Show less output').getAttribute('aria-expanded')).toBe('true')
+    expect(text(el.querySelector('[role="status"]'))).toBe('Copied')
+
+    await view.setProps({ execution: { ...execution, output: [...output, 'line 14'], status: 'running', durationMs: 100 } })
+    expect(el.querySelector('pre.k-ai-execution-details__output')?.textContent).toContain('line 14')
+    expect(button('Show less output').getAttribute('aria-expanded')).toBe('true')
+
+    await view.setProps({ execution: { ...execution, [source]: 'node other' } })
+    expect(el.querySelector('pre.k-ai-execution-details__output')?.textContent).not.toContain('line 13')
+    expect(button('Show full output').getAttribute('aria-expanded')).toBe('false')
+    expect(text(el.querySelector('[role="status"]'))).toBe('')
+    view.unmount()
+  })
+
   it('preserves unknown and failed outcomes, server truncation and copy failure', async () => {
     vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
     const view = await mountVue(AIExecutionDetails, { execution: { command: 'false', status: 'future-status', exitCode: 0, output: ['bounded'], outputTruncated: true } })
