@@ -15,6 +15,7 @@ import AIConversationHeader from '../agentkit/AIConversationHeader.vue'
 import AIConversationLayout from '../agentkit/AIConversationLayout.vue'
 import AIConversationRail from '../agentkit/AIConversationRail.vue'
 import { readAssistantThreadPins, toggleAssistantThreadPin, removeAssistantThreadPin } from '../agentkit/threadPins'
+import { reconcileAssistantThreadReadState, markAssistantThreadRead, markAssistantThreadUnread, removeAssistantThreadReadState } from '../agentkit/threadReadState'
 import AIPrimaryAction from '../agentkit/AIPrimaryAction.vue'
 import AITranscript from '../agentkit/AITranscript.vue'
 import AIConversationStatus from '../agentkit/AIConversationStatus.vue'
@@ -127,6 +128,7 @@ const dockedQuestion = computed(() => dockedInterrupt.value && pendingIsQuestion
 const dockedApproval = computed(() => dockedInterrupt.value && !pendingIsQuestion(dockedInterrupt.value) ? dockedInterrupt.value : undefined)
 const messagesHasSnapshot = ref(false)
 const sessions = ref<SessionMeta[]>([])
+const sessionsReadScope = ref('')
 // A title event can arrive while a session-list read is in flight. Keep the
 // latest event value over that read so an older snapshot cannot undo it.
 const sessionTitleOverrides = ref(new Map<string, { title: string }>())
@@ -951,10 +953,41 @@ const runLinkMessageIDs = computed(() => {
   return new Set([...candidates.values()].map(candidate => candidate.assistant || candidate.fallback))
 })
 const sessionRailScope = computed(() => {
+  revision.value
+  runtime?.authorityEpoch.value
   const tenant = props.api.tenant()
   const user = props.api.context()?.user
   const userKey = user?.sub || user?.userId || user?.email || ''
   return ['agents', tenant.orgUUID || '', tenant.workspaceUUID || '', userKey, props.name].join(':')
+})
+const unreadSessionIDs = ref<string[]>([])
+watch([
+  sessionRailScope,
+  sessionID,
+  sessionsReadScope,
+  () => sessions.value.map(session => `${session.id}:${session.lastActivity}`).join('|'),
+], () => {
+  unreadSessionIDs.value = sessionsReadScope.value === sessionRailScope.value ? reconcileAssistantThreadReadState(
+    sessionRailScope.value,
+    sessions.value.map(session => ({ id: session.id, updatedAt: session.lastActivity })),
+    sessionID.value,
+  ) : []
+})
+function setSessionUnread(id: string, unread: boolean): void {
+  const session = sessions.value.find(session => session.id === id)
+  if (!session || id === sessionID.value || sessionsReadScope.value !== sessionRailScope.value) return
+  const thread = { id, updatedAt: session.lastActivity }
+  if (unread) markAssistantThreadUnread(sessionRailScope.value, thread)
+  else markAssistantThreadRead(sessionRailScope.value, thread)
+  unreadSessionIDs.value = reconcileAssistantThreadReadState(
+    sessionRailScope.value,
+    sessions.value.map(session => ({ id: session.id, updatedAt: session.lastActivity })),
+    sessionID.value,
+  )
+}
+// Polling also detects completions missed while the event stream reconnects.
+watch(threadActivity.runningSessions, (current, previous) => {
+  if (sessionsHasSnapshot.value && [...previous].some(id => id !== sessionID.value && !current.has(id))) refreshSessions()
 })
 const pinnedSessionIDs = ref<string[]>([])
 watch(sessionRailScope, scope => { pinnedSessionIDs.value = readAssistantThreadPins(scope, []) }, { immediate: true })
@@ -1538,6 +1571,7 @@ async function loadSessions(name = props.name, api = props.api): Promise<boolean
     sessionTitleOverrides.value = new Map([...sessionTitleOverrides.value].filter(
       ([id, override]) => overridesAtStart.get(id) !== override,
     ))
+    sessionsReadScope.value = sessionRailScope.value
     sessions.value = result
     sessionsHasSnapshot.value = true
     sessionsError.value = null
@@ -1803,6 +1837,7 @@ async function openAgent(): Promise<void> {
   messagesLoading.value = false
   messages.value = []
   messagesHasSnapshot.value = false
+  sessionsReadScope.value = ''
   sessions.value = []
   sessionTitleOverrides.value = new Map()
   sessionsError.value = null
@@ -2875,6 +2910,8 @@ async function deleteSession(id = sessionID.value): Promise<void> {
     if (await blockedByLiveRun()) return
     await authority.api.deleteSession(name, id)
     if (!authorityIsCurrent(authority) || props.name !== name) return
+    removeAssistantThreadReadState(sessionRailScope.value, id)
+    unreadSessionIDs.value = unreadSessionIDs.value.filter(candidate => candidate !== id)
     removeAssistantThreadPin(sessionRailScope.value, id)
     pinnedSessionIDs.value = pinnedSessionIDs.value.filter(candidate => candidate !== id)
     toast('ok', 'Chat deleted.')
@@ -2943,6 +2980,7 @@ function onServerEvent(event: Event): void {
   }
   if (detail.type !== 'run' || !detail.data.id) return
   threadActivity.record(detail.data)
+  if (detail.data.agent === props.name && detail.data.sessionID !== sessionID.value && TERMINAL_RUN_PHASES.has(detail.data.phase || '')) refreshSessions()
   const watchedLive = detail.data.id === liveRunID && liveRunSessionID === sessionID.value
   const watched = watchedLive || detail.data.id === orphanRun.value?.id || messages.value.some(message => message.role === 'assistant' && message.runID === detail.data.id)
   if (!watched) return
@@ -3209,8 +3247,10 @@ defineExpose({
           :loading="sessionsLoading && !sessionsHasSnapshot"
           :selecting-thread-i-d="selectingSessionID"
           :actioning-thread-i-d="deletingSessionID"
-          :capabilities="{ create: true, rename: true, pin: true, delete: !streaming }"
+          :capabilities="{ create: true, rename: true, pin: true, unread: true, delete: !streaming }"
           :pinned-thread-i-ds="pinnedSessionIDs"
+          :unread-thread-i-ds="unreadSessionIDs"
+          @set-unread="setSessionUnread"
           :storage-scope="sessionRailScope"
           delete-label="Delete chat"
           @select="selectConversation"

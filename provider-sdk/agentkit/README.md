@@ -125,6 +125,11 @@ App Studio. Providers supply admitted items and own tab state, routes,
 persistence, and reorder policy. Closing a tab is a presentation action, not
 resource deletion.
 
+`threadReadState.ts` shares browser-local read markers between App Studio and
+Agents. Callers supply their user/tenant/resource scope and authoritative thread
+update timestamps; the first observation establishes a quiet baseline, selection
+clears unread state, and missing pages preserve existing markers.
+
 ## Pane motion
 
 AgentKit owns pane motion through `--k-ai-pane-enter-duration` (280ms),
