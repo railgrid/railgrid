@@ -319,6 +319,7 @@ onBeforeUnmount(() => { mounted = false })
       class="agents-ai-message"
       :id="message.id"
       :role="message.role"
+      :copy-text="message.role === 'user' ? userMessage.text : message.content"
       :bubble="message.role === 'user' && userHasBubbleContent"
       :aria-label="message.role === 'user' ? `Message from ${messageAuthor}` : 'Assistant message'"
     >
@@ -337,7 +338,7 @@ onBeforeUnmount(() => { mounted = false })
         >
           <template v-if="message.runID && showRunLink && progressIsActive(progressStatus)" #actions>
             <div class="agents-progress-actions" role="group" aria-label="Run controls">
-              <button class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
+              <button class="k-ai-message-metadata__button k-ai-message-hover-action agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
             </div>
           </template>
           <template #details>
@@ -499,7 +500,7 @@ onBeforeUnmount(() => { mounted = false })
         <template v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" #actions>
           <button
             :id="`agents-view-run-${message.id}`"
-            class="k-ai-message-metadata__button agents-message-run-link agents-run-notice-link"
+            class="k-ai-message-metadata__button k-ai-message-hover-action agents-message-run-link agents-run-notice-link"
             type="button"
             @click="emit('view-run', message.runID!)"
           >
@@ -508,9 +509,9 @@ onBeforeUnmount(() => { mounted = false })
         </template>
       </RunFailureNotice>
       <div v-if="!failurePhase && message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
-        <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
+        <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button k-ai-message-hover-action agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>
-      <div v-if="message.usage" class="k-ai-message-metadata agents-turn-usage">
+      <div v-if="message.usage" class="k-ai-message-metadata k-ai-message-hover-action agents-turn-usage">
         {{ fmtTokens(message.usage.inputTokens) }} in · {{ fmtTokens(message.usage.outputTokens) }} out · {{ fmtUSD(message.usage.usdMicros) }}
       </div>
       <span v-if="message.role === 'user'" class="k-ai-message-metadata k-ai-message-author">{{ messageAuthor }}</span>

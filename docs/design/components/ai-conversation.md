@@ -480,3 +480,8 @@ The App Studio preview transcript regression is covered by the
 Live verification confirmed two delayed commands appeared before completion,
 expanded output survived completion and group/Worked for collapse and reopen,
 and no tool rows appeared outside Worked for.
+
+Message copy controls use provider-supplied visible text for user messages and
+assistant responses. On hover-capable desktops, sender labels, timestamps, and
+message actions appear on message hover or keyboard focus; touch layouts keep
+them visible. Copy confirmation and failure feedback remain accessible.

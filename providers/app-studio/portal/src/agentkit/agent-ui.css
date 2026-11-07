@@ -1832,3 +1832,42 @@ button.k-workbench-tab {
   overflow-wrap: anywhere;
   color: var(--color-text-secondary, #8a8ca6);
 }
+
+/* Keep message geometry stable while revealing identity and time on demand.
+ * Opacity preserves screen-reader access and keyboard focus on timestamps;
+ * devices without a hover-capable pointer retain visible metadata. */
+@media (hover: hover) and (pointer: fine) {
+  .k-ai-message .k-ai-message-author,
+  .k-ai-message .k-ai-timestamp,
+  .k-ai-message .k-ai-message-hover-action {
+    opacity: 0;
+  }
+
+  .k-ai-message:hover .k-ai-message-author,
+  .k-ai-message:hover .k-ai-timestamp,
+  .k-ai-message:focus-within .k-ai-message-author,
+  .k-ai-message:focus-within .k-ai-timestamp,
+  .k-ai-message:hover .k-ai-message-hover-action,
+  .k-ai-message:focus-within .k-ai-message-hover-action {
+    opacity: 1;
+  }
+}
+
+.k-ai-message-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted, #8587a1);
+  cursor: pointer;
+}
+.k-ai-message-copy:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.k-ai-message-copy:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+@media (hover: none), (any-pointer: coarse) {
+  .k-ai-message-copy { min-width: 44px; min-height: 44px; }
+}

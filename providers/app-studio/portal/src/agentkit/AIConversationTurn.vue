@@ -22,12 +22,14 @@ const props = withDefaults(defineProps<{
   role: AIConversationTurnRole
   bubble?: boolean
   ariaLabel?: string
+  copyText?: string
 }>(), {
   turnId: '',
   id: '',
   messageId: '',
   bubble: false,
   ariaLabel: '',
+  copyText: '',
 })
 
 const generatedTurnID = safeConversationID('k-ai-conversation-turn')
@@ -81,6 +83,7 @@ ensureAgentUIStyles()
     class="k-ai-conversation-turn"
     :role="role"
     :bubble="bubble"
+    :copy-text="copyText"
     :aria-label="ariaLabel || undefined"
   >
     <template v-if="hasRenderableSlot('before') || hasRenderableSlot('progress') || hasRenderableSlot('trace')" #before>

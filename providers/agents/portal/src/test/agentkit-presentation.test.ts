@@ -1,6 +1,7 @@
 import { defineComponent, h } from 'vue'
 import { describe, expect, it, vi } from 'vitest'
 import AITimestamp from '../agentkit/AITimestamp.vue'
+import AIMessage from '../agentkit/AIMessage.vue'
 import ChatMessage from '../views/ChatMessage.vue'
 import { formatAIWorkedDuration } from '../agentkit/conversation'
 import { formatFullTime, formatRelativeTime } from '../agentkit/timestamp'
@@ -27,6 +28,31 @@ describe('AgentKit timestamp and chat presentation', () => {
     }
     expect(runFailurePresentation('failed', 'OpenAI API key is invalid').recovery?.target).toBe('model-connections')
   })
+  it('copies the provider-supplied visible message text and confirms success', async () => {
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    try {
+      const view = await mountVue(AIMessage, { role: 'user', copyText: 'Visible text' })
+      const button = view.element.querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      button.click()
+      await settleVue()
+      expect(write).toHaveBeenCalledWith('Visible text')
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Copied')
+      expect(button.title).toBe('Copied')
+    } finally { write.mockRestore() }
+  })
+
+  it('exposes copy failure feedback and omits the control for empty text', async () => {
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
+    try {
+      const view = await mountVue(AIMessage, { role: 'assistant', copyText: 'Response' })
+      view.element.querySelector<HTMLButtonElement>('[aria-label="Copy response"]')!.click()
+      await settleVue()
+      expect(text(view.element.querySelector('[role="status"]'))).toBe('Could not copy. Try again.')
+      const empty = await mountVue(AIMessage, { role: 'user', copyText: '  ' })
+      expect(empty.element.querySelector('.k-ai-message-copy')).toBeNull()
+    } finally { write.mockRestore() }
+  })
+
   it('omits missing or invalid timestamps', async () => {
     const missing = await mountVue(AITimestamp, { value: '' })
     expect(missing.element.querySelector('.k-ai-timestamp')).toBeNull()

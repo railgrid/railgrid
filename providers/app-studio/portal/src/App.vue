@@ -10352,6 +10352,18 @@ function assistantAttachmentsForMessage(message: ProjectMessageView) {
     .map((part) => part.attachment)
 }
 
+function messageCopyText(message: ProjectMessageView): string {
+  if (message.role === 'assistant') return assistantResponseContent(message)
+  const parts = assistantContentPartsForMessage(message)
+  if (!parts.length) return message.content || ''
+  return parts.map((part) => {
+    if (part.type === 'text') return part.text
+    if (part.type === 'skill') return `@ ${assistantSkillsForMessage(message).find(skill => skill.id === part.skillID)?.name || part.skillID}`
+    if (part.type === 'resource') return `# ${assistantContextResourcesForMessage(message)[part.resourceIndex]?.resourceRef.name || ''}`
+    return ''
+  }).join('')
+}
+
 function userMessageHasVisibleContent(message: ProjectMessageView): boolean {
   const parts = assistantContentPartsForMessage(message)
   // Legacy visibility was: if (parts.length) return parts.some((part) => part.type !== 'annotation')
@@ -11389,6 +11401,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               :key="message.id"
               :turn-id="message.id"
               :role="message.role"
+              :copy-text="messageCopyText(message)"
               :bubble="message.role === 'user' && userMessageHasVisibleContent(message)"
               :aria-label="message.role === 'user' ? `Message from ${formatAIMessageAuthor(userLabel(message.actorID))}` : 'Assistant message'"
             >
