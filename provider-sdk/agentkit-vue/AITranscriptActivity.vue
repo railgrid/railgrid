@@ -72,12 +72,18 @@ ensureAgentUIStyles()
       <span class="k-ai-transcript-activity__summary">{{ title }} · {{ rows.length }} calls<span v-if="failures"> · {{ failures }} failed or canceled</span><span v-else-if="attention"> · Needs attention</span></span>
       <ChevronRight class="k-ai-transcript-activity__chevron" :class="{ 'is-expanded': open }" aria-hidden="true" />
     </button>
-    <div ref="list" v-show="single || open" :id="panelId" @scroll="onScroll" class="k-ai-transcript-activity__list" :class="{ 'is-bounded': bounded, 'is-grouped': !single }">
-      <AIActionRow v-for="row in rows" :key="row.id" :id="row.id" :title="row.title" :status="row.status" :status-label="row.statusLabel" :target="row.target" :outcome="row.outcome" :busy="row.busy" :attention="row.attention" :error="row.error" :canceled="row.canceled" :expandable="row.expandable" :expanded="isExpanded(row)" :details-id="row.detailsId || `${panelId}-${row.id}-details`" @toggle="toggleRow(row)">
-        <template #icon><component :is="icon(row)" class="k-ai-action-row__icon" aria-hidden="true" /></template>
-        <template v-if="$slots.details" #details><slot name="details" :row="row" /></template>
-      </AIActionRow>
-    </div>
-    <button v-if="!single && open && rows.length > 8" type="button" class="k-ai-transcript-activity__more" :aria-expanded="showAll" @click="showAll = !showAll">{{ showAll ? 'Show fewer activities' : 'Show all activities' }}</button>
+    <Transition name="k-ai-disclosure">
+      <div v-show="single || open" class="k-ai-disclosure">
+        <div class="k-ai-disclosure__inner">
+          <div ref="list" :id="panelId" @scroll="onScroll" class="k-ai-transcript-activity__list" :class="{ 'is-bounded': bounded, 'is-grouped': !single }">
+            <AIActionRow v-for="row in rows" :key="row.id" :id="row.id" :title="row.title" :status="row.status" :status-label="row.statusLabel" :target="row.target" :outcome="row.outcome" :busy="row.busy" :attention="row.attention" :error="row.error" :canceled="row.canceled" :expandable="row.expandable" :expanded="isExpanded(row)" :details-id="row.detailsId || `${panelId}-${row.id}-details`" @toggle="toggleRow(row)">
+              <template #icon><component :is="icon(row)" class="k-ai-action-row__icon" aria-hidden="true" /></template>
+              <template v-if="$slots.details" #details><slot name="details" :row="row" /></template>
+            </AIActionRow>
+          </div>
+          <button v-if="!single && open && rows.length > 8" type="button" class="k-ai-transcript-activity__more" :aria-expanded="showAll" @click="showAll = !showAll">{{ showAll ? 'Show fewer activities' : 'Show all activities' }}</button>
+        </div>
+      </div>
+    </Transition>
   </section>
 </template>

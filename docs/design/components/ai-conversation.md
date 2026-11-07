@@ -457,7 +457,9 @@ and [App Studio phone](../evidence/command-output/command-output-studio-390-dark
 Worked for contains the ordered commentary, tool groups, and command output. It opens during execution so streamed tool starts are visible, and
 preserves explicit reader choices across updates. Single actions have no count wrapper; multiple actions share one semantic summary
 (such as Edited files, read files, ran commands) with a call count and aligned
-individual rows, without category subgroups. Generic inspections, including preview
+individual rows, without category subgroups. Tool groups and individual output
+nodes reveal their intrinsic height with a brief fade (180ms open, 140ms close);
+reduced-motion preferences disable these transitions. Generic inspections, including preview
 screenshots, use Inspected resources rather than claiming to read files. Only
 explicit file operations use Read files.
 The shared presentation classifies only unambiguous simple command arguments
