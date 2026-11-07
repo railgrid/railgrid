@@ -133,6 +133,7 @@ func (m *projectEinoAssistantBoundedModel) Generate(
 		message *schema.Message
 		err     error
 	}
+	defer measureProjectAssistantWork(ctx)()
 	modelCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	resultCh := make(chan result)
@@ -164,6 +165,7 @@ func (m *projectEinoAssistantBoundedModel) Stream(
 		reader *schema.StreamReader[*schema.Message]
 		err    error
 	}
+	finishTiming := measureProjectAssistantWork(ctx)
 	started := time.Now()
 	modelCtx, cancel := context.WithCancel(ctx)
 	resultCh := make(chan result)
@@ -181,17 +183,21 @@ func (m *projectEinoAssistantBoundedModel) Stream(
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		finishTiming()
 		cancel()
 		return nil, ctx.Err()
 	case <-timer.C:
+		finishTiming()
 		cancel()
 		return nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: m.firstResponseTimeout}
 	case result := <-resultCh:
 		if result.err != nil {
+			finishTiming()
 			cancel()
 			return nil, result.err
 		}
 		if result.reader == nil {
+			finishTiming()
 			cancel()
 			return nil, errors.New("assistant model returned no response stream")
 		}
@@ -204,6 +210,7 @@ func (m *projectEinoAssistantBoundedModel) Stream(
 			remaining,
 			m.streamIdleTimeout,
 			m.requireCompletion,
+			finishTiming,
 		), nil
 	}
 }
@@ -216,12 +223,18 @@ func projectEinoAssistantBoundedStream(
 	firstResponseTimeout time.Duration,
 	idleTimeout time.Duration,
 	requireCompletion bool,
+	finishTiming func(),
 ) *schema.StreamReader[*schema.Message] {
 	reader, writer := schema.Pipe[*schema.Message](1)
 	go func() {
 		defer cancel()
 		defer source.Close()
 		defer writer.Close()
+		defer finishTiming()
+		sendError := func(err error) {
+			finishTiming()
+			writer.Send(nil, err)
+		}
 		type receiveResult struct {
 			message *schema.Message
 			err     error
@@ -250,42 +263,42 @@ func projectEinoAssistantBoundedStream(
 		completed := false
 		for {
 			if wait <= 0 {
-				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: firstResponseTimeout})
+				sendError(&projectEinoAssistantModelTimeoutError{Code: "model_first_response_timeout", Duration: firstResponseTimeout})
 				return
 			}
 			timer := time.NewTimer(wait)
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				writer.Send(nil, ctx.Err())
+				sendError(ctx.Err())
 				return
 			case <-modelCtx.Done():
 				timer.Stop()
-				writer.Send(nil, modelCtx.Err())
+				sendError(modelCtx.Err())
 				return
 			case <-timer.C:
 				code := "model_stream_idle_timeout"
 				if first {
 					code = "model_first_response_timeout"
 				}
-				writer.Send(nil, &projectEinoAssistantModelTimeoutError{Code: code, Duration: wait})
+				sendError(&projectEinoAssistantModelTimeoutError{Code: code, Duration: wait})
 				return
 			case result, ok := <-received:
 				timer.Stop()
 				if !ok {
 					if requireCompletion && !completed {
-						writer.Send(nil, &projectEinoAssistantIncompleteStreamError{})
+						sendError(&projectEinoAssistantIncompleteStreamError{})
 					}
 					return
 				}
 				if errors.Is(result.err, io.EOF) {
 					if requireCompletion && !completed {
-						writer.Send(nil, &projectEinoAssistantIncompleteStreamError{})
+						sendError(&projectEinoAssistantIncompleteStreamError{})
 					}
 					return
 				}
 				if result.err != nil {
-					writer.Send(nil, result.err)
+					sendError(result.err)
 					return
 				}
 				if writer.Send(result.message, nil) {

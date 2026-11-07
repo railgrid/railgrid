@@ -13,10 +13,10 @@ describe('tool activity follows the run lifecycle', () => {
         ? [{ kind: 'commentary', id: 'step', content: 'Checking the result.' }] : [] },
     }
     const view = await mountVue(ChatMessageView, { message }); views.push(view)
-    const progress = view.element.querySelector('.k-ai-turn-progress--divided')!
-    expect(progress.textContent).toContain('Worked for 4s')
+    const progress = view.element.querySelector('.k-ai-turn-progress--divided')
+    expect(progress?.textContent?.includes('Worked for 4s') ?? false).toBe(withDetails)
     expect(view.element.querySelector('.agents-body')?.textContent?.trim()).toBe(withDetails ? 'Checking the result.' : 'The answer.')
-    const trigger = progress.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')
+    const trigger = progress?.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')
     if (withDetails) {
       expect(trigger!.getAttribute('aria-expanded')).toBe('false')
       trigger!.click()
@@ -27,7 +27,7 @@ describe('tool activity follows the run lifecycle', () => {
       expect(trace.textContent).toContain('Checking the result.')
       await view.setProps({ message: { ...message } })
       expect(trigger!.getAttribute('aria-expanded')).toBe('true')
-    } else expect(trigger).toBeNull()
+    } else expect(progress).toBeNull()
     expect(view.element.querySelector('.agents-message-run-link')?.textContent).toBe('View run')
     expect(view.element.querySelector('.agents-turn-usage')?.textContent).toContain('100 in')
     expect(view.element.textContent).toContain('The answer.')

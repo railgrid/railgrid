@@ -890,7 +890,9 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		Exec:      projectAssistantExecMetadataForToolArguments(spec.Name, args, "", "running"),
 	})
 	if projectToolBaseName(spec.Name) == projectToolDefineInitialProjectPlan {
+		finishTiming := measureProjectAssistantWork(ctx)
 		result, err := t.invokeInitialProjectPlanTool(ctx, callID, spec, args)
+		finishTiming()
 		return t.finishDurableToolCall(ctx, ledgerDecision, result, err)
 	}
 	callRequest := projectAssistantToolCallRequest{
@@ -917,14 +919,18 @@ func (t projectEinoAssistantTool) invokeAllowedToolWithPlan(
 		// App-owned framework tools are normal projectAssistantTools, but must
 		// not depend on the HTTP/MCP port. Native browser tools are bound to the
 		// server-owned session manager and therefore also bypass aggregate MCP.
+		finishTiming := measureProjectAssistantWork(ctx)
 		result, err = t.tool.Call(ctx, callRequest)
+		finishTiming()
 	} else {
 		if t.req.ToolPort == nil {
 			modelResult, durableErr := t.finishDurableToolCall(ctx, ledgerDecision, "", errors.New("the App Studio tool port is not configured"))
 			_ = t.recordV2CommitSettlement(ctx, spec, args, false)
 			return modelResult, durableErr
 		}
+		finishTiming := measureProjectAssistantWork(ctx)
 		result, err = t.req.ToolPort.Invoke(ctx, t.tool, callRequest)
+		finishTiming()
 	}
 	if err == nil && projectEinoAssistantSuccessfulWorkspaceMutationResult(spec.Name, result) &&
 		projectAssistantRunSandboxForRequest(callRequest) != nil {

@@ -98,7 +98,6 @@ import {
   type AssistantPlan,
 } from './assistantPlan'
 import {
-  AssistantWorkedDurationClock,
   formatAssistantWorkedDuration,
   parseAssistantProgress,
   type AssistantProgress,
@@ -1079,8 +1078,6 @@ const createGitError = ref('')
 const setupCompletionVisible = ref(false)
 const messagesRef = ref<HTMLDivElement | null>(null)
 const assistantProgressDisclosureChoices = ref<Map<string, { closed: boolean; expanded: boolean }>>(new Map())
-const assistantDurationNowMs = ref(Date.now())
-const assistantWorkedDurationClock = new AssistantWorkedDurationClock({ namespace: 'app-studio' })
 const assistantPlanAnnouncement = ref('')
 const promptRef = ref<{ focus: () => void; setSelectionRange: (start: number, end: number) => void } | null>(null)
 const workspaceRef = ref<HTMLDivElement | null>(null)
@@ -1096,7 +1093,6 @@ let projectDeletionPollTimer: number | undefined
 let appComponentMounted = true
 let activeProjectContextFingerprint = ''
 let initializationRetryTimer: number | undefined
-let assistantDurationTimer: number | undefined
 let developmentPreviewAuthorizationSerial = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
 let developmentPreviewRecoveryTimer: number | undefined
@@ -3293,9 +3289,6 @@ onMounted(() => {
   void loadModelProviderConnections()
   void loadImportRepositories()
   void loadDevelopmentTemplates()
-  assistantDurationTimer = window.setInterval(() => {
-    assistantDurationNowMs.value = Date.now()
-  }, 1_000)
   window.addEventListener('focus', handleDevelopmentPreviewAuthorizationWake)
   window.addEventListener('online', handleDevelopmentPreviewAuthorizationWake)
   window.addEventListener('pageshow', handleDevelopmentPreviewAuthorizationWake)
@@ -3452,7 +3445,6 @@ watch(
     productionDeployReviewRelease.value = null
     clearPublishingPoll()
     if (shareWasOpen) restoreShareDialogFocus()
-    assistantWorkedDurationClock.clear()
     developmentPreviewRefreshController.invalidate()
     developmentPreviewAuthorizationSerial += 1
     void previewBridgeController.disconnect()
@@ -3612,8 +3604,6 @@ onBeforeUnmount(() => {
   clearProjectThumbnailURLs()
   clearProjectDeletionPollTimer()
   projectDeletion.clear()
-  if (assistantDurationTimer !== undefined) window.clearInterval(assistantDurationTimer)
-  assistantWorkedDurationClock.clear()
   assistantRunController.disconnect()
   activeAssistantSubscription?.abort()
   detachMountedTool()
@@ -7406,7 +7396,6 @@ function applyAssistantSnapshot(snapshot: ProjectAssistantSnapshot, projectName 
   const previousRun = assistantRunRevisions[normalized.run.id]
   const accepted = acceptScopedConversationSnapshot(selectedProject, activeAssistantProject, activeAssistantRun ?? previousRun, projectName, normalized.run, source, expectedRunID)
   if (!accepted.accepted) return accepted
-  observeAssistantWorkedDuration(normalized.message, normalized.run, projectName)
   const current = mergeConversationSnapshot(
     { messages: messages.value, runs: assistantRunRevisions },
     normalized,
@@ -7530,13 +7519,6 @@ async function recoverAssistantConversation(
   if (!turn) {
     updateAssistantThreadFromEvent(threadID, { status: 'idle' })
     const materializedRuns = assistantThreadItemsToRuns(items) as Record<string, AssistantRun>
-    for (const run of Object.values(materializedRuns)) {
-      if (!assistantRunTerminal(run.status)) continue
-      const terminalMessage = messages.value.find((candidate) => candidate.role === 'assistant' && (
-        candidate.id === run.activeMessageID || candidate.metadata?.assistantMessageID === run.activeMessageID
-      ))
-      if (terminalMessage) observeAssistantWorkedDuration(terminalMessage, run, projectName)
-    }
     const priorRunID = activeAssistantRun?.id ?? ''
     const materialized = priorRunID
       ? materializedRuns[priorRunID]
@@ -9693,8 +9675,9 @@ function applyAssistantThreadEvent(event: ProjectAssistantThreadEvent, projectNa
           ...(rawItem.error ? { assistantError: rawItem.error } : {}),
           ...(rawItem.phase ? { assistantPhase: rawItem.phase } : {}),
         } : {}),
+        ...(role === 'assistant' && rawItem.data?.assistantWorkedDurationMS != null ? { assistantWorkedDurationMS: rawItem.data.assistantWorkedDurationMS } : {}),
         ...(role === 'assistant' && rawItem.data?.assistantProgress ? { assistantProgress: rawItem.data.assistantProgress } : {}),
-		...(role === 'assistant' && rawItem.data?.assistantVerification ? { assistantVerification: rawItem.data.assistantVerification } : {}),
+        ...(role === 'assistant' && rawItem.data?.assistantVerification ? { assistantVerification: rawItem.data.assistantVerification } : {}),
       }
       const projected = toProjectMessageView({
         id: messageID,
@@ -9885,7 +9868,8 @@ function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgres
 }
 
 function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
-  return Boolean(message.progress || message.actionFeed?.length || (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
+  return Boolean(message.progress?.messages.length || message.actionFeed?.length ||
+    (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
 
 function assistantPlanDisclosureVisible(message: ProjectMessageView): boolean {
@@ -9911,32 +9895,18 @@ function assistantProgressRegionID(messageID: string): string {
   return `assistant-progress-${messageID}`
 }
 
-function assistantDurationScope(projectName = selected.value?.name ?? ''): string {
-  return [props.ctx?.tenant, props.ctx?.subPath, projectName].filter(Boolean).join(':') || 'app-studio'
-}
-
-function observeAssistantWorkedDuration(message: ProjectMessage, run: { status?: AssistantRun['status'] }, projectName = selected.value?.name ?? ''): number {
-  const status = normalizeAssistantRunStatus(run.status)
-  return assistantWorkedDurationClock.observe({
-    messageID: message.id,
-    scope: assistantDurationScope(projectName),
-    snapshotDurationMs: parseAssistantProgress(message.metadata?.assistantProgress)?.workedDurationMs ?? 0,
-    nowMs: assistantDurationNowMs.value,
-    ticking: status === 'running',
-    terminal: assistantRunTerminal(status),
-  })
-}
-
 function assistantWorkedLabel(message: ProjectMessageView): string {
-  const progressStatus = assistantTurnProgressStatus(message)
-  if (progressStatus === 'pending' || progressStatus === 'waiting') return ''
-  const status = assistantRunStatusForMessage(message)
-  const durationMs = observeAssistantWorkedDuration(message, { status })
-  return formatAssistantWorkedDuration(durationMs)
+  const status = assistantTurnProgressStatus(message)
+  if (status === 'pending' || status === 'waiting') return ''
+  const measured = message.metadata?.assistantWorkedDurationMS
+  const duration = typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 0
+    ? measured
+    : message.progress?.workedDurationMs
+  return duration === undefined ? '' : formatAssistantWorkedDuration(duration)
 }
 
 function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[] {
-  return buildAssistantTrace(message.progress ?? { version: 1, messages: [], messageSequences: [], workedDurationMs: 0 }, message.actionFeed ?? [])
+  return buildAssistantTrace(message.progress, message.actionFeed ?? [])
 }
 
 function projectMessagePlan(message: ProjectMessage): AssistantPlan | undefined {
@@ -11509,7 +11479,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </template>
               <template #interrupt>
                 <div
-                  v-if="message.role === 'assistant' && message.viewStatus === 'interrupted' && !message.progress"
+                  v-if="message.role === 'assistant' && message.viewStatus === 'interrupted' && !assistantProgressHeaderVisible(message)"
                   class="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-text-muted"
                   role="status"
                   aria-live="polite"

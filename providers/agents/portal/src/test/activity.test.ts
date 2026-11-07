@@ -1094,7 +1094,7 @@ describe('RunDetail.vue', () => {
       expect(keys).not.toContain('ran on')
       expect(text(facts)).not.toContain('harness')
       // An absent backend recorded nothing, so it is not labelled "model" either.
-      expect(text(facts)).not.toContain('model')
+      expect(keys).not.toContain('model')
     }
   })
 
@@ -1119,6 +1119,13 @@ describe('RunDetail.vue', () => {
     })) })
     const measuredZero = await mount(RunDetail, { store: makeStore(measuredZeroApi), api: measuredZeroApi, runId: 'r5' })
     expect(text(measuredZero.element.querySelector('.k-ai-turn-progress__label'))).toBe('Worked for 0ms')
+
+    const conversationApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      steps: [], output: 'Hello!', workedDurationMS: 3400,
+    })) })
+    const conversation = await mount(RunDetail, { store: makeStore(conversationApi), api: conversationApi, runId: 'r5' })
+    expect(conversation.element.querySelector('.k-ai-turn-progress')).toBeNull()
+    expect(text(conversation.element.querySelector('.agents-runmeta'))).toContain('model and tool time3.4s')
 
     const pendingApi = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
       phase: 'Pending', workedDurationMS: undefined, durationMS: undefined, startedAt: undefined,

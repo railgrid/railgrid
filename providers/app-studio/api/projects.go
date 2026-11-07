@@ -837,10 +837,15 @@ func (s *Server) resumeProjectAssistant(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if errors.Is(resumeErr, context.Canceled) || errors.Is(context.Cause(ctx), context.Canceled) {
-			_ = accumulator.UpdateRun(context.Background(), func(current *store.AssistantRun) {
-				current.AbortReason = store.AssistantRunAbortReasonInterrupted
-			})
-			transitionTerminal(store.AssistantRunStatusInterrupted, "interrupted", resumeErr)
+			_, transitionErr := supervisor.AbortWith(scope, run.ID, func(current *store.AssistantRun, _ *store.Message) error {
+				if resp.WorkedDurationMS != nil {
+					current.WorkedDurationMS = resp.WorkedDurationMS
+				}
+				return nil
+			}, run.ThreadID)
+			if transitionErr != nil {
+				logProjectAssistantFailure(ctx, "resume_terminal_transition_failed", scope, run, transitionErr)
+			}
 			return
 		}
 		if projectEinoAssistantIterationLimited(resumeErr) {
@@ -1044,6 +1049,9 @@ func (s *Server) updateProjectAssistantPermissionMessage(
 	}
 	if response.Progress != nil {
 		metadata[projectAssistantMetadataProgress] = *response.Progress
+	}
+	if response.WorkedDurationMS != nil {
+		metadata[projectAssistantMetadataWorkedDuration] = *response.WorkedDurationMS
 	}
 	if displayStatus := projectAssistantRunDisplayStatus(response.Status, ""); displayStatus != "" {
 		metadata[projectAssistantMetadataWorkingStatus] = displayStatus

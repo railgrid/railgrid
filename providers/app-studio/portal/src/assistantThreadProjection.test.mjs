@@ -189,11 +189,11 @@ test('reload projection trims, deduplicates, and bounds context-resource chips',
   assert.doesNotMatch(JSON.stringify(message.metadata), /private/)
 })
 
-test('keeps action items alongside agent progress in the thread projection', async () => {
+test('keeps action items alongside independently measured time in the thread projection', async () => {
   const { assistantThreadItemsToMessages } = await vite.ssrLoadModule('/src/assistantThreadProjection.ts')
   const messages = assistantThreadItemsToMessages([{
     id: 'assistant-1', turnID: 'run-1', type: 'agentMessage', status: 'completed', content: 'Done',
-    data: { assistantProgress: { version: 1, messages: [], messageSequences: [], workedDurationMs: 2_400 } },
+    data: { assistantWorkedDurationMS: 2_400 },
     sequence: 1, createdAt: '2026-08-02T17:42:09Z',
   }, {
     id: 'read-1', turnID: 'run-1', type: 'dynamicToolCall', status: 'completed', content: 'Read file',
@@ -201,7 +201,8 @@ test('keeps action items alongside agent progress in the thread projection', asy
     sequence: 2, createdAt: '2026-08-02T17:42:10Z',
   }], 'demo')
 
-  assert.equal(messages[0].metadata.assistantProgress.workedDurationMs, 2_400)
+  assert.equal(messages[0].metadata.assistantWorkedDurationMS, 2_400)
+  assert.equal(messages[0].metadata.assistantProgress, undefined)
   assert.equal(messages[0].metadata.assistantActionFeed.length, 1)
 })
 

@@ -30,14 +30,14 @@ interface OrderedAction {
 type OrderedTraceItem = OrderedProgress | OrderedAction
 
 export function buildAssistantTrace(
-  progress: AssistantProgress,
+  progress: AssistantProgress | undefined,
   actions: ProjectAssistantActionFeedItem[],
 ): AssistantTraceBlock[] {
   const ordered: OrderedTraceItem[] = [
-    ...progress.messages.map((message, index): OrderedProgress => ({
+    ...(progress?.messages ?? []).map((message, index): OrderedProgress => ({
       kind: 'progress',
       index,
-      sequence: progress.messageSequences[index],
+      sequence: progress?.messageSequences[index] ?? 0,
       message,
     })),
     ...actions.map((item, index): OrderedAction => ({
