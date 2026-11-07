@@ -80,8 +80,10 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
   if (queue.processing) return
   queue.processing = true
   let writesSinceReconcile = false
+  let releaseWrites: (() => void) | undefined
   try {
     while (true) {
+      releaseWrites = store.protectAgentWrites(name)
       while (queue.operations.length) {
         const operation = queue.operations.shift()!
         // Enqueuing was the user's authorization. Component unmount is not an
@@ -124,6 +126,8 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
         if (ambiguousTimeout) break
       }
 
+      releaseWrites()
+      releaseWrites = undefined
       if (!writesSinceReconcile || store.isRetired()) break
 
       // Reconciliation is part of the same critical section as writes. Saves
@@ -159,6 +163,7 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
       if (!queue.operations.length) break
     }
   } finally {
+    releaseWrites?.()
     queue.processing = false
     if (queue.operations.length) {
       void drain(store, name, queue)

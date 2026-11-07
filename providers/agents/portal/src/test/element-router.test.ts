@@ -24,6 +24,7 @@ function ctx(overrides: Partial<RailgridContext> = {}): RailgridContext {
 beforeEach(() => {
   vi.spyOn(AppStore.prototype, 'loadAll').mockImplementation(() => undefined)
   vi.spyOn(AppStore.prototype, 'connect').mockImplementation(() => undefined)
+  vi.spyOn(AppStore.prototype, 'refreshCollections').mockImplementation(() => undefined)
 })
 
 afterEach(() => vi.restoreAllMocks())
@@ -98,6 +99,59 @@ async function chooseModel(root: ParentNode, model: string): Promise<void> {
 }
 
 describe('public Agents shell routing', () => {
+  it('starts route revalidation before webhook settings initialize from a cached snapshot', async () => {
+    vi.mocked(AppStore.prototype.refreshCollections).mockRestore()
+    const element = await mountShell('#/webhooks')
+    const cached: Webhook = { metadata: { name: 'hook' }, spec: { source: 'webhook', displayName: 'Old name' } }
+    Object.assign(element.store!.webhooks, { data: [cached], hasSnapshot: true, loaded: true })
+    const pending = deferred<Webhook[]>()
+    element.api!.listWebhooks = vi.fn().mockReturnValue(pending.promise)
+    element.api!.listTriggers = vi.fn().mockResolvedValue([])
+    element.api!.listWebhookDeliveries = vi.fn().mockResolvedValue({ items: [], retention: 200 })
+
+    history.replaceState(null, '', '#/webhooks/hook/edit')
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
+    await settleVue()
+    expect(element.querySelector('input[name="displayName"]')).toBeNull()
+    pending.resolve([{ ...cached, spec: { ...cached.spec, displayName: 'Changed by agent' } }])
+    await settleVue()
+    expect(element.querySelector<HTMLInputElement>('input[name="displayName"]')?.value).toBe('Changed by agent')
+  })
+
+  it('reloads an empty webhook collection when returning after an external create', async () => {
+    vi.mocked(AppStore.prototype.refreshCollections).mockRestore()
+    const element = await mountShell('#/webhooks')
+    const created: Webhook = { metadata: { name: 'created-by-agent' }, spec: { source: 'webhook' } }
+    let items: Webhook[] = []
+    const listWebhooks = vi.fn(async () => items)
+    element.api!.listWebhooks = listWebhooks
+    await element.store!.load('webhooks')
+    await settleVue()
+    expect(text(element)).toContain('Create your first webhook')
+
+    element.querySelector<HTMLButtonElement>('[data-k-tab-id="connections"]')!.click()
+    await settleVue()
+    items = [created]
+    element.querySelector<HTMLButtonElement>('[data-k-tab-id="webhooks"]')!.click()
+    await vi.waitFor(() => expect(text(element)).toContain('created-by-agent'))
+    expect(listWebhooks).toHaveBeenCalledTimes(2)
+    expect(text(element)).not.toContain('Create your first webhook')
+  })
+
+  it.each([
+    ['agents', ['agents', 'credentials']],
+    ['connections', ['connections', 'toolsets']],
+    ['models', ['credentials', 'connections']],
+    ['webhooks', ['webhooks']],
+    ['activity', ['inbox']],
+  ])('revalidates collections when entering %s', async (menu, keys) => {
+    const element = await mountShell(menu === 'agents' ? '#/connections' : '#/agents')
+    vi.mocked(AppStore.prototype.refreshCollections).mockClear()
+    element.querySelector<HTMLButtonElement>(`[data-k-tab-id="${menu}"]`)!.click()
+    await settleVue()
+    expect(element.store!.refreshCollections).toHaveBeenCalledWith(keys)
+  })
+
   it('focuses the shared Agents page title after menu navigation', async () => {
     const element = await mountShell('#/models')
     element.querySelector<HTMLButtonElement>('[data-k-tab-id="agents"]')!.click()

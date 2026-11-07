@@ -23,6 +23,8 @@
 //   #/create/connection[/<type>]
 //   #/create/toolset #/create/webhook #/create/model
 
+import type { SliceKey } from './store'
+
 export type MenuKey = 'agents' | 'skills' | 'activity' | 'connections' | 'webhooks' | 'models'
 export type ModelsTab = 'models' | 'provider-connections' | 'workspace-assistant' | 'usage'
 export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
@@ -48,6 +50,42 @@ export type Route =
   | { kind: 'create'; resource: CreateResource; type?: string }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'create' }
   | { kind: 'automation'; resource: AutomationResource; agent: string; action: 'edit'; name: string }
+
+// Resources may change outside the portal while a route is unmounted. The
+// shell revalidates the collections each destination reads on navigation.
+// Run history and the skills library have their own view-owned loaders.
+export function resourceSlicesForRoute(route: Route): SliceKey[] {
+  if (route.kind === 'menu') {
+    switch (route.menu) {
+      case 'agents': return ['agents', 'credentials']
+      case 'connections': return ['connections', 'toolsets']
+      case 'models': return ['credentials', 'connections']
+      case 'webhooks': return ['webhooks']
+      case 'activity': return ['inbox']
+      case 'skills': return []
+    }
+  }
+  if (route.kind === 'agent' || route.kind === 'automation') {
+    return ['agents', 'credentials', 'connections', 'toolsets', 'schedules', 'triggers', 'webhooks', 'edges']
+  }
+  if (route.kind === 'edit') {
+    switch (route.resource) {
+      case 'connection': return ['connections']
+      case 'toolset': return ['toolsets', 'connections']
+      case 'webhook': return ['webhooks', 'triggers']
+    }
+  }
+  if (route.kind === 'create') {
+    switch (route.resource) {
+      case 'agent': return ['credentials', 'connections', 'toolsets', 'edges']
+      case 'connection': return ['credentials']
+      case 'toolset': return ['connections']
+      case 'model': return ['credentials', 'connections']
+      case 'webhook': return []
+    }
+  }
+  return []
+}
 
 // Create surfaces send this event after their API write succeeds. Keeping the
 // result on the event lets the shell make it immediately visible in the owning

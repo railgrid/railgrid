@@ -10,6 +10,57 @@ function deferred<T>() {
 }
 
 describe('Agent config collection load races', () => {
+  it.each(['success', 'failure'] as const)('preserves an optimistic save over a same-generation refresh until %s', async outcome => {
+    const poll = deferred<ReturnType<typeof agentFixture>[]>()
+    const patch = deferred<ReturnType<typeof agentFixture>>()
+    const initial = agentFixture('scout', { backend: modelBackend('old-model') })
+    initial.metadata.uid = 'agent-uid'
+    initial.metadata.generation = 1
+    const saved = structuredClone(initial)
+    saved.metadata.generation = 2
+    saved.spec.backend = modelBackend('new-model')
+    const server = outcome === 'success' ? saved : initial
+    const other = agentFixture('other', { description: 'Updated externally' })
+    const listAgents = vi.fn()
+      .mockImplementationOnce(() => poll.promise)
+      .mockResolvedValue([server, other])
+    const api = stubApi({ listAgents, patchAgent: () => patch.promise })
+    const store = makeStore(api)
+    store.agents.data = [structuredClone(initial), agentFixture('other')]
+
+    // This request starts before the save; protecting only newly-started polls
+    // would still allow its response to replace the optimistic row.
+    const read = store.load('agents')
+    const write = queueAgentConfigSave({
+      store, api, name: 'scout', patch: { modelCredential: 'new-model' },
+      apply: spec => { spec.backend = modelBackend('new-model') }, success: 'Saved',
+    })
+    const optimistic = store.agent('scout')
+    poll.resolve([structuredClone(initial), other])
+    await read
+    expect(store.agent('scout')).toBe(optimistic)
+    expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('new-model'))
+    expect(store.agent('other')?.spec.description).toBe('Updated externally')
+
+    // A subsequent periodic read must also preserve the pending write.
+    store.refreshCollections(['agents'])
+    await Promise.resolve()
+    expect(store.agent('scout')).toBe(optimistic)
+    if (outcome === 'success') patch.resolve(saved)
+    else patch.reject(new Error('Save rejected'))
+    await expect(write).resolves.toBe(outcome === 'success')
+    await waitForAgentConfigSaves(store, 'scout')
+    expect(store.agent('scout')?.spec.backend).toEqual(server.spec.backend)
+    expect(listAgents).toHaveBeenCalledTimes(3)
+
+    // The protection is released: later external changes remain visible.
+    const external = agentFixture('scout', { backend: modelBackend('external-model') })
+    external.metadata = { ...saved.metadata, generation: 3 }
+    listAgents.mockResolvedValue([external, other])
+    await store.load('agents')
+    expect(store.agent('scout')?.spec.backend).toEqual(modelBackend('external-model'))
+  })
+
   it('keeps an acknowledged save and queued optimistic edit over an older poll, then rolls B back to A', async () => {
     const oldPoll = deferred<ReturnType<typeof agentFixture>[]>()
     const saveA = deferred<ReturnType<typeof agentFixture>>()

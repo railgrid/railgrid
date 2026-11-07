@@ -163,6 +163,7 @@ const channelError = ref('')
 const channelErrorTarget = ref<{ key: number; field: 'name' | 'connection' } | null>(null)
 const slackRequestURL = ref('')
 
+const formHydrated = ref(false)
 let hydratedStore: AppStore | null = null
 let hydratedName = ''
 let hydratedApi: ApiClient | null = null
@@ -196,6 +197,7 @@ const agent = computed(() => {
   revision.value
   return props.store.agent(props.name)
 })
+const agentReadState = computed(() => { revision.value; return { ...props.store.agents } })
 const credentialSlice = computed(() => {
   revision.value
   return { ...props.store.credentials }
@@ -564,8 +566,11 @@ function hydrate(source: Agent): void {
 // A new store authority or agent identity is a new form and hydrates once.
 watchEffect(() => {
   const source = agent.value
-  if (!source || (hydratedStore === props.store && hydratedName === props.name && hydratedApi === props.api)) return
+  if (hydratedStore === props.store && hydratedName === props.name && hydratedApi === props.api) return
+  formHydrated.value = false
+  if (!source || agentReadState.value.loading || agentReadState.value.error) return
   hydrate(source)
+  formHydrated.value = true
   hydratedStore = props.store
   hydratedName = props.name
   hydratedApi = props.api
@@ -1102,7 +1107,11 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 
 <template>
   <AIWorkbenchPane body-overflow="visible" class="agents-config-pane" title="Config" description="Configure this agent’s identity, execution, and limits.">
-  <div v-if="!agent" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
+  <div v-if="!formHydrated && agentReadState.error" class="k-card agents-state agents-state-error" role="alert">
+    Could not load configuration. {{ agentReadState.error }}
+    <button class="k-btn k-btn--ghost" type="button" :disabled="agentReadState.loading" @click="store.load('agents')">{{ agentReadState.loading ? 'Retrying…' : 'Retry' }}</button>
+  </div>
+  <div v-else-if="!agent || !formHydrated" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
     <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-persona-heading')" title="Persona" description="Who this agent is and how it should behave on every run.">
       <label>Display name<input v-model="displayName" class="k-input" /></label>

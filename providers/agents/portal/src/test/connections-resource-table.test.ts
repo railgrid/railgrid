@@ -154,17 +154,17 @@ describe('Connections resource tables', () => {
       loaded: true,
       hasSnapshot: true,
       error: 'refresh failed',
-      expected: 'last loaded workspace snapshot',
+      expected: 'refresh failed',
       hasForm: false,
     },
     {
-      label: 'editable item from a stale snapshot',
+      label: 'item requiring refresh before editing',
       data: [connection('test', 'http')],
       loaded: true,
       hasSnapshot: true,
       error: 'refresh failed',
       expected: 'refresh failed',
-      hasForm: true,
+      hasForm: false,
     },
   ])('represents $label truthfully on an edit route', async ({ data, loaded, hasSnapshot, error, expected, hasForm }) => {
     const api = stubApi()
