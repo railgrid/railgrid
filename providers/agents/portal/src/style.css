@@ -470,6 +470,14 @@ railgrid-provider-agents .agents-chat-workspace {
 railgrid-provider-agents .agents-conversation-column {
   display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column;
 }
+railgrid-provider-agents .agents-chat-read-notice {
+  box-sizing: border-box;
+  width: calc(100% - 32px);
+  max-width: var(--k-ai-conversation-content-width);
+  flex: none;
+  margin: 8px auto 0;
+  border-color: var(--color-border-default);
+}
 railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { flex: 1 1 56%; }
 railgrid-provider-agents .agents-artifact-panel {
   display: flex; min-width: 360px; min-height: 0; flex: 0 1 44%; flex-direction: column; gap: 12px; overflow: auto;
@@ -515,6 +523,16 @@ railgrid-provider-agents .agents-body {
 railgrid-provider-agents .agents-msg.user { align-items: flex-end; }
 railgrid-provider-agents .agents-msg.user .agents-body { white-space: pre-wrap; }
 railgrid-provider-agents .agents-message-footer { display: flex; align-items: center; gap: 8px; }
+railgrid-provider-agents .agents-run-notice-link {
+  flex: none;
+  min-height: 28px;
+  padding-inline: 4px;
+  margin-inline-start: 6px;
+  font-size: 12px;
+}
+@media (hover: none), (any-pointer: coarse) {
+  railgrid-provider-agents .agents-run-notice-link { min-height: 44px; }
+}
 railgrid-provider-agents .agents-turn-usage { font-size: 11px; color: var(--color-text-muted, #5d5f78); font-family: var(--agents-mono); }
 
 /* Code-copy is provider behavior; prose geometry and typography come from the shared kit. */

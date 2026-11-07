@@ -3,9 +3,10 @@ import type { QuestionReply } from '../types'
 import { PAGE_CONTEXT_MARKER } from '../pageContext'
 import { offerChatDraft, takeChatDraft } from '../chatHandoff'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { Search, ChevronRight, ArrowDown, ArrowUpRight, AlertCircle, MessageSquare, PanelLeft, RefreshCw, X } from 'lucide-vue-next'
+import { Search, ChevronRight, ArrowDown, ArrowUpRight, MessageSquare, PanelLeft, X } from 'lucide-vue-next'
 import { ResourceError } from '../resources'
 import { ApiError, type ApiClient, type SessionModelPreferences, type SSEEvent } from '../api'
+import InlineNotification from '../portalkit/InlineNotification.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { useUserLabels } from '../portalkit/useUserLabels'
 import AIModelReasoningPicker from '../agentkit/AIModelReasoningPicker.vue'
@@ -213,6 +214,7 @@ function resetOlderHistory(): void {
   atBottom.value = true
 }
 watch(sessionID, () => {
+  loadError.value = null
   resetOlderHistory()
   clearArtifactState()
 }, { flush: 'sync' })
@@ -1823,7 +1825,7 @@ const starterPrompts = [
   'Help me plan a task. Ask me about my goal and constraints first.',
 ]
 
-async function openAgent(): Promise<void> {
+async function openAgent(preserveSessionsError = false): Promise<void> {
   const name = props.name
   const api = props.api
   const serial = ++openSerial
@@ -1840,7 +1842,7 @@ async function openAgent(): Promise<void> {
   sessionsReadScope.value = ''
   sessions.value = []
   sessionTitleOverrides.value = new Map()
-  sessionsError.value = null
+  if (!preserveSessionsError) sessionsError.value = null
   sessionsHasSnapshot.value = false
   sessionsLoading.value = false
   sessionID.value = ''
@@ -1917,13 +1919,30 @@ async function openAgent(): Promise<void> {
 function refreshSessions(name = props.name, api = props.api): void {
   if (name !== props.name || api !== props.api) return
   if (!sessionID.value && !sessionsHasSnapshot.value) {
-    void openAgent()
+    void openAgent(true)
     return
   }
   void loadSessions(name, api)
 }
 
-function retrySessions(): void { refreshSessions() }
+async function retrySessions(): Promise<void> {
+  if (sessionID.value || sessionsHasSnapshot.value) {
+    refreshSessions()
+    return
+  }
+
+  const active = document.activeElement
+  const retryButton = active instanceof HTMLButtonElement && active.closest('.agents-chat-sessions-notice') ? active : null
+  const retry = openAgent(true)
+  const serial = openSerial
+  await retry
+  await nextTick()
+  // A disabled button can lose focus during the retry. Restore it after a
+  // failure only when the user has not moved focus to another control.
+  if (serial === openSerial && retryButton?.isConnected && !retryButton.disabled && document.activeElement === document.body) {
+    retryButton.focus({ preventScroll: true })
+  }
+}
 
 function maybeAutoSend(): void {
   if (!mounted || initializedFor !== props.name || streaming.value || modelSaving.value || modelSaveError.value || modelRecovery.value !== 'ready') return
@@ -3267,42 +3286,41 @@ defineExpose({
       <div class="agents-chat-main">
         <div class="agents-chat-workspace" :class="{ 'agents-chat-workspace--inspection': artifactPanelOpen }">
           <section class="agents-conversation-column" aria-label="Conversation and composer">
-        <div v-if="sessionsError && !sessionsHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-          <span><AlertCircle aria-hidden="true" /> Could not load conversations: {{ sessionsError }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="retrySessions">
-            <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
-          </button>
-        </div>
-        <div v-else-if="sessionsError" class="k-stale" role="status">
-          Could not refresh conversations. Showing the last loaded conversations. {{ sessionsError }}
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="sessionsLoading" @click="loadSessions()">
-            <RefreshCw aria-hidden="true" /> {{ sessionsLoading ? 'Retrying…' : 'Retry' }}
-          </button>
-        </div>
+        <InlineNotification
+          v-if="sessionsError"
+          class="agents-chat-read-notice agents-chat-sessions-notice"
+          :tone="sessionsHasSnapshot ? 'warning' : 'error'"
+          :title="sessionsHasSnapshot ? 'Could not refresh conversations' : 'Could not load conversations'"
+          :message="sessionsHasSnapshot ? `Showing the last loaded conversations. ${sessionsError}` : sessionsError"
+          action-label="Retry"
+          action-busy-label="Retrying…"
+          :action-busy="sessionsLoading"
+          @action="retrySessions"
+        />
 
-        <div v-if="orphanError && !orphanHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-          <span><AlertCircle aria-hidden="true" /> Could not check for an active run: {{ orphanError }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="retryRunProgress">
-            <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
-          </button>
-        </div>
-        <div v-else-if="orphanError" class="k-stale" role="status">
-          {{ orphanError }}
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="orphanLoading" @click="retryRunProgress">
-            <RefreshCw aria-hidden="true" /> {{ orphanLoading ? 'Retrying…' : 'Retry' }}
-          </button>
-        </div>
+        <InlineNotification
+          v-if="orphanError"
+          class="agents-chat-read-notice agents-chat-run-notice"
+          :tone="orphanHasSnapshot ? 'warning' : 'error'"
+          :title="orphanHasSnapshot ? undefined : 'Could not check for an active run'"
+          :message="orphanError"
+          action-label="Retry"
+          action-busy-label="Retrying…"
+          :action-busy="orphanLoading"
+          @action="retryRunProgress"
+        />
 
-        <div v-if="loadError && !messagesHasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-          <span><AlertCircle aria-hidden="true" /> Could not load this conversation: {{ loadError }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" @click="loadMessages(sessionID)">
-            <RefreshCw aria-hidden="true" /> Retry
-          </button>
-        </div>
-        <div v-else-if="loadError" class="k-stale" role="status">
-          Could not refresh this conversation. Showing the last loaded transcript. {{ loadError }}
-          <button class="k-dashboard-action" type="button" @click="loadMessages(sessionID)">Retry</button>
-        </div>
+        <InlineNotification
+          v-if="loadError"
+          class="agents-chat-read-notice agents-chat-transcript-notice"
+          :tone="messagesHasSnapshot ? 'warning' : 'error'"
+          :title="messagesHasSnapshot ? 'Could not refresh this conversation' : 'Could not load this conversation'"
+          :message="messagesHasSnapshot ? `Showing the last loaded transcript. ${loadError}` : loadError"
+          action-label="Retry"
+          action-busy-label="Retrying…"
+          :action-busy="messagesLoading"
+          @action="loadMessages(sessionID)"
+        />
 
         <div
           ref="log"
@@ -3343,7 +3361,7 @@ defineExpose({
               />
 
             </template>
-            <p v-if="messagesLoading && !messagesHasSnapshot" class="muted" role="status">Loading conversation…</p>
+            <p v-if="messagesLoading && !messagesHasSnapshot && !loadError" class="muted" role="status">Loading conversation…</p>
             <section v-if="messagesHasSnapshot && messages.length === 0" class="agents-chat-welcome" aria-label="Start a conversation">
               <h2>Start a conversation with {{ agent?.spec.displayName || name }}</h2>
               <p class="muted" role="status" aria-live="polite">{{ agent?.spec.description || 'Share a goal, ask a question, or explore what this agent can help you do.' }}</p>
