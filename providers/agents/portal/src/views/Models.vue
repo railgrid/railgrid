@@ -496,7 +496,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         <button type="button" class="k-btn k-btn--ghost" :disabled="credentials.loading" @click="store.load('credentials')">{{ credentials.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
       </template>
-      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout" :table-only="setupNavigation" :show-provider-connection="setupNavigation">
+      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout" :class="{ 'agents-models-table': setupNavigation }" :table-only="setupNavigation" :show-provider-connection="setupNavigation">
         <template v-if="setupNavigation" #name-prefix="{ row }">
           <ResourceTableExpandButton
             :expanded="expandedModel === row.id"
