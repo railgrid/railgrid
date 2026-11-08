@@ -132,18 +132,6 @@ railgrid-provider-agents .agents-chat-actions .agents-agent-status {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
-  display: inline-flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle svg { width: 16px; height: 16px; }
-@media (max-width: 480px) {
-  railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle { min-width: 44px; padding-inline: 0; }
-  railgrid-provider-agents .agents-workbench-toggle-label { display: none; }
-}
 /* The shared workbench recipe owns tab geometry, states, and touch sizing;
  * these hooks only keep the provider header constrained in its pane. */
 railgrid-provider-agents .agents-workbench-header { min-width: 0; }
@@ -968,10 +956,6 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
     min-height: 44px;
     padding-block: 12px;
   }
-  railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
-    min-width: 44px;
-    min-height: 44px;
-  }
   railgrid-provider-agents .agents-mobile-rail-toggle { min-height: 44px; }
   railgrid-provider-agents .agents-chat-head--agent .agents-mobile-rail-toggle {
     width: 44px;
@@ -1162,6 +1146,17 @@ railgrid-provider-agents .agents-chat-welcome p {
   color: var(--color-text-secondary);
   line-height: 1.6;
   overflow-wrap: anywhere;
+}
+railgrid-provider-agents .agents-chat-setup {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-block-start: 16px;
+}
+railgrid-provider-agents .agents-chat-welcome .agents-chat-setup p {
+  margin: 0;
+  font-size: 13px;
 }
 railgrid-provider-agents .agents-chat-starters {
   display: grid;

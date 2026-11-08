@@ -191,6 +191,13 @@ function toggleWorkbench(event: MouseEvent): void {
   }
 }
 
+function openAgentConfig(event: MouseEvent): void {
+  const trigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  workspace.value?.open(trigger)
+  workbench.value = openAgentWorkbenchTab(workbench.value, 'config')
+  selectWorkbenchTab('config')
+}
+
 function onWorkspaceCompactChange(compact: boolean): void {
   workspaceCompact.value = compact
   if (compact && !workbenchExplicitlyOpened.value) {
@@ -360,7 +367,7 @@ async function remove(): Promise<void> {
                   </span>
                   <button
                     v-if="!compact"
-                    class="k-btn k-btn--ghost agents-workbench-toggle"
+                    class="k-icon-action agents-workbench-toggle"
                     type="button"
                     :aria-controls="domID('agents-workbench')"
                     data-agent-workbench-toggle
@@ -370,8 +377,15 @@ async function remove(): Promise<void> {
                     @click="toggleWorkbench"
                   >
                     <PanelRight :stroke-width="1.75" aria-hidden="true" />
-                    <span class="agents-workbench-toggle-label">Workbench</span>
                   </button>
+                </template>
+                <template v-if="!compact" #empty-setup>
+                  <div v-show="!workspaceOpen" class="agents-chat-setup">
+                    <p>Use the Workbench to edit this agent’s instructions, tools, and automation.</p>
+                    <button class="k-btn k-btn--text" type="button" @click="openAgentConfig">
+                      <PanelRight :stroke-width="1.75" aria-hidden="true" /> Configure agent
+                    </button>
+                  </div>
                 </template>
               </AgentChat>
             </template>

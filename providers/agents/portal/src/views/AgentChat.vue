@@ -3378,6 +3378,7 @@ defineExpose({
                 </button>
               </div>
               <p v-if="starterPromptHelp" :id="domID('agents-starter-help')" class="muted agents-starter-help">{{ starterPromptHelp }}</p>
+              <slot name="empty-setup" />
             </section>
             <AIConversationStatus :label="conversationWorkingLabel" />
           </AITranscript>

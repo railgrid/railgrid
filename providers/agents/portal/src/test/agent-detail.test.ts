@@ -173,8 +173,12 @@ describe('agent resource detail conformance', () => {
       expect(page.querySelector('[aria-label="Delete agent"]')).toBeNull()
       expect(toggle.getAttribute('aria-label')).toBe('Show workbench')
       expect(toggle.getAttribute('aria-expanded')).toBe('false')
-      toggle.click()
+      expect(text(toggle)).toBe('')
+      const setup = page.querySelector<HTMLButtonElement>('.agents-chat-setup button')!
+      expect(text(setup)).toBe('Configure agent')
+      setup.click()
       await settleVue()
+      expect(mounted.navigations.at(-1)).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
       expect(page.querySelector('[aria-label="Delete agent"]')).not.toBeNull()
       expect(page.querySelectorAll('[data-k-ai-workspace-trigger]')).toHaveLength(0)
       expect(toggle.getAttribute('aria-label')).toBe('Hide workbench')
