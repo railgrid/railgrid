@@ -453,6 +453,21 @@ func TestEinoV2FirstRemoteSourceToolProvisionsSandboxExactlyOnce(t *testing.T) {
 	h.req.TurnPolicy = projectAssistantTurnPolicyForProfile(projectAssistantTurnProfileImplementation)
 	h.server.ConfigureCodingSandbox(CodingSandboxConfig{Mode: CodingSandboxModeForce, DevelopmentMode: true, ReplicaCount: 1})
 	setupCalls := 0
+	timing := &projectAssistantWorkTiming{}
+	var beforeTool, measuredTool time.Duration
+	h.req.StreamCallbacks.OnToolCall = func(event projectToolCallStreamEvent) {
+		if event.ID != "read-1" {
+			return
+		}
+		timing.mu.Lock()
+		defer timing.mu.Unlock()
+		switch event.Status {
+		case "running":
+			beforeTool = timing.duration
+		case "succeeded":
+			measuredTool = timing.duration - beforeTool
+		}
+	}
 	sourceRevision, err := h.workspaces.SourceRevision(context.Background(), h.req.WorkspaceScope)
 	if err != nil {
 		t.Fatal(err)
@@ -504,9 +519,16 @@ func TestEinoV2FirstRemoteSourceToolProvisionsSandboxExactlyOnce(t *testing.T) {
 			return []einotool.BaseTool{newProjectEinoAssistantServerTool(h.server, readTool, req, state)}, nil
 		},
 	}
-	result, err := engine.StreamProjectAssistant(context.Background(), h.req)
+	ctx := context.WithValue(context.Background(), projectAssistantWorkTimingKey{}, timing)
+	result, err := engine.StreamProjectAssistant(ctx, h.req)
 	if err != nil {
 		t.Fatal(err)
+	}
+	timing.mu.Lock()
+	toolDuration := measuredTool
+	timing.mu.Unlock()
+	if toolDuration <= 0 {
+		t.Fatal("the source tool did not add to measured work before reporting success")
 	}
 	if result.Content != "Source inspected." || setupCalls != 1 || fake.workspaceCalls != 2 {
 		t.Fatalf("result=%q setupCalls=%d workspaceCalls=%d, want one setup plus read and terminal checkpoint", result.Content, setupCalls, fake.workspaceCalls)

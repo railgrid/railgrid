@@ -424,6 +424,58 @@ func TestProjectEinoAssistantBoundedModelTimesOutFirstResponseAndIdleStream(t *t
 	})
 }
 
+func TestProjectEinoAssistantBoundedModelRecordsTimingAtResponseBoundaries(t *testing.T) {
+	for _, mode := range []string{"generate", "stop", "setup error", "nil reader", "setup timeout", "canceled"} {
+		t.Run(mode, func(t *testing.T) {
+			timing := &projectAssistantWorkTiming{}
+			ctx, cancel := context.WithCancel(context.WithValue(context.Background(), projectAssistantWorkTimingKey{}, timing))
+			defer cancel()
+			model := &projectEinoAssistantBoundedModel{
+				BaseChatModel:        projectEinoAssistantTimeoutTestModel{mode: mode},
+				firstResponseTimeout: time.Second,
+				streamIdleTimeout:    time.Second,
+				requireCompletion:    true,
+			}
+			switch mode {
+			case "generate":
+				if _, err := model.Generate(ctx, nil); err != nil {
+					t.Fatal(err)
+				}
+			case "stop":
+				reader, err := model.Stream(ctx, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer reader.Close()
+				if _, err := reader.Recv(); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := reader.Recv(); !errors.Is(err, io.EOF) {
+					t.Fatalf("terminal error = %v, want EOF", err)
+				}
+			default:
+				if mode == "setup timeout" {
+					model.firstResponseTimeout = 10 * time.Millisecond
+				}
+				if mode == "canceled" {
+					cancel()
+				}
+				if reader, err := model.Stream(ctx, nil); err == nil {
+					if reader != nil {
+						reader.Close()
+					}
+					t.Fatal("expected stream setup to fail")
+				}
+			}
+			timing.mu.Lock()
+			defer timing.mu.Unlock()
+			if !timing.measured {
+				t.Fatal("timing was not available at the response boundary")
+			}
+		})
+	}
+}
+
 func TestProjectEinoAssistantBoundedModelUsesCodexStreamDefaultsAndProviderOverride(t *testing.T) {
 	base := projectEinoAssistantTimeoutTestModel{mode: "complete"}
 	bounded, ok := projectEinoAssistantBoundModel(base, projectLLMSettings{}).(*projectEinoAssistantBoundedModel)
@@ -516,6 +568,9 @@ func (m projectEinoAssistantTimeoutTestModel) Generate(
 	_ []*schema.Message,
 	_ ...einomodel.Option,
 ) (*schema.Message, error) {
+	if m.mode == "generate" {
+		return schema.AssistantMessage("complete", nil), nil
+	}
 	<-ctx.Done()
 	return nil, ctx.Err()
 }
@@ -525,6 +580,15 @@ func (m projectEinoAssistantTimeoutTestModel) Stream(
 	_ []*schema.Message,
 	_ ...einomodel.Option,
 ) (*schema.StreamReader[*schema.Message], error) {
+	switch m.mode {
+	case "setup error":
+		return nil, errors.New("provider request failed")
+	case "nil reader":
+		return nil, nil
+	case "setup timeout", "canceled":
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	reader, writer := schema.Pipe[*schema.Message](1)
 	go func() {
 		defer writer.Close()

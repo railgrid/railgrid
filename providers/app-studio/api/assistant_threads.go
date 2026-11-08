@@ -2092,7 +2092,8 @@ func assistantThreadItemWithMessagePresentation(item assistantThreadItem, metada
 	}
 	progress, progressOK := projectAssistantProgressSnapshotFromMetadata(metadata[projectAssistantMetadataProgress])
 	verification, verificationOK := projectAssistantVerificationFromMetadata(metadata[projectAssistantMetadataVerification])
-	if !progressOK && !verificationOK {
+	worked, workedOK := projectAssistantWorkedDurationFromMetadata(metadata[projectAssistantMetadataWorkedDuration])
+	if !progressOK && !verificationOK && !workedOK {
 		return item
 	}
 	data := map[string]any{}
@@ -2101,6 +2102,9 @@ func assistantThreadItemWithMessagePresentation(item assistantThreadItem, metada
 	}
 	if progressOK {
 		data[projectAssistantMetadataProgress] = *progress
+	}
+	if workedOK {
+		data[projectAssistantMetadataWorkedDuration] = worked
 	}
 	if verificationOK {
 		data[projectAssistantMetadataVerification] = verification

@@ -314,6 +314,9 @@ func (s *MemoryStore) SaveAssistantRun(_ context.Context, scope Scope, run Assis
 		run.ClientRequestID = existing.ClientRequestID
 		run.UserMessageID = existing.UserMessageID
 		run.Revision = existing.Revision
+		if run.WorkedDurationMS == nil {
+			run.WorkedDurationMS = existing.WorkedDurationMS
+		}
 		if run.Mode != existing.Mode || run.ApprovalMode != existing.ApprovalMode {
 			return fmt.Errorf("%w: immutable assistant run contract", ErrAssistantRunConflict)
 		}
@@ -1228,6 +1231,10 @@ func cloneAssistantRun(run AssistantRun) AssistantRun {
 	run.Checkpoint = cloneRawMessage(run.Checkpoint)
 	run.Audit = cloneRawMessage(run.Audit)
 	run.Error = cloneRawMessage(run.Error)
+	if run.WorkedDurationMS != nil {
+		value := *run.WorkedDurationMS
+		run.WorkedDurationMS = &value
+	}
 	return run
 }
 
@@ -1262,8 +1269,7 @@ func prepareAssistantRun(scope Scope, run AssistantRun) AssistantRun {
 		run.UpdatedAt = run.CreatedAt
 	}
 	run.ProjectName, run.ProjectUID = scope.ProjectName, scope.ProjectUID
-	run.Checkpoint, run.Audit, run.Error = cloneRawMessage(run.Checkpoint), cloneRawMessage(run.Audit), cloneRawMessage(run.Error)
-	return run
+	return cloneAssistantRun(run)
 }
 
 func validateAssistantRun(run AssistantRun) error {

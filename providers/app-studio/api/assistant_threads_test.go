@@ -155,8 +155,9 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 		Type:   assistantThreadEventAssistantMessage,
 		Status: "completed",
 	}, map[string]any{
-		projectAssistantMetadataProgress:     progress,
-		projectAssistantMetadataVerification: verification,
+		projectAssistantMetadataProgress:       progress,
+		projectAssistantMetadataWorkedDuration: int64(0),
+		projectAssistantMetadataVerification:   verification,
 	})
 
 	var data map[string]any
@@ -169,6 +170,9 @@ func TestAssistantThreadAgentMessageCarriesWorkedDuration(t *testing.T) {
 	}
 	if got.WorkedDurationMS != progress.WorkedDurationMS {
 		t.Fatalf("worked duration = %d, want %d", got.WorkedDurationMS, progress.WorkedDurationMS)
+	}
+	if worked, ok := projectAssistantWorkedDurationFromMetadata(data[projectAssistantMetadataWorkedDuration]); !ok || worked != 0 {
+		t.Fatalf("agent message data = %#v, want independently measured zero", data)
 	}
 	gotVerification, ok := projectAssistantVerificationFromMetadata(data[projectAssistantMetadataVerification])
 	if !ok || gotVerification.Outcome != verification.Outcome || !gotVerification.RenderedStateObserved {

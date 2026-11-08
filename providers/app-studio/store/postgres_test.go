@@ -612,10 +612,26 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateAssistantRun: %v", err)
 	}
-	if created.Mode != AssistantRunModeDefault || created.ApprovalMode != AssistantApprovalModeAutoApprove {
-		t.Fatalf("created run = %#v", created)
+	if created.Mode != AssistantRunModeDefault || created.ApprovalMode != AssistantApprovalModeAutoApprove || created.WorkedDurationMS != nil {
+		t.Fatalf("created run = %#v, want default mode, auto-approve, and unknown timing", created)
 	}
 
+	measured := int64(1234)
+	created.WorkedDurationMS = &measured
+	if err := s.SaveAssistantRun(ctx, scope, created); err != nil {
+		t.Fatalf("save measured run: %v", err)
+	}
+	created.WorkedDurationMS = nil
+	if err := s.SaveAssistantRun(ctx, scope, created); err != nil {
+		t.Fatalf("save run without a timing update: %v", err)
+	}
+	got, err := s.GetAssistantRun(ctx, scope, run.ID)
+	if err != nil || got.WorkedDurationMS == nil || *got.WorkedDurationMS != measured {
+		t.Fatalf("run after upsert = %#v, %v; want timing retained", got, err)
+	}
+
+	zero := int64(0)
+	created.WorkedDurationMS = &zero
 	created.Status = AssistantRunStatusCompleted
 	created.Revision++
 	created.UpdatedAt = createdAt.Add(time.Minute)
@@ -628,8 +644,9 @@ func TestPostgresStoreV2ContractExternalDSN(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAssistantRun: %v", err)
 	}
-	if persisted.Status != AssistantRunStatusCompleted || persisted.Revision != 2 {
-		t.Fatalf("persisted run = %#v", persisted)
+	if persisted.Status != AssistantRunStatusCompleted || persisted.Revision != 2 ||
+		persisted.WorkedDurationMS == nil || *persisted.WorkedDurationMS != zero {
+		t.Fatalf("persisted run = %#v, want completed revision 2 with a measured zero", persisted)
 	}
 
 	thread, err := s.CreateAssistantThread(ctx, scope, AssistantThread{ID: "thread-1", ActorID: "actor-1", CreatedAt: createdAt, UpdatedAt: createdAt}, []AssistantThreadEvent{

@@ -338,14 +338,13 @@ describe('AgentKit timestamp and chat presentation', () => {
     })
     const view = await mountVue(host, {})
     const state = view.element.querySelector<HTMLElement>('.agents-run-state')!
-    const progress = view.element.querySelector<HTMLElement>('.k-ai-turn-progress')!
+    expect(view.element.querySelector('.k-ai-turn-progress')).toBeNull()
     const partialOutput = view.element.querySelector<HTMLElement>('.agents-body')!
     const details = state.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
 
     expect(state.querySelector('[role="alert"]')).not.toBeNull()
     expect(text(details)).toBe('The model rejected a reasoning setting')
     expect(details.getAttribute('aria-expanded')).toBe('false')
-    expect(Boolean(progress.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
     expect(Boolean(partialOutput.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
 
     details.click()

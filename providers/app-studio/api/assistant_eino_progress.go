@@ -99,6 +99,7 @@ func (t projectEinoAssistantProgressTool) InvokableRun(
 	if t.req.StreamCallbacks.OnProgress == nil {
 		return "", errors.New("assistant progress callback is not configured")
 	}
+	defer measureProjectAssistantWork(ctx)()
 	t.req.StreamCallbacks.OnProgress(message)
 	return `{"status":"shown"}`, nil
 }

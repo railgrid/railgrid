@@ -294,7 +294,9 @@ func TestProjectResponsesStreamRejectsUnfinishedToolBatches(t *testing.T) {
 				projectResponsesFixtureToolStream(w, test.terminal)
 			})
 			model := &projectEinoAssistantBoundedModel{BaseChatModel: base, firstResponseTimeout: 5 * time.Second, streamIdleTimeout: 5 * time.Second, requireCompletion: true}
-			stream, err := model.Stream(context.Background(), []*schema.Message{schema.UserMessage("Read the file.")})
+			timing := &projectAssistantWorkTiming{}
+			ctx := context.WithValue(context.Background(), projectAssistantWorkTimingKey{}, timing)
+			stream, err := model.Stream(ctx, []*schema.Message{schema.UserMessage("Read the file.")})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -316,6 +318,11 @@ func TestProjectResponsesStreamRejectsUnfinishedToolBatches(t *testing.T) {
 				if message != nil && message.ResponseMeta != nil && message.ResponseMeta.FinishReason != "" {
 					t.Fatalf("unfinished tool batch received completion marker %q", message.ResponseMeta.FinishReason)
 				}
+			}
+			timing.mu.Lock()
+			defer timing.mu.Unlock()
+			if !timing.measured {
+				t.Fatal("model stream did not record time before returning its terminal error")
 			}
 		})
 	}

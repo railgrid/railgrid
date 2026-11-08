@@ -341,7 +341,9 @@ func (m *projectEinoAssistantFilesystemTelemetry) WrapInvokableToolCall(
 				modelFailureError = projectEinoAssistantSafeErrorText(errors.New(ledgerDecision.Replay.Error))
 			}
 		} else {
+			finishTiming := measureProjectAssistantWork(ctx)
 			result, endpointErr = endpoint(ctx, argumentsInJSON, opts...)
+			finishTiming()
 			if endpointErr != nil && !projectEinoAssistantPropagateToolError(endpointErr) {
 				modelFailure = true
 				modelFailureError = projectEinoAssistantSafeErrorText(endpointErr)

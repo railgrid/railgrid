@@ -2557,7 +2557,7 @@ describe('approval handoff after the chat stream closes', () => {
 
     expect(getRun).toHaveBeenCalledWith('r-approval')
     expect(el.querySelector('.agents-approval')).toBeNull()
-    expect(el.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
+    expect(el.querySelector('.k-ai-turn-progress')).toBeNull()
     expect(text(el)).not.toContain('Waiting for approval')
 
     finalTranscript.resolve([{
@@ -2567,7 +2567,7 @@ describe('approval handoff after the chat stream closes', () => {
     await settle(6)
 
     expect(text(el)).toContain('Authoritative final answer')
-    expect(el.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
+    expect(el.querySelector('.k-ai-turn-progress')).toBeNull()
   })
 
   it('keeps approval recovery closed after an accepted cancellation without a terminal event', async () => {
@@ -2742,7 +2742,8 @@ describe('approval handoff after the chat stream closes', () => {
     expect(text(el)).not.toContain('inbox-r-b')
     const terminalMessage = [...el.querySelectorAll<HTMLElement>('.agents-ai-message')]
       .find(message => message.id === 'k-ai-conversation-turn-massistant-b')
-    expect(terminalMessage?.querySelector('.k-ai-turn-progress__label')?.textContent?.trim()).toBe('Worked')
+    expect(terminalMessage).toBeDefined()
+    expect(terminalMessage?.querySelector('.k-ai-turn-progress')).toBeNull()
   })
 
   it.each(['cancel', 'navigate'] as const)('discards a pending disclosure fetched before %s', async reason => {
