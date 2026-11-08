@@ -177,14 +177,11 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
-railgrid-provider-agents .agents-create-quick { max-width: 38rem; margin-inline: auto; }
-railgrid-provider-agents .agents-create-quick .agents-create-submit { width: 100%; }
 railgrid-provider-agents .agents-create-alternatives {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
-  gap: 4px 12px;
-  padding: 8px 18px 14px;
+  gap: 4px 8px;
+  margin-inline-end: auto;
 }
 /* Bound the task region, not the route shell or its contextual guidance. */
 railgrid-provider-agents .agents-resource-fields { width: 100%; max-width: 42rem; }

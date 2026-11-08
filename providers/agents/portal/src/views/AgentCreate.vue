@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, Bot, Check } from 'lucide-vue-next'
+import { ArrowLeft, Check } from 'lucide-vue-next'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { portalHref } from '../portalkit/navigation'
@@ -220,7 +220,7 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const guided = computed(() => isHarness.value || Boolean(template.value))
+const detailedSetup = computed(() => isHarness.value || Boolean(template.value))
 const capabilities = computed(() => isHarness.value ? 'The harness’s own tools'
   : selectedTemplate.value ? templateFamilies(selectedTemplate.value).join(', ') || 'Core only' : 'Core only')
 
@@ -473,7 +473,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 </script>
 
 <template>
-  <div class="k-create-page" :class="{ 'agents-create-quick': !guided }">
+  <div class="k-create-page">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="busy" @click="cancel">
       <ArrowLeft aria-hidden="true" /> Agents
     </button>
@@ -504,8 +504,8 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
       </div>
 
-      <form class="agents-create-form agents-guided-form k-create-surface" :class="{ 'k-create-surface--guided': guided }" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
-        <div class="k-create-body" :class="{ 'k-create-body--guided': guided }">
+      <form class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
+        <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields">
             <fieldset v-if="showTemplates" ref="templateChoices" tabindex="-1" class="agents-cap-fs agents-template-fs" aria-describedby="agent-create-template-hint">
               <legend>Start from</legend>
@@ -733,29 +733,27 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             </p>
           </div>
 
-          <CreateGuidance v-if="guided"
-            title="Prepare a usable agent"
-            :description="guidanceDescription"
-            :prerequisites="prerequisites"
-            :values="summaryValues"
-            :next-steps="guidanceNextSteps"
-          >
-            <template #icon><Bot aria-hidden="true" /></template>
-          </CreateGuidance>
+          <CreateGuidance
+            :title="detailedSetup ? 'Prepare a usable agent' : 'After you create the agent'"
+            :description="detailedSetup ? guidanceDescription : 'A conversation opens as soon as the agent is created. You can add tools, channels, and automation later from the workbench.'"
+            :prerequisites="detailedSetup ? prerequisites : undefined"
+            :values="detailedSetup ? summaryValues : undefined"
+            :next-steps="detailedSetup ? guidanceNextSteps : undefined"
+          />
         </div>
 
         <div v-if="errors.template" class="k-inline-notification k-inline-notification--error" role="alert">
           <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
         </div>
         <div class="k-create-actions">
-          <button class="k-btn k-btn--primary agents-create-submit" type="submit" :disabled="busy || !canSubmit">
+          <div class="agents-create-alternatives">
+            <button v-if="!showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="openTemplates">Use a template</button>
+            <button v-if="!isHarness" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
+            <button v-if="isHarness || showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
+          </div>
+          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
             <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create & open chat' }}
           </button>
-        </div>
-        <div class="agents-create-alternatives">
-          <button v-if="!showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="openTemplates">Use a template</button>
-          <button v-if="!isHarness" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
-          <button v-if="isHarness || showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
         </div>
       </form>
     </template>
