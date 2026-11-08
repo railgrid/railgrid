@@ -486,16 +486,17 @@ func TestProjectAssistantProgressMetadataIsBoundedAndPreserved(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantProgressSnapshotTracksActiveWorkOnly(t *testing.T) {
-	started := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
+func TestProjectAssistantMeasuredWorkWithoutActivity(t *testing.T) {
 	state := &projectAssistantDurableMetadataState{
-		progressMessages:   []string{"I’m inspecting the project."},
-		workedDuration:     40 * time.Second,
-		workSegmentStarted: started,
+		workTiming: &projectAssistantWorkTiming{measured: true, duration: 83_400 * time.Millisecond},
 	}
-	progress := state.progressSnapshot(started.Add(43*time.Second+400*time.Millisecond), false)
-	if progress == nil || progress.Version != 1 || progress.WorkedDurationMS != 83_400 {
-		t.Fatalf("progress = %#v, want 83.4 seconds of active work", progress)
+	run := store.AssistantRun{}
+	state.workTiming.updateRun(&run)
+	if run.WorkedDurationMS == nil || *run.WorkedDurationMS != 83_400 {
+		t.Fatalf("worked duration = %v, want 83400ms", run.WorkedDurationMS)
+	}
+	if progress := state.progressSnapshot(); progress != nil {
+		t.Fatalf("timing alone produced a progress snapshot: %#v", progress)
 	}
 }
 
@@ -516,8 +517,8 @@ func TestProjectAssistantActionOnlyTerminalTurnPersistsWorkedDuration(t *testing
 		t.Fatalf("Attach: %v", err)
 	}
 	state := &projectAssistantDurableMetadataState{
-		status:         "Completed",
-		workedDuration: 2400 * time.Millisecond,
+		status:     "Completed",
+		workTiming: &projectAssistantWorkTiming{measured: true, duration: 2400 * time.Millisecond},
 	}
 	state.upsertToolCall(projectToolCallStreamEvent{ID: "call-read", Name: projectToolReadFile, Status: "succeeded"})
 	server := NewWithWorkspace(nil, msgStore, nil, "", false)
@@ -536,16 +537,15 @@ func TestProjectAssistantActionOnlyTerminalTurnPersistsWorkedDuration(t *testing
 		if message.ID != assistant.ID {
 			continue
 		}
-		progress, ok := projectAssistantProgressSnapshotFromMetadata(message.Metadata[projectAssistantMetadataProgress])
-		if !ok || len(progress.Messages) != 0 || len(progress.MessageSequences) != 0 || progress.WorkedDurationMS != 2400 {
-			t.Fatalf("action-only terminal progress = %#v, want empty trace prose and 2400ms worked duration", progress)
+		if progress := message.Metadata[projectAssistantMetadataProgress]; progress != nil {
+			t.Fatalf("action-only turn unexpectedly has a commentary snapshot: %#v", progress)
 		}
-		encoded, err := json.Marshal(progress)
-		if err != nil {
-			t.Fatalf("marshal action-only terminal progress: %v", err)
+		if worked, ok := projectAssistantWorkedDurationFromMetadata(message.Metadata[projectAssistantMetadataWorkedDuration]); !ok || worked != 2400 {
+			t.Fatalf("message worked duration = %v, want 2400ms", message.Metadata[projectAssistantMetadataWorkedDuration])
 		}
-		if !strings.Contains(string(encoded), `"messages":[]`) {
-			t.Fatalf("action-only terminal progress JSON = %s, want an empty message array", encoded)
+		storedRun, err := msgStore.GetAssistantRun(ctx, scope, run.ID)
+		if err != nil || storedRun.WorkedDurationMS == nil || *storedRun.WorkedDurationMS != 2400 {
+			t.Fatalf("stored run = %#v, %v, want 2400ms", storedRun, err)
 		}
 		if actions := projectAssistantActionFeedFromMetadata(message.Metadata[projectMessageMetadataAssistantActionFeed]); len(actions) != 1 {
 			t.Fatalf("action-only terminal actions = %#v, want one durable action", actions)
@@ -600,24 +600,15 @@ func TestProjectAssistantSetStatusClosesRestoredWaitingAction(t *testing.T) {
 	}
 }
 
-func TestProjectAssistantWorkedDurationExcludesPendingPermissionPause(t *testing.T) {
-	firstSegmentStarted := time.Date(2026, 8, 2, 10, 0, 0, 0, time.UTC)
-	pending := &projectAssistantDurableMetadataState{
-		workedDuration:     10 * time.Second,
-		workSegmentStarted: firstSegmentStarted,
-	}
-	pending.upsertToolCall(projectToolCallStreamEvent{ID: "call-read", Name: projectToolReadFile, Status: "succeeded"})
-	pendingSnapshot := pending.progressSnapshot(firstSegmentStarted.Add(5*time.Second), true)
-	if pendingSnapshot == nil || pendingSnapshot.WorkedDurationMS != 15_000 {
-		t.Fatalf("pending snapshot = %#v, want 15 seconds", pendingSnapshot)
-	}
-
-	resumeStarted := firstSegmentStarted.Add(2 * time.Hour)
-	resumed := &projectAssistantDurableMetadataState{workSegmentStarted: resumeStarted}
-	resumed.restoreTrace(pendingSnapshot, projectAssistantActionFeedFromToolCalls(pending.toolCalls))
-	completedSnapshot := resumed.progressSnapshot(resumeStarted.Add(3*time.Second), true)
-	if completedSnapshot == nil || completedSnapshot.WorkedDurationMS != 18_000 {
-		t.Fatalf("resumed snapshot = %#v, want 18 seconds without the permission pause", completedSnapshot)
+func TestProjectAssistantWorkedDurationAccumulatesAcrossResume(t *testing.T) {
+	run := store.AssistantRun{}
+	first := &projectAssistantWorkTiming{measured: true, duration: 15 * time.Second}
+	first.updateRun(&run)
+	resumed := &projectAssistantWorkTiming{prior: run.WorkedDurationMS, measured: true, duration: 3 * time.Second}
+	resumed.updateRun(&run)
+	resumed.updateRun(&run) // Repeated persistence must never count a segment again.
+	if run.WorkedDurationMS == nil || *run.WorkedDurationMS != 18_000 {
+		t.Fatalf("worked duration = %v, want 18000ms", run.WorkedDurationMS)
 	}
 }
 
@@ -645,7 +636,7 @@ func TestProjectAssistantProgressSnapshotOrdersProseAndActionLifecycle(t *testin
 		Status: "succeeded",
 	})
 
-	progress := state.progressSnapshot(time.Now().UTC(), false)
+	progress := state.progressSnapshot()
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
 		t.Fatalf("progress sequences = %#v, want [1 3]", progress)
 	}
@@ -687,7 +678,7 @@ func TestProjectAssistantProgressSnapshotContinuesOrderingAfterResume(t *testing
 		Status: "succeeded",
 	})
 
-	progress := state.progressSnapshot(time.Now().UTC(), false)
+	progress := state.progressSnapshot()
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{1, 3}) {
 		t.Fatalf("resumed progress sequences = %#v, want [1 3]", progress)
 	}
@@ -721,7 +712,7 @@ func TestProjectAssistantProgressSnapshotKeepsHiddenActionSequenceWhenItFails(t 
 	if len(actions) != 1 || actions[0].Sequence != 1 || actions[0].Status != projectAssistantActionFeedStatusFailed {
 		t.Fatalf("failed custom action = %#v, want original sequence 1", actions)
 	}
-	progress := state.progressSnapshot(time.Now().UTC(), false)
+	progress := state.progressSnapshot()
 	if progress == nil || !reflect.DeepEqual(progress.MessageSequences, []int{2}) {
 		t.Fatalf("progress sequences = %#v, want [2]", progress)
 	}

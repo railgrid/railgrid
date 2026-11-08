@@ -50,11 +50,12 @@ describe('run failure recovery and diagnostics', () => {
   it.each([
     { status: 'failed', durationMS: 1200, trace: [] },
     { status: 'failed', trace: [{ id: 'step-1', kind: 'commentary', content: 'Inspected the rollout.' }] },
-  ])('preserves recorded work after a failure', async progress => {
+  ])('discloses inspectable activity after a failure', async progress => {
     const view = await mountVue(ChatMessage, {
       message: { id: 'failed-with-work', role: 'assistant', content: 'Partial answer', tools: [], error: 'Harness stopped', progress },
     })
-    expect(view.element.querySelector('.k-ai-turn-progress')).not.toBeNull()
+    expect(Boolean(view.element.querySelector('.k-ai-turn-progress'))).toBe(progress.trace.length > 0)
+    expect(view.element.querySelector('.agents-run-state')).not.toBeNull()
     expect(text(view.element.querySelector('.agents-body:not(.agents-trace-commentary)'))).toBe('Partial answer')
   })
 

@@ -149,6 +149,7 @@ type projectAssistantResumeResponse struct {
 	FollowUp         *projectAssistantFollowUp          `json:"-"`
 	Checkpoint       *projectAssistantCheckpoint        `json:"-"`
 	Progress         *projectAssistantProgressSnapshot  `json:"-"`
+	WorkedDurationMS *int64                             `json:"-"`
 	AssistantContent string                             `json:"-"`
 	Result           string                             `json:"-"`
 	SuspensionReason string                             `json:"-"`
@@ -843,9 +844,11 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	}
 	assistantContent := &strings.Builder{}
 	accumulator := s.projectAssistantSupervisor().accumulatorFor(messageScope, run.ID, run.ThreadID)
+	timing := &projectAssistantWorkTiming{prior: run.WorkedDurationMS}
+	ctx = context.WithValue(ctx, projectAssistantWorkTimingKey{}, timing)
 	metadataState := &projectAssistantDurableMetadataState{
-		status:             "Working",
-		workSegmentStarted: time.Now().UTC(),
+		status:     "Working",
+		workTiming: timing,
 	}
 	if existingMessage, findErr := s.findProjectMessage(ctx, messageScope, assistantID); findErr == nil {
 		if progress, ok := projectAssistantProgressSnapshotFromMetadata(existingMessage.Metadata[projectAssistantMetadataProgress]); ok {
@@ -895,8 +898,8 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 		pendingPermissionToolCallID = ""
 		pendingFollowUpToolCallID = ""
 		metadataState = &projectAssistantDurableMetadataState{
-			status:             "Working",
-			workSegmentStarted: time.Now().UTC(),
+			status:     "Working",
+			workTiming: timing,
 		}
 	}
 	emitAssistantEvent := func(event projectAssistantEvent) {
@@ -1100,7 +1103,9 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	callbacksClosed = true
 	assistantText := assistantContent.String()
 	metadataToolCalls := append([]projectToolCallStreamEvent(nil), metadataState.toolCalls...)
-	out.Progress = metadataState.progressSnapshot(time.Now().UTC(), len(projectAssistantActionFeedFromToolCalls(metadataToolCalls)) > 0)
+	out.Progress = metadataState.progressSnapshot()
+	timing.updateRun(&run)
+	out.WorkedDurationMS = run.WorkedDurationMS
 	callbackMu.Unlock()
 	persistMetadata(ctx, nil)
 	if persistErr := getSnapshotErr(); persistErr != nil {
@@ -1232,6 +1237,9 @@ func (s *Server) resumeClaimedProjectAssistantRunWithEinoCheckpoint(
 	if out.Progress != nil {
 		messageMetadata[projectAssistantMetadataProgress] = *out.Progress
 	}
+	if out.WorkedDurationMS != nil {
+		messageMetadata[projectAssistantMetadataWorkedDuration] = *out.WorkedDurationMS
+	}
 	messageMetadata[projectAssistantMetadataVerification] = projectAssistantVerificationFromCompletionEvidence(result.CompletionEvidence)
 	if assistantMessage, err := s.appendResumedProjectAssistantMessageFromContent(persistCtx, messageScope, assistantID, resultContent, streamedContent, messageMetadata); err != nil {
 		return projectAssistantResumeResponse{}, err
@@ -1333,11 +1341,14 @@ func (s *Server) resumedPendingProjectAssistantMessage(
 		}
 	}
 	metadata := projectAssistantMessageMetadata(string(response.Status), toolCalls)
+	if metadata == nil && (response.Progress != nil || response.WorkedDurationMS != nil) {
+		metadata = map[string]any{}
+	}
 	if response.Progress != nil {
-		if metadata == nil {
-			metadata = map[string]any{}
-		}
 		metadata[projectAssistantMetadataProgress] = *response.Progress
+	}
+	if response.WorkedDurationMS != nil {
+		metadata[projectAssistantMetadataWorkedDuration] = *response.WorkedDurationMS
 	}
 	return s.appendResumedProjectAssistantMessage(
 		ctx,

@@ -218,6 +218,10 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, assistantRunThreadWriteFenceSchemaVersion, assistantRunThreadMigrationLockTimeout, assistantRunThreadWriteFenceSchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersionWithLockTimeout(ctx, tx, "assistant-run-worked-duration-v1", assistantRunThreadMigrationLockTimeout,
+		`ALTER TABLE app_studio_assistant_runs ADD COLUMN IF NOT EXISTS worked_duration_ms bigint`); err != nil {
+		return err
+	}
 	if err := ensureSchemaVersion(ctx, tx, assistantApprovalPolicySchemaVersion, assistantApprovalPolicySchemaStatements()...); err != nil {
 		return err
 	}
@@ -1049,8 +1053,8 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 		INSERT INTO app_studio_assistant_runs (
 			org_uuid, workspace_uuid, project_name, project_uid, run_id, thread_id, mode, approval_mode,
 			status, client_request_id, user_message_id, active_message_id, revision, request_id,
-			checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT (org_uuid, workspace_uuid, project_name, project_uid, run_id)
 		DO UPDATE SET
 			status = EXCLUDED.status,
@@ -1060,6 +1064,7 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 			audit = EXCLUDED.audit,
 			terminal_error = EXCLUDED.terminal_error,
 			abort_reason = EXCLUDED.abort_reason,
+			worked_duration_ms = COALESCE(EXCLUDED.worked_duration_ms, app_studio_assistant_runs.worked_duration_ms),
 			updated_at = EXCLUDED.updated_at
 			WHERE app_studio_assistant_runs.mode = EXCLUDED.mode
 				AND app_studio_assistant_runs.approval_mode = EXCLUDED.approval_mode
@@ -1067,7 +1072,7 @@ func (s *PostgresStore) SaveAssistantRun(ctx context.Context, scope Scope, run A
 		`,
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, run.ID, run.ThreadID, run.Mode, run.ApprovalMode,
 		run.Status, run.ClientRequestID, run.UserMessageID, run.ActiveMessageID, run.Revision, run.RequestID,
-		string(normalizedCheckpoint), string(normalizedAudit), string(terminalError), run.AbortReason, run.CreatedAt.UTC(), run.UpdatedAt.UTC(),
+		string(normalizedCheckpoint), string(normalizedAudit), string(terminalError), run.AbortReason, run.CreatedAt.UTC(), run.UpdatedAt.UTC(), run.WorkedDurationMS,
 	)
 	if err != nil {
 		if isAssistantRunUniqueViolation(err) {
@@ -1115,14 +1120,14 @@ func (s *PostgresStore) CreateAssistantRun(ctx context.Context, scope Scope, use
 		INSERT INTO app_studio_assistant_runs (
 			org_uuid, workspace_uuid, project_name, project_uid, run_id, thread_id, mode, approval_mode, status,
 			client_request_id, user_message_id, active_message_id, revision, request_id,
-			checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+			checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
 		ON CONFLICT DO NOTHING
 		RETURNING run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		          request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		          request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, run.ID, run.ThreadID, run.Mode, run.ApprovalMode, run.Status,
 		run.ClientRequestID, run.UserMessageID, run.ActiveMessageID, run.Revision, run.RequestID,
-		string(checkpoint), string(audit), string(terminalError), run.AbortReason, run.CreatedAt.UTC(), run.UpdatedAt.UTC())
+		string(checkpoint), string(audit), string(terminalError), run.AbortReason, run.CreatedAt.UTC(), run.UpdatedAt.UTC(), run.WorkedDurationMS)
 	inserted, err := scanAssistantRun(row, scope)
 	if err == sql.ErrNoRows {
 		existing, lookupErr := getAssistantRunByThreadClientRequestID(ctx, tx, scope, run.ThreadID, run.ClientRequestID)
@@ -1187,7 +1192,8 @@ func (s *PostgresStore) SaveAssistantRunSnapshot(ctx context.Context, scope Scop
 			audit = $11,
 			terminal_error = $12,
 			abort_reason = $13,
-			updated_at = $14
+			updated_at = $14,
+			worked_duration_ms = $19
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4 AND run_id = $5
 			  AND revision = $15
 			  AND mode = $16
@@ -1195,7 +1201,7 @@ func (s *PostgresStore) SaveAssistantRunSnapshot(ctx context.Context, scope Scop
 			  AND thread_id = $18
 		`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, run.ID,
 		run.Status, run.ActiveMessageID, run.Revision, run.RequestID,
-		string(checkpoint), string(audit), string(terminalError), run.AbortReason, run.UpdatedAt.UTC(), expectedRevision, run.Mode, run.ApprovalMode, run.ThreadID)
+		string(checkpoint), string(audit), string(terminalError), run.AbortReason, run.UpdatedAt.UTC(), expectedRevision, run.Mode, run.ApprovalMode, run.ThreadID, run.WorkedDurationMS)
 	if err != nil {
 		if isAssistantRunUniqueViolation(err) {
 			return fmt.Errorf("%w: thread already has active assistant run", ErrAssistantRunConflict)
@@ -1291,7 +1297,7 @@ func (s *PostgresStore) requestAssistantRunStop(ctx context.Context, scope Scope
 		WHERE org_uuid=$3 AND workspace_uuid=$4 AND project_name=$5 AND project_uid=$6
 			AND run_id=$7 AND revision=$8 AND status=$9
 		RETURNING run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-			request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at`,
+			request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms`,
 		AssistantRunStatusStopping, now.UTC(), scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID,
 		runID, expectedRunRevision, AssistantRunStatusRunning)
 	run, err := scanAssistantRun(row, scope)
@@ -1342,7 +1348,7 @@ func (s *PostgresStore) ClaimAssistantRun(ctx context.Context, scope Scope, id s
 		  AND request_id = $8
 			AND status IN ($9, $10)
 			RETURNING run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		          request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		          request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 	`,
 		AssistantRunStatusRunning, now.UTC(),
 		scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, id, requestID,
@@ -1371,7 +1377,7 @@ func (s *PostgresStore) GetAssistantRun(ctx context.Context, scope Scope, id str
 	}
 	row := s.db.QueryRowContext(ctx, `
 			SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-			       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+			       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4 AND run_id = $5
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, id)
@@ -1422,7 +1428,7 @@ func (s *PostgresStore) LatestAssistantRun(ctx context.Context, scope Scope) (As
 	}
 	row := s.db.QueryRowContext(ctx, `
 			SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 		ORDER BY updated_at DESC, run_id DESC
@@ -1451,7 +1457,7 @@ func (s *PostgresStore) LatestAssistantRunForThread(ctx context.Context, scope S
 	}
 	row := s.db.QueryRowContext(ctx, `
 		SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4 AND thread_id = $5
 		ORDER BY updated_at DESC, run_id DESC
@@ -1476,7 +1482,7 @@ func (s *PostgresStore) ListActiveAssistantRuns(ctx context.Context, scope Scope
 	}
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 		  AND status NOT IN ('completed','failed','interrupted','aborted')
@@ -2453,7 +2459,7 @@ func getAssistantRunByClientRequestID(ctx context.Context, queryer interface {
 }, scope Scope, clientRequestID string) (AssistantRun, error) {
 	row := queryer.QueryRowContext(ctx, `
 			SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4 AND thread_id = '' AND client_request_id = $5
 	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, clientRequestID)
@@ -2472,7 +2478,7 @@ func getAssistantRunByThreadClientRequestID(ctx context.Context, queryer interfa
 }, scope Scope, threadID, clientRequestID string) (AssistantRun, error) {
 	row := queryer.QueryRowContext(ctx, `
 		SELECT run_id, thread_id, mode, approval_mode, status, client_request_id, user_message_id, active_message_id, revision,
-		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at
+		       request_id, checkpoint, audit, terminal_error, abort_reason, created_at, updated_at, worked_duration_ms
 		FROM app_studio_assistant_runs
 		WHERE org_uuid = $1 AND workspace_uuid = $2 AND project_name = $3 AND project_uid = $4
 		  AND thread_id = $5 AND client_request_id = $6
@@ -2514,6 +2520,7 @@ func scanAssistantRun(row interface {
 		&run.AbortReason,
 		&run.CreatedAt,
 		&run.UpdatedAt,
+		&run.WorkedDurationMS,
 	); err != nil {
 		return AssistantRun{}, err
 	}

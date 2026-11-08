@@ -189,7 +189,7 @@ function mergeAssistantProgressCommentary(
     version: 1,
     messages: bounded.map((entry) => entry.message),
     messageSequences: bounded.map((entry) => entry.sequence),
-    workedDurationMs: progress?.workedDurationMs ?? 0,
+    ...(progress?.workedDurationMs === undefined ? {} : { workedDurationMs: progress.workedDurationMs }),
   }
 }
 
@@ -204,12 +204,13 @@ function mergeAssistantProgressValues(current: unknown, projected: unknown, proj
   projectedProgress.messageSequences.forEach((sequence, index) => {
     if (projectedWinsConflicts || !entries.has(sequence)) entries.set(sequence, projectedProgress.messages[index])
   })
+  const workedDurationMs = Math.max(currentProgress.workedDurationMs ?? -1, projectedProgress.workedDurationMs ?? -1)
   const ordered = [...entries.entries()].sort(([left], [right]) => left - right).slice(-32)
   return {
     version: 1,
     messages: ordered.map(([, message]) => message),
     messageSequences: ordered.map(([sequence]) => sequence),
-    workedDurationMs: Math.max(currentProgress.workedDurationMs, projectedProgress.workedDurationMs),
+    ...(workedDurationMs < 0 ? {} : { workedDurationMs }),
   }
 }
 
@@ -482,8 +483,9 @@ export function assistantThreadItemsToMessages(items: ProjectAssistantThreadItem
         if (sequence > 0) metadata.assistantCommentarySequence = sequence
       }
       if (item.error) metadata.assistantError = item.error
+      if (item.data?.assistantWorkedDurationMS != null) metadata.assistantWorkedDurationMS = item.data.assistantWorkedDurationMS
       if (item.data?.assistantProgress) metadata.assistantProgress = item.data.assistantProgress
-	  if (item.data?.assistantVerification) metadata.assistantVerification = item.data.assistantVerification
+      if (item.data?.assistantVerification) metadata.assistantVerification = item.data.assistantVerification
       const existingIndex = !isCommentaryItem(item) ? assistantByID.get(itemOwnMessageID(item)) : undefined
       if (existingIndex !== undefined) {
         const existing = result[existingIndex]

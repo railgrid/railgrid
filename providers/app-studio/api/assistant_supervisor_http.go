@@ -41,20 +41,21 @@ import (
 // records also contain checkpoint, audit, grant, and project-scoping state that
 // must remain server-side.
 type projectAssistantRunView struct {
-	ID              string                        `json:"id"`
-	ThreadID        string                        `json:"threadID,omitempty"`
-	Mode            store.AssistantRunMode        `json:"mode,omitempty"`
-	ApprovalMode    store.AssistantApprovalMode   `json:"approvalMode,omitempty"`
-	Status          store.AssistantRunStatus      `json:"status"`
-	ClientRequestID string                        `json:"clientRequestID,omitempty"`
-	UserMessageID   string                        `json:"userMessageID,omitempty"`
-	ActiveMessageID string                        `json:"activeMessageID,omitempty"`
-	Revision        int64                         `json:"revision,omitempty"`
-	RequestID       string                        `json:"requestID,omitempty"`
-	Error           *projectAssistantRunErrorView `json:"error,omitempty"`
-	AbortReason     store.AssistantRunAbortReason `json:"abortReason,omitempty"`
-	CreatedAt       time.Time                     `json:"createdAt"`
-	UpdatedAt       time.Time                     `json:"updatedAt"`
+	WorkedDurationMS *int64                        `json:"workedDurationMS,omitempty"`
+	ID               string                        `json:"id"`
+	ThreadID         string                        `json:"threadID,omitempty"`
+	Mode             store.AssistantRunMode        `json:"mode,omitempty"`
+	ApprovalMode     store.AssistantApprovalMode   `json:"approvalMode,omitempty"`
+	Status           store.AssistantRunStatus      `json:"status"`
+	ClientRequestID  string                        `json:"clientRequestID,omitempty"`
+	UserMessageID    string                        `json:"userMessageID,omitempty"`
+	ActiveMessageID  string                        `json:"activeMessageID,omitempty"`
+	Revision         int64                         `json:"revision,omitempty"`
+	RequestID        string                        `json:"requestID,omitempty"`
+	Error            *projectAssistantRunErrorView `json:"error,omitempty"`
+	AbortReason      store.AssistantRunAbortReason `json:"abortReason,omitempty"`
+	CreatedAt        time.Time                     `json:"createdAt"`
+	UpdatedAt        time.Time                     `json:"updatedAt"`
 }
 
 type projectAssistantRunErrorView struct {
@@ -76,20 +77,21 @@ func projectAssistantRunToAPI(run store.AssistantRun) projectAssistantRunView {
 		}
 	}
 	return projectAssistantRunView{
-		ID:              run.ID,
-		ThreadID:        run.ThreadID,
-		Mode:            run.Mode,
-		ApprovalMode:    run.ApprovalMode,
-		Status:          run.Status,
-		ClientRequestID: run.ClientRequestID,
-		UserMessageID:   run.UserMessageID,
-		ActiveMessageID: run.ActiveMessageID,
-		Revision:        run.Revision,
-		RequestID:       run.RequestID,
-		Error:           terminalError,
-		AbortReason:     run.AbortReason,
-		CreatedAt:       run.CreatedAt,
-		UpdatedAt:       run.UpdatedAt,
+		WorkedDurationMS: run.WorkedDurationMS,
+		ID:               run.ID,
+		ThreadID:         run.ThreadID,
+		Mode:             run.Mode,
+		ApprovalMode:     run.ApprovalMode,
+		Status:           run.Status,
+		ClientRequestID:  run.ClientRequestID,
+		UserMessageID:    run.UserMessageID,
+		ActiveMessageID:  run.ActiveMessageID,
+		Revision:         run.Revision,
+		RequestID:        run.RequestID,
+		Error:            terminalError,
+		AbortReason:      run.AbortReason,
+		CreatedAt:        run.CreatedAt,
+		UpdatedAt:        run.UpdatedAt,
 	}
 }
 
@@ -352,6 +354,7 @@ const (
 	projectAssistantMetadataPlan                 = "assistantPlan"
 	projectAssistantMetadataInitialBuild         = "assistantInitialBuild"
 	projectAssistantMetadataProgress             = "assistantProgress"
+	projectAssistantMetadataWorkedDuration       = "assistantWorkedDurationMS"
 	projectAssistantMetadataVerification         = "assistantVerification"
 	projectAssistantProgressMaxMessages          = 32
 	projectAssistantWorkedDurationMaxMS          = int64((7 * 24 * time.Hour) / time.Millisecond)
@@ -506,11 +509,16 @@ type projectAssistantProgressSnapshot struct {
 	Version          int      `json:"version"`
 	Messages         []string `json:"messages"`
 	MessageSequences []int    `json:"messageSequences"`
-	WorkedDurationMS int64    `json:"workedDurationMs"`
+	// Historical snapshots may contain an elapsed estimate. Keep emitting a zero
+	// placeholder for new snapshots so older portals can still read the trace.
+	WorkedDurationMS int64 `json:"workedDurationMs"`
 }
 
 func projectAssistantDurableMetadataForTransition(run store.AssistantRun, status string, provisional, preview bool, toolCalls []projectToolCallStreamEvent, plan *projectAssistantPlanSnapshot) map[string]any {
 	metadata := projectAssistantMessageMetadata(status, sanitizeProjectToolCallStreamEventsForMetadata(toolCalls))
+	if run.WorkedDurationMS != nil {
+		metadata[projectAssistantMetadataWorkedDuration] = *run.WorkedDurationMS
+	}
 	metadata[projectAssistantMetadataRunID] = run.ID
 	metadata[projectAssistantMetadataRevision] = run.Revision
 	metadata[projectAssistantMetadataWorkingStatus] = status
@@ -549,12 +557,31 @@ func projectAssistantDurableMetadataFromExisting(run store.AssistantRun, status 
 		metadata[projectAssistantMetadataVerification] = verification
 	}
 	preview, _ := existing[projectAssistantMetadataPreviewRefreshNeeded].(bool)
+	if run.WorkedDurationMS != nil {
+		metadata[projectAssistantMetadataWorkedDuration] = *run.WorkedDurationMS
+	}
 	metadata[projectAssistantMetadataRunID] = run.ID
 	metadata[projectAssistantMetadataRevision] = run.Revision
 	metadata[projectAssistantMetadataWorkingStatus] = status
 	metadata[projectAssistantMetadataProvisional] = provisional
 	metadata[projectAssistantMetadataPreviewRefreshNeeded] = preview
 	return metadata
+}
+
+func projectAssistantWorkedDurationFromMetadata(value any) (int64, bool) {
+	var ms int64
+	switch v := value.(type) {
+	case int64:
+		ms = v
+	case float64: // JSON metadata rehydrated by the stores.
+		if v < 0 || v > 1<<53-1 || float64(int64(v)) != v {
+			return 0, false
+		}
+		ms = int64(v)
+	default:
+		return 0, false
+	}
+	return ms, ms >= 0 && ms <= 1<<53-1
 }
 
 func projectAssistantProgressSnapshotFromMetadata(value any) (*projectAssistantProgressSnapshot, bool) {
@@ -690,21 +717,20 @@ func projectAssistantPlanLabelValid(label string, required bool) bool {
 }
 
 type projectAssistantDurableMetadataState struct {
-	status             string
-	provisional        bool
-	toolCalls          []projectToolCallStreamEvent
-	modelInputs        []projectAssistantActionFeedItem
-	plan               *projectAssistantPlanSnapshot
-	initialBuild       bool
-	progressMessages   []string
-	progressSequences  []int
-	actionSequences    map[string]int
-	nextTraceSequence  int
-	workedDuration     time.Duration
-	workSegmentStarted time.Time
-	terminalError      json.RawMessage
-	abortReason        store.AssistantRunAbortReason
-	verification       *projectAssistantVerificationView
+	status            string
+	provisional       bool
+	toolCalls         []projectToolCallStreamEvent
+	modelInputs       []projectAssistantActionFeedItem
+	plan              *projectAssistantPlanSnapshot
+	initialBuild      bool
+	progressMessages  []string
+	progressSequences []int
+	actionSequences   map[string]int
+	nextTraceSequence int
+	workTiming        *projectAssistantWorkTiming
+	terminalError     json.RawMessage
+	abortReason       store.AssistantRunAbortReason
+	verification      *projectAssistantVerificationView
 }
 
 func (s *projectAssistantDurableMetadataState) appendProgress(message string) bool {
@@ -743,7 +769,6 @@ func (s *projectAssistantDurableMetadataState) restoreTrace(progress *projectAss
 				s.nextTraceSequence = sequence
 			}
 		}
-		s.workedDuration = time.Duration(progress.WorkedDurationMS) * time.Millisecond
 	}
 	for _, action := range actions {
 		if action.ID == "" || action.Sequence <= 0 || action.Sequence > projectAssistantTraceMaxSequence {
@@ -822,20 +847,9 @@ func (s *projectAssistantDurableMetadataState) nextSequence() int {
 	return s.nextTraceSequence
 }
 
-func (s *projectAssistantDurableMetadataState) progressSnapshot(now time.Time, hasActions bool) *projectAssistantProgressSnapshot {
-	if s == nil || (len(s.progressMessages) == 0 && !hasActions) {
+func (s *projectAssistantDurableMetadataState) progressSnapshot() *projectAssistantProgressSnapshot {
+	if s == nil || len(s.progressMessages) == 0 {
 		return nil
-	}
-	duration := s.workedDuration
-	if !s.workSegmentStarted.IsZero() && now.After(s.workSegmentStarted) {
-		duration += now.Sub(s.workSegmentStarted)
-	}
-	durationMS := duration.Milliseconds()
-	if durationMS < 0 {
-		durationMS = 0
-	}
-	if durationMS > projectAssistantWorkedDurationMaxMS {
-		durationMS = projectAssistantWorkedDurationMaxMS
 	}
 	messageSequences := append([]int{}, s.progressSequences...)
 	if len(messageSequences) != len(s.progressMessages) {
@@ -852,7 +866,6 @@ func (s *projectAssistantDurableMetadataState) progressSnapshot(now time.Time, h
 		Version:          1,
 		Messages:         append([]string{}, s.progressMessages...),
 		MessageSequences: messageSequences,
-		WorkedDurationMS: durationMS,
 	}
 }
 
@@ -909,6 +922,7 @@ func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context,
 		if assistantRunTerminal(run.Status) {
 			state.provisional = false
 		}
+		state.workTiming.updateRun(run)
 		next := *run
 		next.Revision++
 		metadata := projectAssistantDurableMetadataForTransition(
@@ -947,7 +961,7 @@ func (s *Server) persistProjectAssistantDurableMetadataWith(ctx context.Context,
 		} else if initialBuild, _ := message.Metadata[projectAssistantMetadataInitialBuild].(bool); initialBuild {
 			metadata[projectAssistantMetadataInitialBuild] = true
 		}
-		if progress := state.progressSnapshot(time.Now().UTC(), len(actions) > 0); progress != nil {
+		if progress := state.progressSnapshot(); progress != nil {
 			metadata[projectAssistantMetadataProgress] = *progress
 		} else if progress, ok := projectAssistantProgressSnapshotFromMetadata(message.Metadata[projectAssistantMetadataProgress]); ok {
 			metadata[projectAssistantMetadataProgress] = *progress
@@ -969,13 +983,14 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 	// (api/project_ledger.go).
 	ctx = s.withProjectLedger(ctx, id)
 	content := &strings.Builder{}
-	workSegmentStarted := time.Now().UTC()
+	timing := &projectAssistantWorkTiming{prior: run.WorkedDurationMS}
+	ctx = context.WithValue(ctx, projectAssistantWorkTimingKey{}, timing)
 	state := &projectAssistantDurableMetadataState{
 		status: "Working",
 		initialBuild: start != nil &&
 			start.InitialApprovedPlan != nil &&
 			strings.TrimSpace(start.InitialApprovedPlan.Goal) != "",
-		workSegmentStarted: workSegmentStarted,
+		workTiming: timing,
 	}
 	activeMessageID := run.ActiveMessageID
 	syncSteeringSegment := func() {
@@ -986,9 +1001,9 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 		content.Reset()
 		activeMessageID = messageID
 		state = &projectAssistantDurableMetadataState{
-			status:             "Working",
-			initialBuild:       state.initialBuild,
-			workSegmentStarted: time.Now().UTC(),
+			status:       "Working",
+			initialBuild: state.initialBuild,
+			workTiming:   timing,
 		}
 	}
 	workspaceScope := projectWorkspaceScope(id, project)
@@ -1233,6 +1248,7 @@ func (s *Server) runProjectAssistantWorker(ctx context.Context, accumulator *pro
 		state.abortReason = store.AssistantRunAbortReasonInterrupted
 		_, transitionErr := accumulator.supervisor.AbortWith(projectMessageScope(id.orgUUID, id.workspaceUUID, project), run.ID, func(run *store.AssistantRun, message *store.Message) error {
 			run.AbortReason = store.AssistantRunAbortReasonInterrupted
+			timing.updateRun(run)
 			if strings.TrimSpace(finalContent) != "" {
 				message.Content = finalContent
 			}

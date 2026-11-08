@@ -152,15 +152,12 @@ const progressVisible = computed(() => {
   const progress = props.message.progress
   if (props.message.role !== 'assistant') return false
   if (stoppedTurn.value) return true
-  if (!progress) return props.message.tools.length > 0
-  // A startup failure has no worked state unless the server recorded work.
-  // Keep actual trace details and durations available after a failed turn.
-  const hasRecordedDuration = typeof progress.durationMS === 'number'
-    && Number.isFinite(progress.durationMS)
-    && progress.durationMS > 0
-  return !failurePhase.value || progress.trace.length > 0 || hasRecordedDuration
+  if (!progress) return fallbackTools.value.length > 0
+  return progressIsActive(progress.status) || traceBlocks.value.length > 0
 })
-const progressStatus = computed<AITurnProgressStatus>(() => props.message.progress?.status || (props.message.tools.some(tool => tool.pending) ? 'running' : 'completed'))
+const progressStatus = computed<AITurnProgressStatus>(() =>
+  props.message.progress?.status || (fallbackTools.value.some(tool => tool.pending) ? 'running' : 'completed'),
+)
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
   const status = props.message.progress?.status
