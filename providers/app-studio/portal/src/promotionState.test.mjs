@@ -356,20 +356,19 @@ test('claims production readiness only when deployed image values match the sele
   assert.equal(pipeline.state, 'production_ready')
 })
 
-test('keeps a retry in deployment while the provider still reports the previous revision', () => {
+test('keeps a retry pending until the provider confirms its revision', () => {
   const readiness = {
     promotable: true,
     build: { status: 'built', commitSHA: 'release123456', note: '', components: [] },
     requestedRolloutRevision: 'requested-42',
-    observedRolloutRevision: 'older-41',
     production: { name: 'demo-prod', phase: 'Ready' },
   }
-  for (const phase of ['Ready', 'Failed']) {
-    const pipeline = releasePipelineView({ ...readiness, production: { ...readiness.production, phase } })
+  for (const [phase, observedRevision] of [['Ready', 'older-41'], ['Failed', 'older-41'], ['Failed', '']]) {
+    const pipeline = releasePipelineView({ ...readiness, observedRolloutRevision: observedRevision, production: { ...readiness.production, phase } })
     assert.equal(pipeline.state, 'deploying')
     assert.equal(pipeline.transitional, true)
     assert.equal(pipeline.requestedRevision, 'requested-42')
-    assert.equal(pipeline.observedRevision, 'older-41')
+    assert.equal(pipeline.observedRevision, observedRevision)
     assert.match(pipeline.detail, /Waiting for the production app/)
     assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'current')
   }

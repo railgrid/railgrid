@@ -1035,7 +1035,11 @@ func (s *Server) getProjectPromotion(w http.ResponseWriter, r *http.Request) {
 	if prod := findProjectProductionBinding(p); prod != nil {
 		resp.ProductionValues = projectBindingValues(prod)
 		resp.RequestedRolloutRevision = projectRequestedRedeployRevision(prod)
-		st, instance := readProjectProviderBinding(r.Context(), c, p, *prod, id)
+		st, instance, err := readProjectProviderBinding(r.Context(), c, p, *prod, id)
+		if err != nil && !apierrors.IsNotFound(err) {
+			writeProjectPromoteError(w, fmt.Errorf("reading production rollout status: %w", err))
+			return
+		}
 		resp.Production = &st
 		resp.ObservedRolloutRevision = projectObservedRedeployRevision(instance)
 		if resp.ObservedRolloutRevision != "" {

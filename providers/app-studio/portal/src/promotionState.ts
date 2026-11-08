@@ -167,6 +167,8 @@ export function releasePipelineView(
   const requestedRevision = clean(readiness?.requestedRolloutRevision)
   const observedRevision = clean(readiness?.observedRolloutRevision)
   const rolloutConverged = !requestedRevision || observedRevision === requestedRevision
+  // Attribute a terminal phase to the matching rollout. Failed status reads
+  // enter the unavailable path separately.
   const productionFailed = rolloutConverged && ['failed', 'error', 'degraded'].includes(productionPhase)
   const currentProductionReady = productionPhase === 'ready' && rolloutConverged
   const selectedReleaseDeployed = !!readiness && currentProductionReady && selectedReleaseMatchesProduction(readiness, components)

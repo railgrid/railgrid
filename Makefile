@@ -3197,6 +3197,10 @@ test-agent-overlay-resize: ## Browser regression for overlay resize (requires Pl
 .PHONY: test-agent-ui-browser
 test-agent-ui-browser: test-agents-composer-hit-test test-agent-overlay-resize ## Manual Agents browser regressions (requires portal npm dependencies and Playwright)
 
+.PHONY: test-app-studio-workbench-browser
+test-app-studio-workbench-browser: ## Test the App Studio workbench browser layout (requires built portal and Playwright)
+	node hack/app-studio-workbench-browser.mjs
+
 .PHONY: test-ui-e2e-report fix-lint-ui-e2e-report lint-ui-e2e-report
 test-ui-e2e-report: ## Regression coverage for the October 2026 UI E2E findings
 	cd provider-sdk && go test -count=1 ./install
