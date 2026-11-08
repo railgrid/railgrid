@@ -508,6 +508,36 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
               </label>
 
+              <label v-for="param in templateParameters" :key="param.key">
+                <span :id="`agent-create-param-${param.key}-label`">{{ param.label }}{{ param.required ? ' *' : '' }}</span>
+                <textarea
+                  v-if="param.type !== 'string'"
+                  :id="`agent-create-param-${param.key}`"
+                  v-model="parameters[param.key]"
+                  class="k-input"
+                  :rows="param.type === 'list' ? 3 : 2"
+                  :placeholder="param.default || (param.type === 'list' ? 'One per line' : '')"
+                  :disabled="busy"
+                  :aria-labelledby="`agent-create-param-${param.key}-label`"
+                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+                />
+                <input
+                  v-else
+                  :id="`agent-create-param-${param.key}`"
+                  v-model="parameters[param.key]"
+                  class="k-input"
+                  :placeholder="param.default || ''"
+                  :disabled="busy"
+                  autocomplete="off"
+                  :aria-labelledby="`agent-create-param-${param.key}-label`"
+                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+                />
+                <span v-if="errors[`param-${param.key}`]" :id="`agent-create-param-${param.key}-error`" class="agents-fielderr" role="alert">{{ errors[`param-${param.key}`] }}</span>
+                <span :id="`agent-create-param-${param.key}-hint`" class="agents-hint">{{ param.description }}{{ param.type === 'list' ? ' One per line.' : '' }}{{ param.default && param.type !== 'string' ? ' Leave blank for the default.' : '' }}</span>
+              </label>
+
               <label>
                 <span id="agent-create-system-prompt-label">Instructions (optional)</span>
                 <textarea :value="selectedTemplate && !customPrompt ? promptPreview : systemPrompt" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="selectedTemplate ? 'agent-create-system-prompt-hint' : undefined" @input="editInstructions" />
@@ -622,40 +652,6 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
               </p>
               </template>
-            </section>
-
-            <section class="agents-create-section" aria-labelledby="agent-create-inputs-heading">
-              <h2 id="agent-create-inputs-heading">Template inputs</h2>
-              <p v-if="!templateParameters.length" class="agents-hint">No template inputs to fill in.</p>
-              <label v-for="param in templateParameters" :key="param.key">
-                <span :id="`agent-create-param-${param.key}-label`">{{ param.label }}{{ param.required ? ' *' : '' }}</span>
-                <textarea
-                  v-if="param.type !== 'string'"
-                  :id="`agent-create-param-${param.key}`"
-                  v-model="parameters[param.key]"
-                  class="k-input"
-                  :rows="param.type === 'list' ? 3 : 2"
-                  :placeholder="param.default || (param.type === 'list' ? 'One per line' : '')"
-                  :disabled="busy"
-                  :aria-labelledby="`agent-create-param-${param.key}-label`"
-                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
-                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
-                />
-                <input
-                  v-else
-                  :id="`agent-create-param-${param.key}`"
-                  v-model="parameters[param.key]"
-                  class="k-input"
-                  :placeholder="param.default || ''"
-                  :disabled="busy"
-                  autocomplete="off"
-                  :aria-labelledby="`agent-create-param-${param.key}-label`"
-                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
-                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
-                />
-                <span v-if="errors[`param-${param.key}`]" :id="`agent-create-param-${param.key}-error`" class="agents-fielderr" role="alert">{{ errors[`param-${param.key}`] }}</span>
-                <span :id="`agent-create-param-${param.key}-hint`" class="agents-hint">{{ param.description }}{{ param.type === 'list' ? ' One per line.' : '' }}{{ param.default && param.type !== 'string' ? ' Leave blank for the default.' : '' }}</span>
-              </label>
             </section>
 
             <section class="agents-create-section" aria-labelledby="agent-create-connections-heading">
