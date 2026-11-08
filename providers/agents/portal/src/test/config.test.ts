@@ -107,6 +107,19 @@ describe('agent config', () => {
     expect(patchAgent).toHaveBeenCalledWith('scout', expect.objectContaining({ modelCredential: 'backup' }))
   })
 
+  it('leads with instructions and the default model and keeps advanced fields in disclosures', async () => {
+    const { el } = await mountConfig({ backend: modelBackend('main') }, [{ name: 'main' }])
+    const headings = [...el.querySelectorAll('.agents-config-sec h2')].map(text)
+    expect(headings.slice(0, 2)).toEqual(['Instructions', 'Default model'])
+    for (const name of ['Model fallbacks', 'Autonomy & budget', 'Self-configuration']) {
+      const summary = [...el.querySelectorAll('summary')].find(item => text(item) === name)!
+      expect((summary.parentElement as HTMLDetailsElement).open).toBe(false)
+    }
+    const background = el.querySelector<HTMLInputElement>('input[aria-label="Allow in background: Read the web"]')!
+    expect(background.disabled).toBe(true)
+    expect(text(background.closest('label'))).toBe('Allow in background')
+  })
+
   it('uses the canonical square action for removing a model fallback', async () => {
     const { el } = await mountConfig({ backend: modelBackend('main', ['backup']) })
     const remove = el.querySelector<HTMLButtonElement>('.agents-chip-x')!
