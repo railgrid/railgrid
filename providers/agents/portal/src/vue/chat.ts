@@ -317,6 +317,24 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
     }
 
     const phase = typeof item.metadata?.turnPhase === 'string' ? item.metadata.turnPhase.trim().toLowerCase() : ''
+    const decision = item.metadata?.permissionDecision
+    if (phase === 'terminal' && (decision === 'approved' || decision === 'denied')) {
+      const message = ensureAssistant(item, true)
+      message.progress ??= { status: 'running', trace: [] }
+      flush(message)
+      if (message.content) {
+        appendTrace(message, { id: `prior-${item.id}`, kind: 'commentary', content: message.content })
+        message.content = ''
+      }
+      appendTrace(message, {
+        id: item.id,
+        kind: 'permission',
+        decision,
+        tool: item.metadata?.tool ?? '',
+        args: item.metadata?.args ?? '',
+      })
+      continue
+    }
     if (phase === 'commentary') {
       const message = ensureAssistant(item, true)
       flush(message)

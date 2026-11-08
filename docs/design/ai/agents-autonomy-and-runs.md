@@ -202,10 +202,10 @@ An approval pause shows the tool and disclosed arguments with **Approve &
 resume** and **Deny**. A missing or malformed disclosure is a reason to stop
 and report, not a reason to reconstruct or guess the operation.
 
-In chat, a resolved permission request becomes a collapsed disclosure labeled
-**Permission approved** or **Permission denied**. Its request details remain
-available on expansion. Turn metadata, including any timestamp, appears below
-the interruption.
+In chat, a resolved permission request becomes a collapsed disclosure in the
+turn's activity, labeled **Permission approved** or **Permission denied**.
+Later activity appears below the decision. Expand the disclosure to see the
+request details.
 
 Activity retains PortalKit's queryable `ResourceTable` for filters, cursor
 pagination, read states, and keyboard row navigation. The primary cell groups

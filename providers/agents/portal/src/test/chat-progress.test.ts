@@ -114,6 +114,10 @@ describe('typed chat progress projection', () => {
         metadata: { turnPhase: 'terminal', turnStatus: 'waiting', startedAt: '2026-09-10T10:00:00Z', durationMS: 100 },
       },
       {
+        id: 'permission-first', role: 'assistant', content: '', runID: 'r1',
+        metadata: { turnPhase: 'terminal', permissionDecision: 'approved', tool: 'repo_edit', args: '{"file":"one"}' },
+      },
+      {
         id: 't1', role: 'tool', content: 'first result', runID: 'r1',
         metadata: { tool: 'repo_edit', args: '{"file":"one"}', durationMS: 20 },
       },
@@ -124,6 +128,10 @@ describe('typed chat progress projection', () => {
       {
         id: 'a4', role: 'assistant', content: '', runID: 'r1',
         metadata: { turnPhase: 'terminal', turnStatus: 'waiting', startedAt: '2026-09-10T10:00:00Z', durationMS: 180 },
+      },
+      {
+        id: 'permission-second', role: 'assistant', content: '', runID: 'r1',
+        metadata: { turnPhase: 'terminal', permissionDecision: 'denied', tool: 'repo_edit', args: '{"file":"two"}' },
       },
       {
         id: 't2', role: 'tool', content: 'second result', runID: 'r1',
@@ -141,10 +149,15 @@ describe('typed chat progress projection', () => {
       progress: { status: 'completed', startedAt: '2026-09-10T10:00:00Z', durationMS: 270 },
     })
     expect(messages[1].progress?.trace.map(block => block.kind)).toEqual([
-      'commentary', 'tool', 'commentary', 'tool',
+      'commentary', 'permission', 'tool', 'commentary', 'permission', 'tool',
     ])
-    expect(messages[1].progress?.trace.map(block => block.kind === 'commentary' ? block.content : block.tool.name)).toEqual([
-      'I found the first change.', 'repo_edit', 'I found the second change.', 'repo_edit',
+    expect(messages[1].progress?.trace).toMatchObject([
+      { content: 'I found the first change.' },
+      { decision: 'approved', tool: 'repo_edit', args: '{"file":"one"}' },
+      { tool: { name: 'repo_edit' } },
+      { content: 'I found the second change.' },
+      { decision: 'denied', tool: 'repo_edit', args: '{"file":"two"}' },
+      { tool: { name: 'repo_edit' } },
     ])
     expect(messages[1].tools.map(tool => tool.result)).toEqual(['first result', 'second result'])
   })

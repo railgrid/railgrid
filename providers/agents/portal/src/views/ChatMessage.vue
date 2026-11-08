@@ -8,7 +8,7 @@ import {
 } from 'lucide-vue-next'
 import { attachCodeCopy, sanitizedMarkdown, sanitizedMarkdownWithToolCitations, type InlineToolCitation } from '../vue/chat'
 import type { AIActivityRow } from '../agentkit/activity'
-import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ToolCall } from '../types'
+import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ChatTraceBlock, type ToolCall } from '../types'
 import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { pendingIsQuestion } from '../types'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
@@ -198,12 +198,17 @@ function toggle(id: string): void {
 type TracePresentation =
   | { kind: 'commentary'; id: string; content: string }
   | { kind: 'tools'; id: string; tools: ToolCall[] }
+  | Extract<ChatTraceBlock, { kind: 'permission' }>
 
 const traceBlocks = computed<TracePresentation[]>(() => {
   const result: TracePresentation[] = []
   for (const block of progressTrace.value) {
     if (block.kind === 'commentary') {
       if (block.content.trim()) result.push({ kind: 'commentary', id: block.id, content: block.content })
+      continue
+    }
+    if (block.kind === 'permission') {
+      result.push(block)
       continue
     }
     const previous = result[result.length - 1]
@@ -366,6 +371,10 @@ onBeforeUnmount(() => { mounted = false })
                 class="agents-body agents-trace-commentary k-ai-prose"
                 v-html="sanitizedMarkdown(block.content)"
               ></div>
+              <details v-else-if="block.kind === 'permission'" class="agents-approval-done">
+                <summary>{{ block.decision === 'approved' ? 'Permission approved' : 'Permission denied' }}</summary>
+                <ApprovalDisclosure :tool="block.tool" :args="block.args" details-only />
+              </details>
               <AITranscriptActivity
                 v-else
                 :panel-id="activityPanelID(message, block.id)"
@@ -490,22 +499,14 @@ onBeforeUnmount(() => { mounted = false })
         @answer="response => emit('approval', { inboxID: message.approval!.inboxID, decision: 'answer', response })"
       />
 
-      <template
-        v-else-if="message.approval && !approvalDocked && !pendingIsQuestion(message.approval)"
-      >
-        <details v-if="message.approval.resolved === 'approve' || message.approval.resolved === 'deny'" class="agents-approval-done">
-          <summary>{{ message.approval.resolved === 'approve' ? 'Permission approved' : 'Permission denied' }}</summary>
-          <ApprovalDisclosure :tool="message.approval.tool" :args="message.approval.args" details-only />
-        </details>
-        <AgentApprovalCard
-          v-else
-          :tool="message.approval.tool"
-          :args="message.approval.args"
-          :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"
-          :disabled="!!approvalBusy"
-          @decide="decision => emit('approval', { inboxID: message.approval!.inboxID, decision })"
-        />
-      </template>
+      <AgentApprovalCard
+        v-else-if="message.approval && !approvalDocked && !message.approval.resolved && !pendingIsQuestion(message.approval)"
+        :tool="message.approval.tool"
+        :args="message.approval.args"
+        :busy="approvalBusy === 'approve' || approvalBusy === 'deny' ? approvalBusy : undefined"
+        :disabled="!!approvalBusy"
+        @decide="decision => emit('approval', { inboxID: message.approval!.inboxID, decision })"
+      />
     </template>
 
     <template v-if="failurePhase || message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>

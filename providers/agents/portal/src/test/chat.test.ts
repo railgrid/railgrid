@@ -1810,7 +1810,7 @@ describe('chat streaming', () => {
     expect(el.querySelector<HTMLButtonElement>('button[aria-label="Delete chat"]')?.disabled).toBe(false)
   })
 
-  it('does not force-scroll when the user has scrolled up', async () => {
+  it('honors user scrolling and keeps following when activity grows before a scroll event', async () => {
     let release!: () => void
     const gate = new Promise<void>((r) => (release = r))
     const { el } = await mountChat(
@@ -1822,12 +1822,28 @@ describe('chat streaming', () => {
     const log = el.querySelector<HTMLElement>('.agents-log')!
     // jsdom reports zero heights, so drive the scroll handler directly with a
     // geometry that means "scrolled up".
-    Object.defineProperty(log, 'scrollHeight', { value: 1000, configurable: true })
+    let scrollHeight = 1000
+    let scrollTop = 0
+    Object.defineProperty(log, 'scrollHeight', { get: () => scrollHeight })
     Object.defineProperty(log, 'clientHeight', { value: 200, configurable: true })
+    Object.defineProperty(log, 'scrollTop', {
+      get: () => scrollTop,
+      set: (value: number) => { scrollTop = Math.min(value, scrollHeight - log.clientHeight) },
+    })
     log.scrollTop = 100
     log.dispatchEvent(new Event('scroll'))
     await settle(2)
     expect(log.scrollTop).toBe(100)
+
+    el.querySelector<HTMLButtonElement>('.agents-return-latest')!.click()
+    await settle(2)
+    expect(log.scrollTop).toBe(800)
+
+    scrollHeight = 1250
+    log.dispatchEvent(new Event('scroll'))
+    await settle(2)
+    expect(log.scrollTop).toBe(1050)
+    expect(el.querySelector('.agents-return-latest')).toBeNull()
 
     release()
     await done
@@ -2592,7 +2608,7 @@ describe('approval handoff after the chat stream closes', () => {
     await settle(6)
   })
 
-  it('replaces the resolved card with a successive approval despite a lagging run phase', async () => {
+  it('keeps each permission decision when a successive approval arrives', async () => {
     const getRun = vi.fn().mockResolvedValue(pending('first'))
     const resolveInbox = vi.fn().mockResolvedValue({})
     const { el, store } = await mountChat(scripted(frames), { getRun, resolveInbox })
@@ -2603,11 +2619,14 @@ describe('approval handoff after the chat stream closes', () => {
     getRun.mockResolvedValue(pending('second'))
     event(store, 'PendingApproval')
     await settle(6)
-    expect(el.querySelector('.agents-approval-done')).toBeNull()
+    expect(text(el.querySelector('.agents-log .agents-approval-done summary'))).toBe('Permission approved')
     expect(text(el.querySelector('.agents-approval'))).toContain('second')
-    el.querySelector<HTMLButtonElement>('.agents-approval-actions .k-btn--primary')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-approval-actions button')!.click()
     await settle(6)
-    expect(resolveInbox).toHaveBeenLastCalledWith('second', 'approve')
+    expect(resolveInbox).toHaveBeenLastCalledWith('second', 'deny')
+    expect(Array.from(el.querySelectorAll('.agents-log .agents-approval-done summary'), text)).toEqual([
+      'Permission approved', 'Permission denied',
+    ])
   })
 
   it('restores the pending disclosure when reopening a session', async () => {

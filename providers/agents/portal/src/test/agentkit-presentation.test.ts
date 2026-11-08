@@ -149,19 +149,24 @@ describe('AgentKit timestamp and chat presentation', () => {
     }
   })
 
-  it('puts the turn timestamp in a separate row below the permission decision', async () => {
+  it('shows the permission decision between earlier and later activity', async () => {
     const createdAt = '2026-11-07T10:00:00Z'
     const view = await mountVue(ChatMessage, {
       message: message({
         createdAt,
-        progress: { status: 'completed', trace: [] },
-        approval: { runID: 'run-1', inboxID: 'inbox-1', tool: 'Bash', args: '{"command":"pwd"}', resolved: 'approve' },
+        progress: { status: 'completed', trace: [
+          { id: 'earlier', kind: 'commentary', content: 'Checking the working directory.' },
+          { id: 'permission-inbox-1', kind: 'permission', decision: 'approved', tool: 'Bash', args: '{"command":"pwd"}' },
+          { id: 'later', kind: 'tool', tool: { id: 'pwd', name: 'Bash', args: '{"command":"pwd"}', pending: false } },
+        ] },
       }),
     })
     try {
-      const interrupt = view.element.querySelector('.k-ai-conversation-turn__interrupt')
-      expect(text(interrupt?.querySelector('summary'))).toBe('Permission approved')
-      expect(interrupt?.nextElementSibling?.querySelector('time')?.getAttribute('datetime')).toBe(createdAt)
+      const receipt = view.element.querySelector('details.agents-approval-done')
+      expect(text(receipt?.querySelector('summary'))).toBe('Permission approved')
+      expect(text(receipt?.previousElementSibling)).toBe('Checking the working directory.')
+      expect(receipt?.nextElementSibling?.querySelector('.k-ai-action-row')).toBeTruthy()
+      expect(view.element.querySelector('time')?.getAttribute('datetime')).toBe(createdAt)
     } finally {
       view.unmount()
     }
