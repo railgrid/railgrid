@@ -1,7 +1,17 @@
+import { BookOpen, CalendarClock, Gauge, Plus, SlidersHorizontal, Wrench } from 'lucide-vue-next'
 import type { AgentTab } from './router'
 
 export type AgentWorkbenchBuiltInTab = Exclude<AgentTab, 'chat'>
 export type AgentWorkbenchTabKind = AgentWorkbenchBuiltInTab | 'launcher'
+
+export const agentWorkbenchIcons = {
+  config: SlidersHorizontal,
+  tools: Wrench,
+  automation: CalendarClock,
+  runs: Gauge,
+  skills: BookOpen,
+  launcher: Plus,
+}
 
 export interface AgentWorkbenchTabDescriptor {
   id: AgentWorkbenchTabKind

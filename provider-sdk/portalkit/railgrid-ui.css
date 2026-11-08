@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 45;
+  --railgrid-ui-core-version: 46;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2783,6 +2783,40 @@ railgrid-resource-table-filter { display: contents; }
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* A contextual workbench table uses the parent canvas and wraps its primary
+ * value. Persistent actions reflow below the value in the narrowest panes. */
+.k-table.k-table--workbench {
+  container: k-workbench-table / inline-size;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.k-table--workbench :is(.k-table__heading, .k-table__cell) { padding-inline: 8px; }
+.k-table--workbench .k-table__cell--primary { min-width: 0; }
+.k-table--workbench .k-table__primary-value {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.k-table--workbench .k-table__primary-value > strong { color: var(--color-text-primary, #e9e9f2); }
+.k-table--workbench :is(.k-table__controls, .k-table__loading-controls, .k-table__pagination) {
+  padding-inline: 8px;
+  background: transparent;
+}
+.k-table--workbench.k-table--queryable .k-table__cell { vertical-align: top; }
+.k-table--workbench .k-table__primary-actions {
+  gap: 4px;
+  opacity: 1;
+}
+@container k-workbench-table (max-width: 340px) {
+  .k-table--workbench .k-table__primary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .k-table--workbench .k-table__primary-actions { margin-inline-start: 0; }
 }
 
 /* ── Status / conditions ──────────────────────────────────────────────────

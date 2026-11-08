@@ -322,7 +322,8 @@ onBeforeUnmount(() => {
       :disabled="disabled || undefined"
     >
 
-    <Teleport v-if="open" to="body">
+    <!-- A native modal makes siblings of its top-layer dialog inert. -->
+    <Teleport v-if="open" :to="trigger?.closest('dialog[open]') ?? 'body'">
       <div
         ref="panel"
         class="k-menu k-form-select__panel k-form-select__portal"

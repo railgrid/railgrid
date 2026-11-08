@@ -44,6 +44,29 @@ describe('Agent skill activation', () => {
 
     expect(setAgentSkillEnabled).toHaveBeenCalledOnce()
     expect(setAgentSkillEnabled).toHaveBeenCalledWith('scout', 'workspace:renamed-skill', false)
+    expect(text(view.element.querySelector('[data-config-save-status="saved"]')!)).toContain('Skills saved.')
+    view.unmount()
+  })
+
+  it('shows an immediate skill write failure beside the controls and allows retry', async () => {
+    const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace' as const, enabled: true, editable: true, resources: [] }
+    const agent = agentFixture('scout', { skills: [{ name: skill.id }] })
+    const setAgentSkillEnabled = vi.fn(async () => { throw new Error('Request failed') })
+    const api = stubApi({
+      setAgentSkillEnabled,
+      listAgents: async () => [agent],
+      getAgentSkillCatalog: async () => ({ skills: [skill], catalogDigest: '', warnings: [] }),
+    })
+    const store = makeStore(api)
+    store.agents.data = [agent]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+
+    const disable = view.element.querySelector<HTMLButtonElement>('button[aria-label="Disable Review for scout"]')!
+    disable.click()
+    await settleVue(8)
+
+    expect(text(view.element.querySelector('[data-config-save-status="error"]')!)).toContain('Could not disable “Review”. Request failed')
+    expect(disable.disabled).toBe(false)
     view.unmount()
   })
 })

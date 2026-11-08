@@ -5,13 +5,10 @@ import {
   Check,
   Circle,
   ChevronRight,
-  Globe2,
   Plus,
-  Puzzle,
   Send,
   Star,
   Trash2,
-  Wrench,
   X,
 } from 'lucide-vue-next'
 import { credentialUnavailable } from '../types'
@@ -23,7 +20,6 @@ import { channelInbound } from '../conn-defs'
 import { mutate } from '../mutate'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import { portalHref } from '../portalkit/navigation'
-import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import AIWorkbenchPane from '../agentkit/AIWorkbenchPane.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../portalkit/toast'
@@ -58,6 +54,7 @@ import {
 } from '../types'
 import { queueAgentConfigSave } from '../vue/config-save-queue'
 import { useAgentDOMID, useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
+import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import Automation from './Automation.vue'
 
 const domID = useAgentDOMID()
@@ -128,9 +125,10 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   name: string
   authorityEpoch?: number
-  /** Move the tools and automation cards into AgentDetail workbench panels. */
+  /** Move the tools and automation sections into AgentDetail workbench panels. */
   workbenchSections?: boolean
-}>(), { authorityEpoch: 0, workbenchSections: false })
+  automationActive?: boolean
+}>(), { authorityEpoch: 0, workbenchSections: false, automationActive: true })
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -465,6 +463,28 @@ const backendPolicyBlocker = computed(() => {
 const policyDescription = computed(() => harnessPolicyTarget.value
   ? 'The coding harness owns its permission prompts on the selected machine. Railgrid still enforces monthly usage caps and the run timeout.'
   : 'Autonomy controls approval for provider-managed tools. Paused actions appear in Activity before they run.')
+// Use the last acknowledged settings while the operator is editing or saving.
+const policySummary = computed(() => {
+  const policy = baselines.policy
+  if (!policy) return ''
+  const autonomyLabel = baselines.backend?.type === AGENT_BACKEND_HARNESS
+    ? 'Harness controls approvals'
+    : AUTONOMY_MODES.find(mode => mode.id === policy.autonomy)?.label || policy.autonomy
+  const caps = [
+    Number(policy.budgetUSD) > 0 ? `$${policy.budgetUSD}/mo` : '',
+    Number(policy.budgetTokens) > 0 ? `${Number(policy.budgetTokens).toLocaleString()} tokens/mo` : '',
+  ].filter(Boolean)
+  return [autonomyLabel, ...(caps.length ? caps : ['No budget caps'])].join(' · ')
+})
+const backendSummary = computed(() => {
+  const label = BACKEND_MODES.find(mode => mode.id === baselines.backend?.type)?.label || ''
+  const notReady = !backendReadinessSaving.value && !backendReadinessStale.value && backendCondition.value?.status === 'False'
+  return notReady ? `${label} · Not ready` : label
+})
+const fallbackSummary = computed(() => {
+  const count = baselines.model?.modelFallbacks.length ?? 0
+  return count ? `${count} configured` : 'None configured'
+})
 
 function autonomyBlurb(mode: Autonomy): string {
   if (!harnessPolicyTarget.value) return AUTONOMY_MODES.find(item => item.id === mode)?.blurb || ''
@@ -1108,18 +1128,18 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
 </script>
 
 <template>
-  <AIWorkbenchPane body-overflow="visible" class="agents-config-pane" title="Config">
+  <AIWorkbenchPane body-overflow="visible" class="agents-config-pane" title="Config" description="Edit this agent’s instructions, model, and operating settings.">
   <div v-if="!formHydrated && agentReadState.error" class="k-card agents-state agents-state-error" role="alert">
     Could not load configuration. {{ agentReadState.error }}
     <button class="k-btn k-btn--ghost" type="button" :disabled="agentReadState.loading" @click="store.load('agents')">{{ agentReadState.loading ? 'Retrying…' : 'Retry' }}</button>
   </div>
   <div v-else-if="!agent || !formHydrated" class="k-card agents-state agents-state-loading k-loading-reveal" role="status">Loading configuration…</div>
   <template v-else>
-    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-persona-heading')" title="Instructions">
+    <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-persona-heading')" title="Instructions">
       <textarea v-model="systemPrompt" class="k-input" rows="5" :aria-labelledby="domID('agent-persona-heading')" placeholder="Describe how this agent should help."></textarea>
-      <details class="agents-config-disclosure">
-        <summary><ChevronRight :size="16" aria-hidden="true" /> Agent name and description</summary>
-        <div class="agents-fieldset">
+      <details class="agents-setting-disclosure">
+        <summary><span>Agent name and description</span><ChevronRight :size="16" aria-hidden="true" /></summary>
+        <div class="agents-setting-disclosure__body">
           <label>Display name<input v-model="displayName" class="k-input" /></label>
           <label>Description<input v-model="description" class="k-input" placeholder="What this agent is for — shown to you, not to the model." /></label>
         </div>
@@ -1128,10 +1148,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.persona.status === 'pending'" :aria-busy="saveState.persona.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('persona', personaDirty)" @click="savePersona"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.persona.status === 'pending' ? 'Saving persona…' : 'Save persona' }}</button>
         <ConfigSaveFeedback :id="domID('agent-persona-save-feedback')" action="persona" :status="feedbackStatus('persona', personaDirty)" :newer-edits="newerEdits('persona')" :error="feedbackError('persona')" />
       </div>
-    </ResourceSectionCard>
+    </AgentsWorkbenchSection>
 
 
-    <ResourceSectionCard v-if="modelBacked" class="agents-config-sec" variant="document" :heading-id="domID('agent-model-heading')" title="Default model" description="Conversations can override this model.">
+    <AgentsWorkbenchSection v-if="modelBacked" class="agents-config-sec" :heading-id="domID('agent-model-heading')" title="Default model" description="Conversations can override this model.">
       <div v-if="credentialSlice.errorStatus === 403" class="k-inline-notification k-inline-notification--warning" role="status">Model access is restricted. Ask a workspace administrator to restore access.</div>
       <div v-else-if="credentialSlice.error && !credentialSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load model credentials. {{ credentialSlice.error }}</span>
@@ -1158,9 +1178,13 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <p v-else class="agents-hint" role="status">Checking setup access…</p>
         </template>
       </template>
-      <details v-if="credentialSlice.hasSnapshot && credentialSlice.errorStatus !== 403" class="agents-config-disclosure">
-        <summary :id="domID('agent-fallbacks-label')"><ChevronRight :size="16" aria-hidden="true" /> Model fallbacks</summary>
-        <div class="agents-fieldset">
+      <details v-if="credentialSlice.hasSnapshot && credentialSlice.errorStatus !== 403" class="agents-setting-disclosure">
+        <summary>
+          <span :id="domID('agent-fallbacks-label')">Model fallbacks</span>
+          <span class="agents-setting-disclosure__value">{{ fallbackSummary }}</span>
+          <ChevronRight :size="16" aria-hidden="true" />
+        </summary>
+        <div class="agents-setting-disclosure__body">
           <p class="agents-hint">Fallbacks are tried in order if the default model fails.</p>
           <div v-if="fallbacks.length" class="agents-chiprow">
             <span v-for="(fallback, index) in fallbacks" :key="`${fallback}-${index}`" class="agents-chip">
@@ -1177,11 +1201,18 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <button class="k-btn k-btn--primary" type="button" :disabled="saveState.model.status === 'pending' || Boolean(credentialSlice.error) || missingModel || missingFallbacks.length > 0" :aria-busy="saveState.model.status === 'pending' ? 'true' : undefined" :aria-describedby="feedbackDescription('model', modelDirty)" @click="saveModel"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.model.status === 'pending' ? 'Saving model…' : 'Save model' }}</button>
         <ConfigSaveFeedback :id="domID('agent-model-save-feedback')" action="model" :status="feedbackStatus('model', modelDirty)" :newer-edits="newerEdits('model')" :error="feedbackError('model')" />
       </div>
-    </ResourceSectionCard>
+    </AgentsWorkbenchSection>
 
-    <details class="agents-config-disclosure">
-      <summary><ChevronRight :size="16" aria-hidden="true" /> Autonomy &amp; budget</summary>
-      <ResourceSectionCard class="agents-config-sec" variant="document" :description="policyDescription">
+    <details class="agents-setting-disclosure">
+      <summary>
+        <h3>
+          <span>Autonomy &amp; budget</span>
+          <span class="agents-setting-disclosure__value">{{ policySummary }}</span>
+          <ChevronRight :size="16" aria-hidden="true" />
+        </h3>
+      </summary>
+      <div class="agents-setting-disclosure__body">
+        <p class="agents-setting-disclosure__description">{{ policyDescription }}</p>
         <fieldset class="agents-cap-fs">
           <legend>Autonomy</legend>
           <p v-if="harnessPolicyTarget" :id="domID('agent-harness-permission-policy')" class="agents-hint" role="status">
@@ -1220,12 +1251,20 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <button class="k-btn k-btn--primary" type="button" :disabled="saveState.policy.status === 'pending' || harnessPolicyIssues.length > 0 || policyLimitInvalid" :aria-busy="saveState.policy.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessPolicyIssues.length ? domID('agent-harness-policy-issues') : '', maxToolTurnsValidation.error && !harnessPolicyTarget ? domID('agent-max-tool-turns-error') : '', timeoutSecondsValidation.error ? domID('agent-run-timeout-error') : '', feedbackDescription('policy', policyDirty) || ''].filter(Boolean).join(' ') || undefined" @click="savePolicy"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.policy.status === 'pending' ? 'Saving policy…' : 'Save policy' }}</button>
           <ConfigSaveFeedback :id="domID('agent-policy-save-feedback')" action="autonomy, budget and limits" :status="feedbackStatus('policy', policyDirty)" :newer-edits="newerEdits('policy')" :error="feedbackError('policy')" />
         </div>
-      </ResourceSectionCard>
+      </div>
     </details>
 
-    <details class="agents-config-disclosure" :open="executionSettingsOpen" @toggle="executionSettingsOpen = ($event.target as HTMLDetailsElement).open">
-      <summary><ChevronRight :size="16" aria-hidden="true" /> Execution settings</summary>
-      <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-backend-heading')" title="Backend" description="Choose where this agent runs its turns.">
+    <section class="agents-setting-region" :aria-labelledby="domID('agent-backend-heading')">
+    <details class="agents-setting-disclosure" :open="executionSettingsOpen" @toggle="executionSettingsOpen = ($event.target as HTMLDetailsElement).open">
+      <summary>
+        <h3>
+          <span :id="domID('agent-backend-heading')">Execution settings</span>
+          <span class="agents-setting-disclosure__value">{{ backendSummary }}</span>
+          <ChevronRight :size="16" aria-hidden="true" />
+        </h3>
+      </summary>
+      <div class="agents-setting-disclosure__body">
+        <p class="agents-setting-disclosure__description">Choose where this agent runs its turns.</p>
         <fieldset class="agents-cap-fs">
           <legend>Execution backend</legend>
           <div class="agents-radiocards">
@@ -1327,83 +1366,219 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           <button class="k-btn k-btn--primary" type="button" :disabled="saveState.backend.status === 'pending' || Boolean(backendPolicyBlocker) || (backendType === 'harness' && !credentialSlice.hasSnapshot)" :aria-busy="saveState.backend.status === 'pending' ? 'true' : undefined" :aria-describedby="[harnessError ? domID('agent-backend-error') : '', backendPolicyBlocker ? 'agent-backend-policy-blocker' : '', backendType === 'harness' && !credentialSlice.hasSnapshot ? (credentialSlice.error ? domID('agent-harness-credential-read-error') : 'agent-harness-credential-loading') : '', feedbackDescription('backend', backendDirty) || ''].filter(Boolean).join(' ') || undefined" @click="saveBackend"><Check :stroke-width="1.75" aria-hidden="true" /> {{ saveState.backend.status === 'pending' ? 'Saving backend…' : 'Save backend' }}</button>
           <ConfigSaveFeedback :id="domID('agent-backend-save-feedback')" action="the backend" :status="feedbackStatus('backend', backendDirty)" :newer-edits="newerEdits('backend')" :error="feedbackError('backend')" />
         </div>
-      </ResourceSectionCard>
+      </div>
     </details>
+    </section>
 
     <Teleport :to="'#' + domID('agents-workbench-panel-tools')" defer :disabled="!workbenchSections">
-    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-tools-heading')" title="Tools &amp; toolsets" description="Select a tool to allow it in chat. Allow it in background separately for schedules, triggers, and heartbeats that run without you.">
-      <template #actions><Wrench :stroke-width="1.75" aria-hidden="true" /></template>
-      <!-- A harness brings its own tools, and the API REJECTS spec.tools on a
-           harness-backed agent. Showing the grants disabled rather than hiding
-           the card is the honest version: an ignored grant reads as a granted
-           one, and a card that vanished reads as a feature that went missing. -->
-      <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
-        <Circle :stroke-width="1.75" aria-hidden="true" /> This agent uses the coding harness’s own tools. Agent tool grants do not apply; switch to <strong>Model</strong> in Config under Execution settings to configure these tools.
-      </p>
-      <template v-else>
-      <ConfigSaveFeedback :id="domID('agent-tools-save-feedback')" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
-      <fieldset class="agents-wire-fs">
-        <legend><Puzzle :stroke-width="1.75" aria-hidden="true" /> Toolsets</legend>
-        <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
-          <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-        </div>
-        <div v-else-if="!toolsetSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading toolsets…</div>
+      <component
+        :is="workbenchSections ? AIWorkbenchPane : AgentsWorkbenchSection"
+        :id="domID('agent-tools-heading')"
+        title="Tools &amp; toolsets"
+        description="Allow tools in chat, then separately opt in to background runs from schedules, triggers, and heartbeats. Changes save automatically."
+      >
+        <!-- A harness brings its own tools. Its API rejects agent tool grants. -->
+        <p v-if="harnessStored" class="agents-hint agents-warn-inline" data-tools-disabled role="status">
+          <Circle :stroke-width="1.75" aria-hidden="true" /> This agent uses the coding harness’s own tools. Agent tool grants do not apply; switch to <strong>Model</strong> in Config under Execution settings to configure these tools.
+        </p>
         <template v-else>
-          <div v-if="toolsetSlice.error" class="agents-stale" role="status">
-            Showing the last loaded toolsets. {{ toolsetSlice.error }}
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-          </div>
-          <div v-for="toolset in toolsets" :key="toolset.metadata.name" class="agents-tool-row">
-            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ toolset.spec.displayName || toolset.metadata.name }}</label>
-            <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so tools stay interactive-only unless opted in here."><input type="checkbox" :aria-label="`Allow in background: ${toolset.spec.displayName || toolset.metadata.name}`" :checked="backgroundToolsets(agent).has(toolset.metadata.name)" :disabled="!linkedToolsets(agent).has(toolset.metadata.name)" @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)" />Allow in background</label>
-          </div>
-          <p v-if="toolsets.length === 0" class="agents-hint">No toolsets yet — create one in the <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button> tab.</p>
-        </template>
-      </fieldset>
+          <ConfigSaveFeedback :id="domID('agent-tools-save-feedback')" action="tool access" :status="feedbackStatus('tools')" :error="feedbackError('tools')" />
+          <AgentsWorkbenchSection title="Toolsets">
+            <fieldset class="agents-permission-group">
+              <legend class="sr-only">Toolsets</legend>
+              <div v-if="toolsetSlice.error && !toolsetSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+                <span>Could not load toolsets. {{ toolsetSlice.error }}</span>
+                <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+              </div>
+              <div v-else-if="!toolsetSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading toolsets…</div>
+              <template v-else>
+                <div v-if="toolsetSlice.error" class="agents-stale" role="status">
+                  Showing the last loaded toolsets. {{ toolsetSlice.error }}
+                  <button class="k-btn k-btn--ghost secondary" type="button" :disabled="toolsetSlice.loading" @click="store.load('toolsets')">{{ toolsetSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+                </div>
+                <table v-if="toolsets.length" class="agents-permission-table" aria-label="Toolset permissions">
+                  <thead><tr><th scope="col">Toolset</th><th scope="col">Chat</th><th scope="col">Background</th></tr></thead>
+                  <tbody>
+                    <tr v-for="toolset in toolsets" :key="toolset.metadata.name">
+                      <th scope="row">{{ toolset.spec.displayName || toolset.metadata.name }}</th>
+                      <td>
+                        <label class="agents-permission-check k-checkbox-hit">
+                          <input
+                            class="k-checkbox"
+                            type="checkbox"
+                            :aria-label="`Allow in chat: ${toolset.spec.displayName || toolset.metadata.name}`"
+                            :checked="linkedToolsets(agent).has(toolset.metadata.name)"
+                            @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)"
+                          />
+                        </label>
+                      </td>
+                      <td>
+                        <label class="agents-permission-check k-checkbox-hit">
+                          <input
+                            class="k-checkbox"
+                            type="checkbox"
+                            :aria-label="`Allow in background: ${toolset.spec.displayName || toolset.metadata.name}`"
+                            :checked="backgroundToolsets(agent).has(toolset.metadata.name)"
+                            :disabled="!linkedToolsets(agent).has(toolset.metadata.name)"
+                            @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)"
+                          />
+                        </label>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-else class="agents-hint">No toolsets yet — create one in the <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button> tab.</p>
+              </template>
+            </fieldset>
+          </AgentsWorkbenchSection>
 
-      <fieldset class="agents-wire-fs">
-        <legend><Globe2 :stroke-width="1.75" aria-hidden="true" /> Built-in capabilities</legend>
-        <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
-        <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Read the web</span><span class="muted">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></span></label>
-          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" aria-label="Allow in background: Read the web" :checked="familyEnabled(agent, 'web', true)" :disabled="!familyEnabled(agent, 'web')" @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)" />Allow in background</label>
-        </div>
-        <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Research fan-out</span><span class="muted">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></span></label>
-          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" aria-label="Allow in background: Research fan-out" :checked="familyEnabled(agent, 'spawn', true)" :disabled="!familyEnabled(agent, 'spawn')" @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)" />Allow in background</label>
-        </div>
-        <div class="agents-tool-row">
-          <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, false)" /><span class="agents-check-copy"><span>Visualize data</span><span class="muted">Create charts in chat from supplied data</span></span></label>
-          <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" aria-label="Allow in background: Visualize data" :checked="familyEnabled(agent, 'visualization', true)" :disabled="!familyEnabled(agent, 'visualization')" @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, true)" />Allow in background</label>
-        </div>
-        <p v-if="familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web')" class="agents-hint agents-warn-inline"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent can spawn workers but has no web access, so a worker inherits none either — a fan-out would answer from the model alone. Turn on <strong>Read the web</strong>, and wire a websearch tool for real searching.</p>
-      </fieldset>
+          <AgentsWorkbenchSection title="Built-in capabilities">
+            <fieldset class="agents-permission-group">
+              <legend class="sr-only">Built-in capabilities</legend>
+              <p class="muted">Tools the agent has on its own, with nothing to wire up. Reading the web needs no connection; <strong>searching</strong> it needs a websearch tool granted below, and without one the agent can only read pages it is given a link to. Turning on fan-out also teaches the agent how to use it — you do not need to write that into the prompt.</p>
+              <table class="agents-permission-table" aria-label="Built-in capability permissions">
+                <thead><tr><th scope="col">Capability</th><th scope="col">Chat</th><th scope="col">Background</th></tr></thead>
+                <tbody>
+                  <tr>
+                    <th scope="row">Read the web<span class="agents-permission-note">web_fetch{{ familyEnabled(agent, 'web') && !hasSearchTool(agent) ? ' — no search tool wired' : '' }}</span></th>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in chat: Read the web"
+                          :checked="familyEnabled(agent, 'web')"
+                          @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, false)"
+                        />
+                      </label>
+                    </td>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in background: Read the web"
+                          :checked="familyEnabled(agent, 'web', true)"
+                          :disabled="!familyEnabled(agent, 'web')"
+                          @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)"
+                        />
+                      </label>
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Research fan-out<span class="agents-permission-note">spawn + join{{ familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web') ? ' — workers will have no web access' : '' }}</span></th>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in chat: Research fan-out"
+                          :checked="familyEnabled(agent, 'spawn')"
+                          @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, false)"
+                        />
+                      </label>
+                    </td>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in background: Research fan-out"
+                          :checked="familyEnabled(agent, 'spawn', true)"
+                          :disabled="!familyEnabled(agent, 'spawn')"
+                          @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)"
+                        />
+                      </label>
+                    </td>
+                  </tr>
+                  <tr>
+                    <th scope="row">Visualize data<span class="agents-permission-note">Create charts in chat from supplied data</span></th>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in chat: Visualize data"
+                          :checked="familyEnabled(agent, 'visualization')"
+                          @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, false)"
+                        />
+                      </label>
+                    </td>
+                    <td>
+                      <label class="agents-permission-check k-checkbox-hit">
+                        <input
+                          class="k-checkbox"
+                          type="checkbox"
+                          aria-label="Allow in background: Visualize data"
+                          :checked="familyEnabled(agent, 'visualization', true)"
+                          :disabled="!familyEnabled(agent, 'visualization')"
+                          @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, true)"
+                        />
+                      </label>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p v-if="familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'web')" class="agents-hint agents-warn-inline"><Circle :stroke-width="1.75" aria-hidden="true" /> This agent can spawn workers but has no web access, so a worker inherits none either — a fan-out would answer from the model alone. Turn on <strong>Read the web</strong>, and wire a websearch tool for real searching.</p>
+            </fieldset>
+          </AgentsWorkbenchSection>
 
-      <fieldset class="agents-wire-fs">
-        <legend><Wrench :stroke-width="1.75" aria-hidden="true" /> Direct tools</legend>
-        <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
-          <span>Could not load tool connections. {{ connectionSlice.error }}</span>
-          <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-        </div>
-        <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading tool connections…</div>
-        <template v-else>
-          <div v-if="connectionSlice.error" class="agents-stale" role="status">
-            Showing the last loaded connections. {{ connectionSlice.error }}
-            <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
-          </div>
-          <div v-for="connection in toolConnections" :key="connection.metadata.name" class="agents-tool-row">
-            <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="linkedTools(agent).has(connection.metadata.name)" @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" /><span class="agents-check-copy"><span>{{ connection.spec.displayName || connection.metadata.name }}</span><span class="muted">{{ connection.spec.type }}</span></span></label>
-            <label class="agents-check agents-bg-toggle k-checkbox-hit"><input type="checkbox" :aria-label="`Allow in background: ${connection.spec.displayName || connection.metadata.name}`" :checked="backgroundTools(agent).has(connection.metadata.name)" :disabled="!linkedTools(agent).has(connection.metadata.name)" @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)" />Allow in background</label>
-          </div>
-          <p v-if="toolConnections.length === 0" class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
+          <AgentsWorkbenchSection title="Direct tools">
+            <fieldset class="agents-permission-group">
+              <legend class="sr-only">Direct tools</legend>
+              <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
+                <span>Could not load tool connections. {{ connectionSlice.error }}</span>
+                <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+              </div>
+              <div v-else-if="!connectionSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status"><span class="agents-spinner k-spin" aria-hidden="true" /> Loading tool connections…</div>
+              <template v-else>
+                <div v-if="connectionSlice.error" class="agents-stale" role="status">
+                  Showing the last loaded connections. {{ connectionSlice.error }}
+                  <button class="k-btn k-btn--ghost secondary" type="button" :disabled="connectionSlice.loading" @click="store.load('connections')">{{ connectionSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+                </div>
+                <table v-if="toolConnections.length" class="agents-permission-table" aria-label="Direct tool permissions">
+                  <thead><tr><th scope="col">Tool</th><th scope="col">Chat</th><th scope="col">Background</th></tr></thead>
+                  <tbody>
+                    <tr v-for="connection in toolConnections" :key="connection.metadata.name">
+                      <th scope="row">
+                        {{ connection.spec.displayName || connection.metadata.name }}
+                        <span class="agents-permission-note">{{ connection.spec.type }}</span>
+                      </th>
+                      <td>
+                        <label class="agents-permission-check k-checkbox-hit">
+                          <input
+                            class="k-checkbox"
+                            type="checkbox"
+                            :aria-label="`Allow in chat: ${connection.spec.displayName || connection.metadata.name}`"
+                            :checked="linkedTools(agent).has(connection.metadata.name)"
+                            @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)"
+                          />
+                        </label>
+                      </td>
+                      <td>
+                        <label class="agents-permission-check k-checkbox-hit">
+                          <input
+                            class="k-checkbox"
+                            type="checkbox"
+                            :aria-label="`Allow in background: ${connection.spec.displayName || connection.metadata.name}`"
+                            :checked="backgroundTools(agent).has(connection.metadata.name)"
+                            :disabled="!linkedTools(agent).has(connection.metadata.name)"
+                            @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)"
+                          />
+                        </label>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p v-else class="agents-hint">No tools yet — add a GitHub / MCP / web-search connection under <button type="button" class="k-dashboard-action" @click="emit('navigate', { kind: 'menu', menu: 'connections' })">Connections</button>.</p>
+              </template>
+            </fieldset>
+          </AgentsWorkbenchSection>
         </template>
-      </fieldset>
-      </template>
-    </ResourceSectionCard>
+      </component>
     </Teleport>
 
-    <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-channels-heading')" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
+    <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-channels-heading')" title="Channels" description="Where this agent messages you — and, for chat channels, where you message it. Bind a primary channel plus named secondaries; schedules and triggers can route to any of them by name.">
       <SecretHandoff v-if="slackRequestURL" :value="slackRequestURL" label="Slack request URL" copy-label="Copy Slack request URL" @cleared="slackRequestURL = ''" />
       <div v-if="connectionSlice.error && !connectionSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>Could not load channel connections. {{ connectionSlice.error }}</span>
@@ -1451,29 +1626,38 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
           </template>
         </div>
       </div>
-    </ResourceSectionCard>
+    </AgentsWorkbenchSection>
 
     <Teleport :to="'#' + domID('agents-workbench-panel-automation')" defer :disabled="!workbenchSections">
-      <Automation :store="store" :api="api" kind="schedule" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
-      <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" @navigate="emit('navigate', $event)" />
+      <component :is="workbenchSections ? AIWorkbenchPane : 'div'" v-bind="workbenchSections ? { title: 'Schedules & triggers', description: 'Set when this agent runs in the background.' } : {}">
+        <Automation :store="store" :api="api" kind="schedule" :agent="name" :authority-epoch="authorityEpoch" :workbench="workbenchSections" :workbench-active="automationActive" @navigate="emit('navigate', $event)" />
+        <Automation :store="store" :api="api" kind="trigger" :agent="name" :authority-epoch="authorityEpoch" :workbench="workbenchSections" :workbench-active="automationActive" @navigate="emit('navigate', $event)" />
+      </component>
     </Teleport>
 
-    <ResourceSectionCard v-if="otherAgents.length" class="agents-config-sec" variant="document" :heading-id="domID('agent-delegates-heading')" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
+    <AgentsWorkbenchSection v-if="otherAgents.length" class="agents-config-sec" :heading-id="domID('agent-delegates-heading')" title="Delegates" description="Agents this one may hand work to. A delegated run bills against this agent’s budget.">
       <div class="agents-checkrow">
         <label v-for="other in otherAgents" :key="other.metadata.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="(agent.spec?.delegates || []).includes(other.metadata.name)" @change="setDelegate(agent, other.metadata.name, ($event.target as HTMLInputElement).checked)" /> {{ other.spec?.displayName || other.metadata.name }}</label>
       </div>
       <ConfigSaveFeedback :id="domID('agent-delegates-save-feedback')" action="delegates" :status="feedbackStatus('delegates')" :error="feedbackError('delegates')" />
-    </ResourceSectionCard>
+    </AgentsWorkbenchSection>
 
-    <details class="agents-config-disclosure">
-      <summary><ChevronRight :size="16" aria-hidden="true" /> Self-configuration</summary>
-      <ResourceSectionCard class="agents-config-sec" variant="document" description="Let this agent change its own setup as it learns what you need. It can never change its tools, autonomy, budget, limits, backend, or these settings.">
+    <details class="agents-setting-disclosure">
+      <summary>
+        <h3>
+          <span>Self-configuration</span>
+          <span class="agents-setting-disclosure__value">{{ saveState.selfConfiguration.status === 'pending' ? 'Saving…' : selfConfigOf(agent).enabled ? 'Enabled' : 'Disabled' }}</span>
+          <ChevronRight :size="16" aria-hidden="true" />
+        </h3>
+      </summary>
+      <div class="agents-setting-disclosure__body">
+        <p class="agents-setting-disclosure__description">Let this agent change its own setup as it learns what you need. It can never change its tools, autonomy, budget, limits, backend, or these settings.</p>
         <p v-if="harnessStored" class="agents-hint" data-self-config-harness>
           The coding harness reaches these tools as an MCP server named <code>agent</code>, through the hub, with a token minted for each turn. It can also manage its schedules.
         </p>
           <label class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).enabled" :disabled="saveState.selfConfiguration.status === 'pending'" @change="setSelfConfig(agent, { enabled: ($event.target as HTMLInputElement).checked })" /> Let this agent configure itself</label>
           <template v-if="selfConfigOf(agent).enabled">
-            <fieldset class="agents-wire-fs">
+            <fieldset class="agents-permission-group">
               <legend>It may change</legend>
               <div class="agents-checkrow">
                 <label v-for="scope in selfConfigScopes" :key="scope.name" class="agents-check k-checkbox-hit"><input type="checkbox" :checked="selfConfigOf(agent).scopes.includes(scope.name)" :disabled="saveState.selfConfiguration.status === 'pending' || (selfConfigOf(agent).scopes.length === 1 && selfConfigOf(agent).scopes.includes(scope.name))" @change="setSelfConfigScope(agent, scope.name, ($event.target as HTMLInputElement).checked)" /> {{ scope.label }}</label>
@@ -1484,10 +1668,150 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
             </div>
           </template>
         <ConfigSaveFeedback :id="domID('agent-self-config-save-feedback')" action="self configuration" :status="feedbackStatus('selfConfiguration')" :error="feedbackError('selfConfiguration')" />
-      </ResourceSectionCard>
+      </div>
     </details>
 
     <slot name="destructive-actions" />
   </template>
   </AIWorkbenchPane>
 </template>
+
+<style scoped>
+.agents-setting-region,
+.agents-setting-disclosure {
+  min-width: 0;
+}
+.agents-setting-disclosure {
+  border-block-start: 1px solid var(--color-border-subtle);
+}
+.agents-setting-disclosure > summary,
+.agents-setting-disclosure > summary > h3 {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+.agents-setting-disclosure > summary {
+  min-height: 44px;
+  padding-block: 6px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+.agents-setting-disclosure > summary > h3 {
+  width: 100%;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.agents-setting-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+.agents-setting-disclosure > summary:hover {
+  background: var(--color-surface-hover);
+}
+.agents-setting-disclosure > summary:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.agents-setting-disclosure :is(summary, h3) > span:first-child {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+.agents-setting-disclosure__value {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-inline-size: 50%;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+  text-align: end;
+  overflow-wrap: anywhere;
+}
+.agents-setting-disclosure :is(summary, h3) > svg {
+  flex: none;
+  color: var(--color-text-secondary);
+}
+.agents-setting-disclosure[open] :is(summary, h3) > svg {
+  transform: rotate(90deg);
+}
+.agents-setting-disclosure__body {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding-block: 4px 12px;
+}
+.agents-setting-disclosure__description {
+  max-width: 68ch;
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+.agents-permission-group {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+  border: 0;
+}
+.agents-permission-group > p {
+  max-width: 68ch;
+  margin: 0;
+}
+.agents-permission-group > legend:not(.sr-only) {
+  margin-block-end: 8px;
+  font-weight: 600;
+}
+.agents-permission-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+.agents-permission-table tr {
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.agents-permission-table thead th {
+  padding-block: 8px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.agents-permission-table thead th:not(:first-child) {
+  width: 24%;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+.agents-permission-table th:first-child {
+  padding-inline-end: 8px;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+.agents-permission-table tbody th {
+  padding-block: 8px;
+  font-weight: 600;
+}
+.agents-permission-note {
+  display: block;
+  margin-block-start: 2px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+.agents-permission-check {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+}
+.agents-permission-check:has(input:disabled) {
+  cursor: default;
+}
+.agents-permission-check:has(input:focus-visible) {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+</style>

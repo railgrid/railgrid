@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import { Pause, Play, Plus, Power } from 'lucide-vue-next'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { Loader2, Pause, Play, Plus, Power, X } from 'lucide-vue-next'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { hashFor, type Route } from '../router'
@@ -18,6 +18,7 @@ import {
   type Webhook,
 } from '../types'
 import { confirmDialog } from '../portalkit/confirm'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import FormSelect from '../portalkit/FormSelect.vue'
 import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
@@ -25,8 +26,10 @@ import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
+import StatusBadge from '../portalkit/StatusBadge.vue'
 import { toast } from '../ui/toast'
-import { useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAgentDOMID, useAgentsRuntime, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import TriggerFilterTester from './TriggerFilterTester.vue'
 import { deliveryOutcomeLabel } from './webhook-deliveries'
 
@@ -114,12 +117,17 @@ const props = withDefaults(defineProps<{
   api: ApiClient
   kind: AutomationKind
   agent: string
+  workbench?: boolean
+  /** Closes the teleported row menu when the retained workbench pane hides. */
+  workbenchActive?: boolean
   createRoute?: boolean
+  createModal?: boolean
   editName?: string
   authorityEpoch?: number
-}>(), { createRoute: false, editName: '', authorityEpoch: 0 })
+}>(), { createRoute: false, editName: '', authorityEpoch: 0, workbenchActive: true })
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
+const runtime = useAgentsRuntime()
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const editing = ref<string | null>(null)
@@ -127,11 +135,17 @@ const draft = reactive<Draft>({ ...EMPTY })
 const nameError = ref('')
 const filterError = ref('')
 const webhookError = ref('')
+const formError = ref('')
 const formBusy = ref(false)
 const actionBusy = ref('')
+const formSurface = ref<HTMLElement | null>(null)
+let modalOpener: HTMLElement | null = null
 
 const meta = computed(() => META[props.kind])
 const formRoute = computed(() => props.createRoute || !!props.editName)
+const showCreateModal = computed(() => props.createRoute && props.createModal)
+const createButtonSelector = computed(() => `[data-automation-create="${props.kind}"]`)
+const automationRoute = computed<Route>(() => ({ kind: 'agent', name: props.agent, tab: 'automation' }))
 const slice = computed(() => {
   void revision.value
   return { ...(props.kind === 'schedule' ? props.store.schedules : props.store.triggers) }
@@ -154,19 +168,32 @@ const wantsGitHub = computed<boolean | null>(() => selectedWebhook.value ? selec
 // liveFilter is the filter the form currently describes, for the tester: it
 // re-evaluates as the lines and the GitHub fields change.
 const liveFilter = computed(() => draftFilter())
-const tableRows = computed(() => rows.value.map(row => ({
-  name: row.metadata.name,
-  when: whenText(row),
-  status: statusText(row),
-  actions: '',
-  resource: row,
-})))
-const columns = computed(() => [
-  { key: 'name', label: 'Name', primary: true },
-  { key: 'when', label: meta.value.whenHeader },
-  { key: 'status', label: 'Status' },
-  { key: 'actions', label: 'Actions', ariaLabel: 'Actions', align: 'end' as const },
-])
+const tableRows = computed(() => rows.value.map(row => {
+  const status = statusText(row)
+  const summary = workbenchStatus(row, status)
+  return {
+    name: row.metadata.name,
+    when: whenText(row),
+    status,
+    workbenchStatus: summary.label,
+    workbenchTone: summary.tone,
+    workbenchDetail: summary.detail,
+    webhook: automationSpec(row).webhookRef,
+    lastRun: automationStatus(row)?.lastRunID,
+    actions: '',
+    resource: row,
+  }
+}))
+const columns = computed(() => {
+  const actions = { key: 'actions', label: 'Actions', ariaLabel: 'Actions', align: 'end' as const }
+  if (props.workbench) return [{ key: 'name', label: cap(meta.value.one), primary: true }, actions]
+  return [
+    { key: 'name', label: 'Name', primary: true },
+    { key: 'when', label: meta.value.whenHeader },
+    { key: 'status', label: 'Status' },
+    actions,
+  ]
+})
 const channels = computed(() => {
   void revision.value
   return props.store.agent(props.agent)?.spec?.channels || []
@@ -377,12 +404,40 @@ function statusText(row: Automation): string {
   return fired
 }
 
+function workbenchStatus(row: Automation, detail: string) {
+  if (automationStatus(row)?.disabledReason) return { label: 'Disabled', tone: 'warning' as const, detail }
+  const invalid = invalidCondition(row)
+  if (invalid) return { label: 'Invalid', tone: 'warning' as const, detail: conditionText(invalid) }
+  if (row.spec.suspend) return { label: 'Paused', tone: 'muted' as const, detail: '' }
+  return { label: props.kind === 'schedule' ? 'Active' : 'Armed', tone: 'success' as const, detail: detail === 'armed' ? '' : detail }
+}
+
+function workbenchActions(row: Automation): ActionMenuItem[] {
+  const items: ActionMenuItem[] = [
+    { id: 'edit', label: 'Edit' },
+    { id: 'toggle', label: row.spec.suspend ? 'Resume' : 'Pause' },
+    { id: 'delete', label: 'Delete', tone: 'danger' },
+  ]
+  if (automationStatus(row)?.disabledReason) items.unshift({ id: 'enable', label: 'Enable' })
+  return items
+}
+
+function selectWorkbenchAction(row: Automation, action: string): void {
+  if (!props.workbenchActive || actionBusy.value) return
+  switch (action) {
+    case 'edit': openEdit(row); break
+    case 'toggle': void toggleSuspend(row); break
+    case 'enable': void enable(row); break
+    case 'delete': void del(row.metadata.name); break
+  }
+}
+
 function openWebhook(name: string): void {
-  if (name) emit('navigate', { kind: 'edit', resource: 'webhook', name })
+  if (name && !formBusy.value) emit('navigate', { kind: 'edit', resource: 'webhook', name })
 }
 
 function createWebhook(): void {
-  emit('navigate', { kind: 'create', resource: 'webhook' })
+  if (!formBusy.value) emit('navigate', { kind: 'create', resource: 'webhook' })
 }
 
 function resetDraft(values: Draft = EMPTY): void {
@@ -424,7 +479,38 @@ function hydrateEdit(row: Automation): void {
 }
 
 function returnToAutomation(): void {
-	if (!formBusy.value) emit('navigate', { kind: 'agent', name: props.agent, tab: 'automation' })
+  if (!formBusy.value) emit('navigate', automationRoute.value)
+}
+
+onMounted(() => {
+  if (!(formSurface.value instanceof HTMLDialogElement)) return
+  const active = document.activeElement
+  if (active instanceof HTMLElement && active.matches(createButtonSelector.value) && runtime?.host.value?.contains(active)) {
+    modalOpener = active
+  }
+  formSurface.value.showModal()
+  formSurface.value.querySelector<HTMLInputElement>('input[name="name"]')?.focus()
+})
+
+onBeforeUnmount(() => {
+  if (!(formSurface.value instanceof HTMLDialogElement)) return
+  formSurface.value.close()
+  const collectionHash = hashFor(automationRoute.value)
+  const selector = createButtonSelector.value
+  void nextTick(() => {
+    if (!runtime || hashFor(runtime.route.value) !== collectionHash) return
+    const trigger = modalOpener?.isConnected ? modalOpener : runtime.host.value?.querySelector<HTMLElement>(selector)
+    trigger?.focus({ preventScroll: true })
+  })
+})
+
+function focusInvalidField(): void {
+  if (!showCreateModal.value) return
+  void nextTick(() => {
+    const field = formSurface.value?.querySelector<HTMLElement>('[aria-invalid="true"]')
+      ?? formSurface.value?.querySelector<HTMLElement>('button[aria-describedby="automation-trigger-webhook-empty"]')
+    field?.focus()
+  })
 }
 
 function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
@@ -455,6 +541,7 @@ function patch(kind: AutomationKind): SchedulePatch | TriggerPatch {
 
 async function save(): Promise<void> {
   if (formBusy.value) return
+  formError.value = ''
   const authority = captureAuthority()
   const kind = props.kind
   const agent = props.agent
@@ -462,16 +549,19 @@ async function save(): Promise<void> {
   const one = META[kind].one
   if (!editingName && !draft.name.trim()) {
     nameError.value = 'A name is required.'
+    focusInvalidField()
     return
   }
   if (kind === 'trigger') {
     if (!draft.webhookRef) {
       webhookError.value = 'Choose the webhook this trigger routes from.'
+      focusInvalidField()
       return
     }
     const built = draftFilter()
     if (built.error) {
       filterError.value = built.error
+      focusInvalidField()
       return
     }
   }
@@ -494,10 +584,15 @@ async function save(): Promise<void> {
             : authority.api.createTrigger({ name, agentRef: agent, ...bodyPatch } as TriggerCreate),
           success: `${cap(one)} “${name}” created.`,
           failure: 'Create failed',
+          onFailure: error => {
+            if (showCreateModal.value && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
+              formError.value = error instanceof Error && error.message ? error.message : 'Try again.'
+            }
+          },
           reload: [kind === 'schedule' ? 'schedules' : 'triggers'],
         })
-	    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
-	      emit('navigate', { kind: 'agent', name: props.agent, tab: 'automation' })
+    if (result && authorityIsCurrent(authority) && kind === props.kind && agent === props.agent) {
+      emit('navigate', automationRoute.value)
     }
   } finally {
     formBusy.value = false
@@ -599,6 +694,7 @@ watch(() => [props.kind, props.agent] as const, () => {
   nameError.value = ''
   filterError.value = ''
   webhookError.value = ''
+  formError.value = ''
   formBusy.value = false
   actionBusy.value = ''
   resetDraft()
@@ -615,6 +711,7 @@ watch([() => props.createRoute, () => props.editName, () => revision.value], () 
 			nameError.value = ''
 			filterError.value = ''
 			webhookError.value = ''
+			formError.value = ''
 			editing.value = ''
 			// A workspace with exactly one webhook has only one answer; pick it
 			// so the common case is one less step.
@@ -631,17 +728,32 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
 </script>
 
 <template>
-  <ResourceSectionCard v-if="!formRoute" class="agents-config-sec" :heading-id="domID(`agent-${kind}-heading`)" :title="meta.title" :description="meta.blurb">
+  <component
+    :is="workbench ? AgentsWorkbenchSection : ResourceSectionCard"
+    v-if="!formRoute"
+    class="agents-config-sec"
+    :class="{ 'agents-automation-section': workbench }"
+    :heading-id="domID(`agent-${kind}-heading`)"
+    :title="meta.title"
+    :description="meta.blurb"
+  >
     <template #actions>
-      <button class="k-btn k-btn--ghost secondary" type="button" @click="openCreate"><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
+      <button
+        class="k-btn k-btn--ghost secondary"
+        type="button"
+        :data-automation-create="workbench ? kind : undefined"
+        :aria-haspopup="workbench ? 'dialog' : undefined"
+        @click="openCreate"
+      ><Plus :stroke-width="1.75" aria-hidden="true" /> New {{ meta.one }}</button>
     </template>
 
-    <div class="agents-tablewrap">
+    <div :class="{ 'agents-tablewrap': !workbench }">
       <ResourceTable
         :columns="columns"
         :rows="tableRows"
         :aria-label="meta.title"
         variant="simple"
+        :appearance="workbench ? 'workbench' : undefined"
         :interactive="false"
         row-key="name"
         :loaded="slice.hasSnapshot"
@@ -652,7 +764,30 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         :empty-text="meta.empty"
         @retry="store.load(kind === 'schedule' ? 'schedules' : 'triggers')"
       >
-        <template #name="{ row }"><strong>{{ row.name }}</strong></template>
+        <template #name="{ row }">
+          <strong>{{ row.name }}</strong>
+          <template v-if="workbench">
+            <span class="agents-automation-when">
+              <a
+                v-if="row.webhook"
+                class="k-dashboard-action"
+                :href="hashFor({ kind: 'edit', resource: 'webhook', name: String(row.webhook) })"
+                @click.prevent="openWebhook(String(row.webhook))"
+              >{{ row.when }}</a>
+              <span v-else class="mono">{{ row.when }}</span>
+            </span>
+            <span class="agents-automation-status">
+              <StatusBadge :status="String(row.workbenchStatus)" :tone="row.workbenchTone as ReturnType<typeof workbenchStatus>['tone']" />
+              <span v-if="row.workbenchDetail">{{ row.workbenchDetail }}</span>
+              <button
+                v-if="row.lastRun"
+                class="k-dashboard-action"
+                type="button"
+                @click="emit('navigate', { kind: 'run', id: String(row.lastRun) })"
+              >Last run</button>
+            </span>
+          </template>
+        </template>
         <template #when="{ row }">
           <a v-if="kind === 'trigger' && automationSpec(row.resource as Automation).webhookRef" class="mono k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: automationSpec(row.resource as Automation).webhookRef })" @click.prevent="openWebhook(automationSpec(row.resource as Automation).webhookRef)">{{ row.when }}</a>
           <span v-else class="mono">{{ row.when }}</span>
@@ -667,19 +802,56 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           </span>
         </template>
         <template #actions="{ row }">
-          <ResourceTableActionButton v-if="automationStatus(row.resource as Automation)?.disabledReason" :icon="Power" tone="accent" :label="`Enable ${row.name}`" :busy-label="`Enabling ${row.name}…`" :busy="actionBusy === `enable:${row.name}`" :disabled="!!actionBusy" @click="enable(row.resource as Automation)" />
-          <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
-          <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
-          <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
-          <ResourceTableDeleteButton :label="`Delete ${row.name}`" :busy="actionBusy === `delete:${row.name}`" :disabled="!!actionBusy" @click="del(String(row.name))" />
+          <template v-if="workbench">
+            <button
+              class="k-btn k-btn--text agents-automation-run"
+              type="button"
+              :aria-label="`Run now: ${row.name}`"
+              :aria-busy="actionBusy === `run:${row.name}` || undefined"
+              :disabled="!workbenchActive || !!actionBusy"
+              @click="runNow(String(row.name))"
+            ><Loader2 v-if="actionBusy === `run:${row.name}`" class="k-spin" :size="14" aria-hidden="true" />Run now</button>
+            <ActionMenu
+              :label="`More actions for ${row.name}`"
+              :items="workbenchActions(row.resource as Automation)"
+              :disabled="!workbenchActive || !!actionBusy"
+              :busy="actionBusy === `enable:${row.name}` || actionBusy === `toggle:${row.name}` || actionBusy === `delete:${row.name}`"
+              :busy-label="`Updating ${row.name}…`"
+              @select="selectWorkbenchAction(row.resource as Automation, $event)"
+            />
+          </template>
+          <template v-else>
+            <ResourceTableActionButton v-if="automationStatus(row.resource as Automation)?.disabledReason" :icon="Power" tone="accent" :label="`Enable ${row.name}`" :busy-label="`Enabling ${row.name}…`" :busy="actionBusy === `enable:${row.name}`" :disabled="!!actionBusy" @click="enable(row.resource as Automation)" />
+            <ResourceTableActionButton :icon="Play" :label="`Run ${row.name} now`" :busy="actionBusy === `run:${row.name}`" :disabled="!!actionBusy" @click="runNow(String(row.name))" />
+            <ResourceTableEditButton :label="`Edit ${row.name}`" :disabled="!!actionBusy" @click="openEdit(row.resource as Automation)" />
+            <ResourceTableActionButton :icon="automationSpec(row.resource as Automation).suspend ? Play : Pause" :label="`${automationSpec(row.resource as Automation).suspend ? 'Resume' : 'Pause'} ${row.name}`" :busy="actionBusy === `toggle:${row.name}`" :disabled="!!actionBusy" @click="toggleSuspend(row.resource as Automation)" />
+            <ResourceTableDeleteButton :label="`Delete ${row.name}`" :busy="actionBusy === `delete:${row.name}`" :disabled="!!actionBusy" @click="del(String(row.name))" />
+          </template>
         </template>
       </ResourceTable>
     </div>
-  </ResourceSectionCard>
+  </component>
 
-  <div v-else class="k-create-page">
-    <ResourceBackLink :href="hashFor({ kind: 'agent', name: agent, tab: 'automation' })" :disabled="formBusy" @back="returnToAutomation">Agent schedules &amp; triggers</ResourceBackLink>
-    <header class="k-create-header">
+  <component
+    v-else
+    :is="showCreateModal ? 'dialog' : 'div'"
+    ref="formSurface"
+    :class="showCreateModal ? ['k-modal', 'agents-automation-dialog', { 'agents-automation-dialog--wide': kind === 'trigger' }] : 'k-create-page'"
+    :aria-labelledby="showCreateModal ? domID(`automation-${kind}-dialog-title`) : undefined"
+    :aria-describedby="showCreateModal ? domID(`automation-${kind}-dialog-description`) : undefined"
+    @cancel.prevent="returnToAutomation"
+  >
+    <ResourceBackLink v-if="!showCreateModal" :href="hashFor(automationRoute)" :disabled="formBusy" @back="returnToAutomation">Agent schedules &amp; triggers</ResourceBackLink>
+    <header v-if="showCreateModal" class="agents-automation-dialog__header">
+      <div>
+        <h2 :id="domID(`automation-${kind}-dialog-title`)" class="k-modal__title">New {{ meta.one }}</h2>
+        <p :id="domID(`automation-${kind}-dialog-description`)">{{ meta.blurb }}</p>
+      </div>
+      <button class="k-icon-action" type="button" :aria-label="`Close ${meta.one} form`" :disabled="formBusy" @click="returnToAutomation">
+        <X :size="16" :stroke-width="1.75" aria-hidden="true" />
+      </button>
+    </header>
+    <header v-else class="k-create-header">
       <h1 class="k-create-title">{{ createRoute ? `New ${meta.one}` : `Edit ${meta.one} ${editName}` }}</h1>
       <p class="k-create-description">{{ meta.blurb }}</p>
     </header>
@@ -697,10 +869,17 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
     <!-- The trigger form carries the GitHub event grid and the filter tester
          with its delivery picker, so it takes the wide surface; a schedule is
          a handful of fields and keeps the default width. -->
-    <form v-else class="agents-obj-form agents-guided-form k-create-surface" :class="{ 'k-create-surface--wide': kind === 'trigger' }" novalidate :aria-busy="formBusy" @submit.prevent="save">
-      <div class="k-create-body">
+    <form
+      v-else
+      class="agents-obj-form agents-guided-form"
+      :class="showCreateModal ? 'agents-automation-dialog__form' : ['k-create-surface', { 'k-create-surface--wide': kind === 'trigger' }]"
+      novalidate
+      :aria-busy="formBusy"
+      @submit.prevent="save"
+    >
+      <div class="k-create-body" :class="{ 'agents-automation-dialog__body': showCreateModal }">
         <label v-if="!editing" :for="`automation-${kind}-name`">Name *
-          <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" aria-label="Name" required aria-required="true" :placeholder="meta.namePlaceholder" autocomplete="off" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
+          <input :id="`automation-${kind}-name`" v-model="draft.name" class="k-input" name="name" aria-label="Name" required aria-required="true" :placeholder="meta.namePlaceholder" autocomplete="off" :autofocus="showCreateModal" :disabled="formBusy" :aria-invalid="nameError ? 'true' : undefined" :aria-describedby="nameError ? `automation-${kind}-name-error` : undefined" @input="nameError = ''" />
           <span v-if="nameError" :id="`automation-${kind}-name-error`" class="agents-fielderr" role="alert">{{ nameError }}</span>
         </label>
         <template v-if="kind === 'schedule'">
@@ -715,8 +894,8 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
           <label v-if="webhooks.length || draft.webhookRef"><span :id="`automation-${kind}-webhook-label`">Webhook *</span><FormSelect v-model="draft.webhookRef" :options="webhookOptions" placeholder="Choose a webhook" :disabled="formBusy" required :invalid="!!webhookError" :labelledby="`automation-${kind}-webhook-label`" :describedby="webhookError ? `automation-${kind}-webhook-error` : `automation-${kind}-webhook-hint`" name="webhookRef" @update:model-value="webhookError = ''" /><span v-if="webhookError" :id="`automation-${kind}-webhook-error`" class="agents-fielderr" role="alert">{{ webhookError }}</span><span v-else :id="`automation-${kind}-webhook-hint`" class="agents-hint">{{ draft.github ? 'A GitHub webhook. Pick the events below; GitHub’s ping on setup is acknowledged and ignored.' : 'Deliveries to this webhook’s URL are offered to every trigger routing from it; this trigger fires on the ones its filter matches.' }}</span></label>
           <p v-if="webhooks.length || draft.webhookRef" class="agents-webhook-links">
             <span v-if="selectedWebhook" class="agents-hint">The URL to give the sender and the delivery log live on the webhook.</span>
-            <a v-if="selectedWebhook" class="k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: draft.webhookRef })" @click.prevent="openWebhook(draft.webhookRef)">Open webhook {{ draft.webhookRef }}</a>
-            <a class="k-dashboard-action" :href="hashFor({ kind: 'create', resource: 'webhook' })" @click.prevent="createWebhook">New webhook</a>
+            <a v-if="selectedWebhook" class="k-dashboard-action" :href="hashFor({ kind: 'edit', resource: 'webhook', name: draft.webhookRef })" :aria-disabled="formBusy || undefined" @click.prevent="openWebhook(draft.webhookRef)">Open webhook {{ draft.webhookRef }}</a>
+            <a class="k-dashboard-action" :href="hashFor({ kind: 'create', resource: 'webhook' })" :aria-disabled="formBusy || undefined" @click.prevent="createWebhook">New webhook</a>
           </p>
           <div v-else class="agents-webhook-empty" role="status">
             <span id="automation-trigger-webhook-empty" class="agents-hint">{{ webhookSlice.hasSnapshot ? 'A trigger routes from a webhook, and this workspace has none yet. Create one — it gives you the URL to paste into GitHub or any sender — then come back.' : webhookSlice.error ? `Could not load webhooks. ${webhookSlice.error}` : 'Loading webhooks…' }}</span>
@@ -746,10 +925,86 @@ const cap = (value: string): string => value.charAt(0).toUpperCase() + value.sli
         <label><span :id="`automation-${kind}-channel-label`">Channel</span><FormSelect v-model="draft.channelRef" :options="channelOptions" :disabled="formBusy" :labelledby="`automation-${kind}-channel-label`" :describedby="`automation-${kind}-channel-hint`" /><span :id="`automation-${kind}-channel-hint`" class="agents-hint">Where output is delivered</span></label>
         <label class="agents-check k-checkbox-hit"><input v-model="draft.suspend" type="checkbox" name="suspend" :disabled="formBusy" /> Paused</label>
       </div>
-      <div class="k-create-actions">
+      <div class="k-create-actions" :class="{ 'agents-automation-dialog__actions': showCreateModal }">
+        <div v-if="showCreateModal && formError" class="k-inline-notification k-inline-notification--error agents-automation-dialog__error" role="alert">
+          Could not create this {{ meta.one }}. {{ formError }}
+        </div>
         <button type="button" class="k-btn k-btn--ghost secondary" :disabled="formBusy" @click="returnToAutomation">Cancel</button>
         <button class="k-btn k-btn--primary" type="submit" :disabled="formBusy">{{ formBusy ? (editing ? 'Saving…' : 'Creating…') : editing ? 'Save' : `Create ${meta.one}` }}</button>
       </div>
     </form>
-  </div>
+  </component>
 </template>
+
+<style scoped>
+.agents-automation-dialog {
+  --automation-dialog-gutter: 24px;
+  --automation-dialog-width: 35rem;
+  position: fixed;
+  inset-block: 0;
+  inset-inline: auto var(--automation-dialog-gutter);
+  box-sizing: border-box;
+  width: min(var(--automation-dialog-width), calc(100% - 2 * var(--automation-dialog-gutter)));
+  max-width: none;
+  max-height: calc(100dvh - 2 * var(--automation-dialog-gutter));
+  margin: auto 0;
+  padding: 0;
+  overflow: visible;
+  animation: none;
+}
+.agents-automation-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.agents-automation-dialog--wide {
+  --automation-dialog-width: 42rem;
+}
+.agents-automation-dialog::backdrop {
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 30%, transparent);
+}
+.agents-automation-dialog__header {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 18px 14px;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+.agents-automation-dialog__header h2 {
+  margin: 0;
+}
+.agents-automation-dialog__header p {
+  margin: 4px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+.agents-automation-dialog__form {
+  min-block-size: 0;
+}
+.agents-automation-dialog__body {
+  min-block-size: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.agents-automation-dialog__actions {
+  position: static;
+  flex: none;
+  background: transparent;
+}
+.agents-automation-dialog__error {
+  max-block-size: 22dvh;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+@media (min-width: 1024px) {
+  .agents-automation-dialog {
+    max-width: 52vw;
+  }
+}
+@media (max-width: 620px) {
+  .agents-automation-dialog {
+    --automation-dialog-gutter: 12px;
+  }
+}
+</style>

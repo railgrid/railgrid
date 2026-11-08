@@ -370,7 +370,8 @@ test('cached popup owners close their production state on KeepAlive deactivation
     ['ModelIDSelector', '../agentkit-vue/ModelIDSelector.vue', 'closeSelector'],
   ]) {
     const source = readFileSync(new URL(path, import.meta.url), 'utf8')
-    assert.match(source, /<Teleport[^>]*to="body"/)
+    if (name === 'FormSelect') assert.match(source, /<Teleport[^>]*:to="trigger\?\.closest\('dialog\[open\]'\) \?\? 'body'"/)
+    else assert.match(source, /<Teleport[^>]*to="body"/)
     const script = source.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1]
     const parsed = ts.createSourceFile(`${name}.ts`, script, ts.ScriptTarget.Latest, true)
     const declarations = parsed.statements.filter(statement =>

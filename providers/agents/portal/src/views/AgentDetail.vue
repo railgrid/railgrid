@@ -9,7 +9,6 @@ import AIConversationIdentity from '../agentkit/AIConversationIdentity.vue'
 import AIWorkspace from '../agentkit/AIWorkspace.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
-import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import { hashFor, type AgentTab, type Route } from '../router'
 import {
   activateAgentWorkbenchTab,
@@ -33,6 +32,7 @@ import AgentWorkbench from './AgentWorkbench.vue'
 import AgentWorkbenchHeader from './AgentWorkbenchHeader.vue'
 import AgentWorkbenchLauncher from './AgentWorkbenchLauncher.vue'
 import AgentSkillsWorkbench from './AgentSkillsWorkbench.vue'
+import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import RunDetail from './RunDetail.vue'
 
 type WorkbenchTab = AgentWorkbenchTabKind
@@ -409,15 +409,15 @@ async function remove(): Promise<void> {
             <template #workbench>
               <AgentWorkbench :active="workbenchTab">
                 <template #config>
-                  <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections @navigate="handleChildNavigate">
+                  <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections :automation-active="workspaceOpen && !compact && workbenchTab === 'automation'" @navigate="handleChildNavigate">
                     <template #destructive-actions>
-                      <ResourceSectionCard v-if="!workspaceCompact" class="agents-config-sec" variant="document" :heading-id="domID('agent-layout-heading')" title="Layout">
+                      <AgentsWorkbenchSection v-if="!workspaceCompact" class="agents-config-sec" :heading-id="domID('agent-layout-heading')" title="Layout">
                         <label class="agents-check k-checkbox-hit">
                           <input type="checkbox" data-keep-workbench-open :checked="keepWorkbenchOpen" @change="setKeepWorkbenchOpen" />
                           Keep the workbench open on desktop
                         </label>
-                      </ResourceSectionCard>
-                      <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
+                      </AgentsWorkbenchSection>
+                      <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
                         <div class="agents-form-actions">
                           <button
                             class="k-btn k-btn--danger-solid"
@@ -431,7 +431,7 @@ async function remove(): Promise<void> {
                             {{ deleteBusy ? 'Deleting agent…' : 'Delete agent' }}
                           </button>
                         </div>
-                      </ResourceSectionCard>
+                      </AgentsWorkbenchSection>
                     </template>
                   </AgentConfig>
                 </template>

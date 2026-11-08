@@ -596,12 +596,11 @@ describe('public Agents shell routing', () => {
     expect(text(element.querySelector('[data-testid="webhook-url"]'))).toContain('/webhooks/c/github-org/t')
   })
 
-  it('opens automation forms on agent-owned routes and replaces back to Config', async () => {
-    const element = await mountShell('#/agents/scout/config')
+  it.each(['schedule', 'trigger'] as const)('opens New %s over the retained workbench and chat', async kind => {
+    const element = await mountShell('#/agents/scout/automation')
     const store = element.store!
-    store.agents.data = [agentFixture('scout')]
-    store.agents.loaded = store.agents.hasSnapshot = true
-    store.credentials.loaded = store.credentials.hasSnapshot = true
+    configureChatApi(element.api!, [])
+    seedChatStore(store, [{ name: 'openai', provider: 'openai', model: 'gpt-4o-mini' }])
     store.connections.loaded = store.connections.hasSnapshot = true
     store.toolsets.loaded = store.toolsets.hasSnapshot = true
     store.schedules.loaded = store.schedules.hasSnapshot = true
@@ -609,28 +608,71 @@ describe('public Agents shell routing', () => {
     store.dispatchEvent(new Event('change'))
     await settleVue(5, 20)
 
+    const workspace = element.querySelector('[data-agent-workspace]')
+    const editor = setComposerText(element, 'Keep this draft while creating automation.')
+    const opener = element.querySelector<HTMLButtonElement>(`[data-automation-create="${kind}"]`)!
+    expect(workspace).not.toBeNull()
+    expect(editor).not.toBeNull()
+    await settleVue()
+
     const push = vi.spyOn(history, 'pushState')
     const replace = vi.spyOn(history, 'replaceState')
     push.mockClear()
     replace.mockClear()
 
-    buttonWithText(element, 'New schedule').click()
+    opener.focus()
+    opener.click()
     await settleVue(4, 5)
-    expect(location.hash).toBe('#/agents/scout/schedules/create')
-    expect(push).toHaveBeenCalledWith(null, '', '#/agents/scout/schedules/create')
-    expect(text(element.querySelector('h1'))).toBe('New schedule')
-    expect(element.querySelector<HTMLAnchorElement>('.k-back-action')?.getAttribute('href')).toBe('#/agents/scout/automation')
-    expect(document.activeElement).toBe(element.querySelector('.k-create-title'))
+    const createHash = `#/agents/scout/${kind}s/create`
+    expect(location.hash).toBe(createHash)
+    expect(push).toHaveBeenCalledWith(null, '', createHash)
+    expect(element.route).toEqual({ kind: 'automation', resource: kind, agent: 'scout', action: 'create' })
+    const dialog = document.querySelector<HTMLDialogElement>('dialog[open]')!
+    expect(text(document.getElementById(dialog.getAttribute('aria-labelledby')!))).toBe(`New ${kind}`)
+    expect(document.activeElement).toBe(dialog.querySelector('input[name="name"]'))
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
+    expect(composerEditor(element)).toBe(editor)
+    expect(composerText(element)).toBe('Keep this draft while creating automation.')
 
-    buttonWithText(element, 'Cancel').click()
+    buttonWithText(dialog, 'Cancel').click()
     await settleVue(5, 5)
     expect(location.hash).toBe('#/agents/scout/automation')
     expect(replace).toHaveBeenCalledWith(null, '', '#/agents/scout/automation')
-    expect(text(element)).toContain('Schedules')
-    expect(text(element)).toContain('Triggers')
-    const workspaceTitle = element.querySelector<HTMLElement>('[data-agent-workspace-title]')
-    expect(workspaceTitle).not.toBeNull()
-    expect(document.activeElement).toBe(workspaceTitle)
+    expect(document.querySelector('dialog[open]')).toBeNull()
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
+    expect(composerText(element)).toBe('Keep this draft while creating automation.')
+    expect(document.activeElement).toBe(opener)
+  })
+
+  it('projects a direct automation create link and follows browser history without remounting the agent', async () => {
+    const createHash = '#/agents/scout/triggers/create'
+    const collectionHash = '#/agents/scout/automation'
+    history.replaceState(null, '', collectionHash)
+    history.pushState(null, '', createHash)
+    const element = await mountShell(createHash)
+    const store = element.store!
+    configureChatApi(element.api!, [])
+    seedChatStore(store, [])
+    await settleVue(6, 20)
+
+    const workspace = element.querySelector('[data-agent-workspace]')
+    expect(workspace).not.toBeNull()
+    expect(document.querySelector('dialog[open]')).not.toBeNull()
+
+    history.back()
+    await vi.waitFor(() => {
+      expect(location.hash).toBe(collectionHash)
+      expect(document.querySelector('dialog[open]')).toBeNull()
+    })
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
+    expect(document.activeElement).toBe(element.querySelector('[data-automation-create="trigger"]'))
+
+    history.forward()
+    await vi.waitFor(() => {
+      expect(location.hash).toBe(createHash)
+      expect(document.querySelector('dialog[open]')).not.toBeNull()
+    })
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
   })
 
   it('deep-links an automation edit form and returns to Schedules & triggers after save', async () => {

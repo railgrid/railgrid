@@ -67,6 +67,8 @@ const props = withDefaults(defineProps<{
   ariaLabel?: string
   /** Queryable is the default/current resource-list contract. Simple is an explicit bounded-list opt-in. */
   variant?: 'queryable' | 'simple'
+  /** Flat presentation for a contextual table embedded in a resizable workbench. */
+  appearance?: 'default' | 'workbench'
   /** Stable row identity. Resource names/ids are used when omitted. */
   rowKey?: string | ((row: Record<string, unknown>, index: number) => string | number)
   /** True after the first authoritative read has completed successfully. */
@@ -133,6 +135,7 @@ const props = withDefaults(defineProps<{
   ariaLabel: 'Resource table',
   refreshMode: 'foreground',
   variant: 'queryable',
+  appearance: 'default',
   stale: false,
   retryable: false,
   emptyText: 'No data',
@@ -1075,7 +1078,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
   <div
     class="k-table k-table--resource"
     data-resource-table
-    :class="[`k-table--${variant}`, { 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
+    :class="[`k-table--${variant}`, { 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->

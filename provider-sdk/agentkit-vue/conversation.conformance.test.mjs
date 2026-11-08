@@ -100,8 +100,8 @@ test('workbench panes share the raised canvas, plain document header, and tool e
 
   assert.match(agentStyles, /\.k-ai-workbench-canvas\s*\{[^}]*--k-workbench-canvas:\s*var\(--color-surface-raised/)
   assert.match(agentStyles, /\.k-ai-workbench-canvas\s*\{[^}]*background:\s*var\(--k-workbench-canvas\)/)
-  assert.match(agentStyles, /\.k-ai-workbench-pane__title\s*\{[^}]*font-size:\s*16px;[^}]*font-weight:\s*600/)
-  assert.match(agentStyles, /\.k-ai-workbench-pane__description\s*\{[^}]*font-size:\s*12px/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane__title\s*\{[^}]*font-size:\s*var\(--k-ai-workbench-title-size,\s*16px\);[^}]*font-weight:\s*600/)
+  assert.match(agentStyles, /\.k-ai-workbench-pane__description\s*\{[^}]*font-size:\s*var\(--k-ai-workbench-description-size,\s*12px\)/)
   assert.match(agentStyles, /\.k-ai-workbench-pane__header\s*\{[^}]*gap:\s*16px;[^}]*margin-bottom:\s*16px/)
 
   const documentRule = agentStyles.match(/\.k-ai-workbench-pane--document\s*\{([^}]*)\}/)?.[1] || ''
@@ -110,7 +110,8 @@ test('workbench panes share the raised canvas, plain document header, and tool e
   assert.match(agentStyles, /\.k-ai-workbench-pane--tool\s*\{\s*padding:\s*0;\s*\}/)
   assert.match(agentStyles, /\.k-ai-workbench-pane--tool \.k-ai-workbench-pane__body\s*\{[^}]*overflow:\s*hidden/)
 
-  assert.match(workbenchLauncher, /<AIWorkbenchPane title="New tab" description="Open a workbench tool\.">/)
+  assert.match(workbenchLauncher, /description: 'Open a workbench tool\.'/)
+  assert.match(workbenchLauncher, /<AIWorkbenchPane title="New tab" :description="description">/)
   assert.match(workbenchLauncher, /<\/AIWorkbenchPane>/)
   assert.match(agentStyles, /\.k-ai-launcher\s*\{[^}]*padding:\s*0;/)
 })

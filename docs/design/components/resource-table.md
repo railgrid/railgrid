@@ -44,6 +44,11 @@ There are exactly two configurations:
   native semantics, nested-control isolation, and row-action accessibility are
   identical to Queryable.
 
+Either configuration can use `appearance="workbench"` for a table embedded in
+a resizable workbench pane. The table shares the pane canvas, wraps the primary
+value, and keeps row actions visible. At narrow table widths, actions flow
+below the primary value. Callers still select which columns fit the task.
+
 ## Behavior
 
 Interactive row hover uses a 4% accent tint with primary text. Interactive rows

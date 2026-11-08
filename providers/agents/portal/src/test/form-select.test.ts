@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import FormSelect from '../portalkit/FormSelect.vue'
 import { mountVue, settleVue } from './vue-helper'
 
-async function mountSelect() {
+async function mountSelect(inDialog = false) {
   const label = document.createElement('span')
   label.id = 'model-label'
   label.textContent = 'Model credential'
@@ -14,10 +14,13 @@ async function mountSelect() {
     { value: 'backup', label: 'backup (claude)' },
   ]
   const value = ref('main')
-  const Harness = defineComponent({ setup: () => () => h(FormSelect, {
-    modelValue: value.value, options, labelledby: label.id,
-    'onUpdate:modelValue': (next: string) => { value.value = next },
-  }) })
+  const Harness = defineComponent({ setup: () => () => {
+    const select = h(FormSelect, {
+      modelValue: value.value, options, labelledby: label.id,
+      'onUpdate:modelValue': (next: string) => { value.value = next },
+    })
+    return inDialog ? h('dialog', { open: true }, [select]) : select
+  } })
   document.body.append(label)
   return { ...(await mountVue(Harness, {})), value }
 }
@@ -55,6 +58,22 @@ describe('PortalKit Vue form select', () => {
 
     expect(value.value).toBe('backup')
     expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('keeps the option panel inside an open native dialog', async () => {
+    const view = await mountSelect(true)
+    const dialog = view.element.querySelector('dialog')!
+    dialog.querySelector<HTMLButtonElement>('[role="combobox"]')!.click()
+    await settleVue()
+
+    const listbox = dialog.querySelector('[role="listbox"]')!
+    expect(listbox.parentElement).toBe(dialog)
+    listbox.querySelector<HTMLButtonElement>('[role="option"]:last-of-type')!.click()
+    await settleVue()
+
+    expect(view.value.value).toBe('backup')
+    expect(dialog.querySelector('[role="listbox"]')).toBeNull()
+    view.unmount()
   })
 
   it('closes on Escape and restores focus to the trigger', async () => {

@@ -14,13 +14,14 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import Tabs from '../portalkit/Tabs.vue'
 import { toast } from '../ui/toast'
 import { confirmDialog } from '../portalkit/confirm'
-import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { useAgentDOMID, useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import type { ActivityTab, Route } from '../router'
 import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentUsage from './AgentUsage.vue'
+import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
@@ -35,6 +36,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
+const domID = useAgentDOMID()
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
 type InboxDecision = 'approve' | 'deny' | 'answer'
@@ -193,17 +195,22 @@ const filters = computed<TableFilterDefinition[]>(() => [
     options: RANGES.filter(candidate => candidate.id !== 'all').map(candidate => ({ value: candidate.id, label: candidate.label })),
   },
 ])
-const columns = computed(() => [
-  {
+const columns = computed(() => {
+  const primary = {
     key: 'input', label: props.agent ? 'Run' : 'Run / Agent', primary: true, maxWidth: RUN_PREVIEW_MAX_WIDTH,
     fullValue: (row: Record<string, unknown>) => props.agent ? String(row.fullInput) : `${row.fullInput} · ${row.agent}`,
-  },
-  { key: 'phase', label: 'Phase' },
-  { key: 'trigger', label: 'Trigger / Class' },
-  { key: 'duration', label: 'Duration', align: 'end' as const },
-  { key: 'usage', label: 'Usage', align: 'end' as const },
-  { key: 'when', label: 'Created', align: 'end' as const },
-])
+  }
+  const phase = { key: 'phase', label: 'Phase' }
+  if (props.agent) return [primary, phase]
+  return [
+    primary,
+    phase,
+    { key: 'trigger', label: 'Trigger / Class' },
+    { key: 'duration', label: 'Duration', align: 'end' as const },
+    { key: 'usage', label: 'Usage', align: 'end' as const },
+    { key: 'when', label: 'Created', align: 'end' as const },
+  ]
+})
 const searchKeys = ['id', 'agent', 'inputPreview', 'trigger', 'phase', 'class']
 // A run's input can be a whole prompt. The row shows one bounded line of it and
 // discloses a longer cut on hover; the run page has it in full.
@@ -219,6 +226,7 @@ const tableRows = computed(() => runs.value.map(run => ({
     .map(candidate => candidate.id),
   run,
 })))
+const refreshingRuns = computed(() => loading.value && refreshMode.value === 'foreground')
 
 function isWithinRange(createdAt: string, hours: number): boolean {
   const created = Date.parse(createdAt)
@@ -437,18 +445,18 @@ onBeforeUnmount(() => {
     :subtitle="agent ? undefined : 'Run history, requests for review, and usage.'"
     :description="agent ? 'Run history and actions waiting for your review.' : undefined"
   >
-    <template #actions>
+    <template v-if="!agent" #actions>
       <button
         v-if="!viewingUsage"
         class="k-btn k-btn--text agents-runs-refresh"
         type="button"
         :aria-label="viewingInbox ? 'Refresh inbox' : 'Refresh runs'"
-        :disabled="viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground'"
-        :aria-busy="(viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground') || undefined"
+        :disabled="viewingInbox ? inboxSlice.loading : refreshingRuns"
+        :aria-busy="(viewingInbox ? inboxSlice.loading : refreshingRuns) || undefined"
         @click="viewingInbox ? store.load('inbox') : reload('foreground')"
       >
-        <RefreshCw :class="{ 'k-spin': viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground' }" :stroke-width="1.75" aria-hidden="true" />
-        {{ (viewingInbox ? inboxSlice.loading : loading && refreshMode === 'foreground') ? 'Refreshing…' : 'Refresh' }}
+        <RefreshCw :class="{ 'k-spin': viewingInbox ? inboxSlice.loading : refreshingRuns }" :stroke-width="1.75" aria-hidden="true" />
+        {{ (viewingInbox ? inboxSlice.loading : refreshingRuns) ? 'Refreshing…' : 'Refresh' }}
       </button>
     </template>
     <Tabs v-if="!agent" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
@@ -469,7 +477,8 @@ onBeforeUnmount(() => {
           v-if="pending.length"
           class="agents-approvals"
           :class="{ 'agents-inbox-review': viewingInbox, 'agents-inbox-review--queue': viewingInbox && mobileQueue }"
-          aria-label="Pending requests"
+          :aria-label="agent ? undefined : 'Pending requests'"
+          :aria-labelledby="agent ? domID('agent-run-attention-heading') : undefined"
         >
           <div v-if="viewingInbox" ref="inboxQueue" class="agents-inbox-queue">
             <ul class="agents-inbox-list">
@@ -493,7 +502,7 @@ onBeforeUnmount(() => {
           </div>
           <div :class="viewingInbox ? 'agents-inbox-review-tools' : 'agents-inbox-legacy-detail'">
             <div v-if="agent || pending.length > 1 || bulkDismiss" class="agents-attention-head">
-              <h3 v-if="agent" class="agents-attention-title"><Inbox :stroke-width="1.75" aria-hidden="true" /> Needs your attention ({{ pending.length }})</h3>
+              <h3 v-if="agent" :id="domID('agent-run-attention-heading')" class="agents-attention-title">Needs your attention ({{ pending.length }})</h3>
               <button
                 v-if="pending.length > 1 || bulkDismiss"
                 class="k-btn k-btn--ghost secondary agents-attention-dismiss-all"
@@ -571,12 +580,29 @@ onBeforeUnmount(() => {
       </template>
     </template>
 
-    <div v-show="!viewingInbox && !viewingUsage" class="agents-activity-run-history">
+    <component
+      :is="agent ? AgentsWorkbenchSection : 'div'"
+      v-show="!viewingInbox && !viewingUsage"
+      class="agents-activity-run-history"
+      :title="agent ? 'Run history' : undefined"
+      :heading-id="agent ? domID('agent-run-history-heading') : undefined"
+    >
+      <template v-if="agent" #actions>
+        <button
+          class="k-btn k-btn--text agents-runs-refresh"
+          type="button"
+          aria-label="Refresh runs"
+          :disabled="refreshingRuns"
+          :aria-busy="refreshingRuns || undefined"
+          @click="reload('foreground')"
+        ><RefreshCw :class="{ 'k-spin': refreshingRuns }" :stroke-width="1.75" aria-hidden="true" /> {{ refreshingRuns ? 'Refreshing…' : 'Refresh runs' }}</button>
+      </template>
       <ResourceTable
         :columns="columns"
         :rows="tableRows"
         aria-label="Runs"
         variant="queryable"
+        :appearance="agent ? 'workbench' : undefined"
         row-key="id"
         :loaded="loaded"
         :loading="loading"
@@ -602,14 +628,16 @@ onBeforeUnmount(() => {
         @retry="reload('foreground')"
         @row-click="openRun"
       >
-        <!--
-          Both lines are inline content of the kit's primary value, not nested
-          blocks: the kit truncates and measures its own line boxes, so a block
-          wrapper would neither ellipsize nor trigger the disclosure tooltip.
-        -->
+        <!-- Standalone Activity keeps the table's two-line truncation behavior. -->
         <template #input="{ row }">
           <strong class="agents-run-preview">{{ row.input }}</strong>
-          <template v-if="!agent"><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
+          <span v-if="agent" class="agents-run-compact-meta agents-run-secondary">
+            <span>{{ row.trigger }} · {{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
+            <span v-if="row.durationMS">{{ fmtDuration(Number(row.durationMS)) }}</span>
+            <span>{{ fmtTime(String(row.when)) }}</span>
+            <span v-if="ranOnHarness(row)" class="k-badge agents-badge" title="This run's turn ran on a coding harness on an edge machine.">harness</span>
+          </span>
+          <template v-else><br><span class="agents-run-secondary">{{ row.agent }}</span></template>
         </template>
         <template #trigger="{ row }">
           <span class="agents-run-cell">
@@ -617,11 +645,11 @@ onBeforeUnmount(() => {
             <span class="agents-run-secondary">{{ row.class }}<template v-if="row.parentRunID"> · delegated</template></span>
           </span>
         </template>
-        <template #phase="{ row }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></template>
+        <template #phase="{ row }"><span :class="{ 'agents-run-compact-phase': agent }"><StatusBadge class="agents-phase" :class="`agents-phase-${phaseMeta(row.phase as RunPhase).cls}`" :status="phaseMeta(row.phase as RunPhase).label" :tone="phaseMeta(row.phase as RunPhase).tone" /> <span v-if="Number(row.attempt) > 1" class="k-badge agents-badge">try {{ row.attempt }}</span></span></template>
         <template #duration="{ row }"><span class="muted">{{ row.durationMS ? fmtDuration(Number(row.durationMS)) : '—' }}</span></template>
         <template #usage="{ row }"><span class="agents-run-cell mono">{{ fmtTokens(Number(row.inputTokens) + Number(row.outputTokens)) }}<span class="agents-run-secondary">{{ fmtUSD(Number(row.usdMicros)) }}</span></span></template>
         <template #when="{ row }"><span class="muted">{{ fmtTime(String(row.when)) }}</span></template>
       </ResourceTable>
-    </div>
+    </component>
   </component>
 </template>

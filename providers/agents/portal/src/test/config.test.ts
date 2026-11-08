@@ -109,15 +109,42 @@ describe('agent config', () => {
 
   it('leads with instructions and the default model and keeps advanced fields in disclosures', async () => {
     const { el } = await mountConfig({ backend: modelBackend('main') }, [{ name: 'main' }])
-    const headings = [...el.querySelectorAll('.agents-config-sec h2')].map(text)
+    const headings = [...el.querySelectorAll('.agents-config-sec h3')].map(text)
     expect(headings.slice(0, 2)).toEqual(['Instructions', 'Default model'])
-    for (const name of ['Model fallbacks', 'Autonomy & budget', 'Self-configuration']) {
-      const summary = [...el.querySelectorAll('summary')].find(item => text(item) === name)!
+    for (const [name, value] of [
+      ['Model fallbacks', 'None configured'],
+      ['Autonomy & budget', 'Ask · No budget caps'],
+      ['Execution settings', 'Model'],
+      ['Self-configuration', 'Disabled'],
+    ]) {
+      const summary = [...el.querySelectorAll('summary')].find(item => text(item).startsWith(name))!
       expect((summary.parentElement as HTMLDetailsElement).open).toBe(false)
+      expect(text(summary.querySelector('.agents-setting-disclosure__value'))).toBe(value)
     }
     const background = el.querySelector<HTMLInputElement>('input[aria-label="Allow in background: Read the web"]')!
     expect(background.disabled).toBe(true)
-    expect(text(background.closest('label'))).toBe('Allow in background')
+    expect([...background.closest('table')!.querySelectorAll('thead th')].map(text)).toEqual(['Capability', 'Chat', 'Background'])
+  })
+
+  it('shows the saved budget in the disclosure while a draft is pending', async () => {
+    const { el, pending } = await mountDeferredConfig({ autonomy: 'ask', budget: { usdLimit: '12' } })
+    const summary = [...el.querySelectorAll('summary')].find(item => text(item).startsWith('Autonomy & budget'))!
+    const details = summary.parentElement as HTMLDetailsElement
+    const budget = details.querySelector<HTMLInputElement>('input[aria-label="Monthly budget (USD)"]')!
+    const value = summary.querySelector('.agents-setting-disclosure__value')
+
+    expect(text(value)).toBe('Ask · $12/mo')
+    details.open = true
+    budget.value = '24'
+    budget.dispatchEvent(new Event('input'))
+    sectionButton(details, 'Save policy').click()
+    details.open = false
+    await settle()
+    expect(text(value)).toBe('Ask · $12/mo')
+
+    pending.resolve(agentFixture('scout', { autonomy: 'ask', budget: { usdLimit: '24' } }))
+    await settle()
+    expect(text(value)).toBe('Ask · $24/mo')
   })
 
   it('keeps Execution settings open through an optimistic switch from a harness to a model', async () => {
@@ -126,6 +153,8 @@ describe('agent config', () => {
     })
     const execution = el.querySelector('#agent-backend-heading')!.closest('details')!
     expect(execution.open).toBe(true)
+    const policy = [...el.querySelectorAll('summary')].find(item => text(item).startsWith('Autonomy & budget'))!
+    expect(text(policy)).toContain('Harness controls approvals · No budget caps')
 
     execution.querySelector<HTMLInputElement>('input[value="model"]')!.click()
     await settle()
@@ -135,6 +164,7 @@ describe('agent config', () => {
     expect(patchAgent).toHaveBeenCalledWith('scout', { backendType: 'model' })
     expect(store.agent('scout')?.spec.backend?.type).toBe('model')
     expect(execution.open).toBe(true)
+    expect(text(policy)).toContain('Harness controls approvals · No budget caps')
     expect(execution.querySelector('[data-config-save-status="pending"]')).not.toBeNull()
 
     pending.reject(new Error('Save rejected'))
@@ -1467,8 +1497,7 @@ describe('visualization capability', () => {
   })
   it('grants charts interactively without granting background charts', async () => {
     const { el, patchAgent } = await mountConfig({ tools: { interactive: { families: ['core'] } } })
-    const label = [...el.querySelectorAll('label')].find(item => item.textContent?.includes('Visualize data'))!
-    const input = label.querySelector<HTMLInputElement>('input')!
+    const input = el.querySelector<HTMLInputElement>('input[aria-label="Allow in chat: Visualize data"]')!
     expect(input.checked).toBe(false)
     input.checked = true
     input.dispatchEvent(new Event('change'))

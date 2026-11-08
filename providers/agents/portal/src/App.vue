@@ -76,7 +76,19 @@ const contextUsable = computed(() => {
 watch(() => props.overlay?.agent, name => {
   if (name && (route.value.kind !== 'agent' || route.value.name !== name)) route.value = { kind: 'agent', name, tab: 'chat' }
 })
-const workspaceActive = computed(() => contextUsable.value && route.value.kind === 'agent')
+function isAutomationCreateRoute(target: Route): target is Extract<Route, { kind: 'automation'; action: 'create' }> {
+  return target.kind === 'automation' && target.action === 'create'
+}
+
+function agentWorkspaceForRoute(target: Route): Extract<Route, { kind: 'agent' }> | null {
+  if (target.kind === 'agent') return target
+  if (isAutomationCreateRoute(target)) return { kind: 'agent', name: target.agent, tab: 'automation' }
+  return null
+}
+
+const automationCreateRoute = computed(() => isAutomationCreateRoute(route.value) ? route.value : null)
+const workspaceRoute = computed(() => agentWorkspaceForRoute(route.value))
+const workspaceActive = computed(() => contextUsable.value && !!workspaceRoute.value)
 
 function requestWorkspaceLayout(fullBleed: boolean): void {
   if (props.overlay) return
@@ -118,11 +130,13 @@ const tabs = computed<PortalTabItem[]>(() => {
 
 const routeSurfaceKey = computed(() => {
   const current = route.value
-  if (current.kind === 'agent') return `${authorityEpoch.value}:agent:${current.name}`
+  if (current.kind === 'agent' || isAutomationCreateRoute(current)) {
+    return `${authorityEpoch.value}:agent:${current.kind === 'agent' ? current.name : current.agent}`
+  }
   if (current.kind === 'run') return `${authorityEpoch.value}:run:${current.id}`
   if (current.kind === 'create') return `${authorityEpoch.value}:create:${createSession.value}`
   if (current.kind === 'edit') return `${authorityEpoch.value}:edit:${current.resource}:${current.name}`
-  if (current.kind === 'automation') return `${authorityEpoch.value}:automation:${current.agent}:${current.resource}:${current.action}:${current.action === 'edit' ? current.name : ''}`
+  if (current.kind === 'automation') return `${authorityEpoch.value}:automation:${current.agent}:${current.resource}:edit:${current.name}`
   return `${authorityEpoch.value}:menu:${current.menu}`
 })
 
@@ -250,9 +264,10 @@ function restoreRouteFromHash(normalize: boolean): void {
 }
 
 function focusAfterNavigation(previous: Route, next: Route): void {
-  if (previous.kind === 'agent' && next.kind === 'agent' && previous.name === next.name) {
-    // The workspace owns focus between chat and its panels. Do not pull it
-    // back to the resource title on every Config/Run selection.
+  const previousWorkspace = agentWorkspaceForRoute(previous)
+  const nextWorkspace = agentWorkspaceForRoute(next)
+  if (previousWorkspace && nextWorkspace && previousWorkspace.name === nextWorkspace.name) {
+    // The retained workspace and its create dialog own focus across these routes.
     focusRequest += 1
     return
   }
@@ -271,6 +286,7 @@ function scheduleCollectionFocus(): void {
 
 function scheduleRouteFocus(next: Route): void {
   const request = ++focusRequest
+  if (isAutomationCreateRoute(next)) return
   void nextTick(() => requestAnimationFrame(() => {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
     if (newAgentComposerRoute.value === hashFor(next) &&
@@ -701,18 +717,18 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @create-cancel="onCreateCancel"
       />
       <AgentDetail
-        v-else-if="route.kind === 'agent'"
+        v-else-if="workspaceRoute"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
-        :name="route.name"
+        :name="workspaceRoute.name"
         :compact="!!overlay"
         :composer-only="overlay?.composerOnly"
         :focus-new-composer="newAgentComposerRoute === hashFor(route)"
         :overlay="!!overlay"
         :page-context="overlay?.pageContext"
-        :tab="route.tab"
-        :run-id="route.runID"
+        :tab="workspaceRoute.tab"
+        :run-id="workspaceRoute.runID"
         :authority-epoch="authorityEpoch"
         @navigate="go"
       />
@@ -839,14 +855,25 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         @edit-cancel="onEditCancel"
       />
       <Automation
-        v-else-if="route.kind === 'automation'"
+        v-else-if="route.kind === 'automation' && route.action === 'edit'"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
         :kind="route.resource"
         :agent="route.agent"
-        :create-route="route.action === 'create'"
-        :edit-name="route.action === 'edit' ? route.name : ''"
+        :edit-name="route.name"
+        :authority-epoch="authorityEpoch"
+        @navigate="go($event, 'replace')"
+      />
+      <Automation
+        v-if="automationCreateRoute"
+        :key="`${authorityEpoch}:automation-create:${automationCreateRoute.agent}:${automationCreateRoute.resource}`"
+        :store="store"
+        :api="api"
+        :kind="automationCreateRoute.resource"
+        :agent="automationCreateRoute.agent"
+        create-route
+        create-modal
         :authority-epoch="authorityEpoch"
         @navigate="go($event, 'replace')"
       />
