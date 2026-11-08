@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { BookOpen, Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
+import { Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import ResourceBackLink from './portalkit/ResourceBackLink.vue'
@@ -98,6 +98,7 @@ const setupTabs = [
   { id: 'models', label: 'Models' },
   { id: 'connections', label: 'Connections' },
   { id: 'webhooks', label: 'Webhooks' },
+  { id: 'skills', label: 'Skills library' },
 ] as const
 const setupActive = computed(() => setupTabs.some(tab => tab.id === active.value))
 // Initial hydration and authority rotations call loadAll. Subsequent route
@@ -111,7 +112,6 @@ const tabs = computed<PortalTabItem[]>(() => {
   return [
     { id: 'agents', label: 'Agents', icon: Bot, count: store.value.agents.data.length || undefined },
     { id: 'activity', label: 'Activity', icon: Gauge, count: store.value.pendingInbox().length || undefined },
-    { id: 'skills', label: 'Skills library', icon: BookOpen },
     { id: 'setup', label: 'Setup', icon: Settings },
   ]
 })
@@ -615,10 +615,10 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
             <h2 class="k-resource-page__title" data-agents-setup-title>Setup</h2>
-            <p class="k-resource-page__subtitle">Manage the models, connections, and webhooks your agents use.</p>
+            <p class="k-resource-page__subtitle">Manage the models, connections, webhooks, and reusable skills your agents use.</p>
           </div>
         </header>
-        <nav class="k-tabs k-tabs--compact" aria-label="Setup sections">
+        <nav class="k-tabs k-tabs--compact agents-setup-tabs" aria-label="Setup sections">
           <a
             v-for="tab in setupTabs"
             :key="tab.id"

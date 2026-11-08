@@ -1273,7 +1273,8 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
 }
 
 
-/* Route-backed navigation within the Models destination. */
+/* Route-backed navigation within Setup and Models. */
+railgrid-provider-agents .agents-setup-tabs { flex-wrap: wrap; }
 .agents-models-tabs { margin-bottom: 20px; }
 .agents-models-tab { text-decoration: none; }
 .agents-models-empty { padding: 24px; }

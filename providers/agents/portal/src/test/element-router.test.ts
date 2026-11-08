@@ -105,7 +105,7 @@ describe('public Agents shell routing', () => {
     element.store!.dispatchEvent(new Event('change'))
     await settleVue()
     const nav = element.querySelector('[aria-label="Agents provider sections"]')!
-    expect([...nav.querySelectorAll('.k-tab__label')].map(text)).toEqual(['Agents', 'Activity', 'Skills library', 'Setup'])
+    expect([...nav.querySelectorAll('.k-tab__label')].map(text)).toEqual(['Agents', 'Activity', 'Setup'])
     expect(text(nav.querySelector('[data-k-tab-id="activity"] .k-tab__count'))).toBe('1')
     nav.querySelector<HTMLButtonElement>('[data-k-tab-id="setup"]')!.click()
     await settleVue()
@@ -113,7 +113,7 @@ describe('public Agents shell routing', () => {
     expect(location.hash).toBe('#/models')
     expect(nav.querySelector('[aria-current="page"]')?.getAttribute('data-k-tab-id')).toBe('setup')
     const subtabs = element.querySelector('[aria-label="Setup sections"]')!
-    expect([...subtabs.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual(['#/models', '#/connections', '#/webhooks'])
+    expect([...subtabs.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual(['#/models', '#/connections', '#/webhooks', '#/skills'])
     expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
     expect(element.querySelector('[aria-label="Model management"]')).toBeNull()
     const providers = element.querySelector<HTMLAnchorElement>('a[href="#/models/provider-connections"]')!
@@ -122,6 +122,19 @@ describe('public Agents shell routing', () => {
     await settleVue()
     expect(location.hash).toBe('#/models/provider-connections')
     expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
+
+    subtabs.querySelector<HTMLAnchorElement>('a[href="#/skills"]')!.click()
+    await settleVue()
+    expect(location.hash).toBe('#/skills')
+    expect(nav.querySelector('[aria-current="page"]')?.getAttribute('data-k-tab-id')).toBe('setup')
+    expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Skills library')
+  })
+
+  it('keeps the agent return link when the Skills library opens from a Workbench', async () => {
+    const element = await mountShell('#/skills?agent=scout')
+    expect(text(element.querySelector('[aria-label="Setup sections"] [aria-current="page"]'))).toBe('Skills library')
+    const back = element.querySelector<HTMLAnchorElement>('a[href="#/agents/scout/skills"]')
+    expect(text(back)).toBe('Back to scout’s skills')
   })
 
   it('opens usage from Activity and assistant settings from Agents', async () => {
