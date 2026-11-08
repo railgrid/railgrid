@@ -252,6 +252,43 @@ describe('create-result adoption refresh races', () => {
   })
 })
 
+describe('agent deletion refresh races', () => {
+  it('keeps a deleted agent out through stale and finalizing snapshots and allows a replacement', async () => {
+    const deleted: Agent = { metadata: { name: 'scout', uid: 'old-uid' }, spec: {} }
+    const replacement: Agent = { metadata: { name: 'scout', uid: 'new-uid' }, spec: {} }
+    const terminating: Agent = { metadata: { name: 'other', deletionTimestamp: '2026-01-01T00:00:00Z' }, spec: {} }
+    const stale = deferred<Agent[]>()
+    const refresh = deferred<Agent[]>()
+    const listAgents = vi.fn()
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(refresh.promise)
+      .mockResolvedValueOnce([replacement, terminating])
+    const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockResolvedValue(undefined) }))
+    store.agents.data = [deleted]
+
+    const inFlight = store.load('agents')
+    await store.deleteAgent('scout')
+    expect(store.agents.data).toEqual([])
+    stale.resolve([deleted])
+    await inFlight
+    expect(store.agents.data).toEqual([])
+    refresh.resolve([deleted, terminating])
+    await vi.waitFor(() => expect(store.agents.loading).toBe(false))
+    expect(store.agents.data).toEqual([])
+
+    await store.load('agents')
+    expect(store.agents.data).toEqual([replacement])
+  })
+
+  it('keeps the agent visible when deletion fails', async () => {
+    const agent: Agent = { metadata: { name: 'scout' }, spec: {} }
+    const store = makeStore(stubApi({ deleteAgent: vi.fn().mockRejectedValue(new Error('denied')) }))
+    store.agents.data = [agent]
+    await expect(store.deleteAgent('scout')).rejects.toThrow('denied')
+    expect(store.agents.data).toEqual([agent])
+  })
+})
+
 describe('server-push freshness', () => {
   it('polls every collection with a healthy event stream and stops on retirement', async () => {
     vi.useFakeTimers()

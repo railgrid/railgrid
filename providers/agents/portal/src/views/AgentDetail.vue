@@ -286,10 +286,9 @@ async function remove(): Promise<void> {
   deleteBusy.value = true
   try {
     const result = await mutate(authority.store, {
-      run: async () => { await authority.api.deleteAgent(name); return true },
+      run: async () => { await authority.store.deleteAgent(name); return true },
       success: `Agent “${name}” deleted.`,
       failure: 'Delete failed',
-      reload: ['agents'],
     })
     if (result && authorityIsCurrent(authority) && name === props.name) navigate({ kind: 'menu', menu: 'agents' })
   } finally {

@@ -95,11 +95,9 @@ async function removeAgent(name: string, fromMenu = false): Promise<void> {
   })
   if (!ok || !authorityIsCurrent(authority)) return
   await mutate(authority.store, {
-    run: () => authority.api.deleteAgent(name),
+    run: () => authority.store.deleteAgent(name),
     success: `Agent “${name}” deleted.`,
     failure: 'Delete failed',
-    optimistic: () => { authority.store.agents.data = authority.store.agents.data.filter(agent => agent.metadata.name !== name) },
-    reload: ['agents'],
   })
 }
 
