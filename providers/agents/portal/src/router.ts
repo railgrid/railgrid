@@ -11,7 +11,9 @@
 //   #/inbox                           Activity inbox
 //   #/activity/<runID>                run trace
 //   #/connections #/webhooks #/models
-//   #/models/provider-connections|workspace-assistant|usage
+//   #/models/provider-connections
+//   #/assistant-settings             Workspace assistant settings
+//   #/activity?view=usage             Agents usage and cost
 //   #/connections/<name>/edit         connection edit
 //   #/toolsets/<name>/edit            toolset edit
 //   #/webhooks/<name>/edit            webhook detail (URL, routes, deliveries)
@@ -33,7 +35,7 @@ export const MODELS_TABS: { id: ModelsTab; label: string }[] = [
   { id: 'workspace-assistant', label: 'Workspace assistant' },
   { id: 'usage', label: 'Usage & cost' },
 ]
-export type ActivityTab = 'runs' | 'inbox'
+export type ActivityTab = 'runs' | 'inbox' | 'usage'
 export type AgentTab = 'chat' | 'config' | 'tools' | 'automation' | 'runs' | 'skills'
 export type CreateResource = 'agent' | 'connection' | 'toolset' | 'webhook' | 'model'
 export type EditResource = 'connection' | 'toolset' | 'webhook'
@@ -43,7 +45,7 @@ export const MENUS: MenuKey[] = ['agents', 'activity', 'connections', 'skills', 
 const AGENT_TABS: AgentTab[] = ['chat', 'config', 'tools', 'automation', 'runs', 'skills']
 
 export type Route =
-  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab; returnAgent?: string }
+  | { kind: 'menu'; menu: MenuKey; modelsTab?: ModelsTab; activityTab?: ActivityTab; assistantSettings?: true; returnAgent?: string }
   | { kind: 'agent'; name: string; tab: AgentTab; runID?: string }
   | { kind: 'run'; id: string }
   | { kind: 'edit'; resource: EditResource; name: string }
@@ -124,6 +126,13 @@ export function parseHash(hash = location.hash): Route {
   const [path, query = ''] = hash.replace(/^#\/?/, '').split('?')
   const parts = path.split('/').filter(Boolean)
   const [head, second, third, fourth, fifth] = parts
+  if (parts.length === 1 && head === 'assistant-settings' || parts.length === 2 && head === 'models' && second === 'workspace-assistant') {
+    return { kind: 'menu', menu: 'agents', assistantSettings: true }
+  }
+  if (parts.length === 1 && head === 'activity' && new URLSearchParams(query).get('view') === 'usage' ||
+      parts.length === 2 && head === 'models' && second === 'usage') {
+    return { kind: 'menu', menu: 'activity', activityTab: 'usage' }
+  }
   if (head === 'create') {
     // #/create/agent/harness preselects the harness backend; any other third
     // segment names an agent template to start from.
@@ -206,7 +215,9 @@ export function hashFor(route: Route): string {
         : `#/agents/${encodeURIComponent(route.agent)}/${collection}/${encodeURIComponent(route.name)}/edit`
     }
     default:
+      if (route.menu === 'agents' && route.assistantSettings) return '#/assistant-settings'
       if (route.menu === 'activity' && route.activityTab === 'inbox') return '#/inbox'
+      if (route.menu === 'activity' && route.activityTab === 'usage') return '#/activity?view=usage'
       if (route.menu === 'skills' && route.returnAgent) return `#/skills?${new URLSearchParams({ agent: route.returnAgent })}`
       return route.menu === 'models' && route.modelsTab && route.modelsTab !== 'models'
         ? `#/models/${route.modelsTab}` : `#/${route.menu}`

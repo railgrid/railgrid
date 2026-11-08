@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { BookOpen, Bot, Cpu, Gauge, Plug, RefreshCw, Webhook as WebhookIcon } from 'lucide-vue-next'
+import { Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { ApiClient, type ContextAuthority } from './api'
 import { AppStore } from './store'
@@ -28,6 +29,7 @@ import { isHarnessProvider, type AgentOverlayState, type Agent, type Connection,
 import { withCreatedCredential, type AgentCreateDraft, type AgentCredentialFamily } from './agent-create-draft'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
+import WorkspaceAssistantCard from './views/WorkspaceAssistantCard.vue'
 import AgentCreate from './views/AgentCreate.vue'
 import AgentDetail from './views/AgentDetail.vue'
 import SkillsLibrary from './views/SkillsLibrary.vue'
@@ -92,27 +94,26 @@ watch(
   { flush: 'post' },
 )
 const active = computed(() => activeMenu(route.value))
+const setupTabs = [
+  { id: 'models', label: 'Models' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'webhooks', label: 'Webhooks' },
+  { id: 'skills', label: 'Skills library' },
+] as const
+const setupActive = computed(() => setupTabs.some(tab => tab.id === active.value))
 // Initial hydration and authority rotations call loadAll. Subsequent route
 // entries must also revalidate cached collections, including empty snapshots.
 watch(() => hashFor(route.value), () => {
   if (api.value.hasWorkspace()) store.value.refreshCollections(resourceSlicesForRoute(route.value))
 })
-const menuCounts = computed<Record<MenuKey, number>>(() => {
-  storeRevision.value
-  return {
-    agents: store.value.agents.data.length,
-    skills: 0,
-    activity: store.value.pendingInbox().length,
-    connections: store.value.connections.data.length + store.value.toolsets.data.length,
-    webhooks: store.value.webhooks.data.length,
-    models: store.value.credentials.data.filter(item => !item.isConnection && !isHarnessProvider(item.provider)).length,
-  }
-})
 const live = computed(() => { storeRevision.value; return store.value.live })
 const tabs = computed<PortalTabItem[]>(() => {
-  const icons = { agents: Bot, skills: BookOpen, activity: Gauge, connections: Plug, webhooks: WebhookIcon, models: Cpu }
-  const labels = { agents: 'Agents', skills: 'Skills library', activity: 'Activity', connections: 'Connections', webhooks: 'Webhooks', models: 'Models' }
-  return MENUS.map(menu => ({ id: menu, label: labels[menu], icon: icons[menu], count: menuCounts.value[menu] || undefined }))
+  storeRevision.value
+  return [
+    { id: 'agents', label: 'Agents', icon: Bot, count: store.value.agents.data.length || undefined },
+    { id: 'activity', label: 'Activity', icon: Gauge, count: store.value.pendingInbox().length || undefined },
+    { id: 'setup', label: 'Setup', icon: Settings },
+  ]
 })
 
 const routeSurfaceKey = computed(() => {
@@ -274,8 +275,12 @@ function scheduleRouteFocus(next: Route): void {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
     if (newAgentComposerRoute.value === hashFor(next) &&
       document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
-    const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
-    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-detail-title > h2')
+    const assistantSettings = next.kind === 'menu' && next.assistantSettings && props.ctx?.agentOverlay
+    const providerConnections = next.kind === 'menu' && next.menu === 'models' && next.modelsTab === 'provider-connections'
+    const preferredTarget = assistantSettings ? '#workspace-assistant-settings' : providerConnections ? '#provider-connections-title' : ''
+    const target = (preferredTarget ? root.value?.querySelector<HTMLElement>(preferredTarget) : null)
+      ?? root.value?.querySelector<HTMLElement>('[data-agent-workspace-title], .k-resource-page__title:not([data-agents-setup-title]), .k-create-title, .agents-detail-title > h2')
+      ?? root.value?.querySelector<HTMLElement>('[data-agents-setup-title]')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()
@@ -383,10 +388,11 @@ watch(() => props.ctx, () => {
   if (contextUsable.value && !props.overlay) restoreRouteFromHash(false)
 })
 
-// The host assistant settings shortcut still enters the Models destination.
+// Hosts that open Models with the assistant-settings flag still reach the
+// same settings page as the Agents link.
 watch([() => props.ctx?.agentOverlay?.settingsOpen, () => hashFor(route.value)], ([open]) => {
-  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && route.value.modelsTab !== 'workspace-assistant') {
-    go({ kind: 'menu', menu: 'models', modelsTab: 'workspace-assistant' }, 'replace')
+  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && !route.value.modelsTab) {
+    go({ kind: 'menu', menu: 'agents', assistantSettings: true }, 'replace')
   }
 }, { immediate: true })
 
@@ -540,7 +546,14 @@ function onEditSuccess(detail: EditSuccessDetail): void {
 }
 
 function selectMenu(id: string): void {
-  if ((MENUS as string[]).includes(id)) go({ kind: 'menu', menu: id as MenuKey })
+  const menu = id === 'setup' ? 'models' : id
+  if ((MENUS as string[]).includes(menu)) go({ kind: 'menu', menu: menu as MenuKey })
+}
+
+function selectSetupTab(event: MouseEvent, menu: MenuKey): void {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
+  event.preventDefault()
+  go({ kind: 'menu', menu })
 }
 
 // The host's sidebar sub-nav (CatalogEntry ui.children) navigates by pushing a
@@ -594,18 +607,45 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
   </div>
   <div v-else ref="root" class="agents-app" :class="{ 'agents-app--workspace': workspaceActive }">
     <div v-if="route.kind === 'menu'" class="agents-nav-wrap">
-      <Tabs class="agents-nav" :tabs="tabs" :active="active" aria-label="Agents provider sections" @select="selectMenu" />
+      <Tabs class="agents-nav" :tabs="tabs" :active="setupActive ? 'setup' : active" aria-label="Agents provider sections" @select="selectMenu" />
       <span v-if="!live" class="agents-offline" title="Live updates are reconnecting; falling back to polling.">
         <RefreshCw class="k-spin" aria-hidden="true" /> reconnecting
       </span>
     </div>
 
     <div class="agents-view">
+      <section v-if="route.kind === 'menu' && setupActive" class="k-resource-page k-resource-page--collection">
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading">
+            <h2 class="k-resource-page__title" data-agents-setup-title>Setup</h2>
+            <p class="k-resource-page__subtitle">Manage the models, connections, webhooks, and reusable skills your agents use.</p>
+          </div>
+        </header>
+        <nav class="k-tabs k-tabs--compact agents-setup-tabs" aria-label="Setup sections">
+          <a
+            v-for="tab in setupTabs"
+            :key="tab.id"
+            class="k-tab agents-models-tab"
+            :href="hashFor({ kind: 'menu', menu: tab.id })"
+            :aria-current="active === tab.id ? 'page' : undefined"
+            @click="selectSetupTab($event, tab.id)"
+          >{{ tab.label }}</a>
+        </nav>
+      </section>
+      <template v-if="route.kind === 'menu' && route.menu === 'agents' && route.assistantSettings">
+        <ResourceBackLink href="#/agents" @back="go(DEFAULT_ROUTE)">Back to Agents</ResourceBackLink>
+        <WorkspaceAssistantCard v-if="ctx.agentOverlay" :key="routeSurfaceKey" :store="store" :overlay-control="ctx.agentOverlay" />
+        <section v-else class="k-resource-page k-resource-page--collection">
+          <h2 class="k-resource-page__title">Workspace assistant settings</h2>
+          <p class="muted">Workspace assistant settings are available in the workspace portal.</p>
+        </section>
+      </template>
       <AgentsList
-        v-if="route.kind === 'menu' && route.menu === 'agents'"
+        v-else-if="route.kind === 'menu' && route.menu === 'agents'"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
+        :assistant-settings="!!ctx.agentOverlay"
         @navigate="go"
       />
       <SkillsLibrary
@@ -647,7 +687,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
-        :overlay-control="ctx.agentOverlay"
+        setup-navigation
         :models-tab="route.modelsTab"
         :key="routeSurfaceKey"
         :store="store"

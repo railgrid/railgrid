@@ -14,7 +14,7 @@ import { ApiClient } from '../api'
 import { resolveConfirm } from '../portalkit/confirm'
 import { AppStore } from '../store'
 import type { Credential } from '../types'
-import { makeStore, stubApi } from './helpers'
+import { agentFixture, makeStore, modelBackend, stubApi } from './helpers'
 import { mountVue, settleVue, type MountedVue } from './vue-helper'
 
 const { toast } = vi.hoisted(() => ({ toast: vi.fn() }))
@@ -64,6 +64,68 @@ function loadedStore(api: ApiClient, credentials: Credential[]): AppStore {
   store.credentials.loaded = store.credentials.hasSnapshot = true
   return store
 }
+
+describe('combined Models page', () => {
+  it('keeps model assignments, capabilities and pricing in expandable row details', async () => {
+    const api = stubApi({ catalog: async () => [{ id: 'example-model', family: 'example', contextWindow: 128_000, vision: true, inputPer1M: 2, outputPer1M: 8 }] })
+    const store = loadedStore(api, [{ name: 'example', model: 'example-model', ready: true }])
+    store.agents.data = [
+      agentFixture('scout', { backend: modelBackend('example') }),
+      agentFixture('researcher', { backend: modelBackend('other', ['example']) }),
+    ]
+    const { element } = await mountVue(Models, { store, api, setupNavigation: true })
+    await settleVue(4, 150)
+
+    const expand = element.querySelector<HTMLButtonElement>('[aria-label="Show details for example"]')!
+    expect(expand.getAttribute('aria-expanded')).toBe('false')
+    expect(element.textContent).not.toContain('catalog estimate')
+    expand.click()
+    await settleVue()
+    const row = document.getElementById(expand.getAttribute('aria-controls')!)!
+    expect(row.querySelector('td')?.colSpan).toBe(element.querySelectorAll('table[aria-label="Models"] th').length)
+    expect(row.textContent).toContain('128k ctx')
+    expect(row.textContent).toContain('vision')
+    expect(row.textContent).toContain('$2 input · $8 output')
+    expect(row.textContent).toContain('Primary: scout')
+    expect(row.textContent).toContain('Fallback: researcher')
+    expand.click()
+    await settleVue()
+    expect(row.isConnected).toBe(false)
+  })
+
+  it('distinguishes unavailable connection metadata from a confirmed broken reference', async () => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = loadedStore(api, [
+      { name: 'usable', model: 'one', connectionRef: 'private', ready: true },
+      { name: 'broken', model: 'two', connectionRef: 'invalid', connectionUnavailable: true, ready: false },
+      { name: 'invalid', isConnection: true, displayName: 'Invalid provider' },
+    ])
+    const { element } = await mountVue(Models, { store, api, setupNavigation: true })
+    await settleVue(4, 150)
+    const rows = [...element.querySelectorAll('table[aria-label="Models"] tbody tr')]
+    expect(rows.find(row => row.textContent?.includes('usable'))?.textContent).toContain('Connection details unavailable')
+    expect(rows.find(row => row.textContent?.includes('broken'))?.textContent).toContain('Missing or invalid connection')
+  })
+
+  it.each([false, true])('shows a single credential recovery when hasSnapshot is %s', async hasSnapshot => {
+    const api = stubApi({ catalog: async () => [] })
+    const store = loadedStore(api, hasSnapshot ? [{ name: 'example', model: 'one' }] : [])
+    store.credentials.hasSnapshot = hasSnapshot
+    store.credentials.error = 'Credentials offline'
+    const load = vi.spyOn(store, 'load').mockResolvedValue(undefined)
+    const { element } = await mountVue(Models, { store, api, setupNavigation: true })
+    await settleVue()
+    const recovery = [...element.querySelectorAll(hasSnapshot ? '[role="status"]' : '[role="alert"]')]
+      .filter(item => item.textContent?.includes('Credentials offline'))
+    expect(recovery).toHaveLength(1)
+    const buttons = [...element.querySelectorAll('button')].filter(button => button.textContent?.trim() === 'Retry')
+    expect(buttons).toHaveLength(1)
+    buttons[0].click()
+    expect(load).toHaveBeenCalledOnce()
+    expect(load).toHaveBeenCalledWith('credentials')
+    expect(!!element.querySelector('table[aria-label="Provider connections and harness identities"]')).toBe(hasSnapshot)
+  })
+})
 
 describe('models view on an empty workspace', () => {
   beforeEach(() => toast.mockReset())
