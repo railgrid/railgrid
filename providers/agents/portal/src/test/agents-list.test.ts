@@ -70,14 +70,11 @@ describe('agents list refresh resilience', () => {
     const emptyMounted = await mountVue(AgentsList, { store: empty, api })
     expect(emptyMounted.element.querySelector('.k-first-run')).not.toBeNull()
     expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('Create your first agent')
-    expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('coding harness')
     const actions = [...emptyMounted.element.querySelectorAll<HTMLButtonElement>('.k-first-run__actions button')]
-    expect(actions.map(button => text(button))).toEqual(['Create agent', 'Add model credential'])
+    expect(actions.map(button => text(button))).toEqual(['New agent'])
     actions[0].click()
-    actions[1].click()
     expect(emptyMounted.navigations).toEqual([
       { kind: 'create', resource: 'agent' },
-      { kind: 'create', resource: 'model' },
     ])
     const stale = emptyMounted.element.querySelector<HTMLElement>('.agents-stale')!
     expect(text(stale)).toContain('Showing the last loaded agents. temporarily unavailable')
@@ -86,36 +83,16 @@ describe('agents list refresh resilience', () => {
     expect(loadAgents).toHaveBeenCalledWith('agents')
   })
 
-  it('offers a direct harness first-run action when only harness identities are configured', async () => {
+  it('offers New agent without requiring the credential list to load first', async () => {
     const api = stubApi()
     const store = makeStore(api)
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
-    Object.assign(store.credentials, { loaded: true, hasSnapshot: true })
-    store.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
+    store.credentials.error = 'credential API unavailable'
     const mounted = await mountVue(AgentsList, { store, api })
-
-    expect(text(mounted.element.querySelector('.k-first-run'))).toContain('Run Claude Code or Codex')
-    const actions = [...mounted.element.querySelectorAll<HTMLButtonElement>('.k-first-run__actions button')]
-    expect(text(actions[0])).toContain('Create with coding harness')
-    actions[0].click()
-    expect(mounted.navigations).toEqual([{ kind: 'create', resource: 'agent', type: 'harness' }])
-  })
-
-  it('waits for credentials and surfaces a retryable credential error', async () => {
-    const api = stubApi()
-    const store = makeStore(api)
-    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
-    const mounted = await mountVue(AgentsList, { store, api })
-    expect(text(mounted.element.querySelector('.agents-state[role=status]'))).toContain('Loading model credentials')
-    expect(mounted.element.querySelector('.k-first-run')).toBeNull()
-    mounted.unmount()
-
-    const failed = makeStore(api)
-    Object.assign(failed.agents, { loaded: true, hasSnapshot: true })
-    failed.credentials.error = 'credential API unavailable'
-    const failedMounted = await mountVue(AgentsList, { store: failed, api })
-    expect(text(failedMounted.element.querySelector('.agents-state-error'))).toContain('Could not load model credentials')
-    expect(failedMounted.element.querySelector('.agents-state-error button')).not.toBeNull()
+    const action = mounted.element.querySelector<HTMLButtonElement>('.k-first-run__actions button')!
+    expect(text(action)).toBe('New agent')
+    action.click()
+    expect(mounted.navigations).toEqual([{ kind: 'create', resource: 'agent' }])
   })
 })
 

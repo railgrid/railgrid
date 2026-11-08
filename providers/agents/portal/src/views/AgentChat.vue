@@ -80,7 +80,7 @@ interface ConversationRailHandle {
   expanded?: boolean
 }
 
-const props = defineProps<{ store: AppStore; api: ApiClient; name: string; overlay?: boolean; compact?: boolean; composerOnly?: boolean; pageContext?: string }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; name: string; overlay?: boolean; compact?: boolean; composerOnly?: boolean; focusNewComposer?: boolean; pageContext?: string }>()
 const emit = defineEmits<{ navigate: [route: Route]; 'inspection-open': [open: boolean] }>()
 // The standalone chat keeps its Conversation heading. AgentDetail supplies a
 // leading navigation control, compact identity heading, and actions when the
@@ -3134,6 +3134,16 @@ watch(log, element => {
   scrollToBottom()
 }, { flush: 'post' })
 watch(messages, scrollToBottom)
+
+let focusedNewComposer = false
+watch(() => [props.focusNewComposer, sessionInputReady.value, hasModel.value, composer.value] as const,
+  ([requested, ready, modelReady, editor]) => {
+    if (!requested || !ready || !modelReady || !editor || focusedNewComposer) return
+    focusedNewComposer = true
+    const active = document.activeElement
+    if (active === document.body || active?.hasAttribute('data-agent-workspace-title')) editor.focus()
+  }, { flush: 'post' },
+)
 
 onMounted(() => {
   mounted = true

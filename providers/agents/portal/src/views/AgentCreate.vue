@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, Bot, Check, Clock } from 'lucide-vue-next'
+import { ArrowLeft, Bot, Check } from 'lucide-vue-next'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { portalHref } from '../portalkit/navigation'
 import { toast } from '../portalkit/toast'
+import { confirmDialog } from '../portalkit/confirm'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import {
@@ -25,6 +26,7 @@ import {
   AGENT_BACKEND_MODEL,
   HARNESS_EDGE_KINDS,
   WORKSPACE_MODES,
+  credentialUnavailable,
   edgeKey,
   harnessLabel,
   splitEdgeKey,
@@ -33,7 +35,7 @@ import {
   type AgentCreate as AgentCreateBody,
   type HarnessWorkspace,
 } from '../types'
-import { useStoreRevision } from '../vue/runtime'
+import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const NAME_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 const props = withDefaults(defineProps<{
@@ -60,13 +62,7 @@ const emit = defineEmits<{
 }>()
 const revision = useStoreRevision(() => props.store)
 
-// The backend choice, with the same two labels and blurbs the Config pane
-// shows. One decision described one way, or a person meets it twice and reads
-// it as two.
-const BACKENDS: { id: AgentBackendType; label: string; blurb: string }[] = [
-  { id: AGENT_BACKEND_MODEL, label: 'Model', blurb: 'Uses a model connection and the tools configured for this agent.' },
-  { id: AGENT_BACKEND_HARNESS, label: 'Coding harness', blurb: 'Runs on a Linux or macOS machine and uses its own tools. Agent tool grants do not apply.' },
-]
+const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
 const initialDraft = props.initialDraft || emptyAgentCreateDraft(props.initialBackendType, props.initialTemplate)
 const name = ref(initialDraft.name)
@@ -76,13 +72,14 @@ const name = ref(initialDraft.name)
 const templates = ref<AgentTemplate[]>([])
 const templatesError = ref('')
 const template = ref(initialDraft.template || props.initialTemplate || '')
+const showTemplates = ref(Boolean(template.value))
 const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
 // Connection-slot wiring, by slot key. The other slot kinds reuse the fields
 // below (model credential, channel, machine, harness identity, GitHub).
 const slotWiring = ref<Record<string, string>>({ ...initialDraft.wiring })
 // The template's instructions render read-only from the parameters until the
 // user asks to edit them; then the textarea takes over as an override.
-const customPrompt = ref(false)
+const customPrompt = ref(initialDraft.customPrompt)
 const backendType = ref<AgentBackendType>(initialDraft.backendType)
 const modelCredential = ref(initialDraft.modelCredential)
 const harnessEdge = ref(initialDraft.harnessEdge)
@@ -93,20 +90,10 @@ const harnessWorkspace = ref<HarnessWorkspace>(initialDraft.harnessWorkspace)
 const harnessGitHubConnection = ref(initialDraft.harnessGitHubConnection)
 const systemPrompt = ref(initialDraft.systemPrompt)
 const channel = ref(initialDraft.channel)
-const web = ref(initialDraft.web)
-const fanOut = ref(initialDraft.fanOut)
-const visualization = ref(initialDraft.visualization)
-// Background runs (schedules, triggers) have no human watching, so a family
-// stays interactive-only unless opted in here — same rule as the Config pane.
-const webBackground = ref(initialDraft.webBackground)
-const fanOutBackground = ref(initialDraft.fanOutBackground)
-const visualizationBackground = ref(initialDraft.visualizationBackground)
-watch(visualization, on => { if (!on) visualizationBackground.value = false })
-watch(web, on => { if (!on) webBackground.value = false })
-watch(fanOut, on => { if (!on) fanOutBackground.value = false })
 const errors = reactive<Record<string, string>>({})
 const busy = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
+const templateChoices = ref<HTMLFieldSetElement | null>(null)
 
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
@@ -174,7 +161,7 @@ function templateNeeds(item: AgentTemplate): string {
 }
 const promptPreview = computed(() => selectedTemplate.value ? previewPrompt(selectedTemplate.value, parameters.value) : '')
 watch(selectedTemplate, (current, previous) => {
-  if (!current) { customPrompt.value = false; return }
+  if (!current) return
   backendType.value = templateBackend(current)
   const suggested = current.spec.suggestedName || current.metadata.name
   const previousSuggested = previous ? previous.spec.suggestedName || previous.metadata.name : ''
@@ -197,10 +184,35 @@ function customizePrompt(): void {
   systemPrompt.value = promptPreview.value
   customPrompt.value = true
 }
-const credentialOptions = computed(() => chatCredentials.value.map(item => ({
+const credentialOptions = computed(() => chatCredentials.value.filter(item => !credentialUnavailable(item)).map(item => ({
   value: item.name,
   label: item.connectionRef ? `${item.connectionName || item.connectionRef} · ${item.displayName || item.model}` : `${item.name}${item.model ? ` (${item.model})` : ''}`,
 })))
+watch([chatCredentials, credentials], ([models, slice]) => {
+  if (modelCredential.value || !slice.hasSnapshot || slice.error) return
+  const eligible = models.filter(model => !credentialUnavailable(model))
+  if (eligible.length === 1 && eligible[0].ready === true) modelCredential.value = eligible[0].name
+}, { immediate: true })
+
+function chooseBackend(type: AgentBackendType): void {
+  template.value = ''
+  showTemplates.value = false
+  customPrompt.value = false
+  backendType.value = type
+  void nextTick(() => nameInput.value?.focus())
+}
+
+function chooseTemplate(value: string): void {
+  if (!value) chooseBackend(AGENT_BACKEND_MODEL)
+  template.value = value
+}
+
+function openTemplates(): void {
+  showTemplates.value = true
+  void nextTick(() => templateChoices.value?.focus())
+  void loadTemplates()
+}
+
 const channelOptions = computed(() => [
   { value: '', label: '— none —' },
   ...channels.value.map(item => ({
@@ -208,11 +220,9 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const capabilities = computed(() => isHarness.value ? 'The harness’s own tools' : selectedTemplate.value ? (templateFamilies(selectedTemplate.value).join(', ') || 'Core only') : [
-  visualization.value ? `charts${visualizationBackground.value ? ' (+background)' : ''}` : '',
-  web.value ? `web${webBackground.value ? ' (+background)' : ''}` : '',
-  fanOut.value ? `fan-out${fanOutBackground.value ? ' (+background)' : ''}` : '',
-].filter(Boolean).join(', ') || 'Core only')
+const guided = computed(() => isHarness.value || Boolean(template.value))
+const capabilities = computed(() => isHarness.value ? 'The harness’s own tools'
+  : selectedTemplate.value ? templateFamilies(selectedTemplate.value).join(', ') || 'Core only' : 'Core only')
 
 // What the guidance panel promises, per backend. A harness-backed agent's
 // prerequisite is a machine and an identity, not a model credential — telling
@@ -257,8 +267,8 @@ const guidanceDescription = computed(() => isHarness.value
   : 'Choose the model connection the agent will use for its turns.')
 const guidanceNextSteps = computed(() => [
   selectedTemplate.value
-    ? 'Railgrid creates the agent (and any schedules the template declares) and opens its Config workspace.'
-    : 'Railgrid creates the agent and opens its Config workspace.',
+    ? 'Railgrid creates the agent (and any schedules the template declares) and opens a conversation.'
+    : 'Railgrid creates the agent and opens a conversation.',
   'Start a conversation to make sure the agent responds as expected.',
   ...(isHarness.value
     ? ['Add schedules and triggers when you’re ready to automate it.']
@@ -267,13 +277,13 @@ const guidanceNextSteps = computed(() => [
 // Whether the form can be submitted at all, which is a different question per
 // backend: the old condition was "a chat credential exists", which made the
 // harness backend unreachable however it was configured.
-const canSubmit = computed(() => isHarness.value
+const canSubmit = computed(() => (!template.value || Boolean(selectedTemplate.value)) && (isHarness.value
   ? hostEdges.value.length > 0 && harnessCredentials.value.length > 0
-  : credentialOptions.value.length > 0)
+  : credentialOptions.value.length > 0))
 
 onMounted(() => {
   void nextTick(() => nameInput.value?.focus())
-  void loadTemplates()
+  if (showTemplates.value) void loadTemplates()
 })
 
 function clearErrors(): void {
@@ -295,13 +305,8 @@ function addCredential(family: AgentCredentialFamily): void {
       harnessWorkspace: harnessWorkspace.value,
       harnessGitHubConnection: harnessGitHubConnection.value,
       systemPrompt: systemPrompt.value,
+      customPrompt: customPrompt.value,
       channel: channel.value,
-      web: web.value,
-      fanOut: fanOut.value,
-      visualization: visualization.value,
-      webBackground: webBackground.value,
-      fanOutBackground: fanOutBackground.value,
-      visualizationBackground: visualizationBackground.value,
       template: template.value,
       parameters: { ...parameters.value },
       wiring: { ...slotWiring.value },
@@ -333,10 +338,11 @@ async function submit(): Promise<void> {
     // credential. Requiring one here was the bug: it blocked the whole backend.
     if (!harnessEdge.value) errors.harnessEdge = 'Pick the machine this agent runs its turns on.'
     if (!harnessCredential.value) errors.harnessCredential = 'Pick the harness identity its turns run as.'
-  } else if (!modelCredential.value) {
+  } else if (!credentialOptions.value.some(option => option.value === modelCredential.value)) {
     errors.modelCredential = 'Pick the model this agent reasons with.'
   }
   const chosen = selectedTemplate.value
+  if (template.value && !chosen) errors.template = 'Load the selected template before creating this agent.'
   if (chosen) {
     for (const param of templateParameters.value) {
       if (param.required && !(parameters.value[param.key] ?? '').trim() && !param.default) errors[`param-${param.key}`] = `${param.label} is required.`
@@ -370,28 +376,11 @@ async function submit(): Promise<void> {
   }
   const prompt = systemPrompt.value.trim()
   if (prompt) body.systemPrompt = prompt
-  if (channel.value) body.channels = [{ name: 'primary', connectionRef: channel.value, primary: true }]
-  // Tool grants only for a model backend: the API refuses spec.tools on a
-  // harness-backed agent, so sending them would fail the create outright.
-  if (!isHarness.value) {
-    const families = ['core']
-    if (visualization.value) families.push('visualization')
-    if (web.value) families.push('web')
-    if (fanOut.value) families.push('spawn')
-    if (families.length > 1) body.interactiveFamilies = families
-    const background = ['core']
-    if (visualization.value && visualizationBackground.value) background.push('visualization')
-    if (web.value && webBackground.value) background.push('web')
-    if (fanOut.value && fanOutBackground.value) background.push('spawn')
-    if (background.length > 1) body.backgroundFamilies = background
-  }
-
   busy.value = true
   let result: Agent | undefined
   try {
     result = await mutate(props.store, {
       run: () => props.api.createAgent(body),
-      success: `Agent “${normalizedName}” created.`,
       failure: 'Create failed',
       reload: ['agents'],
     })
@@ -438,13 +427,32 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     harness.workspace = harnessWorkspace.value
   }
   const { agent, schedules } = instance
+  const background = agent.spec.tools?.background
+  const access = [
+    ...(background?.families ?? []).filter(family => family !== 'core'),
+    ...(background?.toolsets ?? []),
+    ...(background?.connections ?? []),
+  ]
+  const effects = schedules.map(schedule => {
+    const when = [schedule.spec.schedule || schedule.spec.runAt, schedule.spec.timeZone].filter(Boolean).join(' ')
+    return `${schedule.spec.suspend ? 'Paused schedule' : 'Schedule'} ${schedule.metadata.name}${when ? ` (${when})` : ''}.`
+  })
+  if (access.length) effects.push(`Background runs can use ${access.join(', ')}.`)
+  const authority = captureAuthority()
 
   busy.value = true
   let result
   try {
+    if (effects.length) {
+      const confirmed = await confirmDialog({
+        title: 'Review what this template adds',
+        message: effects.join(' '),
+        confirmLabel: 'Create & open chat',
+      })
+      if (!confirmed || !authorityIsCurrent(authority)) return
+    }
     result = await mutate(props.store, {
       run: () => props.api.createAgentFromTemplate(agent, schedules),
-      success: `Agent “${normalizedName}” created from ${chosen.spec.displayName}.`,
       failure: 'Create failed',
       reload: schedules.length ? ['agents', 'schedules'] : ['agents'],
     })
@@ -465,13 +473,13 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 </script>
 
 <template>
-  <div class="k-create-page">
+  <div class="k-create-page" :class="{ 'agents-create-quick': !guided }">
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="busy" @click="cancel">
       <ArrowLeft aria-hidden="true" /> Agents
     </button>
     <header class="k-create-header">
-      <h1 class="k-create-title">Create agent</h1>
-      <p class="k-create-description">Start from a template or a blank agent, choose where its turns run, and wire in what it needs from this workspace.</p>
+      <h1 class="k-create-title">New agent</h1>
+      <p class="k-create-description">{{ isHarness ? 'Choose the machine and coding harness for this agent.' : 'Set up an agent you can chat with right away.' }}</p>
     </header>
 
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
@@ -496,10 +504,10 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
       </div>
 
-      <form class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
-        <div class="k-create-body k-create-body--guided">
+      <form class="agents-create-form agents-guided-form k-create-surface" :class="{ 'k-create-surface--guided': guided }" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
+        <div class="k-create-body" :class="{ 'k-create-body--guided': guided }">
           <div class="k-create-fields">
-            <fieldset class="agents-cap-fs agents-template-fs" aria-describedby="agent-create-template-hint">
+            <fieldset v-if="showTemplates" ref="templateChoices" tabindex="-1" class="agents-cap-fs agents-template-fs" aria-describedby="agent-create-template-hint">
               <legend>Start from</legend>
               <div v-if="templatesError" class="k-inline-notification k-inline-notification--warning" role="status">
                 <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load templates. {{ templatesError }}</span></span>
@@ -507,11 +515,11 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
               </div>
               <div class="agents-radiocards agents-template-cards">
                 <label class="agents-radiocard k-checkbox-hit" :class="{ sel: template === '' }">
-                  <input v-model="template" type="radio" name="agent-create-template" value="" :disabled="busy" />
-                  <span class="agents-radiocard-t">Blank</span><span class="agents-radiocard-b">Write the instructions and pick capabilities yourself.</span>
+                  <input :checked="!template" type="radio" name="agent-create-template" value="" :disabled="busy" @change="chooseTemplate('')" />
+                  <span class="agents-radiocard-t">Blank</span><span class="agents-radiocard-b">Start with a name, a model, and optional instructions.</span>
                 </label>
                 <label v-for="item in templates" :key="item.metadata.name" class="agents-radiocard k-checkbox-hit" :class="{ sel: item.metadata.name === template }">
-                  <input v-model="template" type="radio" name="agent-create-template" :value="item.metadata.name" :disabled="busy" />
+                  <input :checked="template === item.metadata.name" type="radio" name="agent-create-template" :value="item.metadata.name" :disabled="busy" @change="chooseTemplate(item.metadata.name)" />
                   <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
                   <span class="agents-radiocard-b">{{ item.spec.description }}<span class="agents-template-needs">Needs: {{ templateNeeds(item) }}</span></span>
                 </label>
@@ -539,16 +547,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
               <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
             </label>
 
-            <fieldset class="agents-cap-fs" aria-describedby="agent-create-backend-hint">
-              <legend>Backend</legend>
-              <div class="agents-radiocards">
-                <label v-for="option in BACKENDS" :key="option.id" class="agents-radiocard k-checkbox-hit" :class="{ sel: option.id === backendType }">
-                  <input v-model="backendType" type="radio" name="agent-create-backend" :value="option.id" :disabled="busy || !!selectedTemplate" />
-                  <span class="agents-radiocard-t">{{ option.label }}</span><span class="agents-radiocard-b">{{ option.blurb }}</span>
-                </label>
-              </div>
-              <span id="agent-create-backend-hint" class="agents-hint">{{ selectedTemplate ? `Set by the ${selectedTemplate.spec.displayName} template.` : 'Where this agent’s turns execute.' }}</span>
-            </fieldset>
+
 
             <template v-if="isHarness">
               <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
@@ -605,8 +604,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
                       add a Claude Code or Codex one under Models → Provider connections
                     </button>
-                    first.
-                  </span>
+                      </span>
                 </label>
 
                 <label>
@@ -636,7 +634,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 
             <template v-else>
             <label>
-              <span id="agent-create-model-label">Model credential *</span>
+              <span id="agent-create-model-label">Model *</span>
               <FormSelect
                 id="agent-create-model"
                 v-model="modelCredential"
@@ -647,18 +645,15 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 :disabled="busy"
                 :invalid="Boolean(errors.modelCredential)"
                 labelledby="agent-create-model-label"
-                :describedby="['agent-create-model-hint', credentialOptions.length === 0 ? 'agent-create-model-empty' : '', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
+                :describedby="['agent-create-model-hint', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
               />
               <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
-              <span id="agent-create-model-hint" class="agents-hint">The credential and model endpoint used for every turn.</span>
-              <span v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
-                No model credentials yet —
-                <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">
-                  add one under Models
-                </button>
-                first.
-              </span>
+              <span id="agent-create-model-hint" class="agents-hint">{{ chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>
             </label>
+            <p v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
+              This workspace needs a chat model.
+              <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
+            </p>
 
             <label v-for="slot in connectionSlots" :key="slot.key">
               <span :id="`agent-create-slot-${slot.key}-label`">{{ slotLabel(slot) }}{{ slot.required ? ' *' : '' }}</span>
@@ -709,9 +704,9 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             </label>
 
             <label v-if="!selectedTemplate || customPrompt">
-              <span id="agent-create-system-prompt-label">System prompt</span>
-              <textarea v-model="systemPrompt" class="k-input" :rows="customPrompt ? 10 : 3" placeholder="You are a concise assistant that…" :disabled="busy" aria-labelledby="agent-create-system-prompt-label" aria-describedby="agent-create-system-prompt-hint" />
-              <span id="agent-create-system-prompt-hint" class="agents-hint">{{ customPrompt ? 'Your edited copy replaces the template’s instructions.' : 'Optional — persona and standing instructions, not mechanics.' }}</span>
+              <span id="agent-create-system-prompt-label">Instructions{{ selectedTemplate ? '' : ' (optional)' }}</span>
+              <textarea v-model="systemPrompt" class="k-input" :rows="customPrompt ? 10 : 3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="customPrompt ? 'agent-create-system-prompt-hint' : undefined" />
+              <span v-if="customPrompt" id="agent-create-system-prompt-hint" class="agents-hint">Your edited copy replaces the template’s instructions.</span>
             </label>
             <div v-else class="agents-template-prompt">
               <span id="agent-create-prompt-preview-label" class="agents-field-label">Instructions from template</span>
@@ -722,7 +717,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
               <span id="agent-create-prompt-preview-hint" class="agents-hint">Rendered from your answers above. Editable here, or later in Config.</span>
             </div>
 
-            <label>
+            <label v-if="channelSlot">
               <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : '' }}</span>
               <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
               <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
@@ -736,41 +731,9 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             <p v-else-if="selectedTemplate" class="agents-hint">
               This template grants: {{ capabilities }}. Changeable later in Config.
             </p>
-
-            <fieldset v-else class="agents-cap-fs" aria-describedby="agent-create-capabilities-hint">
-              <legend>Can do</legend>
-              <div class="agents-cap-row">
-                <label class="agents-cap k-checkbox-hit">
-                  <input v-model="web" type="checkbox" :disabled="busy" />
-                  <span class="agents-check-copy"><strong>Read the web</strong><span class="muted">Fetch pages; search needs a websearch tool.</span></span>
-                </label>
-                <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
-                  <input v-model="webBackground" type="checkbox" :disabled="busy || !web" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
-                </label>
-              </div>
-              <div class="agents-cap-row">
-                <label class="agents-cap k-checkbox-hit">
-                  <input v-model="fanOut" type="checkbox" :disabled="busy" />
-                  <span class="agents-check-copy"><strong>Research fan-out</strong><span class="muted">Work independent parts in parallel.</span></span>
-                </label>
-                <label class="agents-check agents-bg-toggle k-checkbox-hit" title="Background runs have no human watching, so a capability stays interactive-only unless opted in here.">
-                  <input v-model="fanOutBackground" type="checkbox" :disabled="busy || !fanOut" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
-                </label>
-              </div>
-              <div class="agents-cap-row">
-                <label class="agents-cap k-checkbox-hit">
-                  <input v-model="visualization" type="checkbox" :disabled="busy" />
-                  <span class="agents-check-copy"><strong>Visualize data</strong><span class="muted">Create charts in chat from supplied data.</span></span>
-                </label>
-                <label class="agents-check agents-bg-toggle k-checkbox-hit">
-                  <input v-model="visualizationBackground" type="checkbox" :disabled="busy || !visualization" /><Clock :stroke-width="1.75" aria-hidden="true" /> background
-                </label>
-              </div>
-              <span id="agent-create-capabilities-hint" class="agents-hint">Changeable later.</span>
-            </fieldset>
           </div>
 
-          <CreateGuidance
+          <CreateGuidance v-if="guided"
             title="Prepare a usable agent"
             :description="guidanceDescription"
             :prerequisites="prerequisites"
@@ -785,10 +748,14 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
           <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
         </div>
         <div class="k-create-actions">
-          <button type="button" class="k-btn k-btn--ghost secondary" :disabled="busy" @click="cancel">Cancel</button>
-          <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
-            <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create agent' }}
+          <button class="k-btn k-btn--primary agents-create-submit" type="submit" :disabled="busy || !canSubmit">
+            <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create & open chat' }}
           </button>
+        </div>
+        <div class="agents-create-alternatives">
+          <button v-if="!showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="openTemplates">Use a template</button>
+          <button v-if="!isHarness" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
+          <button v-if="isHarness || showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
         </div>
       </form>
     </template>

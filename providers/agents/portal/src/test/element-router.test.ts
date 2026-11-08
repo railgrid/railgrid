@@ -952,14 +952,43 @@ describe('context and create-session routing fences', () => {
     expect(text(element.querySelector('#agent-create-edge'))).toContain('builder-01')
     expect(text(element.querySelector('#agent-create-harnesscred'))).toContain('claude-login')
 
-    buttonWithText(element, 'Cancel').click()
+    element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
     await settleVue(5)
     expect(location.hash).toBe('#/agents')
-    buttonWithText(element, 'Create with coding harness').click()
+    buttonWithText(element, 'New agent').click()
     await settleVue(5)
-    expect(location.hash).toBe('#/create/agent/harness')
+    buttonWithText(element, 'Use a coding harness').click()
+    await settleVue(5)
+    expect(location.hash).toBe('#/create/agent')
     expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('')
     expect(element.querySelector<HTMLTextAreaElement>('#agent-create-system-prompt-label + textarea')?.value).toBe('')
+    element.remove()
+  })
+
+  it('opens the focused composer after creating with the sole ready model', async () => {
+    const element = await mountShell('#/create/agent')
+    const store = element.store!
+    const api = element.api!
+    const created = agentFixture('nova')
+    configureChatApi(api, [])
+    api.createAgent = vi.fn().mockResolvedValue(created)
+    api.listAgents = vi.fn().mockResolvedValue([created])
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.data = [{ name: 'openai', provider: 'openai', model: 'gpt-5', ready: true }]
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    const name = element.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'nova'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Create & open chat').click()
+    await settleVue(8, 120)
+
+    expect(location.hash).toBe('#/agents/nova/chat')
+    expect(api.createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'nova', modelCredential: 'openai' }))
+    expect(element.querySelector('[data-agent-workbench-toggle]')?.getAttribute('aria-expanded')).toBe('false')
+    expect(document.activeElement).toBe(composerEditor(element))
     element.remove()
   })
 
@@ -1017,7 +1046,7 @@ describe('context and create-session routing fences', () => {
     expect(oldStore.credentials.hasSnapshot).toBe(true)
     buttonWithText(element, 'Agents').click()
     await settleVue()
-    buttonWithText(element, 'Create agent').click()
+    buttonWithText(element, 'New agent').click()
     await settleVue()
     const oldForm = element.querySelector('.agents-create-form')!
     const oldApi = element.api!

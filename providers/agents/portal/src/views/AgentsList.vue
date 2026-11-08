@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
@@ -16,7 +16,6 @@ import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import { agentHarness, agentHarnessBacked, agentModelCredential, harnessLabel, type Agent } from '../types'
-import type { AgentTemplate } from '../agent-template'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
@@ -38,23 +37,8 @@ watch(layout, (value, previous) => {
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
-// AppStore slices are intentionally plain objects. Return a shallow snapshot so
-// every store revision invalidates the template even when the slice object
-// itself keeps the same identity while its loading fields change.
+// Refresh the view when the store updates its plain resource slice.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
-const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
-const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
-const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
-// Starter templates for the first-run guide. Best-effort: the guide's primary
-// action creates a blank agent whether or not the catalog loaded.
-const starterTemplates = ref<AgentTemplate[]>([])
-onMounted(async () => {
-  try {
-    starterTemplates.value = await props.api.agentTemplates()
-  } catch {
-    starterTemplates.value = []
-  }
-})
 const showFirstRun = computed(() => agents.value.loaded && agents.value.data.length === 0 && (!agents.value.error || agents.value.hasSnapshot))
 const filters: TableFilterDefinition[] = [
   { key: 'backendType', label: 'Backend', allLabel: 'All backends', options: [
@@ -66,22 +50,6 @@ const filters: TableFilterDefinition[] = [
     { value: 'needs-setup', label: 'Needs setup' },
   ] },
 ]
-
-const firstRunDescription = computed(() => {
-  const hasChat = chatCredentials.value.length > 0
-  const hasHarness = harnessCredentials.value.length > 0
-  if (hasChat && hasHarness) return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each backend uses its own credential type.'
-  if (hasChat) return 'Choose a chat model for a provider-run agent, or use Claude Code or Codex on a joined Linux or macOS machine with a harness identity.'
-  if (hasHarness) return 'Run Claude Code or Codex on a joined Linux or macOS machine, or connect a chat model for a provider-run agent.'
-  return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each path needs only its own credential type.'
-})
-
-const firstRunPrimary = computed(() => chatCredentials.value.length === 0 && harnessCredentials.value.length > 0
-  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
-  : { label: 'Create agent', route: { kind: 'create', resource: 'agent' } as Route })
-const firstRunSecondary = computed(() => chatCredentials.value.length > 0
-  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
-  : { label: 'Add model credential', route: { kind: 'create', resource: 'model' } as Route })
 
 function navigate(route: Route): void { emit('navigate', route) }
 
@@ -187,7 +155,6 @@ function openAgentRow(row: Record<string, unknown>): void {
         <Plus aria-hidden="true" /> New agent
       </button>
     </template>
-    <!-- Agent and credential reads retain their existing independent states. -->
     <div class="agents-menu">
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       <AlertCircle aria-hidden="true" />
@@ -202,54 +169,15 @@ function openAgentRow(row: Record<string, unknown>): void {
         <AlertCircle aria-hidden="true" /> Showing the last loaded agents. {{ agents.error }}
         <button class="k-btn k-btn--ghost" type="button" :disabled="agents.loading" @click="store.load('agents')">{{ agents.loading ? 'Retrying…' : 'Retry' }}</button>
       </div>
-      <div v-if="credentials.error && !credentials.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-        <AlertCircle aria-hidden="true" />
-        <span>Could not load model credentials. {{ credentials.error }}</span>
-        <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">
-          {{ credentials.loading ? 'Retrying…' : 'Retry' }}
-        </button>
-      </div>
-      <div v-else-if="!credentials.loaded" class="k-card agents-state k-loading-reveal" role="status">Loading model credentials…</div>
-      <template v-else>
-        <div v-if="credentials.error" class="agents-stale" role="status">
-          <AlertCircle aria-hidden="true" /> Showing the last loaded model credentials. {{ credentials.error }}
-          <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
-        </div>
-        <FirstRunGuide
-          title="Create your first agent"
-          :description="firstRunDescription"
-          :primary-label="firstRunPrimary.label"
-          :secondary-label="firstRunSecondary.label"
-          :steps="[
-            { label: 'Choose a backend', description: 'Chat model or coding harness' },
-            { label: 'Set up the agent', description: 'Identity, instructions, and channel' },
-            { label: 'Run or automate', description: 'Start a conversation or add automation' },
-          ]"
-          journey-label="Agent setup path"
-          @primary="navigate(firstRunPrimary.route)"
-          @secondary="navigate(firstRunSecondary.route)"
-        >
-          <template #icon><Bot aria-hidden="true" /></template>
-          <template v-if="starterTemplates.length" #details>
-            <div class="agents-template-starters">
-              <p class="agents-template-starters-title">Or start from a template</p>
-              <div class="agents-template-starters-grid" role="list" aria-label="Agent templates">
-                <button
-                  v-for="item in starterTemplates"
-                  :key="item.metadata.name"
-                  type="button"
-                  class="agents-template-starter"
-                  role="listitem"
-                  @click="navigate({ kind: 'create', resource: 'agent', type: item.metadata.name })"
-                >
-                  <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
-                  <span class="agents-radiocard-b">{{ item.spec.description }}</span>
-                </button>
-              </div>
-            </div>
-          </template>
-        </FirstRunGuide>
-      </template>
+      <FirstRunGuide
+        title="Create your first agent"
+        description="Give an agent a name and a model, then start a conversation."
+        primary-label="New agent"
+        :steps="[]"
+        @primary="navigate({ kind: 'create', resource: 'agent' })"
+      >
+        <template #icon><Bot aria-hidden="true" /></template>
+      </FirstRunGuide>
     </template>
 
     <template v-else>

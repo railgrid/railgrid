@@ -54,6 +54,7 @@ const props = defineProps<{
   composerOnly?: boolean
   overlay?: boolean
   pageContext?: string
+  focusNewComposer?: boolean
 }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const revision = useStoreRevision(() => props.store)
@@ -88,37 +89,35 @@ const workbenchStorageKey = computed(() => {
   const tenantKey = props.api.tenantKey()
   const user = props.api.context()?.user
   const userKey = user?.sub || user?.userId || user?.email || ''
-  return `railgrid:agents:workbench:${encodeURIComponent(JSON.stringify([tenantKey, userKey, props.name]))}:open:v1`
+  return `railgrid:agents:workbench:${encodeURIComponent(JSON.stringify([tenantKey, userKey, props.name]))}:keep-open:v2`
 })
 function preferredWorkbenchOpen(): boolean {
-  try {
-    const stored = localStorage.getItem(workbenchStorageKey.value)
-    if (stored === '0' || stored === '1') return stored === '1'
-  } catch { /* Storage may be unavailable. */ }
-  return true
+  try { return localStorage.getItem(workbenchStorageKey.value) === '1' }
+  catch { return false }
 }
-function rememberWorkbenchOpen(open: boolean): void {
-  // Mobile drawers and compact overlays should not change the desktop layout.
-  if (props.compact || workspaceCompact.value) return
+const keepWorkbenchOpen = ref(preferredWorkbenchOpen())
+function setKeepWorkbenchOpen(event: Event): void {
+  keepWorkbenchOpen.value = (event.target as HTMLInputElement).checked
   try {
-    localStorage.setItem(workbenchStorageKey.value, open ? '1' : '0')
-  } catch { /* Keep the controls usable when storage is unavailable. */ }
+    localStorage.setItem(workbenchStorageKey.value, keepWorkbenchOpen.value ? '1' : '0')
+  } catch { /* Storage may be unavailable. */ }
 }
 
-// Chat is the route's primary surface, but a wide desktop gets the retained
-// workbench alongside it on first entry. A mobile deep link to a workbench tab
-// is an explicit request for that pane and therefore still opens it.
 const workbenchExplicitlyOpened = ref(props.tab !== 'chat')
 const workspaceCompact = ref(isMobileViewport())
-const workspaceOpen = ref(!props.compact && (props.tab !== 'chat' || (!isMobileViewport() && preferredWorkbenchOpen())))
+function initialWorkbenchOpen(): boolean {
+  return !props.compact && (props.tab !== 'chat' ||
+    (!props.focusNewComposer && !workspaceCompact.value && keepWorkbenchOpen.value))
+}
+const workspaceOpen = ref(initialWorkbenchOpen())
 let inspectionActive = false
 let inspectionWorkspaceOpen: boolean | null = null
 let workbenchIntentVersion = 0
 let inspectionIntentVersion = 0
-watch(() => props.compact, compact => {
+watch(() => props.compact, () => {
   workbenchIntentVersion += 1
-  workbenchExplicitlyOpened.value = false
-  workspaceOpen.value = !compact && !workspaceCompact.value && preferredWorkbenchOpen()
+  workbenchExplicitlyOpened.value = props.tab !== 'chat'
+  workspaceOpen.value = initialWorkbenchOpen()
   if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
 })
 const initialWorkbenchState = props.tab === 'chat'
@@ -131,7 +130,8 @@ const skillsMounted = ref(props.tab === 'skills')
 const workbenchTab = computed(() => workbench.value.activeTabID)
 
 watch(workbenchStorageKey, () => {
-  workspaceOpen.value = !props.compact && (props.tab !== 'chat' || (!workspaceCompact.value && preferredWorkbenchOpen()))
+  keepWorkbenchOpen.value = preferredWorkbenchOpen()
+  workspaceOpen.value = initialWorkbenchOpen()
   if (workspaceOpen.value) ensureWorkbenchSurfaceMounted(workbench.value.activeTabID)
 })
 
@@ -147,7 +147,6 @@ watch(() => props.tab, tab => {
   if (inspectionActive) workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
-    rememberWorkbenchOpen(true)
     workbench.value = openAgentWorkbenchTab(workbench.value, tab)
     workspaceOpen.value = true
     ensureWorkbenchSurfaceMounted(tab)
@@ -183,7 +182,6 @@ function toggleWorkbench(event: MouseEvent): void {
     workspace.value?.close()
     return
   }
-  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workspace.value?.open(trigger)
   workspaceOpen.value = true
@@ -202,7 +200,6 @@ function onWorkspaceCompactChange(compact: boolean): void {
 }
 
 function closeWorkbench(): void {
-  rememberWorkbenchOpen(false)
   workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = false
   workspaceOpen.value = false
@@ -211,7 +208,6 @@ function closeWorkbench(): void {
 
 function selectWorkbenchTab(tab: WorkbenchTab): void {
   workbenchIntentVersion += 1
-  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workbench.value = activateAgentWorkbenchTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -221,7 +217,6 @@ function selectWorkbenchTab(tab: WorkbenchTab): void {
 
 function openWorkbenchLauncherTab(): void {
   workbenchIntentVersion += 1
-  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workspace.value?.open()
   workspaceOpen.value = true
@@ -230,7 +225,6 @@ function openWorkbenchLauncherTab(): void {
 
 function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
   workbenchIntentVersion += 1
-  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   workbench.value = selectAgentWorkbenchLauncherTab(workbench.value, tab)
   workspaceOpen.value = true
@@ -240,7 +234,6 @@ function selectWorkbenchLauncherTab(tab: AgentWorkbenchBuiltInTab): void {
 
 function closeWorkbenchTab(tab: WorkbenchTab): void {
   workbenchIntentVersion += 1
-  rememberWorkbenchOpen(true)
   workbenchExplicitlyOpened.value = true
   const wasActive = workbench.value.activeTabID === tab
   workbench.value = closeAgentWorkbenchTab(workbench.value, tab)
@@ -334,7 +327,7 @@ async function remove(): Promise<void> {
             @close="closeWorkbench"
           >
             <template #conversation>
-              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :overlay="overlay" :composer-only="composerOnly" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
+              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :overlay="overlay" :composer-only="composerOnly" :focus-new-composer="focusNewComposer" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
                 <template #leading>
                   <ResourceBackLink
                     v-if="!overlay"
@@ -367,7 +360,7 @@ async function remove(): Promise<void> {
                   </span>
                   <button
                     v-if="!compact"
-                    class="agents-workbench-toggle"
+                    class="k-btn k-btn--ghost agents-workbench-toggle"
                     type="button"
                     :aria-controls="domID('agents-workbench')"
                     data-agent-workbench-toggle
@@ -377,6 +370,7 @@ async function remove(): Promise<void> {
                     @click="toggleWorkbench"
                   >
                     <PanelRight :stroke-width="1.75" aria-hidden="true" />
+                    <span class="agents-workbench-toggle-label">Workbench</span>
                   </button>
                 </template>
               </AgentChat>
@@ -396,6 +390,12 @@ async function remove(): Promise<void> {
                 <template #config>
                   <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections @navigate="handleChildNavigate">
                     <template #destructive-actions>
+                      <ResourceSectionCard v-if="!workspaceCompact" class="agents-config-sec" variant="document" :heading-id="domID('agent-layout-heading')" title="Layout">
+                        <label class="agents-check k-checkbox-hit">
+                          <input type="checkbox" data-keep-workbench-open :checked="keepWorkbenchOpen" @change="setKeepWorkbenchOpen" />
+                          Keep the workbench open on desktop
+                        </label>
+                      </ResourceSectionCard>
                       <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
                         <div class="agents-form-actions">
                           <button

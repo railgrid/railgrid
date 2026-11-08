@@ -46,6 +46,7 @@ const store = shallowRef(markRaw(new AppStore(api.value)))
 const route = ref<Route>(props.overlay ? { kind: 'agent', name: props.overlay.agent, tab: 'chat' } : parseHash())
 const authorityEpoch = ref(0)
 const createSession = ref(0)
+const newAgentComposerRoute = ref<string | null>(null)
 const continueAddModelAfterProviderConnect = ref(false)
 const storeRevision = ref(0)
 const agentCreateDraft = shallowRef<AgentCreateDraft | null>(null)
@@ -209,6 +210,7 @@ function go(next: Route, mode?: 'push' | 'replace'): void {
   const historyMode = mode ?? (route.value.kind === 'create' && next.kind === 'create' ? 'replace' : 'push')
   prepareAgentCreateRouteChange(previous, next)
   advanceCreateSession(route.value, next)
+  if (newAgentComposerRoute.value !== hashFor(next)) newAgentComposerRoute.value = null
   route.value = next
   // Let the host's Vue Router own browser history when this provider is
   // embedded. ProviderFrame acknowledges the event synchronously with
@@ -239,6 +241,7 @@ function restoreRouteFromHash(normalize: boolean): void {
     focusCollectionAfterEdit = route.value.resource === 'toolset' ? 'toolsets' : 'connections'
   }
   advanceCreateSession(route.value, next)
+  if (newAgentComposerRoute.value !== hashFor(next)) newAgentComposerRoute.value = null
   route.value = next
   if (normalize) syncHash(next)
   if (focusCollectionAfterEdit) scheduleCollectionFocus()
@@ -269,6 +272,8 @@ function scheduleRouteFocus(next: Route): void {
   const request = ++focusRequest
   void nextTick(() => requestAnimationFrame(() => {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
+    if (newAgentComposerRoute.value === hashFor(next) &&
+      document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
     const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
     const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-detail-title > h2')
     if (!target) return
@@ -330,6 +335,7 @@ function rotateContext(context: RailgridContext | null, resetRoute: boolean): vo
     modelCreateOwner = defaultModelCreateOwner()
     continueAddModelAfterProviderConnect.value = false
   }
+  newAgentComposerRoute.value = null
   if (resetRoute) clearAgentCreateSetup()
   if (resetRoute) go(DEFAULT_ROUTE, 'replace')
   if (authority.usable) {
@@ -480,7 +486,11 @@ function onCreateSuccess(detail: CreateSuccessDetail): void {
   }
   if (detail.resource === 'model' && modelCreateOwner.kind === 'agent') { go(modelCreateOwner, 'replace'); return }
   if (detail.resource === 'agent') clearAgentCreateSetup()
-  go(detail.destination || createSuccessRoute(detail), 'replace')
+  const destination = detail.destination || createSuccessRoute(detail)
+  go(destination, 'replace')
+  if (detail.resource === 'agent' && destination.kind === 'agent' && destination.tab === 'chat') {
+    newAgentComposerRoute.value = hashFor(destination)
+  }
 }
 
 function onCreateCancel(detail: Pick<CreateSuccessDetail, 'store' | 'authorityEpoch' | 'createSession'>): void {
@@ -658,6 +668,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :name="route.name"
         :compact="!!overlay"
         :composer-only="overlay?.composerOnly"
+        :focus-new-composer="newAgentComposerRoute === hashFor(route)"
         :overlay="!!overlay"
         :page-context="overlay?.pageContext"
         :tab="route.tab"

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { confirmState, resolveConfirm } from '../portalkit/confirm'
 import AgentCreateView from '../views/AgentCreate.vue'
 import AgentsListView from '../views/AgentsList.vue'
 import ConnectionsView from '../views/Connections.vue'
@@ -70,7 +71,7 @@ describe('route-owned creation surfaces', () => {
     const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'nova' }, spec: { displayName: 'nova' } })
     const api = stubApi({ createAgent })
     const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5' }]
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
     markAuthoritative(store, 'agents', 'credentials')
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
     const events = mountedByElement.get(el)!.events
@@ -78,15 +79,16 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('.agents-overlay')).toBeNull()
     expect(el.querySelector('.k-create-page')).not.toBeNull()
     expect(el.querySelector('[role="dialog"]')).toBeNull()
-    expect(el.querySelector('.k-create-surface--guided')).not.toBeNull()
-    expect(el.querySelector('.k-create-guidance')).not.toBeNull()
+    expect(el.querySelector('.k-create-guidance')).toBeNull()
+    expect(el.querySelector('button[type=submit]')?.textContent).toContain('Create & open chat')
+    expect(el.querySelector('#agent-create-model')?.textContent).toContain('main')
+    expect(el.querySelector('#agent-create-channel')).toBeNull()
     el.querySelector<HTMLInputElement>('input[name=name]')!.value = 'nova'
     el.querySelector<HTMLInputElement>('input[name=name]')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    await chooseFormSelect(el, '#agent-create-model', 'main')
     el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settle(el, 5)
 
-    expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'nova', modelCredential: 'main' }))
+    expect(createAgent).toHaveBeenCalledWith({ name: 'nova', displayName: 'nova', modelCredential: 'main' })
     expect(events['create-success']?.[0]).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
   })
 
@@ -99,7 +101,7 @@ describe('route-owned creation surfaces', () => {
     markAuthoritative(store, 'agents', 'credentials', 'edges')
     const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
 
-    el.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    el.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(el, 2)
 
     const machine = el.querySelector<HTMLButtonElement>('#agent-create-edge')!
@@ -117,7 +119,7 @@ describe('route-owned creation surfaces', () => {
     expect(credential.getAttribute('aria-required')).toBe('true')
     expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
 
-    expect(el.querySelector('.k-create-description')?.textContent).toContain('where its turns run')
+    expect(el.querySelector('.k-create-description')?.textContent).toContain('machine and coding harness')
     expect(el.querySelector('.k-create-guidance__description')?.textContent).toContain('machine and harness identity')
     expect(el.querySelector('.k-create-guidance__description')?.textContent).not.toContain('model connection')
     expect(el.querySelector('.k-create-guidance')?.textContent).toContain('Add schedules and triggers')
@@ -171,7 +173,7 @@ describe('route-owned creation surfaces', () => {
 
     expect(el.querySelector('form')).toBeNull()
     expect(el.querySelector('.agents-state-loading')?.textContent).toContain('Loading existing agents and model credentials')
-    expect(el.textContent).not.toContain('No model credentials yet')
+    expect(el.textContent).not.toContain('This workspace needs a chat model')
   })
 
   it('shows retryable first-load errors instead of treating missing agent prerequisites as empty', async () => {
@@ -204,7 +206,7 @@ describe('route-owned creation surfaces', () => {
     runnerLoadingStore.credentials.data = [{ name: 'claude', provider: 'claude-code' }]
     markAuthoritative(runnerLoadingStore, 'agents', 'credentials')
     const runnerLoading = await mount<AgentCreateWizard>('agents-agent-create', { store: runnerLoadingStore, api })
-    runnerLoading.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    runnerLoading.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(runnerLoading, 2)
     expect(runnerLoading.querySelector('.k-inline-notification--error[role="alert"]')).toBeNull()
     expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).toContain('Checking for available machines…')
@@ -216,7 +218,7 @@ describe('route-owned creation surfaces', () => {
     runnerErrorStore.edges.loaded = true
     runnerErrorStore.edges.error = 'edge API unavailable'
     const runnerError = await mount<AgentCreateWizard>('agents-agent-create', { store: runnerErrorStore, api })
-    runnerError.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    runnerError.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(runnerError, 2)
     expect(runnerError.querySelector('.k-inline-notification--error[role="alert"]')?.textContent).toContain('Could not load machines')
     expect(runnerError.querySelector('.k-create-guidance')?.textContent).toContain('Retry loading machines before choosing a runner.')
@@ -231,10 +233,10 @@ describe('route-owned creation surfaces', () => {
     const events = mountedByElement.get(el)!.events
 
     expect(el.querySelector('form')).not.toBeNull()
-    expect(el.textContent).toContain('No model credentials yet')
+    expect(el.textContent).toContain('This workspace needs a chat model')
     expect(el.querySelector<HTMLButtonElement>('button[type=submit]')?.disabled).toBe(true)
     const recovery = el.querySelector<HTMLButtonElement>('.k-dashboard-action')!
-    expect(recovery.textContent).toContain('add one under Models')
+    expect(recovery.textContent).toContain('Connect a model')
     recovery.click()
     expect(events['add-credential']?.[0]).toEqual(expect.objectContaining({
       family: 'chat',
@@ -258,7 +260,7 @@ describe('route-owned creation surfaces', () => {
     el.querySelector<HTMLInputElement>('#agent-create-name')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
     el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!.value = 'Keep this instruction.'
     el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!.dispatchEvent(new InputEvent('input', { bubbles: true }))
-    el.querySelector<HTMLInputElement>('input[name="agent-create-backend"][value="harness"]')!.click()
+    el.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(el, 2)
     el.querySelector<HTMLButtonElement>('#agent-create-harnesscred-empty .k-dashboard-action')!.click()
 
@@ -531,7 +533,7 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   const picked = el.querySelector<HTMLInputElement>('input[name="agent-create-template"]:checked')!
   expect(picked.value).toBe('news-reporter')
   expect(el.querySelector<HTMLInputElement>('#agent-create-name')!.value).toBe('news-reporter')
-  expect(el.querySelector<HTMLInputElement>('input[name="agent-create-backend"]')!.disabled).toBe(true)
+  expect(el.querySelector('#agent-create-edge')).toBeNull()
   expect(el.querySelector('#agent-create-param-topics')).not.toBeNull()
   expect(el.querySelector('#agent-create-slot-websearch')).not.toBeNull()
   expect(el.querySelector('#agent-create-channel-label')?.textContent).toContain('*')
@@ -565,6 +567,11 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
 
   const remaining = [...el.querySelectorAll('.agents-fielderr, .k-inline-notification--error')].map(n => n.textContent?.trim())
   expect(remaining, 'no validation errors should remain').toEqual([])
+  expect(confirmState.message).toContain('news-reporter-daily-digest')
+  expect(confirmState.message).toContain('Background runs can use web, searx')
+  expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  resolveConfirm(true)
+  await settle(el)
   expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
   const [agent, schedules] = createAgentFromTemplate.mock.calls[0] as unknown as [
     { metadata: { name: string }; spec: Record<string, any> },

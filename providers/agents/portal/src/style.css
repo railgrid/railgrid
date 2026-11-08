@@ -134,14 +134,16 @@ railgrid-provider-agents .agents-chat-actions .agents-agent-status {
 }
 railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
   display: inline-flex;
-  width: 36px;
-  height: 36px;
-  min-width: 36px;
+  min-height: 36px;
   align-items: center;
   justify-content: center;
-  padding: 0;
+  gap: 6px;
 }
 railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle svg { width: 16px; height: 16px; }
+@media (max-width: 480px) {
+  railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle { min-width: 44px; padding-inline: 0; }
+  railgrid-provider-agents .agents-workbench-toggle-label { display: none; }
+}
 /* The shared workbench recipe owns tab geometry, states, and touch sizing;
  * these hooks only keep the provider header constrained in its pane. */
 railgrid-provider-agents .agents-workbench-header { min-width: 0; }
@@ -175,6 +177,15 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
+railgrid-provider-agents .agents-create-quick { max-width: 38rem; margin-inline: auto; }
+railgrid-provider-agents .agents-create-quick .agents-create-submit { width: 100%; }
+railgrid-provider-agents .agents-create-alternatives {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 12px;
+  padding: 8px 18px 14px;
+}
 /* Bound the task region, not the route shell or its contextual guidance. */
 railgrid-provider-agents .agents-resource-fields { width: 100%; max-width: 42rem; }
 railgrid-provider-agents .agents-resource-fields .agents-field-label,
@@ -908,8 +919,6 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
     padding-block: 12px;
   }
   railgrid-provider-agents .agents-chat-actions .agents-workbench-toggle {
-    width: 44px;
-    height: 44px;
     min-width: 44px;
     min-height: 44px;
   }
