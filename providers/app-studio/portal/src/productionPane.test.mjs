@@ -72,7 +72,7 @@ test('summarizes template defaults and saved environment maps through rollout up
 
 test('distinguishes pending rollout observation, terminal failure, and unavailable status', () => {
   const createFixture = new Function('computed', 'promotionError', 'releasePipeline', [
-    sourceBetween('const productionRolloutSummary = ', '\nfunction canPromoteRelease'),
+    sourceBetween('const productionRolloutFailed = ', '\nfunction canPromoteRelease'),
     'return productionRolloutSummary',
   ].join('\n'))
   const promotionError = ref(null)

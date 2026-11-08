@@ -213,6 +213,7 @@ function selectRow(row: Row) {
 }
 
 function showFileViewer() {
+  if (!treeOpen.value) return
   treeOpen.value = false
   if (!splitPane.value) {
     void nextTick(() => {

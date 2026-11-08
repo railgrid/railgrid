@@ -885,7 +885,8 @@ const developmentPreviewAuthorizing = ref(false)
 const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewReadinessMessage = ref<string | null>(null)
 const developmentPreviewAccessModesFromAuthorization = ref<Array<'private' | 'public'>>([])
-const developmentPreviewAuthorizedPolicy = ref<{ mode: 'private' | 'public'; converged: boolean } | null>(null)
+const developmentPreviewAuthorizedPolicy = ref<{ mode: 'private' | 'public'; converged: boolean; serial: number } | null>(null)
+const previewAccessUnverified = ref(false)
 const developmentPreviewAccessConverged = ref(true)
 const developmentPreviewAccessBusy = ref(false)
 const developmentPreviewAccessError = ref<string | null>(null)
@@ -3278,7 +3279,7 @@ const developmentPreviewDesiredAccess = computed<'private' | 'public'>(() => (
     : developmentPreviewAuthorizedPolicy.value?.mode ?? (selected.value?.sharing?.preview?.mode === 'public' ? 'public' : 'private')
 ))
 const developmentPreviewSettingsSummary = computed(() => {
-  if (developmentPreviewAccessError.value || developmentPreviewAuthorizationError.value) return 'Could not confirm access'
+  if (previewAccessUnverified.value || developmentPreviewAuthorizationError.value) return 'Could not confirm access'
   const saved = previewAccess.value?.supported ? previewAccess.value : developmentPreviewAuthorizedPolicy.value
   if (developmentPreviewAccessBusy.value || saved?.converged === false) return 'Updating access…'
   if (!saved) return developmentPreviewAuthorizing.value ? 'Checking access…' : 'Could not confirm access'
@@ -3414,6 +3415,7 @@ watch(
       previewAccessRevision += 1
       previewMode.value = 'restricted'
       previewAccess.value = null
+      previewAccessUnverified.value = false
       developmentPreviewAuthorizedPolicy.value = null
       developmentPreviewAccessConverged.value = true
       developmentPreviewAccessBusy.value = false
@@ -4289,10 +4291,11 @@ const productionSettingsSummary = computed(() => productionBinding.value || !pro
 const productionConfigurationDisclosureSummary = computed(() => promotionValuesDirty.value
   ? `${savedProductionSettingsSummary.value} · unsaved changes`
   : savedProductionSettingsSummary.value)
+const productionRolloutFailed = computed(() => releasePipeline.value.steps.some(step => step.key === 'deploy' && step.state === 'error'))
 const productionRolloutSummary = computed(() => {
   if (promotionError.value) return 'Rollout status unavailable'
-  const { requestedRevision, observedRevision, steps } = releasePipeline.value
-  if (steps.some(step => step.key === 'deploy' && step.state === 'error')) return 'Production rollout failed'
+  const { requestedRevision, observedRevision } = releasePipeline.value
+  if (productionRolloutFailed.value) return 'Production rollout failed'
   if (requestedRevision && requestedRevision !== observedRevision) return 'Rollout requested · awaiting observation'
   return observedRevision ? `Observed rollout ${observedRevision}` : 'No rollout observed'
 })
@@ -4513,7 +4516,10 @@ async function loadPromotionStatus(scheduleNext: boolean) {
     promotion.value = readiness
     syncProductionForm(readiness)
     const observation = promotionObservation(readiness)
-    if (pollAtStart && promotionPollState === pollAtStart) {
+    if (productionRolloutFailed.value) {
+      promotionFeedback.value = null
+      promotionPollState = null
+    } else if (pollAtStart && promotionPollState === pollAtStart) {
       const progress = advancePromotionPoll(pollAtStart, observation)
       promotionLastTarget = progress.state
       if (progress.matched) {
@@ -4522,11 +4528,15 @@ async function loadPromotionStatus(scheduleNext: boolean) {
         promotionFeedback.value = promotionPollExhaustedFeedback(progress.state, observation)
       }
       promotionPollState = progress.done ? null : progress.state
-    } else if (promotionLastTarget && promotionObservationMatches(promotionLastTarget, observation)) {
+    } else if (promotionLastTarget) {
       // The bounded post-action window may expire while the provider is still
       // converging. Keep a later ordinary status poll honest if it eventually
       // reports the target revision.
-      promotionFeedback.value = promotionReadyFeedback(promotionLastTarget, observation)
+      if (promotionObservationMatches(promotionLastTarget, observation)) {
+        promotionFeedback.value = promotionReadyFeedback(promotionLastTarget, observation)
+      } else if (promotionFeedback.value?.tone === 'success') {
+        promotionFeedback.value = null
+      }
     }
     promotionError.value = null
   } catch (err) {
@@ -4608,7 +4618,7 @@ async function loadPublishing() {
   }
   const requestSerial = ++publishingLoadSerial
   const accessRevision = previewAccessRevision
-  const authorizationAtStart = developmentPreviewAuthorizedPolicy.value
+  const authorizationSerialAtStart = developmentPreviewAuthorizationSerial
   const stateWasLoaded = publishingStateAvailable.value
   const membersWereLoaded = publishingMembersLoaded.value
   if (!stateWasLoaded && !membersWereLoaded) publishingLoadState.value = 'loading'
@@ -4647,9 +4657,9 @@ async function loadPublishing() {
   if (previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision) {
     const state = previewResult.value
     const authorization = developmentPreviewAuthorizedPolicy.value
-    // Authorization can confirm the runtime while this combined read is still
-    // waiting for its other requests. Keep that policy alongside the share data.
-    applyPreviewAccessState(state.supported && authorization && authorization !== authorizationAtStart
+    // A later authorization can confirm the runtime while this combined read
+    // is still waiting for its other requests.
+    applyPreviewAccessState(state.supported && authorization && authorization.serial > authorizationSerialAtStart
       ? { ...state, mode: authorization.mode === 'public' ? 'public' : 'restricted', converged: authorization.converged }
       : state)
   }
@@ -4725,7 +4735,17 @@ function applyPreviewAccessState(state: ProjectPreviewAccess) {
     previewMode.value = state.mode
   }
   previewAccess.value = state
+  if (state.supported) previewAccessUnverified.value = false
   developmentPreviewAccessConverged.value = !state.supported || state.converged
+}
+
+function reconcilePreviewAccessAfterFailure(): number {
+  // The server may save the mode before a later step fails. Invalidate older
+  // reads and keep the policy unconfirmed until there is fresh evidence.
+  const revision = ++previewAccessRevision
+  previewAccessUnverified.value = true
+  void authorizeDevelopmentPreview({ force: true })
+  return revision
 }
 
 // savePreviewAccess writes the preview policy. The platform applies it to the
@@ -4750,6 +4770,7 @@ async function savePreviewAccess() {
   } catch (err) {
     if (accessRevision === previewAccessRevision) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
+      accessRevision = reconcilePreviewAccessAfterFailure()
     }
   } finally {
     if (accessRevision === previewAccessRevision) developmentPreviewAccessBusy.value = false
@@ -7847,6 +7868,7 @@ async function changeDevelopmentPreviewAccess(mode: string) {
       developmentPreviewAccessConverged.value = true
       developmentPreviewReadinessMessage.value = null
       developmentPreviewAccessError.value = e instanceof Error ? e.message : String(e)
+      accessRevision = reconcilePreviewAccessAfterFailure()
     }
   } finally {
     if (accessRevision === previewAccessRevision) developmentPreviewAccessBusy.value = false
@@ -7899,7 +7921,8 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
       const converged = authorization.accessConverged && authorization.observedAccess === mode
       const access = previewAccess.value
       if (!access?.supported || access === accessAtStart || (mode === developmentPreviewDesiredAccess.value && converged)) {
-        developmentPreviewAuthorizedPolicy.value = { mode, converged }
+        developmentPreviewAuthorizedPolicy.value = { mode, converged, serial }
+        previewAccessUnverified.value = false
         if (access?.supported) applyPreviewAccessState({ ...access, mode: mode === 'public' ? 'public' : 'restricted', converged })
       }
     }
@@ -12716,7 +12739,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     </div>
                   </div>
                   <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
-                  <div v-if="promotionFeedback" role="status" aria-live="polite" class="text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'text-success' : 'text-warning'">{{ promotionFeedback.message }}</div>
+                  <div v-if="promotionFeedback" role="status" aria-live="polite" class="wrap-anywhere text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'text-success' : 'text-warning'">{{ promotionFeedback.message }}</div>
               </template>
               <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
                 <div>{{ promotionError || 'Production status is unavailable. Refresh to retry.' }}</div>
@@ -12915,6 +12938,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :preview-saved-mode="previewAccess?.mode === 'public' ? 'public' : 'restricted'"
     :preview-url="previewAccess?.url ?? ''"
     :preview-supported="Boolean(previewAccess?.supported)"
+    :preview-unverified="previewAccessUnverified"
     :preview-converged="previewAccess?.converged !== false"
     :preview-grants="previewAccess?.grants ?? []"
     :busy="publishingActionBusy || developmentPreviewAccessBusy"
@@ -12943,12 +12967,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 <style scoped>
 .app-studio-workbench { container: app-studio-workbench / inline-size; }
 
-@container app-studio-workbench (max-width: 26rem) {
+@container app-studio-workbench (max-width: 30rem) {
   .app-studio-workbench-header { flex-wrap: wrap; row-gap: 4px; padding-block: 4px; }
   .app-studio-workbench-header__actions { flex-basis: 100%; justify-content: flex-end; }
 }
 
-@container app-studio-workbench (max-width: 18rem) {
+@container app-studio-workbench (max-width: 21rem) {
   /* Keep the native scroll viewport usable when there is little room for tab chrome. */
   .app-studio-workbench-header { --k-workbench-tabs-scroll-control-display: none; }
   .app-studio-workbench-header__grip { display: none; }

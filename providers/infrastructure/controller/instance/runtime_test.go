@@ -196,6 +196,61 @@ func TestStampConditionObservedGenerationUsesTenantGeneration(t *testing.T) {
 	}
 }
 
+func TestMirrorStatusObservesVersionedProductionRuntime(t *testing.T) {
+	const revision = "retry"
+	for _, tc := range []struct {
+		name      string
+		observed  int64
+		state     string
+		ready     string
+		invalid   bool
+		want      string
+		wantPhase string
+	}{
+		{name: "stale Ready", observed: 1, state: "ACTIVE", ready: "True"},
+		{name: "stale failure", observed: 1, state: "ERROR", ready: "False"},
+		{name: "current generation converging", observed: 2, state: "IN_PROGRESS", ready: "False"},
+		{name: "current generation failed with coarse phase still pending", observed: 2, state: "ERROR", ready: "Unknown", want: revision, wantPhase: "Failed"},
+		{name: "current generation ready", observed: 2, state: "ACTIVE", ready: "True", want: revision, wantPhase: "Ready"},
+		{name: "legacy Ready without state", observed: 2, ready: "True", want: revision, wantPhase: "Ready"},
+		{name: "current spec rejected before sync", invalid: true, want: revision, wantPhase: "Failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &unstructured.Unstructured{Object: map[string]any{
+				"metadata": map[string]any{"generation": int64(12)},
+				"spec": map[string]any{"values": map[string]any{
+					infrav1alpha1.RailgridModeField: infrav1alpha1.RailgridModeProduction,
+					rolloutRevisionField:            revision,
+				}},
+			}}
+			valid := validCondition(metav1.ConditionTrue, infrav1alpha1.ReasonReady, "")
+			var runtimeObj *unstructured.Unstructured
+			if tc.invalid {
+				valid = validCondition(metav1.ConditionFalse, infrav1alpha1.ReasonInvalidValues, "invalid production inputs")
+			} else {
+				runtimeObj = runtimeForNetwork(2, tc.observed, infrav1alpha1.RailgridNetworkPhaseRuntime, tc.ready)
+				runtimeObj.Object["spec"].(map[string]any)[rolloutRevisionField] = revision
+				runtimeObj.Object["status"].(map[string]any)["state"] = tc.state
+			}
+			if _, err := (&Controller{}).mirrorStatus(context.Background(), mirroredStatusClient{}, instance, nil, runtimeObj, valid); err != nil {
+				t.Fatalf("mirrorStatus: %v", err)
+			}
+			got, found, err := unstructured.NestedString(instance.Object, "status", observedRolloutRevisionField)
+			if err != nil || !found || got != tc.want {
+				t.Fatalf("observed rollout = %q (found %v, err %v), want %q", got, found, err, tc.want)
+			}
+			phase, _, _ := unstructured.NestedString(instance.Object, "status", observedRolloutPhaseField)
+			if phase != tc.wantPhase {
+				t.Fatalf("observed rollout phase = %q, want %q", phase, tc.wantPhase)
+			}
+			generation, _, _ := unstructured.NestedInt64(instance.Object, "status", "observedGeneration")
+			if generation != instance.GetGeneration() {
+				t.Fatalf("mirrored Instance generation = %d, want %d", generation, instance.GetGeneration())
+			}
+		})
+	}
+}
+
 func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) {
 	instance := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",

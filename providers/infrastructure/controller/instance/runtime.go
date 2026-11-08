@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -39,6 +40,10 @@ import (
 // written, so finalization still works when the Template is retired while
 // instances exist.
 const runtimeRefKey = "runtimeRef"
+
+const rolloutRevisionField = "railgridRedeployRevision"
+const observedRolloutRevisionField = "observedRolloutRevision"
+const observedRolloutPhaseField = "observedRolloutPhase"
 
 // runtimeGVRFor is the runtime-cluster resource a Template's instances
 // materialize as.
@@ -313,6 +318,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	} else {
 		next = map[string]any{}
 	}
+	mirrorRolloutObservation(inst, runtimeObj, next, valid != nil && valid.status == metav1.ConditionFalse)
 
 	conds, _ := next["conditions"].([]any)
 	prevConds, _ := prevStatus["conditions"].([]any)
@@ -369,6 +375,78 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 		return ready, fmt.Errorf("update status: %w", err)
 	}
 	return ready, nil
+}
+
+// The tenant Instance generation only establishes that its desired spec was
+// processed. A runtime spec update can still return the previous graph's
+// status. Publish rollout evidence separately from the general Instance phase.
+func mirrorRolloutObservation(inst, runtimeObj *unstructured.Unstructured, status map[string]any, invalid bool) {
+	delete(status, observedRolloutRevisionField)
+	delete(status, observedRolloutPhaseField)
+	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "values", infrav1alpha1.RailgridModeField)
+	revision, _, _ := unstructured.NestedString(inst.Object, "spec", "values", rolloutRevisionField)
+	if mode != infrav1alpha1.RailgridModeProduction || revision == "" {
+		return
+	}
+	// An empty value is evidence that a generation-aware controller is waiting.
+	status[observedRolloutRevisionField] = ""
+	phase := "Failed"
+	if !invalid {
+		phase = observedRuntimeRolloutPhase(runtimeObj, status, revision)
+	}
+	if phase != "" {
+		status[observedRolloutRevisionField] = revision
+		status[observedRolloutPhaseField] = phase
+	}
+}
+
+func observedRuntimeRolloutPhase(runtimeObj *unstructured.Unstructured, status map[string]any, revision string) string {
+	if runtimeObj == nil || !currentRuntimeStatus(runtimeObj.GetGeneration(), status) {
+		return ""
+	}
+	runtimeRevision, _, _ := unstructured.NestedString(runtimeObj.Object, "spec", rolloutRevisionField)
+	if runtimeRevision != revision {
+		return ""
+	}
+	state, _ := status["state"].(string)
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "ACTIVE":
+		return "Ready"
+	case "ERROR", "FAILED":
+		return "Failed"
+	case "":
+		// A runtime without KRO's coarse state can report an explicit terminal
+		// phase. Ready=False alone can mean that a graph is still converging.
+		if runtimeReady(runtimeObj) {
+			return "Ready"
+		}
+		phase, _ := status["phase"].(string)
+		switch strings.ToLower(strings.TrimSpace(phase)) {
+		case "failed", "error", "degraded":
+			return "Failed"
+		}
+	}
+	return ""
+}
+
+func currentRuntimeStatus(generation int64, status map[string]any) bool {
+	if generation <= 0 {
+		return false
+	}
+	observed, found := generationValue(status["observedGeneration"])
+	if found && observed != generation {
+		return false
+	}
+	conditions, _ := status["conditions"].([]any)
+	for _, raw := range conditions {
+		condition, ok := raw.(map[string]any)
+		if ok && condition["type"] == "Ready" {
+			if observed, ok := generationValue(condition["observedGeneration"]); ok {
+				return observed == generation
+			}
+		}
+	}
+	return found
 }
 
 // runtimeNetworkPhase exposes the controller-owned network gate on the

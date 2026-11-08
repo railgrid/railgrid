@@ -92,7 +92,7 @@ const authKey = manifestEntryKey(manifest, (item) => item.name === 'ProjectAuthe
 const authArtifact = await artifact(manifest[authKey].file)
 enforce('App Studio authentication settings', [authArtifact], { rawBytes: 17_000, gzipBytes: 5_100 })
 // Workbench sections and adaptive panes affect total gzip size. See the measured baseline.
-enforce('App Studio total assets', allArtifacts, { rawBytes: 1_410_000, gzipBytes: 392_500 })
+enforce('App Studio total assets', allArtifacts, { rawBytes: 1_410_000, gzipBytes: 393_000 })
 
 if (budgetFailures.length) {
   console.error('Largest emitted assets (gzip bytes):')

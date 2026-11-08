@@ -226,7 +226,7 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
     const projectGitSettingsOpen = ref(false);
     let previewAccessRevision = 0;
     const previewMode = ref('restricted'), previewAccess = ref(null);
-    const developmentPreviewAuthorizedPolicy = ref(null), developmentPreviewAccessConverged = ref(true);
+    const developmentPreviewAuthorizedPolicy = ref(null), developmentPreviewAccessConverged = ref(true), previewAccessUnverified = ref(false);
     const developmentPreviewAccessBusy = ref(false), developmentPreviewAccessError = ref(null);
     const activeAssistantThreadID = ref(initialState.noThread ? '' : 'thread-a');
     let assistantThreadRequestSerial = 0;

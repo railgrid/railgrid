@@ -121,6 +121,6 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) 
       <p class="text-[12px] text-text-secondary">{{ recovery ? 'Save files to a fresh repository. The previous repository will be left untouched.' : 'Save source to a private repository when idle. Binary and oversized files may stay in App Studio.' }}</p>
       <button type="button" class="k-btn k-btn--primary justify-self-start" :disabled="saving || checking" @click="connect"><Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" /><span>{{ saving ? 'Creating repository…' : recovery ? 'Create a new repository' : 'Create repository and save project files' }}</span></button>
     </template>
-    <p v-if="error" role="alert" class="text-[12px] text-danger">{{ error }}</p>
   </AIWorkbenchSection>
+  <p v-if="error" role="alert" class="text-[12px] text-danger">{{ error }}</p>
 </template>

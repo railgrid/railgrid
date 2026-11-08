@@ -146,9 +146,10 @@ test('keeps the focused side visible through split changes and restores tree foc
   assert.equal(restoredFocus, 1)
 })
 
-test('reveals a written file and restores narrow-pane focus without taking it from outside Code', async () => {
+test('reveals a written file and moves focus only when leaving the narrow tree', async () => {
   const path = 'notes.md'
   const body = {}
+  const viewerControl = {}
   const ownerDocument = { activeElement: body, body }
   const treeOpen = { value: true }
   const activeTreePath = { value: '' }
@@ -157,7 +158,7 @@ test('reveals a written file and restores narrow-pane focus without taking it fr
   const dependencies = {
     treeOpen,
     activeTreePath,
-    rootRef: { value: { ownerDocument, contains: () => false } },
+    rootRef: { value: { ownerDocument, contains: (element) => element === viewerControl } },
     splitPane: { value: false },
     backToTreeRef: { value: { focus: () => { focusCount++ } } },
     nextTick: (task) => task(),
@@ -179,9 +180,14 @@ test('reveals a written file and restores narrow-pane focus without taking it fr
   assert.deepEqual(opened, [path])
   assert.equal(focusCount, 1)
 
+  ownerDocument.activeElement = viewerControl
+  await refreshAndSelect(path, 'shop', null)
+  assert.equal(focusCount, 1, 'keep focus in the already-open viewer')
+
+  treeOpen.value = true
   ownerDocument.activeElement = {}
   await refreshAndSelect(path, 'shop', null)
-  assert.equal(focusCount, 1)
+  assert.equal(focusCount, 1, 'do not take focus from outside Code')
 })
 
 test('refreshes the tree and selected file after a workspace revision changes', () => {

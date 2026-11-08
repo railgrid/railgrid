@@ -518,6 +518,36 @@ func TestProjectObservedRedeployRevisionReadsProviderInstanceSpec(t *testing.T) 
 	}
 }
 
+func TestProjectObservedRedeployRevisionRequiresCurrentInstanceStatus(t *testing.T) {
+	const revision = "rollout-new"
+	for _, tc := range []struct {
+		name   string
+		status map[string]any
+		want   string
+	}{
+		{name: "no observation"},
+		{name: "prior generation", status: map[string]any{"observedGeneration": int64(1), "observedRolloutRevision": revision}},
+		{name: "legacy infrastructure", status: map[string]any{"observedGeneration": int64(2)}, want: revision},
+		{name: "runtime still pending", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": ""}},
+		{name: "old rollout", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": "rollout-old"}},
+		{name: "current rollout", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": revision}, want: revision},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &unstructured.Unstructured{Object: map[string]any{
+				"kind":     "Instance",
+				"metadata": map[string]any{"generation": int64(2)},
+				"spec":     map[string]any{"values": map[string]any{projectRedeployRevisionField: revision}},
+			}}
+			if tc.status != nil {
+				instance.Object["status"] = tc.status
+			}
+			if got := projectObservedRedeployRevision(instance); got != tc.want {
+				t.Fatalf("observed rollout revision = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestProjectBuildAndPromotionRequireExactReviewedCommitImages(t *testing.T) {
 	base := metav1.Now().Time
 	tests := []struct {

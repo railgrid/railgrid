@@ -51,7 +51,7 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022 } })
   const fixture = new Function('computed', 'ref', 'api', `
     const selected = ref({ name: 'demo', sharing: { preview: { mode: 'private' } } })
-    const previewAccess = ref(null), previewMode = ref('restricted'), shareDialogOpen = ref(true)
+    const previewAccess = ref(null), previewMode = ref('restricted'), shareDialogOpen = ref(true), previewAccessUnverified = ref(false)
     const publishing = ref(null), publishingStateAvailable = ref(false), publishingLoadError = ref(null)
     const publishingMembers = ref([]), publishingMembersLoaded = ref(false), publishingMembersError = ref(null)
     const publishingLoadState = ref('idle'), shareMode = ref('restricted')
@@ -71,17 +71,22 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
     const applyDevelopmentPreviewAuthorization = () => {}
     const clearDevelopmentPreviewAuthorizationRetry = () => {}, developmentPreviewAuthorizationRetryable = () => false
     ${outputText}
-    return { selected, previewAccess, previewMode, developmentPreviewDesiredAccess, developmentPreviewSettingsSummary,
+    return { selected, previewAccess, previewMode, previewAccessUnverified, publishingActionError, developmentPreviewAccessError,
+      developmentPreviewDesiredAccess, developmentPreviewSettingsSummary,
       applyPreviewAccessState, loadPublishing, authorizations, savePreviewAccess, changeDevelopmentPreviewAccess,
       authorizeDevelopmentPreviewRequest }
   `)
   let finishAuthorization
   let failAuthorization
   let finishPreviewRead
+  let previewWriteError
   let projectViewReads = 0
   const current = fixture(computed, ref, {
     authorizeDevelopmentPreview: () => new Promise((resolve, reject) => { finishAuthorization = resolve; failAuthorization = reject }),
-    setPreviewAccess: async (_ctx, _name, mode) => ({ mode: mode === 'public' ? 'public' : 'restricted', supported: true, converged: false }),
+    setPreviewAccess: async (_ctx, _name, mode) => {
+      if (previewWriteError) throw previewWriteError
+      return { mode: mode === 'public' ? 'public' : 'restricted', supported: true, converged: false }
+    },
     getProject: async () => { projectViewReads++; throw new Error('project view unavailable') },
     getPublishing: async () => ({ published: false }),
     listPublishingMembers: async () => [],
@@ -142,6 +147,39 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   finishAuthorization(observed('public'))
   await earlierRead
   assert.equal(summary.value, 'Restricted')
+
+  const olderAuthorization = current.authorizeDevelopmentPreviewRequest('demo', 'older-authorization')
+  const newerRead = current.loadPublishing()
+  finishAuthorization(observed('private'))
+  await olderAuthorization
+  finishPreviewRead({ mode: 'public', supported: true, converged: true })
+  await newerRead
+  assert.equal(summary.value, 'Anyone with link')
+
+  previewWriteError = new Error('grants lookup failed after saving')
+  const beforeFailure = current.loadPublishing()
+  current.previewMode.value = 'restricted'
+  await current.savePreviewAccess()
+  assert.equal(current.publishingActionError.value, previewWriteError.message)
+  assert.equal(current.previewAccessUnverified.value, true)
+  assert.equal(summary.value, 'Could not confirm access')
+  finishPreviewRead({ mode: 'public', supported: true, converged: true })
+  await beforeFailure
+  assert.equal(summary.value, 'Could not confirm access')
+  const afterShareFailure = current.authorizeDevelopmentPreviewRequest('demo', 'after-share-failure')
+  finishAuthorization(observed('private'))
+  await afterShareFailure
+  assert.equal(current.previewAccessUnverified.value, false)
+  assert.equal(summary.value, 'Restricted')
+
+  await current.changeDevelopmentPreviewAccess('public')
+  assert.equal(current.developmentPreviewAccessError.value, previewWriteError.message)
+  assert.equal(summary.value, 'Could not confirm access')
+  const afterSettingsFailure = current.authorizeDevelopmentPreviewRequest('demo', 'after-settings-failure')
+  finishAuthorization(observed('public'))
+  await afterSettingsFailure
+  assert.equal(summary.value, 'Anyone with link')
+  assert.deepEqual(current.authorizations, Array.from({ length: 4 }, () => ({ force: true })))
 
   assert.match(app, /const accessRevision = previewAccessRevision[\s\S]*previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision/)
 })
