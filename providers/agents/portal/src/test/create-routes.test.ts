@@ -93,7 +93,36 @@ describe('route-owned creation surfaces', () => {
     expect(events['create-success']?.[0]).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
   })
 
-  it('opens the template cards above the draft and applies a selection in place', async () => {
+  it.each(['removed', 'unreachable'])('can clear a template when its catalog is %s and keep the draft', async (state) => {
+    const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'nova' }, spec: {} })
+    const agentTemplates = state === 'removed'
+      ? vi.fn().mockResolvedValue([])
+      : vi.fn().mockRejectedValue(new Error('offline'))
+    const api = stubApi({ createAgent, agentTemplates })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'missing' })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    const instructions = el.querySelector<HTMLTextAreaElement>('textarea')!
+    const submit = el.querySelector<HTMLButtonElement>('button[type=submit]')!
+    name.value = 'nova'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    instructions.value = 'Answer with references.'
+    instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    expect(submit.disabled).toBe(true)
+
+    const clear = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Clear template')!
+    clear.click()
+    await settleVue()
+    expect(submit.disabled).toBe(false)
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ name: 'nova', systemPrompt: 'Answer with references.' }))
+  })
+
+  it.each(['', 'Answer with references.'])('applies a template in place with draft instructions "%s"', async (draftInstructions) => {
     const catalog = (await import('../../public/agent-templates.json')).default
     const agentTemplates = vi.fn().mockResolvedValue(catalog)
     const api = stubApi({ agentTemplates })
@@ -106,6 +135,8 @@ describe('route-owned creation surfaces', () => {
     const sections = () => [...el.querySelectorAll('.agents-create-section h2')].map(section => section.textContent)
     const initialSections = ['Agent definition', 'Execution', 'Template inputs', 'Connections & automation']
     const instructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+    instructions.value = draftInstructions
+    instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
     expect(sections()).toEqual(initialSections)
     const trigger = el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!
     const picker = el.querySelector<HTMLDialogElement>('dialog')!
@@ -132,7 +163,7 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
     expect(sections()).toEqual(initialSections)
     expect(el.querySelector('textarea[aria-labelledby="agent-create-system-prompt-label"]')).toBe(instructions)
-    expect(instructions.value).toContain('research')
+    expect(instructions.value).toContain(draftInstructions || 'research')
     el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(el)
     expect(sections()).toEqual(initialSections)
@@ -558,7 +589,7 @@ it('creates a reusable visualization toolset without an external connection', as
   expect(createToolset).toHaveBeenCalledWith(expect.objectContaining({ name: 'charts', connections: [], families: ['core', 'visualization'] }))
 })
 
-it('creates an agent from a template with its parameters, wiring and schedule', async () => {
+it.each([false, true])('creates an agent with the final template inputs and schedule (edited instructions: %s)', async (edited) => {
   const catalog = (await import('../../public/agent-templates.json')).default as unknown[]
   const createAgentFromTemplate = vi.fn(async (agent: { metadata: { name: string } }, schedules: { metadata: { name: string } }[]) => ({
     agent, createdSchedules: schedules.map(s => s.metadata.name), warnings: [],
@@ -601,6 +632,15 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   expect(el.querySelector('#agent-create-channel-error')?.textContent).toContain('channel')
   expect(createAgentFromTemplate).not.toHaveBeenCalled()
 
+  const customInstruction = 'Use a numbered summary.'
+  if (edited) {
+    instructions.focus()
+    await settleVue()
+    expect(instructions.value).toContain('{{topics}}')
+    instructions.value += `\n${customInstruction}`
+    instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    instructions.blur()
+  }
   const topics = el.querySelector<HTMLTextAreaElement>('#agent-create-param-topics')!
   topics.value = 'kcp\nkubernetes'
   topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
@@ -608,6 +648,13 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
   await chooseFormSelect(el, '#agent-create-slot-websearch', 'searx')
   expect(instructions.value).toContain('- kcp')
+  if (edited) {
+    instructions.focus()
+    await settleVue()
+    expect(instructions.value).toContain('{{topics}}')
+    expect(instructions.value).toContain(customInstruction)
+    instructions.blur()
+  }
   el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   await settle(el)
 
@@ -625,6 +672,8 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   ]
   expect(agent.metadata.name).toBe('news-reporter')
   expect(agent.spec.systemPrompt).toContain('- kcp\n- kubernetes')
+  expect(agent.spec.systemPrompt).not.toContain('{{topics}}')
+  if (edited) expect(agent.spec.systemPrompt).toContain(customInstruction)
   expect(agent.spec.backend).toEqual({ type: 'model', model: { credentials: { chat: 'openai' } } })
   expect(agent.spec.channels).toEqual([{ name: 'primary', connectionRef: 'tg', primary: true }])
   expect(agent.spec.tools.interactive.connections).toEqual(['searx'])

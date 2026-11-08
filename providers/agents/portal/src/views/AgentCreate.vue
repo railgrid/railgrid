@@ -80,8 +80,8 @@ const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
 // Connection-slot wiring, by slot key. The other slot kinds reuse the fields
 // below (model credential, channel, machine, harness identity, GitHub).
 const slotWiring = ref<Record<string, string>>({ ...initialDraft.wiring })
-// Template instructions track the parameter values until the user edits them.
 const customPrompt = ref(initialDraft.customPrompt)
+const editingInstructions = ref(false)
 const backendType = ref<AgentBackendType>(initialDraft.backendType)
 const modelCredential = ref(initialDraft.modelCredential)
 const harnessEdge = ref(initialDraft.harnessEdge)
@@ -151,7 +151,12 @@ function connectionOptions(type: string, required: boolean): FormSelectOption[] 
     ...connections.value.filter(item => item.spec.type === type).map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
   ]
 }
-const promptPreview = computed(() => selectedTemplate.value ? previewPrompt(selectedTemplate.value, parameters.value) : '')
+const promptSource = computed(() => selectedTemplate.value && !customPrompt.value
+  ? selectedTemplate.value.spec.agent.systemPrompt ?? ''
+  : systemPrompt.value)
+const instructions = computed(() => selectedTemplate.value && !editingInstructions.value
+  ? previewPrompt(selectedTemplate.value, parameters.value, promptSource.value)
+  : promptSource.value)
 watch(selectedTemplate, (current, previous) => {
   if (!current) return
   backendType.value = templateBackend(current)
@@ -205,6 +210,7 @@ function clearTemplate(): void {
 }
 
 function chooseTemplate(value: string): void {
+  if (!selectedTemplate.value) customPrompt.value = Boolean(systemPrompt.value.trim())
   template.value = value
   templatePicker.value?.close()
   void nextTick(() => nameInput.value?.focus())
@@ -369,7 +375,9 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     errors.template = (e as Error).message
     return
   }
-  if (customPrompt.value) instance.agent.spec.systemPrompt = systemPrompt.value.trim() || undefined
+  if (customPrompt.value) {
+    instance.agent.spec.systemPrompt = previewPrompt(chosen, parameters.value, systemPrompt.value).trim() || undefined
+  }
   const harness = instance.agent.spec.backend?.harness
   if (harness) {
     if (harnessModel.value.trim()) harness.model = harnessModel.value.trim()
@@ -484,6 +492,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             <div v-else-if="template" class="agents-stale" role="status">
               {{ templatesError ? 'Could not load the selected template.' : templatesLoaded ? 'This template is unavailable.' : 'Loading the selected template…' }}
               <button v-if="templatesError" class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
+              <button class="k-btn k-btn--text" type="button" :disabled="busy" @click="clearTemplate">Clear template</button>
             </div>
 
             <section class="agents-create-section" aria-labelledby="agent-create-definition-heading">
@@ -510,8 +519,10 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
 
               <label>
                 <span id="agent-create-system-prompt-label">Instructions (optional)</span>
-                <textarea :value="selectedTemplate && !customPrompt ? promptPreview : systemPrompt" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="selectedTemplate ? 'agent-create-system-prompt-hint' : undefined" @input="editInstructions" />
-                <span v-if="selectedTemplate" id="agent-create-system-prompt-hint" class="agents-hint">{{ customPrompt ? 'Your edits replace the template’s instructions.' : 'Prefilled from the template. Editing makes these instructions your own.' }}</span>
+                <textarea :value="instructions" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="selectedTemplate ? 'agent-create-system-prompt-hint' : undefined" @focus="editingInstructions = true" @blur="editingInstructions = false" @input="editInstructions" />
+                <span v-if="selectedTemplate" id="agent-create-system-prompt-hint" class="agents-hint">
+                  {{ templateParameters.length ? 'Keep placeholders in your edits to fill them from Template inputs.' : 'Prefilled from the template. You can edit these instructions.' }}
+                </span>
               </label>
             </section>
 

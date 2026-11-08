@@ -280,12 +280,42 @@ describe('agent deletion refresh races', () => {
     expect(store.agents.data).toEqual([replacement])
   })
 
-  it('keeps the agent visible when deletion fails', async () => {
+  it('keeps the agent visible when the refresh confirms deletion was denied', async () => {
     const agent: Agent = { metadata: { name: 'scout' }, spec: {} }
-    const store = makeStore(stubApi({ deleteAgent: vi.fn().mockRejectedValue(new Error('denied')) }))
+    const listAgents = vi.fn().mockResolvedValue([agent])
+    const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockRejectedValue(new Error('denied')) }))
     store.agents.data = [agent]
     await expect(store.deleteAgent('scout')).rejects.toThrow('denied')
+    await vi.waitFor(() => expect(store.agents.loading).toBe(false))
+    expect(listAgents).toHaveBeenCalledOnce()
     expect(store.agents.data).toEqual([agent])
+  })
+
+  it('keeps a same-name replacement visible after a delete without a cached UID', async () => {
+    const replacement: Agent = { metadata: { name: 'scout', uid: 'new-uid' }, spec: {} }
+    const listAgents = vi.fn().mockResolvedValue([replacement])
+    const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockResolvedValue(undefined) }))
+
+    await store.deleteAgent('scout')
+    await vi.waitFor(() => expect(store.agents.loading).toBe(false))
+    expect(store.agents.data).toEqual([replacement])
+    await store.load('agents')
+    expect(store.agents.data).toEqual([replacement])
+  })
+
+  it('reconciles a deletion when the response is lost', async () => {
+    const agent: Agent = { metadata: { name: 'scout', uid: 'old-uid' }, spec: {} }
+    const refresh = deferred<Agent[]>()
+    const listAgents = vi.fn().mockReturnValue(refresh.promise)
+    const store = makeStore(stubApi({ listAgents, deleteAgent: vi.fn().mockRejectedValue(new Error('connection reset')) }))
+    store.agents.data = [agent]
+
+    await expect(store.deleteAgent('scout')).rejects.toThrow('connection reset')
+    expect(listAgents).toHaveBeenCalledOnce()
+    expect(store.agents.data).toEqual([agent])
+    refresh.resolve([{ ...agent, metadata: { ...agent.metadata, deletionTimestamp: '2026-01-01T00:00:00Z' } }])
+    await vi.waitFor(() => expect(store.agents.loading).toBe(false))
+    expect(store.agents.data).toEqual([])
   })
 })
 

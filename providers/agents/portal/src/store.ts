@@ -165,7 +165,7 @@ export class AppStore extends EventTarget {
   private acknowledgedInboxIDs = new Set<string>()
   private nextLoadID = 0
   private agentWriteLocks = new Map<string, number>()
-  private deletedAgentUIDs = new Map<string, string | undefined>()
+  private deletedAgentUIDs = new Map<string, string>()
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
   private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
 
@@ -292,19 +292,22 @@ export class AppStore extends EventTarget {
 
   async deleteAgent(name: string): Promise<void> {
     const uid = this.agent(name)?.metadata.uid
-    await this.api.deleteAgent(name)
-    if (this.retired) return
+    try {
+      await this.api.deleteAgent(name)
+      if (this.retired || !uid) return
 
-    // The DELETE can succeed while the Agent still has a cleanup finalizer.
-    // Keep that identity out of the list until a refresh observes its removal.
-    this.deletedAgentUIDs.set(name, uid)
-    const isDeletedAgent = (agent: Agent) => agent.metadata.name === name &&
-      (!uid || !agent.metadata.uid || agent.metadata.uid === uid)
-    this.agents.data = this.agents.data.filter(agent => !isDeletedAgent(agent))
-    const adopted = this.adoptedItems.agents.get(name)
-    if (adopted && isDeletedAgent(adopted.item as Agent)) this.adoptedItems.agents.delete(name)
-    // This load supersedes reads started before the delete was acknowledged.
-    void this.load('agents')
+      // The DELETE can succeed while the Agent still has a cleanup finalizer.
+      // Keep that identity out of the list until a refresh observes its removal.
+      this.deletedAgentUIDs.set(name, uid)
+      const isDeletedAgent = (agent: Agent) => agent.metadata.name === name &&
+        (!agent.metadata.uid || agent.metadata.uid === uid)
+      this.agents.data = this.agents.data.filter(agent => !isDeletedAgent(agent))
+      const adopted = this.adoptedItems.agents.get(name)
+      if (adopted && isDeletedAgent(adopted.item as Agent)) this.adoptedItems.agents.delete(name)
+    } finally {
+      // A lost response can also leave the Agent deleted on the server.
+      if (!this.retired) void this.load('agents')
+    }
   }
 
   // Revalidate snapshots, including empty ones, without stacking requests
@@ -468,12 +471,10 @@ export class AppStore extends EventTarget {
     const active = rows.filter(agent => {
       const metadata = agent?.metadata
       if (!metadata) return true
-      if (this.deletedAgentUIDs.has(metadata.name)) {
-        const deletedUID = this.deletedAgentUIDs.get(metadata.name)
-        if (!deletedUID || !metadata.uid || deletedUID === metadata.uid) {
-          stillListed.add(metadata.name)
-          return false
-        }
+      const deletedUID = this.deletedAgentUIDs.get(metadata.name)
+      if (deletedUID && (!metadata.uid || deletedUID === metadata.uid)) {
+        stillListed.add(metadata.name)
+        return false
       }
       return !metadata.deletionTimestamp
     })
