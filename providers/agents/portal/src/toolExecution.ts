@@ -1,3 +1,4 @@
+import { commandActivityPresentation } from './agentkit/activity'
 import type { ToolCall } from './types'
 
 /** Project only known shell tools; foreign tools retain their ordinary arguments. */
@@ -27,4 +28,12 @@ export function toolCommandTitle(tool: ToolCall): string | undefined {
   if (!command) return undefined
   const verb = tool.pending ? 'Running' : tool.error ? 'Failed' : 'Ran'
   return `${verb} ${command.replace(/\s+/g, ' ').trim()}`
+}
+
+export function toolCommandActivity(command: string, status: string, statusLabel: string) {
+  const activity = commandActivityPresentation(command)
+  return {
+    ...activity,
+    title: status === 'succeeded' ? activity.title : status === 'running' ? activity.runningTitle : `${statusLabel} ${command}`,
+  }
 }

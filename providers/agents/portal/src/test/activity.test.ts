@@ -738,6 +738,39 @@ describe('Activity.vue', () => {
 })
 
 describe('RunDetail.vue', () => {
+  it('uses chat command labels and the shared output panel for recorded harness commands', async () => {
+    const at = new Date().toISOString()
+    const excerpt = 'permission denied\n'.repeat(20)
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      backend: 'harness',
+      steps: [
+        { id: 'list', tool: 'commandExecution', args: "/bin/zsh -lc 'ls src'", result: 'main.ts', outcome: 'ok', durationMS: 120, at },
+        { id: 'test', tool: 'command_execution', args: 'go test ./...', result: `${excerpt}final failure`, error: `${excerpt}…[truncated]`, outcome: 'error', at },
+      ],
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const [success, failure] = view.element.querySelectorAll('.agents-run-activity .k-ai-action-row')
+
+    expect(text(success)).toContain('Listed files in src')
+    expect(text(failure)).toContain('Failed go test ./...')
+    for (const row of [success!, failure!]) {
+      const toggle = row.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+      if (toggle.getAttribute('aria-expanded') === 'false') toggle.click()
+    }
+    await settleVue()
+
+    expect(text(success!.querySelector('.k-ai-execution-details__command'))).toContain('$ ls src')
+    expect(text(success!.querySelector('.k-ai-execution-details__output'))).toBe('main.ts')
+    expect(text(success)).toContain('120 ms')
+    expect(text(failure!.querySelector('.k-ai-execution-details__status'))).toContain('Failed')
+    expect(failure!.querySelector('pre.err')).toBeNull()
+    expect(text(failure!.querySelector('.k-ai-execution-details__output'))).not.toContain('final failure')
+    buttonWithText(failure!, 'Show full output').click()
+    await settleVue()
+    expect(text(failure!.querySelector('.k-ai-execution-details__output'))).toContain('final failure')
+    expect(view.element.textContent).not.toContain('Arguments and result')
+  })
+
   it('renders Running as an in-progress warning tone', async () => {
     const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
       phase: 'Running',

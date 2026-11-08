@@ -18,6 +18,8 @@ import type { AppStore, ServerEvent } from '../store'
 import type { ResourceRefreshMode } from '../portalkit/page-state'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
+import AgentToolDetails from '../components/AgentToolDetails.vue'
+import { toolCommand, toolCommandActivity } from '../toolExecution'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
@@ -32,6 +34,7 @@ import {
   type RunPhase,
   type RunStep,
   type RunSummary,
+  type ToolCall,
 } from '../types'
 import type { AIActionStatus } from '../agentkit/ai'
 import StatusBadge from '../portalkit/StatusBadge.vue'
@@ -387,11 +390,27 @@ function activityIsBusy(current: Run): boolean {
   return (current.phase === 'Pending' || current.phase === 'Running') && !activityNeedsAttention(current)
 }
 
-const stepsByID = computed(() => new Map((run.value?.steps || []).map(step => [step.id, step])))
+function stepCommand(step: RunStep) {
+  if (step.outcome !== 'ok' && step.outcome !== 'error') return undefined
+  const tool: ToolCall = {
+    id: step.id, name: step.tool, args: step.args, result: step.result,
+    durationMS: step.durationMS, pending: false,
+  }
+  const command = toolCommand(tool)
+  if (!command) return undefined
+  const diagnostic = sanitizeTechnicalDiagnostic(step.error)
+  // Harness failures record the output again as a shorter error excerpt.
+  const errorIsOutput = step.error && step.result?.startsWith(step.error.replace(/…\[truncated\]$/, ''))
+  if (!tool.result && diagnostic) tool.error = diagnostic
+  const { title } = toolCommandActivity(command, stepStatus(step), stepStatusLabel(step))
+  return { title, tool, diagnostic: tool.result && !errorIsOutput ? diagnostic : '' }
+}
+
+const stepsByID = computed(() => new Map((run.value?.steps || []).map(step => [step.id, { step, command: stepCommand(step) }])))
 const stepGroups = computed(() => [{
   key: 'steps', label: '',
   rows: (run.value?.steps || []).map((step, index) => ({
-    id: step.id, title: step.tool, target: `Step ${index + 1}`,
+    id: step.id, title: stepsByID.value.get(step.id)?.command?.title ?? step.tool, target: `Step ${index + 1}`,
     status: stepStatus(step), statusLabel: stepStatusLabel(step), outcome: stepOutcome(step),
     attention: stepClass(step) === 'wait' || stepClass(step) === 'unknown',
     error: stepClass(step) === 'err',
@@ -636,14 +655,18 @@ onBeforeUnmount(() => {
                 @toggle-row="toggle"
               >
                 <template #details="{ row }">
-                  <template v-for="step in [stepsByID.get(row.id)]" :key="row.id">
-                    <template v-if="step">
-                      <div v-if="step.error" class="agents-kv"><span>Error</span><pre class="err">{{ sanitizeTechnicalDiagnostic(step.error) }}</pre></div>
-                      <details v-if="step.args || step.result" class="k-resource-technical">
+                  <template v-for="entry in [stepsByID.get(row.id)]" :key="row.id">
+                    <template v-if="entry?.command">
+                      <div v-if="entry.command.diagnostic" class="agents-kv"><span>Error</span><pre class="err">{{ entry.command.diagnostic }}</pre></div>
+                      <AgentToolDetails :tool="entry.command.tool" :failed="entry.step.outcome === 'error'" />
+                    </template>
+                    <template v-else-if="entry">
+                      <div v-if="entry.step.error" class="agents-kv"><span>Error</span><pre class="err">{{ sanitizeTechnicalDiagnostic(entry.step.error) }}</pre></div>
+                      <details v-if="entry.step.args || entry.step.result" class="k-resource-technical">
                         <summary class="k-resource-technical__summary"><span class="k-resource-technical__summary-label">Arguments and result</span><ChevronDown class="k-resource-technical__chevron" :size="14" :stroke-width="1.75" aria-hidden="true" /></summary>
                         <div class="k-resource-technical__body">
-                          <div v-if="step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(step.args) }}</pre></div>
-                          <div v-if="step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(step.result) }}</pre></div>
+                          <div v-if="entry.step.args" class="agents-kv"><span>Arguments</span><pre>{{ prettyJSON(entry.step.args) }}</pre></div>
+                          <div v-if="entry.step.result" class="agents-kv"><span>Result</span><pre>{{ prettyJSON(entry.step.result) }}</pre></div>
                         </div>
                       </details>
                     </template>

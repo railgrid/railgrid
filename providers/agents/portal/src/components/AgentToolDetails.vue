@@ -7,6 +7,7 @@ import { prettyJSON, type ToolCall } from '../types'
 
 const props = defineProps<{
   tool: ToolCall
+  failed?: boolean
 }>()
 
 const execution = computed<AIExecutionView>(() => {
@@ -25,7 +26,7 @@ const execution = computed<AIExecutionView>(() => {
     ...(!command && props.tool.args ? { input: prettyJSON(props.tool.args), inputLabel: 'Arguments' } : {}),
     ...output,
     ...(command ? { outputLabel: undefined } : {}),
-    status: props.tool.pending ? 'running' : props.tool.error ? 'failed' : 'succeeded',
+    status: props.tool.pending ? 'running' : props.failed || props.tool.error ? 'failed' : 'succeeded',
     ...(typeof value === 'number' && Number.isFinite(value) && value >= 0 ? { durationMs: value } : {}),
   }
 })
