@@ -397,7 +397,7 @@ describe('route-owned collection affordances', () => {
 
     const pendingStore = makeStore(api)
     const pendingAgents = await mount('agents-agents-list', { store: pendingStore, api })
-    expect(pendingAgents.querySelector('.k-first-run')).toBeNull()
+    expect(pendingAgents.querySelector('.agents-new-agent')).toBeNull()
 
     const agentsStore = makeStore(api)
     agentsStore.agents.loaded = true
@@ -405,7 +405,7 @@ describe('route-owned collection affordances', () => {
     agentsStore.credentials.loaded = true
     agentsStore.credentials.hasSnapshot = true
     const agents = await mount('agents-agents-list', { store: agentsStore, api })
-    expect(agents.querySelector('.k-first-run')).not.toBeNull()
+    expect(agents.querySelector('.agents-new-agent')).not.toBeNull()
 
     const modelsStore = makeStore(api)
     modelsStore.credentials.loaded = true
@@ -487,7 +487,7 @@ describe('route-owned collection affordances', () => {
     store.agents.loaded = true
     const el = await mount('agents-agents-list', { store, api })
     const routes = mountedByElement.get(el)!.navigations
-    el.querySelector<HTMLButtonElement>('button')!.click()
+    el.querySelector<HTMLButtonElement>('.agents-new-agent')!.click()
     expect(routes).toEqual([{ kind: 'create', resource: 'agent' }])
     expect(el.querySelector('agents-agent-create')).toBeNull()
   })

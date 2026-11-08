@@ -47,6 +47,15 @@ export interface TemplateWiringSlot {
   description?: string
 }
 
+const SLOT_LABELS: Record<TemplateSlotKind, string> = {
+  modelCredential: 'chat model', channel: 'channel', connection: 'connection',
+  edge: 'machine', harnessCredential: 'coding harness identity', githubConnection: 'GitHub connection',
+}
+
+export function templateSlotLabel(slot: TemplateWiringSlot): string {
+  return slot.slot === 'connection' ? `${slot.connectionType ?? ''} connection`.trim() : SLOT_LABELS[slot.slot]
+}
+
 export interface TemplateSchedule {
   name: string
   spec: Omit<Schedule['spec'], 'agentRef'> & { agentRef?: string }

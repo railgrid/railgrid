@@ -52,16 +52,16 @@ railgrid-provider-agents :focus-visible { outline: 2px solid var(--color-accent,
 
 /* --- agent card grid --- */
 railgrid-provider-agents .agents-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr)); gap: 18px; }
-railgrid-provider-agents .agents-card {
+railgrid-provider-agents :is(.agents-card, .agents-starter-card) {
   display: flex; flex-direction: column; gap: 10px; min-height: 160px; padding: 18px;
   text-align: left;
   transition: border-color 0.12s, background 0.12s, transform 0.06s;
 }
-railgrid-provider-agents .agents-card:hover {
+railgrid-provider-agents :is(.agents-card, .agents-starter-card):hover {
   border-color: var(--color-accent, #8b6bff);
   background: var(--color-surface-overlay, #171927);
 }
-railgrid-provider-agents .agents-card:active { transform: translateY(1px); }
+railgrid-provider-agents :is(.agents-card, .agents-starter-card):active { transform: translateY(1px); }
 railgrid-provider-agents .agents-card-link {
   display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 10px;
   color: inherit; text-decoration: none;
@@ -274,15 +274,33 @@ railgrid-provider-agents .agents-template-prompt-text {
   background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
   color: var(--color-text-secondary, #8a8ca6);
 }
-railgrid-provider-agents .agents-template-starters { display: flex; flex-direction: column; gap: 8px; width: 100%; }
-railgrid-provider-agents .agents-template-starters-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--color-text-secondary, #8a8ca6); }
-railgrid-provider-agents .agents-template-starters-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 10px; }
-railgrid-provider-agents .agents-template-starter {
-  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-areas: "t" "b"; align-content: start; gap: 2px; text-align: left; padding: 11px 13px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 13px;
-  background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11)); color: inherit; box-shadow: none;
+railgrid-provider-agents .agents-template-starters { display: grid; gap: 12px; margin-block-start: 10px; }
+railgrid-provider-agents .agents-template-starters h2 { margin: 0; font-size: 17px; font-weight: 600; }
+railgrid-provider-agents .agents-template-starters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 12px;
 }
-railgrid-provider-agents .agents-template-starter:hover,
-railgrid-provider-agents .agents-template-starter:focus-visible { border-color: var(--color-accent, #8b6bff); background: var(--color-accent-subtle); }
+railgrid-provider-agents .agents-starter-card {
+  border-style: dashed;
+  align-items: flex-start;
+  min-width: 0;
+  min-height: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+railgrid-provider-agents .agents-starter-card .agents-card-glyph { width: 32px; height: 32px; }
+railgrid-provider-agents .agents-starter-card .agents-card-glyph svg { width: 16px; height: 16px; }
+railgrid-provider-agents .agents-starter-name { font-size: 14px; font-weight: 600; }
+railgrid-provider-agents .agents-starter-details { display: flex; flex: 1; flex-direction: column; gap: 8px; }
+railgrid-provider-agents .agents-starter-description { font-size: 13px; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-starter-requirements {
+  margin-block-start: auto;
+  padding-block-start: 2px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
 
 /* --- tables --- */
 /* Tables scroll inside their own container so a wide run table never forces

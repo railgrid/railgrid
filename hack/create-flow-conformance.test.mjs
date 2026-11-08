@@ -94,7 +94,7 @@ test('provider create journeys adopt the shared first-run and guidance vocabular
     source('providers/agents/portal/src/views/AgentsList.vue'),
     source('providers/agents/portal/src/views/AgentCreate.vue'),
   ])
-  assert.match(agents[0], /FirstRunGuide/, 'Agents must use the shared first-run component')
+  assert.match(agents[0], /agents-new-agent/, 'Agents offers the same New agent tile in empty and populated card layouts')
   assert.match(agents[1], /CreateGuidance/, 'Agents must use the shared create-guidance component')
 })
 

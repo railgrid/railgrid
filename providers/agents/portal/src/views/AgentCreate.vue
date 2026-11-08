@@ -14,6 +14,7 @@ import {
   slotsOfKind,
   templateBackend,
   templateFamilies,
+  templateSlotLabel as slotLabel,
   type AgentTemplate,
   type TemplateSlotKind,
   type TemplateWiringSlot,
@@ -148,13 +149,6 @@ function connectionOptions(type: string, required: boolean): FormSelectOption[] 
     { value: '', label: required ? '— pick a connection —' : '— none —' },
     ...connections.value.filter(item => item.spec.type === type).map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
   ]
-}
-const SLOT_LABELS: Record<TemplateSlotKind, string> = {
-  modelCredential: 'model credential', channel: 'channel', connection: 'connection',
-  edge: 'machine', harnessCredential: 'harness identity', githubConnection: 'GitHub connection',
-}
-function slotLabel(slot: TemplateWiringSlot): string {
-  return slot.slot === 'connection' ? `${slot.connectionType ?? ''} connection`.trim() : SLOT_LABELS[slot.slot]
 }
 function templateNeeds(item: AgentTemplate): string {
   return (item.spec.wiring ?? []).map(slotLabel).join(' · ')

@@ -68,11 +68,9 @@ describe('agents list refresh resilience', () => {
     Object.assign(empty.agents, { loaded: true, hasSnapshot: true, error: 'temporarily unavailable' })
     Object.assign(empty.credentials, { loaded: true, hasSnapshot: true })
     const emptyMounted = await mountVue(AgentsList, { store: empty, api })
-    expect(emptyMounted.element.querySelector('.k-first-run')).not.toBeNull()
-    expect(text(emptyMounted.element.querySelector('.k-first-run'))).toContain('Create your first agent')
-    const actions = [...emptyMounted.element.querySelectorAll<HTMLButtonElement>('.k-first-run__actions button')]
-    expect(actions.map(button => text(button))).toEqual(['New agent'])
-    actions[0].click()
+    const create = emptyMounted.element.querySelector<HTMLButtonElement>('.agents-new-agent')!
+    expect(create.querySelector('.agents-starter-name')?.textContent).toBe('New agent')
+    create.click()
     expect(emptyMounted.navigations).toEqual([
       { kind: 'create', resource: 'agent' },
     ])
@@ -89,10 +87,46 @@ describe('agents list refresh resilience', () => {
     Object.assign(store.agents, { loaded: true, hasSnapshot: true })
     store.credentials.error = 'credential API unavailable'
     const mounted = await mountVue(AgentsList, { store, api })
-    const action = mounted.element.querySelector<HTMLButtonElement>('.k-first-run__actions button')!
-    expect(text(action)).toBe('New agent')
+    const action = mounted.element.querySelector<HTMLButtonElement>('.agents-new-agent')!
+    expect(action.querySelector('.agents-starter-name')?.textContent).toBe('New agent')
     action.click()
     expect(mounted.navigations).toEqual([{ kind: 'create', resource: 'agent' }])
+  })
+})
+
+describe('agent templates on the landing page', () => {
+  it.each([false, true])('routes the four catalog cards to prefilled setup with existing agents: %s', async populated => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    store.agents.data = populated ? [agentFixture('scout')] : []
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+    const cards = [...mounted.element.querySelectorAll<HTMLButtonElement>('.agents-template-starters-grid button')]
+    expect(cards.map(card => text(card.querySelector('.agents-starter-name')))).toEqual([
+      'Code reviewer', 'News reporter', 'Researcher', 'Workspace assistant',
+    ])
+    expect(text(cards[0])).toContain('GitHub connection')
+    expect(text(cards[1])).toContain('Requires chat model · channel')
+    cards.forEach(card => card.click())
+    expect(mounted.navigations).toEqual(catalog.map(template => ({
+      kind: 'create', resource: 'agent', type: template.metadata.name,
+    })))
+  })
+
+  it('keeps blank creation available when loading the catalog fails', async () => {
+    const agentTemplates = vi.fn().mockRejectedValueOnce(new Error('not available')).mockResolvedValueOnce([])
+    const api = stubApi({ agentTemplates })
+    const store = makeStore(api)
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    const mounted = await mountVue(AgentsList, { store, api })
+    const section = mounted.element.querySelector('.agents-template-starters')!
+    expect(text(section)).toContain('Could not load agent templates')
+    expect(mounted.element.querySelector('.agents-new-agent')).not.toBeNull()
+    section.querySelector<HTMLButtonElement>('button')!.click()
+    await settleVue()
+    expect(agentTemplates).toHaveBeenCalledTimes(2)
+    expect(text(section)).toContain('No templates are available.')
   })
 })
 
