@@ -39,7 +39,11 @@ const cases: Case[] = [
       api.deleteAgent = deletion as ApiClient['deleteAgent']
       store.agents.data = [agentFixture('scout')]
       store.agents.loaded = store.agents.hasSnapshot = true
-      return { deletion, selector: 'button[aria-label="Delete agent scout"]' }
+      return {
+        deletion,
+        openSelector: 'button[aria-label="More actions for scout"]',
+        selector: '[role="menuitem"].k-menu-item--danger',
+      }
     },
   },
   {
@@ -128,7 +132,8 @@ describe('all destructive Vue confirmations are authority-bound', () => {
       opener!.click()
       await settleVue()
     }
-    const button = view.element.querySelector<HTMLButtonElement>(selector)
+    const actionRoot = openSelector ? document.body : view.element
+    const button = actionRoot.querySelector<HTMLButtonElement>(selector)
     expect(button, `${testCase.label} delete action`).toBeTruthy()
     button!.click()
     await settleVue()

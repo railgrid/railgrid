@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
-import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search } from 'lucide-vue-next'
+import AgentTemplateCards from '../components/AgentTemplateCards.vue'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -12,15 +13,19 @@ import { confirmDialog } from '../portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference } from '../portalkit/layoutPreference'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import { hashFor, type Route } from '../router'
+import type { AgentTemplate } from '../agent-template'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
 import { agentHarness, agentHarnessBacked, agentModelCredential, harnessLabel, type Agent } from '../types'
-import type { AgentTemplate } from '../agent-template'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
+const cardActions: readonly ActionMenuItem[] = [
+  { id: 'runs', label: 'View runs' },
+  { id: 'delete', label: 'Delete agent', tone: 'danger' },
+]
 const layoutPreferenceKey = 'railgrid:agents:agents:layout'
 const layout = ref(readLayoutPreference(layoutPreferenceKey))
 const query = ref('')
@@ -38,24 +43,25 @@ watch(layout, (value, previous) => {
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 
-// AppStore slices are intentionally plain objects. Return a shallow snapshot so
-// every store revision invalidates the template even when the slice object
-// itself keeps the same identity while its loading fields change.
+// Refresh the view when the store updates its plain resource slice.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
-const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
-const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
-const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
-// Starter templates for the first-run guide. Best-effort: the guide's primary
-// action creates a blank agent whether or not the catalog loaded.
-const starterTemplates = ref<AgentTemplate[]>([])
-onMounted(async () => {
+const showAgentCards = computed(() => layout.value === 'grid' || !agents.value.data.length)
+const agentTemplates = ref<AgentTemplate[]>([])
+const templatesLoading = ref(true)
+const templatesFailed = ref(false)
+async function loadTemplates(): Promise<void> {
+  templatesLoading.value = true
+  templatesFailed.value = false
   try {
-    starterTemplates.value = await props.api.agentTemplates()
+    agentTemplates.value = await props.api.agentTemplates()
   } catch {
-    starterTemplates.value = []
+    templatesFailed.value = true
+  } finally {
+    templatesLoading.value = false
   }
-})
-const showFirstRun = computed(() => agents.value.loaded && agents.value.data.length === 0 && (!agents.value.error || agents.value.hasSnapshot))
+}
+onMounted(loadTemplates)
+
 const filters: TableFilterDefinition[] = [
   { key: 'backendType', label: 'Backend', allLabel: 'All backends', options: [
     { value: 'model', label: 'Model' },
@@ -67,26 +73,20 @@ const filters: TableFilterDefinition[] = [
   ] },
 ]
 
-const firstRunDescription = computed(() => {
-  const hasChat = chatCredentials.value.length > 0
-  const hasHarness = harnessCredentials.value.length > 0
-  if (hasChat && hasHarness) return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each backend uses its own credential type.'
-  if (hasChat) return 'Choose a chat model for a provider-run agent, or use Claude Code or Codex on a joined Linux or macOS machine with a harness identity.'
-  if (hasHarness) return 'Run Claude Code or Codex on a joined Linux or macOS machine, or connect a chat model for a provider-run agent.'
-  return 'Choose a chat model for a provider-run agent, or run Claude Code or Codex on a joined Linux or macOS machine. Each path needs only its own credential type.'
-})
-
-const firstRunPrimary = computed(() => chatCredentials.value.length === 0 && harnessCredentials.value.length > 0
-  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
-  : { label: 'Create agent', route: { kind: 'create', resource: 'agent' } as Route })
-const firstRunSecondary = computed(() => chatCredentials.value.length > 0
-  ? { label: 'Create with coding harness', route: { kind: 'create', resource: 'agent', type: 'harness' } as Route }
-  : { label: 'Add model credential', route: { kind: 'create', resource: 'model' } as Route })
-
 function navigate(route: Route): void { emit('navigate', route) }
 
-async function removeAgent(name: string): Promise<void> {
+function selectCardAction(name: string, action: string): void {
+  if (action === 'runs') navigate({ kind: 'agent', name, tab: 'runs' })
+  if (action === 'delete') void removeAgent(name, true)
+}
+
+async function removeAgent(name: string, fromMenu = false): Promise<void> {
   const authority = captureAuthority()
+  if (fromMenu) {
+    // Let the menu return focus to its trigger before the dialog captures it.
+    await nextTick()
+    if (!authorityIsCurrent(authority)) return
+  }
   const ok = await confirmDialog({
     title: `Delete agent “${name}”?`,
     message: 'This also deletes its chat history.',
@@ -95,11 +95,9 @@ async function removeAgent(name: string): Promise<void> {
   })
   if (!ok || !authorityIsCurrent(authority)) return
   await mutate(authority.store, {
-    run: () => authority.api.deleteAgent(name),
+    run: () => authority.store.deleteAgent(name),
     success: `Agent “${name}” deleted.`,
     failure: 'Delete failed',
-    optimistic: () => { authority.store.agents.data = authority.store.agents.data.filter(agent => agent.metadata.name !== name) },
-    reload: ['agents'],
   })
 }
 
@@ -183,11 +181,10 @@ function openAgentRow(row: Record<string, unknown>): void {
 <template>
   <ResourcePage title="Agents" variant="collection">
     <template #actions>
-      <button v-if="!showFirstRun" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
+      <button v-if="!showAgentCards" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent
       </button>
     </template>
-    <!-- Agent and credential reads retain their existing independent states. -->
     <div class="agents-menu">
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       <AlertCircle aria-hidden="true" />
@@ -197,67 +194,12 @@ function openAgentRow(row: Record<string, unknown>): void {
       </button>
     </div>
     <div v-else-if="!agents.loaded" class="k-card agents-state k-loading-reveal" role="status">Loading agents…</div>
-    <template v-else-if="agents.data.length === 0">
-      <div v-if="agents.error" class="agents-stale" role="status">
-        <AlertCircle aria-hidden="true" /> Showing the last loaded agents. {{ agents.error }}
-        <button class="k-btn k-btn--ghost" type="button" :disabled="agents.loading" @click="store.load('agents')">{{ agents.loading ? 'Retrying…' : 'Retry' }}</button>
-      </div>
-      <div v-if="credentials.error && !credentials.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
-        <AlertCircle aria-hidden="true" />
-        <span>Could not load model credentials. {{ credentials.error }}</span>
-        <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">
-          {{ credentials.loading ? 'Retrying…' : 'Retry' }}
-        </button>
-      </div>
-      <div v-else-if="!credentials.loaded" class="k-card agents-state k-loading-reveal" role="status">Loading model credentials…</div>
-      <template v-else>
-        <div v-if="credentials.error" class="agents-stale" role="status">
-          <AlertCircle aria-hidden="true" /> Showing the last loaded model credentials. {{ credentials.error }}
-          <button class="k-btn k-btn--ghost" type="button" :disabled="credentials.loading" @click="store.load('credentials')">Retry</button>
-        </div>
-        <FirstRunGuide
-          title="Create your first agent"
-          :description="firstRunDescription"
-          :primary-label="firstRunPrimary.label"
-          :secondary-label="firstRunSecondary.label"
-          :steps="[
-            { label: 'Choose a backend', description: 'Chat model or coding harness' },
-            { label: 'Set up the agent', description: 'Identity, instructions, and channel' },
-            { label: 'Run or automate', description: 'Start a conversation or add automation' },
-          ]"
-          journey-label="Agent setup path"
-          @primary="navigate(firstRunPrimary.route)"
-          @secondary="navigate(firstRunSecondary.route)"
-        >
-          <template #icon><Bot aria-hidden="true" /></template>
-          <template v-if="starterTemplates.length" #details>
-            <div class="agents-template-starters">
-              <p class="agents-template-starters-title">Or start from a template</p>
-              <div class="agents-template-starters-grid" role="list" aria-label="Agent templates">
-                <button
-                  v-for="item in starterTemplates"
-                  :key="item.metadata.name"
-                  type="button"
-                  class="agents-template-starter"
-                  role="listitem"
-                  @click="navigate({ kind: 'create', resource: 'agent', type: item.metadata.name })"
-                >
-                  <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
-                  <span class="agents-radiocard-b">{{ item.spec.description }}</span>
-                </button>
-              </div>
-            </div>
-          </template>
-        </FirstRunGuide>
-      </template>
-    </template>
-
     <template v-else>
       <div v-if="agents.error" class="agents-stale" role="status">
         <AlertCircle aria-hidden="true" /> Showing the last loaded agents. {{ agents.error }}
         <button class="k-btn k-btn--ghost" type="button" :disabled="agents.loading" @click="store.load('agents')">Retry</button>
       </div>
-      <div class="agents-layout-toolbar">
+      <div v-if="agents.data.length" class="agents-layout-toolbar">
         <template v-if="layout === 'grid'">
           <label class="agents-layout-search">
             <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
@@ -272,42 +214,42 @@ function openAgentRow(row: Record<string, unknown>): void {
       <p v-if="layout === 'grid' && filtersClearedForCards" class="sr-only" role="status">
         List filters were cleared for Cards.
       </p>
-      <template v-if="layout === 'grid'">
-        <div v-if="filteredAgents.length" class="agents-grid">
-        <article v-for="row in filteredAgents" :key="row.resourceName" class="agents-card k-card">
-          <a
-            class="agents-card-link"
-            :href="hashFor({ kind: 'agent', name: row.resourceName, tab: 'chat' })"
-            :aria-label="`Open agent ${row.name}`"
-          >
-            <div class="agents-card-glyph"><Bot aria-hidden="true" /></div>
-            <div class="agents-card-body">
-              <h3>{{ row.name }}</h3>
-              <p :class="['agents-card-model', { warn: !row.configured }]">
-                {{ row.backendKind }} · {{ row.backend }}
-              </p>
-            </div>
-            <div class="agents-card-foot">
-              <span>{{ row.scheduleCount }} schedule{{ row.scheduleCount === 1 ? '' : 's' }}</span>
-              <span>{{ row.triggerCount }} trigger{{ row.triggerCount === 1 ? '' : 's' }}</span>
-              <span v-if="row.channel !== 'No channel'"><Megaphone aria-hidden="true" /> {{ row.channel }}</span>
-              <span v-else>no channel</span>
-            </div>
-          </a>
-          <div class="agents-card-actions">
-            <button class="k-btn k-btn--ghost agents-card-chat" type="button" @click="navigate({ kind: 'agent', name: row.resourceName, tab: 'chat' })">
-              <MessageSquare aria-hidden="true" /> Open
-            </button>
-            <button class="k-btn k-btn--ghost secondary" type="button" @click="navigate({ kind: 'agent', name: row.resourceName, tab: 'runs' })">
-              <Gauge aria-hidden="true" /> Runs
-            </button>
-            <button class="k-icon-action agents-iconbtn-danger" type="button" :aria-label="`Delete agent ${row.resourceName}`" data-k-tip="Delete agent" @click="removeAgent(row.resourceName)">
-              <Trash2 aria-hidden="true" />
-            </button>
-          </div>
-        </article>
+      <template v-if="showAgentCards">
+        <div class="agents-grid">
+          <button class="k-card agents-starter-card agents-new-agent" type="button" aria-labelledby="agents-new-agent-label" aria-describedby="agents-new-agent-description" @click="navigate({ kind: 'create', resource: 'agent' })">
+            <span class="agents-card-glyph"><Plus aria-hidden="true" /></span>
+            <span id="agents-new-agent-label" class="agents-starter-name">New agent</span>
+            <span id="agents-new-agent-description" class="agents-starter-description">Start with a name, a model, and your own instructions.</span>
+          </button>
+          <article v-for="row in filteredAgents" :key="row.resourceName" class="agents-card k-card">
+            <a
+              class="agents-card-link"
+              :href="hashFor({ kind: 'agent', name: row.resourceName, tab: 'chat' })"
+              :aria-label="`Open agent ${row.name}`"
+            >
+              <div class="agents-card-glyph"><Bot aria-hidden="true" /></div>
+              <div class="agents-card-body">
+                <h3>{{ row.name }}</h3>
+                <p :class="['agents-card-model', { warn: !row.configured }]">
+                  {{ row.backendKind }} · {{ row.backend }}
+                </p>
+              </div>
+              <div class="agents-card-foot">
+                <span>{{ row.scheduleCount }} schedule{{ row.scheduleCount === 1 ? '' : 's' }}</span>
+                <span>{{ row.triggerCount }} trigger{{ row.triggerCount === 1 ? '' : 's' }}</span>
+                <span v-if="row.channel !== 'No channel'"><Megaphone aria-hidden="true" /> {{ row.channel }}</span>
+                <span v-else>no channel</span>
+              </div>
+            </a>
+            <ActionMenu
+              class="agents-card-menu"
+              :label="`More actions for ${row.name}`"
+              :items="cardActions"
+              @select="action => selectCardAction(row.resourceName, action)"
+            />
+          </article>
         </div>
-        <p v-else class="agents-layout-empty">{{ cardEmptyText }}</p>
+        <p v-if="agentRows.length && !filteredAgents.length" class="agents-layout-empty">{{ cardEmptyText }}</p>
       </template>
       <ResourceTable
         v-else
@@ -350,6 +292,17 @@ function openAgentRow(row: Record<string, unknown>): void {
         </template>
       </ResourceTable>
     </template>
+
+    <section class="agents-template-starters" aria-labelledby="agents-templates-heading">
+      <h2 id="agents-templates-heading">Start from a template</h2>
+      <p v-if="templatesLoading" class="agents-layout-empty" role="status">Loading templates…</p>
+      <div v-else-if="templatesFailed" class="agents-stale" role="status">
+        <AlertCircle aria-hidden="true" /> Could not load agent templates.
+        <button class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
+      </div>
+      <AgentTemplateCards v-else-if="agentTemplates.length" :templates="agentTemplates" @select="type => navigate({ kind: 'create', resource: 'agent', type })" />
+      <p v-else class="agents-layout-empty">No templates are available.</p>
+    </section>
     </div>
   </ResourcePage>
 </template>

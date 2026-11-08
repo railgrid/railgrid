@@ -9,7 +9,7 @@ async function source(path) {
   return readFile(new URL(path, root), 'utf8')
 }
 
-function expectSkeleton(name, text, { wide = false } = {}) {
+function expectSkeleton(name, text, { wide = false, footerCancel = true } = {}) {
   for (const className of [
     'k-create-page',
     'k-create-header',
@@ -22,7 +22,7 @@ function expectSkeleton(name, text, { wide = false } = {}) {
   }
   assert.match(text, /k-back-action|ResourceBackLink/, `${name} is missing a canonical back action`)
   if (wide) assert.match(text, /k-create-surface--(?:wide|guided)/, `${name} should use a wide provisioning surface`)
-  assert.match(text, /Cancel[\s\S]*k-btn--primary/, `${name} must order Cancel before its primary action`)
+  if (footerCancel) assert.match(text, /Cancel[\s\S]*k-btn--primary/, `${name} must order Cancel before its primary action`)
 }
 
 test('the canonical create-page vocabulary defines one shared hierarchy', async () => {
@@ -94,7 +94,7 @@ test('provider create journeys adopt the shared first-run and guidance vocabular
     source('providers/agents/portal/src/views/AgentsList.vue'),
     source('providers/agents/portal/src/views/AgentCreate.vue'),
   ])
-  assert.match(agents[0], /FirstRunGuide/, 'Agents must use the shared first-run component')
+  assert.match(agents[0], /agents-new-agent/, 'Agents offers the same New agent tile in empty and populated card layouts')
   assert.match(agents[1], /CreateGuidance/, 'Agents must use the shared create-guidance component')
 })
 
@@ -127,7 +127,8 @@ test('Agents route-owned create flows use the shared skeleton without obsolete m
     const text = await source(path) + (name === 'model'
       ? await source('providers/agents/portal/src/views/ModelConnectionEditor.vue') + await source(modelForm)
       : '')
-    expectSkeleton(`Agents ${name}`, text)
+    expectSkeleton(`Agents ${name}`, text, { footerCancel: name !== 'agent' })
+    if (name === 'agent') assert.match(text, /k-back-action[^>]+@click="cancel"/)
   }
   const [agent, assistedSearch] = await Promise.all([
     source('providers/agents/portal/src/views/AgentCreate.vue'),

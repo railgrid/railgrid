@@ -57,17 +57,22 @@ describe('agent resource detail conformance', () => {
       const props = { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 }
       let view = await mountVue(AgentDetail, props)
       const toggle = () => view.element.querySelector<HTMLButtonElement>('[data-agent-workbench-toggle]')!
-      expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      expect(toggle().getAttribute('aria-expanded')).toBe('false')
       toggle().click()
       await settleVue()
+      expect(toggle().getAttribute('aria-expanded')).toBe('true')
       view.unmount()
       view = await mountVue(AgentDetail, props)
       expect(toggle().getAttribute('aria-expanded')).toBe('false')
       toggle().click()
       await settleVue()
+      view.element.querySelector<HTMLInputElement>('[data-keep-workbench-open]')!.click()
       view.unmount()
       view = await mountVue(AgentDetail, props)
       expect(toggle().getAttribute('aria-expanded')).toBe('true')
+      view.unmount()
+      view = await mountVue(AgentDetail, { ...props, focusNewComposer: true })
+      expect(toggle().getAttribute('aria-expanded')).toBe('false')
       view.unmount()
     } finally {
       bounds.mockRestore()
@@ -89,7 +94,7 @@ describe('agent resource detail conformance', () => {
       const conversation = view.element.querySelector('[data-k-ai-workspace-conversation]')!
       expect(conversation.getAttribute('aria-hidden')).not.toBe('true')
       const toggle = view.element.querySelector<HTMLButtonElement>('[data-agent-workbench-toggle]')!
-      expect(toggle.getAttribute('aria-expanded')).toBe(String(width >= 846))
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
       if (width < 846) {
         toggle.click()
         await settleVue()
@@ -121,7 +126,7 @@ describe('agent resource detail conformance', () => {
       store.agents.data = [agentFixture('scout')]
       Object.assign(store.agents, { loaded: true, hasSnapshot: true })
       view = await mountVue(AgentDetail, { store, api, name: 'scout', tab: 'chat', authorityEpoch: 1 })
-      expect(view.element.querySelector('[data-agent-workbench-toggle]')?.getAttribute('aria-expanded')).toBe(String(width >= 768))
+      expect(view.element.querySelector('[data-agent-workbench-toggle]')?.getAttribute('aria-expanded')).toBe('false')
       expect(window.matchMedia).toHaveBeenCalledWith('(max-width: 767px)')
     } finally {
       view?.unmount()
@@ -129,7 +134,7 @@ describe('agent resource detail conformance', () => {
     }
   })
 
-  it('uses the shared conversation header and opens Config by default on desktop', async () => {
+  it('uses the shared conversation header and opens Config on demand on desktop', async () => {
     const restoreViewport = stubViewport(false)
     try {
       const api = stubApi()
@@ -165,6 +170,16 @@ describe('agent resource detail conformance', () => {
       expect(text(page.querySelector('.agents-agent-status'))).toBe('Budget exceeded')
       expect(page.classList.contains('k-resource-page--fill')).toBe(true)
       expect(page.querySelector('[aria-label="More agent actions"]')).toBeNull()
+      expect(page.querySelector('[aria-label="Delete agent"]')).toBeNull()
+      expect(toggle.getAttribute('aria-label')).toBe('Show workbench')
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(text(toggle)).toBe('')
+      const setup = page.querySelector<HTMLButtonElement>('button.agents-chat-setup')!
+      expect(setup.classList.contains('agents-chat-starter')).toBe(true)
+      expect(text(setup.querySelector('strong'))).toBe('Configure agent')
+      setup.click()
+      await settleVue()
+      expect(mounted.navigations.at(-1)).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })
       expect(page.querySelector('[aria-label="Delete agent"]')).not.toBeNull()
       expect(page.querySelectorAll('[data-k-ai-workspace-trigger]')).toHaveLength(0)
       expect(toggle.getAttribute('aria-label')).toBe('Hide workbench')
@@ -195,7 +210,7 @@ describe('agent resource detail conformance', () => {
     }
   })
 
-  it('suspends the default workbench for result inspection and restores only when the user leaves it alone', async () => {
+  it('suspends an open workbench for result inspection and restores only when the user leaves it alone', async () => {
     const restoreViewport = stubViewport(false)
     try {
       const api = stubApi()
@@ -208,6 +223,8 @@ describe('agent resource detail conformance', () => {
       const root = (mounted.app as unknown as { _instance: ComponentInternalInstance })._instance
       const chat = findComponent(root, 'AgentChat')
       expect(chat).not.toBeNull()
+      toggle.click()
+      await settleVue()
       expect(toggle.getAttribute('aria-expanded')).toBe('true')
       expect(workspace.getAttribute('aria-hidden')).toBeNull()
 
@@ -292,6 +309,8 @@ describe('agent resource detail conformance', () => {
 
       mounted.element.querySelector<HTMLButtonElement>('[data-k-tab-id="config"]')!.click()
       await mounted.setProps({ tab: 'config' })
+      toggle.click()
+      await settleVue()
       const config = mounted.element.querySelector('.agents-workbench-panel.is-active .agents-config-sec')
       const description = mounted.element.querySelector<HTMLInputElement>('input[placeholder^="What this agent is for"]')!
       description.value = 'unfinished config draft'

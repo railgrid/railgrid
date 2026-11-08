@@ -1423,167 +1423,6 @@ describe('web + fan-out capability warnings', () => {
   })
 })
 
-// Creating an agent asks what it can DO, not which template it is. There is no
-// "research agent" kind: fan-out is a capability any agent can have, and it
-// carries its own behaviour, so the create form and the Config pane use the same
-// two toggles and the same words.
-describe('agent creation capabilities', () => {
-  async function mountCreate() {
-    const createAgent = vi.fn().mockResolvedValue({ metadata: { name: 'scout' }, spec: {} })
-    const api = stubApi({ createAgent })
-    const store = makeStore(api)
-    store.credentials.data = [{ name: 'main', model: 'gpt-5' }] as never
-    store.credentials.loaded = true
-    store.credentials.hasSnapshot = true
-    store.agents.loaded = true
-    store.agents.hasSnapshot = true
-    const view = await mountVue(AgentCreate, { store, api })
-    mounted.push(view)
-    await settle(3)
-    return { el: view.element, createAgent }
-  }
-
-  const caps = (el: HTMLElement) => [...el.querySelectorAll<HTMLInputElement>('.agents-cap input[type=checkbox]')]
-
-  it('offers capabilities, not agent templates', async () => {
-    const { el } = await mountCreate()
-    expect(text(el)).not.toContain('Research agent')
-    expect(text(el)).not.toContain('Blank agent')
-    expect(text(el)).toContain('Read the web')
-    expect(text(el)).toContain('Research fan-out')
-    expect(text(el)).toContain('Visualize data')
-    expect(caps(el)).toHaveLength(3)
-  })
-
-  // The form is terse, so the surviving signal that behaviour is not the user's
-  // job is the prompt field's own label. If that ever goes back to asking for
-  // mechanics, the capability has stopped being self-sufficient.
-  it('asks the prompt for persona, not mechanics', async () => {
-    const { el } = await mountCreate()
-    expect(text(el)).toContain('not mechanics')
-  })
-
-  it('puts capabilities last, after the fields you must fill in', async () => {
-    const { el } = await mountCreate()
-    const body = text(el)
-    // Name and model are required; capabilities are optional extras and should
-    // not lead the form.
-    expect(body.indexOf('Can do')).toBeGreaterThan(body.indexOf('Model credential'))
-    expect(body.indexOf('Can do')).toBeGreaterThan(body.indexOf('Primary channel'))
-  })
-
-  it('sends only the families that were ticked', async () => {
-    const { el, createAgent } = await mountCreate()
-
-    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
-    nameInput.value = 'scout'
-    nameInput.dispatchEvent(new Event('input'))
-    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-
-    const [web, fanOut] = caps(el)
-    web.checked = true
-    web.dispatchEvent(new Event('change'))
-    fanOut.checked = true
-    fanOut.dispatchEvent(new Event('change'))
-    await settle(3)
-
-    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
-    await settle(3)
-
-    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
-    expect(sent.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
-    // No prompt is invented on the user's behalf.
-    expect(sent!.systemPrompt).toBeUndefined()
-  })
-
-  // Background is opt-in per family, exactly as in the Config pane: the toggle
-  // is inert until the family itself is on, and only opted-in families reach
-  // backgroundFamilies (core always rides along, as the API expects).
-  it('sends background families only for capabilities opted in', async () => {
-    const { el, createAgent } = await mountCreate()
-    const bg = [...el.querySelectorAll<HTMLInputElement>('.agents-bg-toggle input[type=checkbox]')]
-    expect(bg).toHaveLength(3)
-    expect(bg.every(input => input.disabled)).toBe(true)
-
-    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
-    nameInput.value = 'scout'
-    nameInput.dispatchEvent(new Event('input'))
-    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-
-    const [web, fanOut] = caps(el)
-    web.checked = true
-    web.dispatchEvent(new Event('change'))
-    fanOut.checked = true
-    fanOut.dispatchEvent(new Event('change'))
-    await settle(3)
-    expect(bg.slice(0, 2).every(input => !input.disabled)).toBe(true)
-    expect(bg[2].disabled).toBe(true)
-
-    bg[0].checked = true
-    bg[0].dispatchEvent(new Event('change'))
-    await settle(3)
-    expect(text(el)).toContain('web (+background)')
-
-    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
-    await settle(3)
-
-    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
-    expect(sent.interactiveFamilies).toEqual(['core', 'web', 'spawn'])
-    expect(sent.backgroundFamilies).toEqual(['core', 'web'])
-  })
-
-  // Turning a family off drops its background grant too; nothing may run in
-  // the background that cannot run interactively.
-  it('drops the background grant when the family is unticked', async () => {
-    const { el, createAgent } = await mountCreate()
-    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
-    nameInput.value = 'scout'
-    nameInput.dispatchEvent(new Event('input'))
-    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-
-    const [web] = caps(el)
-    const bg = [...el.querySelectorAll<HTMLInputElement>('.agents-bg-toggle input[type=checkbox]')]
-    web.checked = true
-    web.dispatchEvent(new Event('change'))
-    await settle(3)
-    bg[0].checked = true
-    bg[0].dispatchEvent(new Event('change'))
-    await settle(3)
-    web.checked = false
-    web.dispatchEvent(new Event('change'))
-    await settle(3)
-    expect(bg[0].checked).toBe(false)
-    expect(bg[0].disabled).toBe(true)
-
-    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
-    await settle(3)
-    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
-    expect(sent.interactiveFamilies).toBeUndefined()
-    expect(sent.backgroundFamilies).toBeUndefined()
-  })
-
-  it('omits families entirely when nothing is ticked', async () => {
-    const { el, createAgent } = await mountCreate()
-    const nameInput = el.querySelector<HTMLInputElement>('input[name=name]')!
-    nameInput.value = 'plain'
-    nameInput.dispatchEvent(new Event('input'))
-    const model = el.querySelector<HTMLButtonElement>('#agent-create-model')!
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
-    model.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    await settle(3)
-    el.querySelector<HTMLFormElement>('form')!.dispatchEvent(new Event('submit'))
-    await settle(3)
-    const sent = createAgent.mock.calls[0][0] as Record<string, unknown>
-    expect(sent!.interactiveFamilies).toBeUndefined()
-  })
-})
-
 describe('visualization capability', () => {
   it('is opt-in and survives changes to connected tools', () => {
     expect(familiesForConns([], () => undefined)).not.toContain('visualization')
@@ -1637,9 +1476,6 @@ describe('agent creation backend choice', () => {
     return { el: view.element as HTMLElement, createAgent }
   }
 
-  function backendRadio(el: HTMLElement, value: string): HTMLInputElement {
-    return [...el.querySelectorAll<HTMLInputElement>('input[name="agent-create-backend"]')].find(i => i.value === value)!
-  }
   function typeName(el: HTMLElement, value: string): void {
     const input = el.querySelector<HTMLInputElement>('#agent-create-name')!
     input.value = value
@@ -1664,13 +1500,7 @@ describe('agent creation backend choice', () => {
   it('creates a harness-backed agent from the machine and identity, with no chat credential and no tool grants', async () => {
     const { el, createAgent } = await mountWizard()
     typeName(el, 'coder')
-    // Ticked BEFORE switching backend: they must still not be sent, because the
-    // API refuses spec.tools on a harness-backed agent.
-    el.querySelectorAll<HTMLInputElement>('.agents-cap input[type=checkbox]').forEach(box => {
-      box.checked = true
-      box.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    backendRadio(el, 'harness').click()
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     await selectOption(el, 'agent-create-edge-label', 'build-01')
     await selectOption(el, 'agent-create-harnesscred-label', 'claude')
@@ -1696,7 +1526,7 @@ describe('agent creation backend choice', () => {
     // No chat credential in the workspace at all: the old wizard disabled its
     // submit button outright in this state.
     const { el, createAgent } = await mountWizard({ credentials: [CLAUDE] })
-    backendRadio(el, 'harness').click()
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     expect(primary(el).disabled).toBe(false)
     typeName(el, 'coder')
@@ -1710,7 +1540,7 @@ describe('agent creation backend choice', () => {
   it('refuses a harness agent with no machine or no identity, naming each field', async () => {
     const { el, createAgent } = await mountWizard()
     typeName(el, 'coder')
-    backendRadio(el, 'harness').click()
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     await submitForm(el)
     expect(createAgent).not.toHaveBeenCalled()
@@ -1720,7 +1550,7 @@ describe('agent creation backend choice', () => {
 
   it('never offers a Kubernetes cluster as a harness machine', async () => {
     const { el } = await mountWizard()
-    backendRadio(el, 'harness').click()
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     const select = [...el.querySelectorAll<HTMLElement>('[data-form-select]')]
       .find(c => c.querySelector('[role="combobox"]')?.getAttribute('aria-labelledby')?.includes('agent-create-edge-label'))!
@@ -1733,8 +1563,8 @@ describe('agent creation backend choice', () => {
 
   it('hides tool grants for a harness backend and says why', async () => {
     const { el } = await mountWizard()
-    expect(text(el)).toContain('Read the web')
-    backendRadio(el, 'harness').click()
+    expect(text(el)).not.toContain('Read the web')
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     expect(text(el)).not.toContain('Read the web')
     expect(text(el)).toContain('A coding harness uses its own tools')
@@ -1742,14 +1572,14 @@ describe('agent creation backend choice', () => {
 
   it('tells each missing prerequisite apart', async () => {
     const noEdges = await mountWizard({ edges: [] })
-    backendRadio(noEdges.el, 'harness').click()
+    noEdges.el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     expect(text(noEdges.el)).toContain('Connect a Linux or macOS machine in Edges, then check again here.')
     expect(text(noEdges.el)).toContain('Keep this tab open to retain your agent draft.')
     expect(primary(noEdges.el).disabled).toBe(true)
 
     const noIdentity = await mountWizard({ credentials: [CHAT] })
-    backendRadio(noIdentity.el, 'harness').click()
+    noIdentity.el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
     expect(text(noIdentity.el)).toContain('No harness identities yet')
     expect(text(noIdentity.el)).toContain('Models → Provider connections')
@@ -1758,7 +1588,7 @@ describe('agent creation backend choice', () => {
 
   it('marks required runner selectors and relates their empty and error states', async () => {
     const { el, createAgent } = await mountWizard({ credentials: [], edges: [] })
-    backendRadio(el, 'harness').click()
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settle(2)
 
     const machine = el.querySelector<HTMLButtonElement>('#agent-create-edge')!

@@ -47,6 +47,15 @@ export interface TemplateWiringSlot {
   description?: string
 }
 
+const SLOT_LABELS: Record<TemplateSlotKind, string> = {
+  modelCredential: 'chat model', channel: 'channel', connection: 'connection',
+  edge: 'machine', harnessCredential: 'coding harness identity', githubConnection: 'GitHub connection',
+}
+
+export function templateSlotLabel(slot: TemplateWiringSlot): string {
+  return slot.slot === 'connection' ? `${slot.connectionType ?? ''} connection`.trim() : SLOT_LABELS[slot.slot]
+}
+
 export interface TemplateSchedule {
   name: string
   spec: Omit<Schedule['spec'], 'agentRef'> & { agentRef?: string }
@@ -113,7 +122,8 @@ function renderList(raw: string): string {
 }
 
 function render(text: string, values: Record<string, string>): string {
-  return text.replace(PLACEHOLDER_RE, (match, key: string) => (key in values ? values[key] : match))
+  return text.replace(PLACEHOLDER_RE, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key] : match)
 }
 
 /**
@@ -141,8 +151,12 @@ export function parameterValues(
 }
 
 /** previewPrompt renders the system prompt with whatever parameters are known. */
-export function previewPrompt(tmpl: AgentTemplate, parameters: Record<string, string> = {}): string {
-  return render(tmpl.spec.agent.systemPrompt ?? '', parameterValues(tmpl, parameters).values)
+export function previewPrompt(
+  tmpl: AgentTemplate,
+  parameters: Record<string, string> = {},
+  prompt = tmpl.spec.agent.systemPrompt ?? '',
+): string {
+  return render(prompt, parameterValues(tmpl, parameters).values)
 }
 
 /** templateFamilies lists the tool families a template grants interactively. */
