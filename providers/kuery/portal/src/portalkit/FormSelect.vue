@@ -322,7 +322,8 @@ onBeforeUnmount(() => {
       :disabled="disabled || undefined"
     >
 
-    <!-- A native modal makes siblings of its top-layer dialog inert. -->
+    <!-- Open the enclosing dialog before opening the select. A native modal
+         makes content outside the dialog inert. -->
     <Teleport v-if="open" :to="trigger?.closest('dialog[open]') ?? 'body'">
       <div
         ref="panel"

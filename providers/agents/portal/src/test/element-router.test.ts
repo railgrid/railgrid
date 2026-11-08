@@ -675,6 +675,59 @@ describe('public Agents shell routing', () => {
     expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
   })
 
+  it('keeps the named schedule dialog and draft open when creation fails', async () => {
+    const element = await mountShell('#/agents/scout/automation')
+    const api = element.api!
+    configureChatApi(api, [])
+    const createSchedule = vi.fn().mockRejectedValue(new Error('Schedule name is already in use.'))
+    api.createSchedule = createSchedule
+    api.listSchedules = vi.fn().mockResolvedValue([])
+    seedChatStore(element.store!, [])
+    await settleVue()
+
+    buttonWithText(element, 'New schedule').click()
+    await settleVue()
+    const dialog = element.querySelector<HTMLDialogElement>('dialog[open]')!
+    const name = dialog.querySelector<HTMLInputElement>('input[name="name"]')!
+    const task = dialog.querySelector<HTMLTextAreaElement>('textarea[name="task"]')!
+    name.value = 'daily'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    task.value = 'Post the daily digest'
+    task.dispatchEvent(new InputEvent('input', { bubbles: true }))
+
+    buttonWithText(dialog, 'Create schedule').click()
+    await settleVue()
+
+    expect(createSchedule).toHaveBeenCalledOnce()
+    expect(createSchedule).toHaveBeenCalledWith(expect.objectContaining({ name: 'daily', agentRef: 'scout', task: 'Post the daily digest' }))
+    expect(location.hash).toBe('#/agents/scout/schedules/create')
+    expect(element.querySelector('dialog[open]')).toBe(dialog)
+    expect(text(document.getElementById(dialog.getAttribute('aria-labelledby')!))).toBe('New schedule')
+    expect(text(dialog.querySelector('[role="alert"]'))).toBe('Could not create this schedule. Schedule name is already in use.')
+    expect(name.value).toBe('daily')
+    expect(task.value).toBe('Post the daily digest')
+  })
+
+  it('returns focus to Name when submitting an empty schedule dialog', async () => {
+    const element = await mountShell('#/agents/scout/schedules/create')
+    const createSchedule = vi.fn()
+    element.api!.createSchedule = createSchedule
+    const dialog = element.querySelector<HTMLDialogElement>('dialog[open]')!
+    const name = dialog.querySelector<HTMLInputElement>('input[name="name"]')!
+    const submit = buttonWithText(dialog, 'Create schedule')
+
+    submit.focus()
+    expect(document.activeElement).toBe(submit)
+    submit.click()
+    await settleVue()
+
+    expect(createSchedule).not.toHaveBeenCalled()
+    expect(element.querySelector('dialog[open]')).toBe(dialog)
+    expect(name.getAttribute('aria-invalid')).toBe('true')
+    expect(text(dialog.querySelector('[role="alert"]'))).toBe('A name is required.')
+    expect(document.activeElement).toBe(name)
+  })
+
   it('deep-links an automation edit form and returns to Schedules & triggers after save', async () => {
     const element = await mountShell('#/agents/scout/triggers/on%2Fissue/edit')
     const store = element.store!

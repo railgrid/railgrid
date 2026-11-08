@@ -940,9 +940,9 @@ html.light .k-menu {
 }
 
 /* ── Form select ──────────────────────────────────────────────────────────
- * FormSelect composes the input and menu recipes above. The panel is
- * teleported to body, so k-form-select__portal is an explicit generic scope
- * for the panel and its descendants rather than relying on the root element. */
+ * FormSelect composes the input and menu recipes above. The Vue panel
+ * teleports into its nearest open dialog or to body. k-form-select__portal
+ * scopes the panel and its descendants independently of the select root. */
 .k-form-select {
   min-width: 0;
   position: relative;
