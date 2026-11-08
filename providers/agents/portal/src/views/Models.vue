@@ -6,7 +6,6 @@ import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
-import ActionMenu from '../portalkit/ActionMenu.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -18,7 +17,7 @@ import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
 import type { RailgridContext } from '../types'
-import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
+import AgentUsage from './AgentUsage.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
 import ProviderConnectionEditor from './ProviderConnectionEditor.vue'
 import TechnicalDetails from '../components/TechnicalDetails.vue'
@@ -26,9 +25,8 @@ import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-prob
 import { hashFor, MODELS_TABS, type ModelsTab, type CreateSuccessDetail, type Route } from '../router'
 import type { AppStore } from '../store'
 import { toast } from '../ui/toast'
-import { agentHarness, agentModelCredential, agentModelFallbacks, fmtTokens, fmtUSD, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo, type UsagePoint, type UsageResponse } from '../types'
+import { agentHarness, agentModelCredential, agentModelFallbacks, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
-import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
 const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; setupNavigation?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
@@ -55,12 +53,6 @@ function openModelTab(tab: ModelsTab): void {
 }
 const connectionView = computed(() => activeTab.value === 'provider-connections')
 const modelView = computed(() => activeTab.value === 'models')
-const moreModelSettings = MODELS_TABS.filter(tab => tab.id === 'workspace-assistant' || tab.id === 'usage')
-
-function selectModelSetting(id: string): void {
-  const tab = moreModelSettings.find(tab => tab.id === id)
-  if (tab) openModelTab(tab.id)
-}
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -68,11 +60,6 @@ const catalog = ref<ModelInfo[]>([])
 const catalogError = ref<string | null>(null)
 const catalogHasSnapshot = ref(false)
 const catalogLoading = ref(false)
-const usage = ref<UsageResponse | null>(null)
-const usageError = ref<string | null>(null)
-const usageHasSnapshot = ref(false)
-const usageLoading = ref(false)
-const windowDays = ref(30)
 const tested = ref(new Map<string, CredentialTestResult>())
 const testing = ref(new Set<string>())
 type CredentialAction = 'saving' | 'deleting'
@@ -90,15 +77,11 @@ const continueAddedProvider = ref(false)
 const savedProviderDiscovery = ref<{ connectionName: string; models: string[] } | null>(null)
 const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
-const showBreakdown = ref(false)
 let catalogGeneration = 0
-let usageGeneration = 0
 const probeGenerations = new Map<string, number>()
 
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
 const showFirstRun = computed(() => credentials.value.loaded && credentials.value.data.length === 0 && (!credentials.value.error || credentials.value.hasSnapshot))
-const normalizedUsage = computed(() => usage.value ? { ...usage.value, byAgent: usage.value.byAgent ?? [], byModel: usage.value.byModel ?? [], series: usage.value.series ?? [], unavailableAgents: usage.value.unavailableAgents ?? [] } : null)
-const unpricedRuns = computed(() => normalizedUsage.value ? unpricedRunCount(normalizedUsage.value.total) : 0)
 
 function resetCatalogRead(): void {
   catalogGeneration += 1
@@ -124,39 +107,9 @@ async function loadCatalog(): Promise<void> {
     if (generation === catalogGeneration && authorityIsCurrent(authority)) catalogLoading.value = false
   }
 }
-function resetUsageRead(): void {
-  usageGeneration += 1
-  usage.value = null
-  usageError.value = null
-  usageHasSnapshot.value = false
-  usageLoading.value = false
-}
-
 watch([() => props.store, () => props.api], () => { resetCatalogRead(); void loadCatalog() }, { immediate: true })
-watch([() => props.store, () => props.api, windowDays], resetUsageRead)
-watch([() => props.store, () => props.api, windowDays, activeTab], () => {
-  if (activeTab.value === 'usage') void loadUsage()
-}, { immediate: true })
 watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
-async function loadUsage(): Promise<void> {
-  const generation = ++usageGeneration
-  const authority = captureAuthority()
-  const days = windowDays.value
-  usageLoading.value = true
-  try {
-    const result = await authority.api.usage(days)
-    if (generation !== usageGeneration || !authorityIsCurrent(authority) || days !== windowDays.value) return
-    usage.value = result
-    usageHasSnapshot.value = true
-    usageError.value = null
-  } catch (error) {
-    if (generation !== usageGeneration || !authorityIsCurrent(authority) || days !== windowDays.value) return
-    usageError.value = (error as Error).message
-  } finally {
-    if (generation === usageGeneration && authorityIsCurrent(authority) && days === windowDays.value) usageLoading.value = false
-  }
-}
 function lookupModel(model: string): ModelInfo | undefined {
   const normalized = (model || '').toLowerCase().trim().replace(/^.*\//, '')
   let exact: ModelInfo | undefined; let best: ModelInfo | undefined
@@ -468,22 +421,8 @@ async function renameModel(displayName: string): Promise<void> {
   } finally { if (authorityIsCurrent(authority) && fence.createSession === props.createSession) createBusy.value = false }
 }
 function cancelEditorAfterSave(): void { initialConnection.value = ''; editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; selectingConnection.value = Boolean(props.selectConnection); editorFamily.value = 'chat' }
-function sparkPoints(series: UsagePoint[]): string {
-  const values = series.map(item => item.usdMicros); if (values.length < 2 || Math.max(...values) === 0) return ''
-  const max = Math.max(...values); const step = 260 / (values.length - 1)
-  return values.map((value, index) => `${(index * step).toFixed(1)},${(40 - (value / max) * 36 - 2).toFixed(1)}`).join(' ')
-}
-function dailySpendSummary(series: UsagePoint[]): string {
-  if (!series.length) return 'Daily priced usage: no recorded estimates in this window.'
-  const first = series[0]
-  const last = series[series.length - 1]
-  const peak = series.reduce((highest, point) => point.usdMicros > highest.usdMicros ? point : highest, first)
-  const trend = last.usdMicros > first.usdMicros ? 'increased' : last.usdMicros < first.usdMicros ? 'decreased' : 'was unchanged'
-  return `Daily priced usage over ${series.length} days: ${fmtUSD(first.usdMicros)} on ${first.date}, ${fmtUSD(last.usdMicros)} on ${last.date}; peak ${fmtUSD(peak.usdMicros)} on ${peak.date}; spend ${trend} overall.`
-}
-function barWidth(value: number, max: number): string { return `${max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0}%` }
-
-defineExpose({ loadCatalog, loadUsage })
+const usagePanel = ref<InstanceType<typeof AgentUsage> | null>(null)
+defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
 </script>
 
 <template>
@@ -520,7 +459,6 @@ defineExpose({ loadCatalog, loadUsage })
         <div class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
             <a v-if="setupNavigation" class="k-btn k-btn--text" :href="hashFor(tabRoute('provider-connections'))" @click="navigateTab($event, 'provider-connections')">Manage model providers</a>
-            <ActionMenu v-if="setupNavigation" label="More model settings" show-label :items="moreModelSettings" @select="selectModelSetting" />
             <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
@@ -602,28 +540,9 @@ defineExpose({ loadCatalog, loadUsage })
       </ModelCollection>
       <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
       </template>
-      <WorkspaceAssistantCard v-if="activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
-      <div v-else-if="activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
-      <ModelUsageSection v-if="activeTab === 'usage'" provider="Agents" available>
-<template #controls><div class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
-      <div v-if="usageError && !usageHasSnapshot" class="k-error" role="alert">Usage unavailable: {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-      <div v-else-if="!usageHasSnapshot" class="agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>
-      <template v-else-if="normalizedUsage">
-        <div v-if="usageError" class="k-stale" role="status">Could not refresh usage. Showing usage from the last successful read. {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-        <div v-if="normalizedUsage.unavailableAgents.length" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
-          <span class="k-inline-notification__body"><span class="k-inline-notification__message">Usage could not be read for {{ normalizedUsage.unavailableAgents.length }} agent{{ normalizedUsage.unavailableAgents.length === 1 ? '' : 's' }}: {{ normalizedUsage.unavailableAgents.join(', ') }}. Totals cover only agents whose usage was available.</span></span>
-          <button class="k-inline-notification__action" type="button" :disabled="usageLoading" :aria-busy="usageLoading ? 'true' : undefined" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button>
-        </div>
-        <p class="agents-hint">Estimates cover recorded, priced usage only. Unpriced runs have no recorded cost estimate and may be billed by the model provider or harness. Usage is calculated from each agent’s most recent 5,000 runs, then filtered to this window.</p>
-        <div class="agents-dash">
-
-        <div class="agents-stats"><div class="agents-stat"><div class="agents-stat-v">{{ usageCostLabel(normalizedUsage.total) }}</div><div class="agents-stat-k">{{ unpricedRuns && normalizedUsage.total.usdMicros ? 'priced usage only' : 'estimated spend' }}</div><div class="agents-stat-sub">{{ normalizedUsage.windowDays }}d<span v-if="unpricedRuns"> · {{ unpricedRuns }} unpriced run{{ unpricedRuns === 1 ? '' : 's' }}</span></div></div><div class="agents-stat"><div class="agents-stat-v">{{ fmtTokens(normalizedUsage.total.inputTokens + normalizedUsage.total.outputTokens) }}</div><div class="agents-stat-k">tokens</div><div class="agents-stat-sub">{{ fmtTokens(normalizedUsage.total.inputTokens) }} in · {{ fmtTokens(normalizedUsage.total.outputTokens) }} out</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.runs }}</div><div class="agents-stat-k">runs</div><div class="agents-stat-sub">{{ normalizedUsage.total.runs ? Math.round(normalizedUsage.total.errors / normalizedUsage.total.runs * 100) : 0 }}% errors</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.latencyP50MS ? `${normalizedUsage.total.latencyP50MS}ms` : '—' }}</div><div class="agents-stat-k">slowest agent p50</div><div class="agents-stat-sub">{{ normalizedUsage.total.latencyP95MS ? `${normalizedUsage.total.latencyP95MS}ms p95` : 'p50 / p95' }}</div></div></div>
-        <button type="button" class="k-btn k-btn--ghost agents-usage-disclosure" :aria-expanded="showBreakdown" @click="showBreakdown = !showBreakdown">{{ showBreakdown ? 'Hide usage breakdown' : 'Show usage breakdown' }}</button><div v-if="showBreakdown" class="agents-dash-grid"><div class="agents-dash-card"><div class="agents-dash-card-h">Daily priced usage · USD</div><div v-if="!sparkPoints(normalizedUsage.series)" class="agents-spark-empty muted">No recorded cost estimates in this window.</div><svg v-else class="agents-spark" viewBox="0 0 260 40" preserveAspectRatio="none" role="img" :aria-label="dailySpendSummary(normalizedUsage.series)"><polygon class="agents-spark-fill" :points="`0,40 ${sparkPoints(normalizedUsage.series)} 260,40`"/><polyline class="agents-spark-line" :points="sparkPoints(normalizedUsage.series)"/></svg></div>
-          <div v-for="breakdown in [{ title: 'Estimate by current model connection', rows: normalizedUsage.byModel }, { title: 'Estimate by agent', rows: normalizedUsage.byAgent }]" :key="breakdown.title" class="agents-dash-card"><div class="agents-dash-card-h">{{ breakdown.title }}</div><p v-if="breakdown.rows.length > 6" class="agents-hint">Showing 6 of {{ breakdown.rows.length }} rows; the rest are not shown.</p><div class="agents-bars"><div v-for="bucket in breakdown.rows.slice(0, 6)" :key="bucket.key" class="agents-bar-row"><div class="agents-bar-label" :title="bucket.key">{{ bucket.key }}</div><div class="agents-bar-track"><div class="agents-bar-fill" :style="{ width: barWidth(bucket.usdMicros, Math.max(1, ...breakdown.rows.map(item => item.usdMicros))) }" /></div><div class="agents-bar-val">{{ usageCostLabel(bucket) }} · {{ bucket.runs }} run{{ bucket.runs === 1 ? '' : 's' }}<span v-if="unpricedRunCount(bucket)"> · {{ unpricedRunCount(bucket) }} unpriced</span></div></div><div v-if="!breakdown.rows.length" class="muted agents-bars-empty">—</div></div></div>
-        </div>
-        </div>
-      </template>
-      </ModelUsageSection>
+      <WorkspaceAssistantCard v-if="!setupNavigation && activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
+      <div v-else-if="!setupNavigation && activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
+      <AgentUsage v-if="!setupNavigation && activeTab === 'usage'" ref="usagePanel" :store="store" :api="api" />
     </template>
   </div>
 </template>

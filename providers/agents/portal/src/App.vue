@@ -3,6 +3,7 @@ import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRe
 import { BookOpen, Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
+import ResourceBackLink from './portalkit/ResourceBackLink.vue'
 import { resolveConfirm } from './portalkit/confirm'
 import { ApiClient, type ContextAuthority } from './api'
 import { AppStore } from './store'
@@ -28,6 +29,7 @@ import { isHarnessProvider, type AgentOverlayState, type Agent, type Connection,
 import { withCreatedCredential, type AgentCreateDraft, type AgentCredentialFamily } from './agent-create-draft'
 import { provideAgentsRuntime } from './vue/runtime'
 import AgentsList from './views/AgentsList.vue'
+import WorkspaceAssistantCard from './views/WorkspaceAssistantCard.vue'
 import AgentCreate from './views/AgentCreate.vue'
 import AgentDetail from './views/AgentDetail.vue'
 import SkillsLibrary from './views/SkillsLibrary.vue'
@@ -273,7 +275,7 @@ function scheduleRouteFocus(next: Route): void {
     if (request !== focusRequest || hashFor(route.value) !== hashFor(next)) return
     if (newAgentComposerRoute.value === hashFor(next) &&
       document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
-    const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
+    const assistantSettings = next.kind === 'menu' && next.assistantSettings && props.ctx?.agentOverlay
     const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title:not([data-agents-setup-title]), .k-create-title, .agents-detail-title > h2')
       ?? root.value?.querySelector<HTMLElement>('[data-agents-setup-title]')
     if (!target) return
@@ -383,10 +385,11 @@ watch(() => props.ctx, () => {
   if (contextUsable.value && !props.overlay) restoreRouteFromHash(false)
 })
 
-// The host assistant settings shortcut still enters the Models destination.
+// Hosts that open Models with the assistant-settings flag still reach the
+// same settings page as the Agents link.
 watch([() => props.ctx?.agentOverlay?.settingsOpen, () => hashFor(route.value)], ([open]) => {
-  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && route.value.modelsTab !== 'workspace-assistant') {
-    go({ kind: 'menu', menu: 'models', modelsTab: 'workspace-assistant' }, 'replace')
+  if (open && !props.overlay && route.value.kind === 'menu' && route.value.menu === 'models' && !route.value.modelsTab) {
+    go({ kind: 'menu', menu: 'agents', assistantSettings: true }, 'replace')
   }
 }, { immediate: true })
 
@@ -626,11 +629,20 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
           >{{ tab.label }}</a>
         </nav>
       </section>
+      <template v-if="route.kind === 'menu' && route.menu === 'agents' && route.assistantSettings">
+        <ResourceBackLink href="#/agents" @back="go(DEFAULT_ROUTE)">Back to Agents</ResourceBackLink>
+        <WorkspaceAssistantCard v-if="ctx.agentOverlay" :key="routeSurfaceKey" :store="store" :overlay-control="ctx.agentOverlay" />
+        <section v-else class="k-resource-page k-resource-page--collection">
+          <h2 class="k-resource-page__title">Workspace assistant settings</h2>
+          <p class="muted">Workspace assistant settings are available in the workspace portal.</p>
+        </section>
+      </template>
       <AgentsList
-        v-if="route.kind === 'menu' && route.menu === 'agents'"
+        v-else-if="route.kind === 'menu' && route.menu === 'agents'"
         :key="routeSurfaceKey"
         :store="store"
         :api="api"
+        :assistant-settings="!!ctx.agentOverlay"
         @navigate="go"
       />
       <SkillsLibrary
@@ -673,7 +685,6 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
         setup-navigation
-        :overlay-control="ctx.agentOverlay"
         :models-tab="route.modelsTab"
         :key="routeSurfaceKey"
         :store="store"

@@ -124,24 +124,37 @@ describe('public Agents shell routing', () => {
     expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
   })
 
-  it('opens additional model pages from the Models header and provides an explicit return', async () => {
-    const element = await mountShell('#/models')
-    const header = element.querySelector('[aria-labelledby="available-models-title"]')!
-    const menu = header.querySelector<HTMLButtonElement>('button[aria-label="More model settings"]')!
-    menu.click()
+  it('opens usage from Activity and assistant settings from Agents', async () => {
+    const control = { selectedAgent: null, followContext: true, settingsOpen: false, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
+    const element = await mountShell('#/agents', ctx({ agentOverlay: control }))
+    const settings = element.querySelector<HTMLAnchorElement>('a[href="#/assistant-settings"]')!
+    expect(text(settings)).toBe('Workspace assistant settings')
+    history.pushState(null, '', settings.getAttribute('href')!)
+    window.dispatchEvent(new HashChangeEvent('hashchange'))
     await settleVue()
-    const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
-    expect(options.map(text)).toEqual(['Workspace assistant', 'Usage & cost'])
-    options[1].click()
+    expect(element.querySelector('[data-k-tab-id="agents"]')?.getAttribute('aria-current')).toBe('page')
+    expect(element.querySelector('#workspace-assistant-settings')).not.toBeNull()
+    element.querySelector<HTMLAnchorElement>('a.k-back-action[href="#/agents"]')!.click()
     await settleVue()
-    expect(location.hash).toBe('#/models/usage')
+    expect(location.hash).toBe('#/agents')
+
+    element.querySelector<HTMLButtonElement>('[data-k-tab-id="activity"]')!.click()
+    await settleVue()
+    element.querySelector<HTMLButtonElement>('[aria-label="Activity sections"] [data-k-tab-id="usage"]')!.click()
+    await settleVue()
+    expect(location.hash).toBe('#/activity?view=usage')
+    expect(element.querySelector('[aria-label="Activity sections"] [aria-current="page"]')?.getAttribute('data-k-tab-id')).toBe('usage')
     expect(text(element.querySelector('.k-model-usage .k-resource-page__title'))).toBe('Usage & cost')
-    const back = element.querySelector<HTMLAnchorElement>('a.k-back-action[href="#/models"]')!
-    expect(text(back)).toBe('Back to Models')
-    back.click()
-    await settleVue()
-    expect(location.hash).toBe('#/models')
-    expect(element.querySelector('#available-models-title')).not.toBeNull()
+  })
+
+  it('canonicalizes legacy Models links to their new owners', async () => {
+    const element = await mountShell('#/models/usage')
+    expect(location.hash).toBe('#/activity?view=usage')
+    expect(element.route).toEqual({ kind: 'menu', menu: 'activity', activityTab: 'usage' })
+    element.remove()
+    const assistant = await mountShell('#/models/workspace-assistant')
+    expect(location.hash).toBe('#/assistant-settings')
+    expect(assistant.route).toEqual({ kind: 'menu', menu: 'agents', assistantSettings: true })
   })
 
   it('starts route revalidation before webhook settings initialize from a cached snapshot', async () => {
@@ -1161,14 +1174,14 @@ describe('context and create-session routing fences', () => {
 })
 
 describe('Models sub-tab shell routing', () => {
-  it('restores deep links and follows external browser navigation between sub-tabs', async () => {
+  it('restores model provider deep links and follows browser navigation to usage', async () => {
     const element = await mountShell('#/models/provider-connections')
     expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
     expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections')
     history.pushState(null, '', '#/models/usage')
     window.dispatchEvent(new PopStateEvent('popstate'))
     await settleVue(6)
-    expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'usage' })
+    expect(element.route).toEqual({ kind: 'menu', menu: 'activity', activityTab: 'usage' })
     expect(element.querySelector('.k-model-usage')).toBeTruthy()
     expect(element.querySelector('.agents-provider-connection')).toBeNull()
   })
@@ -1283,11 +1296,11 @@ describe('Models sub-tab shell routing', () => {
     element.remove()
   })
 
-  it('opens the Workspace assistant sub-tab from the host settings shortcut', async () => {
+  it('opens Workspace assistant settings from the legacy host shortcut', async () => {
     const control = { selectedAgent: null, followContext: true, settingsOpen: true, configure: vi.fn(), setSettingsOpen: vi.fn(), select: vi.fn() }
     const element = await mountShell('#/models', ctx({ agentOverlay: control }))
     await settleVue(6)
-    expect(location.hash).toBe('#/models/workspace-assistant')
+    expect(location.hash).toBe('#/assistant-settings')
     expect(element.querySelector('#workspace-assistant-settings')).toBeTruthy()
     expect(element.querySelector('.k-model-usage')).toBeNull()
   })

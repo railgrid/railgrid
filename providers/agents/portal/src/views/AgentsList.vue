@@ -18,7 +18,7 @@ import type { AppStore } from '../store'
 import { CONDITION_BACKEND_READY, agentCondition, agentHarness, agentHarnessBacked, agentModelCredential, credentialUnavailable, harnessLabel, type Agent } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
-const props = defineProps<{ store: AppStore; api: ApiClient }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; assistantSettings?: boolean }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
 const cardDescriptionID = useId()
 const agentActions: readonly ActionMenuItem[] = [
@@ -184,6 +184,7 @@ function openAgentRow(row: Record<string, unknown>): void {
 <template>
   <ResourcePage title="Agents" variant="collection">
     <template #actions>
+      <a v-if="assistantSettings" class="k-btn k-btn--text" :href="hashFor({ kind: 'menu', menu: 'agents', assistantSettings: true })">Workspace assistant settings</a>
       <button v-if="!showAgentCards" class="k-btn k-btn--primary" type="button" @click="navigate({ kind: 'create', resource: 'agent' })">
         <Plus aria-hidden="true" /> New agent
       </button>
