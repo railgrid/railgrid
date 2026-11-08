@@ -74,7 +74,12 @@ railgrid-provider-agents .agents-card-glyph {
 railgrid-provider-agents .agents-card-body { flex: 1; display: flex; flex-direction: column; gap: 4px; }
 railgrid-provider-agents .agents-card-body h3 { margin: 0; font-size: 16px; font-weight: 600; }
 railgrid-provider-agents .agents-card-model { margin: 0; font-size: 12px; color: var(--color-text-muted, inherit); overflow-wrap: anywhere; }
-railgrid-provider-agents .agents-card-model.warn { color: var(--color-warning, #f0a63a); }
+railgrid-provider-agents .agents-backend-blocker {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
 railgrid-provider-agents .agents-card-foot {
   display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--color-text-muted, inherit);
   border-top: 1px solid var(--color-border-subtle, rgba(255, 255, 255, 0.07)); padding-top: 10px;
@@ -133,6 +138,25 @@ railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 /* Config follows the shared document pane and App Studio settings rhythm. */
 railgrid-provider-agents .agents-config-pane .agents-fieldset { padding: 0; border: 0; }
 railgrid-provider-agents .agents-config-pane .agents-radiocards { gap: 8px; }
+railgrid-provider-agents .agents-config-disclosure {
+  min-width: 0;
+  border-block-start: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-config-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding-inline: 4px;
+  list-style: none;
+  cursor: pointer;
+  font-weight: 600;
+}
+railgrid-provider-agents .agents-config-disclosure > summary::-webkit-details-marker { display: none; }
+railgrid-provider-agents .agents-config-disclosure > summary:hover { background: var(--color-surface-overlay); }
+railgrid-provider-agents .agents-config-disclosure > summary > svg { flex: none; }
+railgrid-provider-agents .agents-config-disclosure[open] > summary > svg { transform: rotate(90deg); }
+railgrid-provider-agents .agents-config-disclosure[open] > .agents-fieldset { padding-block: 8px; }
 
 railgrid-provider-agents input[aria-invalid="true"],
 railgrid-provider-agents textarea[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
@@ -706,7 +730,6 @@ railgrid-provider-agents .agents-wire-fs { border: 1px solid var(--color-border-
 railgrid-provider-agents .agents-wire-fs legend { font-weight: 600; padding: 0 6px; display: inline-flex; align-items: center; gap: 5px; }
 railgrid-provider-agents .agents-tool-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 railgrid-provider-agents .agents-bg-toggle { font-size: 12px; color: var(--color-text-secondary, currentColor); white-space: nowrap; }
-railgrid-provider-agents .agents-bg-toggle svg { width: 12px; height: 12px; }
 railgrid-provider-agents .agents-bg-toggle:has(input:disabled) { opacity: 0.45; }
 railgrid-provider-agents .agents-chan-editor { display: flex; flex-direction: column; gap: 8px; }
 railgrid-provider-agents .agents-chan-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }

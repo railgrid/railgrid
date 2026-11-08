@@ -20,19 +20,19 @@ export type AgentWorkbenchTabDropPlacement = 'before' | 'after'
 
 const builtInTabs: Record<AgentWorkbenchBuiltInTab, AgentWorkbenchTabDescriptor> = {
   config: {
-    id: 'config', kind: 'config', title: 'Config', subtitle: 'Manage this agent and its channels', closeable: true,
+    id: 'config', kind: 'config', title: 'Config', subtitle: 'Edit instructions and the default model', closeable: true,
   },
   tools: {
-    id: 'tools', kind: 'tools', title: 'Tools & toolsets', subtitle: 'Manage tool access and toolsets', closeable: true,
+    id: 'tools', kind: 'tools', title: 'Tools & toolsets', subtitle: 'Choose what the agent can access', closeable: true,
   },
   automation: {
-    id: 'automation', kind: 'automation', title: 'Schedules & triggers', subtitle: 'Manage schedules and triggers', closeable: true,
+    id: 'automation', kind: 'automation', title: 'Schedules & triggers', subtitle: 'Set when the agent runs', closeable: true,
   },
   runs: {
-    id: 'runs', kind: 'runs', title: 'Runs', subtitle: 'Review runs, approvals, and execution details', closeable: true,
+    id: 'runs', kind: 'runs', title: 'Runs', subtitle: 'Review past runs and approvals', closeable: true,
   },
   skills: {
-    id: 'skills', kind: 'skills', title: 'Skills', subtitle: 'Manage skills enabled for this agent', closeable: true,
+    id: 'skills', kind: 'skills', title: 'Skills', subtitle: 'Choose the skills the agent uses', closeable: true,
   },
 }
 
