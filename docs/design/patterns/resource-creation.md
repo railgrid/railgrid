@@ -11,6 +11,12 @@ compact addition whose meaning depends on the current parent. Do not insert a
 substantial form into a collection page where it reflows or competes with the
 collection.
 
+In the Agents workbench, schedule and trigger creation uses the existing create
+routes in a modal over the agent workspace. Keep the conversation and automation
+lists mounted. Place the dialog on the workbench side on wide screens and let its
+form scroll on short screens. Cancel and successful creation return to the
+automation collection.
+
 Organization and workspace member additions, and the current workspace-scoped
 service-account creation form, use compact dialogs. Their short identity-and-role
 decision does not need a dedicated creation route. Put **Add member** or **Create

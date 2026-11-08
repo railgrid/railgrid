@@ -488,6 +488,40 @@ describe('Activity.vue', () => {
     expect(full.endsWith(' · github-reviewer')).toBe(true)
   })
 
+  it('discloses a shortened workbench run prompt on hover and by keyboard without layout overflow', async () => {
+    const prompt = `${'Review the latest changes and list their effects. '.repeat(6)}Check the rollback plan.`
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({
+      items: [run({ id: 'r-long', inputPreview: prompt }), run({ id: 'r-short' })], nextCursor: '',
+    }) })
+    const view = await mount(Activity, { store: makeStore(api), api, agent: 'scout' })
+    const tooltip = () => document.querySelector('.k-table__primary-tooltip')
+    const row = view.element.querySelector<HTMLElement>('[aria-label="Open run r-long"]')!
+    const content = row.querySelector<HTMLElement>('.k-table__primary-content')!
+    const value = content.querySelector<HTMLElement>('.k-table__primary-value')!
+    expect(text(value)).not.toContain('Check the rollback plan.')
+    expect(value.scrollWidth).toBe(value.clientWidth)
+
+    content.dispatchEvent(new MouseEvent('mouseenter'))
+    await settleVue()
+    expect(text(tooltip())).toBe(prompt)
+    content.dispatchEvent(new MouseEvent('mouseleave'))
+    await settleVue()
+    expect(tooltip()).toBeNull()
+
+    row.focus()
+    await settleVue()
+    expect(text(tooltip())).toBe(prompt)
+    const right = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    row.dispatchEvent(right)
+    await settleVue()
+    expect(right.defaultPrevented).toBe(true)
+    expect(text(tooltip())).toBe(prompt)
+
+    view.element.querySelector<HTMLElement>('[aria-label="Open run r-short"]')!.focus()
+    await settleVue()
+    expect(tooltip()).toBeNull()
+  })
+
   it('applies a queued self-configuration change from the feed', async () => {
     // A change parks no run: approving it is what applies it, so it is not
     // offered as "approve & resume" and has no answer box.
@@ -1707,6 +1741,39 @@ describe('Automation.vue', () => {
     expect(createSchedule).not.toHaveBeenCalled()
   })
 
+  it('keeps the creation dialog and its draft through a rejected save', async () => {
+    const pendingCreate = deferred<Schedule>()
+    const createSchedule = vi.fn().mockReturnValue(pendingCreate.promise)
+    const api = stubApi({ createSchedule })
+    const store = storeWithAgent(api)
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', createRoute: true, createModal: true })
+    const dialog = view.element.querySelector<HTMLDialogElement>('dialog')!
+    const form = dialog.querySelector('form')!
+    const name = form.querySelector<HTMLInputElement>('input[name="name"]')!
+    const cancel = buttonWithText(dialog, 'Cancel')
+    expect(dialog.open).toBe(true)
+
+    setValue(name, 'daily')
+    form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    const escape = new Event('cancel', { cancelable: true })
+    dialog.dispatchEvent(escape)
+    expect(escape.defaultPrevented).toBe(true)
+    expect(cancel.disabled).toBe(true)
+    expect(view.navigations).toEqual([])
+
+    pendingCreate.reject(new Error('A schedule with that name already exists.'))
+    await settleVue()
+    expect(text(dialog.querySelector('[role="alert"]'))).toContain('A schedule with that name already exists.')
+    expect(name.value).toBe('daily')
+    expect(dialog.open).toBe(true)
+    expect(cancel.disabled).toBe(false)
+    expect(view.navigations).toEqual([])
+
+    cancel.click()
+    expect(view.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'automation' }])
+  })
+
   it('keeps failed edits open and sends the trigger-specific patch shape', async () => {
     const patchTrigger = vi.fn().mockRejectedValue(new Error('conflict'))
     const api = stubApi({ patchTrigger })
@@ -1976,6 +2043,42 @@ describe('Automation.vue', () => {
       { kind: 'automation', resource: 'trigger', agent: 'scout', action: 'create' },
       { kind: 'automation', resource: 'trigger', agent: 'scout', action: 'edit', name: 'on/issue' },
     ])
+  })
+
+  it('keeps Run now visible and separates it from Resume in the workbench', async () => {
+    const runSchedule = vi.fn().mockResolvedValue({ runID: 'run-42' })
+    const api = stubApi({ runSchedule })
+    const store = storeWithAgent(api)
+    store.schedules.data = [{
+      metadata: { name: 'weekday-digest' },
+      spec: { agentRef: 'scout', type: 'cron', schedule: '0 9 * * 1-5', timeZone: 'America/Chicago', suspend: true },
+    }]
+    store.schedules.hasSnapshot = true
+    const view = await mount(Automation, { store, api, kind: 'schedule', agent: 'scout', workbench: true })
+    const row = view.element.querySelector('tr.k-table__row')!
+
+    expect(text(row)).toContain('weekday-digest')
+    expect(text(row)).toContain('0 9 * * 1-5 America/Chicago')
+    expect(text(row)).toContain('Paused')
+    expect(text(row.querySelector('[aria-label="Run now: weekday-digest"]'))).toBe('Run now')
+    const moreActions = row.querySelector<HTMLButtonElement>('[aria-label="More actions for weekday-digest"]')!
+    moreActions.click()
+    await settleVue()
+    const menu = document.querySelector('[role="menu"]')!
+    expect([...menu.querySelectorAll('[role="menuitem"]')].map(text)).toEqual(['Edit', 'Resume', 'Delete'])
+    buttonWithText(menu, 'Edit').click()
+    await settleVue()
+    expect(view.navigations).toEqual([{ kind: 'automation', resource: 'schedule', agent: 'scout', action: 'edit', name: 'weekday-digest' }])
+
+    buttonWithText(row, 'Run now').click()
+    await settleVue()
+    expect(runSchedule).toHaveBeenCalledWith('weekday-digest')
+
+    moreActions.click()
+    await settleVue()
+    expect(document.querySelector('[role="menu"]')).not.toBeNull()
+    await view.setProps({ workbenchActive: false })
+    expect(document.querySelector('[role="menu"]')).toBeNull()
   })
 
   it('returns a routed automation form to the Schedules & triggers tab on cancel', async () => {

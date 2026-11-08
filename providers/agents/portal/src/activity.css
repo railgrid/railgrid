@@ -2,6 +2,47 @@
 railgrid-provider-agents .agents-run-cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 railgrid-provider-agents .agents-run-preview { font-weight: 500; }
 railgrid-provider-agents .agents-run-secondary { color: var(--color-text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+
+railgrid-provider-agents .agents-run-compact-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  margin-top: 4px;
+}
+railgrid-provider-agents .agents-run-compact-phase {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 4px;
+  white-space: normal;
+}
+railgrid-provider-agents .agents-automation-when {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-text-secondary);
+}
+railgrid-provider-agents .agents-automation-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin-top: 6px;
+  color: var(--color-text-secondary);
+}
+railgrid-provider-agents .agents-automation-run {
+  white-space: nowrap;
+}
+@container ai-workbench-pane (max-width: 440px) {
+  railgrid-provider-agents .agents-automation-section .agents-workbench-section__heading {
+    flex-basis: 100%;
+  }
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  railgrid-provider-agents :is(.agents-automation-run, .agents-runs-pane .agents-runs-refresh) {
+    min-height: 44px;
+  }
+}
 railgrid-provider-agents .agents-approvals { display: flex; flex-direction: column; gap: 12px; }
 railgrid-provider-agents .agents-question-inbox { display: grid; gap: 8px; min-width: 0; }
 railgrid-provider-agents .agents-attention-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

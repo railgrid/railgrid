@@ -9,7 +9,6 @@ import AIConversationIdentity from '../agentkit/AIConversationIdentity.vue'
 import AIWorkspace from '../agentkit/AIWorkspace.vue'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
-import ResourceSectionCard from '../portalkit/ResourceSectionCard.vue'
 import { hashFor, type AgentTab, type Route } from '../router'
 import {
   activateAgentWorkbenchTab,
@@ -33,6 +32,7 @@ import AgentWorkbench from './AgentWorkbench.vue'
 import AgentWorkbenchHeader from './AgentWorkbenchHeader.vue'
 import AgentWorkbenchLauncher from './AgentWorkbenchLauncher.vue'
 import AgentSkillsWorkbench from './AgentSkillsWorkbench.vue'
+import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import RunDetail from './RunDetail.vue'
 
 type WorkbenchTab = AgentWorkbenchTabKind
@@ -48,6 +48,7 @@ const props = defineProps<{
   api: ApiClient
   name: string
   tab: AgentTab
+  automationCreateOpen?: boolean
   runId?: string
   authorityEpoch: number
   compact?: boolean
@@ -143,7 +144,10 @@ function ensureWorkbenchSurfaceMounted(tab: AgentWorkbenchTabKind): void {
   if (tab === 'skills') skillsMounted.value = true
 }
 
-watch(() => props.tab, tab => {
+watch([() => props.tab, () => props.automationCreateOpen], ([tab, createOpen], [previousTab]) => {
+  // The launcher can stay selected at the Automation URL. Entering its
+  // create route explicitly selects Automation even when the tab prop is unchanged.
+  if (tab === previousTab && !createOpen) return
   if (inspectionActive) workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
@@ -409,15 +413,15 @@ async function remove(): Promise<void> {
             <template #workbench>
               <AgentWorkbench :active="workbenchTab">
                 <template #config>
-                  <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections @navigate="handleChildNavigate">
+                  <AgentConfig v-if="configMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" workbench-sections :automation-active="workspaceOpen && !compact && workbenchTab === 'automation'" @navigate="handleChildNavigate">
                     <template #destructive-actions>
-                      <ResourceSectionCard v-if="!workspaceCompact" class="agents-config-sec" variant="document" :heading-id="domID('agent-layout-heading')" title="Layout">
+                      <AgentsWorkbenchSection v-if="!workspaceCompact" class="agents-config-sec" :heading-id="domID('agent-layout-heading')" title="Layout">
                         <label class="agents-check k-checkbox-hit">
                           <input type="checkbox" data-keep-workbench-open :checked="keepWorkbenchOpen" @change="setKeepWorkbenchOpen" />
                           Keep the workbench open on desktop
                         </label>
-                      </ResourceSectionCard>
-                      <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
+                      </AgentsWorkbenchSection>
+                      <AgentsWorkbenchSection class="agents-config-sec" :heading-id="domID('agent-delete-heading')" title="Delete agent" description="Delete this agent and its chat history.">
                         <div class="agents-form-actions">
                           <button
                             class="k-btn k-btn--danger-solid"
@@ -431,7 +435,7 @@ async function remove(): Promise<void> {
                             {{ deleteBusy ? 'Deleting agent…' : 'Delete agent' }}
                           </button>
                         </div>
-                      </ResourceSectionCard>
+                      </AgentsWorkbenchSection>
                     </template>
                   </AgentConfig>
                 </template>
@@ -440,7 +444,7 @@ async function remove(): Promise<void> {
                   <RunDetail v-if="runsMounted && runId" :store="store" :api="api" :run-id="runId" :embedded-agent="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
                 </template>
                 <template #skills>
-                  <AgentSkillsWorkbench v-if="skillsMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
+                  <AgentSkillsWorkbench v-if="skillsMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" :active="workspaceOpen && !compact && workbenchTab === 'skills'" @navigate="handleChildNavigate" />
                 </template>
                 <template #launcher>
                   <AgentWorkbenchLauncher :tabs="workbench.tabs" :active="workbenchTab === 'launcher'" @select="selectWorkbenchLauncherTab" />

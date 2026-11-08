@@ -110,7 +110,16 @@ railgrid-provider-agents .agents-subnav { display: flex; gap: 4px; }
 railgrid-provider-agents .agents-resource-body--workspace { min-height: 0; flex: 1 1 auto; gap: 0; }
 railgrid-provider-agents .agents-resource-body--workspace .agents-workspace { min-height: 0; flex: 1 1 auto; }
 railgrid-provider-agents .agents-conversation-page { display: flex; width: 100%; min-width: 0; min-height: 0; flex: 1 1 auto; }
-railgrid-provider-agents .agents-workbench { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; }
+railgrid-provider-agents .agents-workbench {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  --k-ai-workbench-title-size: 18px;
+  --k-ai-workbench-description-size: 13px;
+  --k-ai-workbench-description-measure: 68ch;
+}
 railgrid-provider-agents .agents-workbench-panel { display: flex; min-width: 0; min-height: 0; flex: 1 1 auto; flex-direction: column; overflow: auto; }
 railgrid-provider-agents .agents-workbench-panel > .agents-panel { min-height: 100%; padding: 18px; }
 railgrid-provider-agents .agents-workbench-panel > .agents-detail { box-sizing: border-box; min-width: 0; min-height: 100%; padding: 16px; }
@@ -132,31 +141,15 @@ railgrid-provider-agents .agents-chat-actions .agents-agent-status {
 }
 /* The shared workbench recipe owns tab geometry, states, and touch sizing;
  * these hooks only keep the provider header constrained in its pane. */
-railgrid-provider-agents .agents-workbench-header { min-width: 0; }
+railgrid-provider-agents .agents-workbench-header { min-width: 0; flex: 1 1 auto; }
 railgrid-provider-agents .agents-workbench-tabstrip { min-width: 0; max-width: 100%; }
+@media (hover: none), (any-pointer: coarse) {
+  railgrid-provider-agents .agents-workbench-tab-grip { display: none; }
+}
 railgrid-provider-agents .agents-config-sec { scroll-margin-top: 12px; }
 /* Config follows the shared document pane and App Studio settings rhythm. */
 railgrid-provider-agents .agents-config-pane .agents-fieldset { padding: 0; border: 0; }
 railgrid-provider-agents .agents-config-pane .agents-radiocards { gap: 8px; }
-railgrid-provider-agents .agents-config-disclosure {
-  min-width: 0;
-  border-block-start: 1px solid var(--color-border-subtle);
-}
-railgrid-provider-agents .agents-config-disclosure > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 44px;
-  padding-inline: 4px;
-  list-style: none;
-  cursor: pointer;
-  font-weight: 600;
-}
-railgrid-provider-agents .agents-config-disclosure > summary::-webkit-details-marker { display: none; }
-railgrid-provider-agents .agents-config-disclosure > summary:hover { background: var(--color-surface-overlay); }
-railgrid-provider-agents .agents-config-disclosure > summary > svg { flex: none; }
-railgrid-provider-agents .agents-config-disclosure[open] > summary > svg { transform: rotate(90deg); }
-railgrid-provider-agents .agents-config-disclosure[open] > .agents-fieldset { padding-block: 8px; }
 
 railgrid-provider-agents input[aria-invalid="true"],
 railgrid-provider-agents textarea[aria-invalid="true"] { border-color: var(--color-danger, #ff5d5d); }
@@ -375,10 +368,58 @@ railgrid-provider-agents .agents-inbound-on { color: var(--color-success, #2fd6a
 
 /* Workspace skill forms are provider-owned, so define their critical geometry
  * here instead of relying on utility classes emitted by another portal build. */
-railgrid-provider-agents .agents-skill-activation__list { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; gap: 6px; }
-railgrid-provider-agents .agents-skill-activation__row { min-width: 0; max-width: 100%; }
-railgrid-provider-agents .agents-skill-activation__summary { flex: 1 1 220px; min-width: 0; }
-railgrid-provider-agents .agents-skill-activation__action { margin-inline-start: auto; }
+railgrid-provider-agents .agents-skill-activation {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+railgrid-provider-agents .agents-skill-activation__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+railgrid-provider-agents .agents-skill-activation__search {
+  max-width: none;
+  flex: 1 1 min(100%, 11rem);
+}
+railgrid-provider-agents .agents-skill-activation__list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-block-start: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-skill-activation__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding-block: 12px;
+  border-block-end: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-skill-activation__summary { overflow-wrap: anywhere; }
+railgrid-provider-agents .agents-skill-activation__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 13px;
+}
+railgrid-provider-agents .agents-skill-activation__summary :is(p, code) {
+  display: block;
+  margin: 2px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+railgrid-provider-agents .agents-skill-activation__summary code {
+  width: fit-content;
+  max-width: 100%;
+  font-size: 11px;
+}
+railgrid-provider-agents .agents-skill-activation .agents-hint { margin: 0; }
 railgrid-provider-agents .agents-skill-workbench__columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
@@ -404,8 +445,7 @@ railgrid-provider-agents .agents-skill-workbench__detail-error {
   gap: 12px;
   flex-wrap: wrap;
 }
-railgrid-provider-agents .agents-skill-workbench__button-icon,
-railgrid-provider-agents .agents-skill-activation__button-icon {
+railgrid-provider-agents .agents-skill-workbench__button-icon {
   width: 16px;
   height: 16px;
   stroke-width: 1.75;

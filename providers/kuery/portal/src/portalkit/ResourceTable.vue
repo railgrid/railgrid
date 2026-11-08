@@ -35,6 +35,8 @@ type ResourceTableColumn = {
   ariaLabel?: string
   /** Full rendered value for truncation disclosure when a slot does not display row[key] verbatim. */
   fullValue?: (row: Record<string, unknown>) => string
+  /** For a primary value shortened before rendering, disclose fullValue even without layout overflow. */
+  isValueTruncated?: (row: Record<string, unknown>) => boolean
   /** Logical cell/header alignment. Defaults to start. */
   align?: 'start' | 'center' | 'end'
   /** Opt in to a native sortable header button. */
@@ -67,6 +69,8 @@ const props = withDefaults(defineProps<{
   ariaLabel?: string
   /** Queryable is the default/current resource-list contract. Simple is an explicit bounded-list opt-in. */
   variant?: 'queryable' | 'simple'
+  /** Flat presentation for a contextual table embedded in a resizable workbench. */
+  appearance?: 'default' | 'workbench'
   /** Stable row identity. Resource names/ids are used when omitted. */
   rowKey?: string | ((row: Record<string, unknown>, index: number) => string | number)
   /** True after the first authoritative read has completed successfully. */
@@ -133,6 +137,7 @@ const props = withDefaults(defineProps<{
   ariaLabel: 'Resource table',
   refreshMode: 'foreground',
   variant: 'queryable',
+  appearance: 'default',
   stale: false,
   retryable: false,
   emptyText: 'No data',
@@ -830,7 +835,7 @@ function updatePrimaryOverflow(container: HTMLElement | null) {
   const value = container.querySelector<HTMLElement>('.k-table__primary-value') ?? container
   const overflows = value.scrollWidth > value.clientWidth + 1
   container.dataset.overflow = String(overflows)
-  return overflows
+  return overflows || container.dataset.valueTruncated === 'true'
 }
 
 function hideTooltip() {
@@ -1075,7 +1080,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
   <div
     class="k-table k-table--resource"
     data-resource-table
-    :class="[`k-table--${variant}`, { 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
+    :class="[`k-table--${variant}`, { 'k-table--workbench': appearance === 'workbench', 'k-table--selecting': selectionSurfaceVisible && selectedCount > 0 }]"
     :aria-busy="ariaBusy"
   >
     <!-- Keep the live region outside layout so background reads cannot move the table. -->
@@ -1294,7 +1299,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                 </td>
                 <td v-for="col in visibleColumns" :key="col.key" class="k-table__cell" :class="[`k-table__cell--${col.align ?? 'start'}`, { 'k-table__cell--primary': col.key === primaryColumnKey }]">
                   <div v-if="col.key === primaryColumnKey && actionsColumn" class="k-table__primary">
-                    <div class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
+                    <div class="k-table__primary-content" :data-full-value="primaryValue(row)" :data-value-truncated="col.isValueTruncated?.(row) || undefined" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                       <span class="k-table__primary-value" :style="primaryValueStyle">
                         <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                       </span>
@@ -1303,7 +1308,7 @@ function onRowKeydown(row: Record<string, unknown>, event: KeyboardEvent) {
                       <slot :name="actionsColumn.key" :value="row[actionsColumn.key]" :row="row">{{ row[actionsColumn.key] }}</slot>
                     </div>
                   </div>
-                  <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
+                  <div v-else-if="col.key === primaryColumnKey" class="k-table__primary-content" :data-full-value="primaryValue(row)" :data-value-truncated="col.isValueTruncated?.(row) || undefined" @mouseenter="syncPrimaryOverflow" @mouseleave="hideTooltip">
                     <span class="k-table__primary-value" :style="primaryValueStyle">
                       <slot :name="col.key" :value="row[col.key]" :row="row">{{ row[col.key] }}</slot>
                     </span>

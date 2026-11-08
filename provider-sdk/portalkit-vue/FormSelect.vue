@@ -322,7 +322,9 @@ onBeforeUnmount(() => {
       :disabled="disabled || undefined"
     >
 
-    <Teleport v-if="open" to="body">
+    <!-- Open the enclosing dialog before opening the select. A native modal
+         makes content outside the dialog inert. -->
+    <Teleport v-if="open" :to="trigger?.closest('dialog[open]') ?? 'body'">
       <div
         ref="panel"
         class="k-menu k-form-select__panel k-form-select__portal"

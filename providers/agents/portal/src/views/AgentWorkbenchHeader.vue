@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { useAgentDOMID } from '../vue/runtime'
-import { BookOpen, CalendarClock, Gauge, GripVertical, Plus, SlidersHorizontal, Wrench } from 'lucide-vue-next'
-import { computed, nextTick, onMounted, ref, watch, type Component } from 'vue'
+import { GripVertical } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import AIWorkbenchTabs from '../agentkit/AIWorkbenchTabs.vue'
 import type { AIWorkbenchTabView } from '../agentkit/ai'
-import type {
-  AgentWorkbenchTabDescriptor,
-  AgentWorkbenchTabDropPlacement,
-  AgentWorkbenchTabKind,
+import {
+  agentWorkbenchIcons,
+  type AgentWorkbenchTabDescriptor,
+  type AgentWorkbenchTabDropPlacement,
+  type AgentWorkbenchTabKind,
 } from '../agent-workbench'
 
 const domID = useAgentDOMID()
@@ -54,15 +55,6 @@ function tabID(tab: AgentWorkbenchTabKind): string {
 
 function panelID(tab: AgentWorkbenchTabKind): string {
   return domID(`agents-workbench-panel-${tab}`)
-}
-
-function tabIcon(tab: string): Component {
-  if (tab === 'config') return SlidersHorizontal
-  if (tab === 'tools') return Wrench
-  if (tab === 'automation') return CalendarClock
-  if (tab === 'runs') return Gauge
-  if (tab === 'skills') return BookOpen
-  return Plus
 }
 
 function reveal(tab: AgentWorkbenchTabKind): void {
@@ -183,6 +175,8 @@ function dropPlacement(event: DragEvent): AgentWorkbenchTabDropPlacement {
       data-agent-workbench-tablist
       aria-label="Agent workbench sections"
       launcher
+      fit-viewport
+      :launcher-active="active === 'launcher'"
       @dragstart="startDrag"
       @dragover="dragOver"
       @drop="drop"
@@ -193,9 +187,9 @@ function dropPlacement(event: DragEvent): AgentWorkbenchTabDropPlacement {
       @launch="emit('new-tab')"
     >
       <template #leading>
-        <GripVertical :size="12" :stroke-width="1.75" aria-hidden="true" />
+        <GripVertical class="agents-workbench-tab-grip" :size="12" :stroke-width="1.75" aria-hidden="true" />
       </template>
-      <template #icon="{ tab }"><component :is="tabIcon(tab.id)" :stroke-width="1.75" aria-hidden="true" /></template>
+      <template #icon="{ tab }"><component :is="agentWorkbenchIcons[tab.id as AgentWorkbenchTabKind]" :stroke-width="1.75" aria-hidden="true" /></template>
     </AIWorkbenchTabs>
   </div>
 </template>

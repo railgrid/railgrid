@@ -21,9 +21,9 @@ export interface MutateOptions<T> {
   // pure-local (they never call the API).
   optimistic?: () => void
   rollback?: () => void
-  // onFailure exposes the request failure when a caller needs to distinguish
-  // an ambiguous transport timeout from a definite server rejection.
-  onFailure?: (error: unknown) => void
+  // onFailure exposes the request failure. Return true when the caller
+  // presents its own feedback for this failure.
+  onFailure?: (error: unknown) => boolean | void
   // reload names the store slices to refresh once the write lands, so the
   // authoritative server state replaces the optimistic guess.
   reload?: SliceKey[]
@@ -31,8 +31,8 @@ export interface MutateOptions<T> {
   action?: { label: string; run: () => void }
 }
 
-// mutate returns the write's result, or undefined if it failed (the error is
-// already surfaced as a toast — callers only need the happy path).
+// mutate returns the write's result, or undefined if it failed. Failures
+// receive a toast unless the caller has already presented feedback.
 export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promise<T | undefined> {
   // A detached authority must not be able to start another write through an
   // event delivered after its shell rotated the store.
@@ -50,10 +50,10 @@ export async function mutate<T>(store: AppStore, opts: MutateOptions<T>): Promis
     return res
   } catch (e) {
     if (store.isRetired()) return undefined
-    opts.onFailure?.(e)
+    const handled = opts.onFailure?.(e) === true
     opts.rollback?.()
     if (opts.rollback) store.dispatchEvent(new Event('change'))
-    toast('error', `${opts.failure}: ${(e as Error).message}`)
+    if (!handled) toast('error', `${opts.failure}: ${(e as Error).message}`)
     // Re-sync from the server: a rejected write may still have partially
     // applied (e.g. connection spec written, secret not).
     for (const key of opts.reload || []) void store.load(key)

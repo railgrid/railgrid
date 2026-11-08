@@ -24,6 +24,8 @@ const props = withDefaults(defineProps<{
   launcherActive?: boolean
   scrollPreviousLabel?: string
   scrollNextLabel?: string
+  /** The caller gives the strip a bounded width, including in narrow panes. */
+  fitViewport?: boolean
 }>(), {
   ariaLabel: 'Workbench tabs',
   launcher: false,
@@ -33,6 +35,7 @@ const props = withDefaults(defineProps<{
   launcherActive: false,
   scrollPreviousLabel: 'Scroll tabs left',
   scrollNextLabel: 'Scroll tabs right',
+  fitViewport: false,
 })
 
 const emit = defineEmits<{
@@ -129,7 +132,7 @@ function closeLabel(tab: AIWorkbenchTabView): string {
 </script>
 
 <template>
-  <div class="k-workbench-tabs__strip">
+  <div class="k-workbench-tabs__strip" :class="{ 'k-workbench-tabs__strip--fit': fitViewport }">
     <button
       v-if="hasOverflow"
       type="button"

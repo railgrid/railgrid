@@ -54,6 +54,16 @@ vi.stubGlobal('cancelAnimationFrame', (id: number) => {
 
 if (!HTMLElement.prototype.scrollIntoView) HTMLElement.prototype.scrollIntoView = () => undefined
 
+// jsdom exposes the dialog element but does not implement its opening and
+// closing methods. Browser checks cover the top layer and native focus trap.
+if (!HTMLDialogElement.prototype.showModal) {
+  HTMLDialogElement.prototype.showModal = function () {
+    this.open = true
+    this.querySelector<HTMLElement>('[autofocus]')?.focus()
+  }
+  HTMLDialogElement.prototype.close = function () { this.open = false }
+}
+
 afterEach(async () => {
   unmountVueApps()
   // Toasts own real auto-dismiss timers. Clear them before the jsdom document

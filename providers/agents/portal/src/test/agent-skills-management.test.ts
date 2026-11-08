@@ -19,7 +19,8 @@ describe('per-Agent skills management', () => {
     const store = makeStore(api)
     store.agents.data = [agent]
     const view = await mountVue(AgentSkillsWorkbench, { store, api, name: 'scout' })
-    expect(text(view.element)).toContain('Enabled skills')
+    expect(view.element.querySelector('[data-k-tab-id="enabled"]')?.getAttribute('aria-current')).toBe('page')
+    expect(view.element.querySelector('[role="list"][aria-label="Enabled skills"]')).not.toBeNull()
     expect(text(view.element)).toContain('first')
     expect(text(view.element)).not.toContain('second')
     const add = [...view.element.querySelectorAll('button')].find(button => text(button) === 'Add skills')!

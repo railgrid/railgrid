@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 58;
+  --railgrid-agent-ui-version: 59;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -56,14 +56,15 @@
 .k-ai-workbench-pane__title {
   margin: 0;
   color: var(--color-text-primary, #e9e9f2);
-  font-size: 16px;
+  font-size: var(--k-ai-workbench-title-size, 16px);
   font-weight: 600;
   line-height: 24px;
 }
 .k-ai-workbench-pane__description {
+  max-width: var(--k-ai-workbench-description-measure, none);
   margin: 4px 0 0;
   color: var(--color-text-secondary, #8a8ca6);
-  font-size: 12px;
+  font-size: var(--k-ai-workbench-description-size, 12px);
   line-height: 18px;
 }
 .k-ai-workbench-pane__actions {
@@ -1487,6 +1488,15 @@ button.k-workbench-tab {
   scroll-behavior: smooth;
 }
 
+.k-workbench-tabs__strip--fit .k-workbench-tabs__viewport {
+  container-type: inline-size;
+  scroll-behavior: auto;
+}
+.k-workbench-tabs__strip--fit .k-workbench-tab {
+  min-width: min(112px, 100cqi);
+  max-width: min(240px, 100cqi);
+}
+
 .k-workbench-tabs__scroll-control {
   display: inline-flex;
   width: 28px;
@@ -1729,6 +1739,45 @@ button.k-workbench-tab {
   color: var(--color-text-muted);
   font-size: 13px;
   text-align: center;
+}
+
+/* The row layout shares the pane canvas with other workbench collections. */
+.k-ai-launcher--rows { max-width: none; }
+.k-ai-launcher--rows .k-ai-launcher__section { gap: 0; }
+.k-ai-launcher--rows .k-ai-launcher__section h3 {
+  padding: 0 0 8px;
+  color: var(--color-text-primary);
+  font-size: 15px;
+  line-height: 1.4;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.k-ai-launcher--rows .k-ai-launcher__card {
+  padding-inline: 4px;
+  border: 0;
+  border-block-end: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+.k-ai-launcher--rows .k-ai-launcher__card:hover { background: var(--color-surface-hover); }
+.k-ai-launcher--rows .k-ai-launcher__icon {
+  width: 24px;
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+.k-ai-launcher--rows .k-ai-launcher__copy :is(strong, small) {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.k-ai-launcher--rows .k-ai-launcher__copy small { color: var(--color-text-secondary); }
+.k-ai-launcher--rows .k-ai-launcher__empty {
+  border: 0;
+  border-block-start: 1px solid var(--color-border-subtle);
+  border-radius: 0;
+  padding-inline: 0;
+  text-align: start;
 }
 
 @media (hover: none), (any-pointer: coarse) {
