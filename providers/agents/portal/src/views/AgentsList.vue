@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search } from 'lucide-vue-next'
 import AgentTemplateCards from '../components/AgentTemplateCards.vue'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -21,6 +22,10 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
+const cardActions: readonly ActionMenuItem[] = [
+  { id: 'runs', label: 'View runs' },
+  { id: 'delete', label: 'Delete agent', tone: 'danger' },
+]
 const layoutPreferenceKey = 'railgrid:agents:agents:layout'
 const layout = ref(readLayoutPreference(layoutPreferenceKey))
 const query = ref('')
@@ -70,8 +75,18 @@ const filters: TableFilterDefinition[] = [
 
 function navigate(route: Route): void { emit('navigate', route) }
 
-async function removeAgent(name: string): Promise<void> {
+function selectCardAction(name: string, action: string): void {
+  if (action === 'runs') navigate({ kind: 'agent', name, tab: 'runs' })
+  if (action === 'delete') void removeAgent(name, true)
+}
+
+async function removeAgent(name: string, fromMenu = false): Promise<void> {
   const authority = captureAuthority()
+  if (fromMenu) {
+    // Let the menu return focus to its trigger before the dialog captures it.
+    await nextTick()
+    if (!authorityIsCurrent(authority)) return
+  }
   const ok = await confirmDialog({
     title: `Delete agent “${name}”?`,
     message: 'This also deletes its chat history.',
@@ -228,17 +243,12 @@ function openAgentRow(row: Record<string, unknown>): void {
                 <span v-else>no channel</span>
               </div>
             </a>
-            <div class="agents-card-actions">
-              <button class="k-btn k-btn--ghost agents-card-chat" type="button" @click="navigate({ kind: 'agent', name: row.resourceName, tab: 'chat' })">
-                <MessageSquare aria-hidden="true" /> Open
-              </button>
-              <button class="k-btn k-btn--ghost secondary" type="button" @click="navigate({ kind: 'agent', name: row.resourceName, tab: 'runs' })">
-                <Gauge aria-hidden="true" /> Runs
-              </button>
-              <button class="k-icon-action agents-iconbtn-danger" type="button" :aria-label="`Delete agent ${row.resourceName}`" data-k-tip="Delete agent" @click="removeAgent(row.resourceName)">
-                <Trash2 aria-hidden="true" />
-              </button>
-            </div>
+            <ActionMenu
+              class="agents-card-menu"
+              :label="`More actions for ${row.name}`"
+              :items="cardActions"
+              @select="action => selectCardAction(row.resourceName, action)"
+            />
           </article>
         </div>
         <p v-if="agentRows.length && !filteredAgents.length" class="agents-layout-empty">{{ cardEmptyText }}</p>

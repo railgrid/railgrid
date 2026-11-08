@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { confirmState, resolveConfirm } from '../portalkit/confirm'
 import AgentsList from '../views/AgentsList.vue'
 import { agentFixture, makeStore, stubApi } from './helpers'
 import { mountVue, settleVue, text } from './vue-helper'
@@ -8,8 +9,9 @@ import { mountVue, settleVue, text } from './vue-helper'
 const AGENTS_LAYOUT_PREFERENCE_KEY = 'railgrid:agents:agents:layout'
 
 describe('agents list card semantics', () => {
-  it('uses a native primary link and keeps explicit actions independent', async () => {
-    const api = stubApi()
+  it('uses one chat link and keeps the overflow actions independent', async () => {
+    const deleteAgent = vi.fn()
+    const api = stubApi({ deleteAgent })
     const store = makeStore(api)
     store.agents.data = [agentFixture('scout')]
     store.agents.loaded = true
@@ -17,23 +19,36 @@ describe('agents list card semantics', () => {
     const mounted = await mountVue(AgentsList, { store, api })
 
     const card = mounted.element.querySelector<HTMLElement>('.agents-card')!
-    const link = mounted.element.querySelector<HTMLAnchorElement>('.agents-card-link')!
-    const runs = [...mounted.element.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.includes('Runs'))!
-    const remove = mounted.element.querySelector<HTMLButtonElement>('button[aria-label="Delete agent scout"]')!
     expect(card.getAttribute('role')).toBeNull()
     expect(card.getAttribute('tabindex')).toBeNull()
-    expect(link.getAttribute('href')).toBe('#/agents/scout/chat')
-    expect(remove.classList.contains('k-icon-action')).toBe(true)
-    expect(remove.classList.contains('agents-iconbtn')).toBe(false)
+    expect(card.querySelectorAll('a')).toHaveLength(1)
+    expect(card.querySelector('a')?.getAttribute('href')).toBe('#/agents/scout/chat')
+    expect(card.querySelectorAll('button')).toHaveLength(1)
+
+    const menu = card.querySelector<HTMLButtonElement>('[aria-label="More actions for scout"]')!
+    expect(menu.classList.contains('k-icon-action')).toBe(true)
     const sharedStyles = readFileSync(resolve(process.cwd(), 'src/portalkit/railgrid-ui.css'), 'utf8')
     expect(sharedStyles).toMatch(/@media \(pointer: coarse\), \(any-pointer: coarse\)[\s\S]*?\.k-icon-action\s*\{[\s\S]*?flex-basis:\s*44px;[\s\S]*?height:\s*44px;[\s\S]*?width:\s*44px;/)
 
-    runs.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
-    expect(mounted.navigations).toEqual([])
-    runs.click()
+    menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }))
     await settleVue()
+    const items = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+    expect(items.map(text)).toEqual(['View runs', 'Delete agent'])
+    expect(document.activeElement).toBe(items[0])
+    expect(mounted.navigations).toEqual([])
+    items[0].click()
     expect(mounted.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'runs' }])
-    card.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true }))
+
+    menu.click()
+    await settleVue()
+    const remove = document.querySelector<HTMLButtonElement>('[role="menuitem"].k-menu-item--danger')!
+    remove.click()
+    await settleVue()
+    expect(document.activeElement).toBe(menu)
+    expect(confirmState.title).toBe('Delete agent “scout”?')
+    resolveConfirm(false)
+    await settleVue()
+    expect(deleteAgent).not.toHaveBeenCalled()
     expect(mounted.navigations).toHaveLength(1)
   })
 })
