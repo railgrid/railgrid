@@ -24,6 +24,9 @@ const props = withDefaults(defineProps<{
   interrupted?: boolean
   /** Expansion is controlled by the provider; this component emits `toggle`. */
   expanded?: boolean
+  /** Provider-owned outcome wording, for example an attributed intentional stop. */
+  label?: string
+  announce?: boolean
   ariaLabel?: string
 }>(), {
   turnId: '',
@@ -88,7 +91,7 @@ const progressRegionID = computed(() => {
 const statusClass = computed(() => sanitizeStatusClass(props.status))
 const isRunning = computed(() => isAITurnProgressRunning(props.status))
 const isInterrupted = computed(() => props.interrupted || props.status === 'interrupted')
-const progressLabel = computed(() => aiTurnProgressLabel(props.status, props.duration))
+const progressLabel = computed(() => props.label || aiTurnProgressLabel(props.status, props.duration))
 function accessibleLabel(): string {
   if (props.ariaLabel.trim()) return props.ariaLabel.trim()
   const prefix = `${progressLabel.value}${isInterrupted.value ? '. Interrupted' : ''}`
@@ -115,6 +118,7 @@ ensureAgentUIStyles()
     :class="[`k-ai-turn-progress--${statusClass}`, { 'k-ai-turn-progress--interrupted': isInterrupted }]"
     :data-status="status"
   >
+    <span v-if="announce" class="sr-only" role="status">{{ progressLabel }}</span>
     <div class="k-ai-turn-progress__header">
       <button
         v-if="hasDetails()"

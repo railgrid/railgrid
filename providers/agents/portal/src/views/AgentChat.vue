@@ -73,7 +73,7 @@ interface DoneData {
   durationMS?: number
   usage?: { inputTokens: number; outputTokens: number; usdMicros: number }
 }
-interface ErrorData { runID?: string; message: string; status?: string; startedAt?: string; finishedAt?: string; durationMS?: number }
+interface ErrorData { stoppedByViewer?: boolean; stoppedAfterMS?: number; runID?: string; message: string; status?: string; startedAt?: string; finishedAt?: string; durationMS?: number }
 interface ConversationRailHandle {
   openAndFocus?: () => void
   toggle?: (returnFocus?: HTMLElement | null) => void
@@ -1060,6 +1060,8 @@ function progressPatch(message: ChatMessage, patch: Partial<ChatProgress> & { st
   const current = message.progress
   const status = patch.status || current?.status || 'pending'
   return {
+    ...(current?.stoppedByViewer !== undefined ? { stoppedByViewer: current.stoppedByViewer } : {}),
+    ...(current?.stoppedAfterMS !== undefined ? { stoppedAfterMS: current.stoppedAfterMS } : {}),
     ...(current?.startedAt ? { startedAt: current.startedAt } : {}),
     ...(current?.durationMS !== undefined ? { durationMS: current.durationMS } : {}),
     trace: current?.trace ? [...current.trace] : [],
@@ -2076,7 +2078,7 @@ async function cancelLiveRun(
     orphanLoading.value = false
     liveRunID = ''
     liveRunSessionID = ''
-    toast('error', `Cancel failed: ${(error as Error).message}`)
+    toast('error', `Could not confirm the stop: ${(error as Error).message}`)
   } finally {
     controller.abort()
     if (cancellationSerial === liveCancellationSerial) cancelingRunID.value = ''
@@ -2470,6 +2472,8 @@ async function streamTurn(
           patchProgress(assistantID, {
             status,
             ...(data.startedAt ? { startedAt: data.startedAt } : {}),
+            ...(typeof data.stoppedByViewer === 'boolean' ? { stoppedByViewer: data.stoppedByViewer } : {}),
+            ...(validDuration(data.stoppedAfterMS) !== undefined ? { stoppedAfterMS: validDuration(data.stoppedAfterMS) } : {}),
             ...(validDuration(data.durationMS) !== undefined ? { durationMS: validDuration(data.durationMS) } : {}),
           })
           liveRunID = ''

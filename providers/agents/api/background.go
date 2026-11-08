@@ -832,7 +832,7 @@ func (b *background) StopRun(ctx context.Context, clusterID, agentName, runID, r
 		return nil
 	}
 	now := time.Now().UTC()
-	if err := b.server.store.RequestCancel(ctx, scope, runID, now); err != nil {
+	if err := b.server.store.RequestCancel(ctx, scope, runID, now, ""); err != nil {
 		return err
 	}
 	if b.server.liveRuns.cancel(runID) {

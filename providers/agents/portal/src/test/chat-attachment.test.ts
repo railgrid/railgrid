@@ -189,7 +189,8 @@ describe('chat attaches to active runs', () => {
     await settleVue(24)
     expect(text(el.querySelector('.agents-log'))).not.toContain('Stopping')
     expect(text(el.querySelector('.agents-log'))).toContain('Cancelled work')
-    expect(el.querySelector('.agents-run-state--aborted')).not.toBeNull()
+    expect(el.querySelector('.agents-run-state--aborted')).toBeNull()
+    expect(text(el.querySelector('.k-ai-turn-progress--aborted'))).toContain('Turn stopped')
     const reads = getRun.mock.calls.length
     await vi.advanceTimersByTimeAsync(3000)
     expect(getRun).toHaveBeenCalledTimes(reads)

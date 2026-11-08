@@ -109,8 +109,10 @@ type runResult struct {
 	FinishedAt *time.Time     `json:"finishedAt,omitempty"`
 	// DurationMS is active work accumulated from model response and tool
 	// callbacks. Approval/recovery idle time is intentionally excluded.
-	DurationMS int64 `json:"durationMS,omitempty"`
-	Usage      struct {
+	DurationMS      int64  `json:"durationMS,omitempty"`
+	StoppedByViewer bool   `json:"stoppedByViewer,omitempty"`
+	StoppedAfterMS  *int64 `json:"stoppedAfterMS,omitempty"`
+	Usage           struct {
 		InputTokens  int64 `json:"inputTokens"`
 		OutputTokens int64 `json:"outputTokens"`
 		USDMicros    int64 `json:"usdMicros"`
@@ -1126,7 +1128,7 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 				return runResult{RunID: runID, Phase: store.RunPhasePending, StartedAt: &startedAt}, requeued
 			}
 		}
-		s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
+		terminal := s.appendTurnTerminal(persistCtx, scope, run, sessionID, startedAt, end, tracker, turnStatusForRunPhase(phase), tracker.partialText(), cause.Error())
 		s.finishRun(persistCtx, scope, runID, runOutcome{
 			Phase: phase, Message: cause.Error(), Usage: out.Usage.Total.Tokens,
 			CostMicros: out.Usage.Total.CostMicros, WorkedDurationMS: tracker.workedDurationMS(), Harness: harnessT,
@@ -1135,6 +1137,11 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		s.publishRunEvent(scope, runEvent{ID: runID, Agent: agent.Name, Trigger: run.Trigger, ParentRunID: run.ParentRunID, Phase: phase})
 		res := runResult{RunID: runID, Content: tracker.partialText(), Phase: phase,
 			StartedAt: &startedAt, FinishedAt: &end, DurationMS: tracker.durationMS()}
+		stoppedBy, _ := terminal["stoppedBy"].(string)
+		res.StoppedByViewer = stoppedBy != "" && stoppedBy == run.CallerUser
+		if elapsed, ok := terminal["stoppedAfterMS"].(int64); ok {
+			res.StoppedAfterMS = &elapsed
+		}
 		res.Usage.InputTokens = out.Usage.Total.InputTokens
 		res.Usage.OutputTokens = out.Usage.Total.OutputTokens
 		res.Usage.USDMicros = out.Usage.Total.CostMicros

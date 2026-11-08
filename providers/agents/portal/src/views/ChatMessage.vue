@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { QuestionReply } from '../types'
 import { splitPageContext } from '../pageContext'
-import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   ChevronDown,
   FileSearch,
@@ -29,7 +29,7 @@ import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import { formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
 import { isValidTimestamp } from '../agentkit/timestamp'
-import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
+import { runFailurePresentation, type FailureRecoveryTarget, type RunFailurePhase } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
@@ -102,7 +102,7 @@ const inlineAppTools = computed(() => {
 const root = ref<HTMLElement | null>(null)
 const expanded = ref(new Set<string>())
 const progressChoice = ref<boolean>()
-const progressExpanded = computed(() => progressChoice.value ?? progressIsActive(progressStatus.value))
+const progressExpanded = computed(() => progressChoice.value ?? (progressIsActive(progressStatus.value) || stoppedTurn.value))
 const assistantHTML = computed(() => {
   if (props.message.role !== 'assistant') return ''
   return sanitizedMarkdownWithToolCitations(props.message.content, citationTools.value)
@@ -126,7 +126,24 @@ function openToolCitation(event: MouseEvent): void {
     .find(item => item.toolCallID === callID && item.sources?.length && typeof item.result === 'string' && !item.pending && !item.error)
   if (tool) emit('save-artifact', { runID: props.message.runID, sessionID: props.sessionID, toolCallID: callID, title: formatToolLabel(tool.name) })
 }
+// Timeouts retain their recovery notice; ordinary stops are a neutral turn outcome.
+const stoppedTurn = computed(() => props.message.role === 'assistant'
+  && props.message.progress?.status === 'aborted'
+  && runFailurePresentation('aborted', props.message.error || '').title !== 'Run timed out')
+const stoppedLabel = computed(() => {
+  const byYou = props.message.progress?.stoppedByViewer === true
+  const duration = props.message.progress?.stoppedAfterMS
+  const prefix = byYou ? 'You stopped' : 'Turn stopped'
+  return typeof duration === 'number' && Number.isSafeInteger(duration) && duration >= 0
+    ? `${prefix} after ${formatAIWorkedDuration(duration)}`
+    : byYou ? 'You stopped this turn' : prefix
+})
+// Preserve a reader's activity choice when a stopped turn settles.
+watch(stoppedTurn, (stopped) => {
+  if (stopped && progressChoice.value === undefined) progressChoice.value = true
+})
 const messageCreatedAt = computed(() => {
+  if (stoppedTurn.value) return null
   const { role, progress, streaming, createdAt } = props.message
   if (role === 'assistant' && (progress ? progressIsActive(progress.status) : streaming)) return null
   return createdAt || null
@@ -134,6 +151,7 @@ const messageCreatedAt = computed(() => {
 const progressVisible = computed(() => {
   const progress = props.message.progress
   if (props.message.role !== 'assistant') return false
+  if (stoppedTurn.value) return true
   if (!progress) return fallbackTools.value.length > 0
   return progressIsActive(progress.status) || traceBlocks.value.length > 0
 })
@@ -143,7 +161,7 @@ const progressStatus = computed<AITurnProgressStatus>(() =>
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
   const status = props.message.progress?.status
-  if (status === 'aborted') return 'aborted'
+  if (status === 'aborted') return stoppedTurn.value ? undefined : 'aborted'
   if (status === 'interrupted') return 'interrupted'
   if (status === 'failed') return 'failed'
   // A completed phase is authoritative. In particular, a recovered local
@@ -309,7 +327,7 @@ onBeforeUnmount(() => { mounted = false })
     ref="root"
     class="agents-msg"
     :class="message.role"
-    :aria-live="announce ? 'polite' : undefined"
+    :aria-live="announce && !stoppedTurn ? 'polite' : undefined"
     :aria-atomic="announce ? 'false' : undefined"
   >
     <AIConversationTurn
@@ -330,6 +348,8 @@ onBeforeUnmount(() => { mounted = false })
           :turn-id="message.id"
           :status="progressStatus"
           :duration="progressDuration"
+          :label="stoppedTurn ? stoppedLabel : undefined"
+          :announce="stoppedTurn || (!announce && progressStatus === 'stopping')"
           :expanded="progressExpanded"
           @toggle="progressChoice = $event"
         >

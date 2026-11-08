@@ -285,7 +285,7 @@ func TestMemoryStore_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save pending approval: %v", err)
 	}
-	if err := s.RequestCancel(ctx, sc, "cancelled-approval", now); err != nil {
+	if err := s.RequestCancel(ctx, sc, "cancelled-approval", now, ""); err != nil {
 		t.Fatalf("request cancel: %v", err)
 	}
 	if _, err := s.ClaimRun(ctx, sc, "cancelled-approval", "late-approval", now); err == nil {

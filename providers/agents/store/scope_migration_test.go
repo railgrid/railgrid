@@ -187,7 +187,7 @@ func TestMemoryStoreTenantMappingMigratesSplitHistory(t *testing.T) {
 	if _, err := s.GetRun(ctx, fallback, "legacy-run"); err != nil {
 		t.Fatalf("old in-flight scope could not follow moved run: %v", err)
 	}
-	if err := s.RequestCancel(ctx, fallback, "legacy-run", now.Add(12*time.Second)); err != nil {
+	if err := s.RequestCancel(ctx, fallback, "legacy-run", now.Add(12*time.Second), ""); err != nil {
 		t.Fatalf("cancel through old in-flight scope: %v", err)
 	}
 	cancelled, err := s.GetRun(ctx, mapped, "legacy-run")
@@ -470,7 +470,7 @@ func TestPostgresTenantMappingMigratesSplitHistory(t *testing.T) {
 	if _, err := ps.GetRun(ctx, fallback, legacyRun.ID); err != nil {
 		t.Fatalf("old-scope read after migration: %v", err)
 	}
-	if err := ps.RequestCancel(ctx, fallback, legacyRun.ID, now.Add(12*time.Second)); err != nil {
+	if err := ps.RequestCancel(ctx, fallback, legacyRun.ID, now.Add(12*time.Second), ""); err != nil {
 		t.Fatalf("old-scope cancel after migration: %v", err)
 	}
 	if run, err := ps.GetRun(ctx, canonical, legacyRun.ID); err != nil || !run.CancelRequested {
@@ -718,7 +718,7 @@ func TestPostgresFallbackMutationsFenceTenantMapping(t *testing.T) {
 	mapTx, blockerPID = lockTenantMapping(t, ps, destructiveClusterID)
 	cancelDone := make(chan error, 1)
 	deleteDone := make(chan error, 1)
-	go func() { cancelDone <- ps.RequestCancel(ctx, destructiveFallback, run.ID, time.Now().UTC()) }()
+	go func() { cancelDone <- ps.RequestCancel(ctx, destructiveFallback, run.ID, time.Now().UTC(), "") }()
 	go func() { deleteDone <- ps.DeleteSession(ctx, destructiveFallback, "delete-session") }()
 	waitForTenantLockWaiters(t, ps, blockerPID, 2)
 	publishTenantMappingInTx(t, mapTx, destructiveClusterID, destructiveRef)
