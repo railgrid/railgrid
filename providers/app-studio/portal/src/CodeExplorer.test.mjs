@@ -146,6 +146,32 @@ test('keeps the focused side visible through split changes and restores tree foc
   assert.equal(restoredFocus, 1)
 })
 
+test('focuses the workspace files pane when Back returns to an empty tree', () => {
+  const treeOpen = { value: false }
+  const scheduled = []
+  let paneFocus = 0
+  const dependencies = {
+    treeOpen,
+    rows: { value: [] },
+    activeTreePath: { value: '' },
+    nextTick: task => scheduled.push(task),
+    treePaneRef: { value: { focus: () => { paneFocus++ } } },
+  }
+  const showTree = new Function(...Object.keys(dependencies), `
+    ${transpileFunction('showTree')}
+    ${transpileFunction('focusActiveTreeRow')}
+    ${transpileFunction('focusTreeRow')}
+    return showTree;
+  `)(...Object.values(dependencies))
+
+  showTree()
+  assert.equal(treeOpen.value, true)
+  assert.equal(paneFocus, 0)
+  assert.equal(scheduled.length, 1)
+  scheduled[0]()
+  assert.equal(paneFocus, 1)
+})
+
 test('reveals a written file and moves focus only when leaving the narrow tree', async () => {
   const path = 'notes.md'
   const body = {}

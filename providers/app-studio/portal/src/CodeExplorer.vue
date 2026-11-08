@@ -251,7 +251,10 @@ function updateExplorerLayout(width: number) {
 
 function focusTreeRow(index: number) {
   const row = rows.value[index]
-  if (!row) return
+  if (!row) {
+    void nextTick(() => treePaneRef.value?.focus())
+    return
+  }
   activeTreePath.value = row.node.path
   void nextTick(() => {
     treeRootRef.value?.querySelectorAll<HTMLElement>('[role="treeitem"]')[index]?.focus()
@@ -833,7 +836,9 @@ onBeforeUnmount(() => {
     <aside
       v-show="splitPane || treeOpen"
       ref="treePaneRef"
-      class="relative flex min-h-0 min-w-0 flex-col"
+      tabindex="-1"
+      aria-label="Workspace files"
+      class="relative flex min-h-0 min-w-0 flex-col focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
       :class="splitPane ? 'w-64 flex-none border-r border-border-subtle' : 'w-full flex-1'"
       @dragenter="handleTreeDragEnter"
       @dragover="handleTreeDragOver"

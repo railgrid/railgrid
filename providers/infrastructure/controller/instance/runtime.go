@@ -318,7 +318,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 	} else {
 		next = map[string]any{}
 	}
-	mirrorRolloutObservation(inst, runtimeObj, next, valid != nil && valid.status == metav1.ConditionFalse)
+	mirrorRolloutObservation(inst, tmpl, runtimeObj, next, valid != nil && valid.status == metav1.ConditionFalse)
 
 	conds, _ := next["conditions"].([]any)
 	prevConds, _ := prevStatus["conditions"].([]any)
@@ -380,7 +380,7 @@ func (c *Controller) mirrorStatus(ctx context.Context, tenantClient client.Clien
 // The tenant Instance generation only establishes that its desired spec was
 // processed. A runtime spec update can still return the previous graph's
 // status. Publish rollout evidence separately from the general Instance phase.
-func mirrorRolloutObservation(inst, runtimeObj *unstructured.Unstructured, status map[string]any, invalid bool) {
+func mirrorRolloutObservation(inst *unstructured.Unstructured, tmpl *infrav1alpha1.Template, runtimeObj *unstructured.Unstructured, status map[string]any, invalid bool) {
 	delete(status, observedRolloutRevisionField)
 	delete(status, observedRolloutPhaseField)
 	mode, _, _ := unstructured.NestedString(inst.Object, "spec", "values", infrav1alpha1.RailgridModeField)
@@ -392,7 +392,8 @@ func mirrorRolloutObservation(inst, runtimeObj *unstructured.Unstructured, statu
 	status[observedRolloutRevisionField] = ""
 	phase := "Failed"
 	if !invalid {
-		phase = observedRuntimeRolloutPhase(runtimeObj, status, revision)
+		isKRO := tmpl != nil && tmpl.Spec.Backend == infrav1alpha1.BackendKRO
+		phase = observedRuntimeRolloutPhase(runtimeObj, status, revision, isKRO)
 	}
 	if phase != "" {
 		status[observedRolloutRevisionField] = revision
@@ -400,8 +401,8 @@ func mirrorRolloutObservation(inst, runtimeObj *unstructured.Unstructured, statu
 	}
 }
 
-func observedRuntimeRolloutPhase(runtimeObj *unstructured.Unstructured, status map[string]any, revision string) string {
-	if runtimeObj == nil || !currentRuntimeStatus(runtimeObj.GetGeneration(), status) {
+func observedRuntimeRolloutPhase(runtimeObj *unstructured.Unstructured, status map[string]any, revision string, isKRO bool) string {
+	if runtimeObj == nil || !currentRuntimeStatus(runtimeObj.GetGeneration(), status, isKRO) {
 		return ""
 	}
 	runtimeRevision, _, _ := unstructured.NestedString(runtimeObj.Object, "spec", rolloutRevisionField)
@@ -411,40 +412,58 @@ func observedRuntimeRolloutPhase(runtimeObj *unstructured.Unstructured, status m
 	state, _ := status["state"].(string)
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "ACTIVE":
-		return "Ready"
+		if !isKRO {
+			return "Ready"
+		}
 	case "ERROR", "FAILED":
 		return "Failed"
 	case "":
-		// A runtime without KRO's coarse state can report an explicit terminal
-		// phase. Ready=False alone can mean that a graph is still converging.
-		if runtimeReady(runtimeObj) {
-			return "Ready"
-		}
-		phase, _ := status["phase"].(string)
-		switch strings.ToLower(strings.TrimSpace(phase)) {
-		case "failed", "error", "degraded":
-			return "Failed"
-		}
+		// Older runtimes may expose only a phase or a Ready condition.
+	default:
+		return ""
+	}
+	// KRO ACTIVE describes the graph, while an authored phase describes app
+	// health. Without an authored phase, Ready is the health signal.
+	phase, _ := status["phase"].(string)
+	phase = strings.ToLower(strings.TrimSpace(phase))
+	if (!isKRO || phase == "") && runtimeReady(runtimeObj) {
+		return "Ready"
+	}
+	switch phase {
+	case "ready":
+		return "Ready"
+	case "failed", "error", "degraded":
+		return "Failed"
 	}
 	return ""
 }
 
-func currentRuntimeStatus(generation int64, status map[string]any) bool {
+func currentRuntimeStatus(generation int64, status map[string]any, isKRO bool) bool {
 	if generation <= 0 {
 		return false
 	}
 	observed, found := generationValue(status["observedGeneration"])
-	if found && observed != generation {
+	if !isKRO && found && observed != generation {
 		return false
 	}
+	// KRO stamps observedGeneration on its conditions. A top-level status
+	// field is a template projection and may describe a child resource.
+	currentCondition := false
 	conditions, _ := status["conditions"].([]any)
 	for _, raw := range conditions {
 		condition, ok := raw.(map[string]any)
-		if ok && condition["type"] == "Ready" {
-			if observed, ok := generationValue(condition["observedGeneration"]); ok {
+		if !ok {
+			continue
+		}
+		if observed, ok := generationValue(condition["observedGeneration"]); ok {
+			if condition["type"] == "Ready" {
 				return observed == generation
 			}
+			currentCondition = currentCondition || observed == generation
 		}
+	}
+	if isKRO {
+		return currentCondition
 	}
 	return found
 }

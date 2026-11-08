@@ -253,7 +253,7 @@ This is a local production-size measurement, not browser performance evidence.
 The workbench shares its document sections and request form, and Code and
 Publishing adapt to the width of the pane. A same-toolchain build of the
 preceding commit measured 1,409,496 B raw / 390,130 B gzip total. The workbench
-with review fixes measures 1,409,968 B raw / 392,659 B gzip total and
-1,200,910 B raw / 327,668 B gzip on the page path. The total gzip limit increases
-by 2,500 B to 393,000 B. The raw and path-specific limits retain their existing
-values.
+with review fixes measures 1,410,195 B raw / 392,721 B gzip total and
+1,200,993 B raw / 327,705 B gzip on the page path. The total limits increase
+by 500 B raw and 2,500 B gzip to 1,410,500 B raw and 393,000 B gzip. The
+path-specific limits retain their existing values.

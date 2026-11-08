@@ -105,7 +105,7 @@ async function openTab(pane, name) {
   await pane.getByRole('tab', { name, exact: true }).waitFor()
 }
 
-async function checkLauncher(pane) {
+async function checkLauncher(page, pane, touch) {
   await pane.getByRole('button', { name: 'Close Preview', exact: true }).click()
   assert.deepEqual(await pane.getByRole('tab').allTextContents(), ['New tab'])
   assert.equal(await launcherSearch(pane).inputValue(), '')
@@ -125,6 +125,15 @@ async function checkLauncher(pane) {
   })
   assert.ok((await launcher.boundingBox()).height >= 12000, 'launcher canvas did not stretch')
   checkRowHeights(await rows())
+  const hide = touch
+    ? pane.getByRole('button', { name: 'Back to conversation' })
+    : page.getByRole('button', { name: 'Hide workbench' })
+  await hide.click()
+  await pane.waitFor({ state: 'hidden' })
+  await page.getByRole('button', { name: 'Show workbench' }).click()
+  await launcherSearch(pane).waitFor()
+  assert.ok((await launcher.boundingBox()).height >= 12000, 'launcher canvas did not stay stretched after reopening')
+  checkRowHeights(await rows())
   await launcher.evaluate(el => {
     el.style.removeProperty('min-block-size')
     el.style.removeProperty('align-content')
@@ -132,13 +141,15 @@ async function checkLauncher(pane) {
   })
 }
 
-async function checkCode(pane) {
+async function checkCode(pane, narrow) {
   await openTab(pane, 'Code')
   const file = pane.getByRole('treeitem', { name: 'app.ts', exact: true })
   await file.press('Enter')
   await pane.getByRole('button', { name: 'Download app.ts', exact: true }).waitFor()
   const back = pane.getByRole('button', { name: 'Back to workspace files' })
-  if (await back.isVisible()) {
+  assert.equal(await back.isVisible(), narrow, 'Code should show Back only in a narrow pane')
+  assert.equal(await file.isVisible(), !narrow, 'Code should retain the tree beside the viewer only in a wide pane')
+  if (narrow) {
     assert.equal(await focused(back), true)
     await back.press('Enter')
     assert.equal(await focused(file), true)
@@ -182,13 +193,15 @@ try {
         const divider = page.getByRole('separator', { name: 'Resize conversation and workbench panes' })
         await divider.press(width === 768 ? 'End' : 'Home')
       }
-      await checkLauncher(pane)
+      await checkLauncher(page, pane, touch)
       if (screenshots) await page.screenshot({ path: join(screenshots, `${themeName}-${width}-launcher.png`) })
-      await checkCode(pane)
+      const paneWidth = await pane.evaluate(el => el.clientWidth)
+      const narrow = width !== 1440
+      assert.equal(paneWidth < 640, narrow, `unexpected Code pane width ${paneWidth}px`)
+      await checkCode(pane, narrow)
       await checkReviewHeader(pane, touch)
       assert.deepEqual(denied, [])
       assert.deepEqual(errors, [])
-      const paneWidth = await pane.evaluate(el => el.clientWidth)
       console.log(`${themeName}, ${width}px viewport / ${paneWidth}px pane: launcher, Code, and Review header passed`)
     } finally { await context.close() }
   }

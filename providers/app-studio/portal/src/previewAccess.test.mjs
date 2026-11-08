@@ -63,8 +63,9 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
     const developmentPreviewReadinessMessage = ref(null), developmentPreviewAuthorizationKey = ref('')
     const developmentPreviewOverrideURL = ref(null), props = { ctx: null }
     let previewAccessRevision = 0, developmentPreviewAuthorizationSerial = 0, publishingLoadSerial = 0
-    const confirmDialog = async () => true, authorizations = []
+    const confirmDialog = async () => true, authorizations = [], authorizationRetries = []
     const authorizeDevelopmentPreview = async options => { authorizations.push(options) }
+    const scheduleDevelopmentPreviewAuthorizationRetry = (...args) => { authorizationRetries.push(args) }
     const schedulePublishingPoll = () => {}, clearPublishingPoll = () => {}
     const previewAccessUpdateToast = () => ({ kind: 'ok', message: '' }), toast = () => {}
     const projectDevelopmentPreviewAuthorization = result => result
@@ -73,7 +74,7 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
     ${outputText}
     return { selected, previewAccess, previewMode, previewAccessUnverified, publishingActionError, developmentPreviewAccessError,
       developmentPreviewDesiredAccess, developmentPreviewSettingsSummary,
-      applyPreviewAccessState, loadPublishing, authorizations, savePreviewAccess, changeDevelopmentPreviewAccess,
+      applyPreviewAccessState, loadPublishing, authorizations, authorizationRetries, savePreviewAccess, changeDevelopmentPreviewAccess,
       authorizeDevelopmentPreviewRequest }
   `)
   let finishAuthorization
@@ -118,9 +119,27 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   assert.equal(summary.value, 'Anyone with link')
   finishPreviewRead({ mode: 'public', supported: true, converged: false, url: '/preview', grants: [{ user: 'reviewer' }] })
   await delayedRead
-  assert.equal(summary.value, 'Anyone with link')
+  assert.equal(summary.value, 'Could not confirm access')
+  assert.equal(current.authorizationRetries.length, 1)
   assert.equal(current.previewAccess.value.url, '/preview')
   assert.deepEqual(current.previewAccess.value.grants, [{ user: 'reviewer' }])
+  const afterDelayedRead = current.authorizeDevelopmentPreviewRequest('demo', 'recheck-delayed-read')
+  finishAuthorization(observed('public'))
+  await afterDelayedRead
+  assert.equal(summary.value, 'Anyone with link')
+
+  const earlierRuntimeCheck = current.authorizeDevelopmentPreviewRequest('demo', 'earlier-runtime-check')
+  const pendingRead = current.loadPublishing()
+  finishAuthorization(observed('public'))
+  await earlierRuntimeCheck
+  finishPreviewRead({ mode: 'public', supported: true, converged: false })
+  await pendingRead
+  assert.equal(summary.value, 'Could not confirm access')
+  assert.equal(current.authorizationRetries.length, 2)
+  const afterPendingRead = current.authorizeDevelopmentPreviewRequest('demo', 'recheck-pending-read')
+  finishAuthorization(observed('public'))
+  await afterPendingRead
+  assert.equal(summary.value, 'Anyone with link')
 
   await current.changeDevelopmentPreviewAccess('private')
   assert.equal(projectViewReads, 0)
@@ -131,6 +150,10 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   failAuthorization(new Error('preview authorization failed'))
   await failed
   assert.equal(summary.value, 'Could not confirm access')
+  const verifiedRead = current.loadPublishing()
+  finishPreviewRead({ mode: 'restricted', supported: true, converged: true })
+  await verifiedRead
+  assert.equal(summary.value, 'Restricted')
   const restricted = current.authorizeDevelopmentPreviewRequest('demo', 'retried')
   finishAuthorization(observed('private'))
   await restricted
@@ -146,6 +169,12 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   current.applyPreviewAccessState({ mode: 'restricted', supported: true, converged: true })
   finishAuthorization(observed('public'))
   await earlierRead
+  assert.equal(current.previewAccess.value.mode, 'restricted')
+  assert.equal(summary.value, 'Could not confirm access')
+  assert.equal(current.authorizationRetries.length, 3)
+  const afterEarlierRead = current.authorizeDevelopmentPreviewRequest('demo', 'recheck-earlier-read')
+  finishAuthorization(observed('private'))
+  await afterEarlierRead
   assert.equal(summary.value, 'Restricted')
 
   const olderAuthorization = current.authorizeDevelopmentPreviewRequest('demo', 'older-authorization')
@@ -154,6 +183,12 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   await olderAuthorization
   finishPreviewRead({ mode: 'public', supported: true, converged: true })
   await newerRead
+  assert.equal(current.previewAccess.value.mode, 'public')
+  assert.equal(summary.value, 'Could not confirm access')
+  assert.equal(current.authorizationRetries.length, 4)
+  const afterNewerRead = current.authorizeDevelopmentPreviewRequest('demo', 'recheck-newer-read')
+  finishAuthorization(observed('public'))
+  await afterNewerRead
   assert.equal(summary.value, 'Anyone with link')
 
   previewWriteError = new Error('grants lookup failed after saving')
@@ -180,6 +215,12 @@ test('summarizes only acknowledged preview policy and matching runtime evidence'
   await afterSettingsFailure
   assert.equal(summary.value, 'Anyone with link')
   assert.deepEqual(current.authorizations, Array.from({ length: 4 }, () => ({ force: true })))
+
+  current.previewAccess.value = null
+  const authOnlyFailure = current.authorizeDevelopmentPreviewRequest('demo', 'auth-only-failure')
+  failAuthorization(new Error('preview authorization failed'))
+  await authOnlyFailure
+  assert.equal(summary.value, 'Could not confirm access')
 
   assert.match(app, /const accessRevision = previewAccessRevision[\s\S]*previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision/)
 })

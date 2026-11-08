@@ -885,7 +885,7 @@ const developmentPreviewAuthorizing = ref(false)
 const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewReadinessMessage = ref<string | null>(null)
 const developmentPreviewAccessModesFromAuthorization = ref<Array<'private' | 'public'>>([])
-const developmentPreviewAuthorizedPolicy = ref<{ mode: 'private' | 'public'; converged: boolean; serial: number } | null>(null)
+const developmentPreviewAuthorizedPolicy = ref<{ mode: 'private' | 'public'; converged: boolean } | null>(null)
 const previewAccessUnverified = ref(false)
 const developmentPreviewAccessConverged = ref(true)
 const developmentPreviewAccessBusy = ref(false)
@@ -3279,8 +3279,9 @@ const developmentPreviewDesiredAccess = computed<'private' | 'public'>(() => (
     : developmentPreviewAuthorizedPolicy.value?.mode ?? (selected.value?.sharing?.preview?.mode === 'public' ? 'public' : 'private')
 ))
 const developmentPreviewSettingsSummary = computed(() => {
-  if (previewAccessUnverified.value || developmentPreviewAuthorizationError.value) return 'Could not confirm access'
-  const saved = previewAccess.value?.supported ? previewAccess.value : developmentPreviewAuthorizedPolicy.value
+  const access = previewAccess.value?.supported ? previewAccess.value : null
+  if (previewAccessUnverified.value || (developmentPreviewAuthorizationError.value && !access?.converged)) return 'Could not confirm access'
+  const saved = access ?? developmentPreviewAuthorizedPolicy.value
   if (developmentPreviewAccessBusy.value || saved?.converged === false) return 'Updating access…'
   if (!saved) return developmentPreviewAuthorizing.value ? 'Checking access…' : 'Could not confirm access'
   return developmentPreviewDesiredAccess.value === 'public' ? 'Anyone with link' : 'Restricted'
@@ -4618,7 +4619,7 @@ async function loadPublishing() {
   }
   const requestSerial = ++publishingLoadSerial
   const accessRevision = previewAccessRevision
-  const authorizationSerialAtStart = developmentPreviewAuthorizationSerial
+  const authorizationAtStart = developmentPreviewAuthorizedPolicy.value
   const stateWasLoaded = publishingStateAvailable.value
   const membersWereLoaded = publishingMembersLoaded.value
   if (!stateWasLoaded && !membersWereLoaded) publishingLoadState.value = 'loading'
@@ -4657,11 +4658,13 @@ async function loadPublishing() {
   if (previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision) {
     const state = previewResult.value
     const authorization = developmentPreviewAuthorizedPolicy.value
-    // A later authorization can confirm the runtime while this combined read
-    // is still waiting for its other requests.
-    applyPreviewAccessState(state.supported && authorization && authorization.serial > authorizationSerialAtStart
-      ? { ...state, mode: authorization.mode === 'public' ? 'public' : 'restricted', converged: authorization.converged }
-      : state)
+    applyPreviewAccessState(state)
+    // The two verbs may read the runtime in a different order than they started.
+    if (state.supported && authorization && authorization !== authorizationAtStart &&
+      (authorization.mode !== developmentPreviewDesiredAccess.value || authorization.converged !== state.converged)) {
+      previewAccessUnverified.value = true
+      scheduleDevelopmentPreviewAuthorizationRetry(name, developmentPreviewAuthorizationKey.value, true)
+    }
   }
 
   const stateAvailable = publishingStateAvailable.value
@@ -7916,12 +7919,17 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     const authorization = projectDevelopmentPreviewAuthorization(result)
     developmentPreviewAccessModesFromAuthorization.value = authorization.previewAccessModes
     if (!previewAccess.value?.supported) developmentPreviewAccessConverged.value = authorization.accessConverged
+    let accessConflict = false
     if (authorization.desiredAccess && authorization.observedAccess) {
       const mode = authorization.desiredAccess
       const converged = authorization.accessConverged && authorization.observedAccess === mode
       const access = previewAccess.value
-      if (!access?.supported || access === accessAtStart || (mode === developmentPreviewDesiredAccess.value && converged)) {
-        developmentPreviewAuthorizedPolicy.value = { mode, converged, serial }
+      accessConflict = !!access?.supported && access !== accessAtStart &&
+        (mode !== developmentPreviewDesiredAccess.value || converged !== access.converged)
+      if (accessConflict) {
+        previewAccessUnverified.value = true
+      } else {
+        developmentPreviewAuthorizedPolicy.value = { mode, converged }
         previewAccessUnverified.value = false
         if (access?.supported) applyPreviewAccessState({ ...access, mode: mode === 'public' ? 'public' : 'restricted', converged })
       }
@@ -7937,6 +7945,7 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     const previewURL = authorization.previewURL
     if (!previewURL) throw new Error('development preview authorization returned no preview URL')
     applyDevelopmentPreviewAuthorization(projectName, authorization)
+    if (accessConflict) scheduleDevelopmentPreviewAuthorizationRetry(projectName, key, true)
   } catch (e) {
     if (serial !== developmentPreviewAuthorizationSerial || accessRevision !== previewAccessRevision || selected.value?.name !== projectName) return
 	if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
