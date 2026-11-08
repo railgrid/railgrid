@@ -104,7 +104,7 @@ describe('route-owned creation surfaces', () => {
     name.value = 'my-draft'
     name.dispatchEvent(new InputEvent('input', { bubbles: true }))
     const sections = () => [...el.querySelectorAll('.agents-create-section h2')].map(section => section.textContent)
-    const initialSections = ['Agent definition', 'Execution', 'Connections & automation']
+    const initialSections = ['Agent definition', 'Execution', 'Template inputs', 'Connections & automation']
     const instructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
     expect(sections()).toEqual(initialSections)
     const trigger = el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!
@@ -129,7 +129,7 @@ describe('route-owned creation surfaces', () => {
     expect(picker.open).toBe(false)
     expect(name.value).toBe('my-draft')
     expect(el.querySelector('[data-selected-template]')?.textContent).toContain('Researcher')
-    expect(el.querySelector('section[aria-labelledby=agent-create-definition-heading] #agent-create-param-domain')).not.toBeNull()
+    expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
     expect(sections()).toEqual(initialSections)
     expect(el.querySelector('textarea[aria-labelledby="agent-create-system-prompt-label"]')).toBe(instructions)
     expect(instructions.value).toContain('research')
