@@ -15,6 +15,7 @@ interface ConfigSave {
 
 interface AgentSaveQueue {
   operations: ConfigSave[]
+  inFlight?: ConfigSave
   processing: boolean
   idleWaiters: Set<() => void>
 }
@@ -44,6 +45,15 @@ export function waitForAgentConfigSaves(store: AppStore, name: string): Promise<
   const queue = queues.get(store)?.get(name)
   if (!queue || (!queue.processing && queue.operations.length === 0)) return Promise.resolve()
   return new Promise(resolve => queue.idleWaiters.add(resolve))
+}
+
+/** Read the saved Agent without any config changes the queue applied optimistically. */
+export function acknowledgedAgentConfig(store: AppStore, name: string): Agent | undefined {
+  const source = store.agent(name)
+  if (!source) return
+  const queue = queues.get(store)?.get(name)
+  const pending = queue?.inFlight ?? queue?.operations[0]
+  return { ...source, spec: pending?.before ?? source.spec }
 }
 
 function cloneSpec(spec: Agent['spec']): Agent['spec'] {
@@ -99,6 +109,7 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
         }
         writesSinceReconcile = true
         let ambiguousTimeout = false
+        queue.inFlight = operation
         const saved = await mutate(store, {
           run: () => operation.api.patchAgent(name, operation.patch),
           success: operation.success,
@@ -109,8 +120,10 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
           rollback: () => {
             source.spec = cloneSpec(operation.before)
             rebasePending(source, queue)
+            queue.inFlight = undefined
           },
         })
+        queue.inFlight = undefined
         if (saved && !store.isRetired()) {
           const current = store.agent(name)
           if (current) {
@@ -164,6 +177,7 @@ async function drain(store: AppStore, name: string, queue: AgentSaveQueue): Prom
     }
   } finally {
     releaseWrites?.()
+    queue.inFlight = undefined
     queue.processing = false
     if (queue.operations.length) {
       void drain(store, name, queue)

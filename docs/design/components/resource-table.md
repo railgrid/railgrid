@@ -44,6 +44,11 @@ There are exactly two configurations:
   native semantics, nested-control isolation, and row-action accessibility are
   identical to Queryable.
 
+Either configuration can use `appearance="workbench"` for a table embedded in
+a resizable workbench pane. The table shares the pane canvas, wraps the primary
+value, and keeps row actions visible. At narrow table widths, actions flow
+below the primary value. Callers still select which columns fit the task.
+
 ## Behavior
 
 Interactive row hover uses a 4% accent tint with primary text. Interactive rows
@@ -209,8 +214,10 @@ columns. The viewport itself must not overflow the page.
 The table retains native `<table>` and `<tr>` semantics. Interactive rows use
 `tabindex="0"` and Enter/Space emits `rowClick`; nested links, buttons, inputs,
 selects, summaries, and other explicit controls remain independent. Resource
-names disclose full values in a viewport overlay only when actually truncated,
-using `fullValue(row)` when a slot label differs. A truncated secondary cell
+names disclose full values in a viewport overlay only when truncated, using
+`fullValue(row)` when a slot label differs. When the primary column renders a
+shortened preview, `isValueTruncated(row)` can enable the same disclosure even
+if the preview wraps and fits its cell. A truncated secondary cell
 discloses the same way: the column's `fullValue`, else the row's scalar, else
 the text its slot rendered. Cells are never tab stops: a focused row steps
 the disclosure through its truncated cells with the Left and Right arrow keys

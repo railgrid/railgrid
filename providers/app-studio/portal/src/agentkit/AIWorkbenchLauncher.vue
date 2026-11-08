@@ -20,6 +20,8 @@ const props = withDefaults(defineProps<{
   suggestedItems?: readonly AIWorkbenchLauncherItemView[]
   /** Controlled query; providers decide how the filtered arrays are built. */
   query?: string
+  description?: string
+  variant?: 'cards' | 'rows'
   searchLabel?: string
   searchPlaceholder?: string
   existingHeading?: string
@@ -29,6 +31,8 @@ const props = withDefaults(defineProps<{
   existingTabs: () => [],
   suggestedItems: () => [],
   query: '',
+  description: 'Open a workbench tool.',
+  variant: 'cards',
   searchLabel: 'Search workbench tools',
   searchPlaceholder: 'Search for tools...',
   existingHeading: 'Jump to existing tab',
@@ -80,8 +84,8 @@ function updateQuery(event: Event): void {
 </script>
 
 <template>
-  <AIWorkbenchPane title="New tab" description="Open a workbench tool.">
-  <div class="k-ai-launcher" data-k-workbench-launcher>
+  <AIWorkbenchPane title="New tab" :description="description">
+  <div class="k-ai-launcher" :class="{ 'k-ai-launcher--rows': variant === 'rows' }" data-k-workbench-launcher>
     <div class="k-ai-launcher__search">
       <Search class="k-ai-launcher__search-icon" :stroke-width="1.75" aria-hidden="true" />
       <input

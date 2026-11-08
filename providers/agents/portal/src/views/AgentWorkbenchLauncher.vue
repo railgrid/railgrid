@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { BookOpen, CalendarClock, Gauge, SlidersHorizontal, Wrench } from 'lucide-vue-next'
-import { computed, ref, watch, type Component } from 'vue'
+import { computed, ref, watch } from 'vue'
 import AIWorkbenchLauncher from '../agentkit/AIWorkbenchLauncher.vue'
 import type { AIWorkbenchLauncherItemView } from '../agentkit/ai'
 import {
+  agentWorkbenchIcons,
   canonicalAgentWorkbenchTab,
   type AgentWorkbenchBuiltInTab,
   type AgentWorkbenchTabDescriptor,
@@ -41,20 +41,12 @@ function matchesQuery(tab: AgentWorkbenchTabDescriptor): boolean {
   return `${tab.title} ${tab.subtitle ?? ''}`.toLowerCase().includes(normalizedQuery.value)
 }
 
-function tabIcon(kind: AgentWorkbenchBuiltInTab): Component {
-  if (kind === 'config') return SlidersHorizontal
-  if (kind === 'tools') return Wrench
-  if (kind === 'automation') return CalendarClock
-  if (kind === 'runs') return Gauge
-  return BookOpen
-}
-
 function launcherItem(tab: AgentWorkbenchTabDescriptor): AIWorkbenchLauncherItemView {
   return {
     id: tab.id,
     title: tab.title,
     ...(tab.subtitle ? { subtitle: tab.subtitle } : {}),
-    icon: tabIcon(tab.kind as AgentWorkbenchBuiltInTab),
+    icon: agentWorkbenchIcons[tab.kind],
   }
 }
 
@@ -66,6 +58,10 @@ function select(id: string): void {
 <template>
   <AIWorkbenchLauncher
     v-model:query="query"
+    variant="rows"
+    description="Open a workbench tab for this agent."
+    search-label="Search workbench tabs"
+    search-placeholder="Search workbench tabs"
     :existing-tabs="existingTabs"
     :suggested-items="suggestedItems"
     @select-existing="select"

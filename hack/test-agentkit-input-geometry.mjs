@@ -280,7 +280,7 @@ try {
     result.activation = await searchGeometry(activation, size.coarse)
     await clearSearch(page, activation, size.coarse)
     await page.locator('.agents-skill-activation .agents-state-loading').waitFor({ state: 'hidden', timeout: 30000 })
-    const activationActions = await page.locator('.agents-skill-activation .agents-tool-row button').evaluateAll(buttons => buttons.map(button => { const bounds = button.closest('.agents-skill-activation').getBoundingClientRect(), rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, minLeft: bounds.left + 8, maxRight: bounds.right - 8 } }))
+    const activationActions = await page.locator('.agents-skill-activation__row button').evaluateAll(buttons => buttons.map(button => { const bounds = button.closest('.k-ai-workbench-pane').getBoundingClientRect(), rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right, minLeft: bounds.left + 8, maxRight: bounds.right - 8 } }))
     for (const rect of activationActions) assert(rect.left >= rect.minLeft && rect.right <= rect.maxRight, `Skill action is clipped inside its panel: ${JSON.stringify(rect)}`)
     result.activationActions = activationActions
     if (size.name !== 'intermediate') await page.locator('.agents-skill-activation').screenshot({ path: path.join(output, `agents-config-skills-${size.name}-${theme}.png`) })

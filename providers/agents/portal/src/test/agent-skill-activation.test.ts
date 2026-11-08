@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import AgentSkillActivation from '../views/AgentSkillActivation.vue'
+import { subscribeToasts } from '../ui/toast'
+import type { Agent } from '../types'
 import { agentFixture, makeStore, stubApi } from './helpers'
 import { mountVue, settleVue, text } from './vue-helper'
+
+const skill = { id: 'workspace:review', name: 'Review', description: 'Review changes.', scope: 'workspace' as const, enabled: true, editable: true, resources: [] }
 
 describe('Agent skill activation', () => {
   it('clears a skill filter and returns focus to the search input', async () => {
@@ -44,6 +48,74 @@ describe('Agent skill activation', () => {
 
     expect(setAgentSkillEnabled).toHaveBeenCalledOnce()
     expect(setAgentSkillEnabled).toHaveBeenCalledWith('scout', 'workspace:renamed-skill', false)
+    expect(text(view.element.querySelector('[data-config-save-status="saved"]')!)).toContain('Skills saved.')
     view.unmount()
+  })
+
+  it('shows an immediate skill write failure beside the controls and allows retry', async () => {
+    const agent = agentFixture('scout', { skills: [{ name: skill.id }] })
+    const setAgentSkillEnabled = vi.fn(async () => { throw new Error('Request failed') })
+    const api = stubApi({
+      setAgentSkillEnabled,
+      listAgents: async () => [agent],
+      getAgentSkillCatalog: async () => ({ skills: [skill], catalogDigest: '', warnings: [] }),
+    })
+    const store = makeStore(api)
+    store.agents.data = [agent]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+    const toasts = vi.fn()
+    const unsubscribe = subscribeToasts(toasts)
+
+    try {
+      const disable = view.element.querySelector<HTMLButtonElement>('button[aria-label="Disable Review for scout"]')!
+      disable.click()
+      await settleVue(8)
+
+      expect(text(view.element.querySelector('[data-config-save-status="error"]')!)).toContain('Could not disable “Review”. Request failed')
+      expect(disable.disabled).toBe(false)
+      expect(toasts).toHaveBeenCalledExactlyOnceWith([])
+    } finally {
+      unsubscribe()
+      view.unmount()
+    }
+  })
+
+  it.each([
+    { outcome: 'success', kind: 'ok', message: 'Disabled “Review” for this agent.' },
+    { outcome: 'failure', kind: 'error', message: 'Could not update agent skills: Request failed' },
+  ])('shows one toast for a $outcome that finishes after hiding Skills', async ({ outcome, kind, message }) => {
+    const agent = agentFixture('scout', { skills: [{ name: skill.id }] })
+    const updated = agentFixture('scout')
+    let finish!: () => void
+    const pending = new Promise<Agent>((resolve, reject) => {
+      finish = () => {
+        if (outcome === 'success') resolve(updated)
+        else reject(new Error('Request failed'))
+      }
+    })
+    const api = stubApi({
+      setAgentSkillEnabled: () => pending,
+      listAgents: async () => [outcome === 'success' ? updated : agent],
+      getAgentSkillCatalog: async () => ({ skills: [skill], catalogDigest: '', warnings: [] }),
+    })
+    const store = makeStore(api)
+    store.agents.data = [agent]
+    const view = await mountVue(AgentSkillActivation, { store, api, name: 'scout' })
+    const toasts = vi.fn()
+    const unsubscribe = subscribeToasts(toasts)
+
+    try {
+      view.element.querySelector<HTMLButtonElement>('button[aria-label="Disable Review for scout"]')!.click()
+      await view.setProps({ active: false })
+      finish()
+      await settleVue(8)
+
+      expect(toasts).toHaveBeenCalledTimes(2)
+      expect(toasts).toHaveBeenLastCalledWith([expect.objectContaining({ kind, message })])
+      expect(view.element.querySelector('[data-config-save-status]')).toBeNull()
+    } finally {
+      unsubscribe()
+      view.unmount()
+    }
   })
 })

@@ -201,7 +201,7 @@ describe('agent resource detail conformance', () => {
       expect(mounted.element.querySelector('.agents-chat')).not.toBeNull()
       expect(page.querySelector('.k-ai-conversation-layout')).not.toBeNull()
       expect(page.querySelector('.agents-split')).toBeNull()
-      expect(page.querySelectorAll('[data-k-resource-section-card]').length).toBeGreaterThan(0)
+      expect(page.querySelector('#agents-workbench-panel-config .agents-workbench-section')).not.toBeNull()
 
       back.click()
       expect(mounted.navigations.at(-1)).toEqual({ kind: 'menu', menu: 'agents' })
@@ -461,6 +461,7 @@ describe('agent resource detail conformance', () => {
       ['H2', 'Runs'],
       ['H3', 'Needs your attention (1)'],
       ['H4', 'Allow this action?'],
+      ['H3', 'Run history'],
     ])
   })
 
@@ -513,7 +514,7 @@ describe('agent resource detail conformance', () => {
     const trigger = mounted.element.querySelector<HTMLButtonElement>('[aria-label="Delete agent"]')!
 
     expect(header.querySelector('[aria-label="More agent actions"]')).toBeNull()
-    expect(trigger.closest('.agents-config-sec')?.querySelector('h2')?.textContent).toBe('Delete agent')
+    expect(trigger.closest('.agents-workbench-section')?.querySelector('h3')?.textContent).toBe('Delete agent')
 
     trigger.click()
     await settleVue()
