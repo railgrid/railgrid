@@ -124,6 +124,26 @@ describe('public Agents shell routing', () => {
     expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
   })
 
+  it('opens additional model pages from the Models header and provides an explicit return', async () => {
+    const element = await mountShell('#/models')
+    const header = element.querySelector('[aria-labelledby="available-models-title"]')!
+    const menu = header.querySelector<HTMLButtonElement>('button[aria-label="More model settings"]')!
+    menu.click()
+    await settleVue()
+    const options = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+    expect(options.map(text)).toEqual(['Workspace assistant', 'Usage & cost'])
+    options[1].click()
+    await settleVue()
+    expect(location.hash).toBe('#/models/usage')
+    expect(text(element.querySelector('.k-model-usage .k-resource-page__title'))).toBe('Usage & cost')
+    const back = element.querySelector<HTMLAnchorElement>('a.k-back-action[href="#/models"]')!
+    expect(text(back)).toBe('Back to Models')
+    back.click()
+    await settleVue()
+    expect(location.hash).toBe('#/models')
+    expect(element.querySelector('#available-models-title')).not.toBeNull()
+  })
+
   it('starts route revalidation before webhook settings initialize from a cached snapshot', async () => {
     vi.mocked(AppStore.prototype.refreshCollections).mockRestore()
     const element = await mountShell('#/webhooks')

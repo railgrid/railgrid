@@ -6,7 +6,9 @@ import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
+import ActionMenu from '../portalkit/ActionMenu.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
+import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -45,14 +47,20 @@ function tabRoute(tab: ModelsTab): Route {
 function navigateTab(event: MouseEvent, tab: ModelsTab): void {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
   event.preventDefault()
+  openModelTab(tab)
+}
+function openModelTab(tab: ModelsTab): void {
   localTab.value = tab
   emit('navigate', tabRoute(tab))
 }
 const connectionView = computed(() => activeTab.value === 'provider-connections')
 const modelView = computed(() => activeTab.value === 'models')
-const modelManagementLinks = computed(() => MODELS_TABS.filter(tab =>
-  tab.id !== 'models' && tab.id !== activeTab.value && (!modelView.value || tab.id !== 'provider-connections'),
-))
+const moreModelSettings = MODELS_TABS.filter(tab => tab.id === 'workspace-assistant' || tab.id === 'usage')
+
+function selectModelSetting(id: string): void {
+  const tab = moreModelSettings.find(tab => tab.id === id)
+  if (tab) openModelTab(tab.id)
+}
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -501,6 +509,7 @@ defineExpose({ loadCatalog, loadUsage })
       <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
+      <ResourceBackLink v-if="setupNavigation && !modelView" :href="hashFor(tabRoute('models'))" @back="openModelTab('models')">Back to Models</ResourceBackLink>
       <template v-if="credentialView">
       <template v-if="modelView">
       <div v-if="modelView && catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
@@ -511,6 +520,7 @@ defineExpose({ loadCatalog, loadUsage })
         <div class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
             <a v-if="setupNavigation" class="k-btn k-btn--text" :href="hashFor(tabRoute('provider-connections'))" @click="navigateTab($event, 'provider-connections')">Manage model providers</a>
+            <ActionMenu v-if="setupNavigation" label="More model settings" show-label :items="moreModelSettings" @select="selectModelSetting" />
             <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
@@ -614,9 +624,6 @@ defineExpose({ loadCatalog, loadUsage })
         </div>
       </template>
       </ModelUsageSection>
-      <nav v-if="setupNavigation" class="k-resource-page__actions" aria-label="More model settings">
-        <a v-for="tab in modelManagementLinks" :key="tab.id" class="k-btn k-btn--text" :href="hashFor(tabRoute(tab.id))" @click="navigateTab($event, tab.id)">{{ tab.id === 'provider-connections' ? 'Manage model providers' : tab.label }}</a>
-      </nav>
     </template>
   </div>
 </template>
