@@ -2,30 +2,31 @@
 import { computed } from 'vue'
 import AIExecutionDetails from '../agentkit/AIExecutionDetails.vue'
 import type { AIExecutionView } from '../agentkit/activity'
+import { redactTechnicalSecrets } from '../failure-presentation'
 import { toolCommand } from '../toolExecution'
 import { prettyJSON, type ToolCall } from '../types'
 
 const props = defineProps<{
   tool: ToolCall
+  failed?: boolean
 }>()
 
 const execution = computed<AIExecutionView>(() => {
   const value = props.tool.durationMS
-  const output = props.tool.error
-    ? { output: [props.tool.error], outputLabel: 'Error' }
-    : props.tool.result
-      ? { output: [prettyJSON(props.tool.result)], outputLabel: 'Output' }
-      : {}
   const command = toolCommand(props.tool)
+  const text = props.tool.error || props.tool.result
+  const output = text
+    ? [command ? redactTechnicalSecrets(text) : props.tool.error || prettyJSON(text)]
+    : undefined
   return {
     ...(command ? {
       command,
     } : {}),
     heading: command ? 'Shell' : `Tool · ${props.tool.name}`,
     ...(!command && props.tool.args ? { input: prettyJSON(props.tool.args), inputLabel: 'Arguments' } : {}),
-    ...output,
-    ...(command ? { outputLabel: undefined } : {}),
-    status: props.tool.pending ? 'running' : props.tool.error ? 'failed' : 'succeeded',
+    output,
+    outputLabel: command || !output ? undefined : props.tool.error ? 'Error' : 'Output',
+    status: props.tool.pending ? 'running' : props.failed || props.tool.error ? 'failed' : 'succeeded',
     ...(typeof value === 'number' && Number.isFinite(value) && value >= 0 ? { durationMs: value } : {}),
   }
 })
