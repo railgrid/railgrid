@@ -103,6 +103,10 @@ describe('route-owned creation surfaces', () => {
     const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
     name.value = 'my-draft'
     name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const sections = () => [...el.querySelectorAll('.agents-create-section h2')].map(section => section.textContent)
+    const initialSections = ['Agent definition', 'Execution', 'Template inputs', 'Connections & automation']
+    const instructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+    expect(sections()).toEqual(initialSections)
     const trigger = el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!
     const picker = el.querySelector<HTMLDialogElement>('dialog')!
     picker.showModal = () => { picker.open = true }
@@ -126,6 +130,14 @@ describe('route-owned creation surfaces', () => {
     expect(name.value).toBe('my-draft')
     expect(el.querySelector('[data-selected-template]')?.textContent).toContain('Researcher')
     expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
+    expect(sections()).toEqual(initialSections)
+    expect(el.querySelector('textarea[aria-labelledby="agent-create-system-prompt-label"]')).toBe(instructions)
+    expect(instructions.value).toContain('research')
+    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
+    await settle(el)
+    expect(sections()).toEqual(initialSections)
+    expect(el.querySelector('[data-selected-template]')).toBeNull()
+    expect(name.value).toBe('my-draft')
     expect(agentTemplates).toHaveBeenCalledTimes(1)
   })
 
@@ -156,10 +168,8 @@ describe('route-owned creation surfaces', () => {
     expect(credential.getAttribute('aria-required')).toBe('true')
     expect(credential.getAttribute('aria-describedby')).toContain('agent-create-harnesscred-hint')
 
-    expect(el.querySelector('.k-create-description')?.textContent).toContain('machine and coding harness')
-    expect(el.querySelector('.k-create-guidance__description')?.textContent).toContain('machine and harness identity')
-    expect(el.querySelector('.k-create-guidance__description')?.textContent).not.toContain('model connection')
-    expect(el.querySelector('.k-create-guidance')?.textContent).toContain('Add schedules and triggers')
+    expect(el.querySelector('#agent-create-execution-heading')?.textContent).toBe('Execution')
+    expect(el.querySelector('.k-create-guidance')?.textContent).toContain('After you create the agent')
 
     machine.click()
     await settle(el)
@@ -246,7 +256,7 @@ describe('route-owned creation surfaces', () => {
     runnerLoading.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(runnerLoading, 2)
     expect(runnerLoading.querySelector('.k-inline-notification--error[role="alert"]')).toBeNull()
-    expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).toContain('Checking for available machines…')
+    expect(runnerLoading.querySelector('[aria-labelledby=agent-create-execution-heading]')?.textContent).toContain('Loading machines…')
     expect(runnerLoading.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
 
     const runnerErrorStore = makeStore(api)
@@ -258,7 +268,7 @@ describe('route-owned creation surfaces', () => {
     runnerError.querySelector<HTMLInputElement>('[data-use-coding-harness]')!.click()
     await settle(runnerError, 2)
     expect(runnerError.querySelector('.k-inline-notification--error[role="alert"]')?.textContent).toContain('Could not load machines')
-    expect(runnerError.querySelector('.k-create-guidance')?.textContent).toContain('Retry loading machines before choosing a runner.')
+    expect(runnerError.querySelector('[aria-labelledby=agent-create-execution-heading] button.k-inline-notification__action')?.textContent).toContain('Retry')
     expect(runnerError.querySelector('.k-create-guidance')?.textContent).not.toContain('Join a Linux or macOS machine')
   })
 
@@ -573,9 +583,9 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   expect(el.querySelector('#agent-create-param-topics')).not.toBeNull()
   expect(el.querySelector('#agent-create-slot-websearch')).not.toBeNull()
   expect(el.querySelector('#agent-create-channel-label')?.textContent).toContain('*')
-  // The template's instructions render read-only, and the websearch picker
-  // offers only websearch connections.
-  expect(el.querySelector('.agents-template-prompt-text')?.textContent).toContain('news reporter')
+  // The existing instructions field receives the template and tracks its inputs.
+  const instructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+  expect(instructions.value).toContain('news reporter')
   el.querySelector<HTMLButtonElement>('#agent-create-slot-websearch')!.click()
   await settleVue()
   const slotOptions = [...document.querySelectorAll<HTMLElement>('.k-form-select__option')].map(o => o.textContent?.trim())
@@ -597,7 +607,7 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
   await chooseFormSelect(el, '#agent-create-model', 'openai')
   await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
   await chooseFormSelect(el, '#agent-create-slot-websearch', 'searx')
-  expect(el.querySelector('.agents-template-prompt-text')?.textContent).toContain('- kcp')
+  expect(instructions.value).toContain('- kcp')
   el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
   await settle(el)
 

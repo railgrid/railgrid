@@ -208,11 +208,24 @@ railgrid-provider-agents .agents-template-picker .agents-template-starters-grid 
 @media (max-width: 550px) {
   railgrid-provider-agents .agents-template-picker .agents-template-starters-grid { grid-template-columns: 1fr; }
 }
-railgrid-provider-agents .agents-create-alternatives {
+railgrid-provider-agents .agents-create-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-block: 14px;
+  border-block-start: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-create-section:first-of-type { border-block-start: 0; padding-block-start: 0; }
+railgrid-provider-agents .agents-create-section h2 { margin: 0; font-size: 15px; font-weight: 600; }
+railgrid-provider-agents :is(.agents-create-backends, .agents-template-selection) {
   display: flex;
   flex-wrap: wrap;
-  gap: 4px 8px;
-  margin-inline-end: auto;
+  align-items: center;
+  gap: 8px 12px;
+}
+railgrid-provider-agents .agents-create-backends [aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
 }
 /* Bound the task region, not the route shell or its contextual guidance. */
 railgrid-provider-agents .agents-resource-fields { width: 100%; max-width: 42rem; }
@@ -295,14 +308,6 @@ railgrid-provider-agents .agents-radiocard-b { grid-area: b; font-size: 12px; co
 /* --- agent templates: the Start-from cards, the rendered instructions, the
  * first-run starters. Cards reuse the radiocard recipe; a starter is the same
  * card as a button. --- */
-railgrid-provider-agents .agents-template-prompt { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
-railgrid-provider-agents .agents-template-prompt .agents-field-label { font-size: 13px; }
-railgrid-provider-agents .agents-template-prompt-text {
-  margin: 0; max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
-  font: inherit; font-size: 12.5px; line-height: 1.45; padding: 10px 12px; border-radius: 6px;
-  background: var(--color-surface, #0a0b12); border: 1px solid var(--color-border-default, rgba(255, 255, 255, 0.11));
-  color: var(--color-text-secondary, #8a8ca6);
-}
 railgrid-provider-agents .agents-template-starters { display: grid; gap: 12px; margin-block-start: 10px; }
 railgrid-provider-agents .agents-template-starters h2 { margin: 0; font-size: 17px; font-weight: 600; }
 railgrid-provider-agents .agents-template-starters-grid {

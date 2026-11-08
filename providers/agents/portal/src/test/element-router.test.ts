@@ -957,7 +957,7 @@ describe('context and create-session routing fences', () => {
     expect(location.hash).toBe('#/agents')
     buttonWithText(element, 'New agent').click()
     await settleVue(5)
-    buttonWithText(element, 'Use a coding harness').click()
+    element.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
     await settleVue(5)
     expect(location.hash).toBe('#/create/agent')
     expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('')

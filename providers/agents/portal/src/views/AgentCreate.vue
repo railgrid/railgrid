@@ -80,8 +80,7 @@ const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
 // Connection-slot wiring, by slot key. The other slot kinds reuse the fields
 // below (model credential, channel, machine, harness identity, GitHub).
 const slotWiring = ref<Record<string, string>>({ ...initialDraft.wiring })
-// The template's instructions render read-only from the parameters until the
-// user asks to edit them; then the textarea takes over as an override.
+// Template instructions track the parameter values until the user edits them.
 const customPrompt = ref(initialDraft.customPrompt)
 const backendType = ref<AgentBackendType>(initialDraft.backendType)
 const modelCredential = ref(initialDraft.modelCredential)
@@ -178,9 +177,9 @@ async function loadTemplates(): Promise<void> {
     templatesLoading.value = false
   }
 }
-function customizePrompt(): void {
-  systemPrompt.value = promptPreview.value
-  customPrompt.value = true
+function editInstructions(event: Event): void {
+  systemPrompt.value = (event.target as HTMLTextAreaElement).value
+  customPrompt.value = Boolean(selectedTemplate.value)
 }
 const credentialOptions = computed(() => chatCredentials.value.filter(item => !credentialUnavailable(item)).map(item => ({
   value: item.name,
@@ -193,10 +192,16 @@ watch([chatCredentials, credentials], ([models, slice]) => {
 }, { immediate: true })
 
 function chooseBackend(type: AgentBackendType): void {
-  template.value = ''
-  customPrompt.value = false
+  if (type === backendType.value) return
+  clearTemplate()
   backendType.value = type
-  void nextTick(() => nameInput.value?.focus())
+}
+
+function clearTemplate(): void {
+  template.value = ''
+  parameters.value = {}
+  slotWiring.value = {}
+  customPrompt.value = false
 }
 
 function chooseTemplate(value: string): void {
@@ -217,60 +222,7 @@ const channelOptions = computed(() => [
     label: `${item.spec.displayName || item.metadata.name} (${item.spec.type})`,
   })),
 ])
-const detailedSetup = computed(() => isHarness.value || Boolean(template.value))
-const capabilities = computed(() => isHarness.value ? 'The harness’s own tools'
-  : selectedTemplate.value ? templateFamilies(selectedTemplate.value).join(', ') || 'Core only' : 'Core only')
-
-// What the guidance panel promises, per backend. A harness-backed agent's
-// prerequisite is a machine and an identity, not a model credential — telling
-// somebody to add one would send them to fix a thing that is not missing.
-const prerequisites = computed(() => isHarness.value
-  ? [
-    hostEdges.value.length
-      ? 'A Linux or macOS machine is joined to this workspace.'
-      : edgeSlice.value.error
-        ? 'Retry loading machines before choosing a runner.'
-        : edgeSlice.value.hasSnapshot
-          ? 'Join a Linux or macOS machine before creating the agent.'
-          : 'Checking for available machines…',
-    harnessCredentials.value.length
-      ? 'A Claude Code or Codex identity is available in this workspace.'
-      : 'Add a Claude Code or Codex identity under Models → Provider connections before creating the agent.',
-  ]
-  : [
-    credentialOptions.value.length
-      ? 'A model credential is available in this workspace.'
-      : 'Add a model credential before creating the agent.',
-    'Optional channel connections can be added now or attached later from Config.',
-  ])
-const summaryValues = computed(() => [
-  { label: 'Start from', value: selectedTemplate.value?.spec.displayName || 'Blank' },
-  { label: 'Agent name', value: name.value.trim() || 'Not entered yet', technical: true },
-  ...(isHarness.value
-    ? [
-      { label: 'Machine', value: splitEdgeKey(harnessEdge.value).name || 'Not selected', technical: true },
-      { label: 'Harness', value: selectedHarness.value || 'Not selected', technical: true },
-      { label: 'Identity', value: harnessCredential.value || 'Not selected', technical: true },
-    ]
-    : [{ label: 'Model', value: modelCredential.value || 'Not selected', technical: true }]),
-  { label: 'Primary channel', value: channel.value || 'None', technical: true },
-  { label: 'Capabilities', value: capabilities.value },
-  ...(selectedTemplate.value?.spec.schedules?.length
-    ? [{ label: 'Schedules', value: selectedTemplate.value.spec.schedules.map(item => `${name.value.trim() || '<name>'}-${item.name}`).join(', '), technical: true }]
-    : []),
-])
-const guidanceDescription = computed(() => isHarness.value
-  ? 'Choose the machine and harness identity that will run the agent’s turns.'
-  : 'Choose the model connection the agent will use for its turns.')
-const guidanceNextSteps = computed(() => [
-  selectedTemplate.value
-    ? 'Railgrid creates the agent (and any schedules the template declares) and opens a conversation.'
-    : 'Railgrid creates the agent and opens a conversation.',
-  'Start a conversation to make sure the agent responds as expected.',
-  ...(isHarness.value
-    ? ['Add schedules and triggers when you’re ready to automate it.']
-    : ['Attach toolsets, schedules, and triggers when the core behavior is ready.']),
-])
+const capabilities = computed(() => selectedTemplate.value ? templateFamilies(selectedTemplate.value).join(', ') : '')
 // Whether the form can be submitted at all, which is a different question per
 // backend: the old condition was "a chat credential exists", which made the
 // harness backend unreachable however it was configured.
@@ -417,7 +369,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     errors.template = (e as Error).message
     return
   }
-  if (customPrompt.value && systemPrompt.value.trim()) instance.agent.spec.systemPrompt = systemPrompt.value.trim()
+  if (customPrompt.value) instance.agent.spec.systemPrompt = systemPrompt.value.trim() || undefined
   const harness = instance.agent.spec.backend?.harness
   if (harness) {
     if (harnessModel.value.trim()) harness.model = harnessModel.value.trim()
@@ -477,7 +429,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     <header class="k-create-header agents-create-header">
       <div>
         <h1 class="k-create-title">New agent</h1>
-        <p class="k-create-description">{{ isHarness ? 'Choose the machine and coding harness for this agent.' : 'Set up an agent you can chat with right away.' }}</p>
+        <p class="k-create-description">Set up an agent you can chat with right away.</p>
       </div>
       <button class="k-btn k-btn--ghost" type="button" :disabled="busy" aria-haspopup="dialog" @click="openTemplates">
         <LayoutTemplate aria-hidden="true" /> Templates
@@ -525,226 +477,230 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
       <form class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields">
-            <p v-if="selectedTemplate" class="agents-hint" data-selected-template>
-              Template: <strong>{{ selectedTemplate.spec.displayName }}</strong>
-            </p>
+            <div v-if="selectedTemplate" class="agents-template-selection">
+              <p class="agents-hint" data-selected-template>Template: <strong>{{ selectedTemplate.spec.displayName }}</strong></p>
+              <button class="k-btn k-btn--text" type="button" :disabled="busy" @click="clearTemplate">Clear template</button>
+            </div>
             <div v-else-if="template" class="agents-stale" role="status">
               {{ templatesError ? 'Could not load the selected template.' : templatesLoaded ? 'This template is unavailable.' : 'Loading the selected template…' }}
               <button v-if="templatesError" class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
             </div>
 
-            <label for="agent-create-name">
-              Name *
-              <input
-                id="agent-create-name"
-                ref="nameInput"
-                v-model="name"
-                class="k-input"
-                name="name"
-                aria-label="Name"
-                placeholder="research-bot"
-                autocomplete="off"
-                required
-                :disabled="busy"
-                :aria-invalid="errors.name ? 'true' : undefined"
-                :aria-describedby="errors.name ? 'agent-create-name-hint agent-create-name-error' : 'agent-create-name-hint'"
-              />
-              <span v-if="errors.name" id="agent-create-name-error" class="agents-fielderr" role="alert">{{ errors.name }}</span>
-              <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
-            </label>
+            <section class="agents-create-section" aria-labelledby="agent-create-definition-heading">
+              <h2 id="agent-create-definition-heading">Agent definition</h2>
+              <label for="agent-create-name">
+                Name *
+                <input
+                  id="agent-create-name"
+                  ref="nameInput"
+                  v-model="name"
+                  class="k-input"
+                  name="name"
+                  aria-label="Name"
+                  placeholder="research-bot"
+                  autocomplete="off"
+                  required
+                  :disabled="busy"
+                  :aria-invalid="errors.name ? 'true' : undefined"
+                  :aria-describedby="errors.name ? 'agent-create-name-hint agent-create-name-error' : 'agent-create-name-hint'"
+                />
+                <span v-if="errors.name" id="agent-create-name-error" class="agents-fielderr" role="alert">{{ errors.name }}</span>
+                <span id="agent-create-name-hint" class="agents-hint">A short id you'll reference from schedules and triggers.</span>
+              </label>
 
+              <label>
+                <span id="agent-create-system-prompt-label">Instructions (optional)</span>
+                <textarea :value="selectedTemplate && !customPrompt ? promptPreview : systemPrompt" class="k-input" rows="3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="selectedTemplate ? 'agent-create-system-prompt-hint' : undefined" @input="editInstructions" />
+                <span v-if="selectedTemplate" id="agent-create-system-prompt-hint" class="agents-hint">{{ customPrompt ? 'Your edits replace the template’s instructions.' : 'Prefilled from the template. Editing makes these instructions your own.' }}</span>
+              </label>
+            </section>
 
-
-            <template v-if="isHarness">
-              <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
-                <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
-                <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
+            <section class="agents-create-section" aria-labelledby="agent-create-execution-heading">
+              <h2 id="agent-create-execution-heading">Execution</h2>
+              <div class="agents-create-backends" role="group" aria-label="Execution type">
+                <button class="k-btn k-btn--ghost" type="button" :aria-pressed="!isHarness" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Chat model</button>
+                <button class="k-btn k-btn--ghost" type="button" data-use-coding-harness :aria-pressed="isHarness" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Coding harness</button>
               </div>
-              <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
-              <template v-else>
-                <div v-if="edgeSlice.error" id="agent-create-edge-stale" class="k-inline-notification k-inline-notification--warning" role="status">
-                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
-                  <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+              <p v-if="selectedTemplate" class="agents-hint">Changing execution type clears the template.</p>
+              <template v-if="isHarness">
+                <div v-if="edgeSlice.error && !edgeSlice.hasSnapshot" class="k-inline-notification k-inline-notification--error" role="alert">
+                  <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load machines. {{ edgeSlice.error }}</span></span>
+                  <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">Retry</button>
                 </div>
-                <label>
-                  <span id="agent-create-edge-label">Machine *</span>
-                  <FormSelect
-                    id="agent-create-edge"
-                    v-model="harnessEdge"
-                    name="harnessEdge"
-                    :options="edgeOptions"
-                    :disabled="busy"
-                    :required="true"
-                    :invalid="Boolean(errors.harnessEdge)"
-                    labelledby="agent-create-edge-label"
-                    :describedby="['agent-create-edge-hint', hostEdges.length === 0 ? 'agent-create-edge-empty' : '', errors.harnessEdge ? 'agent-create-edge-error' : '', edgeSlice.error ? 'agent-create-edge-stale' : ''].filter(Boolean).join(' ')"
-                  />
-                  <span v-if="errors.harnessEdge" id="agent-create-edge-error" class="agents-fielderr" role="alert">{{ errors.harnessEdge }}</span>
-                  <span id="agent-create-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
-                  <span v-if="hostEdges.length === 0" id="agent-create-edge-empty" class="agents-hint">
-                    Connect a Linux or macOS machine in Edges, then check again here. Keep this tab open to retain your agent draft.
-                  </span>
-                </label>
-                <div v-if="hostEdges.length === 0" class="agents-form-actions">
-                  <a :href="connectMachineHref" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
-                  <button type="button" class="k-btn k-btn--ghost" :disabled="busy || edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
-                </div>
+                <div v-else-if="!edgeSlice.hasSnapshot" class="agents-state agents-state-loading k-loading-reveal" role="status">Loading machines…</div>
+                <template v-else>
+                  <div v-if="edgeSlice.error" id="agent-create-edge-stale" class="k-inline-notification k-inline-notification--warning" role="status">
+                    <span class="k-inline-notification__body"><span class="k-inline-notification__message">Showing the last loaded machines. {{ edgeSlice.error }}</span></span>
+                    <button class="k-inline-notification__action" type="button" :disabled="edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Retrying…' : 'Retry' }}</button>
+                  </div>
+                  <label>
+                    <span id="agent-create-edge-label">Machine *</span>
+                    <FormSelect
+                      id="agent-create-edge"
+                      v-model="harnessEdge"
+                      name="harnessEdge"
+                      :options="edgeOptions"
+                      :disabled="busy"
+                      :required="true"
+                      :invalid="Boolean(errors.harnessEdge)"
+                      labelledby="agent-create-edge-label"
+                      :describedby="['agent-create-edge-hint', hostEdges.length === 0 ? 'agent-create-edge-empty' : '', errors.harnessEdge ? 'agent-create-edge-error' : '', edgeSlice.error ? 'agent-create-edge-stale' : ''].filter(Boolean).join(' ')"
+                    />
+                    <span v-if="errors.harnessEdge" id="agent-create-edge-error" class="agents-fielderr" role="alert">{{ errors.harnessEdge }}</span>
+                    <span id="agent-create-edge-hint" class="agents-hint">Linux and macOS machines only — a Kubernetes cluster cannot run a harness process.</span>
+                    <span v-if="hostEdges.length === 0" id="agent-create-edge-empty" class="agents-hint">
+                      Connect a Linux or macOS machine in Edges, then check again here. Keep this tab open to retain your agent draft.
+                    </span>
+                  </label>
+                  <div v-if="hostEdges.length === 0" class="agents-form-actions">
+                    <a :href="connectMachineHref" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--ghost">Connect a machine (new tab)</a>
+                    <button type="button" class="k-btn k-btn--ghost" :disabled="busy || edgeSlice.loading" @click="store.load('edges')">{{ edgeSlice.loading ? 'Checking machines…' : 'Check again' }}</button>
+                  </div>
 
-                <label>
-                  <span id="agent-create-harnesscred-label">Harness credential *</span>
-                  <FormSelect
-                    id="agent-create-harnesscred"
-                    v-model="harnessCredential"
-                    name="harnessCredential"
-                    :options="harnessCredentialOptions"
-                    :disabled="busy"
-                    :required="true"
-                    :invalid="Boolean(errors.harnessCredential)"
-                    labelledby="agent-create-harnesscred-label"
-                    :describedby="['agent-create-harnesscred-hint', harnessCredentials.length === 0 ? 'agent-create-harnesscred-empty' : '', errors.harnessCredential ? 'agent-create-harnesscred-error' : ''].filter(Boolean).join(' ')"
-                  />
-                  <span v-if="errors.harnessCredential" id="agent-create-harnesscred-error" class="agents-fielderr" role="alert">{{ errors.harnessCredential }}</span>
-                  <span id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
-                  <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
-                    No harness identities yet —
-                    <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
-                      add a Claude Code or Codex one under Models → Provider connections
-                    </button>
-                      </span>
-                </label>
+                  <label>
+                    <span id="agent-create-harnesscred-label">Harness credential *</span>
+                    <FormSelect
+                      id="agent-create-harnesscred"
+                      v-model="harnessCredential"
+                      name="harnessCredential"
+                      :options="harnessCredentialOptions"
+                      :disabled="busy"
+                      :required="true"
+                      :invalid="Boolean(errors.harnessCredential)"
+                      labelledby="agent-create-harnesscred-label"
+                      :describedby="['agent-create-harnesscred-hint', harnessCredentials.length === 0 ? 'agent-create-harnesscred-empty' : '', errors.harnessCredential ? 'agent-create-harnesscred-error' : ''].filter(Boolean).join(' ')"
+                    />
+                    <span v-if="errors.harnessCredential" id="agent-create-harnesscred-error" class="agents-fielderr" role="alert">{{ errors.harnessCredential }}</span>
+                    <span id="agent-create-harnesscred-hint" class="agents-hint">{{ selectedHarness ? `Runs ${selectedHarness} — decided by this credential’s provider.` : 'A claude-code credential means Claude Code; a codex one means Codex.' }}</span>
+                    <span v-if="harnessCredentials.length === 0" id="agent-create-harnesscred-empty" class="agents-hint">
+                      No harness identities yet —
+                      <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('harness')">
+                        add a Claude Code or Codex one under Models → Provider connections
+                      </button>
+                        </span>
+                  </label>
 
-                <label>
-                  <span id="agent-create-harness-model-label">Model</span>
-                  <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
-                  <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
-                </label>
-                <label>
-                  <span id="agent-create-harness-effort-label">Reasoning effort</span>
-                  <input id="agent-create-harness-effort" :disabled="busy" pattern="[a-z][a-z0-9_-]*" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label" aria-describedby="agent-create-harness-effort-hint" />
-                  <span id="agent-create-harness-effort-hint" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
-                </label>
+                  <label>
+                    <span id="agent-create-harness-model-label">Model</span>
+                    <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
+                    <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
+                  </label>
+                  <label>
+                    <span id="agent-create-harness-effort-label">Reasoning effort</span>
+                    <input id="agent-create-harness-effort" :disabled="busy" pattern="[a-z][a-z0-9_-]*" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label" aria-describedby="agent-create-harness-effort-hint" />
+                    <span id="agent-create-harness-effort-hint" class="agents-hint">Codex only. Enter an effort supported by the selected model, such as max. Leave blank for the harness default.</span>
+                  </label>
 
-                <label>
-                  <span id="agent-create-workspace-label">Working directory</span>
-                  <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :disabled="busy" labelledby="agent-create-workspace-label" />
-                </label>
+                  <label>
+                    <span id="agent-create-workspace-label">Working directory</span>
+                    <FormSelect v-model="harnessWorkspace" :options="workspaceOptions" :disabled="busy" labelledby="agent-create-workspace-label" />
+                  </label>
 
-                <label>
-                  <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
-                  <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required" :invalid="Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label" :describedby="['agent-create-github-hint', errors.harnessGitHubConnection ? 'agent-create-github-error' : ''].filter(Boolean).join(' ')" />
-                  <span v-if="errors.harnessGitHubConnection" id="agent-create-github-error" class="agents-fielderr" role="alert">{{ errors.harnessGitHubConnection }}</span>
-                  <span id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description || 'Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.' }}</span>
-                </label>
+                </template>
               </template>
-            </template>
 
-            <template v-else>
-            <label>
-              <span id="agent-create-model-label">Model *</span>
-              <FormSelect
-                id="agent-create-model"
-                v-model="modelCredential"
-                name="modelCredential"
-                :options="credentialOptions"
-                placeholder="— pick a model —"
-                :required="true"
-                :disabled="busy"
-                :invalid="Boolean(errors.modelCredential)"
-                labelledby="agent-create-model-label"
-                :describedby="['agent-create-model-hint', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
-              />
-              <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
-              <span id="agent-create-model-hint" class="agents-hint">{{ chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>
-            </label>
-            <p v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
-              This workspace needs a chat model.
-              <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
-            </p>
+              <template v-else>
+              <label>
+                <span id="agent-create-model-label">Model *</span>
+                <FormSelect
+                  id="agent-create-model"
+                  v-model="modelCredential"
+                  name="modelCredential"
+                  :options="credentialOptions"
+                  placeholder="— pick a model —"
+                  :required="true"
+                  :disabled="busy"
+                  :invalid="Boolean(errors.modelCredential)"
+                  labelledby="agent-create-model-label"
+                  :describedby="['agent-create-model-hint', errors.modelCredential ? 'agent-create-model-error' : ''].filter(Boolean).join(' ')"
+                />
+                <span v-if="errors.modelCredential" id="agent-create-model-error" class="agents-fielderr" role="alert">{{ errors.modelCredential }}</span>
+                <span id="agent-create-model-hint" class="agents-hint">{{ chatCredentials.some(model => model.name === modelCredential && model.ready === true) ? 'Ready to use' : 'The default model for this agent.' }}</span>
+              </label>
+              <p v-if="credentialOptions.length === 0" id="agent-create-model-empty" class="agents-hint">
+                This workspace needs a chat model.
+                <button type="button" class="k-dashboard-action" :disabled="busy" @click="addCredential('chat')">Connect a model</button>
+              </p>
+              </template>
+            </section>
 
-            <label v-for="slot in connectionSlots" :key="slot.key">
-              <span :id="`agent-create-slot-${slot.key}-label`">{{ slotLabel(slot) }}{{ slot.required ? ' *' : '' }}</span>
-              <FormSelect
-                :id="`agent-create-slot-${slot.key}`"
-                :model-value="slotWiring[slot.key] ?? ''"
-                @update:model-value="value => { slotWiring[slot.key] = value }"
-                :options="connectionOptions(slot.connectionType || '', !!slot.required)"
-                :disabled="busy"
-                :required="!!slot.required"
-                :invalid="Boolean(errors[`slot-${slot.key}`])"
-                :labelledby="`agent-create-slot-${slot.key}-label`"
-                :describedby="[`agent-create-slot-${slot.key}-hint`, errors[`slot-${slot.key}`] ? `agent-create-slot-${slot.key}-error` : ''].filter(Boolean).join(' ')"
-              />
-              <span v-if="errors[`slot-${slot.key}`]" :id="`agent-create-slot-${slot.key}-error`" class="agents-fielderr" role="alert">{{ errors[`slot-${slot.key}`] }}</span>
-              <span :id="`agent-create-slot-${slot.key}-hint`" class="agents-hint">{{ slot.description || (slot.required ? '' : 'Optional.') }}</span>
-            </label>
-            </template>
+            <section class="agents-create-section" aria-labelledby="agent-create-inputs-heading">
+              <h2 id="agent-create-inputs-heading">Template inputs</h2>
+              <p v-if="!templateParameters.length" class="agents-hint">No template inputs to fill in.</p>
+              <label v-for="param in templateParameters" :key="param.key">
+                <span :id="`agent-create-param-${param.key}-label`">{{ param.label }}{{ param.required ? ' *' : '' }}</span>
+                <textarea
+                  v-if="param.type !== 'string'"
+                  :id="`agent-create-param-${param.key}`"
+                  v-model="parameters[param.key]"
+                  class="k-input"
+                  :rows="param.type === 'list' ? 3 : 2"
+                  :placeholder="param.default || (param.type === 'list' ? 'One per line' : '')"
+                  :disabled="busy"
+                  :aria-labelledby="`agent-create-param-${param.key}-label`"
+                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+                />
+                <input
+                  v-else
+                  :id="`agent-create-param-${param.key}`"
+                  v-model="parameters[param.key]"
+                  class="k-input"
+                  :placeholder="param.default || ''"
+                  :disabled="busy"
+                  autocomplete="off"
+                  :aria-labelledby="`agent-create-param-${param.key}-label`"
+                  :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
+                  :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
+                />
+                <span v-if="errors[`param-${param.key}`]" :id="`agent-create-param-${param.key}-error`" class="agents-fielderr" role="alert">{{ errors[`param-${param.key}`] }}</span>
+                <span :id="`agent-create-param-${param.key}-hint`" class="agents-hint">{{ param.description }}{{ param.type === 'list' ? ' One per line.' : '' }}{{ param.default && param.type !== 'string' ? ' Leave blank for the default.' : '' }}</span>
+              </label>
+            </section>
 
-            <label v-for="param in templateParameters" :key="param.key">
-              <span :id="`agent-create-param-${param.key}-label`">{{ param.label }}{{ param.required ? ' *' : '' }}</span>
-              <textarea
-                v-if="param.type !== 'string'"
-                :id="`agent-create-param-${param.key}`"
-                v-model="parameters[param.key]"
-                class="k-input"
-                :rows="param.type === 'list' ? 3 : 2"
-                :placeholder="param.default || (param.type === 'list' ? 'One per line' : '')"
-                :disabled="busy"
-                :aria-labelledby="`agent-create-param-${param.key}-label`"
-                :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
-                :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
-              />
-              <input
-                v-else
-                :id="`agent-create-param-${param.key}`"
-                v-model="parameters[param.key]"
-                class="k-input"
-                :placeholder="param.default || ''"
-                :disabled="busy"
-                autocomplete="off"
-                :aria-labelledby="`agent-create-param-${param.key}-label`"
-                :aria-describedby="[`agent-create-param-${param.key}-hint`, errors[`param-${param.key}`] ? `agent-create-param-${param.key}-error` : ''].filter(Boolean).join(' ')"
-                :aria-invalid="errors[`param-${param.key}`] ? 'true' : undefined"
-              />
-              <span v-if="errors[`param-${param.key}`]" :id="`agent-create-param-${param.key}-error`" class="agents-fielderr" role="alert">{{ errors[`param-${param.key}`] }}</span>
-              <span :id="`agent-create-param-${param.key}-hint`" class="agents-hint">{{ param.description }}{{ param.type === 'list' ? ' One per line.' : '' }}{{ param.default && param.type !== 'string' ? ' Leave blank for the default.' : '' }}</span>
-            </label>
-
-            <label v-if="!selectedTemplate || customPrompt">
-              <span id="agent-create-system-prompt-label">Instructions{{ selectedTemplate ? '' : ' (optional)' }}</span>
-              <textarea v-model="systemPrompt" class="k-input" :rows="customPrompt ? 10 : 3" placeholder="Describe how this agent should help." :disabled="busy" aria-labelledby="agent-create-system-prompt-label" :aria-describedby="customPrompt ? 'agent-create-system-prompt-hint' : undefined" />
-              <span v-if="customPrompt" id="agent-create-system-prompt-hint" class="agents-hint">Your edited copy replaces the template’s instructions.</span>
-            </label>
-            <div v-else class="agents-template-prompt">
-              <span id="agent-create-prompt-preview-label" class="agents-field-label">Instructions from template</span>
-              <pre class="agents-template-prompt-text" aria-labelledby="agent-create-prompt-preview-label" aria-describedby="agent-create-prompt-preview-hint">{{ promptPreview }}</pre>
-              <div class="agents-form-actions">
-                <button type="button" class="k-btn k-btn--ghost" :disabled="busy" @click="customizePrompt">Customize instructions</button>
-              </div>
-              <span id="agent-create-prompt-preview-hint" class="agents-hint">Rendered from your answers above. Editable here, or later in Config.</span>
-            </div>
-
-            <label v-if="channelSlot">
-              <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : '' }}</span>
-              <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
-              <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
-              <span id="agent-create-channel-hint" class="agents-hint">{{ channelSlot?.description || 'Optional — where this agent messages you.' }}</span>
-            </label>
-
-            <p v-if="isHarness" class="agents-hint">
-              A coding harness uses its own tools; configure those on the selected machine. Agent tool grants do not apply.
-            </p>
-
-            <p v-else-if="selectedTemplate" class="agents-hint">
-              This template grants: {{ capabilities }}. Changeable later in Config.
-            </p>
+            <section class="agents-create-section" aria-labelledby="agent-create-connections-heading">
+              <h2 id="agent-create-connections-heading">Connections & automation</h2>
+              <p v-if="!isHarness && !channelSlot && !connectionSlots.length" class="agents-hint">Add connections or automation after creating the agent.</p>
+              <label v-if="isHarness">
+                <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
+                <FormSelect id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection" :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required" :invalid="Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label" :describedby="['agent-create-github-hint', errors.harnessGitHubConnection ? 'agent-create-github-error' : ''].filter(Boolean).join(' ')" />
+                <span v-if="errors.harnessGitHubConnection" id="agent-create-github-error" class="agents-fielderr" role="alert">{{ errors.harnessGitHubConnection }}</span>
+                <span id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description || 'Optional — its token reaches the harness as GH_TOKEN for each turn, never the machine, so `gh` can read and review pull requests.' }}</span>
+              </label>
+              <label v-for="slot in connectionSlots" :key="slot.key">
+                <span :id="`agent-create-slot-${slot.key}-label`">{{ slotLabel(slot) }}{{ slot.required ? ' *' : '' }}</span>
+                <FormSelect
+                  :id="`agent-create-slot-${slot.key}`"
+                  :model-value="slotWiring[slot.key] ?? ''"
+                  @update:model-value="value => { slotWiring[slot.key] = value }"
+                  :options="connectionOptions(slot.connectionType || '', !!slot.required)"
+                  :disabled="busy"
+                  :required="!!slot.required"
+                  :invalid="Boolean(errors[`slot-${slot.key}`])"
+                  :labelledby="`agent-create-slot-${slot.key}-label`"
+                  :describedby="[`agent-create-slot-${slot.key}-hint`, errors[`slot-${slot.key}`] ? `agent-create-slot-${slot.key}-error` : ''].filter(Boolean).join(' ')"
+                />
+                <span v-if="errors[`slot-${slot.key}`]" :id="`agent-create-slot-${slot.key}-error`" class="agents-fielderr" role="alert">{{ errors[`slot-${slot.key}`] }}</span>
+                <span :id="`agent-create-slot-${slot.key}-hint`" class="agents-hint">{{ slot.description || (slot.required ? '' : 'Optional.') }}</span>
+              </label>
+              <label v-if="channelSlot">
+                <span id="agent-create-channel-label">Primary channel{{ channelSlot?.required ? ' *' : '' }}</span>
+                <FormSelect id="agent-create-channel" v-model="channel" :options="channelOptions" :disabled="busy" :required="!!channelSlot?.required" :invalid="Boolean(errors.channel)" labelledby="agent-create-channel-label" :describedby="['agent-create-channel-hint', errors.channel ? 'agent-create-channel-error' : ''].filter(Boolean).join(' ')" />
+                <span v-if="errors.channel" id="agent-create-channel-error" class="agents-fielderr" role="alert">{{ errors.channel }}</span>
+                <span id="agent-create-channel-hint" class="agents-hint">{{ channelSlot?.description || 'Optional — where this agent messages you.' }}</span>
+              </label>
+              <p v-if="isHarness" class="agents-hint">A coding harness uses its own tools, configured on the selected machine.</p>
+              <p v-else-if="capabilities" class="agents-hint">Template capabilities: {{ capabilities }}.</p>
+              <p v-if="selectedTemplate?.spec.schedules?.length" class="agents-hint">
+                Template schedules: {{ selectedTemplate.spec.schedules.map(schedule => schedule.name).join(', ') }}.
+                You’ll review them before creating the agent.
+              </p>
+            </section>
           </div>
 
           <CreateGuidance
-            :title="detailedSetup ? 'Prepare a usable agent' : 'After you create the agent'"
-            :description="detailedSetup ? guidanceDescription : 'A conversation opens as soon as the agent is created. You can add tools, channels, and automation later from the workbench.'"
-            :prerequisites="detailedSetup ? prerequisites : undefined"
-            :values="detailedSetup ? summaryValues : undefined"
-            :next-steps="detailedSetup ? guidanceNextSteps : undefined"
+            title="After you create the agent"
+            description="A conversation opens as soon as the agent is created. You can manage tools, channels, and automation from the workbench."
           />
         </div>
 
@@ -752,10 +708,6 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
           <span class="k-inline-notification__body"><span class="k-inline-notification__message">{{ errors.template }}</span></span>
         </div>
         <div class="k-create-actions">
-          <div class="agents-create-alternatives">
-            <button v-if="!isHarness && !template" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
-            <button v-if="isHarness || template" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
-          </div>
           <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
             <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create & open chat' }}
           </button>
