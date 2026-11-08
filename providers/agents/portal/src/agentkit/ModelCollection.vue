@@ -47,12 +47,19 @@ const searchKeys = computed(() => ['name', 'model', connectionColumn.value.key, 
       <p v-else class="k-model-collection__empty">No models match your search.</p>
     </template>
     <ResourceTable v-else v-model:query="query" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="searchKeys" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
-      <template #name="{ row }">{{ row.name }} <StatusBadge v-if="row.default" status="Default" tone="muted" /></template>
+      <template #name="{ row }">
+        <slot name="name-prefix" :row="row as T" />
+        {{ row.name }}
+        <StatusBadge v-if="row.default" status="Default" tone="muted" />
+      </template>
       <template #status="{ row }">
         <StatusBadge :status="row.configured ? String(row.status) : 'Needs credential'" :tone="row.configured ? (row as T).tone || 'muted' : 'warning'" />
         <slot name="details" :row="row as T" />
       </template>
       <template #actions="{ row }"><slot name="actions" :row="row as T" /></template>
+      <template #after-row="{ row, columnCount }">
+        <slot name="after-row" :row="row as T" :column-count="columnCount" />
+      </template>
     </ResourceTable>
   </div>
 </template>

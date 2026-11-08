@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Brain, Check, CornerDownRight, Eye, Link2, Plus, Trash2, Wrench } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { Play, ArrowLeft, Check, Plus, Trash2 } from 'lucide-vue-next'
+import { computed, ref, useId, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
@@ -11,6 +11,7 @@ import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableExpandButton from '../portalkit/ResourceTableExpandButton.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ModelCollection from '../agentkit/ModelCollection.vue'
@@ -19,6 +20,7 @@ import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
 import type { RailgridContext } from '../types'
 import AgentUsage from './AgentUsage.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
+import ModelDetails from './ModelDetails.vue'
 import ProviderConnectionEditor from './ProviderConnectionEditor.vue'
 import TechnicalDetails from '../components/TechnicalDetails.vue'
 import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-probe-result'
@@ -77,6 +79,8 @@ const continueAddedProvider = ref(false)
 const savedProviderDiscovery = ref<{ connectionName: string; models: string[] } | null>(null)
 const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
+const expandedModel = ref<string | null>(null)
+const modelDetailsPrefix = useId()
 let catalogGeneration = 0
 const probeGenerations = new Map<string, number>()
 
@@ -107,6 +111,7 @@ async function loadCatalog(): Promise<void> {
   }
 }
 watch([() => props.store, () => props.api], () => { resetCatalogRead(); void loadCatalog() }, { immediate: true })
+watch(() => props.store, () => { expandedModel.value = null })
 watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
 function lookupModel(model: string): ModelInfo | undefined {
@@ -128,7 +133,6 @@ function missingCatalogLabel(): string {
 function primaryName(agent: Agent): string { return agentHarness(agent)?.credentialRef || agentModelCredential(agent) }
 function primaryOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) === credential.name) }
 function fallbackOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) !== credential.name && agentModelFallbacks(agent).includes(credential.name)) }
-function fmtCtx(value: number): string { return value >= 1e6 ? `${value / 1e6}M ctx` : value >= 1e3 ? `${Math.round(value / 1e3)}k ctx` : `${value} ctx` }
 function setMap<K, V>(source: Map<K, V>, key: K, value: V): Map<K, V> { return new Map(source).set(key, value) }
 function credentialStateKey(name: string, connection = false): string { return `${connection ? 'connection' : 'model'}:${name}` }
 function credentialAction(name: string, connection = false): CredentialAction | undefined { return credentialActions.value.get(credentialStateKey(name, connection)) }
@@ -193,8 +197,12 @@ function connectionModelCountSortValue(row: Record<string, unknown>): number | n
 }
 function modelProviderName(credential: Credential): string {
   if (!credential.connectionRef) return 'Direct credential'
+  if (credential.connectionUnavailable) return 'Missing or invalid connection'
   const connection = providerConnections.value.find(item => item.name === credential.connectionRef)
-  return connection ? credentialLabel(connection) : credential.connectionName || 'Missing connection'
+  return connection ? credentialLabel(connection) : credential.connectionName || 'Connection details unavailable'
+}
+function toggleModelDetails(name: string): void {
+  expandedModel.value = expandedModel.value === name ? null : name
 }
 const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection && !harnessCredential(item)).map(credential => ({
   id: credential.name, name: credentialLabel(credential), model: credential.model || '—', endpoint: credential.baseURL || 'Provider default',
@@ -482,19 +490,33 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         </div>
       </header>
       <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
-      <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-      <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
-      <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
+      <div v-else-if="!setupNavigation && !credentials.loaded && !credentials.error" class="k-loading-reveal muted" role="status">Loading credentials…</div>
+      <div v-if="credentials.error" :class="credentials.hasSnapshot ? 'k-stale' : 'k-error'" :role="credentials.hasSnapshot ? 'status' : 'alert'">
+        <span v-if="setupNavigation && credentials.hasSnapshot">Showing the last successful results. </span>{{ credentials.error }}
+        <button type="button" class="k-btn k-btn--ghost" :disabled="credentials.loading" @click="store.load('credentials')">{{ credentials.loading ? 'Retrying…' : 'Retry' }}</button>
+      </div>
       </template>
       <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout" :table-only="setupNavigation" :show-provider-connection="setupNavigation">
+        <template v-if="setupNavigation" #name-prefix="{ row }">
+          <ResourceTableExpandButton
+            :expanded="expandedModel === row.id"
+            :label="`Show details for ${row.name}`"
+            :expanded-label="`Hide details for ${row.name}`"
+            :controls="`${modelDetailsPrefix}-${row.id}`"
+            @click="toggleModelDetails(row.id)"
+          />
+        </template>
         <template #cards="{ rows }">
         <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.displayName || credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL || 'Provider default'" endpoint-label="Endpoint" resource-label="Model" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credentialStateKey(credential.name))?.ok ? 'success' : tested.has(credentialStateKey(credential.name)) ? 'danger' : statusTone(credential)">
           <p v-if="credential.connectionRef" class="agents-hint">Connection: {{ credential.connectionName || credential.connectionRef }}</p>
-          <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>
-          <p v-if="lookupModel(credential.model || '')" class="agents-hint">${{ lookupModel(credential.model || '')?.inputPer1M }} input · ${{ lookupModel(credential.model || '')?.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="agents-hint">{{ missingCatalogLabel() }}</p>
-          <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
+          <ModelDetails
+            :model="lookupModel(credential.model || '')"
+            :catalog-fallback="missingCatalogLabel()"
+            :primary-agents="primaryOf(credential)"
+            :fallback-agents="fallbackOf(credential)"
+          />
           <p v-if="tested.get(credentialStateKey(credential.name))?.error" class="k-error" role="alert">{{ tested.get(credentialStateKey(credential.name))?.error }}</p>
           <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">The model connection needs attention. Edit it to review the endpoint and credential.</p>
           <TechnicalDetails :diagnostic="tested.get(credentialStateKey(credential.name))?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
@@ -510,6 +532,21 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <ResourceTableEditButton :label="`Edit ${credentialLabel(credential)}`" :disabled="credentialIsBusy(credential.name)" @click="toggleEdit(credential)" />
           <ResourceTableActionButton v-if="credential.model?.trim()" :icon="Play" :label="`Test connection for ${credentialLabel(credential)}`" :busy="testing.has(credentialStateKey(credential.name))" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
           <ResourceTableDeleteButton :label="`Delete ${credentialLabel(credential)}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
+        </template>
+        <template v-if="setupNavigation" #after-row="{ row, columnCount }">
+          <tr v-if="expandedModel === row.id" :id="`${modelDetailsPrefix}-${row.id}`">
+            <td :colspan="columnCount">
+              <div class="agents-model-details">
+                <p v-if="row.credential.baseURL" class="agents-hint">Endpoint: {{ row.credential.baseURL }}</p>
+                <ModelDetails
+                  :model="lookupModel(row.model)"
+                  :catalog-fallback="missingCatalogLabel()"
+                  :primary-agents="primaryOf(row.credential)"
+                  :fallback-agents="fallbackOf(row.credential)"
+                />
+              </div>
+            </td>
+          </tr>
         </template>
       </ModelCollection>
       <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
@@ -529,16 +566,16 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         <div v-if="!setupNavigation && showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
         <FirstRunGuide v-if="!setupNavigation && showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
         <ResourceTable
-          v-else
+          v-else-if="!setupNavigation || !credentials.error || credentials.hasSnapshot"
           :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, ...(setupNavigation ? [] : [{ key: 'endpoint', label: 'Endpoint / machine', sortable: true }]), { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
           :rows="connectionRows"
           row-key="id"
           aria-label="Provider connections and harness identities"
           :loaded="credentials.hasSnapshot"
           :loading="credentials.loading"
-          :error="credentials.error"
-          :stale="credentials.hasSnapshot && !!credentials.error"
-          retryable
+          :error="setupNavigation ? null : credentials.error"
+          :stale="!setupNavigation && credentials.hasSnapshot && !!credentials.error"
+          :retryable="!setupNavigation"
           searchable
           search-placeholder="Search provider access and identities…"
           :search-keys="['name', 'type', 'endpoint']"
