@@ -791,6 +791,15 @@ railgrid-provider-agents .agents-chip-btn { cursor: pointer; font-family: var(--
 railgrid-provider-agents .agents-chip-btn:hover { border-color: var(--color-accent, #8b6bff); color: var(--color-accent, #8b6bff); background: var(--color-surface, #0a0b12); }
 railgrid-provider-agents .agents-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
 railgrid-provider-agents .agents-model-assign { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+railgrid-provider-agents td:has(.agents-model-expand) { min-inline-size: 18rem; }
+railgrid-provider-agents .agents-model-details {
+  display: grid;
+  gap: 8px;
+  max-inline-size: min(36rem, calc(100vw - 7rem));
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+railgrid-provider-agents .agents-model-details .agents-hint { margin: 0; }
 railgrid-provider-agents .agents-assign-none { font-size: 12px; }
 railgrid-provider-agents .agents-chip-primary { background: var(--color-accent-subtle); border-color: transparent; color: var(--color-accent, #8b6bff); font-weight: 600; }
 railgrid-provider-agents .agents-chip-fallback { border-style: dashed; color: var(--color-text-secondary, #8a8ca6); }
@@ -993,6 +1002,7 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
 
 /* Collection spacing follows Databricks: the host owns the outer inset. */
 railgrid-provider-agents .agents-panel.agents-models-page { padding: 0; gap: 16px; }
+railgrid-provider-agents .agents-model-providers { margin-top: 12px; }
 
 /* Inline visualization layout; shared controls remain PortalKit-owned. */
 railgrid-provider-agents .agents-visualization { margin: 1rem 0; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
@@ -1273,7 +1283,8 @@ railgrid-provider-agents .agents-connection-review code { font-family: var(--fon
 }
 
 
-/* Route-backed navigation within the Models destination. */
+/* Route-backed navigation within Setup and Models. */
+railgrid-provider-agents .agents-setup-tabs { flex-wrap: wrap; }
 .agents-models-tabs { margin-bottom: 20px; }
 .agents-models-tab { text-decoration: none; }
 .agents-models-empty { padding: 24px; }

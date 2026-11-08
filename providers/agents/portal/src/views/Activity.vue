@@ -20,6 +20,7 @@ import { approvalDisclosureAvailable } from '../approval-disclosure'
 import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import AgentApprovalCard from '../components/AgentApprovalCard.vue'
+import AgentUsage from './AgentUsage.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import { approvalResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
@@ -108,8 +109,10 @@ function inboxPreview(item: InboxItem): string {
 const activityTabs = computed(() => [
   { id: 'runs', label: 'Run history' },
   { id: 'inbox', label: 'Inbox', icon: Inbox, count: pending.value.length },
+  { id: 'usage', label: 'Usage & cost' },
 ])
 const viewingInbox = computed(() => !props.agent && section.value === 'inbox')
+const viewingUsage = computed(() => !props.agent && section.value === 'usage')
 function focusIsInInboxDetail(active: Element | null): boolean {
   return !!inboxDetail.value?.closest('.agents-inbox-detail')?.contains(active)
 }
@@ -140,9 +143,9 @@ watch([viewingInbox, pending], ([showing, items], [, previous]) => {
 }, { immediate: true })
 
 function selectActivityTab(id: string): void {
-  if (id !== 'inbox' && id !== 'runs' || id === section.value) return
+  if ((id !== 'inbox' && id !== 'runs' && id !== 'usage') || id === section.value) return
   section.value = id
-  emit('navigate', { kind: 'menu', menu: 'activity', ...(id === 'inbox' ? { activityTab: id } : {}) })
+  emit('navigate', { kind: 'menu', menu: 'activity', ...(id === 'runs' ? {} : { activityTab: id }) })
 }
 function inboxKindLabel(item: InboxItem): string {
   if (item.kind === 'approval') return 'Approval'
@@ -237,6 +240,7 @@ function runFilter(): RunFilter {
 }
 
 async function reload(mode: 'foreground' | 'background' = 'foreground'): Promise<void> {
+  if (viewingUsage.value) return
   now.value = Date.now()
   if (mode === 'background' && loading.value) {
     backgroundRefreshQueued = true
@@ -391,6 +395,9 @@ onMounted(() => {
   bindStore(props.store)
   void reload('foreground')
 })
+watch(viewingUsage, showing => {
+  if (!showing) void reload('foreground')
+})
 watch(() => [props.store, props.api, props.agent] as const, () => {
   bindStore(props.store)
   requestGeneration += 1
@@ -427,11 +434,12 @@ onBeforeUnmount(() => {
     :class="agent ? 'agents-runs-pane' : 'agents-panel agents-activity-panel'"
     :title="agent ? 'Runs' : 'Activity'"
     :variant="agent ? undefined : 'collection'"
-    :subtitle="agent ? undefined : 'Run history and actions waiting for your review.'"
+    :subtitle="agent ? undefined : 'Run history, requests for review, and usage.'"
     :description="agent ? 'Run history and actions waiting for your review.' : undefined"
   >
     <template #actions>
       <button
+        v-if="!viewingUsage"
         class="k-btn k-btn--text agents-runs-refresh"
         type="button"
         :aria-label="viewingInbox ? 'Refresh inbox' : 'Refresh runs'"
@@ -444,6 +452,7 @@ onBeforeUnmount(() => {
       </button>
     </template>
     <Tabs v-if="!agent" :tabs="activityTabs" :active="section" aria-label="Activity sections" @select="selectActivityTab" />
+    <AgentUsage v-if="viewingUsage" :store="store" :api="api" />
     <template v-if="agent || viewingInbox">
       <div v-if="inboxSlice.error && !inboxSlice.hasSnapshot" class="agents-state agents-state-error" role="alert">
         <span>{{ inboxSlice.error }}</span>
@@ -562,7 +571,7 @@ onBeforeUnmount(() => {
       </template>
     </template>
 
-    <div v-show="!viewingInbox" class="agents-activity-run-history">
+    <div v-show="!viewingInbox && !viewingUsage" class="agents-activity-run-history">
       <ResourceTable
         :columns="columns"
         :rows="tableRows"

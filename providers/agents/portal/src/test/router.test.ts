@@ -195,11 +195,24 @@ describe('hash history writes', () => {
 
 
 describe('model management sub-routes', () => {
-  it.each(['provider-connections', 'workspace-assistant', 'usage'] as const)('round trips %s and keeps Models selected', modelsTab => {
-    const route: Route = { kind: 'menu', menu: 'models', modelsTab }
-    expect(parseHash(`#/models/${modelsTab}`)).toEqual(route)
-    expect(hashFor(route)).toBe(`#/models/${modelsTab}`)
+  it('round trips provider connections and keeps Models selected', () => {
+    const route: Route = { kind: 'menu', menu: 'models', modelsTab: 'provider-connections' }
+    expect(parseHash('#/models/provider-connections')).toEqual(route)
+    expect(hashFor(route)).toBe('#/models/provider-connections')
     expect(activeMenu(route)).toBe('models')
+  })
+  it('routes old workspace assistant links to Agents', () => {
+    const route = parseHash('#/models/workspace-assistant')
+    expect(activeMenu(route)).toBe('agents')
+    expect(hashFor(route)).toBe('#/assistant-settings')
+    expect(parseHash(hashFor(route))).toEqual(route)
+  })
+  it('routes old usage links to Activity and preserves run URLs', () => {
+    const route = parseHash('#/models/usage')
+    expect(activeMenu(route)).toBe('activity')
+    expect(hashFor(route)).toBe('#/activity?view=usage')
+    expect(parseHash(hashFor(route))).toEqual(route)
+    expect(hashFor(parseHash('#/activity/usage'))).toBe('#/activity/usage')
   })
   it('retains the default Models URL and safely normalizes unknown sub-tabs', () => {
     expect(parseHash('#/models')).toEqual({ kind: 'menu', menu: 'models' })

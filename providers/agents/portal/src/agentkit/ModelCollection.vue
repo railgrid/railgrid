@@ -8,7 +8,7 @@ import StatusBadge from '../portalkit/StatusBadge.vue'
 import { readLayoutPreference, writeLayoutPreference } from '../portalkit/layoutPreference'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 
-const props = defineProps<{ rows: T[]; preferenceKey: string }>()
+const props = defineProps<{ rows: T[]; preferenceKey: string; tableOnly?: boolean; showProviderConnection?: boolean }>()
 ensureAgentUIStyles()
 const layout = ref(readLayoutPreference(props.preferenceKey))
 const query = ref('')
@@ -19,18 +19,22 @@ const filtered = computed(() => {
 })
 const tableRows = computed(() => props.rows.map(row => ({ ...row, status: row.configured ? row.status : 'Needs credential' })))
 const tableFilters = [{ key: 'model', label: 'Model' }, { key: 'status', label: 'Status' }]
-const columns = [
+const connectionColumn = computed(() => props.showProviderConnection
+  ? { key: 'providerConnection', label: 'Provider connection' }
+  : { key: 'endpoint', label: 'Endpoint / runtime' })
+const columns = computed(() => [
   { key: 'name', label: 'Name', primary: true },
   { key: 'model', label: 'Model' },
-  { key: 'endpoint', label: 'Endpoint / runtime' },
+  connectionColumn.value,
   { key: 'status', label: 'Status', fullValue: (row: Record<string, unknown>) => row.configured ? String(row.status) : 'Needs credential' },
   { key: 'actions', label: 'Actions' },
-]
+])
+const searchKeys = computed(() => ['name', 'model', connectionColumn.value.key, 'status'])
 </script>
 
 <template>
   <div class="k-model-collection">
-    <div class="k-model-collection__toolbar">
+    <div v-if="!tableOnly" class="k-model-collection__toolbar">
       <label v-if="layout === 'grid'" class="k-model-collection__search">
         <Search :size="16" :stroke-width="1.75" aria-hidden="true" />
         <input v-model="query" type="search" class="k-input" aria-label="Search models" placeholder="Search models…" />
@@ -38,17 +42,24 @@ const columns = [
       <span v-if="layout === 'grid'" class="k-model-collection__count" role="status">{{ filtered.length }}{{ query.trim() ? ` of ${rows.length}` : '' }} model{{ rows.length === 1 ? '' : 's' }}</span>
       <LayoutSelector v-model="layout" aria-label="Model layout" grid-label="Cards" />
     </div>
-    <template v-if="layout === 'grid'">
+    <template v-if="!tableOnly && layout === 'grid'">
       <div v-if="filtered.length" class="k-model-grid"><slot name="cards" :rows="filtered" /></div>
       <p v-else class="k-model-collection__empty">No models match your search.</p>
     </template>
-    <ResourceTable v-else v-model:query="query" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="['name', 'model', 'endpoint', 'status']" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
-      <template #name="{ row }">{{ row.name }} <StatusBadge v-if="row.default" status="Default" tone="muted" /></template>
+    <ResourceTable v-else v-model:query="query" :rows="tableRows" searchable search-placeholder="Search models…" :search-keys="searchKeys" :filters="tableFilters" search-empty-text="No models match your search." :columns="columns" row-key="id" aria-label="Models" :loaded="true" empty-text="No models match your search.">
+      <template #name="{ row }">
+        <slot name="name-prefix" :row="row as T" />
+        {{ row.name }}
+        <StatusBadge v-if="row.default" status="Default" tone="muted" />
+      </template>
       <template #status="{ row }">
         <StatusBadge :status="row.configured ? String(row.status) : 'Needs credential'" :tone="row.configured ? (row as T).tone || 'muted' : 'warning'" />
         <slot name="details" :row="row as T" />
       </template>
       <template #actions="{ row }"><slot name="actions" :row="row as T" /></template>
+      <template #after-row="{ row, columnCount }">
+        <slot name="after-row" :row="row as T" :column-count="columnCount" />
+      </template>
     </ResourceTable>
   </div>
 </template>

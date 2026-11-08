@@ -15,6 +15,8 @@ export type ActionMenuTone = 'neutral' | 'accent' | 'warning' | 'danger'
 export interface ActionMenuItem {
   id: string
   label: string
+  description?: string
+  separatorBefore?: boolean
   tone?: ActionMenuTone
   disabled?: boolean
   busy?: boolean
@@ -31,6 +33,8 @@ const props = withDefaults(defineProps<{
   busyLabel?: string
   /** Optional visible trigger text for actions such as dashboard "Add tile". */
   showLabel?: boolean
+  /** The whole primary-styled button opens the menu. */
+  primaryMenu?: boolean
   /** Primary action turns the menu into a shared split button. */
   primaryLabel?: string
 }>(), {
@@ -63,7 +67,7 @@ const {
   panelRef,
   panelStyle,
   close: closePopover,
-} = useAnchoredPopover({ width: 180, gap: 5, align: 'end' })
+} = useAnchoredPopover({ width: props.primaryMenu ? 288 : 180, gap: 5, align: 'end' })
 const activeIndex = ref(-1)
 
 const selectableIndexes = computed(() => props.items.reduce<number[]>((indexes, item, index) => {
@@ -275,8 +279,13 @@ onBeforeUnmount(() => {
       :id="triggerID"
       ref="trigger"
       type="button"
-      :class="[primaryLabel ? 'k-btn k-btn--primary k-action-menu__split-toggle' : 'k-icon-action k-action-menu__trigger', { 'k-action-menu__trigger--with-label': showLabel, 'k-table-action--busy': busy, 'k-table-action--neutral': busy }]"
-      :data-k-tip="primaryLabel ? undefined : accessibleLabel"
+      :class="[
+        primaryLabel ? 'k-btn k-btn--primary k-action-menu__split-toggle'
+          : primaryMenu ? 'k-btn k-btn--primary'
+          : 'k-icon-action k-action-menu__trigger',
+        { 'k-action-menu__trigger--with-label': showLabel, 'k-table-action--busy': busy, 'k-table-action--neutral': busy },
+      ]"
+      :data-k-tip="primaryLabel || primaryMenu ? undefined : accessibleLabel"
       :aria-label="accessibleLabel"
       :aria-busy="busy || undefined"
       :aria-controls="menuID"
@@ -288,8 +297,11 @@ onBeforeUnmount(() => {
     >
       <Loader2 v-if="busy" class="k-action-menu__busy" :size="16" :stroke-width="1.75" aria-hidden="true" />
       <ChevronDown v-else-if="primaryLabel" :size="16" aria-hidden="true" />
+      <Plus v-else-if="primaryMenu" :size="16" aria-hidden="true" />
       <Ellipsis v-else :size="16" :stroke-width="1.75" aria-hidden="true" />
-      <span v-if="showLabel" class="k-action-menu__trigger-label">{{ accessibleLabel }}</span>
+      <span v-if="primaryMenu">{{ accessibleLabel }}</span>
+      <span v-else-if="showLabel" class="k-action-menu__trigger-label">{{ accessibleLabel }}</span>
+      <ChevronDown v-if="primaryMenu" :size="14" aria-hidden="true" />
     </button>
     <span class="k-table__live" role="status" aria-live="polite" aria-atomic="true">{{ busy ? accessibleLabel : '' }}</span>
 
@@ -299,6 +311,7 @@ onBeforeUnmount(() => {
         :id="menuID"
         ref="panelRef"
         class="k-menu k-action-menu__menu"
+        :class="{ 'k-action-menu__menu--primary': primaryMenu }"
         :style="panelStyle"
         role="menu"
         :aria-label="label"
@@ -306,12 +319,14 @@ onBeforeUnmount(() => {
         @keydown="handleMenuKeydown"
       >
         <template v-for="(item, index) in items" :key="item.id">
-          <div v-if="startsDangerGroup(index)" class="k-menu-sep" role="separator" aria-hidden="true" />
+          <div v-if="item.separatorBefore || startsDangerGroup(index)" class="k-menu-sep" role="separator" aria-hidden="true" />
           <button
             type="button"
             class="k-menu-item k-action-menu__item"
             :class="item.tone ? `k-menu-item--${item.tone}` : undefined"
             role="menuitem"
+            :aria-label="item.description ? item.label : undefined"
+            :aria-describedby="item.description ? `${menuID}-description-${index}` : undefined"
             :disabled="item.disabled || item.busy"
             :aria-disabled="item.disabled || item.busy ? 'true' : undefined"
             :aria-busy="item.busy ? 'true' : undefined"
@@ -320,10 +335,21 @@ onBeforeUnmount(() => {
             @click="select(item.id)"
           >
             <Loader2 v-if="item.busy" class="k-action-menu__busy" :size="14" :stroke-width="1.75" aria-hidden="true" />
-            <span>{{ item.label }}</span>
+            <span v-if="item.description" class="k-action-menu__copy">
+              <span class="k-action-menu__label">{{ item.label }}</span>
+              <span :id="`${menuID}-description-${index}`" class="k-action-menu__description">{{ item.description }}</span>
+            </span>
+            <span v-else>{{ item.label }}</span>
           </button>
         </template>
       </div>
     </Teleport>
   </div>
 </template>
+
+<style scoped>
+.k-action-menu__menu--primary { width: 288px; }
+.k-action-menu__copy { display: grid; gap: 2px; }
+.k-action-menu__label { color: var(--color-text-primary); font-weight: 600; }
+.k-action-menu__description { color: var(--color-text-secondary); }
+</style>

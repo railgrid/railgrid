@@ -1,35 +1,37 @@
 <script setup lang="ts">
 import snapshotSuffixPattern from '../model-snapshot-suffix.json'
 
-import { Play, ArrowLeft, Brain, Check, CornerDownRight, Eye, Link2, Plus, Trash2, Wrench } from 'lucide-vue-next'
-import { computed, ref, watch } from 'vue'
+import { Play, ArrowLeft, Check, Plus, Trash2 } from 'lucide-vue-next'
+import { computed, ref, useId, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
+import ResourceTableExpandButton from '../portalkit/ResourceTableExpandButton.vue'
 import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import ModelCollection from '../agentkit/ModelCollection.vue'
 import ModelConnectionCard from '../agentkit/ModelConnectionCard.vue'
 import WorkspaceAssistantCard from './WorkspaceAssistantCard.vue'
 import type { RailgridContext } from '../types'
-import ModelUsageSection from '../agentkit/ModelUsageSection.vue'
+import AgentUsage from './AgentUsage.vue'
 import ModelConnectionEditor from './ModelConnectionEditor.vue'
+import ModelDetails from './ModelDetails.vue'
 import ProviderConnectionEditor from './ProviderConnectionEditor.vue'
 import TechnicalDetails from '../components/TechnicalDetails.vue'
 import { errorTechnicalDiagnostic, presentModelProbeResult } from '../model-probe-result'
 import { hashFor, MODELS_TABS, type ModelsTab, type CreateSuccessDetail, type Route } from '../router'
 import type { AppStore } from '../store'
 import { toast } from '../ui/toast'
-import { agentHarness, agentModelCredential, agentModelFallbacks, fmtTokens, fmtUSD, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo, type UsagePoint, type UsageResponse } from '../types'
+import { agentHarness, agentModelCredential, agentModelFallbacks, harnessLabel, isHarnessProvider, type Agent, type Credential, type CredentialWrite, type CredentialTestResult, type ModelInfo } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
-import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; setupNavigation?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
 const emit = defineEmits<{
   navigate: [route: Route]
   'connect-provider': [continueToModel: boolean]
@@ -45,11 +47,14 @@ function tabRoute(tab: ModelsTab): Route {
 function navigateTab(event: MouseEvent, tab: ModelsTab): void {
   if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
   event.preventDefault()
+  openModelTab(tab)
+}
+function openModelTab(tab: ModelsTab): void {
   localTab.value = tab
   emit('navigate', tabRoute(tab))
 }
-const connectionView = computed(() => activeTab.value === 'provider-connections')
-const modelView = computed(() => activeTab.value === 'models')
+const connectionView = computed(() => props.setupNavigation || activeTab.value === 'provider-connections')
+const modelView = computed(() => props.setupNavigation || activeTab.value === 'models')
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -57,11 +62,6 @@ const catalog = ref<ModelInfo[]>([])
 const catalogError = ref<string | null>(null)
 const catalogHasSnapshot = ref(false)
 const catalogLoading = ref(false)
-const usage = ref<UsageResponse | null>(null)
-const usageError = ref<string | null>(null)
-const usageHasSnapshot = ref(false)
-const usageLoading = ref(false)
-const windowDays = ref(30)
 const tested = ref(new Map<string, CredentialTestResult>())
 const testing = ref(new Set<string>())
 type CredentialAction = 'saving' | 'deleting'
@@ -79,15 +79,12 @@ const continueAddedProvider = ref(false)
 const savedProviderDiscovery = ref<{ connectionName: string; models: string[] } | null>(null)
 const editorFamily = ref<'chat' | 'harness'>(props.initialFamily)
 const saveError = ref<string | null>(null)
-const showBreakdown = ref(false)
+const expandedModel = ref<string | null>(null)
+const modelDetailsPrefix = useId()
 let catalogGeneration = 0
-let usageGeneration = 0
 const probeGenerations = new Map<string, number>()
 
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
-const showFirstRun = computed(() => credentials.value.loaded && credentials.value.data.length === 0 && (!credentials.value.error || credentials.value.hasSnapshot))
-const normalizedUsage = computed(() => usage.value ? { ...usage.value, byAgent: usage.value.byAgent ?? [], byModel: usage.value.byModel ?? [], series: usage.value.series ?? [], unavailableAgents: usage.value.unavailableAgents ?? [] } : null)
-const unpricedRuns = computed(() => normalizedUsage.value ? unpricedRunCount(normalizedUsage.value.total) : 0)
 
 function resetCatalogRead(): void {
   catalogGeneration += 1
@@ -113,39 +110,10 @@ async function loadCatalog(): Promise<void> {
     if (generation === catalogGeneration && authorityIsCurrent(authority)) catalogLoading.value = false
   }
 }
-function resetUsageRead(): void {
-  usageGeneration += 1
-  usage.value = null
-  usageError.value = null
-  usageHasSnapshot.value = false
-  usageLoading.value = false
-}
-
 watch([() => props.store, () => props.api], () => { resetCatalogRead(); void loadCatalog() }, { immediate: true })
-watch([() => props.store, () => props.api, windowDays], resetUsageRead)
-watch([() => props.store, () => props.api, windowDays, activeTab], () => {
-  if (activeTab.value === 'usage') void loadUsage()
-}, { immediate: true })
+watch(() => props.store, () => { expandedModel.value = null })
 watch([() => props.store, () => props.api, () => props.createSession], () => { editorGeneration.value++; initialConnection.value = ''; selectingConnection.value = Boolean(props.selectConnection); createBusy.value = false; credentialActions.value = new Map(); editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; editorFamily.value = props.initialFamily; saveError.value = null; tested.value = new Map(); testing.value = new Set() })
 
-async function loadUsage(): Promise<void> {
-  const generation = ++usageGeneration
-  const authority = captureAuthority()
-  const days = windowDays.value
-  usageLoading.value = true
-  try {
-    const result = await authority.api.usage(days)
-    if (generation !== usageGeneration || !authorityIsCurrent(authority) || days !== windowDays.value) return
-    usage.value = result
-    usageHasSnapshot.value = true
-    usageError.value = null
-  } catch (error) {
-    if (generation !== usageGeneration || !authorityIsCurrent(authority) || days !== windowDays.value) return
-    usageError.value = (error as Error).message
-  } finally {
-    if (generation === usageGeneration && authorityIsCurrent(authority) && days === windowDays.value) usageLoading.value = false
-  }
-}
 function lookupModel(model: string): ModelInfo | undefined {
   const normalized = (model || '').toLowerCase().trim().replace(/^.*\//, '')
   let exact: ModelInfo | undefined; let best: ModelInfo | undefined
@@ -165,7 +133,6 @@ function missingCatalogLabel(): string {
 function primaryName(agent: Agent): string { return agentHarness(agent)?.credentialRef || agentModelCredential(agent) }
 function primaryOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) === credential.name) }
 function fallbackOf(credential: Credential) { revision.value; return props.store.agents.data.filter(agent => primaryName(agent) !== credential.name && agentModelFallbacks(agent).includes(credential.name)) }
-function fmtCtx(value: number): string { return value >= 1e6 ? `${value / 1e6}M ctx` : value >= 1e3 ? `${Math.round(value / 1e3)}k ctx` : `${value} ctx` }
 function setMap<K, V>(source: Map<K, V>, key: K, value: V): Map<K, V> { return new Map(source).set(key, value) }
 function credentialStateKey(name: string, connection = false): string { return `${connection ? 'connection' : 'model'}:${name}` }
 function credentialAction(name: string, connection = false): CredentialAction | undefined { return credentialActions.value.get(credentialStateKey(name, connection)) }
@@ -228,13 +195,30 @@ function connectionCredential(row: Record<string, unknown>): Credential { return
 function connectionModelCountSortValue(row: Record<string, unknown>): number | null {
   return typeof row.modelCount === 'number' ? row.modelCount : null
 }
+function modelProviderName(credential: Credential): string {
+  if (!credential.connectionRef) return 'Direct credential'
+  if (credential.connectionUnavailable) return 'Missing or invalid connection'
+  const connection = providerConnections.value.find(item => item.name === credential.connectionRef)
+  return connection ? credentialLabel(connection) : credential.connectionName || 'Connection details unavailable'
+}
+function toggleModelDetails(name: string): void {
+  expandedModel.value = expandedModel.value === name ? null : name
+}
 const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection && !harnessCredential(item)).map(credential => ({
   id: credential.name, name: credentialLabel(credential), model: credential.model || '—', endpoint: credential.baseURL || 'Provider default',
+  providerConnection: modelProviderName(credential),
   configured: credential.secretResolved !== false,
   status: testing.value.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.value.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.value.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.value.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential),
   tone: tested.value.get(credentialStateKey(credential.name))?.ok ? 'success' as const : tested.value.has(credentialStateKey(credential.name)) ? 'danger' as const : statusTone(credential),
   credential,
 })))
+const showFirstRun = computed(() => credentials.value.loaded && (!credentials.value.error || credentials.value.hasSnapshot) &&
+  (props.setupNavigation ? !modelRows.value.length && !providerConnections.value.length : !credentials.value.data.length))
+const createActions: readonly ActionMenuItem[] = [
+  { id: 'model', label: 'Add model', description: 'Use a saved provider connection' },
+  { id: 'provider', label: 'Connect provider', description: 'Save API access for models' },
+  { id: 'harness', label: 'Add harness identity', description: 'Set up a coding harness on an edge machine', separatorBefore: true },
+]
 const editorIsHarness = computed(() => editingCredential.value
   ? harnessCredential(editingCredential.value)
   : editorFamily.value === 'harness')
@@ -325,6 +309,11 @@ function toggleEdit(credential: Credential): void {
 function beginModel(): void {
   if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
   else { selectingConnection.value = true; creating.value = true }
+}
+function selectCreateAction(id: string): void {
+  if (id === 'model') beginModel()
+  else if (id === 'provider') openProvider()
+  else if (id === 'harness') beginHarness()
 }
 function beginHarness(): void {
   if (props.routeOwned) {
@@ -457,22 +446,8 @@ async function renameModel(displayName: string): Promise<void> {
   } finally { if (authorityIsCurrent(authority) && fence.createSession === props.createSession) createBusy.value = false }
 }
 function cancelEditorAfterSave(): void { initialConnection.value = ''; editingCredential.value = undefined; editName.value = null; creating.value = false; connectedProvider.value = null; continueAddedProvider.value = false; savedProviderDiscovery.value = null; selectingConnection.value = Boolean(props.selectConnection); editorFamily.value = 'chat' }
-function sparkPoints(series: UsagePoint[]): string {
-  const values = series.map(item => item.usdMicros); if (values.length < 2 || Math.max(...values) === 0) return ''
-  const max = Math.max(...values); const step = 260 / (values.length - 1)
-  return values.map((value, index) => `${(index * step).toFixed(1)},${(40 - (value / max) * 36 - 2).toFixed(1)}`).join(' ')
-}
-function dailySpendSummary(series: UsagePoint[]): string {
-  if (!series.length) return 'Daily priced usage: no recorded estimates in this window.'
-  const first = series[0]
-  const last = series[series.length - 1]
-  const peak = series.reduce((highest, point) => point.usdMicros > highest.usdMicros ? point : highest, first)
-  const trend = last.usdMicros > first.usdMicros ? 'increased' : last.usdMicros < first.usdMicros ? 'decreased' : 'was unchanged'
-  return `Daily priced usage over ${series.length} days: ${fmtUSD(first.usdMicros)} on ${first.date}, ${fmtUSD(last.usdMicros)} on ${last.date}; peak ${fmtUSD(peak.usdMicros)} on ${peak.date}; spend ${trend} overall.`
-}
-function barWidth(value: number, max: number): string { return `${max > 0 ? Math.max(2, Math.round((value / max) * 100)) : 0}%` }
-
-defineExpose({ loadCatalog, loadUsage })
+const usagePanel = ref<InstanceType<typeof AgentUsage> | null>(null)
+defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
 </script>
 
 <template>
@@ -491,11 +466,14 @@ defineExpose({ loadCatalog, loadUsage })
     <template v-else>
       <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
-          <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
+          <component :is="routeOwned ? 'h2' : 'h3'" id="models-title" class="k-resource-page__title">Models</component>
+          <p class="k-resource-page__subtitle">{{ setupNavigation ? 'Manage the models and provider access your agents use.' : 'Connect and manage models for your agents.' }}</p>
+        </div>
+        <div v-if="setupNavigation" class="k-resource-page__actions">
+          <ActionMenu label="Create" primary-menu :items="createActions" @select="selectCreateAction" />
         </div>
       </header>
-      <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
+      <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
       <template v-if="credentialView">
@@ -505,70 +483,41 @@ defineExpose({ loadCatalog, loadUsage })
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
       <header class="k-resource-page__header" aria-labelledby="available-models-title">
         <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models you can assign to agents.</p></div>
-        <div class="k-resource-page__header-side">
+        <div v-if="!setupNavigation" class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
             <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
       </header>
       <FirstRunGuide v-if="modelView && showFirstRun" title="Connect a provider to add models" description="Bring an API key to connect a provider once, then reuse it across models for your agents." primary-label="Connect provider" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" @primary="openProvider" />
-      <div v-else-if="credentials.error && !credentials.hasSnapshot" class="k-error" role="alert">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-      <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
-      <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
+      <div v-else-if="!setupNavigation && !credentials.loaded && !credentials.error" class="k-loading-reveal muted" role="status">Loading credentials…</div>
+      <div v-if="credentials.error" :class="credentials.hasSnapshot ? 'k-stale' : 'k-error'" :role="credentials.hasSnapshot ? 'status' : 'alert'">
+        <span v-if="setupNavigation && credentials.hasSnapshot">Showing the last successful results. </span>{{ credentials.error }}
+        <button type="button" class="k-btn k-btn--ghost" :disabled="credentials.loading" @click="store.load('credentials')">{{ credentials.loading ? 'Retrying…' : 'Retry' }}</button>
+      </div>
       </template>
-      <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
-        <header class="k-resource-page__header">
-          <div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Manage API access for models and harness identities for agents running on edge machines.</p></div>
-          <div class="k-resource-page__header-side">
-            <div class="k-resource-page__actions">
-              <button type="button" class="k-btn k-btn--ghost secondary" @click="beginHarness"><Plus :stroke-width="1.75" aria-hidden="true" /> Add harness identity</button>
-              <button type="button" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button>
-            </div>
-          </div>
-        </header>
-        <div v-if="showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-        <FirstRunGuide v-if="showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
-        <ResourceTable
-          v-else
-          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, { key: 'endpoint', label: 'Endpoint / machine', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
-          :rows="connectionRows"
-          row-key="id"
-          aria-label="Provider connections and harness identities"
-          :loaded="credentials.hasSnapshot"
-          :loading="credentials.loading"
-          :error="credentials.error"
-          :stale="credentials.hasSnapshot && !!credentials.error"
-          retryable
-          searchable
-          search-placeholder="Search provider access and identities…"
-          :search-keys="['name', 'type', 'endpoint']"
-          empty-text="No provider connections or harness identities yet. Use the header actions to add one."
-          search-empty-text="No provider connections or harness identities match your search."
-          paginated
-          :interactive="false"
-          @retry="store.load('credentials')"
-        >
-          <template #actions="{ row }">
-            <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
-            <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
-            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
-          </template>
-          <template #status="{ row }">
-            <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
-            <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
-            <TechnicalDetails :diagnostic="connectionCredential(row).statusMessage" />
-          </template>
-        </ResourceTable>
-      </section>
-      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout">
+      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout" :table-only="setupNavigation" :show-provider-connection="setupNavigation">
+        <template v-if="setupNavigation" #name-prefix="{ row }">
+          <ResourceTableExpandButton
+            class="agents-model-expand"
+            :expanded="expandedModel === row.id"
+            :label="`Show details for ${row.name}`"
+            :expanded-label="`Hide details for ${row.name}`"
+            :controls="`${modelDetailsPrefix}-${row.id}`"
+            @click="toggleModelDetails(row.id)"
+          />
+        </template>
         <template #cards="{ rows }">
         <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.displayName || credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL || 'Provider default'" endpoint-label="Endpoint" resource-label="Model" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential)"
           :test-tone="tested.get(credentialStateKey(credential.name))?.ok ? 'success' : tested.has(credentialStateKey(credential.name)) ? 'danger' : statusTone(credential)">
           <p v-if="credential.connectionRef" class="agents-hint">Connection: {{ credential.connectionName || credential.connectionRef }}</p>
-          <div v-if="lookupModel(credential.model || '')" class="agents-model-chips"><template v-if="lookupModel(credential.model || '')"><span v-if="lookupModel(credential.model || '')?.contextWindow" class="agents-chip">{{ fmtCtx(lookupModel(credential.model || '')!.contextWindow!) }}</span><span v-if="lookupModel(credential.model || '')?.vision" class="agents-chip"><Eye :stroke-width="1.75" aria-hidden="true" /> vision</span><span v-if="lookupModel(credential.model || '')?.toolCall" class="agents-chip"><Wrench :stroke-width="1.75" aria-hidden="true" /> tools</span><span v-if="lookupModel(credential.model || '')?.reasoning" class="agents-chip"><Brain :stroke-width="1.75" aria-hidden="true" /> reasoning</span></template></div>
-          <p v-if="lookupModel(credential.model || '')" class="agents-hint">${{ lookupModel(credential.model || '')?.inputPer1M }} input · ${{ lookupModel(credential.model || '')?.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="agents-hint">{{ missingCatalogLabel() }}</p>
-          <div class="agents-model-assign"><span v-for="agent in primaryOf(credential)" :key="`p-${agent.metadata.name}`" class="agents-chip agents-chip-primary"><Link2 :stroke-width="1.75" aria-hidden="true" /> Primary: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-for="agent in fallbackOf(credential)" :key="`f-${agent.metadata.name}`" class="agents-chip agents-chip-fallback"><CornerDownRight :stroke-width="1.75" aria-hidden="true" /> Fallback: {{ agent.spec?.displayName || agent.metadata.name }}</span><span v-if="!primaryOf(credential).length && !fallbackOf(credential).length" class="muted agents-assign-none">Not assigned to any agent</span></div>
+          <ModelDetails
+            :model="lookupModel(credential.model || '')"
+            :catalog-fallback="missingCatalogLabel()"
+            :primary-agents="primaryOf(credential)"
+            :fallback-agents="fallbackOf(credential)"
+          />
           <p v-if="tested.get(credentialStateKey(credential.name))?.error" class="k-error" role="alert">{{ tested.get(credentialStateKey(credential.name))?.error }}</p>
           <p v-else-if="credential.ready === false && credential.statusMessage" class="k-error" role="alert">The model connection needs attention. Edit it to review the endpoint and credential.</p>
           <TechnicalDetails :diagnostic="tested.get(credentialStateKey(credential.name))?.technicalDiagnostic || (credential.ready === false ? credential.statusMessage : '')" />
@@ -585,31 +534,73 @@ defineExpose({ loadCatalog, loadUsage })
           <ResourceTableActionButton v-if="credential.model?.trim()" :icon="Play" :label="`Test connection for ${credentialLabel(credential)}`" :busy="testing.has(credentialStateKey(credential.name))" :disabled="credentialIsBusy(credential.name)" @click="testCredential(credential.name)" />
           <ResourceTableDeleteButton :label="`Delete ${credentialLabel(credential)}`" :busy="credentialAction(credential.name) === 'deleting'" :disabled="credentialIsBusy(credential.name)" @click="remove(credential.name)" />
         </template>
+        <template v-if="setupNavigation" #after-row="{ row, columnCount }">
+          <tr v-if="expandedModel === row.id" :id="`${modelDetailsPrefix}-${row.id}`">
+            <td :colspan="columnCount">
+              <div class="agents-model-details">
+                <p v-if="row.credential.baseURL" class="agents-hint">Endpoint: {{ row.credential.baseURL }}</p>
+                <ModelDetails
+                  :model="lookupModel(row.model)"
+                  :catalog-fallback="missingCatalogLabel()"
+                  :primary-agents="primaryOf(row.credential)"
+                  :fallback-agents="fallbackOf(row.credential)"
+                />
+              </div>
+            </td>
+          </tr>
+        </template>
       </ModelCollection>
       <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
+      <section v-if="connectionView" class="k-resource-page k-resource-page--collection" :class="{ 'agents-model-providers': setupNavigation }" aria-labelledby="provider-connections-title">
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading">
+            <h3 id="provider-connections-title" class="k-resource-page__title">{{ setupNavigation ? 'Provider connections & harness identities' : 'Provider connections' }}</h3>
+            <p class="k-resource-page__subtitle">Shared API access for models and logins for coding harnesses.</p>
+          </div>
+          <div v-if="!setupNavigation" class="k-resource-page__header-side">
+            <div class="k-resource-page__actions">
+              <button type="button" class="k-btn k-btn--ghost secondary" @click="beginHarness"><Plus :stroke-width="1.75" aria-hidden="true" /> Add harness identity</button>
+              <button type="button" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button>
+            </div>
+          </div>
+        </header>
+        <div v-if="!setupNavigation && showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
+        <FirstRunGuide v-if="!setupNavigation && showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
+        <ResourceTable
+          v-else-if="!setupNavigation || !credentials.error || credentials.hasSnapshot"
+          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, ...(setupNavigation ? [] : [{ key: 'endpoint', label: 'Endpoint / machine', sortable: true }]), { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
+          :rows="connectionRows"
+          row-key="id"
+          aria-label="Provider connections and harness identities"
+          :loaded="credentials.hasSnapshot"
+          :loading="credentials.loading"
+          :error="setupNavigation ? null : credentials.error"
+          :stale="!setupNavigation && credentials.hasSnapshot && !!credentials.error"
+          :retryable="!setupNavigation"
+          searchable
+          search-placeholder="Search provider access and identities…"
+          :search-keys="['name', 'type', 'endpoint']"
+          empty-text="No provider connections or harness identities yet."
+          search-empty-text="No provider connections or harness identities match your search."
+          paginated
+          :interactive="false"
+          @retry="store.load('credentials')"
+        >
+          <template #actions="{ row }">
+            <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
+            <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
+            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
+          </template>
+          <template #status="{ row }">
+            <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
+            <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
+          </template>
+        </ResourceTable>
+      </section>
       </template>
-      <WorkspaceAssistantCard v-if="activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
-      <div v-else-if="activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
-      <ModelUsageSection v-if="activeTab === 'usage'" provider="Agents" available>
-<template #controls><div class="agents-seg" role="group" aria-label="Usage window"><button v-for="days in [7, 30, 90]" :key="days" :class="['k-btn k-btn--ghost', { on: days === windowDays }]" :aria-pressed="days === windowDays" @click="windowDays = days">{{ days }}d</button></div></template>
-      <div v-if="usageError && !usageHasSnapshot" class="k-error" role="alert">Usage unavailable: {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-      <div v-else-if="!usageHasSnapshot" class="agents-dash-loading k-loading-reveal muted" role="status">Loading usage…</div>
-      <template v-else-if="normalizedUsage">
-        <div v-if="usageError" class="k-stale" role="status">Could not refresh usage. Showing usage from the last successful read. {{ usageError }} <button class="k-btn k-btn--ghost" :disabled="usageLoading" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button></div>
-        <div v-if="normalizedUsage.unavailableAgents.length" class="k-inline-notification k-inline-notification--warning" role="status" aria-live="polite" aria-atomic="true">
-          <span class="k-inline-notification__body"><span class="k-inline-notification__message">Usage could not be read for {{ normalizedUsage.unavailableAgents.length }} agent{{ normalizedUsage.unavailableAgents.length === 1 ? '' : 's' }}: {{ normalizedUsage.unavailableAgents.join(', ') }}. Totals cover only agents whose usage was available.</span></span>
-          <button class="k-inline-notification__action" type="button" :disabled="usageLoading" :aria-busy="usageLoading ? 'true' : undefined" @click="loadUsage">{{ usageLoading ? 'Retrying…' : 'Retry' }}</button>
-        </div>
-        <p class="agents-hint">Estimates cover recorded, priced usage only. Unpriced runs have no recorded cost estimate and may be billed by the model provider or harness. Usage is calculated from each agent’s most recent 5,000 runs, then filtered to this window.</p>
-        <div class="agents-dash">
-
-        <div class="agents-stats"><div class="agents-stat"><div class="agents-stat-v">{{ usageCostLabel(normalizedUsage.total) }}</div><div class="agents-stat-k">{{ unpricedRuns && normalizedUsage.total.usdMicros ? 'priced usage only' : 'estimated spend' }}</div><div class="agents-stat-sub">{{ normalizedUsage.windowDays }}d<span v-if="unpricedRuns"> · {{ unpricedRuns }} unpriced run{{ unpricedRuns === 1 ? '' : 's' }}</span></div></div><div class="agents-stat"><div class="agents-stat-v">{{ fmtTokens(normalizedUsage.total.inputTokens + normalizedUsage.total.outputTokens) }}</div><div class="agents-stat-k">tokens</div><div class="agents-stat-sub">{{ fmtTokens(normalizedUsage.total.inputTokens) }} in · {{ fmtTokens(normalizedUsage.total.outputTokens) }} out</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.runs }}</div><div class="agents-stat-k">runs</div><div class="agents-stat-sub">{{ normalizedUsage.total.runs ? Math.round(normalizedUsage.total.errors / normalizedUsage.total.runs * 100) : 0 }}% errors</div></div><div class="agents-stat"><div class="agents-stat-v">{{ normalizedUsage.total.latencyP50MS ? `${normalizedUsage.total.latencyP50MS}ms` : '—' }}</div><div class="agents-stat-k">slowest agent p50</div><div class="agents-stat-sub">{{ normalizedUsage.total.latencyP95MS ? `${normalizedUsage.total.latencyP95MS}ms p95` : 'p50 / p95' }}</div></div></div>
-        <button type="button" class="k-btn k-btn--ghost agents-usage-disclosure" :aria-expanded="showBreakdown" @click="showBreakdown = !showBreakdown">{{ showBreakdown ? 'Hide usage breakdown' : 'Show usage breakdown' }}</button><div v-if="showBreakdown" class="agents-dash-grid"><div class="agents-dash-card"><div class="agents-dash-card-h">Daily priced usage · USD</div><div v-if="!sparkPoints(normalizedUsage.series)" class="agents-spark-empty muted">No recorded cost estimates in this window.</div><svg v-else class="agents-spark" viewBox="0 0 260 40" preserveAspectRatio="none" role="img" :aria-label="dailySpendSummary(normalizedUsage.series)"><polygon class="agents-spark-fill" :points="`0,40 ${sparkPoints(normalizedUsage.series)} 260,40`"/><polyline class="agents-spark-line" :points="sparkPoints(normalizedUsage.series)"/></svg></div>
-          <div v-for="breakdown in [{ title: 'Estimate by current model connection', rows: normalizedUsage.byModel }, { title: 'Estimate by agent', rows: normalizedUsage.byAgent }]" :key="breakdown.title" class="agents-dash-card"><div class="agents-dash-card-h">{{ breakdown.title }}</div><p v-if="breakdown.rows.length > 6" class="agents-hint">Showing 6 of {{ breakdown.rows.length }} rows; the rest are not shown.</p><div class="agents-bars"><div v-for="bucket in breakdown.rows.slice(0, 6)" :key="bucket.key" class="agents-bar-row"><div class="agents-bar-label" :title="bucket.key">{{ bucket.key }}</div><div class="agents-bar-track"><div class="agents-bar-fill" :style="{ width: barWidth(bucket.usdMicros, Math.max(1, ...breakdown.rows.map(item => item.usdMicros))) }" /></div><div class="agents-bar-val">{{ usageCostLabel(bucket) }} · {{ bucket.runs }} run{{ bucket.runs === 1 ? '' : 's' }}<span v-if="unpricedRunCount(bucket)"> · {{ unpricedRunCount(bucket) }} unpriced</span></div></div><div v-if="!breakdown.rows.length" class="muted agents-bars-empty">—</div></div></div>
-        </div>
-        </div>
-      </template>
-      </ModelUsageSection>
+      <WorkspaceAssistantCard v-if="!setupNavigation && activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
+      <div v-else-if="!setupNavigation && activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
+      <AgentUsage v-if="!setupNavigation && activeTab === 'usage'" ref="usagePanel" :store="store" :api="api" />
     </template>
   </div>
 </template>
