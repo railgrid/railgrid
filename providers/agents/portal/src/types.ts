@@ -817,6 +817,13 @@ export type ChatTraceBlock =
       readonly tool: ToolCall
       readonly createdAt?: string
     }
+  | {
+      readonly id: string
+      readonly kind: 'permission'
+      readonly decision: 'approved' | 'denied'
+      readonly tool: string
+      readonly args: string
+    }
 
 /** Provider-owned turn progress projected for AgentKit presentation. */
 export interface ChatProgress {
@@ -920,6 +927,7 @@ export interface TranscriptMessage {
     durationMS?: number
     turnPhase?: string
     turnStatus?: string
+    permissionDecision?: 'approved' | 'denied'
     startedAt?: string
     segmentDurationMS?: number
     turnError?: string

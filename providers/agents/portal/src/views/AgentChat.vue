@@ -534,6 +534,7 @@ let deltaBuffer = ''
 let flushHandle = 0
 const atBottom = ref(true)
 let logResizeObserver: ResizeObserver | null = null
+let followedScrollTop: number | undefined
 let messageSequence = 0
 let openSerial = 0
 let sessionReadSerial = 0
@@ -1202,7 +1203,8 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
       flushTerminalTranscriptRefresh()
       return
     }
-    if (!detail.pending || target?.approval?.inboxID !== detail.pending.inboxID || !target.approval.resolved) threadActivity.record(detail)
+    const alreadyResolved = detail.pending && hasResolvedApproval(target, detail.pending.inboxID)
+    if (!alreadyResolved) threadActivity.record(detail)
     if (recoverStream && LIVE_RUN_PHASES.has(detail.phase || '') && !streaming.value) {
       acceptRunSnapshot(runID)
       orphanRun.value = detail
@@ -1217,7 +1219,7 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
     restoreProgressAccess(runID)
     // The checkpoint can precede its KCP phase projection. Its pending ID is
     // the current approval identity even if that projection still says Running.
-    if (target?.approval?.inboxID === detail.pending.inboxID && target.approval.resolved) return
+    if (alreadyResolved) return
     // This successful disclosure supersedes progress reads already in flight,
     // even when the lifecycle event stream is disconnected.
     acceptRunSnapshot(runID)
@@ -1238,6 +1240,11 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
         : `${recoverStream ? 'Could not recover the disconnected run.' : 'Could not load approval details.'} ${(error as Error).message}`
     }
   }
+}
+
+function hasResolvedApproval(message: ChatMessage | undefined, inboxID: string): boolean {
+  return !!(message?.approval?.inboxID === inboxID && message.approval.resolved)
+    || !!message?.progress?.trace.some(block => block.kind === 'permission' && block.id === `permission-${inboxID}`)
 }
 
 function contextIsCurrent(name: string, api: ApiClient): boolean {
@@ -2608,6 +2615,17 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     const content = resolved === 'answer' && pendingIsQuestion(approval) ? answer?.trim() : undefined
     const id = `mquestion-answer-${inboxID}`
     patchMessage(target.id, { approval: { ...approval, resolved, ...(content ? { answerInThread: true } : {}) } })
+    if (!pendingIsQuestion(approval) && (resolved === 'approve' || resolved === 'deny')) {
+      if (target.content) {
+        appendLiveTrace(target.id, { id: `prior-permission-${inboxID}`, kind: 'commentary', content: target.content })
+        patchMessage(target.id, { content: '' })
+      }
+      appendLiveTrace(target.id, {
+        id: `permission-${inboxID}`, kind: 'permission',
+        decision: resolved === 'approve' ? 'approved' : 'denied',
+        tool: approval.tool, args: approval.args,
+      }, 'running')
+    }
     if (!content || messages.value.some(message => message.id === id)) return
     if (!beforeID && !approvalRecoveryClosedRunIDs.has(approval.runID)) {
       orphanReadSerial += 1
@@ -2809,13 +2827,17 @@ watch(
         const progress = detail.phase === 'Running'
           ? (detail.progress || []).filter(row => row.runID === runID) : []
         const projected = rebuildTranscript(transcriptWithProgress(historyItems, progress))
-        // Preserve other runs' approval disclosures and the resolution receipt
-        // of an approval just accepted locally while its KCP phase catches up.
+        // Keep the locally accepted decision until the persisted row arrives.
         for (const message of messages.value) {
-          if (!message.approval) continue
+          const receipts = message.progress?.trace.filter(block => block.kind === 'permission') || []
+          if (!message.approval && !receipts.length) continue
           const target = projected.find(row => row.id === message.id)
             || projected.filter(row => row.role === 'assistant' && row.runID === message.runID).at(-1)
-          if (target && (message.runID !== runID || message.approval.resolved)) target.approval = message.approval
+          if (!target) continue
+          if (message.approval && (message.runID !== runID || message.approval.resolved)) target.approval = message.approval
+          const trace = target.progress?.trace || []
+          const pendingReceipts = receipts.filter(block => !trace.some(saved => saved.id === block.id))
+          if (pendingReceipts.length) target.progress = progressPatch(target, { trace: [...trace, ...pendingReceipts] })
         }
         // Older servers may not provide a progress overlay before the first
         // persisted assistant row. Keep the local partial output in that gap.
@@ -2828,7 +2850,7 @@ watch(
         threadActivity.record(detail)
         applyRunProgress(detail)
         const target = messages.value.filter(row => row.role === 'assistant' && row.runID === runID).at(-1)
-        if (!approvalRecoveryClosedRunIDs.has(runID) && detail.pending && (target?.approval?.inboxID !== detail.pending.inboxID || !target.approval.resolved)) {
+        if (!approvalRecoveryClosedRunIDs.has(runID) && detail.pending && !hasResolvedApproval(target, detail.pending.inboxID)) {
           if (target) target.approval = { runID, ...detail.pending }
           else messages.value.push({ id: `approval-${runID}`, role: 'assistant', runID, content: '', tools: [], approval: { runID, ...detail.pending } })
         }
@@ -3067,14 +3089,24 @@ function bindServer(store: AppStore | null): void {
 function onScroll(event: Event): void {
   const element = event.target as HTMLElement
   if (!element.clientHeight) return
+  const fromFollowing = atBottom.value && element.scrollTop === followedScrollTop
+  followedScrollTop = undefined
+  if (fromFollowing) {
+    // Activity can grow before the browser delivers our scroll event.
+    scrollToBottom()
+    return
+  }
   atBottom.value = element.scrollHeight - element.scrollTop - element.clientHeight < 48
 }
 
 function scrollToBottom(): void {
   if (!atBottom.value) return
   void nextTick(() => {
-    if (atBottom.value && log.value?.clientHeight) {
-      log.value.scrollTop = log.value.scrollHeight
+    const element = log.value
+    if (atBottom.value && element?.clientHeight) {
+      const previousTop = element.scrollTop
+      element.scrollTop = element.scrollHeight
+      if (element.scrollTop !== previousTop) followedScrollTop = element.scrollTop
     }
   })
 }
@@ -3126,6 +3158,7 @@ watch(() => conversationRail.value?.expanded, (expanded) => {
 })
 watch(revision, () => queueMicrotask(maybeAutoSend))
 watch(log, element => {
+  followedScrollTop = undefined
   logResizeObserver?.disconnect()
   if (element && typeof ResizeObserver !== 'undefined') {
     logResizeObserver = new ResizeObserver(scrollToBottom)
