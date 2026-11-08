@@ -594,7 +594,6 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
           <template #status="{ row }">
             <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
             <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
-            <TechnicalDetails :diagnostic="connectionCredential(row).statusMessage" />
           </template>
         </ResourceTable>
       </section>
