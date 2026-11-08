@@ -187,7 +187,7 @@ export interface AgentBackendStatus {
 }
 
 export interface Agent {
-  metadata: { name: string; uid?: string; generation?: number }
+  metadata: { name: string; uid?: string; generation?: number; deletionTimestamp?: string }
   spec: {
     displayName?: string
     description?: string

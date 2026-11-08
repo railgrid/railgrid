@@ -165,6 +165,7 @@ export class AppStore extends EventTarget {
   private acknowledgedInboxIDs = new Set<string>()
   private nextLoadID = 0
   private agentWriteLocks = new Map<string, number>()
+  private deletedAgentUIDs = new Map<string, string>()
   private latestLoadID: Partial<Record<SliceKey, number>> = {}
   private pendingLoads: Partial<Record<CreateCollectionKey, Map<number, number>>> = {}
 
@@ -289,6 +290,26 @@ export class AppStore extends EventTarget {
     }
   }
 
+  async deleteAgent(name: string): Promise<void> {
+    const uid = this.agent(name)?.metadata.uid
+    try {
+      await this.api.deleteAgent(name)
+      if (this.retired || !uid) return
+
+      // The DELETE can succeed while the Agent still has a cleanup finalizer.
+      // Keep that identity out of the list until a refresh observes its removal.
+      this.deletedAgentUIDs.set(name, uid)
+      const isDeletedAgent = (agent: Agent) => agent.metadata.name === name &&
+        (!agent.metadata.uid || agent.metadata.uid === uid)
+      this.agents.data = this.agents.data.filter(agent => !isDeletedAgent(agent))
+      const adopted = this.adoptedItems.agents.get(name)
+      if (adopted && isDeletedAgent(adopted.item as Agent)) this.adoptedItems.agents.delete(name)
+    } finally {
+      // A lost response can also leave the Agent deleted on the server.
+      if (!this.retired) void this.load('agents')
+    }
+  }
+
   // Revalidate snapshots, including empty ones, without stacking requests
   // while a previous read is still in flight.
   refreshCollections(keys: readonly SliceKey[] = Object.keys(LOADERS) as SliceKey[]): void {
@@ -360,7 +381,8 @@ export class AppStore extends EventTarget {
       // adopted item back in. This keeps refreshes authoritative for every
       // other row instead of suppressing the reload altogether.
       if (this.latestLoadID[key] === loadID) {
-        s.data = this.mergeLoadedRows(key, rows, requestGeneration)
+        const merged = this.mergeLoadedRows(key, rows, requestGeneration)
+        s.data = key === 'agents' ? this.activeAgentRows(merged as Agent[]) : merged
         if (key === 'inbox' && this.acknowledgedInboxIDs.size) {
           // A failed or stale read must not reopen an acknowledged decision.
           // Drop receipts only after the latest successful snapshot catches up.
@@ -444,6 +466,24 @@ export class AppStore extends EventTarget {
     return merged
   }
 
+  private activeAgentRows(rows: Agent[]): Agent[] {
+    const stillListed = new Set<string>()
+    const active = rows.filter(agent => {
+      const metadata = agent?.metadata
+      if (!metadata) return true
+      const deletedUID = this.deletedAgentUIDs.get(metadata.name)
+      if (deletedUID && (!metadata.uid || deletedUID === metadata.uid)) {
+        stillListed.add(metadata.name)
+        return false
+      }
+      return !metadata.deletionTimestamp
+    })
+    for (const name of this.deletedAgentUIDs.keys()) {
+      if (!stillListed.has(name)) this.deletedAgentUIDs.delete(name)
+    }
+    return active
+  }
+
   private mergeNewerAgentRows(rows: unknown[]): unknown[] {
     const currentByName = new Map(this.agents.data.map((agent) => [agent.metadata.name, agent]))
     const present = new Set<string>()
@@ -453,6 +493,7 @@ export class AppStore extends EventTarget {
       const name = incoming.metadata?.name
       if (!name) return row
       present.add(name)
+      if (incoming.metadata.deletionTimestamp) return row
       const current = currentByName.get(name)
       if (current && this.agentWriteLocks.has(name)) return current
       if (!current || current.metadata.uid !== incoming.metadata?.uid || !current.metadata.uid) return row

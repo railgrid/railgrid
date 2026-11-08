@@ -18,13 +18,8 @@ export interface AgentCreateDraft {
   harnessWorkspace: HarnessWorkspace
   harnessGitHubConnection: string
   systemPrompt: string
+  customPrompt: boolean
   channel: string
-  web: boolean
-  fanOut: boolean
-  visualization: boolean
-  webBackground: boolean
-  fanOutBackground: boolean
-  visualizationBackground: boolean
   // The template the form started from, with its parameter values and the
   // connection-slot wiring that has no field of its own.
   template: string
@@ -44,13 +39,8 @@ export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACK
     harnessWorkspace: 'persistent',
     harnessGitHubConnection: '',
     systemPrompt: '',
+    customPrompt: false,
     channel: '',
-    web: false,
-    fanOut: false,
-    visualization: false,
-    webBackground: false,
-    fanOutBackground: false,
-    visualizationBackground: false,
     template,
     parameters: {},
     wiring: {},
