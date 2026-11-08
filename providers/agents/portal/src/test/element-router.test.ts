@@ -44,6 +44,14 @@ function buttonWithText(root: ParentNode, value: string): HTMLButtonElement {
   return button
 }
 
+async function chooseModelCreateAction(element: AgentsElement, label: string): Promise<void> {
+  const trigger = element.querySelector<HTMLButtonElement>('button[aria-label="Create"][aria-haspopup="menu"]')!
+  trigger.click()
+  await settleVue()
+  const menu = document.getElementById(trigger.getAttribute('aria-controls')!)!
+  menu.querySelector<HTMLButtonElement>(`[role="menuitem"][aria-label="${label}"]`)!.click()
+}
+
 function populateConnections(element: AgentsElement, connections: Connection[]): void {
   const store = element.store!
   store.connections.data = connections
@@ -116,12 +124,8 @@ describe('public Agents shell routing', () => {
     expect([...subtabs.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual(['#/models', '#/connections', '#/webhooks', '#/skills'])
     expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
     expect(element.querySelector('[aria-label="Model management"]')).toBeNull()
-    const providers = element.querySelector<HTMLAnchorElement>('a[href="#/models/provider-connections"]')!
-    expect(text(providers)).toBe('Manage model providers')
-    providers.click()
-    await settleVue()
-    expect(location.hash).toBe('#/models/provider-connections')
-    expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
+    expect(element.querySelector('a[href="#/models/provider-connections"]')).toBeNull()
+    expect(element.querySelector('#provider-connections-title')).toBeTruthy()
 
     subtabs.querySelector<HTMLAnchorElement>('a[href="#/skills"]')!.click()
     await settleVue()
@@ -353,7 +357,7 @@ describe('public Agents shell routing', () => {
     await settleVue(4, 5)
     expect(element.route).toEqual({ kind: 'menu', menu: 'models' })
     expect(text(element.querySelector('[aria-label="Setup sections"] [aria-current="page"]'))).toBe('Models')
-    expect(document.activeElement).toBe(element.querySelector('#available-models-title'))
+    expect(document.activeElement).toBe(element.querySelector('#models-title'))
 
     history.replaceState(null, '', '#/activity/run%2F42')
     window.dispatchEvent(new PopStateEvent('popstate'))
@@ -410,7 +414,13 @@ describe('public Agents shell routing', () => {
     await settleVue(6)
 
     expect(element.querySelector('[data-k-tab-id="setup"]')?.getAttribute('aria-current')).toBe('page')
-    buttonWithText(element.querySelector('section[aria-labelledby="provider-connections-title"] > header')!, 'Add harness identity').click()
+    const modelTable = element.querySelector('table[aria-label="Models"]')!
+    const providerTable = element.querySelector('table[aria-label="Provider connections and harness identities"]')!
+    expect(modelTable.compareDocumentPosition(providerTable) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await vi.waitFor(() => expect(text(modelTable)).toContain('OpenAI production'))
+    expect(text(modelTable)).toContain('Provider connection')
+    await vi.waitFor(() => expect(text(providerTable)).toContain('Credential checked'))
+    await chooseModelCreateAction(element, 'Add harness identity')
     await vi.waitFor(() => expect(location.hash).toBe('#/create/model/harness'))
     await settleVue(8)
     expect(element.querySelector('form[aria-label="Harness identity form"]')).toBeTruthy()
@@ -421,7 +431,7 @@ describe('public Agents shell routing', () => {
     await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
     await settleVue(8)
 
-    buttonWithText(element.querySelector('section[aria-labelledby="provider-connections-title"] > header')!, 'Add harness identity').click()
+    await chooseModelCreateAction(element, 'Add harness identity')
     await vi.waitFor(() => expect(location.hash).toBe('#/create/model/harness'))
     await settleVue(8)
     const provider = element.querySelector<HTMLSelectElement>('#model-provider')!
@@ -1098,7 +1108,7 @@ describe('context and create-session routing fences', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     expect(location.hash).toBe('#/models')
     await settleVue()
-    buttonWithText(element, 'Add model').click()
+    await chooseModelCreateAction(element, 'Add model')
     await settleVue()
     expect(location.hash).toBe('#/create/model/from-connection')
 
@@ -1190,7 +1200,7 @@ describe('Models sub-tab shell routing', () => {
   it('restores model provider deep links and follows browser navigation to usage', async () => {
     const element = await mountShell('#/models/provider-connections')
     expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
-    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections')
+    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections & harness identities')
     history.pushState(null, '', '#/models/usage')
     window.dispatchEvent(new PopStateEvent('popstate'))
     await settleVue(6)
@@ -1201,13 +1211,13 @@ describe('Models sub-tab shell routing', () => {
 
   it('returns to Provider connections after canceling provider setup', async () => {
     const element = await mountShell('#/models/provider-connections')
-    buttonWithText(element, 'Connect provider').click()
+    await chooseModelCreateAction(element, 'Connect provider')
     await settleVue(6)
     expect(location.hash).toBe('#/create/model')
     buttonWithText(element, 'Cancel').click()
     await settleVue(6)
     expect(location.hash).toBe('#/models/provider-connections')
-    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections')
+    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections & harness identities')
   })
 
   it.each([
@@ -1265,7 +1275,7 @@ describe('Models sub-tab shell routing', () => {
     store.credentials.loaded = store.credentials.hasSnapshot = true
     store.dispatchEvent(new Event('change'))
 
-    buttonWithText(element, 'Connect provider').click()
+    await chooseModelCreateAction(element, 'Connect provider')
     await settleVue(6)
     const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
     apiKey.value = 'first-key'
@@ -1295,7 +1305,7 @@ describe('Models sub-tab shell routing', () => {
     expect(store.credentials.data).toContainEqual(addedModel)
     stalledCredentialList.resolve([...saved])
 
-    buttonWithText(element, 'Connect provider').click()
+    await chooseModelCreateAction(element, 'Connect provider')
     await settleVue(6)
     const stagingKey = element.querySelector<HTMLInputElement>('#model-credential')!
     stagingKey.value = 'second-key'

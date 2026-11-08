@@ -993,6 +993,7 @@ railgrid-provider-agents .agents-usage-disclosure { align-self: flex-start; }
 
 /* Collection spacing follows Databricks: the host owns the outer inset. */
 railgrid-provider-agents .agents-panel.agents-models-page { padding: 0; gap: 16px; }
+railgrid-provider-agents .agents-model-providers { margin-top: 12px; }
 
 /* Inline visualization layout; shared controls remain PortalKit-owned. */
 railgrid-provider-agents .agents-visualization { margin: 1rem 0; min-width: 0; max-width: 100%; overflow-wrap: anywhere; }

@@ -276,7 +276,10 @@ function scheduleRouteFocus(next: Route): void {
     if (newAgentComposerRoute.value === hashFor(next) &&
       document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
     const assistantSettings = next.kind === 'menu' && next.assistantSettings && props.ctx?.agentOverlay
-    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title:not([data-agents-setup-title]), .k-create-title, .agents-detail-title > h2')
+    const providerConnections = next.kind === 'menu' && next.menu === 'models' && next.modelsTab === 'provider-connections'
+    const preferredTarget = assistantSettings ? '#workspace-assistant-settings' : providerConnections ? '#provider-connections-title' : ''
+    const target = (preferredTarget ? root.value?.querySelector<HTMLElement>(preferredTarget) : null)
+      ?? root.value?.querySelector<HTMLElement>('[data-agent-workspace-title], .k-resource-page__title:not([data-agents-setup-title]), .k-create-title, .agents-detail-title > h2')
       ?? root.value?.querySelector<HTMLElement>('[data-agents-setup-title]')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')

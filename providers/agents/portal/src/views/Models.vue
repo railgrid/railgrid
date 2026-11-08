@@ -6,8 +6,8 @@ import { computed, ref, watch } from 'vue'
 import type { ApiClient } from '../api'
 import { mutate } from '../mutate'
 import { confirmDialog } from '../portalkit/confirm'
+import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import FirstRunGuide from '../portalkit/FirstRunGuide.vue'
-import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
 import ResourceTableEditButton from '../portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
@@ -51,8 +51,8 @@ function openModelTab(tab: ModelsTab): void {
   localTab.value = tab
   emit('navigate', tabRoute(tab))
 }
-const connectionView = computed(() => activeTab.value === 'provider-connections')
-const modelView = computed(() => activeTab.value === 'models')
+const connectionView = computed(() => props.setupNavigation || activeTab.value === 'provider-connections')
+const modelView = computed(() => props.setupNavigation || activeTab.value === 'models')
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -81,7 +81,6 @@ let catalogGeneration = 0
 const probeGenerations = new Map<string, number>()
 
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
-const showFirstRun = computed(() => credentials.value.loaded && credentials.value.data.length === 0 && (!credentials.value.error || credentials.value.hasSnapshot))
 
 function resetCatalogRead(): void {
   catalogGeneration += 1
@@ -192,13 +191,26 @@ function connectionCredential(row: Record<string, unknown>): Credential { return
 function connectionModelCountSortValue(row: Record<string, unknown>): number | null {
   return typeof row.modelCount === 'number' ? row.modelCount : null
 }
+function modelProviderName(credential: Credential): string {
+  if (!credential.connectionRef) return 'Direct credential'
+  const connection = providerConnections.value.find(item => item.name === credential.connectionRef)
+  return connection ? credentialLabel(connection) : credential.connectionName || 'Missing connection'
+}
 const modelRows = computed(() => credentials.value.data.filter(item => !item.isConnection && !harnessCredential(item)).map(credential => ({
   id: credential.name, name: credentialLabel(credential), model: credential.model || '—', endpoint: credential.baseURL || 'Provider default',
+  providerConnection: modelProviderName(credential),
   configured: credential.secretResolved !== false,
   status: testing.value.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.value.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.value.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.value.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential),
   tone: tested.value.get(credentialStateKey(credential.name))?.ok ? 'success' as const : tested.value.has(credentialStateKey(credential.name)) ? 'danger' as const : statusTone(credential),
   credential,
 })))
+const showFirstRun = computed(() => credentials.value.loaded && (!credentials.value.error || credentials.value.hasSnapshot) &&
+  (props.setupNavigation ? !modelRows.value.length && !providerConnections.value.length : !credentials.value.data.length))
+const createActions: readonly ActionMenuItem[] = [
+  { id: 'model', label: 'Add model', description: 'Use a saved provider connection' },
+  { id: 'provider', label: 'Connect provider', description: 'Save API access for models' },
+  { id: 'harness', label: 'Add harness identity', description: 'Set up a coding harness on an edge machine', separatorBefore: true },
+]
 const editorIsHarness = computed(() => editingCredential.value
   ? harnessCredential(editingCredential.value)
   : editorFamily.value === 'harness')
@@ -289,6 +301,11 @@ function toggleEdit(credential: Credential): void {
 function beginModel(): void {
   if (props.routeOwned) emit('navigate', { kind: 'create', resource: 'model', type: 'from-connection' })
   else { selectingConnection.value = true; creating.value = true }
+}
+function selectCreateAction(id: string): void {
+  if (id === 'model') beginModel()
+  else if (id === 'provider') openProvider()
+  else if (id === 'harness') beginHarness()
 }
 function beginHarness(): void {
   if (props.routeOwned) {
@@ -439,16 +456,18 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="editorFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
-      <header v-if="!setupNavigation" class="k-resource-page__header">
+      <header class="k-resource-page__header">
         <div class="k-resource-page__heading">
-          <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
-          <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
+          <component :is="routeOwned ? 'h2' : 'h3'" id="models-title" class="k-resource-page__title">Models</component>
+          <p class="k-resource-page__subtitle">{{ setupNavigation ? 'Manage the models and provider access your agents use.' : 'Connect and manage models for your agents.' }}</p>
+        </div>
+        <div v-if="setupNavigation" class="k-resource-page__actions">
+          <ActionMenu label="Create" primary-menu :items="createActions" @select="selectCreateAction" />
         </div>
       </header>
       <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
-      <ResourceBackLink v-if="setupNavigation && !modelView" :href="hashFor(tabRoute('models'))" @back="openModelTab('models')">Back to Models</ResourceBackLink>
       <template v-if="credentialView">
       <template v-if="modelView">
       <div v-if="modelView && catalogError && !catalogHasSnapshot" class="k-error" role="alert">Model catalog unavailable: {{ catalogError }} <button class="k-btn k-btn--ghost" :disabled="catalogLoading" @click="loadCatalog">Retry</button></div>
@@ -456,9 +475,8 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       <div v-else-if="modelView && catalogLoading && !catalogHasSnapshot" class="k-loading-reveal muted" role="status">Loading model catalog…</div>
       <header class="k-resource-page__header" aria-labelledby="available-models-title">
         <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models you can assign to agents.</p></div>
-        <div class="k-resource-page__header-side">
+        <div v-if="!setupNavigation" class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
-            <a v-if="setupNavigation" class="k-btn k-btn--text" :href="hashFor(tabRoute('provider-connections'))" @click="navigateTab($event, 'provider-connections')">Manage model providers</a>
             <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
@@ -468,51 +486,7 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
       <div v-else-if="!credentials.loaded" class="k-loading-reveal muted" role="status">Loading credentials…</div>
       <div v-if="credentials.hasSnapshot && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
       </template>
-      <section v-if="connectionView" class="k-resource-page k-resource-page--collection" aria-labelledby="provider-connections-title">
-        <header class="k-resource-page__header">
-          <div class="k-resource-page__heading"><h3 id="provider-connections-title" class="k-resource-page__title">Provider connections</h3><p class="k-resource-page__subtitle">Manage API access for models and harness identities for agents running on edge machines.</p></div>
-          <div class="k-resource-page__header-side">
-            <div class="k-resource-page__actions">
-              <button type="button" class="k-btn k-btn--ghost secondary" @click="beginHarness"><Plus :stroke-width="1.75" aria-hidden="true" /> Add harness identity</button>
-              <button type="button" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button>
-            </div>
-          </div>
-        </header>
-        <div v-if="showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
-        <FirstRunGuide v-if="showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
-        <ResourceTable
-          v-else
-          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, { key: 'endpoint', label: 'Endpoint / machine', sortable: true }, { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
-          :rows="connectionRows"
-          row-key="id"
-          aria-label="Provider connections and harness identities"
-          :loaded="credentials.hasSnapshot"
-          :loading="credentials.loading"
-          :error="credentials.error"
-          :stale="credentials.hasSnapshot && !!credentials.error"
-          retryable
-          searchable
-          search-placeholder="Search provider access and identities…"
-          :search-keys="['name', 'type', 'endpoint']"
-          empty-text="No provider connections or harness identities yet. Use the header actions to add one."
-          search-empty-text="No provider connections or harness identities match your search."
-          paginated
-          :interactive="false"
-          @retry="store.load('credentials')"
-        >
-          <template #actions="{ row }">
-            <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
-            <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
-            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
-          </template>
-          <template #status="{ row }">
-            <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
-            <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
-            <TechnicalDetails :diagnostic="connectionCredential(row).statusMessage" />
-          </template>
-        </ResourceTable>
-      </section>
-      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout">
+      <ModelCollection v-if="modelView && credentials.hasSnapshot && modelRows.length" :rows="modelRows" preference-key="railgrid:agents:models:layout" :table-only="setupNavigation" :show-provider-connection="setupNavigation">
         <template #cards="{ rows }">
         <ModelConnectionCard v-for="{ credential } in rows" :key="credential.name" :name="credential.displayName || credential.name" :model="credential.model || '—'" :endpoint="credential.baseURL || 'Provider default'" endpoint-label="Endpoint" resource-label="Model" :configured="credential.secretResolved !== false" :busy="credentialIsBusy(credential.name)"
           :test-state="testing.has(credentialStateKey(credential.name)) ? 'Testing…' : tested.get(credentialStateKey(credential.name))?.ok ? `Test passed · ${tested.get(credentialStateKey(credential.name))?.latencyMS} ms` : tested.has(credentialStateKey(credential.name)) ? 'Test failed' : statusLabel(credential)"
@@ -539,6 +513,53 @@ defineExpose({ loadCatalog, loadUsage: () => usagePanel.value?.loadUsage() })
         </template>
       </ModelCollection>
       <div v-if="modelView && credentials.hasSnapshot && !showFirstRun && !modelRows.length" class="k-card agents-models-empty"><h3>No models configured</h3><p>Add a model using an existing provider connection, or connect a new provider.</p></div>
+      <section v-if="connectionView" class="k-resource-page k-resource-page--collection" :class="{ 'agents-model-providers': setupNavigation }" aria-labelledby="provider-connections-title">
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading">
+            <h3 id="provider-connections-title" class="k-resource-page__title">{{ setupNavigation ? 'Provider connections & harness identities' : 'Provider connections' }}</h3>
+            <p class="k-resource-page__subtitle">Shared API access for models and logins for coding harnesses.</p>
+          </div>
+          <div v-if="!setupNavigation" class="k-resource-page__header-side">
+            <div class="k-resource-page__actions">
+              <button type="button" class="k-btn k-btn--ghost secondary" @click="beginHarness"><Plus :stroke-width="1.75" aria-hidden="true" /> Add harness identity</button>
+              <button type="button" class="k-btn k-btn--primary" @click="openProvider"><Plus :stroke-width="1.75" aria-hidden="true" /> Connect provider</button>
+            </div>
+          </div>
+        </header>
+        <div v-if="!setupNavigation && showProviderFirstRun && credentials.error" class="k-stale" role="status">{{ credentials.error }} <button class="k-btn k-btn--ghost" @click="store.load('credentials')">Retry</button></div>
+        <FirstRunGuide v-if="!setupNavigation && showProviderFirstRun" title="Add provider access or a harness identity" description="Connect an API provider to add chat models, or add a Claude Code or Codex login for an agent running on an edge machine." primary-label="Connect provider" :actions-visible="false" :steps="[{ label: 'Provider', description: 'Connect a provider and choose a model' }, { label: 'Agent', description: 'Assign it to an agent' }, { label: 'Run', description: 'Start a conversation' }]" :current-step="0" journey-label="Model setup path" />
+        <ResourceTable
+          v-else
+          :columns="[{ key: 'name', label: 'Name', primary: true, sortable: true }, { key: 'type', label: 'Type', sortable: true }, ...(setupNavigation ? [] : [{ key: 'endpoint', label: 'Endpoint / machine', sortable: true }]), { key: 'modelCount', label: 'Models', sortable: true, sortValue: connectionModelCountSortValue }, { key: 'status', label: 'Readiness', sortable: true }, { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' }]"
+          :rows="connectionRows"
+          row-key="id"
+          aria-label="Provider connections and harness identities"
+          :loaded="credentials.hasSnapshot"
+          :loading="credentials.loading"
+          :error="credentials.error"
+          :stale="credentials.hasSnapshot && !!credentials.error"
+          retryable
+          searchable
+          search-placeholder="Search provider access and identities…"
+          :search-keys="['name', 'type', 'endpoint']"
+          empty-text="No provider connections or harness identities yet."
+          search-empty-text="No provider connections or harness identities match your search."
+          paginated
+          :interactive="false"
+          @retry="store.load('credentials')"
+        >
+          <template #actions="{ row }">
+            <ResourceTableActionButton v-if="providerConnectionCredential(connectionCredential(row))" :icon="Plus" :label="`Add model to ${row.name}`" :disabled="credentialIsBusy(connectionCredential(row).name, true)" @click="addModel(connectionCredential(row).name)" />
+            <ResourceTableEditButton :label="providerConnectionCredential(connectionCredential(row)) ? `Edit provider connection ${row.name}` : `Edit ${row.name} harness identity`" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="toggleEdit(connectionCredential(row))" />
+            <ResourceTableDeleteButton :label="providerConnectionCredential(connectionCredential(row)) ? `Delete provider connection ${row.name}` : `Delete ${row.name} harness identity`" :busy-label="providerConnectionCredential(connectionCredential(row)) ? `Deleting provider connection ${row.name}…` : `Deleting ${row.name} harness identity…`" :busy="credentialAction(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row))) === 'deleting'" :disabled="credentialIsBusy(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" @click="remove(connectionCredential(row).name, providerConnectionCredential(connectionCredential(row)))" />
+          </template>
+          <template #status="{ row }">
+            <StatusBadge :status="String(row.status)" :tone="row.statusTone as 'success' | 'danger' | 'muted'" />
+            <p v-if="harnessCredential(connectionCredential(row))" class="agents-hint">The credential check validates login format; a successful first run confirms edge access.</p>
+            <TechnicalDetails :diagnostic="connectionCredential(row).statusMessage" />
+          </template>
+        </ResourceTable>
+      </section>
       </template>
       <WorkspaceAssistantCard v-if="!setupNavigation && activeTab === 'workspace-assistant' && overlayControl" :store="store" :overlay-control="overlayControl" />
       <div v-else-if="!setupNavigation && activeTab === 'workspace-assistant'" class="k-card agents-models-empty"><h3>Workspace assistant unavailable</h3><p>Open Agents in the workspace portal to configure your assistant.</p></div>
