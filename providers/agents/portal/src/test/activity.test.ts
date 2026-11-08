@@ -771,6 +771,45 @@ describe('RunDetail.vue', () => {
     expect(view.element.textContent).not.toContain('Arguments and result')
   })
 
+  it('redacts command labels and failed output while preserving the full recorded output for viewing and copying', async () => {
+    const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const commandSecret = 'fake-command-credential'
+    const outputSecret = 'fake-output-credential'
+    const tailSecret = 'fake-tail-credential'
+    const command = "curl -H 'Authorization: Bearer " + commandSecret + "' https://example.test"
+    const safeCommand = "curl -H 'Authorization: [redacted]' https://example.test"
+    const body = 'request failed with permission denied\n'.repeat(150)
+    const result = 'Authorization: Bearer ' + outputSecret + '\n' + body + 'password=' + tailSecret + '\nfinal failure\n'
+    const safeResult = 'Authorization: [redacted]\n' + body + 'password=[redacted]\nfinal failure\n'
+    const at = new Date().toISOString()
+    const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
+      backend: 'harness',
+      phase: 'Failed',
+      steps: [
+        { id: 'closed', tool: 'commandExecution', args: 'example --token ' + commandSecret, outcome: 'ok', at },
+        { id: 'open', tool: 'command_execution', args: command, result, error: result.slice(0, 3990) + '…[truncated]', outcome: 'error', at },
+      ],
+    })) })
+    const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
+    const [closed, open] = view.element.querySelectorAll('.agents-run-activity .k-ai-action-row')
+    expect(closed!.querySelector('[aria-expanded="false"]')).not.toBeNull()
+    expect(text(closed)).toContain('Ran example --token [redacted]')
+    expect(text(open)).toContain('Failed ' + safeCommand)
+    expect(text(open!.querySelector('.k-ai-execution-details__command'))).toBe('$ ' + safeCommand)
+    const output = open!.querySelector('.k-ai-execution-details__output')!
+    expect(output.textContent).toContain('Authorization: [redacted]')
+    expect(output.textContent).not.toContain('final failure')
+    expect(view.element.textContent).not.toContain(commandSecret)
+    expect(view.element.textContent).not.toContain(outputSecret)
+
+    buttonWithText(open!, 'Show full output').click()
+    await settleVue()
+    expect(output.textContent).toBe(safeResult)
+    open!.querySelector<HTMLButtonElement>('[aria-label="Copy command and output"]')!.click()
+    await settleVue()
+    expect(writeText).toHaveBeenCalledWith(safeCommand + '\n\n' + safeResult)
+  })
+
   it('renders Running as an in-progress warning tone', async () => {
     const api = stubApi({ getRun: vi.fn().mockResolvedValue(detail({
       phase: 'Running',

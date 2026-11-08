@@ -394,16 +394,16 @@ function stepCommand(step: RunStep) {
   if (step.outcome !== 'ok' && step.outcome !== 'error') return undefined
   const tool: ToolCall = {
     id: step.id, name: step.tool, args: step.args, result: step.result,
+    error: step.result ? undefined : step.error,
     durationMS: step.durationMS, pending: false,
   }
   const command = toolCommand(tool)
   if (!command) return undefined
-  const diagnostic = sanitizeTechnicalDiagnostic(step.error)
   // Harness failures record the output again as a shorter error excerpt.
   const errorIsOutput = step.error && step.result?.startsWith(step.error.replace(/…\[truncated\]$/, ''))
-  if (!tool.result && diagnostic) tool.error = diagnostic
+  const diagnostic = tool.result && !errorIsOutput ? sanitizeTechnicalDiagnostic(step.error) : ''
   const { title } = toolCommandActivity(command, stepStatus(step), stepStatusLabel(step))
-  return { title, tool, diagnostic: tool.result && !errorIsOutput ? diagnostic : '' }
+  return { title, tool, diagnostic }
 }
 
 const stepsByID = computed(() => new Map((run.value?.steps || []).map(step => [step.id, { step, command: stepCommand(step) }])))

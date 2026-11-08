@@ -1,4 +1,5 @@
 import { commandActivityPresentation } from './agentkit/activity'
+import { redactTechnicalSecrets } from './failure-presentation'
 import type { ToolCall } from './types'
 
 /** Project only known shell tools; foreign tools retain their ordinary arguments. */
@@ -20,7 +21,7 @@ export function toolCommand(tool: ToolCall): string | undefined {
   // A simple quoted shell wrapper is presentation noise. Complex quoting
   // is displayed verbatim.
   const wrapped = command.match(/^(?:\/[^\s]+\/)?(?:ba|z)?sh -[a-z]*c\s+'([^']*)'$/s)
-  return wrapped?.[1] || command
+  return redactTechnicalSecrets(wrapped?.[1] || command)
 }
 
 export function toolCommandTitle(tool: ToolCall): string | undefined {
