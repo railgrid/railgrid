@@ -13,6 +13,19 @@ describe('command receipts', () => {
     expect(toolCommand({ id: '1', name: 'shell', pending: false, args: '{"command":[]}' })).toBeUndefined()
   })
 
+  it('redacts structured shell commands and keeps the recorded formatting of successful output', async () => {
+    const command = 'API_KEY=fake-command-key example'
+    const output = '{ "id": 9007199254740993, "note": "Bearer fake-output-key" }\n'
+    const tool = { id: '1', name: 'exec_command', args: JSON.stringify({ cmd: command }), result: output, pending: false }
+    expect(toolCommandTitle(tool)).toBe('Ran API_KEY=[redacted] example')
+    const view = await mountVue(AgentToolDetails, { tool })
+    expect(text(view.element.querySelector('.k-ai-execution-details__command'))).toBe('$ API_KEY=[redacted] example')
+    expect(view.element.querySelector('.k-ai-execution-details__output')?.textContent).toBe(
+      '{ "id": 9007199254740993, "note": "Bearer [redacted]" }\n',
+    )
+    view.unmount()
+  })
+
   it('shows compact shell output without redundant metadata and copies the complete receipt', async () => {
     const writeText = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
     const output = Array.from({ length: 24 }, (_, i) => `line ${i}  <script>literal</script>`).join('\n')

@@ -7,7 +7,7 @@ import {
   FileSearch,
 } from 'lucide-vue-next'
 import { attachCodeCopy, sanitizedMarkdown, sanitizedMarkdownWithToolCitations, type InlineToolCitation } from '../vue/chat'
-import { commandActivityPresentation, type AIActivityRow } from '../agentkit/activity'
+import type { AIActivityRow } from '../agentkit/activity'
 import { fmtDuration, fmtTokens, fmtUSD, type AgentArtifact, type ChatMessage, type ToolCall } from '../types'
 import { parseSavedCaptureCitation } from '../agentArtifacts'
 import { pendingIsQuestion } from '../types'
@@ -17,7 +17,7 @@ import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
-import { toolCommand } from '../toolExecution'
+import { toolCommand, toolCommandActivity } from '../toolExecution'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
@@ -288,14 +288,15 @@ const toolsByID = computed(() => {
 function activityRowsFor(block: Extract<TracePresentation, { kind: 'tools' }>): AIActivityRow[] {
   return block.tools.map(tool => {
     const command = toolCommand(tool)
-    const activity = command ? commandActivityPresentation(command) : undefined
     const status = actionStatus(tool)
+    const statusLabel = actionStatusLabel(tool)
+    const activity = command ? toolCommandActivity(command, status, statusLabel) : undefined
     return {
       id: tool.id,
-      title: activity ? status === 'succeeded' ? activity.title : status === 'running' ? activity.runningTitle : `${actionStatusLabel(tool)} ${command}` : formatToolLabel(tool.name),
+      title: activity?.title ?? formatToolLabel(tool.name),
       category: activity?.category,
       iconKey: activity?.iconKey || toolIconKey(tool.name),
-      status, statusLabel: actionStatusLabel(tool),
+      status, statusLabel,
       outcome: command ? '' : actionOutcome(tool),
       busy: toolBusy(tool), error: !!tool.error,
       expandable: Boolean(tool.args || tool.result || tool.error),
