@@ -29,7 +29,7 @@ import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 import { unpricedRunCount, usageCostLabel } from '../usage'
 
 interface Fence { store: AppStore; authorityEpoch?: number; createSession?: number }
-const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
+const props = withDefaults(defineProps<{ store: AppStore; api: ApiClient; overlayControl?: RailgridContext['agentOverlay']; returnLabel?: string; selectConnection?: boolean; continueAddModelAfterProviderConnect?: boolean; modelsTab?: ModelsTab; routeOwned?: boolean; setupNavigation?: boolean; createRoute?: boolean; initialFamily?: 'chat' | 'harness'; authorityEpoch?: number; createSession?: number }>(), { modelsTab: 'models', routeOwned: false, createRoute: false, initialFamily: 'chat', returnLabel: 'Models', continueAddModelAfterProviderConnect: false })
 const emit = defineEmits<{
   navigate: [route: Route]
   'connect-provider': [continueToModel: boolean]
@@ -50,6 +50,9 @@ function navigateTab(event: MouseEvent, tab: ModelsTab): void {
 }
 const connectionView = computed(() => activeTab.value === 'provider-connections')
 const modelView = computed(() => activeTab.value === 'models')
+const modelManagementLinks = computed(() => MODELS_TABS.filter(tab =>
+  tab.id !== 'models' && tab.id !== activeTab.value && (!modelView.value || tab.id !== 'provider-connections'),
+))
 const credentialView = computed(() => modelView.value || connectionView.value)
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
@@ -489,13 +492,13 @@ defineExpose({ loadCatalog, loadUsage })
       <ModelConnectionEditor v-else ref="editor" :key="`${editorGeneration}:${createSession}:${editName || 'new'}`" :api="api" :credential="editingCredential" :initial-family="editorFamily" :busy="createBusy" :error="saveError" :catalog="catalog" @save="saveModel" @cancel="cancelCreate" @family-change="editorFamily = $event" />
     </template>
     <template v-else>
-      <header class="k-resource-page__header">
+      <header v-if="!setupNavigation" class="k-resource-page__header">
         <div class="k-resource-page__heading">
           <component :is="routeOwned ? 'h2' : 'h3'" class="k-resource-page__title">Models</component>
           <p class="k-resource-page__subtitle">Connect and manage models for your agents.</p>
         </div>
       </header>
-      <nav class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
+      <nav v-if="!setupNavigation" class="k-tabs k-tabs--compact agents-models-tabs" aria-label="Model management">
         <a v-for="tab in MODELS_TABS" :key="tab.id" class="k-tab agents-models-tab" :href="hashFor(tabRoute(tab.id))" :aria-current="activeTab === tab.id ? 'page' : undefined" @click="navigateTab($event, tab.id)">{{ tab.label }}</a>
       </nav>
       <template v-if="credentialView">
@@ -507,6 +510,7 @@ defineExpose({ loadCatalog, loadUsage })
         <div class="k-resource-page__heading"><h3 id="available-models-title" class="k-resource-page__title">Available models</h3><p class="k-resource-page__subtitle">Models you can assign to agents.</p></div>
         <div class="k-resource-page__header-side">
           <div class="k-resource-page__actions">
+            <a v-if="setupNavigation" class="k-btn k-btn--text" :href="hashFor(tabRoute('provider-connections'))" @click="navigateTab($event, 'provider-connections')">Manage model providers</a>
             <button v-if="!showFirstRun" type="button" class="k-btn k-btn--primary" @click="beginModel"><Plus :stroke-width="1.75" aria-hidden="true" /> Add model</button>
           </div>
         </div>
@@ -610,6 +614,9 @@ defineExpose({ loadCatalog, loadUsage })
         </div>
       </template>
       </ModelUsageSection>
+      <nav v-if="setupNavigation" class="k-resource-page__actions" aria-label="More model settings">
+        <a v-for="tab in modelManagementLinks" :key="tab.id" class="k-btn k-btn--text" :href="hashFor(tabRoute(tab.id))" @click="navigateTab($event, tab.id)">{{ tab.id === 'provider-connections' ? 'Manage model providers' : tab.label }}</a>
+      </nav>
     </template>
   </div>
 </template>

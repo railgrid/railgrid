@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
-import { BookOpen, Bot, Cpu, Gauge, Plug, RefreshCw, Webhook as WebhookIcon } from 'lucide-vue-next'
+import { BookOpen, Bot, Gauge, RefreshCw, Settings } from 'lucide-vue-next'
 import Tabs, { type PortalTabItem } from './portalkit/Tabs.vue'
 import ConfirmDialog from './portalkit/ConfirmDialog.vue'
 import { resolveConfirm } from './portalkit/confirm'
@@ -92,27 +92,26 @@ watch(
   { flush: 'post' },
 )
 const active = computed(() => activeMenu(route.value))
+const setupTabs = [
+  { id: 'models', label: 'Models' },
+  { id: 'connections', label: 'Connections' },
+  { id: 'webhooks', label: 'Webhooks' },
+] as const
+const setupActive = computed(() => setupTabs.some(tab => tab.id === active.value))
 // Initial hydration and authority rotations call loadAll. Subsequent route
 // entries must also revalidate cached collections, including empty snapshots.
 watch(() => hashFor(route.value), () => {
   if (api.value.hasWorkspace()) store.value.refreshCollections(resourceSlicesForRoute(route.value))
 })
-const menuCounts = computed<Record<MenuKey, number>>(() => {
-  storeRevision.value
-  return {
-    agents: store.value.agents.data.length,
-    skills: 0,
-    activity: store.value.pendingInbox().length,
-    connections: store.value.connections.data.length + store.value.toolsets.data.length,
-    webhooks: store.value.webhooks.data.length,
-    models: store.value.credentials.data.filter(item => !item.isConnection && !isHarnessProvider(item.provider)).length,
-  }
-})
 const live = computed(() => { storeRevision.value; return store.value.live })
 const tabs = computed<PortalTabItem[]>(() => {
-  const icons = { agents: Bot, skills: BookOpen, activity: Gauge, connections: Plug, webhooks: WebhookIcon, models: Cpu }
-  const labels = { agents: 'Agents', skills: 'Skills library', activity: 'Activity', connections: 'Connections', webhooks: 'Webhooks', models: 'Models' }
-  return MENUS.map(menu => ({ id: menu, label: labels[menu], icon: icons[menu], count: menuCounts.value[menu] || undefined }))
+  storeRevision.value
+  return [
+    { id: 'agents', label: 'Agents', icon: Bot, count: store.value.agents.data.length || undefined },
+    { id: 'activity', label: 'Activity', icon: Gauge, count: store.value.pendingInbox().length || undefined },
+    { id: 'skills', label: 'Skills library', icon: BookOpen },
+    { id: 'setup', label: 'Setup', icon: Settings },
+  ]
 })
 
 const routeSurfaceKey = computed(() => {
@@ -275,7 +274,8 @@ function scheduleRouteFocus(next: Route): void {
     if (newAgentComposerRoute.value === hashFor(next) &&
       document.activeElement?.matches('.agents-composer [contenteditable="true"]')) return
     const assistantSettings = next.kind === 'menu' && next.menu === 'models' && (props.ctx?.agentOverlay?.settingsOpen || root.value?.querySelector('#workspace-assistant-settings') === document.activeElement)
-    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title, .k-create-title, .agents-detail-title > h2')
+    const target = root.value?.querySelector<HTMLElement>(assistantSettings ? '#workspace-assistant-settings' : '[data-agent-workspace-title], .k-resource-page__title:not([data-agents-setup-title]), .k-create-title, .agents-detail-title > h2')
+      ?? root.value?.querySelector<HTMLElement>('[data-agents-setup-title]')
     if (!target) return
     if (!target.hasAttribute('tabindex')) target.setAttribute('tabindex', '-1')
     target.focus()
@@ -540,7 +540,14 @@ function onEditSuccess(detail: EditSuccessDetail): void {
 }
 
 function selectMenu(id: string): void {
-  if ((MENUS as string[]).includes(id)) go({ kind: 'menu', menu: id as MenuKey })
+  const menu = id === 'setup' ? 'models' : id
+  if ((MENUS as string[]).includes(menu)) go({ kind: 'menu', menu: menu as MenuKey })
+}
+
+function selectSetupTab(event: MouseEvent, menu: MenuKey): void {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey || event.button !== 0) return
+  event.preventDefault()
+  go({ kind: 'menu', menu })
 }
 
 // The host's sidebar sub-nav (CatalogEntry ui.children) navigates by pushing a
@@ -594,13 +601,31 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
   </div>
   <div v-else ref="root" class="agents-app" :class="{ 'agents-app--workspace': workspaceActive }">
     <div v-if="route.kind === 'menu'" class="agents-nav-wrap">
-      <Tabs class="agents-nav" :tabs="tabs" :active="active" aria-label="Agents provider sections" @select="selectMenu" />
+      <Tabs class="agents-nav" :tabs="tabs" :active="setupActive ? 'setup' : active" aria-label="Agents provider sections" @select="selectMenu" />
       <span v-if="!live" class="agents-offline" title="Live updates are reconnecting; falling back to polling.">
         <RefreshCw class="k-spin" aria-hidden="true" /> reconnecting
       </span>
     </div>
 
     <div class="agents-view">
+      <section v-if="route.kind === 'menu' && setupActive" class="k-resource-page k-resource-page--collection">
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading">
+            <h2 class="k-resource-page__title" data-agents-setup-title>Setup</h2>
+            <p class="k-resource-page__subtitle">Manage the models, connections, and webhooks your agents use.</p>
+          </div>
+        </header>
+        <nav class="k-tabs k-tabs--compact" aria-label="Setup sections">
+          <a
+            v-for="tab in setupTabs"
+            :key="tab.id"
+            class="k-tab agents-models-tab"
+            :href="hashFor({ kind: 'menu', menu: tab.id })"
+            :aria-current="active === tab.id ? 'page' : undefined"
+            @click="selectSetupTab($event, tab.id)"
+          >{{ tab.label }}</a>
+        </nav>
+      </section>
       <AgentsList
         v-if="route.kind === 'menu' && route.menu === 'agents'"
         :key="routeSurfaceKey"
@@ -647,6 +672,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
       />
       <Models
         v-else-if="route.kind === 'menu' && route.menu === 'models'"
+        setup-navigation
         :overlay-control="ctx.agentOverlay"
         :models-tab="route.modelsTab"
         :key="routeSurfaceKey"

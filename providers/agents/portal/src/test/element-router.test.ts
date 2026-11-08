@@ -99,6 +99,31 @@ async function chooseModel(root: ParentNode, model: string): Promise<void> {
 }
 
 describe('public Agents shell routing', () => {
+  it('groups setup routes under one tab while retaining the Activity badge and direct links', async () => {
+    const element = await mountShell()
+    element.store!.inbox.data = [{ id: 'request', agentName: 'scout', kind: 'approval', state: 'pending', prompt: 'Review tool access', createdAt: '2026-01-01T00:00:00Z' }]
+    element.store!.dispatchEvent(new Event('change'))
+    await settleVue()
+    const nav = element.querySelector('[aria-label="Agents provider sections"]')!
+    expect([...nav.querySelectorAll('.k-tab__label')].map(text)).toEqual(['Agents', 'Activity', 'Skills library', 'Setup'])
+    expect(text(nav.querySelector('[data-k-tab-id="activity"] .k-tab__count'))).toBe('1')
+    nav.querySelector<HTMLButtonElement>('[data-k-tab-id="setup"]')!.click()
+    await settleVue()
+
+    expect(location.hash).toBe('#/models')
+    expect(nav.querySelector('[aria-current="page"]')?.getAttribute('data-k-tab-id')).toBe('setup')
+    const subtabs = element.querySelector('[aria-label="Setup sections"]')!
+    expect([...subtabs.querySelectorAll('a')].map(link => link.getAttribute('href'))).toEqual(['#/models', '#/connections', '#/webhooks'])
+    expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
+    expect(element.querySelector('[aria-label="Model management"]')).toBeNull()
+    const providers = element.querySelector<HTMLAnchorElement>('a[href="#/models/provider-connections"]')!
+    expect(text(providers)).toBe('Manage model providers')
+    providers.click()
+    await settleVue()
+    expect(location.hash).toBe('#/models/provider-connections')
+    expect(text(subtabs.querySelector('[aria-current="page"]'))).toBe('Models')
+  })
+
   it('starts route revalidation before webhook settings initialize from a cached snapshot', async () => {
     vi.mocked(AppStore.prototype.refreshCollections).mockRestore()
     const element = await mountShell('#/webhooks')
@@ -129,10 +154,10 @@ describe('public Agents shell routing', () => {
     await settleVue()
     expect(text(element)).toContain('Create your first webhook')
 
-    element.querySelector<HTMLButtonElement>('[data-k-tab-id="connections"]')!.click()
+    element.querySelector<HTMLAnchorElement>('[aria-label="Setup sections"] a[href="#/connections"]')!.click()
     await settleVue()
     items = [created]
-    element.querySelector<HTMLButtonElement>('[data-k-tab-id="webhooks"]')!.click()
+    element.querySelector<HTMLAnchorElement>('[aria-label="Setup sections"] a[href="#/webhooks"]')!.click()
     await vi.waitFor(() => expect(text(element)).toContain('created-by-agent'))
     expect(listWebhooks).toHaveBeenCalledTimes(2)
     expect(text(element)).not.toContain('Create your first webhook')
@@ -147,7 +172,13 @@ describe('public Agents shell routing', () => {
   ])('revalidates collections when entering %s', async (menu, keys) => {
     const element = await mountShell(menu === 'agents' ? '#/connections' : '#/agents')
     vi.mocked(AppStore.prototype.refreshCollections).mockClear()
-    element.querySelector<HTMLButtonElement>(`[data-k-tab-id="${menu}"]`)!.click()
+    if (menu === 'connections' || menu === 'webhooks' || menu === 'models') {
+      element.querySelector<HTMLButtonElement>('[data-k-tab-id="setup"]')!.click()
+      await settleVue()
+      if (menu !== 'models') element.querySelector<HTMLAnchorElement>(`[aria-label="Setup sections"] a[href="#/${menu}"]`)!.click()
+    } else {
+      element.querySelector<HTMLButtonElement>(`[data-k-tab-id="${menu}"]`)!.click()
+    }
     await settleVue()
     expect(element.store!.refreshCollections).toHaveBeenCalledWith(keys)
   })
@@ -242,13 +273,13 @@ describe('public Agents shell routing', () => {
   })
 
   it('delegates embedded navigation to the host router without mutating history itself', async () => {
-    const element = await mountShell()
+    const element = await mountShell('#/models')
     const navigate = vi.fn((event: Event) => event.preventDefault())
     document.body.addEventListener('railgrid-navigate', navigate)
     const push = vi.spyOn(history, 'pushState')
     push.mockClear()
     try {
-      element.querySelector<HTMLButtonElement>('[data-k-tab-id="connections"]')!.click()
+      element.querySelector<HTMLAnchorElement>('[aria-label="Setup sections"] a[href="#/connections"]')!.click()
       await settleVue(4, 5)
 
       expect(navigate).toHaveBeenCalledOnce()
@@ -261,11 +292,11 @@ describe('public Agents shell routing', () => {
   })
 
   it('pushes menu navigation and restores externally assigned hashes', async () => {
-    const element = await mountShell()
+    const element = await mountShell('#/models')
     const push = vi.spyOn(history, 'pushState')
     push.mockClear()
 
-    element.querySelector<HTMLButtonElement>('[data-k-tab-id="connections"]')!.click()
+    element.querySelector<HTMLAnchorElement>('[aria-label="Setup sections"] a[href="#/connections"]')!.click()
     await settleVue(4, 5)
     expect(location.hash).toBe('#/connections')
     expect(push).toHaveBeenCalledWith(null, '', '#/connections')
@@ -275,8 +306,8 @@ describe('public Agents shell routing', () => {
     window.dispatchEvent(new HashChangeEvent('hashchange'))
     await settleVue(4, 5)
     expect(element.route).toEqual({ kind: 'menu', menu: 'models' })
-    expect(text(element.querySelector('.k-resource-page__header'))).toContain('Models')
-    expect(document.activeElement).toBe(element.querySelector('.k-resource-page__title'))
+    expect(text(element.querySelector('[aria-label="Setup sections"] [aria-current="page"]'))).toBe('Models')
+    expect(document.activeElement).toBe(element.querySelector('#available-models-title'))
 
     history.replaceState(null, '', '#/activity/run%2F42')
     window.dispatchEvent(new PopStateEvent('popstate'))
@@ -332,7 +363,7 @@ describe('public Agents shell routing', () => {
     store.dispatchEvent(new Event('change'))
     await settleVue(6)
 
-    expect(element.querySelector('[data-k-tab-id="models"] .k-tab__count')?.textContent).toBe('1')
+    expect(element.querySelector('[data-k-tab-id="setup"]')?.getAttribute('aria-current')).toBe('page')
     buttonWithText(element.querySelector('section[aria-labelledby="provider-connections-title"] > header')!, 'Add harness identity').click()
     await vi.waitFor(() => expect(location.hash).toBe('#/create/model/harness'))
     await settleVue(8)
@@ -485,7 +516,7 @@ describe('public Agents shell routing', () => {
     store.webhooks.loaded = store.webhooks.hasSnapshot = true
     store.dispatchEvent(new Event('change'))
     await settleVue(4, 120)
-    expect(text(element.querySelector('.agents-nav-wrap'))).toContain('Webhooks')
+    expect(text(element.querySelector('[aria-label="Setup sections"] [aria-current="page"]'))).toBe('Webhooks')
     expect(text(element.querySelector('[data-webhooks-heading]'))).toContain('Webhooks')
 
     const createWebhook = vi.fn().mockResolvedValue(created)
@@ -1113,7 +1144,7 @@ describe('Models sub-tab shell routing', () => {
   it('restores deep links and follows external browser navigation between sub-tabs', async () => {
     const element = await mountShell('#/models/provider-connections')
     expect(element.route).toEqual({ kind: 'menu', menu: 'models', modelsTab: 'provider-connections' })
-    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections')
     history.pushState(null, '', '#/models/usage')
     window.dispatchEvent(new PopStateEvent('popstate'))
     await settleVue(6)
@@ -1130,21 +1161,21 @@ describe('Models sub-tab shell routing', () => {
     buttonWithText(element, 'Cancel').click()
     await settleVue(6)
     expect(location.hash).toBe('#/models/provider-connections')
-    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe('Provider connections')
+    expect(element.querySelector('#provider-connections-title')?.textContent).toBe('Provider connections')
   })
 
   it.each([
-    { from: '#/create/model/harness', to: '#/models/provider-connections', tab: 'Provider connections' },
-    { from: '#/create/model', to: '#/models/provider-connections', tab: 'Provider connections' },
-    { from: '#/create/model/from-connection', to: '#/models', tab: 'Models' },
-  ])('restores the expected owner when cancelling direct create deep link $from', async ({ from, to, tab }) => {
+    { from: '#/create/model/harness', to: '#/models/provider-connections', heading: '#provider-connections-title' },
+    { from: '#/create/model', to: '#/models/provider-connections', heading: '#provider-connections-title' },
+    { from: '#/create/model/from-connection', to: '#/models', heading: '#available-models-title' },
+  ])('restores the expected owner when cancelling direct create deep link $from', async ({ from, to, heading }) => {
     const element = await mountShell(from)
     expect(element.querySelector('.k-create-title')).toBeTruthy()
 
     element.querySelector<HTMLButtonElement>('.k-back-action')!.click()
     await vi.waitFor(() => expect(location.hash).toBe(to))
     await settleVue(6)
-    expect(element.querySelector('[aria-label="Model management"] [aria-current="page"]')?.textContent).toBe(tab)
+    expect(element.querySelector(heading)).not.toBeNull()
     element.remove()
   })
 
