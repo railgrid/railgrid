@@ -1147,17 +1147,6 @@ railgrid-provider-agents .agents-chat-welcome p {
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-railgrid-provider-agents .agents-chat-setup {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-  margin-block-start: 16px;
-}
-railgrid-provider-agents .agents-chat-welcome .agents-chat-setup p {
-  margin: 0;
-  font-size: 13px;
-}
 railgrid-provider-agents .agents-chat-starters {
   display: grid;
   border-top: 1px solid var(--color-border-subtle);
@@ -1194,6 +1183,13 @@ railgrid-provider-agents .agents-chat-starter[aria-disabled="true"] {
   cursor: default;
   opacity: 0.5;
   background: transparent;
+}
+
+railgrid-provider-agents .agents-chat-setup { width: 100%; }
+railgrid-provider-agents .agents-chat-setup strong {
+  display: block;
+  color: var(--color-text-primary);
+  font-weight: 600;
 }
 
 /* Zero-height anchor keeps the transcript full-height; only the button catches input. */

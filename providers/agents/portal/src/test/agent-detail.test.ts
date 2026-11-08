@@ -174,8 +174,9 @@ describe('agent resource detail conformance', () => {
       expect(toggle.getAttribute('aria-label')).toBe('Show workbench')
       expect(toggle.getAttribute('aria-expanded')).toBe('false')
       expect(text(toggle)).toBe('')
-      const setup = page.querySelector<HTMLButtonElement>('.agents-chat-setup button')!
-      expect(text(setup)).toBe('Configure agent')
+      const setup = page.querySelector<HTMLButtonElement>('button.agents-chat-setup')!
+      expect(setup.classList.contains('agents-chat-starter')).toBe(true)
+      expect(text(setup.querySelector('strong'))).toBe('Configure agent')
       setup.click()
       await settleVue()
       expect(mounted.navigations.at(-1)).toEqual({ kind: 'agent', name: 'scout', tab: 'config' })

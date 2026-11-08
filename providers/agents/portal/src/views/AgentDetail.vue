@@ -380,12 +380,20 @@ async function remove(): Promise<void> {
                   </button>
                 </template>
                 <template v-if="!compact" #empty-setup>
-                  <div v-show="!workspaceOpen" class="agents-chat-setup">
-                    <p>Use the Workbench to edit this agent’s instructions, tools, and automation.</p>
-                    <button class="k-btn k-btn--text" type="button" @click="openAgentConfig">
-                      <PanelRight :stroke-width="1.75" aria-hidden="true" /> Configure agent
-                    </button>
-                  </div>
+                  <button
+                    v-show="!workspaceOpen"
+                    class="k-ai-launcher__card agents-chat-starter agents-chat-setup"
+                    type="button"
+                    :aria-labelledby="domID('agents-chat-setup-title')"
+                    :aria-describedby="domID('agents-chat-setup-description')"
+                    @click="openAgentConfig"
+                  >
+                    <span>
+                      <strong :id="domID('agents-chat-setup-title')">Configure agent</strong>
+                      <span :id="domID('agents-chat-setup-description')">Edit instructions, tools, and automation in the Workbench.</span>
+                    </span>
+                    <PanelRight :size="16" :stroke-width="1.75" aria-hidden="true" />
+                  </button>
                 </template>
               </AgentChat>
             </template>
