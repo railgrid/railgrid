@@ -356,33 +356,39 @@ test('claims production readiness only when deployed image values match the sele
   assert.equal(pipeline.state, 'production_ready')
 })
 
-test('keeps a stale Ready production revision in deployment until the requested revision is observed', () => {
-  const pipeline = releasePipelineView({
+test('keeps a retry in deployment while the provider still reports the previous revision', () => {
+  const readiness = {
     promotable: true,
     build: { status: 'built', commitSHA: 'release123456', note: '', components: [] },
     requestedRolloutRevision: 'requested-42',
     observedRolloutRevision: 'older-41',
     production: { name: 'demo-prod', phase: 'Ready' },
-  })
-  assert.equal(pipeline.state, 'deploying')
-  assert.equal(pipeline.transitional, true)
-  assert.equal(pipeline.requestedRevision, 'requested-42')
-  assert.equal(pipeline.observedRevision, 'older-41')
-  assert.match(pipeline.detail, /Waiting for the production app/)
-  assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'current')
+  }
+  for (const phase of ['Ready', 'Failed']) {
+    const pipeline = releasePipelineView({ ...readiness, production: { ...readiness.production, phase } })
+    assert.equal(pipeline.state, 'deploying')
+    assert.equal(pipeline.transitional, true)
+    assert.equal(pipeline.requestedRevision, 'requested-42')
+    assert.equal(pipeline.observedRevision, 'older-41')
+    assert.match(pipeline.detail, /Waiting for the production app/)
+    assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'current')
+  }
 })
 
-test('stops the transitional release state when the provider reports a terminal rollout failure', () => {
-  const pipeline = releasePipelineView({
+test('stops the transitional release state when the observed rollout fails', () => {
+  const readiness = {
     promotable: true,
     build: { status: 'built', commitSHA: 'release123456', note: '', components: [] },
     requestedRolloutRevision: 'requested-42',
-    observedRolloutRevision: 'older-41',
+    observedRolloutRevision: 'requested-42',
     production: { name: 'demo-prod', phase: 'Failed' },
-  })
-  assert.equal(pipeline.state, 'failed')
-  assert.equal(pipeline.transitional, false)
-  assert.match(pipeline.message, /failed/i)
-  assert.equal(pipeline.steps.find((step) => step.key === 'build').state, 'done')
-  assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'error')
+  }
+  for (const revision of [readiness.requestedRolloutRevision, undefined]) {
+    const pipeline = releasePipelineView({ ...readiness, requestedRolloutRevision: revision, observedRolloutRevision: revision })
+    assert.equal(pipeline.state, 'failed')
+    assert.equal(pipeline.transitional, false)
+    assert.match(pipeline.message, /failed/i)
+    assert.equal(pipeline.steps.find((step) => step.key === 'build').state, 'done')
+    assert.equal(pipeline.steps.find((step) => step.key === 'deploy').state, 'error')
+  }
 })

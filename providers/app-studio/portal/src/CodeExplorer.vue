@@ -26,7 +26,7 @@ export function codeExplorerTreeState(
 </script>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ChevronLeft,
   Download,
@@ -83,14 +83,18 @@ let fileRequestSerial = 0
 let workspaceRefreshSerial = 0
 
 const collapsed = ref<Set<string>>(new Set())
-const mobileTreeOpen = ref(true)
+const splitPane = ref(false)
+const treeOpen = ref(true)
 const activeTreePath = ref('')
 const rootRef = ref<HTMLElement | null>(null)
+const treePaneRef = ref<HTMLElement | null>(null)
 const treeRootRef = ref<HTMLElement | null>(null)
-const mobileBackRef = ref<HTMLButtonElement | null>(null)
+const viewerPaneRef = ref<HTMLElement | null>(null)
+const backToTreeRef = ref<HTMLButtonElement | null>(null)
 const uploadInputRef = ref<HTMLInputElement | null>(null)
 const newFileInputRef = ref<HTMLInputElement | null>(null)
 const uploadDirInputRef = ref<HTMLInputElement | null>(null)
+let paneResizeObserver: ResizeObserver | undefined
 
 // Write state. One write sequence runs at a time; writeStatus names it.
 const writeBusy = ref(false)
@@ -204,17 +208,44 @@ function selectRow(row: Row) {
     toggleDir(row.node.path)
     return
   }
-  mobileTreeOpen.value = false
+  showFileViewer()
   void openFile(row.node.path)
-  if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
-    void nextTick(() => mobileBackRef.value?.focus())
+}
+
+function showFileViewer() {
+  treeOpen.value = false
+  if (!splitPane.value) {
+    void nextTick(() => {
+      const root = rootRef.value
+      if (!root) return
+      const { activeElement, body } = root.ownerDocument
+      if (activeElement === body || root.contains(activeElement)) backToTreeRef.value?.focus()
+    })
   }
 }
 
-function showMobileTree() {
-  mobileTreeOpen.value = true
+function showTree() {
+  treeOpen.value = true
+  focusActiveTreeRow()
+}
+
+function focusActiveTreeRow() {
   const activeIndex = Math.max(0, rows.value.findIndex((row) => row.node.path === activeTreePath.value))
   focusTreeRow(activeIndex)
+}
+
+function updateExplorerLayout(width: number) {
+  if (width <= 0) return
+  // The 256px tree needs room alongside a readable code viewport.
+  const split = width >= 640
+  if (split === splitPane.value) return
+  const active = rootRef.value?.ownerDocument.activeElement
+  if (!split && active) {
+    if (treePaneRef.value?.contains(active)) treeOpen.value = true
+    else if (viewerPaneRef.value?.contains(active)) treeOpen.value = false
+  }
+  splitPane.value = split
+  if (split && active === backToTreeRef.value) focusActiveTreeRow()
 }
 
 function focusTreeRow(index: number) {
@@ -349,6 +380,7 @@ async function refreshAndSelect(path: string, projectName: string, requestContex
     collapsed.value = next
   }
   activeTreePath.value = path
+  showFileViewer()
   await openFile(path, projectName, requestContext)
 }
 
@@ -714,8 +746,8 @@ async function loadPreview(file: ProjectFileContent) {
   try {
     const blob = await api.fetchProjectFileRaw(requestContext, projectName, file.path, { signal: controller.signal })
     if (previewController !== controller || !isCurrentProject(projectName, requestContext)) return
-    // <img> needs an image type; the server's type is by extension but may
-    // fall back to octet-stream.
+    // The image element needs an image type. The server may fall back to
+    // octet-stream when it derives the type from the file extension.
     const extension = file.path.split('.').pop()?.toLowerCase() ?? ''
     const typed = blob.type.startsWith('image/') ? blob : new Blob([blob], { type: IMAGE_TYPES[extension] ?? 'application/octet-stream' })
     previewController = null
@@ -747,7 +779,7 @@ watch(
     treeError.value = null
     fileError.value = null
     collapsed.value = new Set()
-    mobileTreeOpen.value = true
+    treeOpen.value = true
     activeTreePath.value = ''
     writeBusy.value = false
     writeStatus.value = ''
@@ -776,27 +808,44 @@ watch(
   },
 )
 
-onBeforeUnmount(releasePreview)
+onMounted(() => {
+  const pane = rootRef.value
+  if (!pane) return
+  updateExplorerLayout(pane.getBoundingClientRect().width)
+  if (typeof ResizeObserver !== 'undefined') {
+    paneResizeObserver = new ResizeObserver(([entry]) => {
+      if (entry) updateExplorerLayout(entry.contentRect.width)
+    })
+    paneResizeObserver.observe(pane)
+  }
+})
+
+onBeforeUnmount(() => {
+  paneResizeObserver?.disconnect()
+  releasePreview()
+})
 </script>
 
 <template>
-  <div ref="rootRef" class="flex h-full min-h-0 flex-col md:flex-row">
+  <div ref="rootRef" class="flex h-full min-h-0 min-w-0" :class="splitPane ? 'flex-row' : 'flex-col'">
     <!-- Tree -->
     <aside
-      class="relative w-full min-h-0 flex-1 flex-col md:w-64 md:flex-none md:border-r md:border-border-subtle"
-      :class="mobileTreeOpen ? 'flex' : 'hidden md:flex'"
+      v-show="splitPane || treeOpen"
+      ref="treePaneRef"
+      class="relative flex min-h-0 min-w-0 flex-col"
+      :class="splitPane ? 'w-64 flex-none border-r border-border-subtle' : 'w-full flex-1'"
       @dragenter="handleTreeDragEnter"
       @dragover="handleTreeDragOver"
       @dragleave="handleTreeDragLeave"
       @drop="handleTreeDrop"
     >
-      <div class="flex items-center justify-between gap-1 border-b border-border-subtle px-3 py-2">
-        <span class="shrink-0 whitespace-nowrap text-[12px] font-semibold text-text-secondary">Workspace files</span>
+      <div class="flex min-h-11 shrink-0 items-center gap-1 border-b border-border-subtle px-3 py-1">
+        <span class="min-w-0 truncate text-[13px] font-semibold text-text-primary">Workspace files</span>
         <span v-if="treeState === 'refreshing' && !writeBusy" class="mr-auto min-w-0 truncate text-[11px] text-text-muted" role="status" aria-live="polite">Refreshing…</span>
         <span v-else class="mr-auto" />
         <button
           type="button"
-          class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          class="app-studio-touch-target k-icon-action"
           :title="`Upload files to ${dirLabel(contextDir)}`"
           aria-label="Upload files"
           :disabled="writesDisabled"
@@ -806,7 +855,7 @@ onBeforeUnmount(releasePreview)
         </button>
         <button
           type="button"
-          class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          class="app-studio-touch-target k-icon-action"
           title="New file"
           aria-label="New file"
           :disabled="writesDisabled"
@@ -816,7 +865,7 @@ onBeforeUnmount(releasePreview)
         </button>
         <button
           type="button"
-          class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
+          class="app-studio-touch-target k-icon-action"
           title="Refresh"
           aria-label="Refresh workspace files"
           :disabled="loadingTree"
@@ -951,20 +1000,23 @@ onBeforeUnmount(releasePreview)
     </aside>
 
     <!-- Viewer -->
-    <section class="min-w-0 flex-1 flex-col" :class="mobileTreeOpen ? 'hidden md:flex' : 'flex'">
-      <div class="flex items-center gap-2 border-b border-border-subtle px-3 py-2">
-        <button
-          ref="mobileBackRef"
-          type="button"
-          class="app-studio-touch-target -ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary md:hidden"
-          aria-label="Back to workspace files"
-          @click="showMobileTree"
-        >
-          <ChevronLeft class="h-4 w-4" aria-hidden="true" />
-        </button>
-        <FileIcon class="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
-        <span class="truncate text-[12px] font-medium text-text-primary">{{ selectedPath || 'Select a file' }}</span>
-        <div class="ml-auto flex shrink-0 items-center gap-2">
+    <section v-show="splitPane || !treeOpen" ref="viewerPaneRef" class="flex min-h-0 min-w-0 flex-1 flex-col">
+      <div class="flex min-h-11 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border-subtle px-3 py-1">
+        <div class="flex min-w-0 grow basis-32 items-center gap-2">
+          <button
+            v-if="!splitPane"
+            ref="backToTreeRef"
+            type="button"
+            class="app-studio-touch-target k-icon-action"
+            aria-label="Back to workspace files"
+            @click="showTree"
+          >
+            <ChevronLeft class="h-4 w-4" aria-hidden="true" />
+          </button>
+          <FileIcon class="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
+          <span class="min-w-0 truncate text-[13px] font-semibold text-text-primary" :title="selectedPath || undefined">{{ selectedPath || 'Select a file' }}</span>
+        </div>
+        <div v-if="selectedPath" class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1">
           <span v-if="content?.truncated" class="rounded bg-surface-overlay px-1.5 py-0.5 text-[11px] text-text-muted">truncated</span>
           <button
             v-if="selectedIsImage && content && !content.binary"
@@ -974,29 +1026,27 @@ onBeforeUnmount(releasePreview)
           >
             {{ showImageSource ? 'View image' : 'View source' }}
           </button>
-          <template v-if="selectedPath">
-            <button
-              type="button"
-              class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary disabled:opacity-50"
-              title="Download"
-              :aria-label="`Download ${projectFileBaseName(selectedPath)}`"
-              :disabled="downloadBusy"
-              @click="downloadSelected"
-            >
-              <Loader2 v-if="downloadBusy" class="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-              <Download v-else class="h-4 w-4" aria-hidden="true" />
-            </button>
-            <button
-              type="button"
-              class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition hover:bg-danger-subtle hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
-              title="Delete"
-              :aria-label="`Delete ${projectFileBaseName(selectedPath)}`"
-              :disabled="writesDisabled || !selectedDeleteVersion"
-              @click="deleteSelected"
-            >
-              <Trash2 class="h-4 w-4" aria-hidden="true" />
-            </button>
-          </template>
+          <button
+            type="button"
+            class="app-studio-touch-target k-icon-action"
+            title="Download"
+            :aria-label="`Download ${projectFileBaseName(selectedPath)}`"
+            :disabled="downloadBusy"
+            @click="downloadSelected"
+          >
+            <Loader2 v-if="downloadBusy" class="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+            <Download v-else class="h-4 w-4" aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            class="app-studio-touch-target k-icon-action hover:bg-danger-subtle hover:text-danger"
+            title="Delete"
+            :aria-label="`Delete ${projectFileBaseName(selectedPath)}`"
+            :disabled="writesDisabled || !selectedDeleteVersion"
+            @click="deleteSelected"
+          >
+            <Trash2 class="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       </div>
       <div class="min-h-0 flex-1 overflow-auto">

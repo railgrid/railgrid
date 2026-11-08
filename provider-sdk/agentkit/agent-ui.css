@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 59;
+  --railgrid-agent-ui-version: 60;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1498,7 +1498,7 @@ button.k-workbench-tab {
 }
 
 .k-workbench-tabs__scroll-control {
-  display: inline-flex;
+  display: var(--k-workbench-tabs-scroll-control-display, inline-flex);
   width: 28px;
   height: 32px;
   flex: none;
@@ -1743,6 +1743,8 @@ button.k-workbench-tab {
 
 /* The row layout shares the pane canvas with other workbench collections. */
 .k-ai-launcher--rows { max-width: none; }
+.k-ai-launcher--rows,
+.k-ai-launcher--rows .k-ai-launcher__section { grid-auto-rows: max-content; }
 .k-ai-launcher--rows .k-ai-launcher__section { gap: 0; }
 .k-ai-launcher--rows .k-ai-launcher__section h3 {
   padding: 0 0 8px;

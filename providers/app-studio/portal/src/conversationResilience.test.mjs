@@ -223,6 +223,11 @@ async function assistantSubmissionHarness(t, initialParts = [], initialState = {
   return scope.run(() => new Function('ref', 'computed', 'watch', 'api', 'outputText', 'fingerprint', 'initialParts', 'initialState', 'startCalls', 'createCalls', 'clearDraftCalls', 'transferDraftCalls', 'rebindDraftCalls', 'writeDraftCalls', 'committedParts', 'mutationCalls', 'steerCalls', 'recoveryCalls', 'pageCalls', 'pageOutcomes', 'activeTurnCalls', 'activeTurnOutcomes', 'reasoningSaveCalls', 'reasoningSaveWaiters', 'state', 'runRequiresLiveControls', 'isTerminal', 'startControllerCalls', 'stopCalls', 'composerDraft', `
     const props = { ctx: { tenant: 'tenant-a', workspaceUUID: 'workspace-a', subPath: '/project-a' } };
     const selected = ref({ name: 'project-a', uid: 'uid-a' });
+    const projectGitSettingsOpen = ref(false);
+    let previewAccessRevision = 0;
+    const previewMode = ref('restricted'), previewAccess = ref(null);
+    const developmentPreviewAuthorizedPolicy = ref(null), developmentPreviewAccessConverged = ref(true);
+    const developmentPreviewAccessBusy = ref(false), developmentPreviewAccessError = ref(null);
     const activeAssistantThreadID = ref(initialState.noThread ? '' : 'thread-a');
     let assistantThreadRequestSerial = 0;
     let assistantSubmissionGeneration = 0;
@@ -1573,8 +1578,13 @@ test('App keeps central loading surfaces honest while project state hydrates', a
   assert.match(appSource, /@click="enterProject\(project\)"/)
   assert.match(appSource, /<template v-if="projectRouteLoading">[\s\S]*Loading project workspace…/)
   assert.match(appSource, /<template v-else>[\s\S]*activeWorkbenchTab\?\.kind === 'launcher'/)
-  assert.match(appSource, /v-if="providersLoading && !providerCatalogLoaded"/)
-  assert.match(appSource, /v-else-if="providerCatalogLoaded \|\| !providerCatalogError"/)
+  const providersStart = appSource.indexOf('<AIWorkbenchPane title="Providers"')
+  const providersEnd = appSource.indexOf('</AIWorkbenchPane>', providersStart)
+  assert.ok(providersStart >= 0 && providersEnd > providersStart)
+  const providers = appSource.slice(providersStart, providersEnd)
+  assert.match(providers, /v-if="providersLoading"[\s\S]*Loading provider views/)
+  assert.match(providers, /v-if="filteredProviderTools\.length"/)
+  assert.match(providers, /v-else-if="!providersLoading && !providerCatalogError"/)
   assert.match(appSource, /v-if="providerCatalogError && providerCatalogLoaded"/)
   assert.match(appSource, /v-else-if="importRepositoriesError && importRepositories\.length === 0"/)
   assert.match(appSource, /v-if="importRepositoriesError"/)

@@ -38,8 +38,8 @@ const toolbarWidth = ref(0)
 const layout = computed(() => previewToolbarLayout(toolbarWidth.value))
 let toolbarResizeObserver: ResizeObserver | undefined
 
-function syncToolbarWidth(width = root.value?.getBoundingClientRect().width ?? 0): void {
-  toolbarWidth.value = width
+function syncToolbarWidth(): void {
+  toolbarWidth.value = root.value?.getBoundingClientRect().width ?? 0
 }
 
 function closeOverflow(restoreFocus = false): void {
@@ -118,8 +118,8 @@ onMounted(() => {
   document.addEventListener('pointerdown', handleDocumentPointerDown)
   syncToolbarWidth()
   if (typeof ResizeObserver !== 'undefined' && root.value) {
-    toolbarResizeObserver = new ResizeObserver((entries) => {
-      syncToolbarWidth(entries[0]?.contentRect.width)
+    toolbarResizeObserver = new ResizeObserver(() => {
+      syncToolbarWidth()
       closeOverflow()
     })
     toolbarResizeObserver.observe(root.value)
@@ -135,29 +135,25 @@ onBeforeUnmount(() => {
 <template>
   <header
     ref="root"
-    class="preview-toolbar relative [z-index:var(--app-studio-z-dropdown)] flex min-w-0 items-center justify-between gap-3"
+    class="preview-toolbar relative [z-index:var(--app-studio-z-dropdown)] flex min-h-11 min-w-0 shrink-0 items-center justify-between gap-3 border-b border-border-subtle px-3 py-1"
     :data-preview-toolbar-layout="layout"
     @focusout="handleFocusOut"
   >
     <div class="preview-toolbar__identity flex min-w-0 items-center gap-2">
-      <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-        <AppWindow class="h-4 w-4 text-accent" :stroke-width="1.75" aria-hidden="true" />
-      </div>
+      <AppWindow class="h-4 w-4 shrink-0 text-text-secondary" :stroke-width="1.75" aria-hidden="true" />
       <div class="min-w-0">
-        <div class="truncate text-[13px] font-semibold text-text-primary">Development</div>
-        <div v-if="layout !== 'collapsed'" class="preview-toolbar__identity-meta truncate text-[12px] text-text-muted">{{ provider }}</div>
+        <div class="truncate text-[13px] font-semibold leading-4 text-text-primary">Development</div>
+        <div v-if="layout !== 'collapsed'" class="preview-toolbar__identity-meta truncate text-[11px] leading-4 text-text-secondary">{{ provider }}</div>
       </div>
       <StatusBadge class="shrink-0" :status="phase" />
     </div>
 
-    <div class="ml-auto flex shrink-0 items-center gap-2">
+    <div class="ml-auto flex shrink-0 items-center gap-1">
       <button
         v-if="layout !== 'collapsed'"
         type="button"
-        class="app-studio-touch-target preview-toolbar__primary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
-        :class="annotationMode
-          ? 'border-accent/40 bg-accent-subtle text-accent'
-          : 'border-border-subtle bg-surface text-text-secondary hover:bg-surface-hover hover:text-text-primary'"
+        class="app-studio-touch-target preview-toolbar__primary-action k-icon-action"
+        :class="{ 'border-accent/40 bg-accent-subtle text-accent': annotationMode }"
         :disabled="annotationDisabled"
         :aria-pressed="annotationMode"
         :aria-label="annotationMode ? 'Stop annotating' : 'Annotate preview'"
@@ -173,20 +169,21 @@ onBeforeUnmount(() => {
       <button
         v-if="layout === 'expanded'"
         type="button"
-        class="app-studio-touch-target preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target preview-toolbar__secondary-action k-icon-action"
         :disabled="syncDisabled"
+        :aria-busy="syncBusy || undefined"
         :aria-label="syncBusy ? 'Syncing preview' : 'Sync preview'"
         :data-k-tip="syncBusy ? 'Syncing preview…' : 'Sync preview'"
         @click="runSync"
       >
-        <Loader2 v-if="syncBusy" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+        <Loader2 v-if="syncBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
         <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
       </button>
 
       <button
         v-if="layout === 'expanded'"
         type="button"
-        class="app-studio-touch-target preview-toolbar__secondary-action inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60"
+        class="app-studio-touch-target preview-toolbar__secondary-action k-icon-action"
         :disabled="openDisabled"
         :aria-label="openLabel"
         :data-k-tip="openLabel"
@@ -199,7 +196,7 @@ onBeforeUnmount(() => {
         <button
           ref="overflowTrigger"
           type="button"
-          class="app-studio-touch-target flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-surface text-text-secondary transition hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          class="app-studio-touch-target k-icon-action"
           data-k-tip="More preview actions"
           aria-label="More preview actions"
           aria-haspopup="menu"
@@ -213,7 +210,7 @@ onBeforeUnmount(() => {
         <div
           v-if="overflowOpen"
           ref="overflowMenu"
-          class="k-menu absolute right-0 top-10 [z-index:var(--app-studio-z-menu)] w-52"
+          class="k-menu absolute right-0 top-full [z-index:var(--app-studio-z-menu)] mt-1 w-52"
           role="menu"
           aria-label="Preview actions"
           @keydown="handleMenuKeydown"

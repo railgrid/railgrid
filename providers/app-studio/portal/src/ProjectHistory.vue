@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
+import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 import { computed, nextTick } from 'vue'
 import { CircleAlert, ExternalLink, Loader2, RefreshCw, RotateCcw } from 'lucide-vue-next'
 
@@ -101,10 +102,13 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       </button>
     </template>
 
-    <div v-if="!repositoryRef" class="grid gap-1 border-y border-dashed border-border-subtle py-4" role="status">
-      <p class="text-[12px] font-medium text-text-secondary">No Git repository connected</p>
-      <p class="text-[12px] leading-5 text-text-muted">Connect and commit project source before using History.</p>
-    </div>
+    <template v-if="!repositoryRef">
+      <div class="grid gap-1 border-t border-border-subtle pt-4" role="status">
+        <p class="text-[12px] font-medium text-text-secondary">No Git repository connected</p>
+        <p class="text-[12px] leading-5 text-text-muted">Connect and commit project source before using History.</p>
+      </div>
+      <slot name="connect" />
+    </template>
 
     <div v-else-if="refreshing && commits.length === 0" class="py-4 text-[12px] leading-5 text-text-muted" role="status">Loading saved commits…</div>
 
@@ -117,34 +121,33 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
       </div>
     </div>
 
-    <div v-else-if="commits.length === 0" class="grid gap-1 border-y border-dashed border-border-subtle py-4" role="status">
+    <div v-else-if="commits.length === 0" class="grid gap-1 border-t border-border-subtle py-4" role="status">
       <p class="text-[12px] font-medium text-text-secondary">No saved commits yet</p>
       <p class="text-[12px] leading-5 text-text-muted">Save your project files to Git to create your first restore point.</p>
       <p class="text-[12px] leading-5 text-text-muted">Your project files are still available in App Studio.</p>
     </div>
 
-    <div v-else class="grid min-h-0 gap-2">
+    <AIWorkbenchSection v-else title="Git commits">
       <p id="app-studio-history-list-hint" class="text-[11px] leading-4 text-text-muted">
         <span class="font-medium text-text-secondary">{{ orderedCommits.length }} {{ orderedCommits.length === 1 ? 'commit' : 'commits' }}</span>
         <span v-if="orderedCommits.length > 1"> · Scroll to see more commits. Use arrow keys to select.</span>
       </p>
-      <div class="max-h-[min(36dvh,24rem)] overflow-y-auto p-1">
+      <div class="max-h-[min(36dvh,24rem)] overflow-y-auto">
         <div id="app-studio-history-selection-help" class="sr-only">Select one successful Git commit to restore its project files.</div>
         <div class="relative" role="radiogroup" aria-orientation="vertical" aria-label="Project commits" aria-describedby="app-studio-history-selection-help app-studio-history-list-hint">
-          <div class="pointer-events-none absolute bottom-1.5 left-[5px] top-1.5 w-px bg-border-subtle" aria-hidden="true" />
-          <div v-for="commit in orderedCommits" :key="commit.name" class="relative grid grid-cols-[12px_minmax(0,1fr)] gap-2 pb-2 last:pb-0">
-            <div class="relative flex justify-center"><span class="relative z-10 mt-3 h-2.5 w-2.5 rounded-full border-2" :class="selected?.name === commit.name ? 'border-accent bg-accent' : 'border-border-default bg-surface'" aria-hidden="true" /></div>
+          <div v-for="commit in orderedCommits" :key="commit.name" class="grid grid-cols-[16px_minmax(0,1fr)] border-t border-border-subtle last:border-b" :class="selected?.name === commit.name ? 'bg-accent-subtle' : ''">
+            <div class="flex justify-center"><span class="mt-3.5 h-2.5 w-2.5 rounded-full border-2" :class="selected?.name === commit.name ? 'border-accent bg-accent' : 'border-border-default'" aria-hidden="true" /></div>
             <div class="min-w-0">
               <button
                 :id="optionID(commit)"
                 type="button"
                 role="radio"
-                class="app-studio-touch-target group grid w-full gap-1 rounded-md border px-2 py-1.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                class="app-studio-touch-target grid w-full gap-1 px-2 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50"
                 :class="repositoryCommitSelectable(commit)
                   ? selected?.name === commit.name
-                    ? 'border-accent/50 bg-accent-subtle/20 text-text-primary'
-                    : 'border-transparent text-text-secondary hover:border-border-subtle hover:bg-surface-hover/40 hover:text-text-primary'
-                  : 'cursor-not-allowed border-transparent text-text-muted opacity-70'"
+                    ? 'text-text-primary'
+                    : 'text-text-secondary hover:bg-surface-hover hover:text-text-primary'
+                  : 'cursor-not-allowed text-text-muted opacity-70'"
                 :aria-checked="repositoryCommitSelectable(commit) && selected?.name === commit.name"
                 :aria-disabled="!repositoryCommitSelectable(commit)"
                 :tabindex="focusable?.name === commit.name ? 0 : -1"
@@ -174,7 +177,7 @@ function moveSelection(direction: 'next' | 'previous' | 'first' | 'last') {
           </div>
         </div>
       </div>
-    </div>
+    </AIWorkbenchSection>
 
     <InlineNotification v-if="error && commits.length > 0" tone="error" :message="error" />
     <InlineNotification v-if="feedback" tone="success" :message="feedback" />

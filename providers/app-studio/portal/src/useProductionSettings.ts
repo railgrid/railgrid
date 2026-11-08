@@ -111,7 +111,11 @@ export function useProductionSettings(input: ProductionSettingsInputs): Producti
     if (input.promotionError.value) return { label: 'Status unavailable', tone: 'warning' }
     if (!input.promotion.value) return { label: 'Awaiting status', tone: 'muted' }
     if (!productionBinding.value) return { label: 'Not deployed', tone: 'muted' }
-    if (!productionDeployment.value.ready) return { label: productionDeployment.value.label, tone: productionDeployment.value.tone }
+    if (!productionDeployment.value.ready) {
+      const { requestedRevision, observedRevision } = releasePipeline.value
+      if (requestedRevision && requestedRevision !== observedRevision) return { label: 'Deploying', tone: 'warning' }
+      return { label: productionDeployment.value.label, tone: productionDeployment.value.tone }
+    }
     if (!input.publishing.value) return { label: 'Checking access', tone: 'muted' }
     if (!input.publishing.value.published) return { label: 'Deployed', tone: 'success' }
     if (productionPublicationReady.value) return { label: productionURL.value ? 'Live' : 'Ready', tone: 'success' }

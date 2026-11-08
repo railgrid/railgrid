@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { nextTick, ref, watch } from 'vue'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const workbenchTab = await readFile(new URL('./agentkit/AIWorkbenchTab.vue', import.meta.url), 'utf8')
@@ -22,7 +23,7 @@ test('emits truthful publishing and access toasts only after current responses',
   assert.match(publish, /if \(selected\.value\?\.name !== name\) return[\s\S]*productionAccessUpdateToast\(\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
 
   const preview = functionSource('async function savePreviewAccess', '\n\n// Preview grants')
-  assert.match(preview, /if \(selected\.value\?\.name !== name\) return[\s\S]*previewAccessUpdateToast\(state\.converged\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
+  assert.match(preview, /if \(selected\.value\?\.name !== name \|\| accessRevision !== previewAccessRevision\) return[\s\S]*previewAccessUpdateToast\(state\.converged\)[\s\S]*toast\(notice\.kind, notice\.message\)/)
 
   const previewGrantCalls = functionSource('async function grantCurrentProjectPreviewAccess', '\n\ninterface PreviewGrantMutation')
   assert.match(previewGrantCalls, /mutation: 'grant'[\s\S]*mutation: 'invite'[\s\S]*mutation: 'revoke'/)
@@ -45,7 +46,7 @@ test('exposes Publishing separately and keeps workspace model config out of Proj
   assert.doesNotMatch(app, /aria-label="Project Settings sections"/)
   assert.doesNotMatch(app, /project-settings-tab-model/)
   assert.match(app, /v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"/)
-  assert.match(app, /v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"/)
+  assert.match(app, /v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"/)
   assert.doesNotMatch(app, /projectSettingsPane === 'production'/)
   assert.doesNotMatch(app, /project-settings-tab-production/)
   assert.doesNotMatch(app, /id: 'builtin:production'/)
@@ -77,6 +78,71 @@ test('closes project settings before the landing route can render them as an LLM
   assert.match(app.slice(openStart, openEnd), /showSettings\.value = true/)
 })
 
+test('keeps unsaved project details through same-project refreshes and save acknowledgements', async () => {
+  const watcher = functionSource('watch(settingsProject, (project, previousProject) =>', '\n\nwatch([messages, conversationLoading]')
+  assert.match(watcher, /flush: 'sync'/)
+  const surfaceWatcher = functionSource('watch(\n  () => [productionSurfaceActive.value', '\n\nonBeforeUnmount')
+    .replace('] as const,', '],')
+  const editor = functionSource('function syncProjectSettingsForm()', '\n\nfunction enterProject')
+  const createFixture = new Function('initialProject', 'updateProjectDetails', 'ref', 'watch', `
+    const selected = ref(initialProject)
+    const settingsProject = selected
+    const showSettings = { value: true }
+    const productionSurfaceActive = { value: false }
+    const activeWorkbenchTab = ref({ kind: 'settings' })
+    const resetReleaseTransitionTracking = () => {}
+    const clearPromotionPoll = () => {}
+    const clearPublishingPoll = () => {}
+    const projectSettingsName = { value: initialProject.displayName }
+    const projectSettingsDescription = { value: initialProject.description }
+    const projectSettingsStatus = { value: null }
+    const projectSettingsError = { value: null }
+    const projectSettingsSaving = { value: false }
+    const projects = { value: [initialProject] }
+    let projectSettingsSaveSerial = 0
+    const props = { ctx: null }
+    const projectContextFingerprint = () => 'tenant'
+    const api = { updateProjectDetails }
+    ${watcher}
+    ${surfaceWatcher}
+    ${editor}
+    return { selected, activeWorkbenchTab, projectSettingsName, projectSettingsDescription, projectSettingsSaving, saveProjectSettings }
+  `)
+  const initialProject = { name: 'demo', uid: 'project-1', displayName: 'Original', description: 'Before refresh' }
+  let acknowledge
+  const editorState = createFixture(initialProject, () => new Promise(resolve => { acknowledge = resolve }), ref, watch)
+  editorState.projectSettingsName.value = 'Draft'
+  editorState.selected.value = { ...initialProject, description: 'After refresh' }
+  await nextTick()
+  assert.equal(editorState.projectSettingsName.value, 'Draft')
+  assert.equal(editorState.projectSettingsDescription.value, 'After refresh')
+
+  const save = editorState.saveProjectSettings()
+  editorState.projectSettingsName.value = 'Original'
+  acknowledge({ ...editorState.selected.value, displayName: 'Draft' })
+  await save
+  assert.equal(editorState.selected.value.displayName, 'Draft')
+  assert.equal(editorState.projectSettingsName.value, 'Original')
+
+  editorState.selected.value = { ...initialProject, uid: 'project-2', displayName: 'Replacement' }
+  await nextTick()
+  assert.equal(editorState.projectSettingsName.value, 'Replacement')
+
+  const replacementSave = editorState.saveProjectSettings()
+  assert.equal(editorState.projectSettingsSaving.value, true)
+  editorState.activeWorkbenchTab.value = { kind: 'history' }
+  await nextTick()
+  const replacement = { ...initialProject, uid: 'project-3', displayName: 'Recreated while Settings is hidden' }
+  editorState.selected.value = replacement
+  acknowledge({ ...initialProject, uid: 'project-2', displayName: 'Stale save' })
+  await replacementSave
+  editorState.activeWorkbenchTab.value = { kind: 'settings' }
+  await nextTick()
+  assert.equal(editorState.projectSettingsSaving.value, false)
+  assert.equal(editorState.selected.value.uid, replacement.uid)
+  assert.equal(editorState.projectSettingsName.value, replacement.displayName)
+})
+
 test('defers project controls until the restored Settings, Publishing, or History host exists', () => {
   assert.match(app, /<Teleport defer :to="projectControlSurfaceTarget">/)
   assert.match(app, /if \(publishingInWorkbench\.value\) return '#app-studio-publishing-host'/)
@@ -92,7 +158,7 @@ test('defers project controls until the restored Settings, Publishing, or Histor
 })
 
 test('keeps New tab in the horizontal tab flow while preserving tablist semantics', () => {
-  const headerStart = app.indexOf('<header class="flex h-14')
+  const headerStart = app.indexOf('<header class="app-studio-workbench-header')
   const panelStart = app.indexOf('<div\n        v-if="activeWorkbenchTab?.kind === \'launcher\'"', headerStart)
   assert.ok(headerStart >= 0 && panelStart > headerStart)
   const header = app.slice(headerStart, panelStart)
@@ -117,8 +183,9 @@ test('keeps New tab in the horizontal tab flow while preserving tablist semantic
   assert.match(tabstrip, /@launch="openWorkbenchLauncher"/)
   assert.match(tabstrip, /<template #leading>[\s\S]*<GripVertical[\s\S]*<\/template>/)
   assert.match(tabstrip, /<template #icon="\{ tab \}">[\s\S]*<\/template>/)
-  assert.match(tabstrip, /<template #after-label="\{ tab \}">[\s\S]*hasPendingReview[\s\S]*<\/template>/)
-  assert.match(tabstrip, /<template #launcher-indicator>[\s\S]*hasPendingReview[\s\S]*<\/template>/)
+  assert.match(tabstrip, /<template #after-label="\{ tab \}">[\s\S]*tab\.id === 'review' && pendingReviewCount/)
+  assert.doesNotMatch(tabstrip, /launcher-indicator|launcher-active/)
+  assert.match(header, /pendingReviewCount && activeWorkbenchTab\?\.kind !== 'review'[\s\S]*:aria-label="`Open Review requests, \$\{pendingReviewLabel\}`"[\s\S]*@click="openReviewRequests"/)
   assert.doesNotMatch(header, /sticky right-0|role="presentation"/)
   assert.match(workbenchTab, /class="k-workbench-tab"/)
   assert.match(workbenchTab, /class="k-workbench-tab__button"[\s\S]*role="tab"[\s\S]*:aria-selected="selected"[\s\S]*:aria-controls="controls"[\s\S]*:tabindex="tabindex"[\s\S]*:title="title"/)
@@ -128,6 +195,10 @@ test('keeps New tab in the horizontal tab flow while preserving tablist semantic
   assert.ok(tabRecipeStart >= 0 && tabRecipeEnd > tabRecipeStart)
   assert.match(railgridUI.slice(tabRecipeStart, tabRecipeEnd), /max-width: 240px/)
   assert.match(header, /title="Open full provider"[\s\S]*@click="openToolFull"/)
+  assert.match(app, /@container app-studio-workbench \(max-width: 26rem\) \{[\s\S]*\.app-studio-workbench-header__actions \{ flex-basis: 100%/)
+  assert.match(app, /@container app-studio-workbench \(max-width: 18rem\) \{[\s\S]*--k-workbench-tabs-scroll-control-display: none/)
+  assert.match(railgridUI, /\.k-workbench-tabs__scroll-control \{\s*display: var\(--k-workbench-tabs-scroll-control-display, inline-flex\)/)
+  assert.match(railgridUI, /\.k-workbench-tabs__viewport \{[\s\S]*overflow-x: auto/)
 })
 
 test('anchors Share beside the Workbench toggle and preserves its dialog focus contract', () => {
@@ -150,7 +221,7 @@ test('anchors Share beside the Workbench toggle and preserves its dialog focus c
   assert.match(titlebar.slice(shareButtonStart), /k-btn k-btn--primary k-btn--sm/)
   assert.match(titlebar.slice(shareButtonStart), />\s*<span class="app-studio-titlebar-share__label">Share<\/span>/)
 
-  const workbenchHeaderStart = app.indexOf('<header class="flex h-14')
+  const workbenchHeaderStart = app.indexOf('<header class="app-studio-workbench-header')
   const workbenchHeaderEnd = app.indexOf('</header>', workbenchHeaderStart)
   assert.ok(workbenchHeaderStart >= 0 && workbenchHeaderEnd > workbenchHeaderStart)
   assert.doesNotMatch(app.slice(workbenchHeaderStart, workbenchHeaderEnd), /aria-label="Share project"/)
@@ -169,13 +240,13 @@ test('presents Publishing as a release review with separate configuration and ac
   const productionEnd = historyStart
   assert.ok(productionStart >= 0 && historyStart > productionStart && productionEnd > productionStart)
   const pane = app.slice(productionStart, productionEnd)
-  assert.match(pane, /aria-label="Production overview"/)
+  assert.match(pane, /<AIWorkbenchSection\s+title="Production"/)
   assert.match(pane, /aria-label="Release ready for production"/)
   assert.match(pane, /Verified release/)
   assert.match(pane, /Image verified/)
   assert.doesNotMatch(pane, /Latest build commit|Built images/)
   assert.match(pane, /Open app/)
-  assert.match(pane, /aria-label="Technical details"/)
+  assert.match(pane, /<AIWorkbenchSection[\s\S]*title="Technical details"\s*:summary="productionRolloutSummary"\s*disclosure/)
   assert.match(pane, /<ReleasePipeline[\s\S]*:pipeline="releasePipeline"[\s\S]*@refresh="refreshProduction"/)
   assert.match(pane, /Set up sharing/)
   assert.match(pane, /publishing\?\.publication\?\.error && !publishing\?\.publication\?\.ready/)
@@ -190,13 +261,13 @@ test('presents Publishing as a release review with separate configuration and ac
   assert.doesNotMatch(pane, /@click="publishCurrentProject"/)
   assert.match(pane, /<ProductionForm[\s\S]*:schema="promotion\?\.productionSchema \?\? null"/)
   assert.match(pane, /Choose how the production app runs\./)
-  assert.match(pane, /Deployment configuration/)
+  assert.match(pane, /v-model:open="productionSettingsOpen"\s*title="Deployment configuration"[\s\S]*:summary="productionConfigurationDisclosureSummary"\s*disclosure/)
   assert.match(pane, /Save configuration and redeploy/)
   assert.match(pane, /These values will be reviewed and applied with the first deployment\./)
   assert.match(pane, /aria-label="Current production release"/)
   assert.match(pane, /@click="redeployCurrentProduction"/)
   assert.match(pane, /@click="openProductionDeployReview\(latestDeployableRelease\)"/)
-  assert.match(pane, /@click="confirmProductionDeploy"/)
+  assert.match(pane, /:disabled="!canPromoteRelease\(productionDeployReviewRelease\)" @click="confirmProductionDeploy"/)
   assert.match(pane, /Deploy this release to production\?/)
   assert.match(pane, /First production deployment/)
   assert.match(pane, /Current production stays online until this exact release is observed/)
@@ -204,6 +275,22 @@ test('presents Publishing as a release review with separate configuration and ac
   assert.match(pane, /:disabled="promotionBusy \|\| !promotionValuesDirty \|\| !canRedeployCurrentProduction"/)
   assert.doesNotMatch(pane, /<ReleasePicker/)
   assert.doesNotMatch(pane, /<textarea[^>]*promotionValuesText/)
+})
+
+test('bases deployment review layout on pane width and puts consequences before the action', () => {
+  const releaseStart = app.indexOf('aria-label="Release ready for production"')
+  const reviewStart = app.indexOf('aria-labelledby="production-deploy-review-title"', releaseStart)
+  assert.ok(releaseStart >= 0 && reviewStart > releaseStart)
+  const release = app.slice(releaseStart, reviewStart)
+  assert.match(release, /aria-label="Deployment consequences"[\s\S]*ref="productionDeployButtonRef"/)
+  assert.match(app, /@container ai-workbench-pane \([^)]+\) \{\s*\.publishing-release \{ grid-template-columns:/)
+  assert.match(app, /@container ai-workbench-pane \([^)]+\) \{\s*\.publishing-review-facts \{ grid-template-columns:/)
+})
+
+test('shows saved configuration for production updates and the draft for first deployment', () => {
+  assert.match(app, /const values = readiness\.productionSchema \? productionValuesFromReadiness\(readiness\) : readiness\.productionValues/)
+  assert.match(app, /const productionSettingsSummary = computed\(\(\) => productionBinding\.value \|\| !promotion\.value\?\.productionSchema\s*\? savedProductionSettingsSummary\.value\s*: productionConfigurationSummary\(promotionValues\.value\)\)/)
+  assert.match(app, /const productionConfigurationDisclosureSummary = computed\(\(\) => promotionValuesDirty\.value[\s\S]*· unsaved changes/)
 })
 
 test('refreshes release evidence in every scheduled promotion poll', () => {
@@ -579,15 +666,17 @@ test('keeps Preview edits dirty until the API acknowledges the desired mode', ()
   const saveEnd = app.indexOf('async function grantCurrentProjectPreviewAccess', saveStart)
   assert.ok(saveStart >= 0 && saveEnd > saveStart)
   const save = app.slice(saveStart, saveEnd)
-  assert.match(save, /previewAccess\.value = state/)
-  assert.match(save, /previewMode\.value = state\.mode === 'public' \? 'public' : 'restricted'/)
+  assert.match(save, /applyPreviewAccessState\(state\)/)
+  assert.match(save, /previewMode\.value = state\.mode/)
+  assert.match(app, /:busy="publishingActionBusy \|\| developmentPreviewAccessBusy"/)
 })
 
 test('Publishing explains Git prerequisites and links unconnected projects to settings', () => {
-  const start = app.indexOf('aria-label="Production overview"')
+  const start = app.indexOf('title="Production"', app.indexOf('ref="publishingPaneRef"'))
   const end = app.indexOf('<ProductionSettingsLoadingShell', start)
+  assert.ok(start >= 0 && end > start)
   const overview = app.slice(start, end)
-  assert.match(overview, /selected\?\.repository\?\.ref \? productionOverviewDescription/)
+  assert.match(overview, /:description="!selected\?\.repository\?\.ref[\s\S]*: !promotion \|\| promotionError \? productionOverviewDescription/)
   assert.match(overview, /Production publishing requires a connected repository, a Git commit, and a successful build/)
-  assert.match(overview, /v-if="selected && !selected\.repository\?\.ref"[^>]*@click="openSettings">Connect Git/)
+  assert.match(overview, /v-if="selected && !selected\.repository\?\.ref"[^>]*@click="openGitSettings">Connect Git/)
 })

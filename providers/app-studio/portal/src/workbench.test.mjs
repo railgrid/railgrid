@@ -171,7 +171,8 @@ test('review is a closeable built-in tab without being forced open by default', 
   assert.deepEqual(withReview.tabs[withReview.tabs.length - 1], {
     id: 'review',
     kind: 'review',
-    title: 'Review',
+    title: 'Review requests',
+    subtitle: 'Respond to assistant approvals and questions',
     closeable: true,
   })
   assert.equal(closedReview.tabs.some((tab) => tab.id === 'review'), false)

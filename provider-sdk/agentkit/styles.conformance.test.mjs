@@ -116,6 +116,10 @@ test('multiline model-form credentials retain their textarea height on coarse po
     'the existing 44px touch minimum for single-line controls remains in place')
 })
 
+test('row launchers and their groups use intrinsic tracks in a tall workbench', () => {
+  assert.match(css, /\.k-ai-launcher--rows,\s*\.k-ai-launcher--rows \.k-ai-launcher__section\s*\{\s*grid-auto-rows:\s*max-content;/)
+})
+
 test('AgentKit is opt-in, depends on core styles, and is idempotent', () => {
   const helper = loadAgentHelper({ coreVersion: '34' })
   assert.equal(helper.document.head.children.length, 0, 'loading the module must not inject styles')

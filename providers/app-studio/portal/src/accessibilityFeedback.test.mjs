@@ -8,6 +8,7 @@ const timestamp = await readFile(new URL('./agentkit/AITimestamp.vue', import.me
 const canonicalAgentKitConversation = await readFile(new URL('../../../../provider-sdk/agentkit/conversation.css', import.meta.url), 'utf8')
 const studioStyles = await readFile(new URL('./style.css', import.meta.url), 'utf8')
 const aiInterrupt = await readFile(new URL('./agentkit/AIInterrupt.vue', import.meta.url), 'utf8')
+const reviewRequest = await readFile(new URL('./ReviewRequest.vue', import.meta.url), 'utf8')
 const approvalModePicker = await readFile(new URL('./ApprovalModePicker.vue', import.meta.url), 'utf8')
 const commandPalette = await readFile(new URL('./agentkit/AICommandPalette.vue', import.meta.url), 'utf8')
 const dashboardTile = await readFile(new URL('./DashboardTile.vue', import.meta.url), 'utf8')
@@ -32,15 +33,10 @@ const railgridUIDestinations = await Promise.all([
 test('announces asynchronous conversation and settings feedback', () => {
   assert.match(aiInterrupt, /<div v-if="\$slots\.error \|\| invalid \|\| error" class="k-ai-interrupt__error" role="alert">/)
   assert.match(aiInterrupt, /<slot name="error">[\s\S]*<span>\{\{ error \|\|/)
-  const interruptOpenings = app.match(/<AIInterrupt\b[\s\S]*?>/g) ?? []
-  const followUpAlerts = interruptOpenings.filter((opening) =>
-    /kind="follow-up"/.test(opening) && /:error="followUpError\(pendingFollowUp\.interrupt\) \|\| ''"/.test(opening),
-  )
-  const permissionAlerts = interruptOpenings.filter((opening) =>
-    /kind="approval"/.test(opening) && /:error="permissionError\(pendingApproval\.interrupt\) \|\| \(pendingApproval\.interrupt\.execDisclosureInvalid/.test(opening),
-  )
-  assert.equal(followUpAlerts.length, 2)
-  assert.equal(permissionAlerts.length, 2)
+  assert.equal((app.match(/<ReviewRequest\s+v-if="pendingReviewProps"[\s\S]*?v-bind="pendingReviewProps"/g) ?? []).length, 2)
+  assert.match(app, /error: followUpError\(followUp\)/)
+  assert.match(app, /error: permissionError\(approval\)/)
+  assert.match(reviewRequest, /<AIInterrupt[\s\S]*:error="errorMessage"/)
   assert.match(app, /v-else-if="developmentSyncStatus"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
   assert.match(app, /<InlineNotification\s+v-if="projectSettingsError \|\| projectSettingsStatus"\s+:tone="projectSettingsError \? 'error' : 'success'"/)
   assert.match(notification, /const assertive = \(\) => props.tone === 'error'/)
@@ -78,7 +74,7 @@ test('keeps compact controls touch-sized on coarse pointers', () => {
   assert.match(app, /workbenchTabItems[\s\S]*selected: workbench\.value\.activeTabID === tab\.id[\s\S]*controls: workbenchTabPanelID\(tab\)/)
   assert.match(app, /<AIWorkbenchTabs[\s\S]*:tabs="workbenchTabItems"[\s\S]*launcher[\s\S]*@dragstart="startWorkbenchTabDragByID"[\s\S]*@dragend="clearWorkbenchTabDragState"/)
   assert.match(app, /<template #icon="\{ tab \}">[\s\S]*class="object-contain"[\s\S]*<\/template>/)
-  assert.match(app, /<template #after-label="\{ tab \}">[\s\S]*workbenchTabIsReview\(tab\.id\)[\s\S]*hasPendingReview[\s\S]*<\/template>/)
+  assert.match(app, /<template #after-label="\{ tab \}">[\s\S]*tab\.id === 'review' && pendingReviewCount[\s\S]*<span class="sr-only">\{\{ pendingReviewLabel \}\}<\/span>/)
   assert.match(app, /<AIWorkbenchTabs[\s\S]*@close="closeWorkbenchTabByID"[\s\S]*@launch="openWorkbenchLauncher"/)
 })
 

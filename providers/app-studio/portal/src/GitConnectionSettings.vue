@@ -5,9 +5,11 @@ import { ExternalLink, Loader2 } from 'lucide-vue-next'
 import { api } from './api'
 import type { RailgridContext, Project } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
+import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 
 const props = defineProps<{ ctx: RailgridContext | null; project: Project }>()
-const emit = defineEmits<{ connected: [project: Project] }>()
+const emit = defineEmits<{ connected: [project: Project]; ready: [] }>()
+const open = defineModel<boolean>('open', { default: false })
 const readiness = ref<ProjectCreateReadiness | null>(null)
 const checking = ref(false)
 const saving = ref(false)
@@ -16,6 +18,12 @@ let generation = 0
 const connection = computed(() => readiness.value?.gitConnection)
 const recovery = computed(() => props.project.repository?.canRetryCreation)
 const canCreate = computed(() => recovery.value || (!props.project.repository?.ref && connection.value?.ready))
+const repositorySummary = computed(() => {
+  const repository = props.project.repository
+  if (!repository?.ref) return saving.value ? 'Creating repository…' : 'Not connected'
+  const name = repository.name || repository.ref
+  return repository.status && !repository.ready ? `${name} · ${repository.status}` : name
+})
 const repositoryMessage = computed(() => {
   const repo = props.project.repository
   if (!repo?.ready) return repo?.message || 'Creating repository; files stay in App Studio.'
@@ -80,13 +88,22 @@ watch(() => [props.ctx?.orgUUID, props.ctx?.workspaceUUID, props.ctx?.user?.sub,
   readiness.value = null
   if (!props.project.repository?.ref) void check()
 }, { immediate: true })
-onMounted(() => window.addEventListener('focus', wake))
+onMounted(() => {
+  window.addEventListener('focus', wake)
+  emit('ready')
+})
 onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) })
 </script>
 
 <template>
-  <section class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" aria-label="Git settings">
-    <h3 class="flex items-center gap-2 text-[13px] font-semibold text-text-primary">Git <span class="font-normal text-text-secondary">Recommended</span></h3>
+  <AIWorkbenchSection
+    v-model:open="open"
+    title="Git"
+    heading-id="app-studio-git-settings-heading"
+    disclosure
+    :summary="repositorySummary"
+    :aria-busy="checking || saving"
+  >
     <template v-if="project.repository?.ref">
       <p class="text-[12px] text-text-primary">{{ project.repository.name || project.repository.ref }}</p>
       <p class="text-[12px] text-text-secondary" role="status">{{ repositoryMessage }}</p>
@@ -105,5 +122,5 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) 
       <button type="button" class="k-btn k-btn--primary justify-self-start" :disabled="saving || checking" @click="connect"><Loader2 v-if="saving" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" /><span>{{ saving ? 'Creating repository…' : recovery ? 'Create a new repository' : 'Create repository and save project files' }}</span></button>
     </template>
     <p v-if="error" role="alert" class="text-[12px] text-danger">{{ error }}</p>
-  </section>
+  </AIWorkbenchSection>
 </template>
