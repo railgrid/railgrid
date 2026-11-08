@@ -791,7 +791,7 @@ railgrid-provider-agents .agents-chip-btn { cursor: pointer; font-family: var(--
 railgrid-provider-agents .agents-chip-btn:hover { border-color: var(--color-accent, #8b6bff); color: var(--color-accent, #8b6bff); background: var(--color-surface, #0a0b12); }
 railgrid-provider-agents .agents-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
 railgrid-provider-agents .agents-model-assign { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
-railgrid-provider-agents .agents-models-table .k-table__cell--primary { min-inline-size: 18rem; }
+railgrid-provider-agents td:has(.agents-model-expand) { min-inline-size: 18rem; }
 railgrid-provider-agents .agents-model-details {
   display: grid;
   gap: 8px;
