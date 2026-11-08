@@ -148,6 +148,19 @@ func (s *Server) resumeRun(parent context.Context, agentScope store.Scope, runID
 	// The claim above ensures only the resolver that resumes this run writes
 	// its reply. Record it before publishing progress or appending the next turn.
 	item := intent.InboxItem
+	if item.Kind == store.InboxKindApproval && item.ID != "" {
+		// A terminal marker is presentation-only, including when model history
+		// pairs a call before this marker with its result after the resume.
+		_ = s.appendProgressMessage(ctx, agentScope, store.Message{
+			ID: "permission-" + item.ID, AgentName: run.AgentName,
+			SessionID: effectiveSessionID(run.SessionID, run.Trigger), RunID: run.ID,
+			Role: "assistant", CreatedAt: time.Now().UTC(),
+			Metadata: map[string]any{
+				"turnPhase": "terminal", "permissionDecision": string(item.State),
+				"tool": ck.Tool, "args": redactArgs(ck.Args),
+			},
+		})
+	}
 	if intent.Approve && item.Kind == store.InboxKindQuestion && item.ID != "" && item.ID == ck.InboxID {
 		if answer := strings.TrimSpace(intent.Note); answer != "" {
 			metadata := map[string]any{"actorID": strings.TrimSpace(access.CallerUser), "questionPrompt": item.Prompt}

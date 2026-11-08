@@ -271,7 +271,7 @@ func TestRunProjectionStopsRetriesAtItsContextDeadline(t *testing.T) {
 func TestApprovalResumeProjectsClaimedRunningBeforeContinuing(t *testing.T) {
 	dyn := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 	s, scope, run := newProjectionFixture(t, dyn, store.RunPhasePendingApproval)
-	run.Checkpoint = []byte(`{"engine":{"messages":[]}}`)
+	run.Checkpoint = []byte(`{"inboxID":"inbox-approval","tool":"shell","args":"{\"command\":\"pwd\",\"token\":\"secret\"}","engine":{"messages":[]}}`)
 	if err := s.store.SaveRun(context.Background(), scope, run); err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,23 @@ func TestApprovalResumeProjectsClaimedRunningBeforeContinuing(t *testing.T) {
 		if phase != agentsv1alpha1.RunPhaseRunning {
 			t.Fatalf("resumed phase=%q before continuation; want Running", phase)
 		}
-	}}}, resumeIntent{Approval: true, Approve: true, FromPhase: store.RunPhasePendingApproval})
+		page, err := s.store.ListMessages(t.Context(), scope, run.SessionID, 10, "")
+		if err != nil || len(page.Items) != 1 {
+			t.Fatalf("want one permission receipt before continuation, got %+v, %v", page, err)
+		}
+		receipt := page.Items[0]
+		if receipt.ID != "permission-inbox-approval" || receipt.RunID != run.ID ||
+			receipt.Metadata["permissionDecision"] != "approved" || receipt.Metadata["tool"] != "shell" ||
+			receipt.Metadata["args"] != `{"command":"pwd","token":"[redacted]"}` {
+			t.Fatalf("unexpected permission receipt: %+v", receipt)
+		}
+		if len(engineMessagesFromHistory(page.Items)) != 0 {
+			t.Fatal("permission receipt appeared in model history")
+		}
+	}}}, resumeIntent{
+		Approval: true, Approve: true, FromPhase: store.RunPhasePendingApproval,
+		InboxItem: store.InboxItem{ID: "inbox-approval", Kind: store.InboxKindApproval, State: store.InboxStateApproved},
+	})
 	if !checked {
 		t.Fatal("resume did not reach its continuation boundary")
 	}
