@@ -120,6 +120,30 @@ describe('agent config', () => {
     expect(text(background.closest('label'))).toBe('Allow in background')
   })
 
+  it('keeps Execution settings open through an optimistic switch from a harness to a model', async () => {
+    const { el, pending, patchAgent, store } = await mountDeferredConfig({
+      backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'codex' } },
+    })
+    const execution = el.querySelector('#agent-backend-heading')!.closest('details')!
+    expect(execution.open).toBe(true)
+
+    execution.querySelector<HTMLInputElement>('input[value="model"]')!.click()
+    await settle()
+    sectionButton(execution, 'Save backend').click()
+    await settle()
+
+    expect(patchAgent).toHaveBeenCalledWith('scout', { backendType: 'model' })
+    expect(store.agent('scout')?.spec.backend?.type).toBe('model')
+    expect(execution.open).toBe(true)
+    expect(execution.querySelector('[data-config-save-status="pending"]')).not.toBeNull()
+
+    pending.reject(new Error('Save rejected'))
+    await settle()
+    expect(store.agent('scout')?.spec.backend?.type).toBe('harness')
+    expect(execution.open).toBe(true)
+    expect(text(execution.querySelector('[data-config-save-status="error"]'))).toContain('Could not save the backend')
+  })
+
   it('uses the canonical square action for removing a model fallback', async () => {
     const { el } = await mountConfig({ backend: modelBackend('main', ['backup']) })
     const remove = el.querySelector<HTMLButtonElement>('.agents-chip-x')!

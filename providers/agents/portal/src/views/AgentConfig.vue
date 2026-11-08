@@ -164,6 +164,7 @@ const channelErrorTarget = ref<{ key: number; field: 'name' | 'connection' } | n
 const slackRequestURL = ref('')
 
 const formHydrated = ref(false)
+const executionSettingsOpen = ref(false)
 let hydratedStore: AppStore | null = null
 let hydratedName = ''
 let hydratedApi: ApiClient | null = null
@@ -529,6 +530,7 @@ function feedbackDescription(region: SaveRegion, dirty = false): string | undefi
 }
 
 function hydrate(source: Agent): void {
+  executionSettingsOpen.value = agentHarnessBacked(source)
   displayName.value = source.spec?.displayName || source.metadata.name
   description.value = source.spec?.description || ''
   systemPrompt.value = source.spec?.systemPrompt || ''
@@ -1221,7 +1223,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       </ResourceSectionCard>
     </details>
 
-    <details class="agents-config-disclosure" :open="harnessStored">
+    <details class="agents-config-disclosure" :open="executionSettingsOpen" @toggle="executionSettingsOpen = ($event.target as HTMLDetailsElement).open">
       <summary><ChevronRight :size="16" aria-hidden="true" /> Execution settings</summary>
       <ResourceSectionCard class="agents-config-sec" variant="document" :heading-id="domID('agent-backend-heading')" title="Backend" description="Choose where this agent runs its turns.">
         <fieldset class="agents-cap-fs">

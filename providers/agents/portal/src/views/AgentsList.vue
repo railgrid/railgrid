@@ -15,7 +15,7 @@ import type { AgentTemplate } from '../agent-template'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
-import { agentHarness, agentHarnessBacked, agentModelCredential, credentialUnavailable, harnessLabel, type Agent } from '../types'
+import { CONDITION_BACKEND_READY, agentCondition, agentHarness, agentHarnessBacked, agentModelCredential, credentialUnavailable, harnessLabel, type Agent } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
@@ -44,6 +44,8 @@ const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.s
 
 // Refresh the view when the store updates its plain resource slice.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
+const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
+const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
 const showAgentCards = computed(() => layout.value === 'grid' || !agents.value.data.length)
 const agentTemplates = ref<AgentTemplate[]>([])
 const templatesLoading = ref(true)
@@ -106,12 +108,17 @@ function triggerCount(agent: Agent): number {
 }
 
 function backendSummary(agent: Agent): { label: string; blocker?: string } {
-  const { data, hasSnapshot, error } = props.store.credentials
+  const { hasSnapshot, error } = props.store.credentials
   const credentialsCurrent = hasSnapshot && !error
   if (agentHarnessBacked(agent)) {
     const harness = agentHarness(agent)
-    if (!harness?.edgeRef?.name) return { label: 'Coding harness', blocker: 'Choose a machine in Config' }
-    const identity = data.find(item => item.name === harness.credentialRef)
+    const readiness = agentCondition(agent, CONDITION_BACKEND_READY)
+    const machineMissing = readiness?.status === 'False' && readiness.reason === 'UnknownEdgeRef' &&
+      typeof agent.metadata.generation === 'number' && readiness.observedGeneration === agent.metadata.generation
+    if (!harness?.edgeRef?.name || machineMissing) {
+      return { label: 'Coding harness', blocker: 'Choose a machine in Config' }
+    }
+    const identity = harnessCredentials.value.find(item => item.name === harness.credentialRef)
     if (!harness.credentialRef || (credentialsCurrent && credentialUnavailable(identity))) {
       return { label: 'Coding harness', blocker: 'Choose a harness identity in Config' }
     }
@@ -119,7 +126,7 @@ function backendSummary(agent: Agent): { label: string; blocker?: string } {
   }
   const ref = agentModelCredential(agent)
   if (!ref) return { label: '', blocker: 'Set a default model in Config' }
-  const credential = data.find(item => item.name === ref)
+  const credential = chatCredentials.value.find(item => item.name === ref)
   if (credentialsCurrent && credentialUnavailable(credential)) {
     return { label: '', blocker: 'Replace the unavailable model in Config' }
   }

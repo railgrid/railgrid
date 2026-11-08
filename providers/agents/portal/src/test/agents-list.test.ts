@@ -79,6 +79,54 @@ describe('agents list card semantics', () => {
     await settleVue()
     expect(text(unavailable)).not.toContain('Needs setup')
   })
+
+  it('treats provider connections and credentials for the other backend as unavailable', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [
+      agentFixture('scout'),
+      agentFixture('reviewer', {
+        backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'chat-only' } },
+      }),
+    ]
+    store.credentials.data = [
+      { name: 'openai', displayName: 'Shared provider', isConnection: true, provider: 'openai' },
+      { name: 'chat-only', model: 'gpt-4.1', provider: 'openai' },
+    ]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    store.credentials.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+    const [scout, reviewer] = mounted.element.querySelectorAll('.agents-card')
+
+    expect(text(scout)).toContain('Replace the unavailable model in Config')
+    expect(text(scout)).not.toContain('Shared provider')
+    expect(text(reviewer)).toContain('Choose a harness identity in Config')
+  })
+
+  it('flags a removed harness machine only when the backend condition matches the current generation', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    const agent = agentFixture('reviewer', {
+      backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'codex' } },
+    })
+    agent.metadata.generation = 2
+    const readiness = { type: 'BackendReady', status: 'False', reason: 'UnknownEdgeRef', observedGeneration: 1 }
+    agent.status = { conditions: [readiness] }
+    store.agents.data = [agent]
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    store.credentials.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+    const card = mounted.element.querySelector('.agents-card')
+
+    expect(text(card)).toContain('Codex on build-01')
+    expect(text(card)).not.toContain('Needs setup')
+    readiness.observedGeneration = 2
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(card)).toContain('Needs setup')
+    expect(text(card)).toContain('Choose a machine in Config')
+  })
 })
 
 describe('agents list refresh resilience', () => {
