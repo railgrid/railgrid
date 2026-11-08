@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Bot, Gauge, LayoutTemplate, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
+import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search, Trash2 } from 'lucide-vue-next'
+import AgentTemplateCards from '../components/AgentTemplateCards.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
@@ -11,7 +12,7 @@ import { confirmDialog } from '../portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference } from '../portalkit/layoutPreference'
 import type { TableFilterDefinition, TableFilterState } from '../portalkit/table'
 import { hashFor, type Route } from '../router'
-import { templateSlotLabel, type AgentTemplate } from '../agent-template'
+import type { AgentTemplate } from '../agent-template'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
@@ -56,12 +57,6 @@ async function loadTemplates(): Promise<void> {
 }
 onMounted(loadTemplates)
 
-const templateCards = computed(() => agentTemplates.value.map(template => ({
-  name: template.metadata.name,
-  title: template.spec.displayName,
-  description: template.spec.description,
-  requirements: (template.spec.wiring ?? []).filter(slot => slot.required).map(templateSlotLabel).join(' · '),
-})))
 const filters: TableFilterDefinition[] = [
   { key: 'backendType', label: 'Backend', allLabel: 'All backends', options: [
     { value: 'model', label: 'Model' },
@@ -297,24 +292,7 @@ function openAgentRow(row: Record<string, unknown>): void {
         <AlertCircle aria-hidden="true" /> Could not load agent templates.
         <button class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
       </div>
-      <div v-else-if="templateCards.length" class="agents-template-starters-grid">
-        <button
-          v-for="template in templateCards"
-          :key="template.name"
-          class="k-card agents-starter-card"
-          type="button"
-          :aria-labelledby="`agent-template-${template.name}-title`"
-          :aria-describedby="`agent-template-${template.name}-details`"
-          @click="navigate({ kind: 'create', resource: 'agent', type: template.name })"
-        >
-          <span class="agents-card-glyph"><LayoutTemplate aria-hidden="true" /></span>
-          <span :id="`agent-template-${template.name}-title`" class="agents-starter-name">{{ template.title }}</span>
-          <span :id="`agent-template-${template.name}-details`" class="agents-starter-details">
-            <span v-if="template.description" class="agents-starter-description">{{ template.description }}</span>
-            <span v-if="template.requirements" class="agents-starter-requirements">Requires {{ template.requirements }}</span>
-          </span>
-        </button>
-      </div>
+      <AgentTemplateCards v-else-if="agentTemplates.length" :templates="agentTemplates" @select="type => navigate({ kind: 'create', resource: 'agent', type })" />
       <p v-else class="agents-layout-empty">No templates are available.</p>
     </section>
     </div>

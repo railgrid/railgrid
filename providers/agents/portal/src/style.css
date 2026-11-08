@@ -177,6 +177,37 @@ railgrid-provider-agents .agents-panel form, railgrid-provider-agents .agents-ob
 }
 /* PortalKit owns the body and footer spacing on route-owned creation surfaces. */
 railgrid-provider-agents form.agents-guided-form { gap: 0; padding: 0; }
+railgrid-provider-agents .agents-create-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+railgrid-provider-agents .agents-template-picker {
+  box-sizing: border-box;
+  width: min(44rem, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  margin: auto;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+railgrid-provider-agents .agents-template-picker::backdrop {
+  background: color-mix(in srgb, var(--color-surface, #0a0b12) 65%, transparent);
+}
+railgrid-provider-agents .agents-template-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-block-end: 14px;
+}
+railgrid-provider-agents .agents-template-picker .agents-template-starters-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+@media (max-width: 550px) {
+  railgrid-provider-agents .agents-template-picker .agents-template-starters-grid { grid-template-columns: 1fr; }
+}
 railgrid-provider-agents .agents-create-alternatives {
   display: flex;
   flex-wrap: wrap;
@@ -264,8 +295,6 @@ railgrid-provider-agents .agents-radiocard-b { grid-area: b; font-size: 12px; co
 /* --- agent templates: the Start-from cards, the rendered instructions, the
  * first-run starters. Cards reuse the radiocard recipe; a starter is the same
  * card as a button. --- */
-railgrid-provider-agents .agents-template-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
-railgrid-provider-agents .agents-template-needs { display: block; margin-top: 4px; font-size: 11px; color: var(--color-text-secondary, #8a8ca6); }
 railgrid-provider-agents .agents-template-prompt { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
 railgrid-provider-agents .agents-template-prompt .agents-field-label { font-size: 13px; }
 railgrid-provider-agents .agents-template-prompt-text {
@@ -290,6 +319,7 @@ railgrid-provider-agents .agents-starter-card {
   font: inherit;
   cursor: pointer;
 }
+railgrid-provider-agents .agents-starter-card[aria-current="true"] { border-color: var(--color-accent); }
 railgrid-provider-agents .agents-starter-card .agents-card-glyph { width: 32px; height: 32px; }
 railgrid-provider-agents .agents-starter-card .agents-card-glyph svg { width: 16px; height: 16px; }
 railgrid-provider-agents .agents-starter-name { font-size: 14px; font-weight: 600; }

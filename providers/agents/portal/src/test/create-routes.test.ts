@@ -93,6 +93,42 @@ describe('route-owned creation surfaces', () => {
     expect(events['create-success']?.[0]).toEqual(expect.objectContaining({ resource: 'agent', name: 'nova', item: expect.anything() }))
   })
 
+  it('opens the template cards above the draft and applies a selection in place', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const agentTemplates = vi.fn().mockResolvedValue(catalog)
+    const api = stubApi({ agentTemplates })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api })
+    const name = el.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'my-draft'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    const trigger = el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!
+    const picker = el.querySelector<HTMLDialogElement>('dialog')!
+    picker.showModal = () => { picker.open = true }
+    picker.close = () => { picker.open = false }
+
+    expect(picker.open).toBe(false)
+    trigger.click()
+    await settle(el)
+    expect(picker.open).toBe(true)
+    expect(picker.querySelectorAll('.agents-starter-card')).toHaveLength(4)
+    picker.querySelector<HTMLButtonElement>('[aria-label="Close templates"]')!.click()
+    expect(name.value).toBe('my-draft')
+    expect(picker.open).toBe(false)
+
+    trigger.click()
+    const researcher = [...picker.querySelectorAll<HTMLButtonElement>('.agents-starter-card')]
+      .find(card => card.querySelector('.agents-starter-name')?.textContent === 'Researcher')!
+    researcher.click()
+    await settle(el)
+    expect(picker.open).toBe(false)
+    expect(name.value).toBe('my-draft')
+    expect(el.querySelector('[data-selected-template]')?.textContent).toContain('Researcher')
+    expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
+    expect(agentTemplates).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {
     const api = stubApi()
     const store = makeStore(api)
@@ -531,8 +567,7 @@ it('creates an agent from a template with its parameters, wiring and schedule', 
 
   // The template preselects itself, suggests a name, locks the backend and
   // asks for exactly its parameters and slots.
-  const picked = el.querySelector<HTMLInputElement>('input[name="agent-create-template"]:checked')!
-  expect(picked.value).toBe('news-reporter')
+  expect(el.querySelector('[data-selected-template]')?.textContent).toContain('News reporter')
   expect(el.querySelector<HTMLInputElement>('#agent-create-name')!.value).toBe('news-reporter')
   expect(el.querySelector('#agent-create-edge')).toBeNull()
   expect(el.querySelector('#agent-create-param-topics')).not.toBeNull()

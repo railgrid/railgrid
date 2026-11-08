@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, Check } from 'lucide-vue-next'
+import { ArrowLeft, Check, LayoutTemplate, X } from 'lucide-vue-next'
+import AgentTemplateCards from '../components/AgentTemplateCards.vue'
 import FormSelect, { type FormSelectOption } from '../portalkit/FormSelect.vue'
 import CreateGuidance from '../portalkit/CreateGuidance.vue'
 import { portalHref } from '../portalkit/navigation'
@@ -73,7 +74,8 @@ const name = ref(initialDraft.name)
 const templates = ref<AgentTemplate[]>([])
 const templatesError = ref('')
 const template = ref(initialDraft.template || props.initialTemplate || '')
-const showTemplates = ref(Boolean(template.value))
+const templatesLoading = ref(false)
+const templatesLoaded = ref(false)
 const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
 // Connection-slot wiring, by slot key. The other slot kinds reuse the fields
 // below (model credential, channel, machine, harness identity, GitHub).
@@ -94,7 +96,7 @@ const channel = ref(initialDraft.channel)
 const errors = reactive<Record<string, string>>({})
 const busy = ref(false)
 const nameInput = ref<HTMLInputElement | null>(null)
-const templateChoices = ref<HTMLFieldSetElement | null>(null)
+const templatePicker = ref<HTMLDialogElement | null>(null)
 
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
 const credentials = computed(() => { revision.value; return { ...props.store.credentials } })
@@ -150,9 +152,6 @@ function connectionOptions(type: string, required: boolean): FormSelectOption[] 
     ...connections.value.filter(item => item.spec.type === type).map(item => ({ value: item.metadata.name, label: item.spec.displayName || item.metadata.name })),
   ]
 }
-function templateNeeds(item: AgentTemplate): string {
-  return (item.spec.wiring ?? []).map(slotLabel).join(' · ')
-}
 const promptPreview = computed(() => selectedTemplate.value ? previewPrompt(selectedTemplate.value, parameters.value) : '')
 watch(selectedTemplate, (current, previous) => {
   if (!current) return
@@ -167,11 +166,16 @@ watch(selectedTemplate, (current, previous) => {
   }
 }, { immediate: true })
 async function loadTemplates(): Promise<void> {
+  if (templatesLoading.value) return
+  templatesLoading.value = true
   try {
     templates.value = await props.api.agentTemplates()
+    templatesLoaded.value = true
     templatesError.value = ''
   } catch (e) {
     templatesError.value = (e as Error).message
+  } finally {
+    templatesLoading.value = false
   }
 }
 function customizePrompt(): void {
@@ -190,21 +194,20 @@ watch([chatCredentials, credentials], ([models, slice]) => {
 
 function chooseBackend(type: AgentBackendType): void {
   template.value = ''
-  showTemplates.value = false
   customPrompt.value = false
   backendType.value = type
   void nextTick(() => nameInput.value?.focus())
 }
 
 function chooseTemplate(value: string): void {
-  if (!value) chooseBackend(AGENT_BACKEND_MODEL)
   template.value = value
+  templatePicker.value?.close()
+  void nextTick(() => nameInput.value?.focus())
 }
 
 function openTemplates(): void {
-  showTemplates.value = true
-  void nextTick(() => templateChoices.value?.focus())
-  void loadTemplates()
+  templatePicker.value?.showModal()
+  if (!templatesLoaded.value) void loadTemplates()
 }
 
 const channelOptions = computed(() => [
@@ -277,7 +280,7 @@ const canSubmit = computed(() => (!template.value || Boolean(selectedTemplate.va
 
 onMounted(() => {
   void nextTick(() => nameInput.value?.focus())
-  if (showTemplates.value) void loadTemplates()
+  if (template.value) void loadTemplates()
 })
 
 function clearErrors(): void {
@@ -471,10 +474,31 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
     <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="busy" @click="cancel">
       <ArrowLeft aria-hidden="true" /> Agents
     </button>
-    <header class="k-create-header">
-      <h1 class="k-create-title">New agent</h1>
-      <p class="k-create-description">{{ isHarness ? 'Choose the machine and coding harness for this agent.' : 'Set up an agent you can chat with right away.' }}</p>
+    <header class="k-create-header agents-create-header">
+      <div>
+        <h1 class="k-create-title">New agent</h1>
+        <p class="k-create-description">{{ isHarness ? 'Choose the machine and coding harness for this agent.' : 'Set up an agent you can chat with right away.' }}</p>
+      </div>
+      <button class="k-btn k-btn--ghost" type="button" :disabled="busy" aria-haspopup="dialog" @click="openTemplates">
+        <LayoutTemplate aria-hidden="true" /> Templates
+      </button>
     </header>
+
+    <dialog ref="templatePicker" class="k-modal agents-template-picker" aria-labelledby="agents-template-picker-title">
+      <div class="agents-template-picker-header">
+        <h2 id="agents-template-picker-title" class="k-modal__title">Templates</h2>
+        <button class="k-icon-action" type="button" aria-label="Close templates" autofocus @click="templatePicker?.close()">
+          <X aria-hidden="true" />
+        </button>
+      </div>
+      <p v-if="templatesLoading" role="status">Loading templates…</p>
+      <div v-else-if="templatesError" class="agents-stale" role="status">
+        Could not load agent templates.
+        <button class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
+      </div>
+      <AgentTemplateCards v-else-if="templates.length" :templates="templates" :selected="template" @select="chooseTemplate" />
+      <p v-else>No templates are available.</p>
+    </dialog>
 
     <div v-if="agents.error && !agents.hasSnapshot" class="k-card agents-state agents-state-error" role="alert">
       Could not load existing agents. {{ agents.error }}
@@ -501,25 +525,13 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
       <form class="agents-create-form agents-guided-form k-create-surface k-create-surface--guided" aria-label="Create agent" :aria-busy="busy" @submit.prevent="submit">
         <div class="k-create-body k-create-body--guided">
           <div class="k-create-fields">
-            <fieldset v-if="showTemplates" ref="templateChoices" tabindex="-1" class="agents-cap-fs agents-template-fs" aria-describedby="agent-create-template-hint">
-              <legend>Start from</legend>
-              <div v-if="templatesError" class="k-inline-notification k-inline-notification--warning" role="status">
-                <span class="k-inline-notification__body"><span class="k-inline-notification__message">Could not load templates. {{ templatesError }}</span></span>
-                <button class="k-inline-notification__action" type="button" :disabled="busy" @click="loadTemplates">Retry</button>
-              </div>
-              <div class="agents-radiocards agents-template-cards">
-                <label class="agents-radiocard k-checkbox-hit" :class="{ sel: template === '' }">
-                  <input :checked="!template" type="radio" name="agent-create-template" value="" :disabled="busy" @change="chooseTemplate('')" />
-                  <span class="agents-radiocard-t">Blank</span><span class="agents-radiocard-b">Start with a name, a model, and optional instructions.</span>
-                </label>
-                <label v-for="item in templates" :key="item.metadata.name" class="agents-radiocard k-checkbox-hit" :class="{ sel: item.metadata.name === template }">
-                  <input :checked="template === item.metadata.name" type="radio" name="agent-create-template" :value="item.metadata.name" :disabled="busy" @change="chooseTemplate(item.metadata.name)" />
-                  <span class="agents-radiocard-t">{{ item.spec.displayName }}</span>
-                  <span class="agents-radiocard-b">{{ item.spec.description }}<span class="agents-template-needs">Needs: {{ templateNeeds(item) }}</span></span>
-                </label>
-              </div>
-              <span id="agent-create-template-hint" class="agents-hint">A template sets the instructions, autonomy, capabilities and schedules; you wire in what it needs from this workspace.</span>
-            </fieldset>
+            <p v-if="selectedTemplate" class="agents-hint" data-selected-template>
+              Template: <strong>{{ selectedTemplate.spec.displayName }}</strong>
+            </p>
+            <div v-else-if="template" class="agents-stale" role="status">
+              {{ templatesError ? 'Could not load the selected template.' : templatesLoaded ? 'This template is unavailable.' : 'Loading the selected template…' }}
+              <button v-if="templatesError" class="k-btn k-btn--ghost" type="button" @click="loadTemplates">Retry</button>
+            </div>
 
             <label for="agent-create-name">
               Name *
@@ -741,9 +753,8 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
         </div>
         <div class="k-create-actions">
           <div class="agents-create-alternatives">
-            <button v-if="!showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="openTemplates">Use a template</button>
-            <button v-if="!isHarness" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
-            <button v-if="isHarness || showTemplates" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
+            <button v-if="!isHarness && !template" class="k-btn k-btn--text" type="button" data-use-coding-harness :disabled="busy" @click="chooseBackend(AGENT_BACKEND_HARNESS)">Use a coding harness</button>
+            <button v-if="isHarness || template" class="k-btn k-btn--text" type="button" :disabled="busy" @click="chooseBackend(AGENT_BACKEND_MODEL)">Start with a chat model</button>
           </div>
           <button class="k-btn k-btn--primary" type="submit" :disabled="busy || !canSubmit">
             <Check aria-hidden="true" /> {{ busy ? 'Creating…' : 'Create & open chat' }}
