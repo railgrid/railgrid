@@ -126,25 +126,93 @@ describe('agent config', () => {
     expect([...background.closest('table')!.querySelectorAll('thead th')].map(text)).toEqual(['Capability', 'Chat', 'Background'])
   })
 
-  it('shows the saved budget in the disclosure while a draft is pending', async () => {
-    const { el, pending } = await mountDeferredConfig({ autonomy: 'ask', budget: { usdLimit: '12' } })
+  it('shows the saved daily budget in the disclosure while a draft is pending', async () => {
+    const { el, pending, store } = await mountDeferredConfig({ autonomy: 'ask', budget: { window: 'day', usdLimit: '12', tokenLimit: 150 } })
     const summary = [...el.querySelectorAll('summary')].find(item => text(item).startsWith('Autonomy & budget'))!
     const details = summary.parentElement as HTMLDetailsElement
-    const budget = details.querySelector<HTMLInputElement>('input[aria-label="Monthly budget (USD)"]')!
+    const budget = details.querySelector<HTMLInputElement>('input[aria-label="Daily budget (USD)"]')!
     const value = summary.querySelector('.agents-setting-disclosure__value')
 
-    expect(text(value)).toBe('Ask · $12/mo')
+    expect(budget.value).toBe('12')
+    expect(details.querySelector<HTMLInputElement>('input[aria-label="Daily token cap"]')?.value).toBe('150')
+    expect(text(value)).toBe('Ask · $12/day · 150 tokens/day')
     details.open = true
     budget.value = '24'
     budget.dispatchEvent(new Event('input'))
     sectionButton(details, 'Save policy').click()
     details.open = false
     await settle()
-    expect(text(value)).toBe('Ask · $12/mo')
+    expect(store.agent('scout')?.spec.budget?.usdLimit).toBe('24')
+    expect(text(value)).toBe('Ask · $12/day · 150 tokens/day')
 
-    pending.resolve(agentFixture('scout', { autonomy: 'ask', budget: { usdLimit: '24' } }))
+    pending.resolve(agentFixture('scout', { autonomy: 'ask', budget: { window: 'day', usdLimit: '24', tokenLimit: 150 } }))
     await settle()
-    expect(text(value)).toBe('Ask · $24/mo')
+    expect(text(value)).toBe('Ask · $24/day · 150 tokens/day')
+  })
+
+  it('refreshes saved summaries from an external Agent update while keeping local drafts', async () => {
+    const { el, store } = await mountConfig(
+      { backend: modelBackend('main', ['backup']), budget: { window: 'month', usdLimit: '12' } },
+      [{ name: 'main' }, { name: 'backup' }],
+    )
+    const summaries = [...el.querySelectorAll('summary')]
+    const value = (name: string) => {
+      const summary = summaries.find(item => text(item).startsWith(name))
+      return text(summary?.querySelector('.agents-setting-disclosure__value'))
+    }
+    const budget = el.querySelector<HTMLInputElement>('input[aria-label="Monthly budget (USD)"]')!
+    expect(value('Model fallbacks')).toBe('1 configured')
+    expect(value('Autonomy & budget')).toBe('Ask · $12/mo')
+
+    budget.value = '24'
+    budget.dispatchEvent(new Event('input'))
+    store.agents.data = [{
+      ...agentFixture('scout', {
+        backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'codex' } },
+        budget: { window: 'day', usdLimit: '18' },
+        selfConfiguration: { enabled: true },
+      }),
+      metadata: { name: 'scout', generation: 2 },
+      status: { conditions: [{ type: 'BackendReady', status: 'False', observedGeneration: 2 }] },
+    }]
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    expect(value('Model fallbacks')).toBe('None configured')
+    expect(value('Autonomy & budget')).toBe('Harness controls approvals · $18/day')
+    expect(value('Execution settings')).toBe('Coding harness · Not ready')
+    expect(value('Self-configuration')).toBe('Enabled')
+    expect(budget.getAttribute('aria-label')).toBe('Daily budget (USD)')
+    expect(budget.value).toBe('24')
+    expect(el.querySelector<HTMLInputElement>('input[value="model"]')?.checked).toBe(true)
+  })
+
+  it.each([
+    ['Night tools', { toolsets: ['night'] }, { backgroundToolsets: [] }],
+    ['GitHub', { connections: ['gh'], families: ['core', 'github'] }, { backgroundConnections: [], backgroundFamilies: ['core'] }],
+    ['Read the web', { families: ['core', 'web'] }, { backgroundFamilies: ['core'] }],
+  ])('can revoke the background-only %s grant without adding chat access', async (label, background, patch) => {
+    const { el, pending, patchAgent, store } = await mountDeferredConfig({ tools: { background } })
+    store.toolsets.data = [{ metadata: { name: 'night' }, spec: { displayName: 'Night tools' } }]
+    store.connections.data = [{ metadata: { name: 'gh' }, spec: { type: 'github', displayName: 'GitHub' } }]
+    store.dispatchEvent(new Event('change'))
+    await settle()
+
+    const chat = el.querySelector<HTMLInputElement>(`input[aria-label="Allow in chat: ${label}"]`)!
+    const run = el.querySelector<HTMLInputElement>(`input[aria-label="Allow in background: ${label}"]`)!
+    expect(chat.checked).toBe(false)
+    expect(run.checked).toBe(true)
+    expect(run.disabled).toBe(false)
+
+    run.click()
+    await settle()
+    expect(patchAgent).toHaveBeenCalledWith('scout', patch)
+    expect(chat.checked).toBe(false)
+    expect(run.checked).toBe(false)
+    expect(run.disabled).toBe(true)
+
+    pending.resolve(structuredClone(store.agent('scout')!))
+    await settle()
   })
 
   it('keeps Execution settings open through an optimistic switch from a harness to a model', async () => {
@@ -465,7 +533,7 @@ describe('agent config', () => {
     expect(el.querySelector('#agent-max-tool-turns-label')).toBeNull()
     expect(el.querySelector('#agent-run-timeout-label')).not.toBeNull()
     expect(el.querySelector('#agent-harness-permission-policy')?.textContent).toContain('configured by Claude Code or Codex on the machine')
-    expect(el.textContent).toContain('harness caps depend on usage reported by the runner')
+    expect(el.textContent).toContain('caps use the usage reported by the model or coding harness')
     expect(el.querySelector('[data-harness-tool-turn-limit]')?.textContent).toContain('cannot cap individual tool calls')
   })
 

@@ -488,6 +488,40 @@ describe('Activity.vue', () => {
     expect(full.endsWith(' · github-reviewer')).toBe(true)
   })
 
+  it('discloses a shortened workbench run prompt on hover and by keyboard without layout overflow', async () => {
+    const prompt = `${'Review the latest changes and list their effects. '.repeat(6)}Check the rollback plan.`
+    const api = stubApi({ listRuns: vi.fn().mockResolvedValue({
+      items: [run({ id: 'r-long', inputPreview: prompt }), run({ id: 'r-short' })], nextCursor: '',
+    }) })
+    const view = await mount(Activity, { store: makeStore(api), api, agent: 'scout' })
+    const tooltip = () => document.querySelector('.k-table__primary-tooltip')
+    const row = view.element.querySelector<HTMLElement>('[aria-label="Open run r-long"]')!
+    const content = row.querySelector<HTMLElement>('.k-table__primary-content')!
+    const value = content.querySelector<HTMLElement>('.k-table__primary-value')!
+    expect(text(value)).not.toContain('Check the rollback plan.')
+    expect(value.scrollWidth).toBe(value.clientWidth)
+
+    content.dispatchEvent(new MouseEvent('mouseenter'))
+    await settleVue()
+    expect(text(tooltip())).toBe(prompt)
+    content.dispatchEvent(new MouseEvent('mouseleave'))
+    await settleVue()
+    expect(tooltip()).toBeNull()
+
+    row.focus()
+    await settleVue()
+    expect(text(tooltip())).toBe(prompt)
+    const right = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true })
+    row.dispatchEvent(right)
+    await settleVue()
+    expect(right.defaultPrevented).toBe(true)
+    expect(text(tooltip())).toBe(prompt)
+
+    view.element.querySelector<HTMLElement>('[aria-label="Open run r-short"]')!.focus()
+    await settleVue()
+    expect(tooltip()).toBeNull()
+  })
+
   it('applies a queued self-configuration change from the feed', async () => {
     // A change parks no run: approving it is what applies it, so it is not
     // offered as "approve & resume" and has no answer box.

@@ -48,6 +48,7 @@ const props = defineProps<{
   api: ApiClient
   name: string
   tab: AgentTab
+  automationCreateOpen?: boolean
   runId?: string
   authorityEpoch: number
   compact?: boolean
@@ -143,7 +144,10 @@ function ensureWorkbenchSurfaceMounted(tab: AgentWorkbenchTabKind): void {
   if (tab === 'skills') skillsMounted.value = true
 }
 
-watch(() => props.tab, tab => {
+watch([() => props.tab, () => props.automationCreateOpen], ([tab, createOpen], [previousTab]) => {
+  // The launcher can stay selected at the Automation URL. Entering its
+  // create route explicitly selects Automation even when the tab prop is unchanged.
+  if (tab === previousTab && !createOpen) return
   if (inspectionActive) workbenchIntentVersion += 1
   workbenchExplicitlyOpened.value = tab !== 'chat'
   if (tab !== 'chat') {
@@ -440,7 +444,7 @@ async function remove(): Promise<void> {
                   <RunDetail v-if="runsMounted && runId" :store="store" :api="api" :run-id="runId" :embedded-agent="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
                 </template>
                 <template #skills>
-                  <AgentSkillsWorkbench v-if="skillsMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" @navigate="handleChildNavigate" />
+                  <AgentSkillsWorkbench v-if="skillsMounted" :store="store" :api="api" :name="name" :authority-epoch="authorityEpoch" :active="workspaceOpen && !compact && workbenchTab === 'skills'" @navigate="handleChildNavigate" />
                 </template>
                 <template #launcher>
                   <AgentWorkbenchLauncher :tabs="workbench.tabs" :active="workbenchTab === 'launcher'" @select="selectWorkbenchLauncherTab" />

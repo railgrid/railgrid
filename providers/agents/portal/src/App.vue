@@ -728,6 +728,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :overlay="!!overlay"
         :page-context="overlay?.pageContext"
         :tab="workspaceRoute.tab"
+        :automation-create-open="!!automationCreateRoute"
         :run-id="workspaceRoute.runID"
         :authority-epoch="authorityEpoch"
         @navigate="go"

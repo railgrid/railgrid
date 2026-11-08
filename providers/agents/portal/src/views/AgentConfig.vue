@@ -52,7 +52,7 @@ import {
   type Autonomy,
   type HarnessWorkspace,
 } from '../types'
-import { queueAgentConfigSave } from '../vue/config-save-queue'
+import { acknowledgedAgentConfig, queueAgentConfigSave } from '../vue/config-save-queue'
 import { useAgentDOMID, useAuthorityGuard, useStoreRevision, type AuthoritySnapshot } from '../vue/runtime'
 import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import Automation from './Automation.vue'
@@ -195,6 +195,10 @@ const saveState = reactive<Record<SaveRegion, SaveRegionState>>({
 const agent = computed(() => {
   revision.value
   return props.store.agent(props.name)
+})
+const savedAgent = computed(() => {
+  revision.value
+  return acknowledgedAgentConfig(props.store, props.name)
 })
 const agentReadState = computed(() => { revision.value; return { ...props.store.agents } })
 const credentialSlice = computed(() => {
@@ -461,28 +465,32 @@ const backendPolicyBlocker = computed(() => {
   return ''
 })
 const policyDescription = computed(() => harnessPolicyTarget.value
-  ? 'The coding harness owns its permission prompts on the selected machine. Railgrid still enforces monthly usage caps and the run timeout.'
+  ? 'The coding harness owns its permission prompts on the selected machine. Railgrid still enforces usage caps and the run timeout.'
   : 'Autonomy controls approval for provider-managed tools. Paused actions appear in Activity before they run.')
-// Use the last acknowledged settings while the operator is editing or saving.
+const budgetPeriod = computed(() => savedAgent.value?.spec?.budget?.window === 'day'
+  ? { label: 'Daily', suffix: '/day' }
+  : { label: 'Monthly', suffix: '/mo' })
 const policySummary = computed(() => {
-  const policy = baselines.policy
-  if (!policy) return ''
-  const autonomyLabel = baselines.backend?.type === AGENT_BACKEND_HARNESS
+  const source = savedAgent.value
+  if (!source) return ''
+  const policy = policySnapshot(source)
+  const autonomyLabel = agentHarnessBacked(source)
     ? 'Harness controls approvals'
     : AUTONOMY_MODES.find(mode => mode.id === policy.autonomy)?.label || policy.autonomy
+  const suffix = budgetPeriod.value.suffix
   const caps = [
-    Number(policy.budgetUSD) > 0 ? `$${policy.budgetUSD}/mo` : '',
-    Number(policy.budgetTokens) > 0 ? `${Number(policy.budgetTokens).toLocaleString()} tokens/mo` : '',
+    Number(policy.budgetUSD) > 0 ? `$${policy.budgetUSD}${suffix}` : '',
+    Number(policy.budgetTokens) > 0 ? `${Number(policy.budgetTokens).toLocaleString()} tokens${suffix}` : '',
   ].filter(Boolean)
   return [autonomyLabel, ...(caps.length ? caps : ['No budget caps'])].join(' · ')
 })
 const backendSummary = computed(() => {
-  const label = BACKEND_MODES.find(mode => mode.id === baselines.backend?.type)?.label || ''
+  const label = BACKEND_MODES.find(mode => mode.id === agentBackendType(savedAgent.value))?.label || ''
   const notReady = !backendReadinessSaving.value && !backendReadinessStale.value && backendCondition.value?.status === 'False'
   return notReady ? `${label} · Not ready` : label
 })
 const fallbackSummary = computed(() => {
-  const count = baselines.model?.modelFallbacks.length ?? 0
+  const count = agentModelFallbacks(savedAgent.value).length
   return count ? `${count} configured` : 'None configured'
 })
 
@@ -790,21 +798,19 @@ function savePolicy(): void {
   )
 }
 
-function linkedToolsets(source: Agent): Set<string> {
-  return new Set([...(source.spec?.tools?.interactive?.toolsets || []), ...(source.spec?.tools?.background?.toolsets || [])])
+function toolGrant(source: Agent, background: boolean) {
+  // The save queue changes the Agent in place before publishing a revision.
+  void revision.value
+  return background ? source.spec?.tools?.background : source.spec?.tools?.interactive
 }
-function backgroundToolsets(source: Agent): Set<string> {
-  return new Set(source.spec?.tools?.background?.toolsets || [])
+function toolsetEnabled(source: Agent, toolset: string, background = false): boolean {
+  return Boolean(toolGrant(source, background)?.toolsets?.includes(toolset))
 }
-function linkedTools(source: Agent): Set<string> {
-  return new Set([...(source.spec?.tools?.interactive?.connections || []), ...(source.spec?.tools?.background?.connections || [])])
-}
-function backgroundTools(source: Agent): Set<string> {
-  return new Set(source.spec?.tools?.background?.connections || [])
+function toolEnabled(source: Agent, connection: string, background = false): boolean {
+  return Boolean(toolGrant(source, background)?.connections?.includes(connection))
 }
 function familyEnabled(source: Agent, family: string, background = false): boolean {
-  const grant = background ? source.spec?.tools?.background : source.spec?.tools?.interactive
-  return (grant?.families || []).includes(family)
+  return Boolean(toolGrant(source, background)?.families?.includes(family))
 }
 function hasSearchTool(source: Agent): boolean {
   return (source.spec?.tools?.interactive?.connections || []).some(name => props.store.connectionType(name) === 'websearch')
@@ -851,7 +857,7 @@ function setToolsetBackground(source: Agent, toolset: string, on: boolean): void
     'tools',
     { backgroundToolsets: next },
     spec => setGrants(spec, { backgroundToolsets: next }),
-    on ? 'Toolset enabled for background runs.' : 'Toolset is now interactive-only.',
+    on ? 'Toolset enabled for background runs.' : 'Toolset disabled for background runs.',
     'tool access',
   )
 }
@@ -881,7 +887,7 @@ function setToolBackground(source: Agent, connection: string, on: boolean): void
     'tools',
     patch,
     spec => setGrants(spec, patch),
-    on ? 'Tool enabled for background runs.' : 'Tool is now interactive-only.',
+    on ? 'Tool enabled for background runs.' : 'Tool disabled for background runs.',
     'tool access',
   )
 }
@@ -902,7 +908,7 @@ function setFamily(source: Agent, family: string, label: string, on: boolean, ba
         ...(on ? {} : { backgroundFamilies: withFamily(backgroundFamilies, false) }),
       }
   const message = background
-    ? on ? `${label} enabled for background runs.` : `${label} is now interactive-only.`
+    ? on ? `${label} enabled for background runs.` : `${label} disabled for background runs.`
     : on ? `${label} enabled.` : `${label} disabled.`
   saveImmediate('tools', patch, spec => setGrants(spec, patch), message, 'tool access')
 }
@@ -1228,10 +1234,10 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
         <div class="agents-fieldset">
           <span class="agents-fieldset-legend">Budget</span>
           <div class="agents-grid2">
-            <label>Monthly budget (USD)<input v-model="budgetUSD" class="k-input" aria-label="Monthly budget (USD)" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? domID('agent-budget-usd-error') : undefined" /><span v-if="budgetUSDError" :id="domID('agent-budget-usd-error')" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
-            <label>Monthly token cap<input v-model="budgetTokens" class="k-input" aria-label="Monthly token cap" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? domID('agent-budget-tokens-error') : undefined" /><span v-if="budgetTokensError" :id="domID('agent-budget-tokens-error')" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
+            <label>{{ budgetPeriod.label }} budget (USD)<input v-model="budgetUSD" class="k-input" :aria-label="`${budgetPeriod.label} budget (USD)`" inputmode="decimal" placeholder="blank = unlimited" :aria-invalid="budgetUSDError ? 'true' : undefined" :aria-describedby="budgetUSDError ? domID('agent-budget-usd-error') : undefined" /><span v-if="budgetUSDError" :id="domID('agent-budget-usd-error')" class="agents-fielderr" role="alert">{{ budgetUSDError }}</span></label>
+            <label>{{ budgetPeriod.label }} token cap<input v-model="budgetTokens" class="k-input" :aria-label="`${budgetPeriod.label} token cap`" inputmode="numeric" placeholder="blank = unlimited" :aria-invalid="budgetTokensError ? 'true' : undefined" :aria-describedby="budgetTokensError ? domID('agent-budget-tokens-error') : undefined" /><span v-if="budgetTokensError" :id="domID('agent-budget-tokens-error')" class="agents-fielderr" role="alert">{{ budgetTokensError }}</span></label>
           </div>
-          <p class="agents-hint">Monthly caps apply to either backend and use usage reported by that backend; harness caps depend on usage reported by the runner.</p>
+          <p class="agents-hint">{{ budgetPeriod.label }} caps use the usage reported by the model or coding harness.</p>
         </div>
         <div class="agents-fieldset">
           <span class="agents-fieldset-legend">Limits</span>
@@ -1407,7 +1413,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                             class="k-checkbox"
                             type="checkbox"
                             :aria-label="`Allow in chat: ${toolset.spec.displayName || toolset.metadata.name}`"
-                            :checked="linkedToolsets(agent).has(toolset.metadata.name)"
+                            :checked="toolsetEnabled(agent, toolset.metadata.name)"
                             @change="setToolsetLinked(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)"
                           />
                         </label>
@@ -1418,8 +1424,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                             class="k-checkbox"
                             type="checkbox"
                             :aria-label="`Allow in background: ${toolset.spec.displayName || toolset.metadata.name}`"
-                            :checked="backgroundToolsets(agent).has(toolset.metadata.name)"
-                            :disabled="!linkedToolsets(agent).has(toolset.metadata.name)"
+                            :checked="toolsetEnabled(agent, toolset.metadata.name, true)"
+                            :disabled="!toolsetEnabled(agent, toolset.metadata.name) && !toolsetEnabled(agent, toolset.metadata.name, true)"
                             @change="setToolsetBackground(agent, toolset.metadata.name, ($event.target as HTMLInputElement).checked)"
                           />
                         </label>
@@ -1459,7 +1465,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                           type="checkbox"
                           aria-label="Allow in background: Read the web"
                           :checked="familyEnabled(agent, 'web', true)"
-                          :disabled="!familyEnabled(agent, 'web')"
+                          :disabled="!familyEnabled(agent, 'web') && !familyEnabled(agent, 'web', true)"
                           @change="setFamily(agent, 'web', 'Web access', ($event.target as HTMLInputElement).checked, true)"
                         />
                       </label>
@@ -1485,7 +1491,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                           type="checkbox"
                           aria-label="Allow in background: Research fan-out"
                           :checked="familyEnabled(agent, 'spawn', true)"
-                          :disabled="!familyEnabled(agent, 'spawn')"
+                          :disabled="!familyEnabled(agent, 'spawn') && !familyEnabled(agent, 'spawn', true)"
                           @change="setFamily(agent, 'spawn', 'Research fan-out', ($event.target as HTMLInputElement).checked, true)"
                         />
                       </label>
@@ -1511,7 +1517,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                           type="checkbox"
                           aria-label="Allow in background: Visualize data"
                           :checked="familyEnabled(agent, 'visualization', true)"
-                          :disabled="!familyEnabled(agent, 'visualization')"
+                          :disabled="!familyEnabled(agent, 'visualization') && !familyEnabled(agent, 'visualization', true)"
                           @change="setFamily(agent, 'visualization', 'Visualize data', ($event.target as HTMLInputElement).checked, true)"
                         />
                       </label>
@@ -1550,7 +1556,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                             class="k-checkbox"
                             type="checkbox"
                             :aria-label="`Allow in chat: ${connection.spec.displayName || connection.metadata.name}`"
-                            :checked="linkedTools(agent).has(connection.metadata.name)"
+                            :checked="toolEnabled(agent, connection.metadata.name)"
                             @change="setToolLinked(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)"
                           />
                         </label>
@@ -1561,8 +1567,8 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
                             class="k-checkbox"
                             type="checkbox"
                             :aria-label="`Allow in background: ${connection.spec.displayName || connection.metadata.name}`"
-                            :checked="backgroundTools(agent).has(connection.metadata.name)"
-                            :disabled="!linkedTools(agent).has(connection.metadata.name)"
+                            :checked="toolEnabled(agent, connection.metadata.name, true)"
+                            :disabled="!toolEnabled(agent, connection.metadata.name) && !toolEnabled(agent, connection.metadata.name, true)"
                             @change="setToolBackground(agent, connection.metadata.name, ($event.target as HTMLInputElement).checked)"
                           />
                         </label>
@@ -1646,7 +1652,7 @@ function setGrants(spec: Agent['spec'], patch: AgentPatch): void {
       <summary>
         <h3>
           <span>Self-configuration</span>
-          <span class="agents-setting-disclosure__value">{{ saveState.selfConfiguration.status === 'pending' ? 'Saving…' : selfConfigOf(agent).enabled ? 'Enabled' : 'Disabled' }}</span>
+          <span class="agents-setting-disclosure__value">{{ saveState.selfConfiguration.status === 'pending' ? 'Saving…' : savedAgent?.spec?.selfConfiguration?.enabled ? 'Enabled' : 'Disabled' }}</span>
           <ChevronRight :size="16" aria-hidden="true" />
         </h3>
       </summary>

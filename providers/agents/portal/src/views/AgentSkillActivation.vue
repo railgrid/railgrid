@@ -8,12 +8,19 @@ import { filterAssistantSkills } from '../agentkit/composerSkillsSearch'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import ConfigSaveFeedback, { type ConfigSaveStatus } from '../components/ConfigSaveFeedback.vue'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
+import { toast } from '../ui/toast'
 import type { AppStore } from '../store'
 import type { AgentSkill, AgentSkillCatalog } from '../types'
 
 ensureAgentUIStyles()
 
-const props = defineProps<{ store: AppStore; api: ApiClient; name: string; authorityEpoch?: number }>()
+const props = withDefaults(defineProps<{
+  store: AppStore
+  api: ApiClient
+  name: string
+  authorityEpoch?: number
+  active?: boolean
+}>(), { active: true })
 const revision = useStoreRevision(() => props.store)
 const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.store, () => props.api)
 const catalog = ref<AgentSkillCatalog>({ skills: [], warnings: [] })
@@ -60,6 +67,7 @@ async function updateEnabled(skillID: string, skillName: string, enabled: boolea
   if (busySkill.value) return
   const authority = captureAuthority()
   const name = props.name
+  const ownsPane = () => authorityIsCurrent(authority) && props.name === name
   busySkill.value = skillID
   saveStatus.value = 'pending'
   saveError.value = ''
@@ -69,15 +77,16 @@ async function updateEnabled(skillID: string, skillName: string, enabled: boolea
       failure: 'Could not update agent skills',
       reload: ['agents'],
       onFailure: reason => {
-        if (!authorityIsCurrent(authority) || props.name !== name) return
+        if (!props.active || !ownsPane()) return false
         saveError.value = `Could not ${enabled ? 'enable' : 'disable'} “${skillName}”. ${(reason as Error).message}`
         saveStatus.value = 'error'
+        return true
       },
     })
-    if (updated && authorityIsCurrent(authority) && props.name === name) {
-      saveStatus.value = 'saved'
-      await load()
-    }
+    if (!updated || authority.store.isRetired()) return
+    if (props.active && ownsPane()) saveStatus.value = 'saved'
+    else toast('ok', `${enabled ? 'Enabled' : 'Disabled'} “${skillName}” for this agent.`)
+    if (ownsPane()) await load()
   } finally {
     if (busySkill.value === skillID) {
       busySkill.value = ''

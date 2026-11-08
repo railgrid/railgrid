@@ -675,6 +675,48 @@ describe('public Agents shell routing', () => {
     expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
   })
 
+  it('restores the Automation tab when history reopens creation from the tab launcher', async () => {
+    const collectionHash = '#/agents/scout/automation'
+    const createHash = '#/agents/scout/schedules/create'
+    const element = await mountShell(collectionHash)
+    configureChatApi(element.api!, [])
+    seedChatStore(element.store!, [])
+    await settleVue()
+
+    const workspace = element.querySelector('[data-agent-workspace]')!
+    const opener = element.querySelector<HTMLButtonElement>('[data-automation-create="schedule"]')!
+    opener.focus()
+    opener.click()
+    await settleVue()
+    expect(location.hash).toBe(createHash)
+
+    history.back()
+    await vi.waitFor(() => expect(location.hash).toBe(collectionHash))
+    expect(element.querySelector('dialog[open]')).toBeNull()
+
+    element.querySelector<HTMLButtonElement>('button[aria-label="New tab"]')!.click()
+    await settleVue()
+    expect(location.hash).toBe(collectionHash)
+    expect(element.querySelector('[data-k-tab-id="launcher"]')?.getAttribute('aria-selected')).toBe('true')
+
+    history.forward()
+    await vi.waitFor(() => {
+      expect(location.hash).toBe(createHash)
+      expect(element.querySelector('dialog[open]')).not.toBeNull()
+    })
+    expect(element.querySelector('[data-k-tab-id="automation"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
+
+    buttonWithText(element.querySelector('dialog[open]')!, 'Cancel').click()
+    await settleVue()
+    expect(location.hash).toBe(collectionHash)
+    expect(element.querySelector('dialog[open]')).toBeNull()
+    expect(element.querySelector('[data-agent-workspace]')).toBe(workspace)
+    expect(element.querySelector('[data-k-tab-id="automation"]')?.getAttribute('aria-selected')).toBe('true')
+    expect(element.querySelector('[data-k-tab-id="launcher"]')?.getAttribute('aria-selected')).toBe('false')
+    expect(document.activeElement).toBe(opener)
+  })
+
   it('keeps the named schedule dialog and draft open when creation fails', async () => {
     const element = await mountShell('#/agents/scout/automation')
     const api = element.api!

@@ -201,7 +201,10 @@ const columns = computed(() => {
     fullValue: (row: Record<string, unknown>) => props.agent ? String(row.fullInput) : `${row.fullInput} · ${row.agent}`,
   }
   const phase = { key: 'phase', label: 'Phase' }
-  if (props.agent) return [primary, phase]
+  if (props.agent) return [{
+    ...primary,
+    isValueTruncated: (row: Record<string, unknown>) => row.input !== row.fullInput,
+  }, phase]
   return [
     primary,
     phase,
@@ -212,8 +215,8 @@ const columns = computed(() => {
   ]
 })
 const searchKeys = ['id', 'agent', 'inputPreview', 'trigger', 'phase', 'class']
-// A run's input can be a whole prompt. The row shows one bounded line of it and
-// discloses a longer cut on hover; the run page has it in full.
+// A run's input can be a whole prompt. The row shows a bounded preview and
+// discloses a longer cut on hover or focus; the run page has it in full.
 const now = ref(Date.now())
 let rangeClock = 0
 const tableRows = computed(() => runs.value.map(run => ({
