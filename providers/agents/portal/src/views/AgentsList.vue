@@ -1,13 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { AlertCircle, Bot, Gauge, Megaphone, MessageSquare, Plus, Search } from 'lucide-vue-next'
+import { computed, nextTick, onMounted, ref, useId, watch } from 'vue'
+import { AlertCircle, Bot, Megaphone, Plus, Search } from 'lucide-vue-next'
 import AgentTemplateCards from '../components/AgentTemplateCards.vue'
 import ActionMenu, { type ActionMenuItem } from '../portalkit/ActionMenu.vue'
 import LayoutSelector from '../portalkit/LayoutSelector.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
 import ResourceTable from '../portalkit/ResourceTable.vue'
-import ResourceTableActionButton from '../portalkit/ResourceTableActionButton.vue'
-import ResourceTableDeleteButton from '../portalkit/ResourceTableDeleteButton.vue'
 import StatusBadge from '../portalkit/StatusBadge.vue'
 import { confirmDialog } from '../portalkit/confirm'
 import { readLayoutPreference, writeLayoutPreference } from '../portalkit/layoutPreference'
@@ -17,12 +15,13 @@ import type { AgentTemplate } from '../agent-template'
 import { mutate } from '../mutate'
 import type { ApiClient } from '../api'
 import type { AppStore } from '../store'
-import { agentHarness, agentHarnessBacked, agentModelCredential, harnessLabel, type Agent } from '../types'
+import { CONDITION_BACKEND_READY, agentCondition, agentHarness, agentHarnessBacked, agentModelCredential, credentialUnavailable, harnessLabel, type Agent } from '../types'
 import { useAuthorityGuard, useStoreRevision } from '../vue/runtime'
 
 const props = defineProps<{ store: AppStore; api: ApiClient }>()
 const emit = defineEmits<{ navigate: [route: Route] }>()
-const cardActions: readonly ActionMenuItem[] = [
+const cardDescriptionID = useId()
+const agentActions: readonly ActionMenuItem[] = [
   { id: 'runs', label: 'View runs' },
   { id: 'delete', label: 'Delete agent', tone: 'danger' },
 ]
@@ -45,6 +44,8 @@ const { captureAuthority, authorityIsCurrent } = useAuthorityGuard(() => props.s
 
 // Refresh the view when the store updates its plain resource slice.
 const agents = computed(() => { revision.value; return { ...props.store.agents } })
+const chatCredentials = computed(() => { revision.value; return props.store.chatCredentials() })
+const harnessCredentials = computed(() => { revision.value; return props.store.harnessCredentials() })
 const showAgentCards = computed(() => layout.value === 'grid' || !agents.value.data.length)
 const agentTemplates = ref<AgentTemplate[]>([])
 const templatesLoading = ref(true)
@@ -75,18 +76,13 @@ const filters: TableFilterDefinition[] = [
 
 function navigate(route: Route): void { emit('navigate', route) }
 
-function selectCardAction(name: string, action: string): void {
+async function selectAgentAction(name: string, action: string): Promise<void> {
   if (action === 'runs') navigate({ kind: 'agent', name, tab: 'runs' })
-  if (action === 'delete') void removeAgent(name, true)
-}
-
-async function removeAgent(name: string, fromMenu = false): Promise<void> {
+  if (action !== 'delete') return
   const authority = captureAuthority()
-  if (fromMenu) {
-    // Let the menu return focus to its trigger before the dialog captures it.
-    await nextTick()
-    if (!authorityIsCurrent(authority)) return
-  }
+  // Let the menu return focus to its trigger before the dialog captures it.
+  await nextTick()
+  if (!authorityIsCurrent(authority)) return
   const ok = await confirmDialog({
     title: `Delete agent “${name}”?`,
     message: 'This also deletes its chat history.',
@@ -111,22 +107,30 @@ function triggerCount(agent: Agent): number {
   return props.store.triggers.data.filter(trigger => trigger.spec.agentRef === agent.metadata.name).length
 }
 
-/**
- * backendSummary is the one line under an agent's name: what its turns run on.
- *
- * A harness-backed agent has no chat credential and needs none, so the old
- * "no model — pick one in Config" would have been a lie about a correctly
- * configured agent. `configured` is what the warning tone keys off.
- */
-function backendSummary(agent: Agent): { label: string; configured: boolean } {
+function backendSummary(agent: Agent): { label: string; blocker?: string } {
+  const { hasSnapshot, error } = props.store.credentials
+  const credentialsCurrent = hasSnapshot && !error
   if (agentHarnessBacked(agent)) {
     const harness = agentHarness(agent)
-    if (!harness?.edgeRef?.name) return { label: 'harness — no machine picked yet', configured: false }
-    const named = harnessLabel(props.store.credentials.data.find(c => c.name === harness.credentialRef)?.provider)
-    return { label: `${named || 'harness'} on ${harness.edgeRef.name}`, configured: true }
+    const readiness = agentCondition(agent, CONDITION_BACKEND_READY)
+    const machineMissing = readiness?.status === 'False' && readiness.reason === 'UnknownEdgeRef' &&
+      typeof agent.metadata.generation === 'number' && readiness.observedGeneration === agent.metadata.generation
+    if (!harness?.edgeRef?.name || machineMissing) {
+      return { label: 'Coding harness', blocker: 'Choose a machine in Config' }
+    }
+    const identity = harnessCredentials.value.find(item => item.name === harness.credentialRef)
+    if (!harness.credentialRef || (credentialsCurrent && credentialUnavailable(identity))) {
+      return { label: 'Coding harness', blocker: 'Choose a harness identity in Config' }
+    }
+    return { label: `${harnessLabel(identity?.provider) || 'Coding harness'} on ${harness.edgeRef.name}` }
   }
-  const credential = agentModelCredential(agent)
-  return { label: credential || 'no model — pick one in Config', configured: Boolean(credential) }
+  const ref = agentModelCredential(agent)
+  if (!ref) return { label: '', blocker: 'Set a default model in Config' }
+  const credential = chatCredentials.value.find(item => item.name === ref)
+  if (credentialsCurrent && credentialUnavailable(credential)) {
+    return { label: '', blocker: 'Replace the unavailable model in Config' }
+  }
+  return { label: credential?.displayName || credential?.model || 'Default model' }
 }
 
 function primaryChannel(agent: Agent): string {
@@ -152,22 +156,21 @@ const agentRows = computed(() => {
       backendType: harness ? 'harness' : 'model',
       backendKind: harness ? 'Coding harness' : 'Model',
       backend: backend.label,
-      configured: backend.configured,
-      configuration: backend.configured ? 'configured' : 'needs-setup',
-      configurationLabel: backend.configured ? 'Configured' : 'Needs setup',
+      blocker: backend.blocker || '',
+      configuration: backend.blocker ? 'needs-setup' : 'configured',
+      configurationLabel: backend.blocker ? 'Needs setup' : 'Configured',
       channel,
-      scheduleCount: schedules,
-      triggerCount: triggers,
-      automation: schedules || triggers
-        ? `${schedules} schedule${schedules === 1 ? '' : 's'} · ${triggers} trigger${triggers === 1 ? '' : 's'}`
-        : 'No automations',
+      automation: [
+        schedules ? `${schedules} schedule${schedules === 1 ? '' : 's'}` : '',
+        triggers ? `${triggers} trigger${triggers === 1 ? '' : 's'}` : '',
+      ].filter(Boolean).join(' · '),
     }
   })
 })
 
 const filteredAgents = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
-  return agentRows.value.filter(row => !needle || [row.name, row.resourceName, row.backendKind, row.backend, row.channel, row.automation, row.configurationLabel]
+  return agentRows.value.filter(row => !needle || [row.name, row.resourceName, row.backendKind, row.backend, row.blocker, row.channel, row.automation, row.configurationLabel]
     .some(value => value.toLocaleLowerCase().includes(needle)))
 })
 
@@ -226,26 +229,27 @@ function openAgentRow(row: Record<string, unknown>): void {
               class="agents-card-link"
               :href="hashFor({ kind: 'agent', name: row.resourceName, tab: 'chat' })"
               :aria-label="`Open agent ${row.name}`"
+              :aria-describedby="row.blocker ? `${cardDescriptionID}-${row.resourceName}` : undefined"
             >
               <div class="agents-card-glyph"><Bot aria-hidden="true" /></div>
               <div class="agents-card-body">
                 <h3>{{ row.name }}</h3>
-                <p :class="['agents-card-model', { warn: !row.configured }]">
-                  {{ row.backendKind }} · {{ row.backend }}
-                </p>
+                <div v-if="row.blocker" :id="`${cardDescriptionID}-${row.resourceName}`" class="agents-backend-blocker">
+                  <StatusBadge status="Needs setup" tone="warning" />
+                  <p class="agents-card-model">{{ row.blocker }}</p>
+                </div>
+                <p v-else class="agents-card-model">{{ row.backend }}</p>
               </div>
-              <div class="agents-card-foot">
-                <span>{{ row.scheduleCount }} schedule{{ row.scheduleCount === 1 ? '' : 's' }}</span>
-                <span>{{ row.triggerCount }} trigger{{ row.triggerCount === 1 ? '' : 's' }}</span>
+              <div v-if="row.automation || row.channel !== 'No channel'" class="agents-card-foot">
+                <span v-if="row.automation">{{ row.automation }}</span>
                 <span v-if="row.channel !== 'No channel'"><Megaphone aria-hidden="true" /> {{ row.channel }}</span>
-                <span v-else>no channel</span>
               </div>
             </a>
             <ActionMenu
               class="agents-card-menu"
               :label="`More actions for ${row.name}`"
-              :items="cardActions"
-              @select="action => selectCardAction(row.resourceName, action)"
+              :items="agentActions"
+              @select="action => selectAgentAction(row.resourceName, action)"
             />
           </article>
         </div>
@@ -269,7 +273,7 @@ function openAgentRow(row: Record<string, unknown>): void {
         :loading="agents.loading"
         searchable
         search-placeholder="Search agents…"
-        :search-keys="['name', 'resourceName', 'backendKind', 'backend', 'channel', 'automation', 'configurationLabel']"
+        :search-keys="['name', 'resourceName', 'backendKind', 'backend', 'blocker', 'channel', 'automation', 'configurationLabel']"
         :filters="filters"
         filter-empty-text="No agents match your filters."
         search-empty-text="No agents match your search."
@@ -281,14 +285,22 @@ function openAgentRow(row: Record<string, unknown>): void {
         :row-aria-label="row => `Open agent ${String(row.name)}`"
         @row-click="openAgentRow"
       >
+        <template #name="{ row }">
+          <a class="k-table-resource-link" tabindex="-1" :href="hashFor({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })">{{ row.name }}</a>
+        </template>
         <template #backend="{ row }">
-          <span>{{ row.backendKind }} · {{ row.backend }}</span><br>
-          <StatusBadge :status="String(row.configurationLabel)" :tone="row.configured ? 'muted' : 'warning'" />
+          <div v-if="row.blocker" class="agents-backend-blocker">
+            <StatusBadge status="Needs setup" tone="warning" />
+            <span class="agents-card-model">{{ row.blocker }}</span>
+          </div>
+          <span v-else>{{ row.backend }}</span>
         </template>
         <template #actions="{ row }">
-          <ResourceTableActionButton :icon="MessageSquare" :label="`Open agent ${String(row.resourceName)}`" tone="accent" @click="navigate({ kind: 'agent', name: String(row.resourceName), tab: 'chat' })" />
-          <ResourceTableActionButton :icon="Gauge" :label="`View runs for agent ${String(row.resourceName)}`" @click="navigate({ kind: 'agent', name: String(row.resourceName), tab: 'runs' })" />
-          <ResourceTableDeleteButton :label="`Delete agent ${String(row.resourceName)}`" @click="removeAgent(String(row.resourceName))" />
+          <ActionMenu
+            :label="`More actions for ${row.name}`"
+            :items="agentActions"
+            @select="action => selectAgentAction(String(row.resourceName), action)"
+          />
         </template>
       </ResourceTable>
     </template>

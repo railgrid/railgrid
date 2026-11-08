@@ -51,6 +51,82 @@ describe('agents list card semantics', () => {
     expect(deleteAgent).not.toHaveBeenCalled()
     expect(mounted.navigations).toHaveLength(1)
   })
+
+  it('uses readable model labels and shows only actionable setup and nonempty metadata', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [
+      agentFixture('scout'),
+      agentFixture('reporter'),
+      agentFixture('unavailable', { backend: { type: 'model', model: { credentials: { chat: 'missing' } } } }),
+    ]
+    store.credentials.data = [{ name: 'openai', displayName: 'GPT-4.1', model: 'gpt-4.1' }]
+    store.schedules.data = [{ metadata: { name: 'daily' }, spec: { agentRef: 'reporter', type: 'cron' } }]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    store.credentials.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+    const [scout, reporter, unavailable] = mounted.element.querySelectorAll('.agents-card')
+
+    expect(text(scout)).toContain('GPT-4.1')
+    expect(text(scout)).not.toContain('openai')
+    expect(scout.querySelector('.agents-card-foot')).toBeNull()
+    expect(text(reporter.querySelector('.agents-card-foot'))).toBe('1 schedule')
+    expect(text(unavailable)).toContain('Needs setup')
+    expect(text(unavailable)).toContain('Replace the unavailable model in Config')
+
+    store.credentials.error = 'temporarily unavailable'
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(unavailable)).not.toContain('Needs setup')
+  })
+
+  it('treats provider connections and credentials for the other backend as unavailable', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    store.agents.data = [
+      agentFixture('scout'),
+      agentFixture('reviewer', {
+        backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'chat-only' } },
+      }),
+    ]
+    store.credentials.data = [
+      { name: 'openai', displayName: 'Shared provider', isConnection: true, provider: 'openai' },
+      { name: 'chat-only', model: 'gpt-4.1', provider: 'openai' },
+    ]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    store.credentials.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+    const [scout, reviewer] = mounted.element.querySelectorAll('.agents-card')
+
+    expect(text(scout)).toContain('Replace the unavailable model in Config')
+    expect(text(scout)).not.toContain('Shared provider')
+    expect(text(reviewer)).toContain('Choose a harness identity in Config')
+  })
+
+  it('flags a removed harness machine only when the backend condition matches the current generation', async () => {
+    const api = stubApi()
+    const store = makeStore(api)
+    const agent = agentFixture('reviewer', {
+      backend: { type: 'harness', harness: { edgeRef: { kind: 'LinuxServer', name: 'build-01' }, credentialRef: 'codex' } },
+    })
+    agent.metadata.generation = 2
+    const readiness = { type: 'BackendReady', status: 'False', reason: 'UnknownEdgeRef', observedGeneration: 1 }
+    agent.status = { conditions: [readiness] }
+    store.agents.data = [agent]
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    Object.assign(store.agents, { loaded: true, hasSnapshot: true })
+    store.credentials.hasSnapshot = true
+    const mounted = await mountVue(AgentsList, { store, api })
+    const card = mounted.element.querySelector('.agents-card')
+
+    expect(text(card)).toContain('Codex on build-01')
+    expect(text(card)).not.toContain('Needs setup')
+    readiness.observedGeneration = 2
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(text(card)).toContain('Needs setup')
+    expect(text(card)).toContain('Choose a machine in Config')
+  })
 })
 
 describe('agents list refresh resilience', () => {
@@ -194,9 +270,15 @@ describe('agents list layouts', () => {
     row.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
     await settleVue()
     expect(mounted.navigations).toEqual([{ kind: 'agent', name: 'scout', tab: 'chat' }])
-    expect(mounted.element.querySelector('button[aria-label="Open agent scout"]')).not.toBeNull()
-    expect(mounted.element.querySelector('button[aria-label="View runs for agent scout"]')).not.toBeNull()
-    expect(mounted.element.querySelector('button[aria-label="Delete agent scout"]')).not.toBeNull()
+    expect(row.querySelector('a')?.getAttribute('href')).toBe('#/agents/scout/chat')
+    expect(row.querySelectorAll('button')).toHaveLength(1)
+    row.querySelector<HTMLButtonElement>('button[aria-label="More actions for scout"]')!.click()
+    await settleVue()
+    const actions = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+    expect(actions.map(text)).toEqual(['View runs', 'Delete agent'])
+    expect(mounted.navigations).toHaveLength(1)
+    actions[0].click()
+    expect(mounted.navigations.at(-1)).toEqual({ kind: 'agent', name: 'scout', tab: 'runs' })
 
     const search = mounted.element.querySelector<HTMLInputElement>('.k-table__search-input')!
     search.value = 'no matching agent'
