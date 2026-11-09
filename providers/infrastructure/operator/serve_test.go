@@ -282,7 +282,7 @@ func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
 			Publishing: v1alpha1.PublishingSpec{
 				BaseDomain: "apps.example.test", AccessProxyImage: "example.test/access-proxy@sha256:deadbeef",
 				HubURL: "https://access-hub.internal", HubInsecure: true, PublicScheme: "https", PublicPort: 10443,
-				Gateway: v1alpha1.GatewayRef{Name: "shared", Namespace: "gateway-system"},
+				Gateway: v1alpha1.GatewayRef{Name: "shared", Namespace: "gateway-system", BackendHealthCheck: "gke-tcp"},
 			},
 		},
 	}
@@ -300,14 +300,15 @@ func TestEnsureProviderServePropagatesPlatformPublishingConfig(t *testing.T) {
 		counts[variable.Name]++
 	}
 	want := map[string]string{
-		"RAILGRID_APP_BASE_DOMAIN":      "apps.example.test",
-		"RAILGRID_ACCESS_PROXY_IMAGE":   "example.test/access-proxy@sha256:deadbeef",
-		"RAILGRID_ACCESS_HUB_URL":       "https://access-hub.internal",
-		"RAILGRID_ACCESS_HUB_INSECURE":  "true",
-		"RAILGRID_ACCESS_PUBLIC_SCHEME": "https",
-		"RAILGRID_APP_PUBLIC_PORT":      "10443",
-		"RAILGRID_GATEWAY_NAME":         "shared",
-		"RAILGRID_GATEWAY_NAMESPACE":    "gateway-system",
+		"RAILGRID_APP_BASE_DOMAIN":              "apps.example.test",
+		"RAILGRID_ACCESS_PROXY_IMAGE":           "example.test/access-proxy@sha256:deadbeef",
+		"RAILGRID_ACCESS_HUB_URL":               "https://access-hub.internal",
+		"RAILGRID_ACCESS_HUB_INSECURE":          "true",
+		"RAILGRID_ACCESS_PUBLIC_SCHEME":         "https",
+		"RAILGRID_APP_PUBLIC_PORT":              "10443",
+		"RAILGRID_GATEWAY_NAME":                 "shared",
+		"RAILGRID_GATEWAY_NAMESPACE":            "gateway-system",
+		"RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK": "gke-tcp",
 	}
 	for name, value := range want {
 		if env[name] != value {
@@ -438,6 +439,46 @@ func TestServeBaseURLMatchesTheServeService(t *testing.T) {
 			}
 			if addr := fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", svc.Name, svc.Namespace, svc.Spec.Ports[0].Port); addr != tc.want {
 				t.Fatalf("serve Service address %q, want %q — ServeBaseURL has drifted from the Service", addr, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnsureProviderServeGatewayBackendHealthCheckFallsBackToApplication(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		spec    v1alpha1.InfrastructureProviderSpec
+		want    string
+		present bool
+	}{
+		{name: "unset", present: false},
+		{
+			name:    "application only",
+			spec:    v1alpha1.InfrastructureProviderSpec{Application: v1alpha1.ApplicationSpec{Gateway: v1alpha1.GatewayRef{BackendHealthCheck: "gke-tcp"}}},
+			want:    "gke-tcp",
+			present: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := fake.NewSimpleClientset()
+			tc.spec.Provider = v1alpha1.ProviderServeSpec{Image: v1alpha1.ImageSpec{Repository: "example.test/infrastructure", Tag: "test"}}
+			provider := &v1alpha1.InfrastructureProvider{ObjectMeta: metav1.ObjectMeta{Name: "test-infrastructure"}, Spec: tc.spec}
+			if err := EnsureProviderServe(context.Background(), client, provider, []byte("provider-kubeconfig"), nil, nil); err != nil {
+				t.Fatalf("EnsureProviderServe: %v", err)
+			}
+			deployment, err := client.AppsV1().Deployments(ServeNamespace).Get(context.Background(), provider.Name, metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got string
+			var present bool
+			for _, v := range deployment.Spec.Template.Spec.Containers[0].Env {
+				if v.Name == "RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK" {
+					got, present = v.Value, true
+				}
+			}
+			if present != tc.present || got != tc.want {
+				t.Errorf("RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK = %q (present %v), want %q (present %v)", got, present, tc.want, tc.present)
 			}
 		})
 	}
