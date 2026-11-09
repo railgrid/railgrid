@@ -556,24 +556,34 @@ func TestProjectObservedRedeployRevisionRequiresCurrentInstanceStatus(t *testing
 	}
 }
 
-func TestGetProjectPromotionDistinguishesPendingFromUnavailable(t *testing.T) {
+func TestGetProjectPromotionReportsRolloutStatus(t *testing.T) {
 	const revision = "rollout-new"
 	instanceResource := schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "instances"}
-	instance := &unstructured.Unstructured{Object: map[string]any{
-		"kind":     "Instance",
-		"metadata": map[string]any{"generation": int64(2)},
-		"spec":     map[string]any{"values": map[string]any{projectRedeployRevisionField: revision}},
-		"status":   map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": "", "phase": "Failed"},
-	}}
+	instance := func(phase, observedPhase, observedRevision string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"kind":     "Instance",
+			"metadata": map[string]any{"generation": int64(2)},
+			"spec":     map[string]any{"values": map[string]any{projectRedeployRevisionField: revision}},
+			"status": map[string]any{
+				"observedGeneration":      int64(2),
+				"phase":                   phase,
+				"observedRolloutPhase":    observedPhase,
+				"observedRolloutRevision": observedRevision,
+			},
+		}}
+	}
 	for _, tc := range []struct {
-		name  string
-		obj   runtime.Object
-		err   error
-		code  int
-		phase string
+		name                 string
+		obj                  runtime.Object
+		err                  error
+		code                 int
+		wantPhase            string
+		wantObservedRevision string
 	}{
-		{name: "old phase while runtime is pending", obj: instance, code: http.StatusOK, phase: "Failed"},
-		{name: "new instance not yet created", err: apierrors.NewNotFound(instanceResource, "shop-prod"), code: http.StatusOK, phase: "Pending"},
+		{name: "old phase while runtime is pending", obj: instance("Failed", "", ""), code: http.StatusOK, wantPhase: "Failed"},
+		{name: "observed Ready overrides generic Failed", obj: instance("Failed", "Ready", revision), code: http.StatusOK, wantPhase: "Ready", wantObservedRevision: revision},
+		{name: "observed Failed overrides generic Ready", obj: instance("Ready", "Failed", revision), code: http.StatusOK, wantPhase: "Failed", wantObservedRevision: revision},
+		{name: "new instance not yet created", err: apierrors.NewNotFound(instanceResource, "shop-prod"), code: http.StatusOK, wantPhase: "Pending"},
 		{name: "instance observation unavailable", err: apierrors.NewServiceUnavailable("instance read unavailable"), code: http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -618,8 +628,9 @@ func TestGetProjectPromotionDistinguishesPendingFromUnavailable(t *testing.T) {
 			if err := json.Unmarshal(response.Body.Bytes(), &readiness); err != nil {
 				t.Fatal(err)
 			}
-			if readiness.Production == nil || readiness.Production.Phase != tc.phase || readiness.RequestedRolloutRevision != revision || readiness.ObservedRolloutRevision != "" {
-				t.Fatalf("pending rollout evidence = %+v: %s", readiness, response.Body.String())
+			if readiness.Production == nil || readiness.Production.Phase != tc.wantPhase ||
+				readiness.RequestedRolloutRevision != revision || readiness.ObservedRolloutRevision != tc.wantObservedRevision {
+				t.Fatalf("GET promotion = %s, want phase %q, requested revision %q, observed revision %q", response.Body.String(), tc.wantPhase, revision, tc.wantObservedRevision)
 			}
 		})
 	}
