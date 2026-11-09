@@ -262,7 +262,7 @@ without overriding an explicit user open or deep link.
 `.k-workbench-tab__button` control, including the icon and label layout, ARIA
 props, and click, keyboard, and drag event forwarding. Its optional `leading`,
 `after-label`, and `trailing` slots preserve App Studio's grip, close control,
-and review dot without imposing lifecycle controls on fixed tab sets.
+and pending request count while allowing simpler tab sets to omit those controls.
 `AIWorkbenchTabs` keeps tab frames at their natural width, up to 240px, inside a
 horizontal viewport. When that viewport overflows it shows accessible
 previous/next controls; when selection changes, the selected tab scrolls into
@@ -280,12 +280,16 @@ workbench behavior.
 16px/600 title, an optional 12px description, and a trailing actions slot; it
 has no decorative icon, title bar, or enclosing card. The standalone
 `.k-ai-workbench-pane__header`, `__heading`, `__title`, `__description`, and
-`__actions` recipes also support headers rendered outside the pane, such as a
-teleported Settings heading. Use the `tool` variant for editor or preview tabs:
+`__actions` recipes also support headers rendered outside the pane.
+Use the `tool` variant for editor or preview tabs:
 it keeps the same host canvas while leaving intrinsic tool surfaces and their
 internal spacing to the provider. Group independent forms or actions with
 subtle separators and neutral same-canvas surfaces only where that grouping
-helps the task; avoid wrapping an entire pane in a second card.
+helps the task. `AIWorkbenchSection` provides a plain section heading and a
+rule for sibling groups. Its disclosure variant uses a native summary with a
+trailing chevron and a caller-supplied saved value. In narrow sections the
+value moves below the title. Callers own saved values, drafts, and expansion
+state where they need to retain it.
 
 When this chrome is nested in `ResourcePage`, use its optional `fill` prop only
 when the conversation must absorb the parent’s remaining height. The default

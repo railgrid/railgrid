@@ -38,6 +38,7 @@ const props = withDefaults(defineProps<{
   previewSavedMode?: ProjectPublishingMode
   previewURL?: string
   previewSupported?: boolean
+  previewUnverified?: boolean
   previewConverged?: boolean
   previewGrants?: ProjectPublishingGrant[]
   busy?: boolean
@@ -130,7 +131,7 @@ const previewPending = computed(() => previewDraftState.value.pending)
 // a draft mode must be saved first so a public preview cannot take a grant.
 const previewShowViewers = computed(() => props.previewSupported && selectedPreviewMode.value === 'restricted')
 const previewSavedRestricted = computed(() => (
-  props.previewSupported && !previewDirty.value && selectedPreviewMode.value === 'restricted'
+  props.previewSupported && !props.previewUnverified && !previewDirty.value && selectedPreviewMode.value === 'restricted'
 ))
 const canAddPreviewMember = computed(() => (
   previewSavedRestricted.value && !!previewSelectedMember.value && !props.busy && !props.loading
@@ -208,8 +209,8 @@ const productionStatusTone = computed<StatusTone>(() => {
   if (productionStatus.value === 'Error') return 'danger'
   return 'muted'
 })
-const previewStatus = computed(() => previewPending.value ? 'Pending' : 'Available')
-const previewStatusTone = computed<StatusTone>(() => previewPending.value ? 'warning' : 'muted')
+const previewStatus = computed(() => props.previewUnverified ? 'Unconfirmed' : previewPending.value ? 'Pending' : 'Available')
+const previewStatusTone = computed<StatusTone>(() => previewStatus.value === 'Available' ? 'muted' : 'warning')
 const productionAudienceSummary = computed(() => {
   if (!props.published) return 'External access is not enabled'
   if (props.publication?.mode === 'public') return 'Anyone with the link'
@@ -217,6 +218,7 @@ const productionAudienceSummary = computed(() => {
   return guestCount === 0 ? 'Workspace members only' : `Workspace members + ${guestCount} invited ${guestCount === 1 ? 'person' : 'people'}`
 })
 const previewAudienceSummary = computed(() => {
+  if (props.previewUnverified) return 'Could not confirm access'
   if (props.previewMode === 'public') return 'Anyone with the link'
   const guestCount = previewActiveGrants.value.length
   return guestCount === 0 ? 'Workspace members only' : `Workspace members + ${guestCount} invited ${guestCount === 1 ? 'person' : 'people'}`

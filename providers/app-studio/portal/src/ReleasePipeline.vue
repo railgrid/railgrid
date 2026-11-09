@@ -32,11 +32,11 @@ function stepStatusLabel(step: ReleasePipelineView['steps'][number]): string {
     class="grid gap-3"
     aria-label="Release pipeline"
   >
-    <ol class="grid gap-2 sm:grid-cols-5">
+    <ol class="release-pipeline-steps m-0 grid list-none gap-2 p-0" role="list">
       <li
         v-for="step in pipeline.steps"
         :key="step.key"
-        class="grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2 border-l border-border-subtle pl-2 first:border-l-0 first:pl-0 sm:grid-cols-1 sm:border-l-0 sm:border-t sm:pt-2"
+        class="release-pipeline-step grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2 border-s border-border-subtle ps-2 first:border-s-0 first:ps-0"
         :class="step.state === 'error' ? 'text-danger' : step.state === 'done' ? 'text-success' : ['current', 'attention'].includes(step.state) ? 'text-warning' : 'text-text-muted'"
         :aria-current="step.state === 'current' ? 'step' : undefined"
       >
@@ -103,3 +103,16 @@ function stepStatusLabel(step: ReleasePipelineView['steps'][number]): string {
 
   </section>
 </template>
+
+<style scoped>
+@container ai-workbench-pane (min-width: 34rem) {
+  .release-pipeline-steps { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .release-pipeline-step {
+    grid-template-columns: minmax(0, 1fr);
+    border-inline-start-width: 0;
+    border-block-start-width: 1px;
+    padding-inline-start: 0;
+    padding-block-start: 8px;
+  }
+}
+</style>

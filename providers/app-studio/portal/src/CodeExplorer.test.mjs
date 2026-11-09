@@ -86,12 +86,16 @@ test('keeps a cached tree visible and reports refresh failure separately from in
   assert.match(source, /class="app-studio-touch-target[^\"]*focus-visible:ring-2[^\"]*" @click="refreshWorkspaceSnapshot">Retry refresh<\/button>/)
 })
 
-test('adapts the explorer to one pane on mobile and exposes a complete keyboard tree', () => {
-  assert.match(source, /flex-col md:flex-row/)
-  assert.match(source, /mobileTreeOpen \? 'flex' : 'hidden md:flex'/)
-  assert.match(source, /mobileTreeOpen \? 'hidden md:flex' : 'flex'/)
+test('adapts the explorer to one pane when the workbench is narrow and keeps the keyboard tree', () => {
+  assert.match(source, /paneResizeObserver\.observe\(pane\)/)
+  assert.match(source, /updateExplorerLayout\(entry\.contentRect\.width\)/)
+  assert.match(source, /paneResizeObserver\?\.disconnect\(\)/)
+  assert.doesNotMatch(source, /matchMedia|md:flex-row/)
+  assert.match(source, /v-show="splitPane \|\| treeOpen"/)
+  assert.match(source, /v-show="splitPane \|\| !treeOpen"/)
   assert.match(source, /aria-label="Back to workspace files"/)
-  assert.match(source, /ref="mobileBackRef"[\s\S]*aria-label="Back to workspace files"/)
+  assert.match(source, /ref="backToTreeRef"[\s\S]*aria-label="Back to workspace files"/)
+  assert.match(source, /function selectRow[\s\S]*showFileViewer\(\)[\s\S]*void openFile\(row\.node\.path\)/)
   assert.match(source, /role="tree"/)
   assert.match(source, /role="treeitem"/)
   assert.match(source, /:aria-level="row\.depth \+ 1"/)
@@ -102,6 +106,114 @@ test('adapts the explorer to one pane on mobile and exposes a complete keyboard 
   assert.match(source, /event\.key === 'ArrowDown'/)
   assert.match(source, /event\.key === 'ArrowRight'/)
   assert.match(source, /event\.key === 'Home'/)
+})
+
+test('keeps the focused side visible through split changes and restores tree focus when Back disappears', () => {
+  const treeItem = {}
+  const backButton = {}
+  const viewerAction = {}
+  const ownerDocument = { activeElement: treeItem }
+  const splitPane = { value: false }
+  const treeOpen = { value: false }
+  let restoredFocus = 0
+  const dependencies = {
+    rootRef: { value: { ownerDocument } },
+    treePaneRef: { value: { contains: (element) => element === treeItem } },
+    viewerPaneRef: { value: { contains: (element) => element === viewerAction } },
+    backToTreeRef: { value: backButton },
+    splitPane,
+    treeOpen,
+    focusActiveTreeRow: () => { restoredFocus++ },
+  }
+  const updateLayout = new Function(...Object.keys(dependencies), `${transpileFunction('updateExplorerLayout')}\nreturn updateExplorerLayout`)(...Object.values(dependencies))
+
+  updateLayout(640)
+  assert.equal(splitPane.value, true)
+  updateLayout(0)
+  assert.equal(splitPane.value, true, 'ignore a hidden workbench measurement')
+  updateLayout(639)
+  assert.equal(splitPane.value, false)
+  assert.equal(treeOpen.value, true, 'keep the focused tree item visible')
+
+  updateLayout(640)
+  ownerDocument.activeElement = viewerAction
+  updateLayout(639)
+  assert.equal(treeOpen.value, false, 'keep the focused viewer action visible')
+  assert.equal(restoredFocus, 0)
+
+  ownerDocument.activeElement = backButton
+  updateLayout(640)
+  assert.equal(restoredFocus, 1)
+})
+
+test('focuses the workspace files pane when Back returns to an empty tree', () => {
+  const treeOpen = { value: false }
+  const scheduled = []
+  let paneFocus = 0
+  const dependencies = {
+    treeOpen,
+    rows: { value: [] },
+    activeTreePath: { value: '' },
+    nextTick: task => scheduled.push(task),
+    treePaneRef: { value: { focus: () => { paneFocus++ } } },
+  }
+  const showTree = new Function(...Object.keys(dependencies), `
+    ${transpileFunction('showTree')}
+    ${transpileFunction('focusActiveTreeRow')}
+    ${transpileFunction('focusTreeRow')}
+    return showTree;
+  `)(...Object.values(dependencies))
+
+  showTree()
+  assert.equal(treeOpen.value, true)
+  assert.equal(paneFocus, 0)
+  assert.equal(scheduled.length, 1)
+  scheduled[0]()
+  assert.equal(paneFocus, 1)
+})
+
+test('reveals a written file and moves focus only when leaving the narrow tree', async () => {
+  const path = 'notes.md'
+  const body = {}
+  const viewerControl = {}
+  const ownerDocument = { activeElement: body, body }
+  const treeOpen = { value: true }
+  const activeTreePath = { value: '' }
+  const opened = []
+  let focusCount = 0
+  const dependencies = {
+    treeOpen,
+    activeTreePath,
+    rootRef: { value: { ownerDocument, contains: (element) => element === viewerControl } },
+    splitPane: { value: false },
+    backToTreeRef: { value: { focus: () => { focusCount++ } } },
+    nextTick: (task) => task(),
+    loadTree: async () => {},
+    isCurrentProject: () => true,
+    files: { value: [{ path }] },
+    projectFileParentDir: () => '',
+    openFile: async (selected) => opened.push(selected),
+  }
+  const refreshAndSelect = new Function(...Object.keys(dependencies), `
+    let workspaceRefreshSerial = 0;
+    ${transpileFunction('showFileViewer')}
+    ${transpileFunction('refreshAndSelect')}
+    return refreshAndSelect;
+  `)(...Object.values(dependencies))
+  await refreshAndSelect(path, 'shop', null)
+  assert.equal(treeOpen.value, false)
+  assert.equal(activeTreePath.value, path)
+  assert.deepEqual(opened, [path])
+  assert.equal(focusCount, 1)
+
+  ownerDocument.activeElement = viewerControl
+  await refreshAndSelect(path, 'shop', null)
+  assert.equal(focusCount, 1, 'keep focus in the already-open viewer')
+
+  treeOpen.value = true
+  ownerDocument.activeElement = {}
+  await refreshAndSelect(path, 'shop', null)
+  assert.equal(focusCount, 1, 'do not take focus from outside Code')
 })
 
 test('refreshes the tree and selected file after a workspace revision changes', () => {

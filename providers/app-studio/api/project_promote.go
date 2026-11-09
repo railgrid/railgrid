@@ -1035,13 +1035,21 @@ func (s *Server) getProjectPromotion(w http.ResponseWriter, r *http.Request) {
 	if prod := findProjectProductionBinding(p); prod != nil {
 		resp.ProductionValues = projectBindingValues(prod)
 		resp.RequestedRolloutRevision = projectRequestedRedeployRevision(prod)
-		st := projectProviderBindingStatus(r.Context(), c, p, *prod, id)
+		st, instance, err := readProjectProviderBinding(r.Context(), c, p, *prod, id)
+		if err != nil && !apierrors.IsNotFound(err) {
+			writeProjectPromoteError(w, fmt.Errorf("reading production rollout status: %w", err))
+			return
+		}
 		resp.Production = &st
-		// Read the provider instance's spec, not the desired Project binding,
-		// so clients can distinguish the old Ready deployment from a rollout
-		// revision the Project controller has actually delivered downstream.
-		if instance, observeErr := observeProjectProviderBinding(r.Context(), c, p, *prod, id); observeErr == nil {
-			resp.ObservedRolloutRevision = projectObservedRedeployRevision(instance)
+		resp.ObservedRolloutRevision = projectObservedRedeployRevision(instance)
+		if resp.ObservedRolloutRevision != "" {
+			// Prefer the rollout-specific phase from newer Infrastructure providers.
+			// The generic phase can fold a graph's Ready=False into Failed while
+			// the graph is still converging.
+			phase, _, _ := unstructured.NestedString(instance.Object, "status", "observedRolloutPhase")
+			if phase == "Ready" || phase == "Failed" {
+				st.Phase = phase
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -1051,7 +1059,21 @@ func projectObservedRedeployRevision(instance *unstructured.Unstructured) string
 	if instance == nil {
 		return ""
 	}
+	// The spec can carry a new revision while status still describes the old
+	// generation. Generic Instances always publish the reconciled generation.
+	// Older per-template resources may have no top-level generation in status.
+	if generation := instance.GetGeneration(); generation > 0 {
+		observed, found, err := unstructured.NestedInt64(instance.Object, "status", "observedGeneration")
+		if err != nil || (found && observed != generation) || (!found && instance.GetKind() == "Instance") {
+			return ""
+		}
+	}
 	revision, _, _ := unstructured.NestedString(instance.Object, "spec", "values", projectRedeployRevisionField)
+	// Newer Infrastructure controllers additionally tie this evidence to the
+	// downstream runtime generation. An explicit empty value means pending.
+	if observed, found, err := unstructured.NestedString(instance.Object, "status", "observedRolloutRevision"); err != nil || (found && observed != revision) {
+		return ""
+	}
 	return strings.TrimSpace(revision)
 }
 

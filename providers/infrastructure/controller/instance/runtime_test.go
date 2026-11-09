@@ -196,6 +196,97 @@ func TestStampConditionObservedGenerationUsesTenantGeneration(t *testing.T) {
 	}
 }
 
+func TestMirrorStatusObservesVersionedProductionRuntime(t *testing.T) {
+	const revision = "retry"
+	for _, tc := range []struct {
+		name                string
+		observed            int64
+		state               string
+		ready               string
+		conditionType       string
+		projectedPhase      string
+		projectedGeneration int64
+		invalid             bool
+		nonKRO              bool
+		want                string
+		wantPhase           string
+	}{
+		{name: "stale Ready", observed: 1, state: "ACTIVE", ready: "True"},
+		{name: "stale failure", observed: 1, state: "ERROR", ready: "False"},
+		{name: "stale Ready with equal child generation", observed: 1, state: "ACTIVE", ready: "True", projectedGeneration: 2},
+		{name: "current generation converging", observed: 2, state: "IN_PROGRESS", ready: "False", projectedPhase: "Ready"},
+		{name: "current generation failed with coarse phase still pending", observed: 2, state: "ERROR", ready: "Unknown", want: revision, wantPhase: "Failed"},
+		{name: "terminal graph failure takes precedence over authored Ready phase", observed: 2, state: "ERROR", ready: "True", projectedPhase: "Ready", want: revision, wantPhase: "Failed"},
+		{name: "current generation ready", observed: 2, state: "ACTIVE", ready: "True", want: revision, wantPhase: "Ready"},
+		{name: "active graph with authored Ready False", observed: 2, state: "ACTIVE", ready: "False"},
+		{name: "active graph with authored Degraded phase", observed: 2, state: "ACTIVE", ready: "True", projectedPhase: "Degraded", want: revision, wantPhase: "Failed"},
+		{name: "active graph with authored Pending phase", observed: 2, state: "ACTIVE", ready: "True", projectedPhase: "Pending"},
+		{name: "current Ready despite unrelated child generation", observed: 2, state: "ACTIVE", ready: "True", projectedGeneration: 9, want: revision, wantPhase: "Ready"},
+		{name: "authored phase with a current custom condition", observed: 2, state: "ACTIVE", ready: "True", conditionType: "AppReady", projectedPhase: "Ready", want: revision, wantPhase: "Ready"},
+		{name: "KRO cannot use a matching child generation alone", state: "ACTIVE", projectedGeneration: 2, projectedPhase: "Ready"},
+		{name: "legacy Ready without state", observed: 2, ready: "True", want: revision, wantPhase: "Ready"},
+		{name: "current spec rejected before sync", invalid: true, want: revision, wantPhase: "Failed"},
+		{name: "non-KRO top-level observed generation", state: "ACTIVE", projectedGeneration: 2, nonKRO: true, want: revision, wantPhase: "Ready"},
+		{name: "non-KRO stale top-level generation", observed: 2, state: "ACTIVE", ready: "True", projectedGeneration: 1, nonKRO: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &unstructured.Unstructured{Object: map[string]any{
+				"metadata": map[string]any{"generation": int64(12)},
+				"spec": map[string]any{"values": map[string]any{
+					infrav1alpha1.RailgridModeField: infrav1alpha1.RailgridModeProduction,
+					rolloutRevisionField:            revision,
+				}},
+			}}
+			valid := validCondition(metav1.ConditionTrue, infrav1alpha1.ReasonReady, "")
+			var runtimeObj *unstructured.Unstructured
+			if tc.invalid {
+				valid = validCondition(metav1.ConditionFalse, infrav1alpha1.ReasonInvalidValues, "invalid production inputs")
+			} else {
+				runtimeObj = runtimeForNetwork(2, tc.observed, infrav1alpha1.RailgridNetworkPhaseRuntime, tc.ready)
+				runtimeObj.Object["spec"].(map[string]any)[rolloutRevisionField] = revision
+				status := runtimeObj.Object["status"].(map[string]any)
+				status["state"] = tc.state
+				if tc.ready == "" {
+					delete(status, "conditions")
+				} else if tc.conditionType != "" {
+					status["conditions"].([]any)[0].(map[string]any)["type"] = tc.conditionType
+				}
+				if tc.projectedPhase != "" {
+					status["phase"] = tc.projectedPhase
+				}
+				if tc.projectedGeneration != 0 {
+					status["observedGeneration"] = tc.projectedGeneration
+				}
+			}
+			tmpl := &infrav1alpha1.Template{Spec: infrav1alpha1.TemplateSpec{Backend: infrav1alpha1.BackendKRO}}
+			if tc.nonKRO {
+				tmpl.Spec.Backend = "stub"
+			}
+			if _, err := (&Controller{}).mirrorStatus(context.Background(), mirroredStatusClient{}, instance, tmpl, runtimeObj, valid); err != nil {
+				t.Fatalf("mirrorStatus: %v", err)
+			}
+			got, found, err := unstructured.NestedString(instance.Object, "status", observedRolloutRevisionField)
+			if err != nil || !found || got != tc.want {
+				t.Fatalf("observed rollout = %q (found %v, err %v), want %q", got, found, err, tc.want)
+			}
+			phase, _, _ := unstructured.NestedString(instance.Object, "status", observedRolloutPhaseField)
+			if phase != tc.wantPhase {
+				t.Fatalf("observed rollout phase = %q, want %q", phase, tc.wantPhase)
+			}
+			if tc.projectedPhase != "" {
+				phase, _, _ := unstructured.NestedString(instance.Object, "status", "phase")
+				if phase != tc.projectedPhase {
+					t.Fatalf("mirrored phase = %q, want authored %q", phase, tc.projectedPhase)
+				}
+			}
+			generation, _, _ := unstructured.NestedInt64(instance.Object, "status", "observedGeneration")
+			if generation != instance.GetGeneration() {
+				t.Fatalf("mirrored Instance generation = %d, want %d", generation, instance.GetGeneration())
+			}
+		})
+	}
+}
+
 func TestMirroredRuntimeStatusAllowsHandlerWithoutTenantPhaseSpec(t *testing.T) {
 	instance := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "infrastructure.railgrid.ai/v1alpha1",

@@ -280,9 +280,16 @@ func projectLiveEnvironmentStatuses(ctx context.Context, c *asclient.Client, p *
 }
 
 func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) aiv1alpha1.ProjectProviderBindingStatus {
+	status, _, _ := readProjectProviderBinding(ctx, c, p, binding, id)
+	return status
+}
+
+// Return the same provider object used to fold the phase so callers that need
+// additional status evidence can tie it to that observation.
+func readProjectProviderBinding(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, binding aiv1alpha1.ProjectProviderBindingSpec, id identity) (aiv1alpha1.ProjectProviderBindingStatus, *unstructured.Unstructured, error) {
 	gvr, err := projectProviderResourceGVR(binding.ResourceRef)
 	if err != nil {
-		return bindings.InvalidStatus(binding)
+		return bindings.InvalidStatus(binding), nil, nil
 	}
 	name := ""
 	if binding.Kind == aiv1alpha1.ProjectBindingKindProviderReference {
@@ -292,16 +299,16 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 	} else {
 		values, valuesErr := projectProviderBindingValues(binding)
 		if valuesErr != nil {
-			return bindings.InvalidStatus(binding)
+			return bindings.InvalidStatus(binding), nil, nil
 		}
 		name = projectProviderBindingResourceName(p, binding, values, id)
 	}
 	if name == "" {
-		return bindings.InvalidStatus(binding)
+		return bindings.InvalidStatus(binding), nil, nil
 	}
 	obj, err := c.Resource(providerBindingResource(gvr, binding.ResourceRef.Kind), "").Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
-		return bindings.StatusFromObject(binding, nil)
+		return bindings.StatusFromObject(binding, nil), nil, err
 	}
 	status := bindings.StatusFromObject(binding, obj)
 	if status.Phase == "" && binding.Kind == aiv1alpha1.ProjectBindingKindProviderReference {
@@ -309,7 +316,7 @@ func projectProviderBindingStatus(ctx context.Context, c *asclient.Client, p *ai
 		// usable as-is: the reference is satisfied.
 		status.Phase = "Ready"
 	}
-	return status
+	return status, obj, nil
 }
 
 // projectIntegrationBindingStatus reads a non-owning provider reference with

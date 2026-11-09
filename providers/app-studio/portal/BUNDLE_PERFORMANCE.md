@@ -247,3 +247,13 @@ providers use the same canonical component and synchronized stylesheet.
 Only the total ceiling increases, by 4,000 B raw / 1,000 B gzip, to account for
 these controls. Bootstrap, dashboard, page and authentication limits stay fixed.
 This is a local production-size measurement, not browser performance evidence.
+
+### App Studio workbench
+
+The workbench shares its document sections and request form, and Code and
+Publishing adapt to the width of the pane. A same-toolchain build of the
+preceding commit measured 1,409,496 B raw / 390,130 B gzip total. The workbench
+with review fixes measures 1,410,195 B raw / 392,721 B gzip total and
+1,200,993 B raw / 327,705 B gzip on the page path. The total limits increase
+by 500 B raw and 2,500 B gzip to 1,410,500 B raw and 393,000 B gzip. The
+path-specific limits retain their existing values.

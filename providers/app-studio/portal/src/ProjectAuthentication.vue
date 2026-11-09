@@ -16,6 +16,7 @@ import type { RailgridContext, Project, ProjectPublishingGrant } from './types'
 import InlineNotification from './portalkit/InlineNotification.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import { confirmDialog } from './portalkit/confirm'
+import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 
 const props = defineProps<{ ctx: RailgridContext | null; project: Project }>()
 const emit = defineEmits<{
@@ -42,6 +43,10 @@ const supportNotice = computed(() => authenticationSupportNotice(state.value))
 const supportIsError = computed(() => authenticationSupportIsError(state.value))
 const supportStatus = computed(() => authenticationSupportStatus(state.value))
 const supportTone = computed(() => authenticationSupportTone(state.value))
+const authenticationSummary = computed(() => {
+  if (loading.value) return 'Checking…'
+  return state.value?.enabled ? 'Enabled' : supportStatus.value
+})
 const showCreateCompatibleProject = computed(() => canCreateCompatibleAuthenticationProject(state.value))
 const productionRuntimeExists = computed(() => hasPersistedProductionRuntime(state.value?.environments))
 const productionAppID = computed(() => `${props.project.uid}/production`)
@@ -122,8 +127,8 @@ async function loadGrants(force = false) {
   }
 }
 
-function onAccessToggle(event: Event) {
-  if ((event.currentTarget as HTMLDetailsElement).open) void loadGrants()
+function onAccessToggle(open: boolean) {
+  if (open) void loadGrants()
 }
 
 async function configure() {
@@ -260,13 +265,14 @@ onBeforeUnmount(() => { generation++ })
 </script>
 
 <template>
-  <section class="grid gap-4 rounded-lg border border-border-subtle bg-transparent p-3" aria-labelledby="project-auth-heading" :aria-busy="loading || saving || grantsLoading">
-    <div class="flex items-start gap-2.5">
-      <div class="min-w-0">
-        <h3 id="project-auth-heading" class="text-[13px] font-semibold text-text-primary">Railgrid Auth</h3>
-        <p class="mt-1 max-w-[65ch] text-[12px] leading-5 text-text-muted">Let people sign in to your app with their Railgrid account.</p>
-      </div>
-    </div>
+  <AIWorkbenchSection
+    title="Railgrid Auth"
+    heading-id="project-auth-heading"
+    description="Let people sign in to your app with their Railgrid account."
+    disclosure
+    :summary="authenticationSummary"
+    :aria-busy="loading || saving || grantsLoading"
+  >
 
     <p v-if="loading" role="status" class="flex items-center gap-2 text-[12px] text-text-muted">
       <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -348,13 +354,7 @@ onBeforeUnmount(() => { generation++ })
           </button>
         </div>
 
-        <details class="group border-t border-border-subtle pt-3" @toggle="onAccessToggle">
-          <summary class="flex min-h-10 cursor-pointer list-none items-center justify-between gap-3 text-[13px] font-medium text-text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent [&::-webkit-details-marker]:hidden">
-            <span>Who can sign in</span>
-            <span class="font-mono text-[10px] text-text-muted group-open:hidden">Show</span>
-            <span class="hidden font-mono text-[10px] text-text-muted group-open:inline">Hide</span>
-          </summary>
-          <div class="grid gap-3 pb-1 pt-3">
+        <AIWorkbenchSection title="Who can sign in" disclosure @update:open="onAccessToggle">
             <p class="max-w-[70ch] text-[12px] leading-5 text-text-muted">Workspace members can sign in. Approve additional Railgrid users for the Production app without adding them to your organization or workspace.</p>
 
             <ul v-if="state.environments.length" class="grid gap-1 text-[11px] text-text-secondary" aria-label="Railgrid Auth runtime status">
@@ -393,13 +393,12 @@ onBeforeUnmount(() => { generation++ })
               </li>
             </ul>
             <p v-else-if="grantsLoaded && productionRuntimeExists" role="status" class="text-[12px] leading-5 text-text-muted">No additional users are approved to sign in to the Production app.</p>
-          </div>
-        </details>
+        </AIWorkbenchSection>
       </template>
     </template>
 
     <InlineNotification v-if="error && errorSource !== 'grants'" tone="error" :message="error" />
     <InlineNotification v-else-if="notice" tone="success" :message="notice" />
     <button v-if="errorSource === 'authentication'" type="button" class="k-btn justify-self-start" :disabled="loading || saving" @click="retry">Retry</button>
-  </section>
+  </AIWorkbenchSection>
 </template>
