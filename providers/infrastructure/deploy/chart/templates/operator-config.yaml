@@ -110,7 +110,7 @@ spec:
       {{- toYaml .Values.development.images | nindent 6 }}
     {{- end }}
   {{- end }}
-  {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
+  {{- if or .Values.operator.application.baseDomain .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace .Values.operator.application.gateway.backendHealthCheck }}
   # Exposure layer for the `application` template (serve container's
   # RAILGRID_APP_BASE_DOMAIN / RAILGRID_GATEWAY_NAME / RAILGRID_GATEWAY_NAMESPACE).
   # baseDomain gates the feature.
@@ -118,13 +118,16 @@ spec:
     {{- with .Values.operator.application.baseDomain }}
     baseDomain: {{ . | quote }}
     {{- end }}
-    {{- if or .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace }}
+    {{- if or .Values.operator.application.gateway.name .Values.operator.application.gateway.namespace .Values.operator.application.gateway.backendHealthCheck }}
     gateway:
       {{- with .Values.operator.application.gateway.name }}
       name: {{ . | quote }}
       {{- end }}
       {{- with .Values.operator.application.gateway.namespace }}
       namespace: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.operator.application.gateway.backendHealthCheck }}
+      backendHealthCheck: {{ . | quote }}
       {{- end }}
     {{- end }}
   {{- end }}
@@ -141,13 +144,16 @@ spec:
     {{- if gt (int .Values.operator.publishing.publicPort) 0 }}
     publicPort: {{ .Values.operator.publishing.publicPort }}
     {{- end }}
-    {{- if or .Values.operator.publishing.gateway.name .Values.operator.publishing.gateway.namespace }}
+    {{- if or .Values.operator.publishing.gateway.name .Values.operator.publishing.gateway.namespace .Values.operator.publishing.gateway.backendHealthCheck }}
     gateway:
       {{- with .Values.operator.publishing.gateway.name }}
       name: {{ . | quote }}
       {{- end }}
       {{- with .Values.operator.publishing.gateway.namespace }}
       namespace: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.operator.publishing.gateway.backendHealthCheck }}
+      backendHealthCheck: {{ . | quote }}
       {{- end }}
     {{- end }}
   {{- end }}

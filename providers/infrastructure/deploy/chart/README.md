@@ -74,6 +74,7 @@ helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-inf
 | `application.gateway` |  | Gateway API parent the generated Application HTTPRoutes attach to (substituted into Application RGDs as ${railgrid.gatewayName} / ${railgrid.gatewayNamespace}). Defaults to the cfgate Cloudflare Tunnel Gateway in-binary; override to point apps at a different Gateway without touching the template. |
 | `application.gateway.name` | `"cloudflare-tunnel"` |  |
 | `application.gateway.namespace` | `"cfgate-system"` |  |
+| `application.gateway.backendHealthCheck` | `""` | How the Gateway's load balancer health-checks route backends (RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK). `"gke-tcp"` adds a GKE HealthCheckPolicy (TCP) per HTTPRoute backend Service; required on a GKE Gateway. Empty adds nothing. |
 | `publishing` |  | Platform-owned access-gate configuration shared by simple-webapp, application, and future publishable templates. Templates render the gate (railgrid-access-proxy) as a component of their own graph via the ${railgrid.accessProxyImage}/${railgrid.hubUrl}/${railgrid.hubPublicUrl} tokens; all app traffic enters… |
 | `publishing.baseDomain` | `""` | App host zone (wins over `application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
@@ -84,6 +85,7 @@ helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-inf
 | `publishing.publicPort` | `0` | Optional externally visible port, e.g. 10443 for a local Gateway. |
 | `publishing.gateway.name` | `"cloudflare-tunnel"` |  |
 | `publishing.gateway.namespace` | `"cfgate-system"` |  |
+| `publishing.gateway.backendHealthCheck` | `""` | As `application.gateway.backendHealthCheck`; wins over it. |
 | `tenantLimitRange` |  | Default container resource policy stamped into every tenant namespace as a LimitRange named "railgrid-defaults" (defaultRequest 50m/128Mi, default limit 500m/512Mi, max 2cpu/2Gi per container). Create-only — operators may hand-tune a tenant's copy without it being overwritten. Disable when the runti… |
 | `tenantLimitRange.enabled` | `true` |  |
 | `tenantNetworkPolicy` |  | Ingress NetworkPolicy "railgrid-tenant-isolation" in every tenant runtime namespace: only the same namespace, the same workspace's other runtime namespaces, the Gateway's namespace and the sources below may reach tenant pods. Requires a CNI that enforces NetworkPolicy. See the provider README, "Tenant network isolation". |
@@ -151,6 +153,7 @@ helm upgrade --install infrastructure oci://ghcr.io/railgrid/charts/railgrid-inf
 | `operator.application` |  | Application-template exposure layer (the `application` template's public URL + Gateway API parent). This is the operator-mode equivalent of the top-level `application.*` values: the operator owns the serve Deployment, so these land on the InfrastructureProvider CR (RAILGRID_APP_BASE_DOMAIN / RAILGRID_G… |
 | `operator.application.baseDomain` | `""` | DNS zone apps are served under, e.g. "apps.example.com". REQUIRED to enable app exposure — the Application instance controller stays disabled until this is set. Empty → feature off. TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `operator.application.gateway` |  | Gateway API parent the generated HTTPRoutes attach to. Empty fields → "cloudflare-tunnel" / "cfgate-system" (the in-binary defaults). |
+| `operator.application.gateway.backendHealthCheck` | `""` | CR `spec.application.gateway.backendHealthCheck` (and `operator.publishing.gateway.backendHealthCheck`, which wins): per-backend load-balancer health check for generated HTTPRoutes. `"gke-tcp"` on a GKE Gateway; empty adds nothing. |
 | `operator.publishing.baseDomain` | `""` | App host zone (wins over `operator.application.baseDomain`). TLS: below the Cloudflare zone apex, Universal SSL does not cover app hosts — add a `*.<baseDomain>` edge cert (ACM / Total TLS) or new URLs fail TLS for minutes (see docs/application-template-architecture.md). |
 | `operator.publishing.accessProxyImage` | `ghcr.io/railgrid/railgrid-access-proxy:latest` |  |
 | `operator.publishing.hubURL` | `""` |  |

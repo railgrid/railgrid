@@ -153,6 +153,14 @@ func buildRGD(tmpl *infrav1alpha1.Template, tokens map[string]string) (*unstruct
 		}
 	}
 
+	// On a GKE Gateway every route backend needs its own HealthCheckPolicy or
+	// the load balancer never sees it healthy (gatewayhealth.go). After the dev
+	// overlay, so its preview routes are covered too.
+	resources, err = injectGatewayHealthChecks(tmpl.Name, resources, tokens[gatewayBackendHealthCheckConfigKey])
+	if err != nil {
+		return nil, err
+	}
+
 	// Templates author every namespaced child with the placeholder
 	// namespace "default" (a convention the dev overlay also relies on).
 	// The RGD instance is Namespaced now, so children must inherit the
@@ -399,7 +407,8 @@ func substituteTokens(raw []byte, tokens map[string]string) []byte {
 		resolved[appPublicPortToken] = ""
 	}
 	for token, value := range resolved {
-		if token == previewBridgeVerificationJWKSConfigKey || token == sandboxRuntimeClassNameConfigKey {
+		if token == previewBridgeVerificationJWKSConfigKey || token == sandboxRuntimeClassNameConfigKey ||
+			token == gatewayBackendHealthCheckConfigKey {
 			continue
 		}
 		raw = bytes.ReplaceAll(raw, []byte(token), []byte(value))

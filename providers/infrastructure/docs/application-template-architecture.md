@@ -48,6 +48,7 @@ All are environment variables on the **provider serve** container.
 |---|---|---|
 | `RAILGRID_GATEWAY_NAME` | `cloudflare-tunnel` | Substituted for the reserved `${railgrid.gatewayName}` token in a Template's `backendConfig` before the kro RGD is authored. Ends up as the HTTPRoute `parentRefs[].name`. kro never sees the token — substitution happens in [backend/kro/rgd.go](../backend/kro/rgd.go) (`substituteTokens`). |
 | `RAILGRID_GATEWAY_NAMESPACE` | `cfgate-system` | Same, for the reserved `${railgrid.gatewayNamespace}` token → HTTPRoute `parentRefs[].namespace`. |
+| `RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK` | _(unset)_ | How the Gateway's load balancer health-checks route backends. `gke-tcp` adds a GKE `HealthCheckPolicy` (`networking.gke.io/v1`, TCP on the serving port) for every Service an HTTPRoute in the graph sends traffic to, gated by that route's `includeWhen` ([backend/kro/gatewayhealth.go](../backend/kro/gatewayhealth.go)). **Required on a GKE Gateway**: it does not use readiness probes, and its default check (`GET /` expecting 200) never passes the access gate (421 for a foreign Host, sign-in redirect for private apps), so every app answers "no healthy upstream". Unset adds nothing. CR field `spec.publishing.gateway.backendHealthCheck` (or `spec.application.gateway.backendHealthCheck`). |
 | `RAILGRID_APP_BASE_DOMAIN` | _(unset)_ | The DNS zone apps are served under, e.g. `apps.example.com`. **Also gates the Application instance controller** — see below. |
 
 ### `RAILGRID_APP_BASE_DOMAIN` gates the whole feature
