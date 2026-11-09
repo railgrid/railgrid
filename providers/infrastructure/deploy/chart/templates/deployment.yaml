@@ -213,6 +213,12 @@ spec:
             - name: RAILGRID_GATEWAY_NAMESPACE
               value: {{ . | quote }}
             {{- end }}
+            {{- with (default .Values.application.gateway.backendHealthCheck .Values.publishing.gateway.backendHealthCheck) }}
+            # Per-backend load-balancer health check the provider adds to every
+            # generated HTTPRoute ("gke-tcp"); empty adds nothing.
+            - name: RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK
+              value: {{ . | quote }}
+            {{- end }}
             {{- if not .Values.tenantLimitRange.enabled }}
             # Opt out of stamping the railgrid-defaults LimitRange into tenant
             # namespaces (for clusters that manage resource policy themselves).

@@ -150,6 +150,13 @@ func EnsureProviderServe(
 	if publishingGatewayNamespace != "" {
 		env = append(env, corev1.EnvVar{Name: "RAILGRID_GATEWAY_NAMESPACE", Value: publishingGatewayNamespace})
 	}
+	publishingGatewayHealthCheck := cr.Spec.Publishing.Gateway.BackendHealthCheck
+	if publishingGatewayHealthCheck == "" {
+		publishingGatewayHealthCheck = cr.Spec.Application.Gateway.BackendHealthCheck
+	}
+	if publishingGatewayHealthCheck != "" {
+		env = append(env, corev1.EnvVar{Name: "RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK", Value: publishingGatewayHealthCheck})
+	}
 	// Dev-mode image set (${railgrid.devAgentImage} / ${railgrid.devImage.*}); empty
 	// values fall back to the in-binary defaults (node toolchain + agent).
 	if cr.Spec.Development.AgentImage != "" {

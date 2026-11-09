@@ -254,6 +254,21 @@ type GatewayRef struct {
 	// Namespace of the Gateway. Empty → "cfgate-system" (the in-binary default).
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
+
+	// BackendHealthCheck selects how the Gateway's load balancer health-checks
+	// the Services generated HTTPRoutes send traffic to. Maps onto the serve
+	// container's RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK.
+	//
+	//   - "" (default): add nothing; the Gateway implementation decides.
+	//   - "gke-tcp": add a GKE HealthCheckPolicy (networking.gke.io/v1, TCP on
+	//     the serving port) per route backend Service. Required on a GKE
+	//     Gateway, whose default check ("GET /" expecting 200) the access gate
+	//     never passes (421 off-host, sign-in redirects for private apps), so
+	//     every app answers "no healthy upstream". Only set it where the
+	//     HealthCheckPolicy CRD exists.
+	// +optional
+	// +kubebuilder:validation:Enum="";gke-tcp
+	BackendHealthCheck string `json:"backendHealthCheck,omitempty"`
 }
 
 // SecretKeyRef points at one key in a Secret in the operator's namespace.

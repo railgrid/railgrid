@@ -93,6 +93,10 @@ const (
 //   - RAILGRID_GATEWAY_NAME / RAILGRID_GATEWAY_NAMESPACE — the exposure-layer Gateway
 //     parent every template's HTTPRoutes attach to (defaults
 //     "cloudflare-tunnel" / "cfgate-system").
+//   - RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK — how that Gateway's load balancer
+//     health-checks route backends. "gke-tcp" adds a GKE HealthCheckPolicy
+//     (TCP) per HTTPRoute backend Service (gatewayhealth.go); empty adds
+//     nothing.
 //   - RAILGRID_APP_PUBLIC_PORT — bare port number appended (as ":<port>") to
 //     synthesized exposure URLs via ${railgrid.appPublicPort}. Unset in
 //     production (443 implied); local kind sets 10443 (the envoy
@@ -119,6 +123,9 @@ func New(runtime dynamic.Interface) *Backend {
 			os.Getenv("RAILGRID_PREVIEW_BRIDGE_VERIFICATION_JWKS"),
 		),
 		sandboxRuntimeClassNameConfigKey: strings.TrimSpace(os.Getenv("RAILGRID_SANDBOX_RUNTIME_CLASS_NAME")),
+		gatewayBackendHealthCheckConfigKey: strings.TrimSpace(
+			os.Getenv("RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK"),
+		),
 	}
 	maps.Copy(tokens, accessGateTokens())
 	maps.Copy(tokens, devImageTokens())
