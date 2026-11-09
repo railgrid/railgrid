@@ -159,6 +159,25 @@ conflict with the affected paths when another source change wins. It never
 retries a stale replacement or deletion with a newer version behind the
 user's back. Refreshing and confirming again is the user's choice.
 
+### Workbench documents and tools
+
+App Studio uses the AgentKit document heading and ruled sections for project
+controls. Optional settings show their saved values in a collapsed summary.
+Production status, verified release evidence, and the active review request
+stay visible. Providers opens workbench tools. Integrations manages the
+project's resource and action grants with explicit consent.
+
+**Review requests** shows the pending decision for the active thread. Its
+count is included in the tab's accessible name, and a separate shortcut opens
+the pane when a request is pending and another pane is visible. The chat composer
+retains the Review response mode.
+
+Preview and Code keep a tool toolbar and their own content canvas. Code shows
+the file tree beside the viewer at 640px or more of pane width. Below that,
+file selection moves to the viewer and Back returns focus to the selected file.
+Publishing uses the pane width for the release pipeline, the release evidence
+and consequences layout, and the deployment confirmation facts.
+
 ### Context is bounded and receipt-backed
 
 User turns may select a bounded set of skill IDs, provider resource references,

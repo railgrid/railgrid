@@ -30,7 +30,6 @@ import {
   Plus,
   Search,
   RefreshCw,
-  Send,
   Settings2,
   Plug,
   TriangleAlert,
@@ -49,7 +48,6 @@ import AIConversationTurn from './agentkit/AIConversationTurn.vue'
 import AIConversationStatus from './agentkit/AIConversationStatus.vue'
 import AITurnProgress from './agentkit/AITurnProgress.vue'
 import AITimestamp from './agentkit/AITimestamp.vue'
-import AIInterrupt from './agentkit/AIInterrupt.vue'
 import AIComposer from './agentkit/AIComposer.vue'
 import AIPrimaryAction from './agentkit/AIPrimaryAction.vue'
 import AIConversationIdentity from './agentkit/AIConversationIdentity.vue'
@@ -80,7 +78,6 @@ import {
 import { parseAssistantActionFeed } from './assistantActionFeed'
 import { shouldShowAssistantSpendCapChangesNotice } from './assistantSpendCapNotice'
 import {
-  assistantInterruptAllowsApproval,
   parseAssistantInterrupt,
   type ProjectAssistantInterruptView,
 } from './assistantInterrupt'
@@ -90,7 +87,7 @@ import {
   type LLMCredentialMode,
 } from './llmSettingsValidation'
 import AssistantActionLog from './AssistantActionLog.vue'
-import AssistantExecDetails from './AssistantExecDetails.vue'
+import ReviewRequest from './ReviewRequest.vue'
 import {
   activeAssistantPlanMessage,
   assistantPlanProgress,
@@ -232,6 +229,7 @@ import { useProjectCreationSubmit } from './useProjectCreationSubmit'
 import GitRecommendationBanner from './GitRecommendationBanner.vue'
 import ProjectIntegrations from './ProjectIntegrations.vue'
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
+import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 import {
   ConversationRunController,
   abortedConversationSnapshot,
@@ -382,7 +380,6 @@ import type {
   ProjectAssistantRunStart,
   ProjectAssistantUIComponent,
   ProjectAssistantFollowUpQuestion,
-  ProjectAssistantFollowUpQuestionOption,
   ProjectAssistantUIInterruptRequest,
   ProjectProviderBinding,
   ProjectLLMDiscoveredModel,
@@ -591,7 +588,7 @@ interface ProjectDevelopmentPreviewAuthorization {
   previewURL: string
   message: string
   reason: string
-  desiredAccess: 'private' | 'public'
+  desiredAccess: 'private' | 'public' | ''
   observedAccess: 'private' | 'public' | ''
   accessConverged: boolean
   previewAccessModes: Array<'private' | 'public'>
@@ -767,7 +764,21 @@ const pendingFollowUp = computed<PendingFollowUpView | null>(() => {
   }
   return heldReviewPanel('follow_up') as PendingFollowUpView | null
 })
-const hasPendingReview = computed(() => pendingFollowUp.value !== null || pendingApproval.value !== null)
+const pendingReviewProps = computed(() => {
+  const followUp = pendingFollowUp.value?.interrupt
+  if (followUp) return {
+    interrupt: followUp,
+    questions: followUpQuestions(followUp),
+    answers: followUpAnswers.value[followUpKey(followUp)],
+    busy: followUpBusyState(followUp),
+    error: followUpError(followUp),
+  }
+  const approval = pendingApproval.value?.interrupt
+  if (approval) return { interrupt: approval, busy: permissionBusyState(approval), error: permissionError(approval) }
+})
+// Review presents the blocking request for the active thread, one at a time.
+const pendingReviewCount = computed(() => Number(Boolean(pendingReviewProps.value)))
+const pendingReviewLabel = computed(() => `${pendingReviewCount.value} pending ${pendingReviewCount.value === 1 ? 'request' : 'requests'}`)
 const loading = ref(true)
 const projectsLoaded = ref(false)
 const projectOpenLoading = ref(false)
@@ -803,6 +814,8 @@ const projectSettingsDescription = ref('')
 const projectSettingsSaving = ref(false)
 const projectSettingsStatus = ref<string | null>(null)
 const projectSettingsError = ref<string | null>(null)
+const projectGitSettingsOpen = ref(false)
+let projectGitSettingsFocusAnchor: HTMLElement | null = null
 const deletingProjectName = ref('')
 const deletingProjectUID = ref('')
 const projectDeletionError = ref<string | null>(null)
@@ -863,6 +876,7 @@ const approvalModeSaving = ref(false)
 const approvalModeError = ref<string | null>(null)
 const projectQuery = ref('')
 const providerQuery = ref('')
+const providerSearchInput = ref<HTMLInputElement | null>(null)
 const workbenchLauncherQuery = ref('')
 const developmentSyncBusy = ref(false)
 const developmentSyncStatus = ref<string | null>(null)
@@ -871,6 +885,8 @@ const developmentPreviewAuthorizing = ref(false)
 const developmentPreviewAuthorizationError = ref<string | null>(null)
 const developmentPreviewReadinessMessage = ref<string | null>(null)
 const developmentPreviewAccessModesFromAuthorization = ref<Array<'private' | 'public'>>([])
+const developmentPreviewAuthorizedPolicy = ref<{ mode: 'private' | 'public'; converged: boolean } | null>(null)
+const previewAccessUnverified = ref(false)
 const developmentPreviewAccessConverged = ref(true)
 const developmentPreviewAccessBusy = ref(false)
 const developmentPreviewAccessError = ref<string | null>(null)
@@ -934,7 +950,8 @@ const productionDeployConfirmRef = ref<HTMLButtonElement | null>(null)
 
 // Promote to Prod (the production surface's deployment action): read build readiness +
 // the live production environment, and stand up / redeploy production.
-const promotion = ref<ProjectPromotionReadiness | null>(null)
+// Readiness snapshots are replaced as a whole. Keep schema values cloneable.
+const promotion = shallowRef<ProjectPromotionReadiness | null>(null)
 const promotionLoading = ref(false)
 const promotionBusy = ref(false)
 const publishingRefreshBusy = ref(false)
@@ -1094,6 +1111,7 @@ let appComponentMounted = true
 let activeProjectContextFingerprint = ''
 let initializationRetryTimer: number | undefined
 let developmentPreviewAuthorizationSerial = 0
+let previewAccessRevision = 0
 let developmentPreviewAuthorizationRetryTimer: number | undefined
 let developmentPreviewRecoveryTimer: number | undefined
 let developmentPreviewComponentMounted = true
@@ -3006,7 +3024,7 @@ const launcherExistingTabs = computed<AIWorkbenchLauncherItemView[]>(() => {
     .map((tab) => ({
       id: tab.id,
       title: tab.title,
-      subtitle: tab.subtitle || (tab.kind === 'preview' ? 'Preview your app' : 'Open tab'),
+      subtitle: tab.kind === 'review' && pendingReviewCount.value ? pendingReviewLabel.value : tab.subtitle || (tab.kind === 'preview' ? 'Preview your app' : 'Open tab'),
       icon: workbenchTabIcon(tab),
       ...(tab.kind === 'provider' && tab.providerTool?.iconURL ? { iconURL: tab.providerTool.iconURL } : {}),
     }))
@@ -3021,18 +3039,18 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'preview',
   },
   {
-    id: 'builtin:providers',
-    title: 'Providers',
-    subtitle: 'Browse provider views and project tools',
-    icon: PanelRight,
-    builtInTab: 'providers',
+    id: 'builtin:code',
+    title: 'Code',
+    subtitle: 'Browse the live development workspace files',
+    icon: FileCode,
+    builtInTab: 'code',
   },
   {
-    id: 'builtin:integrations',
-    title: 'Integrations',
-    subtitle: 'Manage what this project can access',
-    icon: Link2,
-    builtInTab: 'integrations',
+    id: 'builtin:review',
+    title: 'Review requests',
+    subtitle: pendingReviewCount.value ? pendingReviewLabel.value : 'Respond to assistant approvals and questions',
+    icon: ClipboardList,
+    builtInTab: 'review',
   },
   {
     id: 'builtin:publishing',
@@ -3049,25 +3067,25 @@ const launcherBuiltInItems = computed<WorkbenchLauncherItem[]>(() => [
     builtInTab: 'history',
   },
   {
+    id: 'builtin:providers',
+    title: 'Providers',
+    subtitle: 'Open workspace tools in the workbench',
+    icon: PanelRight,
+    builtInTab: 'providers',
+  },
+  {
+    id: 'builtin:integrations',
+    title: 'Integrations',
+    subtitle: 'Manage this project’s resource access',
+    icon: Link2,
+    builtInTab: 'integrations',
+  },
+  {
     id: 'builtin:settings',
     title: 'Project Settings',
     subtitle: 'Manage project details and preview access',
     icon: Settings2,
     builtInTab: 'settings',
-  },
-  {
-    id: 'builtin:code',
-    title: 'Code',
-    subtitle: 'Browse the live development workspace files',
-    icon: FileCode,
-    builtInTab: 'code',
-  },
-  {
-    id: 'builtin:review',
-    title: 'Review',
-    subtitle: hasPendingReview.value ? 'Resolve pending approvals and follow-up questions' : 'Inspect approvals and follow-up requests',
-    icon: ClipboardList,
-    builtInTab: 'review',
   },
   {
     id: 'builtin:skills',
@@ -3116,6 +3134,11 @@ const filteredProviderTools = computed(() => {
     `${tool.title} ${tool.subtitle} ${tool.providerName}`.toLowerCase().includes(q),
   )
 })
+
+function clearProviderSearch() {
+  providerQuery.value = ''
+  providerSearchInput.value?.focus()
+}
 
 const developmentEnvironment = computed(() => {
   const envs = selected.value?.environments ?? []
@@ -3251,8 +3274,18 @@ const developmentPreviewOpenButtonLabel = computed(() => {
   return 'Open in browser'
 })
 const developmentPreviewDesiredAccess = computed<'private' | 'public'>(() => (
-  selected.value?.sharing?.preview?.mode === 'public' ? 'public' : 'private'
+  previewAccess.value?.supported
+    ? previewAccess.value.mode === 'public' ? 'public' : 'private'
+    : developmentPreviewAuthorizedPolicy.value?.mode ?? (selected.value?.sharing?.preview?.mode === 'public' ? 'public' : 'private')
 ))
+const developmentPreviewSettingsSummary = computed(() => {
+  const access = previewAccess.value?.supported ? previewAccess.value : null
+  if (previewAccessUnverified.value || (developmentPreviewAuthorizationError.value && !access?.converged)) return 'Could not confirm access'
+  const saved = access ?? developmentPreviewAuthorizedPolicy.value
+  if (developmentPreviewAccessBusy.value || saved?.converged === false) return 'Updating access…'
+  if (!saved) return developmentPreviewAuthorizing.value ? 'Checking access…' : 'Could not confirm access'
+  return developmentPreviewDesiredAccess.value === 'public' ? 'Anyone with link' : 'Restricted'
+})
 const selectedDevelopmentTemplate = computed(() => (
   developmentTemplates.value.find((template) => template.name === selected.value?.template) ?? null
 ))
@@ -3379,6 +3412,15 @@ watch(
     if (current !== previous) {
       invalidateAssistantMessageSubmission()
       invalidateAssistantQueueOperations()
+      projectGitSettingsOpen.value = false
+      previewAccessRevision += 1
+      previewMode.value = 'restricted'
+      previewAccess.value = null
+      previewAccessUnverified.value = false
+      developmentPreviewAuthorizedPolicy.value = null
+      developmentPreviewAccessConverged.value = true
+      developmentPreviewAccessBusy.value = false
+      developmentPreviewAccessError.value = null
     }
   },
   { flush: 'sync' },
@@ -3433,8 +3475,6 @@ watch(
     publishingLoadError.value = null
     publishingMembersError.value = null
     shareMode.value = 'restricted'
-    previewMode.value = 'restricted'
-    previewAccess.value = null
     projectSettingsSaving.value = false
     publishingActionError.value = null
     publishingBusyAction.value = null
@@ -3453,9 +3493,6 @@ watch(
     developmentTemplateStatus.value = null
     developmentTemplateError.value = null
     developmentPreviewAccessModesFromAuthorization.value = []
-    developmentPreviewAccessConverged.value = true
-    developmentPreviewAccessBusy.value = false
-    developmentPreviewAccessError.value = null
     developmentPreviewAuthorizationError.value = null
     developmentPreviewReadinessMessage.value = null
     developmentPreviewOverrideURL.value = null
@@ -3571,8 +3608,23 @@ watch(settingsProject, (project, previousProject) => {
     showSettings.value = false
     return
   }
-  if (showSettings.value) syncProjectSettingsForm()
-})
+  if (!project) return
+  const sameProject = previousProject?.name === project.name &&
+    (!previousProject.uid || previousProject.uid === project.uid)
+  if (!sameProject) {
+    projectSettingsSaveSerial += 1
+    projectSettingsSaving.value = false
+    if (showSettings.value) syncProjectSettingsForm()
+    return
+  }
+  // A local save acknowledges its submitted fields separately. Background
+  // refreshes update only fields that still match the previous saved record.
+  if (!showSettings.value || projectSettingsSaving.value) return
+  if (projectSettingsName.value === previousProject.displayName) projectSettingsName.value = project.displayName
+  if (projectSettingsDescription.value === (previousProject.description ?? '')) {
+    projectSettingsDescription.value = project.description ?? ''
+  }
+}, { flush: 'sync' })
 
 watch([messages, conversationLoading], async () => {
   if (suppressNextConversationAutoScroll) {
@@ -4220,9 +4272,34 @@ const {
 
 const latestDeployableRelease = computed(() => newestDeployableRelease(releases.value))
 const currentProductionRelease = computed(() => releases.value.find((release) => release.live && releaseHasPromotionEvidence(release)) ?? null)
+const productionReleaseReadyForDeploy = computed(() => {
+  const release = latestDeployableRelease.value
+  return Boolean(release && (!productionBinding.value || !release.live))
+})
 const productionReleaseSHA = computed(() => shortReleaseSHA(latestDeployableRelease.value?.commitSHA || releasePipeline.value.commitSHA))
 const productionDeployReviewSHA = computed(() => shortReleaseSHA(productionDeployReviewRelease.value?.commitSHA))
-const productionSettingsSummary = computed(() => productionConfigurationSummary(promotionValues.value))
+const savedProductionSettingsSummary = computed(() => {
+  const readiness = promotion.value
+  if (!readiness) return 'Configuration unavailable'
+  const values = readiness.productionSchema ? productionValuesFromReadiness(readiness) : readiness.productionValues
+  return values ? productionConfigurationSummary(values) : 'Configuration unavailable'
+})
+// A release update uses the saved configuration. Only the first deployment
+// applies the values currently in the form.
+const productionSettingsSummary = computed(() => productionBinding.value || !promotion.value?.productionSchema
+  ? savedProductionSettingsSummary.value
+  : productionConfigurationSummary(promotionValues.value))
+const productionConfigurationDisclosureSummary = computed(() => promotionValuesDirty.value
+  ? `${savedProductionSettingsSummary.value} · unsaved changes`
+  : savedProductionSettingsSummary.value)
+const productionRolloutFailed = computed(() => releasePipeline.value.steps.some(step => step.key === 'deploy' && step.state === 'error'))
+const productionRolloutSummary = computed(() => {
+  if (promotionError.value) return 'Rollout status unavailable'
+  const { requestedRevision, observedRevision } = releasePipeline.value
+  if (productionRolloutFailed.value) return 'Production rollout failed'
+  if (requestedRevision && requestedRevision !== observedRevision) return 'Rollout requested · awaiting observation'
+  return observedRevision ? `Observed rollout ${observedRevision}` : 'No rollout observed'
+})
 function canPromoteRelease(release: ProjectRelease | null): boolean {
   return Boolean(
     releaseHasPromotionEvidence(release) &&
@@ -4328,17 +4405,17 @@ function promotionObservation(readiness: ProjectPromotionReadiness) {
   }
 }
 
+function productionValuesFromReadiness(readiness: ProjectPromotionReadiness): ProductionFormValues {
+  const imageInputs = (readiness.build.components ?? []).map((component) => component.imageInput).filter(Boolean)
+  return productionFormValuesFromSchema(readiness.productionSchema, readiness.productionValues, imageInputs)
+}
+
 function syncProductionForm(readiness: ProjectPromotionReadiness) {
   // Keep a locally edited form stable while status polling refreshes the
   // deployment. Once the server has accepted a promotion, the next clean
   // refresh hydrates from the persisted binding values again.
   if (promotionValuesDirty.value) return
-  const imageInputs = (readiness.build.components ?? []).map((component) => component.imageInput).filter(Boolean)
-  promotionValues.value = productionFormValuesFromSchema(
-    readiness.productionSchema,
-    readiness.productionValues,
-    imageInputs,
-  )
+  promotionValues.value = productionValuesFromReadiness(readiness)
 }
 
 function updateProductionForm(values: ProductionFormValues) {
@@ -4440,7 +4517,10 @@ async function loadPromotionStatus(scheduleNext: boolean) {
     promotion.value = readiness
     syncProductionForm(readiness)
     const observation = promotionObservation(readiness)
-    if (pollAtStart && promotionPollState === pollAtStart) {
+    if (productionRolloutFailed.value) {
+      promotionFeedback.value = null
+      promotionPollState = null
+    } else if (pollAtStart && promotionPollState === pollAtStart) {
       const progress = advancePromotionPoll(pollAtStart, observation)
       promotionLastTarget = progress.state
       if (progress.matched) {
@@ -4449,11 +4529,15 @@ async function loadPromotionStatus(scheduleNext: boolean) {
         promotionFeedback.value = promotionPollExhaustedFeedback(progress.state, observation)
       }
       promotionPollState = progress.done ? null : progress.state
-    } else if (promotionLastTarget && promotionObservationMatches(promotionLastTarget, observation)) {
+    } else if (promotionLastTarget) {
       // The bounded post-action window may expire while the provider is still
       // converging. Keep a later ordinary status poll honest if it eventually
       // reports the target revision.
-      promotionFeedback.value = promotionReadyFeedback(promotionLastTarget, observation)
+      if (promotionObservationMatches(promotionLastTarget, observation)) {
+        promotionFeedback.value = promotionReadyFeedback(promotionLastTarget, observation)
+      } else if (promotionFeedback.value?.tone === 'success') {
+        promotionFeedback.value = null
+      }
     }
     promotionError.value = null
   } catch (err) {
@@ -4534,6 +4618,8 @@ async function loadPublishing() {
     return
   }
   const requestSerial = ++publishingLoadSerial
+  const accessRevision = previewAccessRevision
+  const authorizationAtStart = developmentPreviewAuthorizedPolicy.value
   const stateWasLoaded = publishingStateAvailable.value
   const membersWereLoaded = publishingMembersLoaded.value
   if (!stateWasLoaded && !membersWereLoaded) publishingLoadState.value = 'loading'
@@ -4569,10 +4655,15 @@ async function loadPublishing() {
   }
   // Preview visibility is advisory for this surface: it drives one toggle, so a
   // failure leaves the previous value rather than degrading the whole dialog.
-  if (previewResult.status === 'fulfilled') {
-    previewAccess.value = previewResult.value
-    if (!shareDialogOpen.value) {
-      previewMode.value = previewResult.value.mode === 'public' ? 'public' : 'restricted'
+  if (previewResult.status === 'fulfilled' && accessRevision === previewAccessRevision) {
+    const state = previewResult.value
+    const authorization = developmentPreviewAuthorizedPolicy.value
+    applyPreviewAccessState(state)
+    // The two verbs may read the runtime in a different order than they started.
+    if (state.supported && authorization && authorization !== authorizationAtStart &&
+      (authorization.mode !== developmentPreviewDesiredAccess.value || authorization.converged !== state.converged)) {
+      previewAccessUnverified.value = true
+      scheduleDevelopmentPreviewAuthorizationRetry(name, developmentPreviewAuthorizationKey.value, true)
     }
   }
 
@@ -4640,27 +4731,52 @@ async function publishCurrentProject() {
   }
 }
 
+function applyPreviewAccessState(state: ProjectPreviewAccess) {
+  // An open Share dialog may have a local draft. Clean forms follow the
+  // saved mode, including when the first read finishes after Share opens.
+  if (!shareDialogOpen.value || previewMode.value === (previewAccess.value?.mode ?? 'restricted')) {
+    previewMode.value = state.mode
+  }
+  previewAccess.value = state
+  if (state.supported) previewAccessUnverified.value = false
+  developmentPreviewAccessConverged.value = !state.supported || state.converged
+}
+
+function reconcilePreviewAccessAfterFailure(): number {
+  // The server may save the mode before a later step fails. Invalidate older
+  // reads and keep the policy unconfirmed until there is fresh evidence.
+  const revision = ++previewAccessRevision
+  previewAccessUnverified.value = true
+  void authorizeDevelopmentPreview({ force: true })
+  return revision
+}
+
 // savePreviewAccess writes the preview policy. The platform applies it to the
 // running preview asynchronously, so the response's `converged` flag is what
 // the dialog shows as pending — not this call returning.
 async function savePreviewAccess() {
   const name = selected.value?.name
-  if (!name || publishingActionBusy.value) return
-  publishingActionBusy.value = true
+  if (!name || publishingActionBusy.value || developmentPreviewAccessBusy.value) return
+  let accessRevision = previewAccessRevision
+  developmentPreviewAccessBusy.value = true
+  developmentPreviewAccessError.value = null
   publishingActionError.value = null
   try {
     const state = await api.setPreviewAccess(props.ctx, name, previewMode.value)
-    if (selected.value?.name !== name) return
-    previewAccess.value = state
-    previewMode.value = state.mode === 'public' ? 'public' : 'restricted'
+    if (selected.value?.name !== name || accessRevision !== previewAccessRevision) return
+    accessRevision = ++previewAccessRevision
+    applyPreviewAccessState(state)
+    previewMode.value = state.mode
     const notice = previewAccessUpdateToast(state.converged)
     toast(notice.kind, notice.message)
+    void authorizeDevelopmentPreview({ force: true })
   } catch (err) {
-    if (selected.value?.name === name) {
+    if (accessRevision === previewAccessRevision) {
       publishingActionError.value = err instanceof Error ? err.message : String(err)
+      accessRevision = reconcilePreviewAccessAfterFailure()
     }
   } finally {
-    publishingActionBusy.value = false
+    if (accessRevision === previewAccessRevision) developmentPreviewAccessBusy.value = false
   }
 }
 
@@ -4881,7 +4997,7 @@ watch(
       clearPublishingPoll()
     }
     if (kind === 'settings' && settingsProject.value) {
-      syncProjectSettingsForm()
+      if (!showSettings.value) syncProjectSettingsForm()
       showSettings.value = true
     } else if (settingsProject.value) {
       showSettings.value = false
@@ -6167,8 +6283,8 @@ async function createProjectAndStartConversation(
 }
 
 async function openSettings() {
-  syncProjectSettingsForm()
   if (settingsProject.value) {
+    if (!showSettings.value) syncProjectSettingsForm()
     openBuiltInWorkbenchTab('settings')
     await nextTick()
   } else {
@@ -6181,6 +6297,42 @@ async function openSettings() {
     return
   }
   showSettings.value = true
+}
+
+function gitSettingsDisclosure(pane: HTMLElement) {
+  return pane.querySelector('#app-studio-git-settings-heading')?.closest('summary')
+}
+
+function onGitSettingsReady() {
+  const anchor = projectGitSettingsFocusAnchor
+  projectGitSettingsFocusAnchor = null
+  if (anchor && document.activeElement === anchor && projectGitSettingsOpen.value && workbenchVisible.value && settingsInWorkbench.value) {
+    gitSettingsDisclosure(anchor)?.focus()
+  }
+}
+
+async function openGitSettings() {
+  const project = settingsProject.value
+  if (!project) return
+  const context = projectContextFingerprint(props.ctx)
+  if (settingsInWorkbench.value) revealWorkbenchPane()
+  else await openSettings()
+
+  const current = settingsProject.value
+  if (!settingsInWorkbench.value || current?.name !== project.name || current.uid !== project.uid ||
+    context !== projectContextFingerprint(props.ctx)) return
+  projectGitSettingsOpen.value = true
+  await nextTick()
+  if (!workbenchVisible.value || !settingsInWorkbench.value || !projectGitSettingsOpen.value) return
+  const pane = workbenchPaneRef.value?.querySelector<HTMLElement>('#project-settings-pane-project')
+  if (!pane) return
+  const disclosure = gitSettingsDisclosure(pane)
+  if (disclosure) disclosure.focus()
+  else {
+    // Keep keyboard focus in Settings until its lazy Git section is ready.
+    projectGitSettingsFocusAnchor = pane
+    pane.focus()
+  }
 }
 
 function openProjectsSection() {
@@ -6230,9 +6382,11 @@ function syncProjectSettingsForm() {
 
 async function saveProjectSettings() {
   const project = settingsProject.value
-  if (!project) return
-  const displayName = projectSettingsName.value.trim()
-  const description = projectSettingsDescription.value.trim()
+  if (!project || projectSettingsSaving.value) return
+  const draftName = projectSettingsName.value
+  const draftDescription = projectSettingsDescription.value
+  const displayName = draftName.trim()
+  const description = draftDescription.trim()
   projectSettingsStatus.value = null
   projectSettingsError.value = null
   if (!displayName) {
@@ -6245,7 +6399,8 @@ async function saveProjectSettings() {
   const contextFingerprint = projectContextFingerprint(props.ctx)
   const isCurrentSave = () => saveSerial === projectSettingsSaveSerial &&
     contextFingerprint === projectContextFingerprint(props.ctx) &&
-    selected.value?.name === projectName
+    selected.value?.name === projectName &&
+    (!project.uid || selected.value?.uid === project.uid)
   projectSettingsSaving.value = true
   try {
     const updated = await api.updateProjectDetails(props.ctx, projectName, { displayName, description })
@@ -6256,8 +6411,8 @@ async function saveProjectSettings() {
       projects.value[idx] = updated
       projects.value = [...projects.value]
     }
-    projectSettingsName.value = updated.displayName
-    projectSettingsDescription.value = updated.description ?? ''
+    if (projectSettingsName.value === draftName) projectSettingsName.value = updated.displayName
+    if (projectSettingsDescription.value === draftDescription) projectSettingsDescription.value = updated.description ?? ''
     projectSettingsStatus.value = 'Project details saved.'
   } catch (e) {
     if (!isCurrentSave()) return
@@ -7690,36 +7845,36 @@ async function openDevelopmentPreviewInBrowser() {
 async function changeDevelopmentPreviewAccess(mode: string) {
   const requested = mode === 'public' ? 'public' : 'private'
   const project = selected.value
+  let accessRevision = previewAccessRevision
   if (!project || !developmentPreviewAccessConfigurable.value || requested === developmentPreviewDesiredAccess.value || developmentPreviewAccessBusy.value) return
   if (requested === 'public' && !(await confirmDialog({
     title: 'Make development preview public?',
     message: 'Anyone with the URL will be able to access this mutable app and any data it exposes. This does not grant access to the project or workspace.',
     confirmLabel: 'Make public',
   }))) return
+  if (accessRevision !== previewAccessRevision || developmentPreviewAccessBusy.value) return
 
   developmentPreviewAccessBusy.value = true
   developmentPreviewAccessError.value = null
   developmentPreviewAccessConverged.value = false
   developmentPreviewReadinessMessage.value = 'Updating preview access…'
   try {
-    // Preview visibility is a verb, not a field: POST /preview flips the mode
-    // AND reconciles the app-access grants behind it, which a bare write to
-    // spec.sharing.preview would leave stale. Re-read the view afterwards so
-    // the selected project carries the new policy.
-    await api.setPreviewAccess(props.ctx, project.name, requested)
-    if (selected.value?.name !== project.name) return
-    const updated = await api.getProject(props.ctx, project.name)
-    if (selected.value?.name !== project.name) return
-    selected.value = updated
+    // The preview verb returns the saved policy, and authorization observes
+    // when the running preview applies it.
+    const state = await api.setPreviewAccess(props.ctx, project.name, requested)
+    if (accessRevision !== previewAccessRevision) return
+    accessRevision = ++previewAccessRevision
+    applyPreviewAccessState(state)
     await authorizeDevelopmentPreview({ force: true })
   } catch (e) {
-    if (selected.value?.name === project.name) {
+    if (accessRevision === previewAccessRevision) {
       developmentPreviewAccessConverged.value = true
       developmentPreviewReadinessMessage.value = null
       developmentPreviewAccessError.value = e instanceof Error ? e.message : String(e)
+      accessRevision = reconcilePreviewAccessAfterFailure()
     }
   } finally {
-    if (selected.value?.name === project.name) developmentPreviewAccessBusy.value = false
+    if (accessRevision === previewAccessRevision) developmentPreviewAccessBusy.value = false
   }
 }
 
@@ -7754,14 +7909,31 @@ async function authorizeDevelopmentPreview(options: { force?: boolean; preserveE
 async function authorizeDevelopmentPreviewRequest(projectName: string, key: string, preserveExistingPreview = false) {
   clearDevelopmentPreviewAuthorizationRetry()
   const serial = ++developmentPreviewAuthorizationSerial
+  const accessRevision = previewAccessRevision
+  const accessAtStart = previewAccess.value
   developmentPreviewAuthorizing.value = true
   developmentPreviewAuthorizationError.value = null
   try {
     const result = await api.authorizeDevelopmentPreview(props.ctx, projectName)
-    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    if (serial !== developmentPreviewAuthorizationSerial || accessRevision !== previewAccessRevision || selected.value?.name !== projectName) return
     const authorization = projectDevelopmentPreviewAuthorization(result)
     developmentPreviewAccessModesFromAuthorization.value = authorization.previewAccessModes
-    developmentPreviewAccessConverged.value = authorization.accessConverged
+    if (!previewAccess.value?.supported) developmentPreviewAccessConverged.value = authorization.accessConverged
+    let accessConflict = false
+    if (authorization.desiredAccess && authorization.observedAccess) {
+      const mode = authorization.desiredAccess
+      const converged = authorization.accessConverged && authorization.observedAccess === mode
+      const access = previewAccess.value
+      accessConflict = !!access?.supported && access !== accessAtStart &&
+        (mode !== developmentPreviewDesiredAccess.value || converged !== access.converged)
+      if (accessConflict) {
+        previewAccessUnverified.value = true
+      } else {
+        developmentPreviewAuthorizedPolicy.value = { mode, converged }
+        previewAccessUnverified.value = false
+        if (access?.supported) applyPreviewAccessState({ ...access, mode: mode === 'public' ? 'public' : 'restricted', converged })
+      }
+    }
     if (!authorization.ready) {
 	  if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
       developmentPreviewAuthorizationKey.value = key
@@ -7773,8 +7945,9 @@ async function authorizeDevelopmentPreviewRequest(projectName: string, key: stri
     const previewURL = authorization.previewURL
     if (!previewURL) throw new Error('development preview authorization returned no preview URL')
     applyDevelopmentPreviewAuthorization(projectName, authorization)
+    if (accessConflict) scheduleDevelopmentPreviewAuthorizationRetry(projectName, key, true)
   } catch (e) {
-    if (serial !== developmentPreviewAuthorizationSerial || selected.value?.name !== projectName) return
+    if (serial !== developmentPreviewAuthorizationSerial || accessRevision !== previewAccessRevision || selected.value?.name !== projectName) return
 	if (!preserveExistingPreview) developmentPreviewOverrideURL.value = null
     developmentPreviewAuthorizationKey.value = key
     developmentPreviewReadinessMessage.value = null
@@ -7809,7 +7982,7 @@ function scheduleDevelopmentPreviewAuthorizationRetry(projectName: string, key: 
 }
 
 function developmentPreviewKey(projectName: string, rawURL: string): string {
-  return [projectName, rawURL, props.ctx?.tenant ?? '', props.ctx?.subPath ?? '', props.ctx?.token ? 'token' : ''].join('\u001f')
+  return [projectName, rawURL, props.ctx?.tenant ?? '', props.ctx?.subPath ?? '', props.ctx?.token ? 'token' : '', previewAccessRevision].join('\u001f')
 }
 
 function projectDevelopmentPreviewURL(result: unknown): string {
@@ -7823,7 +7996,7 @@ function projectDevelopmentPreviewURL(result: unknown): string {
 }
 
 function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelopmentPreviewAuthorization {
-  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '', desiredAccess: 'private', observedAccess: '', accessConverged: true, previewAccessModes: [] }
+  if (!result || typeof result !== 'object') return { ready: false, previewURL: '', message: '', reason: '', desiredAccess: '', observedAccess: '', accessConverged: true, previewAccessModes: [] }
   const previewURL = projectDevelopmentPreviewURL(result)
   const ready = typeof (result as { ready?: unknown }).ready === 'boolean'
     ? Boolean((result as { ready?: unknown }).ready)
@@ -7833,7 +8006,7 @@ function projectDevelopmentPreviewAuthorization(result: unknown): ProjectDevelop
     previewURL,
     message: projectDevelopmentPreviewString(result, 'message'),
     reason: projectDevelopmentPreviewString(result, 'reason'),
-    desiredAccess: projectDevelopmentPreviewAccess(result, 'desiredAccess') || 'private',
+    desiredAccess: projectDevelopmentPreviewAccess(result, 'desiredAccess'),
     observedAccess: projectDevelopmentPreviewAccess(result, 'observedAccess'),
     accessConverged: typeof (result as { accessConverged?: unknown }).accessConverged === 'boolean'
       ? Boolean((result as { accessConverged?: unknown }).accessConverged)
@@ -8201,7 +8374,7 @@ function restoreShareModeFromPublication() {
 }
 
 function closeShareDialog() {
-  if (publishingActionBusy.value) return
+  if (publishingActionBusy.value || developmentPreviewAccessBusy.value) return
   restoreShareModeFromPublication()
   shareDialogOpen.value = false
   restoreShareDialogFocus()
@@ -8212,7 +8385,7 @@ function closeShareDialog() {
 }
 
 function openPublishingFromShare() {
-  if (publishingActionBusy.value) return
+  if (publishingActionBusy.value || developmentPreviewAccessBusy.value) return
   // Publishing is another Share exit path. Treat an edited access
   // mode as a draft here too, so navigating away cannot leak it into the next
   // publish action.
@@ -8347,6 +8520,13 @@ function openWorkbenchLauncher() {
   openBuiltInWorkbenchTab('launcher')
 }
 
+async function openReviewRequests() {
+  openBuiltInWorkbenchTab('review')
+  await nextTick()
+  const tab = workbenchTabByID('review')
+  if (tab) document.getElementById(workbenchTabControlID(tab))?.focus()
+}
+
 function openWorkbenchLauncherItem(itemOrID: WorkbenchLauncherItem | string) {
   const item = typeof itemOrID === 'string'
     ? launcherSuggestedItems.value.find((candidate) => candidate.id === itemOrID)
@@ -8462,10 +8642,6 @@ function workbenchTabIconByID(tabID: string): Component {
 function workbenchTabProviderIconURL(tabID: string): string | undefined {
   const tab = workbenchTabByID(tabID)
   return tab?.kind === 'provider' ? tab.providerTool?.iconURL : undefined
-}
-
-function workbenchTabIsReview(tabID: string): boolean {
-  return workbenchTabByID(tabID)?.kind === 'review'
 }
 
 function workbenchTabPanelID(tab: WorkbenchTabDescriptor): string {
@@ -9410,16 +9586,14 @@ function followUpQuestions(interrupt: ProjectAssistantUIInterruptRequest): Proje
     : question)
 }
 
-function followUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, question: ProjectAssistantFollowUpQuestion): string {
-  return followUpAnswers.value[followUpKey(interrupt)]?.[question.id] || ''
+function submitReviewRequest(interrupt: ProjectAssistantInterruptView) {
+  const request = pendingFollowUp.value
+  if (request?.interrupt === interrupt) void submitFollowUpAnswer(request.message, interrupt)
 }
 
-function followUpOptionSelected(
-  interrupt: ProjectAssistantUIInterruptRequest,
-  question: ProjectAssistantFollowUpQuestion,
-  option: ProjectAssistantFollowUpQuestionOption,
-): boolean {
-  return followUpAnswer(interrupt, question) === option.label
+function decideReviewRequest(interrupt: ProjectAssistantInterruptView, decision: 'allow' | 'deny') {
+  const request = pendingApproval.value
+  if (request?.interrupt === interrupt) void resolveToolPermission(request.message, interrupt, decision)
 }
 
 function updateFollowUpAnswer(interrupt: ProjectAssistantUIInterruptRequest, questionID: string, value: string) {
@@ -11140,7 +11314,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                   <span aria-hidden="true">·</span>
                   <GitBranch class="h-3 w-3 shrink-0" :stroke-width="2" />
                   <span v-if="selected.repository?.ref" class="truncate">{{ selected.repository.name || selected.repository.ref }}</span>
-                  <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openSettings">Git recommended · Connect</button>
+                  <button v-else type="button" class="app-studio-touch-target text-accent underline underline-offset-2" @click="openGitSettings">Git recommended · Connect</button>
                 </span>
               </div>
             </template>
@@ -11550,113 +11724,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </div>
 
         <form class="k-ai-composer-dock" @submit.prevent="sendMessage(assistantActiveRunSubmitIntent())">
-          <AIInterrupt
-            v-if="pendingFollowUp"
-            class="mb-2"
-            kind="follow-up"
-            :busy="followUpBusyState(pendingFollowUp.interrupt)"
-            title="Clarification needed"
-            :description="pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.'"
-            :error="followUpError(pendingFollowUp.interrupt) || ''"
-            aria-label="Clarification needed"
-          >
-            <div v-if="pendingFollowUp.interrupt.questions?.length" class="grid gap-3">
-              <div
-                v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
-                :key="question.id"
-                class="rounded-xl border border-border-subtle bg-surface p-3"
-              >
-                <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
-                <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
-                <div v-if="question.options?.length" class="mt-2 grid gap-2">
-                  <button
-                    v-for="option in question.options"
-                    :key="option.label"
-                    type="button"
-                    class="app-studio-touch-target rounded-md border px-3 py-2 text-left transition"
-                    :aria-pressed="followUpOptionSelected(pendingFollowUp.interrupt, question, option)"
-                    :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
-                    :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                    @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
-                  >
-                    <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
-                    <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
-                  </button>
-                </div>
-                <input
-                  v-if="question.isOther !== false"
-                  class="app-studio-touch-target mt-2 h-9 w-full rounded-md border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                  :aria-label="`${question.header || 'Clarification'} other answer`"
-                  placeholder="Other..."
-                  :value="followUpAnswer(pendingFollowUp.interrupt, question)"
-                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </div>
-            <template #actions>
-              <button
-                type="button"
-                class="app-studio-touch-target k-btn k-btn--primary"
-                :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
-                @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
-              >
-                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" aria-hidden="true" />
-                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                Continue
-              </button>
-            </template>
-          </AIInterrupt>
-          <AIInterrupt
-            v-else-if="pendingApproval"
-            class="mb-2"
-            kind="approval"
-            :busy="Boolean(permissionBusyState(pendingApproval.interrupt))"
-            :invalid="pendingApproval.interrupt.execDisclosureInvalid"
-            :error="permissionError(pendingApproval.interrupt) || (pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable, so allowing this request is disabled. Deny it and retry.' : '')"
-            title="Approval required"
-            :description="pendingApproval.interrupt.description || 'Review this action before it runs.'"
-            aria-label="Approval required"
-          >
-            <AssistantExecDetails
-              v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-              :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-              variant="approval"
-            />
-            <template #actions>
-              <button
-                type="button"
-                class="app-studio-touch-target k-btn k-btn--primary"
-                :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
-                :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
-                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
-              >
-                <Loader2
-                  v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'"
-                  class="h-3.5 w-3.5 animate-spin"
-                  :stroke-width="1.75"
-                  aria-hidden="true"
-                />
-                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                Allow
-              </button>
-              <button
-                type="button"
-                class="app-studio-touch-target k-btn k-btn--ghost"
-                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
-              >
-                <Loader2
-                  v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'"
-                  class="h-3.5 w-3.5 animate-spin"
-                  :stroke-width="1.75"
-                  aria-hidden="true"
-                />
-                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
-                Deny
-              </button>
-            </template>
-          </AIInterrupt>
+          <ReviewRequest
+            v-if="pendingReviewProps" class="mb-2"
+            v-bind="pendingReviewProps"
+            @answer="updateFollowUpAnswer"
+            @submit="submitReviewRequest"
+            @decide="decideReviewRequest"
+          />
           <div v-if="approvalModeError" class="mb-2 text-[11px] leading-4 text-danger" role="alert">
             {{ approvalModeError }}
           </div>
@@ -11794,10 +11868,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           id="app-studio-workbench-pane"
           ref="workbenchPaneRef"
           v-show="workbenchVisible"
-          class="flex min-h-0 min-w-0 flex-1 flex-col"
+          class="app-studio-workbench flex min-h-0 min-w-0 flex-1 flex-col"
           :aria-hidden="!workbenchVisible"
         >
-      <header class="flex h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
+      <header class="app-studio-workbench-header flex min-h-14 shrink-0 items-center gap-2 border-b border-border-subtle px-3">
         <button
           ref="mobileWorkbenchBackRef"
           type="button"
@@ -11813,7 +11887,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             class="min-w-0 flex-1"
             aria-label="Workbench tabs"
             launcher
-            :launcher-active="hasPendingReview"
+            fit-viewport
             @dragstart="startWorkbenchTabDragByID"
             @dragover="dragOverWorkbenchTabByID"
             @drop="dropWorkbenchTabByID"
@@ -11824,7 +11898,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @launch="openWorkbenchLauncher"
           >
             <template #leading>
-              <GripVertical class="ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="1.75" aria-hidden="true" />
+              <GripVertical class="app-studio-workbench-header__grip ml-1 h-3 w-3 shrink-0 text-current/50" :stroke-width="1.75" aria-hidden="true" />
             </template>
             <template #icon="{ tab }">
               <img v-if="workbenchTabProviderIconURL(tab.id)" :src="workbenchTabProviderIconURL(tab.id)" alt="" class="object-contain" />
@@ -11832,21 +11906,30 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             </template>
             <template #after-label="{ tab }">
               <span
-                v-if="workbenchTabIsReview(tab.id) && hasPendingReview"
-                class="h-1.5 w-1.5 shrink-0 rounded-full bg-accent"
-                aria-hidden="true"
-              />
-            </template>
-            <template #launcher-indicator>
-              <span
-                v-if="hasPendingReview"
-                class="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-accent"
-                aria-hidden="true"
-              />
+                v-if="tab.id === 'review' && pendingReviewCount"
+                class="min-w-4 shrink-0 rounded-sm bg-accent-subtle px-1 text-center text-[11px] font-semibold tabular-nums text-accent"
+              >
+                <span aria-hidden="true">{{ pendingReviewCount }}</span>
+                <span class="sr-only">{{ pendingReviewLabel }}</span>
+              </span>
             </template>
           </AIWorkbenchTabs>
         </div>
-        <div class="flex shrink-0 items-center gap-1">
+        <div
+          v-if="(pendingReviewCount && activeWorkbenchTab?.kind !== 'review') || activeProviderTool"
+          class="app-studio-workbench-header__actions flex shrink-0 items-center gap-1"
+        >
+          <button
+            v-if="pendingReviewCount && activeWorkbenchTab?.kind !== 'review'"
+            type="button"
+            class="app-studio-touch-target k-btn k-btn--ghost shrink-0"
+            :aria-label="`Open Review requests, ${pendingReviewLabel}`"
+            :title="`Review requests · ${pendingReviewLabel}`"
+            @click="openReviewRequests"
+          >
+            <ClipboardList class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
+            <span class="tabular-nums" aria-hidden="true">{{ pendingReviewCount }}</span>
+          </button>
           <button
             v-if="activeProviderTool"
             class="app-studio-touch-target flex h-8 w-8 items-center justify-center rounded-md border border-border-subtle text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
@@ -11926,6 +12009,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
       >
         <AIWorkbenchLauncher
           v-model:query="workbenchLauncherQuery"
+          variant="rows"
+          description="Open a workbench tab for this project."
+          search-label="Search workbench tabs"
+          search-placeholder="Search workbench tabs"
           :existing-tabs="launcherExistingTabs"
           :suggested-items="launcherSuggestedItems"
           @select-existing="selectExistingWorkbenchLauncherTab"
@@ -11935,12 +12022,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
       <div
         v-else-if="activeWorkbenchTab?.kind === 'preview'"
-        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto p-4"
+        class="k-ai-workbench-canvas min-h-0 flex-1 overflow-auto"
         role="tabpanel"
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <div class="flex h-full min-h-[420px] flex-col gap-3">
+        <div class="flex h-full min-h-[420px] flex-col">
           <DevelopmentPreviewToolbar
             :provider="developmentBinding?.provider || 'app-studio'"
             :phase="developmentPreviewPhase"
@@ -11957,7 +12044,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
           <div
             v-if="selected?.lastSourceChange || selected?.lastPreviewCheckpoint"
-            class="flex flex-wrap gap-x-4 gap-y-1 px-1 text-[11px] text-text-muted"
+            class="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-b border-border-subtle px-3 py-1.5 text-[11px] text-text-secondary"
             aria-label="Development source provenance"
           >
             <p v-if="selected?.lastSourceChange">
@@ -11971,13 +12058,13 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               · Revision {{ selected.lastPreviewCheckpoint.sourceRevision }}
             </p>
           </div>
-          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
+          <div v-if="developmentSyncError || developmentPreviewAuthorizationError" class="shrink-0 border-b border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert" aria-live="assertive" aria-atomic="true">
             {{ developmentSyncError || developmentPreviewAuthorizationError }}
           </div>
-          <div v-else-if="developmentSyncStatus" class="rounded-lg border border-success/30 bg-success-subtle p-3 text-[12px] text-success" role="status" aria-live="polite" aria-atomic="true">
+          <div v-else-if="developmentSyncStatus" class="shrink-0 border-b border-success/30 bg-success-subtle px-3 py-2 text-[12px] text-success" role="status" aria-live="polite" aria-atomic="true">
             {{ developmentSyncStatus }}
           </div>
-          <div v-if="developmentPreviewURL" class="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-surface">
+          <div v-if="developmentPreviewURL" class="relative min-h-[360px] flex-1 overflow-hidden bg-surface">
             <iframe
               ref="developmentPreviewFrameRef"
               :key="developmentPreviewFrameKey"
@@ -11985,7 +12072,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               title="Development preview"
               sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-scripts allow-same-origin"
 			  referrerpolicy="no-referrer"
-			  class="h-full min-h-[360px] w-full border-0 bg-surface"
+			  class="block h-full w-full border-0 bg-surface"
 			  @load="handleDevelopmentPreviewFrameLoad"
 			/>
 			<div
@@ -12063,11 +12150,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 				</div>
 			</div>
           </div>
-          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center rounded-lg border border-border-subtle bg-surface/80 p-6 text-center">
+          <div v-else class="flex min-h-[360px] flex-1 items-center justify-center bg-surface p-6 text-center">
             <div class="max-w-xs">
-              <div class="mx-auto flex h-10 w-10 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-                <AppWindow class="h-5 w-5 text-text-muted" :stroke-width="1.75" />
-              </div>
+              <AppWindow class="mx-auto h-5 w-5 text-text-muted" :stroke-width="1.75" aria-hidden="true" />
               <div class="mt-3 text-[13px] font-semibold text-text-primary">{{ developmentPreviewUnavailableTitle }}</div>
               <div class="mt-1 text-[12px] leading-5 text-text-muted">{{ developmentPreviewUnavailableMessage }}</div>
             </div>
@@ -12114,107 +12199,20 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <AIWorkbenchPane title="Review" description="Review requests that need your input.">
+        <AIWorkbenchPane title="Review requests" description="Approve actions or answer questions for this thread.">
+        <template #actions>
+          <span class="text-[12px] tabular-nums text-text-secondary" role="status">{{ pendingReviewLabel }}</span>
+        </template>
         <div class="grid gap-3">
-          <AIInterrupt
-            v-if="pendingFollowUp"
-            kind="follow-up"
-            :busy="followUpBusyState(pendingFollowUp.interrupt)"
-            title="Clarification needed"
-            :description="pendingFollowUp.interrupt.description || 'App Studio needs a little more information before continuing.'"
-            :error="followUpError(pendingFollowUp.interrupt) || ''"
-            aria-label="Clarification needed"
-          >
-            <div v-if="pendingFollowUp.interrupt.questions?.length" class="grid gap-3">
-              <div
-                v-for="question in followUpQuestions(pendingFollowUp.interrupt)"
-                :key="question.id"
-                class="rounded-xl border border-border-subtle bg-surface p-3"
-              >
-                <div v-if="question.header" class="text-[10px] font-semibold uppercase tracking-wide text-text-muted">{{ question.header }}</div>
-                <div class="mt-1 text-[12px] font-medium leading-5 text-text-primary">{{ question.question }}</div>
-                <div v-if="question.options?.length" class="mt-2 grid gap-2">
-                  <button
-                    v-for="option in question.options"
-                    :key="option.label"
-                    type="button"
-                    class="app-studio-touch-target rounded-md border px-3 py-2 text-left transition"
-                    :aria-pressed="followUpOptionSelected(pendingFollowUp.interrupt, question, option)"
-                    :class="followUpOptionSelected(pendingFollowUp.interrupt, question, option) ? 'border-accent bg-accent-subtle' : 'border-border-subtle bg-surface-raised hover:border-accent/40 hover:bg-surface-hover'"
-                    :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                    @click="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, option.label)"
-                  >
-                    <div class="text-[12px] font-medium text-text-primary">{{ option.label }}</div>
-                    <div class="mt-0.5 text-[11px] leading-4 text-text-secondary">{{ option.description }}</div>
-                  </button>
-                </div>
-                <input
-                  v-if="question.isOther !== false"
-                  class="app-studio-touch-target mt-2 h-9 w-full rounded-lg border border-border-subtle bg-surface-raised px-3 text-[12px] text-text-primary outline-none transition placeholder:text-text-muted focus:border-accent/50"
-                  :aria-label="`${question.header || 'Clarification'} other answer`"
-                  placeholder="Other..."
-                  :value="followUpAnswer(pendingFollowUp.interrupt, question)"
-                  :disabled="followUpBusyState(pendingFollowUp.interrupt)"
-                  @input="updateFollowUpAnswer(pendingFollowUp.interrupt, question.id, ($event.target as HTMLInputElement).value)"
-                />
-              </div>
-            </div>
-            <template #actions>
-              <button
-                type="button"
-                class="k-btn k-btn--primary"
-                :disabled="!pendingFollowUp.interrupt.action || followUpBusyState(pendingFollowUp.interrupt)"
-                title="Continue"
-                @click="submitFollowUpAnswer(pendingFollowUp.message, pendingFollowUp.interrupt)"
-              >
-                <Loader2 v-if="followUpBusyState(pendingFollowUp.interrupt)" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Continue
-              </button>
-            </template>
-          </AIInterrupt>
-          <AIInterrupt
-            v-else-if="pendingApproval"
-            kind="approval"
-            :busy="Boolean(permissionBusyState(pendingApproval.interrupt))"
-            :invalid="pendingApproval.interrupt.execDisclosureInvalid"
-            :error="permissionError(pendingApproval.interrupt) || (pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable, so allowing this request is disabled. Deny it and retry.' : '')"
-            title="Approval required"
-            :description="pendingApproval.interrupt.description || 'Review this action before it runs.'"
-            aria-label="Approval required"
-          >
-            <AssistantExecDetails
-              v-if="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-              :exec="pendingApproval.interrupt.action?.exec || pendingApproval.interrupt.exec"
-              variant="approval"
-            />
-            <template #actions>
-              <button
-                type="button"
-                class="k-btn k-btn--primary"
-                :disabled="!assistantInterruptAllowsApproval(pendingApproval.interrupt) || !!permissionBusyState(pendingApproval.interrupt)"
-                :title="pendingApproval.interrupt.execDisclosureInvalid ? 'Command details are unavailable; deny this request.' : 'Allow'"
-                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'allow')"
-              >
-                <Loader2 v-if="permissionBusyState(pendingApproval.interrupt) === 'allow'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <Check v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Allow
-              </button>
-              <button
-                type="button"
-                class="k-btn k-btn--ghost"
-                :disabled="!pendingApproval.interrupt.action || !!permissionBusyState(pendingApproval.interrupt)"
-                title="Deny"
-                @click="resolveToolPermission(pendingApproval.message, pendingApproval.interrupt, 'deny')"
-              >
-                <Loader2 v-if="permissionBusyState(pendingApproval.interrupt) === 'deny'" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <X v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-                Deny
-              </button>
-            </template>
-          </AIInterrupt>
+          <ReviewRequest
+            v-if="pendingReviewProps"
+            v-bind="pendingReviewProps"
+            @answer="updateFollowUpAnswer"
+            @submit="submitReviewRequest"
+            @decide="decideReviewRequest"
+          />
           <div v-else class="py-2 text-[12px] text-text-muted" role="status">
-            No reviews are waiting.
+            No requests are waiting for this thread.
           </div>
         </div>
         </AIWorkbenchPane>
@@ -12227,57 +12225,56 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         :id="workbenchTabPanelID(activeWorkbenchTab)"
         :aria-labelledby="workbenchTabControlID(activeWorkbenchTab)"
       >
-        <AIWorkbenchPane title="Providers" description="Open provider tools available in this workspace.">
-        <div class="relative min-w-0">
-          <Search class="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-text-muted" :stroke-width="1.75" />
+        <AIWorkbenchPane title="Providers" description="Open workspace tools in the workbench.">
+        <label class="k-ai-search k-ai-search--clearable">
+          <Search class="k-ai-search__icon" :stroke-width="1.75" aria-hidden="true" />
           <input
+            ref="providerSearchInput"
             v-model="providerQuery"
-            class="app-studio-touch-target k-input pl-8 pr-8"
-            placeholder="Search provider views..."
+            type="search"
+            class="k-input k-ai-search__input"
+            placeholder="Search provider views"
             aria-label="Search provider views"
           />
           <button
             v-if="providerQuery"
-            class="app-studio-touch-target absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-md text-text-muted hover:bg-surface-hover hover:text-text-primary"
-            title="Clear search"
-            @click="providerQuery = ''"
+            type="button"
+            class="app-studio-touch-target k-ai-search__clear"
+            aria-label="Clear provider search"
+            @click="clearProviderSearch"
           >
-            <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <X :stroke-width="1.75" aria-hidden="true" />
           </button>
-        </div>
-        <div v-if="providerCatalogError" class="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" :role="providerCatalogLoaded ? 'status' : 'alert'">
-          <span>{{ providerCatalogError }}</span>
-          <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadProviders">Retry</button>
-        </div>
-        <div v-if="providersLoading && !providerCatalogLoaded" class="flex min-h-40 items-center justify-center gap-2 rounded-lg border border-dashed border-border-subtle p-3 text-[13px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-          <Loader2 class="h-4 w-4 animate-spin" :stroke-width="1.75" />
-          Loading provider views...
-        </div>
-        <div v-else-if="providerCatalogLoaded || !providerCatalogError" class="grid gap-1.5">
-          <div v-if="providersLoading" class="flex items-center gap-2 rounded-lg border border-border-subtle bg-surface-overlay px-3 py-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true">
-            <Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" />
-            Updating provider catalog…
-          </div>
-          <button
-            v-for="tool in filteredProviderTools"
-            :key="tool.id"
-            class="app-studio-touch-target group flex min-h-[54px] w-full items-center gap-3 rounded-md border border-transparent px-2.5 py-2 text-left transition hover:border-border-subtle hover:bg-surface-hover"
-            @click="openTool(tool)"
-          >
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border-subtle bg-surface-overlay">
-              <img v-if="tool.iconURL" :src="tool.iconURL" alt="" class="h-5 w-5 object-contain" />
-              <Wrench v-else class="h-4 w-4 text-accent" :stroke-width="1.75" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-[13px] font-medium text-text-primary">{{ tool.title }}</div>
-              <div class="truncate text-[12px] text-text-muted">{{ tool.subtitle }}</div>
-            </div>
-            <PanelRight class="h-4 w-4 shrink-0 text-text-muted opacity-0 transition group-hover:opacity-100" :stroke-width="1.75" />
-          </button>
-          <div v-if="!providersLoading && filteredProviderTools.length === 0" class="p-4 text-center text-[13px] text-text-muted" role="status">
-            No provider views found.
-          </div>
-        </div>
+        </label>
+        <InlineNotification
+          v-if="providerCatalogError"
+          :tone="providerCatalogLoaded ? 'warning' : 'error'"
+          :message="providerCatalogError"
+          action-label="Retry"
+          :action-busy="providersLoading"
+          @action="loadProviders"
+        />
+        <p v-if="providersLoading" class="text-[12px] text-text-muted" role="status">
+          {{ providerCatalogLoaded ? 'Refreshing provider views…' : 'Loading provider views…' }}
+        </p>
+        <ul v-if="filteredProviderTools.length" class="k-ai-launcher--rows" aria-label="Provider views">
+          <li v-for="tool in filteredProviderTools" :key="tool.id">
+            <button type="button" class="app-studio-touch-target k-ai-launcher__card" @click="openTool(tool)">
+              <span class="k-ai-launcher__icon">
+                <img v-if="tool.iconURL" :src="tool.iconURL" alt="" />
+                <Wrench v-else :stroke-width="1.75" aria-hidden="true" />
+              </span>
+              <span class="k-ai-launcher__copy">
+                <strong>{{ tool.title }}</strong>
+                <small>{{ tool.subtitle }}</small>
+              </span>
+              <PanelRight :stroke-width="1.75" aria-hidden="true" />
+            </button>
+          </li>
+        </ul>
+        <p v-else-if="!providersLoading && !providerCatalogError" class="border-t border-border-subtle py-4 text-[12px] text-text-muted" role="status">
+          {{ providerQuery.trim() ? 'No provider views match your search.' : 'No provider views are available in this workspace.' }}
+        </p>
         </AIWorkbenchPane>
       </div>
 
@@ -12376,19 +12373,20 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
-        <header v-if="!publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute" :class="settingsInWorkbench ? 'k-ai-workbench-pane__header px-4 pt-4' : 'flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3'">
+        <header
+          v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"
+          class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3"
+        >
           <div class="min-w-0">
             <div class="flex items-center gap-2">
-              <Cpu v-if="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
-              <Settings2 v-else-if="!settingsInWorkbench" class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" />
-              <h2 :class="settingsInWorkbench ? 'k-ai-workbench-pane__title' : 'truncate text-[15px] font-semibold text-text-primary'">{{ settingsTitle }}</h2>
+              <Settings2 class="h-4 w-4 shrink-0 text-accent" :stroke-width="1.75" aria-hidden="true" />
+              <h2 class="truncate text-[15px] font-semibold text-text-primary">{{ settingsTitle }}</h2>
             </div>
             <p class="k-ai-workbench-pane__description">
               {{ settingsDescription }}
             </p>
           </div>
           <button
-            v-if="!settingsInWorkbench && !isModelsRoute && !isProviderConnectionsRoute && !isCreateModelRoute"
             type="button"
             class="app-studio-touch-target flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-muted transition hover:bg-surface-hover hover:text-text-primary"
             title="Close"
@@ -12398,19 +12396,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : isModelsRoute || isProviderConnectionsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 overflow-auto px-4 pb-4' : 'min-h-0 overflow-auto p-4'">
-          <div class="grid gap-4">
-          <div
+        <div :class="isCreateModelRoute ? '' : isModelsRoute || isProviderConnectionsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 overflow-auto p-4'">
+          <div :class="settingsInWorkbench ? 'flex h-full min-h-0 flex-col' : 'grid gap-4'">
+          <component
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
+            :is="settingsInWorkbench ? AIWorkbenchPane : 'section'"
             id="project-settings-pane-project"
             aria-label="Project settings"
-            class="grid gap-3"
+            :tabindex="settingsInWorkbench ? -1 : undefined"
+            :class="settingsInWorkbench ? undefined : 'grid gap-4'"
+            v-bind="settingsInWorkbench ? { title: settingsTitle, description: settingsDescription } : {}"
           >
-          <form class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" @submit.prevent="saveProjectSettings">
-            <div>
-              <h3 class="text-[13px] font-semibold text-text-primary">Project</h3>
-              <p class="mt-1 text-[12px] text-text-muted">Update the project name and description shown in App Studio.</p>
-            </div>
+          <AIWorkbenchSection title="Project" description="Update the project name and description shown in App Studio.">
+          <form class="grid gap-3" @submit.prevent="saveProjectSettings">
             <label class="grid gap-1.5">
               <span class="text-[12px] font-medium text-text-secondary">Name</span>
               <input
@@ -12446,6 +12444,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               </button>
             </div>
           </form>
+          </AIWorkbenchSection>
           <ProjectAuthentication
             v-if="settingsProject"
             :key="settingsProject.uid || settingsProject.name"
@@ -12456,23 +12455,22 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           />
           <GitConnectionSettings
             v-if="settingsProject" :key="settingsProject.name"
+            v-model:open="projectGitSettingsOpen"
             :ctx="props.ctx" :project="settingsProject"
             @connected="onProjectGitConnected"
+            @ready="onGitSettingsReady"
           />
-          <section
-            class="grid gap-4 rounded-lg border border-border-subtle bg-transparent p-3"
+          <AIWorkbenchSection
+            title="Development"
+            description="Configure the development runtime and who can access its preview."
             aria-label="Development settings"
           >
-            <div class="flex items-start gap-2.5">
-              <div class="min-w-0">
-                <h3 class="text-[13px] font-semibold text-text-primary">Development</h3>
-                <p class="mt-0.5 text-[12px] leading-5 text-text-muted">Configure the development runtime and who can access its preview.</p>
-              </div>
-            </div>
-            <section class="grid gap-3" aria-labelledby="development-template-heading">
-              <div>
-                <h4 id="development-template-heading" class="text-[12px] font-semibold text-text-primary">Template</h4>
-              </div>
+            <AIWorkbenchSection
+              title="Runtime template"
+              heading-id="development-template-heading"
+              disclosure
+              :summary="selectedDevelopmentTemplate?.displayName || selected?.template || 'Not selected'"
+            >
               <label class="grid max-w-sm gap-1.5">
                 <span class="text-[12px] font-medium text-text-secondary">Runtime template</span>
                 <span class="relative block">
@@ -12516,15 +12514,14 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               >
                 {{ developmentTemplateError || developmentTemplateStatus }}
               </div>
-            </section>
-            <section
+            </AIWorkbenchSection>
+            <AIWorkbenchSection
               v-if="developmentPreviewAccessConfigurable"
-              class="grid gap-3 border-t border-border-subtle pt-4"
-              aria-labelledby="development-preview-access-heading"
+              title="Preview access"
+              heading-id="development-preview-access-heading"
+              disclosure
+              :summary="developmentPreviewSettingsSummary"
             >
-              <div>
-                <h4 id="development-preview-access-heading" class="text-[12px] font-semibold text-text-primary">Preview access</h4>
-              </div>
               <label class="grid max-w-sm gap-1.5">
                 <span class="text-[12px] font-medium text-text-secondary">Visibility</span>
                 <span class="relative block">
@@ -12538,18 +12535,37 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                     :disabled="developmentPreviewAccessBusy || !developmentPreviewAccessConverged || messageStreaming"
                     @change="changeDevelopmentPreviewAccess(($event.target as HTMLSelectElement).value)"
                   >
-                    <option value="private">Workspace only</option>
+                    <option value="private">Restricted</option>
                     <option value="public">Anyone with link</option>
                   </select>
                   <ChevronRight class="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 rotate-90 text-text-muted" :stroke-width="1.75" />
                 </span>
               </label>
-              <p id="development-preview-access-hint" class="text-[12px] leading-5 text-text-muted">Workspace members can open a private preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
+              <p id="development-preview-access-hint" class="text-[12px] leading-5 text-text-muted">Workspace members and invited people can open a restricted preview. A public preview exposes the running app to anyone with its URL without granting project access.</p>
               <p v-if="developmentPreviewAccessBusy || !developmentPreviewAccessConverged" class="text-[11px] text-text-muted" role="status" aria-live="polite">Updating access…</p>
               <p v-if="developmentPreviewAccessError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] text-danger" role="alert">{{ developmentPreviewAccessError }}</p>
-            </section>
-          </section>
-          </div>
+            </AIWorkbenchSection>
+          </AIWorkbenchSection>
+          <AIWorkbenchSection
+            title="Delete project"
+            :description="selected?.repository?.ref
+              ? 'Remove this App Studio project without deleting its associated repository resource.'
+              : 'Remove this App Studio project. No Git repository contains an external copy of its source.'"
+          >
+            <template #actions>
+              <button
+                type="button"
+                class="k-btn k-btn--danger-solid"
+                :disabled="busy || isProjectDeleting(settingsProject)"
+                @click="requestDeleteProject(settingsProject)"
+              >
+                <Loader2 v-if="isProjectDeleting(settingsProject)" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
+                <Trash2 v-else class="h-4 w-4" :stroke-width="1.75" aria-hidden="true" />
+                {{ isProjectDeleting(settingsProject) ? 'Deleting…' : 'Delete project' }}
+              </button>
+            </template>
+          </AIWorkbenchSection>
+          </component>
 
           <AIWorkbenchPane
             title="Publishing"
@@ -12568,28 +12584,23 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                 {{ publishingRefreshBusy ? 'Refreshing…' : 'Refresh' }}
               </button>
             </template>
-            <section class="grid gap-4" aria-label="Production overview" :aria-busy="promotionLoading && !promotion">
-              <div class="flex min-w-0 items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <div class="flex items-center gap-2">
-                    <h3 class="text-[13px] font-semibold text-text-primary">Production</h3>
-                  </div>
-                  <p v-if="!promotion || promotionError || !selected?.repository?.ref" class="mt-1 max-w-2xl text-[13px] leading-5 text-text-secondary">{{ selected?.repository?.ref ? productionOverviewDescription : 'Build and preview without Git. Production publishing requires a connected repository, a Git commit, and a successful build.' }}</p>
-                  <button v-if="selected && !selected.repository?.ref" type="button" class="k-btn k-btn--primary mt-3" @click="openSettings">Connect Git</button>
-                </div>
+            <AIWorkbenchSection
+              title="Production"
+              :description="!selected?.repository?.ref
+                ? 'Build and preview without Git. Production publishing requires a connected repository, a Git commit, and a successful build.'
+                : !promotion || promotionError ? productionOverviewDescription : undefined"
+              :aria-busy="promotionLoading && !promotion"
+            >
+              <template #actions>
                 <StatusBadge :status="productionOverview.label" :tone="productionOverview.tone" />
-              </div>
+              </template>
+              <button v-if="selected && !selected.repository?.ref" type="button" class="k-btn k-btn--primary justify-self-start" @click="openGitSettings">Connect Git</button>
 
               <ProductionSettingsLoadingShell v-if="promotionLoading && !promotion" />
-              <template v-else>
-                <div v-if="!promotion && promotionError" class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-                  <div>{{ promotionError }}</div>
-                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-                </div>
-                <template v-else-if="promotion">
+              <template v-else-if="promotion">
                   <ReleasePipeline
                     :pipeline="releasePipeline"
-                    :hide-summary="releasePipeline.state === 'ready' && Boolean(latestDeployableRelease && (!productionBinding || !latestDeployableRelease.live))"
+                    :hide-summary="releasePipeline.state === 'ready' && productionReleaseReadyForDeploy"
                     :taking-longer="releaseTakingLonger"
                     :needs-attention="releaseArtifactNeedsAttention"
                     :refreshing="publishingRefreshBusy"
@@ -12598,18 +12609,19 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
                   <section
                     v-if="latestDeployableRelease && (!productionBinding || !latestDeployableRelease.live)"
-                    class="grid gap-5 border-y border-border-subtle py-5 lg:grid-cols-[minmax(0,1fr)_260px]"
+                    class="publishing-release grid gap-x-6 gap-y-4 border-y border-border-subtle py-5"
+                    :class="{ 'publishing-release--reviewing': productionDeployReviewRelease }"
                     aria-label="Release ready for production"
                   >
                     <div class="min-w-0">
-                      <div class="flex items-center gap-2 text-[12px] font-semibold text-success">
-                        <Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
-                        Verified release
-                      </div>
-                      <h4 class="mt-2 text-[18px] font-semibold leading-6 text-text-primary" aria-live="polite">
+                      <h4 class="text-[18px] font-semibold leading-6 text-text-primary" aria-live="polite">
                         {{ productionBinding ? 'Ready to update production to' : 'Ready to deploy' }}
                         <code class="font-mono text-[16px] font-medium text-text-primary">{{ productionReleaseSHA }}</code>
                       </h4>
+                      <div class="mt-1 flex items-center gap-2 text-[12px] font-semibold text-success">
+                        <Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
+                        Verified release
+                      </div>
                       <p class="mt-2 max-w-xl text-[13px] leading-5 text-text-secondary">
                         {{ productionBinding
                           ? 'Current production stays online until this exact release is observed. Its access policy will not change.'
@@ -12620,9 +12632,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         <div
                           v-for="component in latestDeployableRelease.components ?? []"
                           :key="component.name"
-                          class="flex min-w-0 items-center justify-between gap-3 py-2.5 text-[12px]"
+                          class="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 py-2.5 text-[12px]"
                         >
-                          <span class="min-w-0 truncate font-medium text-text-primary">{{ component.name }}</span>
+                          <span class="min-w-0 wrap-anywhere font-medium text-text-primary">{{ component.name }}</span>
                           <span class="inline-flex shrink-0 items-center gap-1.5 text-success"><Check class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />Image verified</span>
                         </div>
                         <div v-if="!(latestDeployableRelease.components?.length)" class="flex items-center justify-between gap-3 py-2.5 text-[12px]">
@@ -12630,24 +12642,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                           <span class="font-mono text-success">{{ releasePipeline.builtCount }} of {{ releasePipeline.totalCount }} verified</span>
                         </div>
                       </div>
-
-                      <div class="mt-5 flex flex-wrap items-center gap-3">
-                        <button
-                          ref="productionDeployButtonRef"
-                          type="button"
-                          class="k-btn k-btn--primary"
-                          :disabled="!canPromoteLatestRelease"
-                          @click="openProductionDeployReview(latestDeployableRelease)"
-                        >
-                          <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
-                          {{ promotionBusy ? 'Deploying…' : `Deploy ${productionReleaseSHA}` }}
-                        </button>
-                        <span class="text-[12px] text-text-secondary">{{ productionBinding ? 'Production update' : 'First production deployment' }}</span>
-                      </div>
-                      <p v-if="currentBuildActionDisabledReason" class="mt-2 text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
                     </div>
 
-                    <aside class="border-t border-border-subtle pt-4 lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0" aria-label="Deployment consequences">
+                    <aside class="publishing-release__consequences min-w-0 border-t border-border-subtle pt-4" aria-label="Deployment consequences">
                       <h4 class="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">What will happen</h4>
                       <dl class="mt-3 divide-y divide-border-subtle">
                         <div class="py-3 first:pt-0">
@@ -12668,6 +12665,22 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                         </div>
                       </dl>
                     </aside>
+                    <div v-show="!productionDeployReviewRelease" class="min-w-0">
+                      <div class="flex flex-wrap items-center gap-3">
+                        <button
+                          ref="productionDeployButtonRef"
+                          type="button"
+                          class="k-btn k-btn--primary"
+                          :disabled="!canPromoteLatestRelease"
+                          @click="openProductionDeployReview(latestDeployableRelease)"
+                        >
+                          <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                          {{ promotionBusy ? 'Deploying…' : `Deploy ${productionReleaseSHA}` }}
+                        </button>
+                        <span class="text-[12px] text-text-secondary">{{ productionBinding ? 'Production update' : 'First production deployment' }}</span>
+                      </div>
+                      <p v-if="currentBuildActionDisabledReason" class="mt-2 text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
+                    </div>
                   </section>
 
                   <section
@@ -12683,14 +12696,15 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                           : 'This creates the production runtime with invite-only access. Development remains online.' }}
                       </p>
                     </div>
-                    <dl class="grid overflow-hidden border border-border-subtle sm:grid-cols-3">
-                      <div class="bg-surface p-3 sm:border-r sm:border-border-subtle"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Release</dt><dd class="mt-1 font-mono text-[12px] font-medium text-text-primary">{{ productionDeployReviewSHA }}</dd></div>
-                      <div class="border-t border-border-subtle bg-surface p-3 sm:border-r sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Runtime</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionSettingsSummary }}</dd></div>
-                      <div class="border-t border-border-subtle bg-surface p-3 sm:border-t-0"><dt class="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">Access</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionBinding ? 'Policy unchanged' : 'Invite-only after deploy' }}</dd></div>
+                    <dl class="publishing-review-facts grid gap-x-5 gap-y-3 border-y border-border-subtle py-3">
+                      <div class="min-w-0"><dt class="text-[11px] font-semibold text-text-secondary">Release</dt><dd :title="productionDeployReviewRelease.commitSHA" class="mt-1 font-mono text-[12px] font-medium text-text-primary">{{ productionDeployReviewSHA }}</dd></div>
+                      <div class="min-w-0"><dt class="text-[11px] font-semibold text-text-secondary">Runtime</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionSettingsSummary }}</dd></div>
+                      <div class="min-w-0"><dt class="text-[11px] font-semibold text-text-secondary">Access</dt><dd class="mt-1 text-[12px] font-medium text-text-primary">{{ productionBinding ? 'Policy unchanged' : 'Invite-only after deploy' }}</dd></div>
                     </dl>
+                    <p v-if="!canPromoteRelease(productionDeployReviewRelease) && currentBuildActionDisabledReason" class="text-[12px] leading-5 text-text-secondary" role="status">{{ currentBuildActionDisabledReason }}</p>
                     <div class="flex flex-wrap justify-end gap-2">
                       <button type="button" class="k-btn k-btn--ghost" @click="closeProductionDeployReview">Cancel</button>
-                      <button ref="productionDeployConfirmRef" type="button" class="k-btn k-btn--primary" @click="confirmProductionDeploy">
+                      <button ref="productionDeployConfirmRef" type="button" class="k-btn k-btn--primary" :disabled="!canPromoteRelease(productionDeployReviewRelease)" @click="confirmProductionDeploy">
                         Deploy release
                       </button>
                     </div>
@@ -12716,7 +12730,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       </div>
                     </div>
                   </div>
-                  <div v-else class="grid gap-3 border-t border-border-subtle pt-4">
+                  <div v-else-if="publishing?.published || (productionDeployment.ready && publishing)" class="grid gap-3 border-t border-border-subtle pt-4">
                     <div v-if="publishing?.published" class="grid gap-2">
                       <div class="flex flex-wrap items-center justify-between gap-2">
                         <div>
@@ -12729,93 +12743,89 @@ function isMissingCodeConnectionError(value: string | null): boolean {
                       <div class="flex flex-wrap justify-end gap-2"><button type="button" class="k-btn k-btn--ghost" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Manage sharing</button></div>
                     </div>
                     <div v-else-if="productionDeployment.ready && publishing && !publishing.published" class="flex flex-wrap items-center gap-3">
-                      <button type="button" class="k-btn k-btn--primary" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Set up sharing</button>
+                      <button type="button" class="k-btn" :class="productionReleaseReadyForDeploy ? 'k-btn--ghost' : 'k-btn--primary'" @click="openShareDialog"><Users class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />Set up sharing</button>
                       <p class="text-[12px] leading-5 text-text-secondary">App sign-in is managed in Railgrid Auth.</p>
                     </div>
                   </div>
                   <div v-if="publishingActionError" class="rounded-lg border border-danger/30 bg-danger-subtle px-3 py-2 text-[12px] leading-5 text-danger" role="alert">{{ publishingActionError }}</div>
-                </template>
-                <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
-                  <div>Production status is unavailable. Refresh to retry.</div>
-                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-                </div>
+                  <div v-if="promotionFeedback" role="status" aria-live="polite" class="wrap-anywhere text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'text-success' : 'text-warning'">{{ promotionFeedback.message }}</div>
               </template>
-            </section>
+              <div v-else class="flex min-h-[190px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-4 text-[12px] text-danger" role="alert">
+                <div>{{ promotionError || 'Production status is unavailable. Refresh to retry.' }}</div>
+                <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+              </div>
+            </AIWorkbenchSection>
 
-            <section v-if="!promotionLoading || promotion" class="rounded-lg border border-border-subtle bg-transparent" aria-label="Deployment configuration">
-              <button
-                type="button"
-                class="app-studio-touch-target flex w-full items-start justify-between gap-4 p-3 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-                :aria-expanded="productionSettingsOpen"
-                aria-controls="production-settings-body"
-                @click="productionSettingsOpen = !productionSettingsOpen"
-              >
-                <span class="flex min-w-0 items-start gap-2">
-                  <span class="min-w-0"><span class="block text-[13px] font-semibold text-text-primary">Deployment configuration</span><span class="mt-1 block text-[12px] leading-4 text-text-secondary">{{ productionSettingsSummary }}</span></span>
-                </span>
-                <span class="text-[11px] text-text-muted">{{ productionSettingsOpen ? 'Hide' : 'Show' }}</span>
-              </button>
-              <div id="production-settings-body" v-show="productionSettingsOpen" class="grid gap-3 border-t border-border-subtle p-3">
-                <p class="text-[12px] leading-5 text-text-secondary">Choose how the production app runs. Sharing and sign-in are managed separately.</p>
-                <div v-if="currentProductionRelease" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-secondary" aria-label="Current production release">
-                  <span class="font-semibold uppercase tracking-wide">Current production release</span>
-                  <code class="font-mono text-text-primary">{{ shortReleaseSHA(currentProductionRelease.commitSHA) }}</code>
-                </div>
-                <ProductionForm
-                  v-if="promotion"
-                  :schema="promotion?.productionSchema ?? null"
-                  :values="promotionValues"
-                  :image-inputs="(promotion?.build.components ?? []).map(component => component.imageInput).filter(Boolean)"
-                  :disabled="promotionBusy || !promotion?.productionSchema"
-                  :immutable-paths="promotion?.immutableProductionInputs ?? []"
-                  :existing-production="Boolean(productionBinding)"
-                  @update:values="updateProductionForm"
-                  @validity="productionFormValid = $event"
-                />
-                <div v-if="promotion" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
-                  <p class="text-[12px] leading-5 text-text-secondary">{{ productionBinding ? 'Saving configuration redeploys the current release. Access does not change.' : 'These values will be reviewed and applied with the first deployment.' }}</p>
-                  <button
-                    v-if="productionBinding"
-                    type="button"
-                    class="k-btn k-btn--ghost"
-                    :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
-                    @click="redeployCurrentProduction"
-                  >
-                    <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
-                    {{ promotionBusy ? 'Redeploying…' : 'Save configuration and redeploy' }}
-                  </button>
-                </div>
-                <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[12px] leading-5 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
-                <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
-                  <div>Production configuration is unavailable. Refresh to retry.</div>
-                  <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
-                </div>
+            <AIWorkbenchSection
+              v-if="!promotionLoading || promotion"
+              v-model:open="productionSettingsOpen"
+              title="Deployment configuration"
+              description="Choose how the production app runs. Manage sharing and sign-in separately."
+              :summary="productionConfigurationDisclosureSummary"
+              disclosure
+            >
+              <div v-if="currentProductionRelease" class="flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border-subtle py-2 text-[11px] text-text-secondary" aria-label="Current production release">
+                <span class="font-semibold uppercase tracking-wide">Current production release</span>
+                <code class="font-mono text-text-primary">{{ shortReleaseSHA(currentProductionRelease.commitSHA) }}</code>
               </div>
-            </section>
-            <section class="grid gap-3 rounded-lg border border-border-subtle bg-transparent p-3" aria-label="Technical details">
-              <button type="button" class="app-studio-touch-target flex w-full items-center justify-between gap-2 text-left" :aria-expanded="productionTechnicalOpen" @click="productionTechnicalOpen = !productionTechnicalOpen">
-                <span class="flex items-center gap-2 text-[13px] font-semibold text-text-primary">Technical details</span>
-                <span class="text-[11px] text-text-muted">{{ productionTechnicalOpen ? 'Hide' : 'Show' }}</span>
-              </button>
-              <div v-if="productionTechnicalOpen" class="grid min-w-0 gap-3 border-t border-border-subtle pt-3">
+              <ProductionForm
+                v-if="promotion"
+                :schema="promotion?.productionSchema ?? null"
+                :values="promotionValues"
+                :image-inputs="(promotion?.build.components ?? []).map(component => component.imageInput).filter(Boolean)"
+                :disabled="promotionBusy || !promotion?.productionSchema"
+                :immutable-paths="promotion?.immutableProductionInputs ?? []"
+                :existing-production="Boolean(productionBinding)"
+                @update:values="updateProductionForm"
+                @validity="productionFormValid = $event"
+              />
+              <div v-if="promotion" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-3">
+                <p class="text-[12px] leading-5 text-text-secondary">{{ productionBinding ? 'Saving configuration redeploys the current release. Access does not change.' : 'These values will be reviewed and applied with the first deployment.' }}</p>
+                <button
+                  v-if="productionBinding"
+                  type="button"
+                  class="k-btn k-btn--ghost"
+                  :disabled="promotionBusy || !promotionValuesDirty || !canRedeployCurrentProduction"
+                  @click="redeployCurrentProduction"
+                >
+                  <Loader2 v-if="promotionBusy" class="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" :stroke-width="1.75" aria-hidden="true" />
+                  {{ promotionBusy ? 'Redeploying…' : 'Save configuration and redeploy' }}
+                </button>
+              </div>
+              <p v-if="promotion && promotionValuesDirty && productionBinding && !canRedeployCurrentProduction" class="text-[12px] leading-5 text-text-secondary" role="status">{{ productionSettingsActionDisabledReason }}</p>
+              <div v-if="!promotion" class="flex min-h-[180px] flex-col items-start justify-center gap-2 rounded-lg border border-danger/30 bg-danger-subtle p-3 text-[12px] text-danger" role="alert">
+                <div>Production configuration is unavailable. Refresh to retry.</div>
+                <button type="button" class="app-studio-touch-target font-medium underline underline-offset-2" @click="loadPromotion">Retry</button>
+              </div>
+            </AIWorkbenchSection>
+            <AIWorkbenchSection
+              v-model:open="productionTechnicalOpen"
+              title="Technical details"
+              :summary="productionRolloutSummary"
+              disclosure
+            >
+              <dl class="grid gap-2 text-[12px]">
+                <div class="publishing-technical-row grid gap-1"><dt class="text-text-muted">Requested rollout</dt><dd class="wrap-anywhere font-mono">{{ releasePipeline.requestedRevision || 'Not requested' }}</dd></div>
+                <div class="publishing-technical-row grid gap-1"><dt class="text-text-muted">Observed rollout</dt><dd class="wrap-anywhere font-mono">{{ releasePipeline.observedRevision || 'Not observed' }}</dd></div>
+              </dl>
+              <div class="grid gap-2">
+                <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project and preview</div>
                 <dl class="grid gap-2 text-[12px]">
-                  <div class="grid gap-1 sm:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Requested rollout</dt><dd class="break-all font-mono">{{ releasePipeline.requestedRevision || 'Not requested' }}</dd></div>
-                  <div class="grid gap-1 sm:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Observed rollout</dt><dd class="break-all font-mono">{{ releasePipeline.observedRevision || 'Not observed' }}</dd></div>
+                  <div class="publishing-technical-row grid gap-1"><dt class="text-text-muted">Project</dt><dd class="wrap-anywhere font-medium text-text-primary">{{ productionProjectName || 'No project selected' }}</dd></div>
+                  <div class="publishing-technical-row grid gap-1"><dt class="text-text-muted">Development preview</dt><dd class="wrap-anywhere text-text-primary">{{ productionSummaryTarget }}</dd></div>
+                  <div class="publishing-technical-row grid gap-1"><dt class="text-text-muted">Suggested domain</dt><dd class="wrap-anywhere font-mono text-text-primary">{{ productionDefaultDomain }}</dd></div>
                 </dl>
-                <div class="grid gap-2">
-                  <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Project and preview</div>
-                  <dl class="grid gap-2 text-[12px]">
-                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Project</dt><dd class="font-medium text-text-primary">{{ productionProjectName || 'No project selected' }}</dd></div>
-                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Development preview</dt><dd class="truncate text-text-primary">{{ productionSummaryTarget }}</dd></div>
-                    <div class="grid gap-1 md:grid-cols-[150px_minmax(0,1fr)]"><dt class="text-text-muted">Suggested domain</dt><dd class="font-mono text-text-primary">{{ productionDefaultDomain }}</dd></div>
-                  </dl>
-                  <p class="text-[12px] leading-5 text-text-muted">The authoritative production URL appears above only after the publication reports Ready.</p>
-                </div>
-                <div v-if="productionBinding" class="grid gap-2"><div class="flex flex-wrap items-center justify-between gap-2"><div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div><span class="font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span></div><pre class="max-h-56 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[12px] leading-5 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre></div>
-                <div v-if="promotionFeedback" role="status" aria-live="polite" class="rounded-lg border px-3 py-2 text-[12px] leading-5" :class="promotionFeedback.tone === 'success' ? 'border-success/30 bg-success-subtle text-success' : 'border-warning/30 bg-warning-subtle text-warning'">{{ promotionFeedback.message }}</div>
-                <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[12px] leading-5 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p></div>
+                <p class="text-[12px] leading-5 text-text-muted">The authoritative production URL appears above only after the publication reports Ready.</p>
               </div>
-            </section>
+              <div v-if="productionBinding" class="grid min-w-0 gap-2">
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <div class="text-[11px] font-semibold uppercase tracking-wide text-text-muted">Provider binding</div>
+                  <span class="min-w-0 wrap-anywhere font-mono text-[11px] text-text-muted">Revision {{ promotion?.observedRolloutRevision || 'not observed' }}</span>
+                </div>
+                <pre class="max-h-56 min-w-0 overflow-auto rounded-lg border border-border-subtle bg-surface-overlay p-2.5 font-mono text-[12px] leading-5 text-text-secondary">{{ JSON.stringify(productionBinding, null, 2) }}</pre>
+              </div>
+              <div class="flex flex-wrap items-center justify-between gap-2 border-t border-border-subtle pt-2"><p class="text-[12px] leading-5 text-text-muted">Redeploy updates the production deployment only. It does not publish or change access.</p></div>
+            </AIWorkbenchSection>
             <p class="text-[12px] leading-5 text-text-muted">Your development instance keeps running while production is deployed and published.</p>
           </AIWorkbenchPane>
 
@@ -12826,7 +12836,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             aria-label="History"
             class="grid gap-3 outline-none"
           >
-            <button v-if="!selected?.repository?.ref" type="button" class="k-btn k-btn--ghost mb-3" @click="openSettings">Connect Git in project settings</button>
             <ProjectHistory
               :repository-ref="selected?.repository?.ref"
               :repository-status="selected?.repository?.status"
@@ -12842,7 +12851,11 @@ function isMissingCodeConnectionError(value: string | null): boolean {
               @select="selectedHistoryCommitSHA = $event"
               @refresh="refreshProjectHistory"
               @restore="restoreProjectHistory"
-            />
+            >
+              <template #connect>
+                <button type="button" class="k-btn k-btn--ghost justify-self-start" @click="openGitSettings">Connect Git in project settings</button>
+              </template>
+            </ProjectHistory>
           </section>
 
           <ModelsSettings
@@ -12908,25 +12921,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @update:reasoning-effort="updateLLMReasoningEffort"
           />
 
-          <footer v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench" class="flex flex-wrap items-center justify-between gap-3 border-t border-border-subtle pt-4">
-            <div class="min-w-0">
-              <div class="text-[12px] font-medium text-text-primary">Delete project</div>
-              <p class="mt-1 text-[12px] text-text-muted">
-                {{ selected?.repository?.ref ? 'Remove this App Studio project without deleting its associated repository resource.' : 'Remove this App Studio project. No Git repository contains an external copy of its source.' }}
-              </p>
-            </div>
-            <button
-              type="button"
-              class="k-btn k-btn--danger-solid"
-              title="Delete project"
-              :disabled="busy || isProjectDeleting(settingsProject)"
-              @click="requestDeleteProject(settingsProject)"
-            >
-              <Loader2 v-if="isProjectDeleting(settingsProject)" class="h-4 w-4 animate-spin" :stroke-width="1.75" aria-hidden="true" />
-              <Trash2 v-else class="h-4 w-4" :stroke-width="1.75" />
-              {{ isProjectDeleting(settingsProject) ? 'Deleting…' : 'Delete project' }}
-            </button>
-          </footer>
           </div>
         </div>
       </div>
@@ -12953,9 +12947,10 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     :preview-saved-mode="previewAccess?.mode === 'public' ? 'public' : 'restricted'"
     :preview-url="previewAccess?.url ?? ''"
     :preview-supported="Boolean(previewAccess?.supported)"
+    :preview-unverified="previewAccessUnverified"
     :preview-converged="previewAccess?.converged !== false"
     :preview-grants="previewAccess?.grants ?? []"
-    :busy="publishingActionBusy"
+    :busy="publishingActionBusy || developmentPreviewAccessBusy"
     :busy-action="publishingBusyAction"
     :busy-target="publishingBusyTarget ?? undefined"
     :loading="publishingLoadState === 'loading'"
@@ -12979,6 +12974,39 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 </template>
 
 <style scoped>
+.app-studio-workbench { container: app-studio-workbench / inline-size; }
+
+@container app-studio-workbench (max-width: 30rem) {
+  .app-studio-workbench-header { flex-wrap: wrap; row-gap: 4px; padding-block: 4px; }
+  .app-studio-workbench-header__actions { flex-basis: 100%; justify-content: flex-end; }
+}
+
+@container app-studio-workbench (max-width: 21rem) {
+  /* Keep the native scroll viewport usable when there is little room for tab chrome. */
+  .app-studio-workbench-header { --k-workbench-tabs-scroll-control-display: none; }
+  .app-studio-workbench-header__grip { display: none; }
+}
+
+@container ai-workbench-pane (min-width: 36rem) {
+  .publishing-review-facts { grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr); }
+}
+
+@container ai-workbench-pane (min-width: 28rem) {
+  .publishing-technical-row { grid-template-columns: 9.375rem minmax(0, 1fr); }
+}
+
+@container ai-workbench-pane (min-width: 42rem) {
+  .publishing-release { grid-template-columns: minmax(0, 1fr) minmax(0, 15rem); }
+  .publishing-release__consequences {
+    grid-area: 1 / 2 / span 2;
+    border-block-start-width: 0;
+    border-inline-start: 1px solid var(--color-border-subtle);
+    padding-block-start: 0;
+    padding-inline-start: 16px;
+  }
+  .publishing-release--reviewing .publishing-release__consequences { grid-row-end: auto; }
+}
+
 .app-studio-starter-prompts { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
 @media (hover: none), (any-pointer: coarse) {
   [data-app-studio-titlebar] { gap: 4px; }

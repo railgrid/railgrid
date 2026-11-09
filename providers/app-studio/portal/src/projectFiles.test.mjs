@@ -208,7 +208,7 @@ test('code explorer wires upload, drop, new file, delete, download, and binary p
   assert.match(source, /projectFileFailureMessage\(retryError, `Could not upload/)
   assert.match(source, /api\.fetchProjectFileRaw\(requestContext, projectName, path, \{ download: true \}\)[\s\S]*URL\.createObjectURL\(blob\)/)
   assert.match(source, /URL\.revokeObjectURL\(preview\.value\.url\)/)
-  assert.match(source, /onBeforeUnmount\(releasePreview\)/)
+  assert.match(source, /onBeforeUnmount\(\(\) => \{\s*paneResizeObserver\?\.disconnect\(\)\s*releasePreview\(\)\s*\}\)/)
   assert.match(source, /projectFileSizeError\(file\)/)
   assert.doesNotMatch(source, /props\.assistantBusy/)
   assert.match(source, /No preview for this file type\./)

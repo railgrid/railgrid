@@ -359,6 +359,8 @@ function friendlyError(error: unknown, fallback: string): string {
     </div>
 
     <AISkillCatalogList
+      variant="workbench"
+      title="Installed skills"
       :skills="localSkills"
       :query="query"
       :selected-id="selectedSkillID"

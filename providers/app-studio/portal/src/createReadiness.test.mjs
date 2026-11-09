@@ -41,7 +41,7 @@ test('new-project route has one setup surface and a stable wizard entry label', 
   assert.match(appSource, /function openSettings\(\)[\s\S]*openModelsSection\(\)/)
   assert.equal(appSource.includes('error.value = gitConnectionCreateReady.value ? null : createReadinessError.value || createPromptBlockedMessage(createReadiness.value)'), false)
   assert.match(appSource, /if \(llmConfigured\.value\) return true\s+error\.value = null\s+return false/)
-  assert.match(appSource, />\s*Continue\s*</)
+  assert.match(appSource, />\s*Continue without Git\s*</)
 })
 
 test('new-project stream explicitly authorizes development-template inference when no template is selected', () => {

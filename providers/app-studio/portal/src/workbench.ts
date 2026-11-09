@@ -59,7 +59,8 @@ const builtInTabs: Record<WorkbenchBuiltInTab, WorkbenchTabDescriptor> = {
   review: {
     id: 'review',
     kind: 'review',
-    title: 'Review',
+    title: 'Review requests',
+    subtitle: 'Respond to assistant approvals and questions',
     closeable: true,
   },
   providers: {

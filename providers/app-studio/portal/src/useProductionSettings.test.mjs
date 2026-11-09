@@ -57,6 +57,19 @@ test('separates ready publication evidence from URL availability', () => {
   assert.equal(state.productionURL.value, 'https://example.test')
 })
 
+test('shows deployment in progress while the last failed rollout is superseded', () => {
+  const { input, state } = setup()
+  input.promotion.value = readiness({
+    production: { phase: 'Failed' },
+    requestedRolloutRevision: 'retry',
+    observedRolloutRevision: 'previous',
+  })
+  assert.deepEqual(state.productionOverview.value, { label: 'Deploying', tone: 'warning' })
+
+  input.promotion.value.observedRolloutRevision = 'retry'
+  assert.deepEqual(state.productionOverview.value, { label: 'Failed', tone: 'danger' })
+})
+
 test('centralizes promotion validity and busy-state presentation', () => {
   const { input, state } = setup()
   input.promotion.value = readiness()

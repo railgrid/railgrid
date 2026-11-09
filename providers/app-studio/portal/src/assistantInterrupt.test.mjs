@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import vue from '@vitejs/plugin-vue'
 import { createServer } from 'vite'
+import { createSSRApp } from 'vue'
+import { renderToString } from 'vue/server-renderer'
 
-const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-assistant-interrupt', configFile: false, server: { middlewareMode: true } })
+const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-assistant-interrupt', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
 const interrupt = await vite.ssrLoadModule('/src/assistantInterrupt.ts')
 test.after(async () => vite.close())
 
@@ -62,4 +65,21 @@ test('rejects malformed approval envelopes while preserving strict outer validat
   assert.equal(interrupt.parseAssistantInterrupt({ ...approval(), action: { ...approval().action, extra: 'raw' } }), undefined)
   assert.equal(interrupt.parseAssistantInterrupt({ ...approval(), rawArguments: 'secret' }), undefined)
   assert.equal(interrupt.assistantInterruptAllowsApproval(undefined), false)
+})
+
+test('shared request surface keeps the fail-closed approval and follow-up state', async () => {
+  const { default: ReviewRequest } = await vite.ssrLoadModule('/src/ReviewRequest.vue')
+  const render = props => renderToString(createSSRApp(ReviewRequest, props))
+  const invalid = interrupt.parseAssistantInterrupt(approval({ ...disclosure, argv: [''] }))
+  const deniedOnly = await render({ interrupt: invalid })
+  assert.match(deniedOnly, /role="alert"[^>]*>[\s\S]*?Command details are unavailable/)
+  assert.match(deniedOnly, /<button[^>]*disabled[^>]*title="Command details are unavailable; deny this request\."/)
+  assert.doesNotMatch(deniedOnly, /<button[^>]*k-btn--ghost[^>]*disabled/)
+
+  const question = { id: 'choice', question: 'Which report?', options: [{ label: 'Daily', description: '' }] }
+  const followUp = await render({ interrupt: { ...approval(), kind: 'follow_up' }, questions: [question], answers: { choice: 'Daily' } })
+  assert.match(followUp, /Clarification needed/)
+  assert.match(followUp, /aria-pressed="true"/)
+  assert.match(followUp, /value="Daily"/)
+  assert.match(followUp, /Continue/)
 })

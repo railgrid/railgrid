@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
@@ -49,4 +50,9 @@ test('successful Git status refers to the latest commit snapshot only', async ()
   } }))
 
   assert.match(html, /Latest Git save succeeded\. Newer App Studio changes may not be in Git\./)
+})
+
+test('keeps repository errors visible when the Git disclosure is closed', async () => {
+  const source = await readFile(new URL('./GitConnectionSettings.vue', import.meta.url), 'utf8')
+  assert.match(source, /<\/AIWorkbenchSection>\s*<p v-if="error" role="alert"/)
 })

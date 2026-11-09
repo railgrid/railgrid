@@ -20,16 +20,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gorilla/mux"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/client-go/dynamic/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	aiv1alpha1 "github.com/railgrid/provider-app-studio/apis/ai/v1alpha1"
+	asclient "github.com/railgrid/provider-app-studio/client"
 )
 
 func applicationTemplateForPromote() projectTemplateInfo {
@@ -515,6 +523,116 @@ func TestProjectObservedRedeployRevisionReadsProviderInstanceSpec(t *testing.T) 
 	}
 	if got := projectObservedRedeployRevision(nil); got != "" {
 		t.Fatalf("nil instance revision = %q, want empty", got)
+	}
+}
+
+func TestProjectObservedRedeployRevisionRequiresCurrentInstanceStatus(t *testing.T) {
+	const revision = "rollout-new"
+	for _, tc := range []struct {
+		name   string
+		status map[string]any
+		want   string
+	}{
+		{name: "no observation"},
+		{name: "prior generation", status: map[string]any{"observedGeneration": int64(1), "observedRolloutRevision": revision}},
+		{name: "legacy infrastructure", status: map[string]any{"observedGeneration": int64(2)}, want: revision},
+		{name: "runtime still pending", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": ""}},
+		{name: "old rollout", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": "rollout-old"}},
+		{name: "current rollout", status: map[string]any{"observedGeneration": int64(2), "observedRolloutRevision": revision}, want: revision},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			instance := &unstructured.Unstructured{Object: map[string]any{
+				"kind":     "Instance",
+				"metadata": map[string]any{"generation": int64(2)},
+				"spec":     map[string]any{"values": map[string]any{projectRedeployRevisionField: revision}},
+			}}
+			if tc.status != nil {
+				instance.Object["status"] = tc.status
+			}
+			if got := projectObservedRedeployRevision(instance); got != tc.want {
+				t.Fatalf("observed rollout revision = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGetProjectPromotionReportsRolloutStatus(t *testing.T) {
+	const revision = "rollout-new"
+	instanceResource := schema.GroupResource{Group: "infrastructure.railgrid.ai", Resource: "instances"}
+	instance := func(phase, observedPhase, observedRevision string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]any{
+			"kind":     "Instance",
+			"metadata": map[string]any{"generation": int64(2)},
+			"spec":     map[string]any{"values": map[string]any{projectRedeployRevisionField: revision}},
+			"status": map[string]any{
+				"observedGeneration":      int64(2),
+				"phase":                   phase,
+				"observedRolloutPhase":    observedPhase,
+				"observedRolloutRevision": observedRevision,
+			},
+		}}
+	}
+	for _, tc := range []struct {
+		name                 string
+		obj                  runtime.Object
+		err                  error
+		code                 int
+		wantPhase            string
+		wantObservedRevision string
+	}{
+		{name: "old phase while runtime is pending", obj: instance("Failed", "", ""), code: http.StatusOK, wantPhase: "Failed"},
+		{name: "observed Ready overrides generic Failed", obj: instance("Failed", "Ready", revision), code: http.StatusOK, wantPhase: "Ready", wantObservedRevision: revision},
+		{name: "observed Failed overrides generic Ready", obj: instance("Ready", "Failed", revision), code: http.StatusOK, wantPhase: "Failed", wantObservedRevision: revision},
+		{name: "new instance not yet created", err: apierrors.NewNotFound(instanceResource, "shop-prod"), code: http.StatusOK, wantPhase: "Pending"},
+		{name: "instance observation unavailable", err: apierrors.NewServiceUnavailable("instance read unavailable"), code: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			project := projectForPromote("shop")
+			upsertProjectProductionBinding(project, aiv1alpha1.ProjectProviderBindingSpec{
+				Name: projectProductionBindingName,
+				Kind: aiv1alpha1.ProjectBindingKindProviderResource,
+				ResourceRef: &aiv1alpha1.ProjectProviderResourceReference{
+					APIVersion: "infrastructure.railgrid.ai/v1alpha1", Resource: "instances", Kind: "Instance", Name: "shop-prod",
+				},
+				Values: rawJSON(t, map[string]any{projectRedeployRevisionField: revision}),
+			})
+			client := newProjectBuildProvenanceClient(project, nil, nil)
+			reads := 0
+			client.Dynamic().(*fake.FakeDynamicClient).PrependReactor("get", "instances", func(k8stesting.Action) (bool, runtime.Object, error) {
+				reads++
+				return true, tc.obj, tc.err
+			})
+			server := &Server{
+				tenantWorkspaces: defaultTestWorkspaces.lookup,
+				tenantActors:     defaultTestActors.lookup,
+				tenantProviders:  defaultTestProviders,
+				projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+			}
+			request := httptest.NewRequest(http.MethodGet, "/api/projects/shop/promotion", nil)
+			request = mux.SetURLVars(request, map[string]string{"project": "shop"})
+			request.Header.Set("X-Railgrid-Tenant", "cluster-a")
+			request.Header.Set("X-Railgrid-Cluster", "cluster-a")
+			request = stampTestCaller(request, testUserForToken("test-token"))
+			response := httptest.NewRecorder()
+			server.getProjectPromotion(response, request)
+			if response.Code != tc.code || reads != 1 {
+				t.Fatalf("GET promotion = %d after %d instance reads: %s, want %d after one read", response.Code, reads, response.Body.String(), tc.code)
+			}
+			if tc.code != http.StatusOK {
+				if !strings.Contains(response.Body.String(), "reading production rollout status") {
+					t.Fatalf("missing rollout error: %s", response.Body.String())
+				}
+				return
+			}
+			var readiness projectPromotionReadinessResponse
+			if err := json.Unmarshal(response.Body.Bytes(), &readiness); err != nil {
+				t.Fatal(err)
+			}
+			if readiness.Production == nil || readiness.Production.Phase != tc.wantPhase ||
+				readiness.RequestedRolloutRevision != revision || readiness.ObservedRolloutRevision != tc.wantObservedRevision {
+				t.Fatalf("GET promotion = %s, want phase %q, requested revision %q, observed revision %q", response.Body.String(), tc.wantPhase, revision, tc.wantObservedRevision)
+			}
+		})
 	}
 }
 

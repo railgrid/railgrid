@@ -217,13 +217,17 @@ export function projectIntegrationMatchesSearch(
 
 <script setup lang="ts">
 import AIWorkbenchPane from './agentkit/AIWorkbenchPane.vue'
+import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
-  ChevronDown, KeyRound,
+  ChevronRight,
+  KeyRound,
   Loader2,
   RefreshCw,
+  Search,
   ShieldCheck,
   Undo2,
+  X,
 } from 'lucide-vue-next'
 import { api } from './api'
 import { confirmDialog } from './portalkit/confirm'
@@ -262,6 +266,7 @@ const error = ref<string | null>(null)
 const formError = ref<string | null>(null)
 const notice = ref<string | null>(null)
 const search = ref('')
+const searchInput = ref<HTMLInputElement | null>(null)
 const consentReviewKey = ref('')
 const acceptedConsentActionKey = ref('')
 const consentError = ref<{ key: string; message: string } | null>(null)
@@ -277,6 +282,11 @@ const integrationGroups = computed(() => [
   { state: 'connected' as const, label: 'Connected', entries: visibleIntegrationCards.value.filter((entry) => entry.state === 'connected') },
   { state: 'available' as const, label: 'Available', entries: visibleIntegrationCards.value.filter((entry) => entry.state === 'available') },
 ].filter((group) => group.entries.length))
+
+function clearSearch() {
+  search.value = ''
+  searchInput.value?.focus()
+}
 const discoveryNotification = computed(() => {
   const current = discovery.value
   if (!current || current.state === 'available') return null
@@ -589,50 +599,60 @@ onBeforeUnmount(() => {
     <InlineNotification v-if="formError" tone="error" :message="formError" />
     <InlineNotification v-if="notice" tone="success" :message="notice" />
 
-    <section class="min-w-0" aria-label="Provider resources">
-      <label v-if="hasIntegrationCards" class="mb-4 block text-[12px] font-medium text-text-secondary">
-        Find a resource
+    <section class="grid min-w-0 gap-4" aria-label="Provider resources">
+      <div v-if="hasIntegrationCards" class="k-ai-search k-ai-search--clearable">
+        <Search class="k-ai-search__icon" :stroke-width="1.75" aria-hidden="true" />
         <input
+          ref="searchInput"
           v-model.trim="search"
           type="search"
-          class="k-input mt-1.5 w-full text-[13px]"
+          class="k-input k-ai-search__input"
           placeholder="Search name, alias, or provider"
           aria-label="Find a resource"
         />
-      </label>
+        <button
+          v-if="search"
+          class="k-ai-search__clear k-agentkit-touch-target"
+          type="button"
+          aria-label="Clear resource search"
+          @click="clearSearch"
+        ><X :size="14" :stroke-width="1.75" aria-hidden="true" /></button>
+      </div>
 
       <div v-if="loading && !hasIntegrationCards" class="grid gap-2" role="status" aria-live="polite">
         <p class="text-[12px] text-text-muted">Loading integrations…</p>
-        <div v-for="i in 3" :key="i" aria-hidden="true" class="shimmer h-16 rounded-xl border border-border-subtle bg-surface" />
+        <div v-for="i in 3" :key="i" aria-hidden="true" class="grid gap-2 border-t border-border-subtle py-3">
+          <div class="shimmer h-3.5 w-32 rounded bg-surface-overlay" />
+          <div class="shimmer h-3 w-48 max-w-full rounded bg-surface-overlay" />
+        </div>
       </div>
-      <p v-else-if="error && !integrationsLoaded" class="rounded-lg border border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+      <p v-else-if="error && !integrationsLoaded" class="py-2 text-[13px] text-text-secondary" role="status">
         Provider resources could not be loaded. Use Refresh to try again.
       </p>
-      <p v-else-if="hasIntegrationCards && !visibleIntegrationCards.length" class="rounded-lg border border-dashed border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+      <p v-else-if="hasIntegrationCards && !visibleIntegrationCards.length" class="py-2 text-[13px] text-text-secondary" role="status">
         No resources match your search.
       </p>
-      <div v-else-if="integrationsLoaded && !hasIntegrationCards && !error && discovery?.state === 'available'" class="rounded-xl border border-dashed border-border-subtle bg-surface p-5 text-center" role="status">
+      <div v-else-if="integrationsLoaded && !hasIntegrationCards && !error && discovery?.state === 'available'" class="py-2" role="status">
         <h3 class="text-[13px] font-semibold text-text-primary">No resources available yet</h3>
-        <p class="mt-1 text-[12px] leading-5 text-text-muted">Create a resource in a provider or ask your workspace administrator for access, then refresh this list.</p>
+        <p class="mt-1 max-w-[68ch] text-[13px] leading-5 text-text-secondary">Create a resource in a provider or ask your workspace administrator for access, then refresh this list.</p>
       </div>
-      <p v-else-if="integrationsLoaded && !hasIntegrationCards" class="rounded-lg border border-dashed border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+      <p v-else-if="integrationsLoaded && !hasIntegrationCards" class="py-2 text-[13px] text-text-secondary" role="status">
         No provider resources could be confirmed. Use Refresh to check again.
       </p>
-      <p v-else-if="!integrationsLoaded && !loading" class="rounded-lg border border-border-subtle bg-surface p-4 text-[12px] text-text-muted" role="status">
+      <p v-else-if="!integrationsLoaded && !loading" class="py-2 text-[13px] text-text-secondary" role="status">
         Select a project to view its provider resources.
       </p>
-      <div v-else class="min-w-0">
-        <section v-for="group in integrationGroups" :key="group.state" class="mb-5 min-w-0" :aria-label="`${group.label} resources`">
-          <h3 class="mb-2 font-mono text-[11px] font-medium uppercase tracking-wide text-text-muted">{{ group.label }} <span aria-hidden="true">·</span> {{ group.entries.length }}</h3>
-          <div class="min-w-0 divide-y divide-border-subtle border-y border-border-subtle">
-        <details v-for="entry in group.entries" :key="entry.key" class="integration-resource min-w-0">
-          <summary class="app-studio-touch-target flex min-w-0 cursor-pointer list-none items-center gap-3 py-3 text-text-primary hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2">
-            <div class="min-w-0 flex-1">
-              <h4 class="break-words text-[13px] font-semibold [overflow-wrap:anywhere]">{{ entry.resourceRef?.name || entry.alias }}</h4>
-              <p class="mt-0.5 break-words text-[12px] text-text-muted [overflow-wrap:anywhere]">{{ [providerDisplayName(entry.provider), entry.resourceRef?.kind || entry.kind, entry.state === 'connected' ? entry.environment : null].filter(Boolean).join(' · ') }}</p>
-            </div>
+      <div v-else class="grid min-w-0 gap-4">
+        <AIWorkbenchSection v-for="group in integrationGroups" :key="group.state" :title="`${group.label} · ${group.entries.length}`">
+          <div class="min-w-0 divide-y divide-border-subtle border-t border-border-subtle">
+        <details v-for="entry in group.entries" :key="entry.key" class="integration-disclosure min-w-0">
+          <summary class="integration-disclosure__trigger py-3 text-text-primary">
+            <span class="min-w-0 flex-1 [overflow-wrap:anywhere]">
+              <strong class="block text-[13px] font-semibold">{{ entry.resourceRef?.name || entry.alias }}</strong>
+              <span class="mt-0.5 block text-[12px] text-text-secondary">{{ [providerDisplayName(entry.provider), entry.resourceRef?.kind || entry.kind, entry.state === 'connected' ? entry.environment : null].filter(Boolean).join(' · ') }}</span>
+            </span>
             <StatusBadge v-if="entry.phase && !['Ready', 'Connected', 'Succeeded'].includes(entry.phase)" :status="entry.phase" />
-            <ChevronDown class="integration-resource-chevron h-4 w-4 shrink-0 text-text-muted" aria-hidden="true" />
+            <ChevronRight class="integration-disclosure__chevron" :stroke-width="1.75" aria-hidden="true" />
           </summary>
           <div class="grid min-w-0 gap-2 pb-3">
           <div v-if="entry.state === 'connected'" class="grid min-w-0 gap-2">
@@ -695,7 +715,7 @@ onBeforeUnmount(() => {
               <section
                 v-if="isConsentReviewOpen(entry, action)"
                 :id="consentReviewID(entry, action)"
-                class="grid min-w-0 gap-3 rounded-lg border border-border-subtle bg-surface p-3"
+                class="grid min-w-0 gap-3 border-y border-warning/30 bg-warning-subtle/30 px-3 py-4"
                 role="group"
                 :aria-labelledby="`${consentReviewID(entry, action)}-title`"
               >
@@ -721,20 +741,23 @@ onBeforeUnmount(() => {
                     <dd class="mt-0.5 min-w-0 break-words text-text-primary [overflow-wrap:anywhere]">{{ actionDisplayName(entry, action) }} · {{ action.readOnly ? 'Read-only' : 'Can make changes' }}</dd>
                   </div>
                 </dl>
-                <details class="k-resource-technical">
-                  <summary class="k-resource-technical__summary">Technical details<ChevronDown class="k-resource-technical__chevron h-3.5 w-3.5" aria-hidden="true" /></summary>
-                  <dl class="k-resource-technical__body k-resource-technical__labels text-[12px] text-text-secondary [overflow-wrap:anywhere]">
+                <details class="integration-disclosure border-t border-border-subtle">
+                  <summary class="integration-disclosure__trigger text-[13px] font-medium text-text-primary">
+                    Technical details
+                    <ChevronRight class="integration-disclosure__chevron" :stroke-width="1.75" aria-hidden="true" />
+                  </summary>
+                  <dl class="grid gap-2 pb-2 text-[12px] text-text-secondary [overflow-wrap:anywhere]">
                     <div><dt>Resource coordinate</dt><dd class="break-all font-mono">{{ entry.resourceRef?.apiVersion }}/{{ entry.resourceRef?.kind }}/{{ entry.resourceRef?.resource }}/{{ entry.resourceRef?.name || 'unknown' }}</dd></div>
                     <div><dt>Action ID</dt><dd class="break-all font-mono">{{ action.name }}/{{ action.version }} · Risk {{ action.risk || 'unspecified' }}</dd></div>
                     <div><dt>Schema digest</dt><dd class="break-all font-mono">{{ action.schemaDigest }}</dd></div>
                   </dl>
                 </details>
                 <p class="min-w-0 break-words text-[12px] leading-5 text-text-secondary [overflow-wrap:anywhere]">This approval applies only to this action on this resource in this project. Other resources and actions are not included.</p>
-                <label :for="consentCheckboxID(entry, action)" class="k-checkbox-hit flex min-w-0 items-start gap-2 rounded-lg border border-border-subtle bg-surface px-2.5 py-2 text-[12px] leading-5 text-text-secondary">
+                <label :for="consentCheckboxID(entry, action)" class="k-checkbox-hit flex min-w-0 items-start gap-2 py-2 text-[12px] leading-5 text-text-secondary">
                   <input
                     :id="consentCheckboxID(entry, action)"
                     type="checkbox"
-                    class="mt-1 h-3.5 w-3.5 shrink-0 accent-accent"
+                    class="k-checkbox mt-1"
                     :checked="isConsentAccepted(entry, action)"
                     :disabled="busy"
                     @change="setConsentAccepted(entry, action, $event)"
@@ -764,9 +787,12 @@ onBeforeUnmount(() => {
           </div>
           <p v-else-if="entry.state === 'available' && !entry.catalogActions.length" class="text-[12px] text-text-muted">No actions are listed for this resource right now.</p>
           <p v-else-if="entry.state === 'connected' && !entry.catalogActions.length" class="text-[12px] leading-5 text-text-muted">Action details are unavailable. Refresh to check for actions that need approval.</p>
-          <details class="text-[12px] text-text-muted">
-            <summary class="app-studio-touch-target cursor-pointer py-1">Resource details and access history</summary>
-            <dl class="mt-2 grid gap-2 text-[11px] [overflow-wrap:anywhere]">
+          <details class="integration-disclosure border-t border-border-subtle text-[12px] text-text-secondary">
+            <summary class="integration-disclosure__trigger text-[13px] font-medium text-text-primary">
+              Resource details and access history
+              <ChevronRight class="integration-disclosure__chevron" :stroke-width="1.75" aria-hidden="true" />
+            </summary>
+            <dl class="grid gap-2 [overflow-wrap:anywhere]">
               <div><dt class="font-semibold">Project alias</dt><dd>{{ entry.alias }}</dd></div>
               <div><dt class="font-semibold">Resource</dt><dd>{{ entry.resourceRef?.apiVersion }}/{{ entry.resourceRef?.kind }}/{{ entry.resourceRef?.resource }}/{{ entry.resourceRef?.name || 'unknown' }}</dd></div>
               <div v-if="entry.phase"><dt class="font-semibold">Status</dt><dd>{{ entry.phase }}</dd></div>
@@ -785,13 +811,27 @@ onBeforeUnmount(() => {
           </div>
         </details>
           </div>
-        </section>
+        </AIWorkbenchSection>
       </div>
     </section>
   </AIWorkbenchPane>
 </template>
 
 <style scoped>
-.integration-resource > summary::-webkit-details-marker { display: none; }
-.integration-resource[open] > summary .integration-resource-chevron { transform: rotate(180deg); }
+.integration-disclosure__trigger {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  list-style: none;
+}
+.integration-disclosure__trigger::-webkit-details-marker { display: none; }
+.integration-disclosure__trigger:hover { background: var(--color-surface-hover); }
+.integration-disclosure__trigger:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.integration-disclosure__chevron { flex: none; width: 16px; height: 16px; color: var(--color-text-muted); }
+.integration-disclosure__chevron:dir(rtl) { transform: rotate(180deg); }
+.integration-disclosure[open] > summary > .integration-disclosure__chevron { transform: rotate(90deg); }
 </style>
