@@ -1,7 +1,7 @@
 apiVersion: apis.kcp.io/v1alpha1
 kind: APIResourceSchema
 metadata:
-  name: v260925-87f1980f.infrastructureproviders.infrastructure.railgrid.ai
+  name: v261109-d11c8b12.infrastructureproviders.infrastructure.railgrid.ai
 spec:
   group: infrastructure.railgrid.ai
   names:
@@ -88,6 +88,23 @@ spec:
                     Empty fields fall back to the in-binary default ("cloudflare-tunnel" in
                     "cfgate-system").
                   properties:
+                    backendHealthCheck:
+                      description: |-
+                        BackendHealthCheck selects how the Gateway's load balancer health-checks
+                        the Services generated HTTPRoutes send traffic to. Maps onto the serve
+                        container's RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK.
+
+                          - "" (default): add nothing; the Gateway implementation decides.
+                          - "gke-tcp": add a GKE HealthCheckPolicy (networking.gke.io/v1, TCP on
+                            the serving port) per route backend Service. Required on a GKE
+                            Gateway, whose default check ("GET /" expecting 200) the access gate
+                            never passes (421 off-host, sign-in redirects for private apps), so
+                            every app answers "no healthy upstream". Only set it where the
+                            HealthCheckPolicy CRD exists.
+                      enum:
+                      - ""
+                      - gke-tcp
+                      type: string
                     name:
                       description: Name of the Gateway. Empty → "cloudflare-tunnel"
                         (the in-binary default).
@@ -277,6 +294,23 @@ spec:
                   description: Gateway is the shared platform Gateway parent for publication
                     routes.
                   properties:
+                    backendHealthCheck:
+                      description: |-
+                        BackendHealthCheck selects how the Gateway's load balancer health-checks
+                        the Services generated HTTPRoutes send traffic to. Maps onto the serve
+                        container's RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK.
+
+                          - "" (default): add nothing; the Gateway implementation decides.
+                          - "gke-tcp": add a GKE HealthCheckPolicy (networking.gke.io/v1, TCP on
+                            the serving port) per route backend Service. Required on a GKE
+                            Gateway, whose default check ("GET /" expecting 200) the access gate
+                            never passes (421 off-host, sign-in redirects for private apps), so
+                            every app answers "no healthy upstream". Only set it where the
+                            HealthCheckPolicy CRD exists.
+                      enum:
+                      - ""
+                      - gke-tcp
+                      type: string
                     name:
                       description: Name of the Gateway. Empty → "cloudflare-tunnel"
                         (the in-binary default).

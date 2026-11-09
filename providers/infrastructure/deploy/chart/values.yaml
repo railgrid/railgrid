@@ -65,6 +65,12 @@ application:
   gateway:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
+    # How the Gateway's load balancer health-checks route backends
+    # (RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK). "gke-tcp" adds a GKE
+    # HealthCheckPolicy (TCP) per HTTPRoute backend Service; required on a GKE
+    # Gateway, where the default "GET /" check never passes the access gate.
+    # Empty: add nothing.
+    backendHealthCheck: ""
 
 # Platform-owned access-gate configuration shared by simple-webapp,
 # application, and future publishable templates. Templates render the gate
@@ -92,6 +98,12 @@ publishing:
   gateway:
     name: "cloudflare-tunnel"
     namespace: "cfgate-system"
+    # How the Gateway's load balancer health-checks route backends
+    # (RAILGRID_GATEWAY_BACKEND_HEALTH_CHECK). "gke-tcp" adds a GKE
+    # HealthCheckPolicy (TCP) per HTTPRoute backend Service; required on a GKE
+    # Gateway, where the default "GET /" check never passes the access gate.
+    # Empty: add nothing.
+    backendHealthCheck: ""
 
 # Default container resource policy stamped into every tenant namespace as a
 # LimitRange named "railgrid-defaults" (defaultRequest 50m/128Mi, default limit
@@ -377,6 +389,8 @@ operator:
     gateway:
       name: ""
       namespace: ""
+      # See publishing.gateway.backendHealthCheck above ("" or "gke-tcp").
+      backendHealthCheck: ""
 
   publishing:
     # App host zone (wins over operator.application.baseDomain). TLS: below the
@@ -391,3 +405,5 @@ operator:
     gateway:
       name: ""
       namespace: ""
+      # See publishing.gateway.backendHealthCheck above ("" or "gke-tcp").
+      backendHealthCheck: ""
