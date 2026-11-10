@@ -1276,7 +1276,7 @@ defineExpose({
 
 <template>
   <div
-    ref="rootRef" class="k-ai-composer__rich-editor relative min-h-[72px]"
+    ref="rootRef" class="k-ai-rich-editor relative min-h-[72px]"
     :aria-busy="submitting"
     @dragenter="handleDragEnter"
     @dragover="handleDragOver"

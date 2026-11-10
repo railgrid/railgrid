@@ -1162,13 +1162,37 @@ button.k-workbench-tab {
 }
 /* Compact chat surfaces reserve space beside the editor, not a second row. */
 .k-ai-composer--compact {
-  --k-ai-composer-compact-height: 44px;
-  --k-ai-composer-compact-add-space: 36px;
+  --k-ai-bar-height: 44px;
+  --k-ai-bar-inset: 36px;
+
+  &,
+  & .k-ai-composer__editor { min-height: var(--k-ai-bar-height); }
+  & .k-ai-composer__editor > textarea { min-height: var(--k-ai-bar-height); padding: 12px 48px 12px 10px; }
+  & .k-ai-composer__primary { right: 6px; bottom: 6px; }
+
+  /* Keep Add and Send in the row while the rich draft scrolls. */
+  & .k-ai-composer__editor:has(> .k-ai-rich-editor) { display: flex; align-items: center; }
+  & .k-ai-rich-editor {
+    position: static;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    max-height: var(--k-ai-bar-height);
+    overflow: auto;
+    padding-inline-start: var(--k-ai-bar-inset);
+  }
+  & .k-ai-rich-editor .k-ai-composer__controls {
+    position: absolute;
+    inset: 50% auto auto 4px;
+    margin: 0;
+    translate: 0 -50%;
+  }
+  & .k-ai-rich-editor ~ .k-ai-composer__primary {
+    position: static;
+    flex: none;
+    margin-inline: 4px;
+  }
 }
-.k-ai-composer--compact,
-.k-ai-composer--compact .k-ai-composer__editor { min-height: var(--k-ai-composer-compact-height); }
-.k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 44px; padding: 12px 48px 12px 10px; }
-.k-ai-composer--compact .k-ai-composer__primary { right: 6px; bottom: 6px; }
 /* Compact controls overlap the editor row. Empty positioning wrappers must
  * pass clicks through to the textarea, while controls and menus stay usable. */
 .k-ai-composer--compact .k-ai-composer__controls { pointer-events: none; }
@@ -1176,37 +1200,12 @@ button.k-workbench-tab {
   [role="button"], [role="combobox"], [role="listbox"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"],
   [tabindex]:not([tabindex="-1"]), .k-ai-model-picker__menu) { pointer-events: auto; }
 
-/* Keep Add and Send in the compact row while the rich draft scrolls. */
-.k-ai-composer--compact .k-ai-composer__editor:has(> .k-ai-composer__rich-editor) {
-  display: flex;
-  align-items: center;
-}
-.k-ai-composer--compact .k-ai-composer__rich-editor {
-  position: static;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  max-height: var(--k-ai-composer-compact-height);
-  overflow: auto;
-  padding-inline-start: var(--k-ai-composer-compact-add-space);
-}
-.k-ai-composer--compact .k-ai-composer__rich-editor .k-ai-composer__controls {
-  position: absolute;
-  inset: 50% auto auto 4px;
-  margin: 0;
-  transform: translateY(-50%);
-}
-.k-ai-composer--compact .k-ai-composer__editor:has(> .k-ai-composer__rich-editor) > .k-ai-composer__primary {
-  position: static;
-  flex: none;
-  margin-inline: 4px;
-}
 @media (pointer: coarse), (any-pointer: coarse) {
   .k-ai-composer--compact {
-    --k-ai-composer-compact-height: 56px;
-    --k-ai-composer-compact-add-space: 52px;
+    --k-ai-bar-height: 56px;
+    --k-ai-bar-inset: 52px;
   }
-  .k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 56px; padding: 18px 62px 18px 10px; }
+  .k-ai-composer--compact .k-ai-composer__editor > textarea { padding: 18px 62px 18px 10px; }
 }
 .k-ai-primary-action {
   display: inline-flex;
