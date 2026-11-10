@@ -367,14 +367,22 @@ func (c *Client) Start(ctx context.Context, req runner.StartRequest) (runner.Rec
 	}
 	if len(req.InputFiles) > 0 {
 		if err := c.requireInputFiles(ctx); err != nil {
-			return runner.Receipt{}, &PreDispatchError{err}
+			return runner.Receipt{}, &PreDispatchError{Cause: err}
 		}
 	}
 	base, err := c.discover(ctx)
 	if err != nil {
-		return runner.Receipt{}, &PreDispatchError{err}
+		return runner.Receipt{}, &PreDispatchError{Cause: err}
 	}
-	return c.post(ctx, base+"/runner/v1/attempts", req)
+	receipt, err := c.post(ctx, base+"/runner/v1/attempts", req)
+	if err != nil {
+		return runner.Receipt{}, err
+	}
+	if receipt.ProtocolVersion != req.ProtocolVersion || receipt.TaskID != req.TaskID ||
+		receipt.AttemptID != req.AttemptID || receipt.AttemptEpoch != req.AttemptEpoch || receipt.Phase == "" {
+		return runner.Receipt{}, fmt.Errorf("%w: start response has incomplete or mismatched attempt identity", ErrMutationReceiptUnavailable)
+	}
+	return receipt, nil
 }
 
 // StageInput streams one attempt file to the runner before Start. The file

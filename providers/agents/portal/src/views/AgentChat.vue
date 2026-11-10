@@ -2375,11 +2375,10 @@ async function streamTurn(
             ? parseSavedCaptureCitation(data.savedCapture)
             : null
           const hasMcpApp = data.hasMcpApp === true && !!sources?.length && receiptMatches
-          const error = typeof data.error === 'string' ? data.error : data.error ? 'Tool failed' : undefined
           setTool(data.id, {
             toolCallID: data.id,
             result: data.result,
-            error,
+            error: data.error,
             exitCode: data.exitCode,
             outcomeUnknown: data.outcomeUnknown,
             sources: sources?.length ? sources : undefined,
@@ -2393,7 +2392,7 @@ async function streamTurn(
             name: data.name,
             args: data.args,
             result: data.result,
-            error,
+            error: data.error,
             exitCode: data.exitCode,
             outcomeUnknown: data.outcomeUnknown,
             ...(sources?.length ? { sources } : {}),

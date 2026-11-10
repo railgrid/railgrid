@@ -9,7 +9,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
+import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, TriangleAlert, X } from 'lucide-vue-next'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import {
   executionStatusPresentation,
@@ -44,6 +44,7 @@ const statusIcon = computed(() => {
   switch (status.value.state) {
     case 'running': return Loader2
     case 'succeeded': return Check
+    case 'exited': return TriangleAlert
     case 'failed':
     case 'timed_out':
     case 'canceled':

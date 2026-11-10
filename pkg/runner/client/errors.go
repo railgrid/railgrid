@@ -31,9 +31,10 @@ import (
 const errorBodyLimit = 64 << 10
 
 // PreDispatchError reports a failed runner preflight before Start sent the mutation.
-type PreDispatchError struct{ error }
+type PreDispatchError struct{ Cause error }
 
-func (e *PreDispatchError) Unwrap() error { return e.error }
+func (e *PreDispatchError) Error() string { return e.Cause.Error() }
+func (e *PreDispatchError) Unwrap() error { return e.Cause }
 
 // ErrMutationReceiptUnavailable means a successful HTTP response could not be
 // decoded as a receipt. The runner may already have acted on the request.

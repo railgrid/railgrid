@@ -419,13 +419,16 @@ func TestStartDistinguishesPreflightFromUnreadableReceipt(t *testing.T) {
 		t.Fatalf("expected discovery to stop Start before the POST: %v", err)
 	}
 
-	dispatchedClient, dispatchedFixture := newFixtureClient(t, service, enrolledCapabilities())
-	dispatchedFixture.operation = func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusAccepted)
-	}
-	_, err = dispatchedClient.Start(context.Background(), req)
-	if !errors.Is(err, ErrMutationReceiptUnavailable) || len(dispatchedFixture.seen()) != 3 {
-		t.Fatalf("expected an unreadable receipt after one POST: %v", err)
+	for _, body := range []string{"", "null", "{}", `{"protocolVersion":"runner/v1","taskID":"task-1","attemptID":"different-attempt","attemptEpoch":1,"phase":"accepted"}`} {
+		dispatchedClient, dispatchedFixture := newFixtureClient(t, service, enrolledCapabilities())
+		dispatchedFixture.operation = func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, body)
+		}
+		_, err = dispatchedClient.Start(context.Background(), req)
+		if !errors.Is(err, ErrMutationReceiptUnavailable) || len(dispatchedFixture.seen()) != 3 {
+			t.Fatalf("expected an unusable receipt after one POST for body %q: %v", body, err)
+		}
 	}
 }
 

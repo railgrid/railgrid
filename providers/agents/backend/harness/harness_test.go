@@ -14,13 +14,18 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/railgrid/railgrid/pkg/runner"
+	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 	runnerharness "github.com/railgrid/railgrid/pkg/runner/harness"
 
@@ -708,6 +713,37 @@ func TestProgressMapsOntoTheSinkAsThePayloadsAllow(t *testing.T) {
 	}
 }
 
+func TestLostToolStreamReportsUnknownOutcome(t *testing.T) {
+	f := &lostToolStreamRunner{fakeRunner: fakeRunner{
+		receipt: runner.Receipt{AttemptID: "run-1", AttemptEpoch: 1, Phase: runner.PhaseRunning},
+	}}
+	cfg := testConfig(&f.fakeRunner, 1, "")
+	cfg.Runner = f
+	sink := &recordingSink{}
+	out, err := New(cfg).Turn(context.Background(), testRun(),
+		backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "deploy"}}}, sink)
+	if out.Status != backend.StatusFailed || !errors.Is(err, backend.ErrHarnessOutcomeUnknown) {
+		t.Fatalf("Turn = %s, %v; want an unknown outcome", out.Status, err)
+	}
+	if refusal, ok := dispatch.Refusal(err); !ok || refusal.Code != runner.ErrorBusy {
+		t.Fatalf("expected the underlying runner diagnostic: %v", err)
+	}
+	if len(sink.toolEnds) != 1 || sink.toolEnds[0].ID != "i1" || !sink.toolEnds[0].OutcomeUnknown {
+		t.Fatalf("toolEnds = %+v, want the observed call to close with an unknown outcome", sink.toolEnds)
+	}
+}
+
+type lostToolStreamRunner struct{ fakeRunner }
+
+func (r *lostToolStreamRunner) Events(context.Context, string, uint64) (dispatch.Stream, error) {
+	return &failingSliceStream{
+		sliceStream: sliceStream{events: []runner.Event{
+			event(1, runner.EventProgress, "", `{"item":{"id":"i1","type":"command_execution","command":"deploy","status":"in_progress"}}`),
+		}},
+		err: &runner.Error{Code: runner.ErrorBusy, Retryable: true, Message: "runner event stream unavailable"},
+	}, nil
+}
+
 // An agent outcome depends on its complete transcript and usage. If the runner
 // cannot supply a cursor gap, the adapter must fail instead of returning a
 // partial completion from the terminal receipt.
@@ -763,6 +799,36 @@ func TestStartFailureKeepsTheProtocolError(t *testing.T) {
 	var protocol *runner.Error
 	if !errors.As(err, &protocol) || protocol.Code != runner.ErrorStaleAttempt {
 		t.Fatalf("error %v does not carry the protocol code", err)
+	}
+}
+
+// These prefixes are the failure-presentation contract for saved runs and chat.
+func TestStartFailurePresentation(t *testing.T) {
+	gateway := &runnerclient.HTTPError{StatusCode: http.StatusServiceUnavailable}
+	request := &url.Error{Op: "Post", Err: io.ErrUnexpectedEOF}
+	for _, tc := range []struct {
+		name, prefix string
+		cause        error
+		unknown      bool
+	}{
+		{"dial", "connecting to the runner before dispatch:", &net.OpError{Op: "dial", Err: io.EOF}, false},
+		{"preflight transport", "connecting to the runner before dispatch:", &runnerclient.PreDispatchError{Cause: request}, false},
+		{"preflight gateway", "connecting to the runner before dispatch:", &runnerclient.PreDispatchError{Cause: gateway}, false},
+		{"post transport", "confirming the runner outcome:", request, true},
+		{"post gateway", "confirming the runner outcome:", gateway, true},
+		{"post timeout", "confirming the runner outcome:", &runnerclient.HTTPError{StatusCode: http.StatusRequestTimeout}, true},
+		{"invalid receipt", "confirming the runner outcome:", fmt.Errorf("%w: empty response", runnerclient.ErrMutationReceiptUnavailable), true},
+		{"runner refusal", "starting the harness turn:", &runner.Error{Code: runner.ErrorBusy}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeRunner{startErr: tc.cause}
+			out, err := New(testConfig(f, 1, "")).Turn(context.Background(), testRun(),
+				backend.Input{Messages: []backend.Message{{Role: backend.RoleUser, Content: "test it"}}}, &recordingSink{})
+			if out.Status != backend.StatusFailed || err == nil || !strings.HasPrefix(err.Error(), tc.prefix) ||
+				!errors.Is(err, tc.cause) || errors.Is(err, backend.ErrHarnessOutcomeUnknown) != tc.unknown {
+				t.Fatalf("Turn = %s, %v; want %q and unknown=%t", out.Status, err, tc.prefix, tc.unknown)
+			}
+		})
 	}
 }
 

@@ -1117,7 +1117,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
-		if phase == store.RunPhaseFailed {
+		freshDispatch := cont == nil && (harnessT == nil || harnessT.backend.Observed().AttemptID == "")
+		if phase == store.RunPhaseFailed && freshDispatch {
 			// A refusal that left nothing running on an unattended run is not
 			// an outcome: the run goes back to the queue with a wake-up time and
 			// the reconciler claims it again (api/retry.go). The transcript gets
@@ -1151,7 +1152,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// An unavailable model can fail on either transport, for example when the
 	// provider retires an id or refuses it on the selected endpoint. Keep the
 	// upstream details and identify the credential that may need another model.
-	if err = llm.ExplainModelUnavailable(err, credentialNameForPurpose(agent, purpose)); err != nil {
+	if err != nil {
+		if !errors.Is(err, backend.ErrHarnessOutcomeUnknown) {
+			err = llm.ExplainModelUnavailable(err, credentialNameForPurpose(agent, purpose))
+		}
 		return finishFailedTurn(err)
 	}
 

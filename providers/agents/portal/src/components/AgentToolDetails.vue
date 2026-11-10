@@ -15,11 +15,13 @@ const execution = computed<AIExecutionView>(() => {
   const value = props.tool.durationMS
   const command = toolCommand(props.tool)
   const outcome = toolOutcome(props.tool)
-  const text = outcome ? props.tool.result
-    : command ? props.tool.result || props.tool.error
-    : props.tool.error || props.tool.result
+  const errorText = typeof props.tool.error === 'string' ? props.tool.error : ''
+  const result = props.tool.result
+  const text = outcome ? result
+    : command ? result || errorText
+    : errorText || result
   const output = text
-    ? [command || outcome ? redactTechnicalSecrets(text) : props.tool.error || prettyJSON(text)]
+    ? [command || outcome || props.tool.error ? redactTechnicalSecrets(text) : prettyJSON(text)]
     : undefined
   return {
     ...(command ? {
@@ -29,7 +31,7 @@ const execution = computed<AIExecutionView>(() => {
     ...(!command && props.tool.args ? { input: prettyJSON(props.tool.args), inputLabel: 'Arguments' } : {}),
     output,
     outputLabel: command || !output ? undefined : !outcome && props.tool.error ? 'Error' : 'Output',
-    status: outcome?.kind === 'exit' ? 'succeeded'
+    status: outcome?.kind === 'exit' ? 'exited'
       : outcome?.kind === 'unknown' ? 'outcome_unknown'
       : props.tool.pending ? 'running'
       : props.failed || props.tool.error ? 'failed' : 'succeeded',

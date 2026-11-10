@@ -110,7 +110,7 @@ export interface AIExecutionView {
 }
 
 export type AIExecutionVariant = 'approval' | 'activity'
-export type AIExecutionState = 'running' | 'succeeded' | 'failed' | 'timed_out' | 'canceled' | 'blocked' | 'unknown'
+export type AIExecutionState = 'running' | 'succeeded' | 'exited' | 'failed' | 'timed_out' | 'canceled' | 'blocked' | 'unknown'
 export type AIExecutionTone = 'running' | 'success' | 'danger' | 'attention' | 'muted'
 
 export interface AIExecutionStatusPresentation {
@@ -126,6 +126,7 @@ export interface AIExecutionStatusPresentation {
 const knownExecutionStatuses = new Set([
   'running',
   'succeeded',
+  'exited',
   'failed',
   'timed_out',
   'canceled',
@@ -175,6 +176,10 @@ export function executionStatusPresentation(status?: string, exitCode?: number |
       return { state: 'running', label: 'Running', tone: 'running', busy: true, success: false, known: true }
     case 'succeeded':
       return { state: 'succeeded', label: 'Success', tone: 'success', busy: false, success: true, known: true }
+    case 'exited':
+      return exitCode === 0
+        ? { state: 'succeeded', label: 'Completed', tone: 'success', busy: false, success: true, known: true }
+        : { state: 'exited', label: 'Completed', tone: 'attention', busy: false, success: false, known: true }
     case 'failed':
     case 'error':
       return { state: 'failed', label: 'Failed', tone: 'danger', busy: false, success: false, known: true }

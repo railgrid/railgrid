@@ -292,7 +292,7 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
           name: toolName,
           args: metadata.args,
           result: item.content,
-          error: typeof rawError === 'string' ? rawError : rawError ? 'Tool failed' : undefined,
+          error: rawError,
           ...(sources?.length ? { sources } : {}),
           ...(metadata.hasMcpApp === true && sources?.length ? { hasMcpApp: true } : {}),
           ...(savedCapture ? { savedCapture } : {}),

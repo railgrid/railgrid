@@ -791,7 +791,7 @@ export interface ToolCall {
   name: string
   args?: string
   result?: string
-  error?: string
+  error?: string | boolean
   exitCode?: number
   outcomeUnknown?: boolean
   durationMS?: number

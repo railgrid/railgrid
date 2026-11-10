@@ -32,10 +32,18 @@ describe('command receipts', () => {
     view.unmount()
   })
 
+  it('keeps the diagnostic from a legacy boolean-error result', async () => {
+    const tool = { id: '1', name: 'lookup', result: 'upstream timed out', error: true, pending: false }
+    const view = await mountVue(AgentToolDetails, { tool })
+    expect(text(view.element.querySelector('.k-ai-execution-details__output'))).toBe('upstream timed out')
+    expect(text(view.element.querySelector('.k-ai-execution-details__status'))).toBe('Failed')
+    view.unmount()
+  })
+
   it('shows a silent nonzero exit without inventing error output', async () => {
     const tool = { id: '1', name: 'commandExecution', args: 'false', exitCode: 1, error: 'Tool failed', pending: false }
     const view = await mountVue(AgentToolDetails, { tool })
-    expect(text(view.element)).toContain('Completed · exit 1')
+    expect(text(view.element.querySelector('.k-ai-execution-details__status--attention'))).toBe('Completed · exit 1')
     expect(text(view.element)).toContain('No output')
     expect(text(view.element)).not.toContain('Tool failed')
     view.unmount()
