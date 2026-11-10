@@ -563,6 +563,7 @@ request accounting.
 | `RAILGRID_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
 | `RAILGRID_PROVIDER_NAME` | `code` | CatalogEntry name |
 | `RAILGRID_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
+| `RAILGRID_HUB_CA_FILE` / `RAILGRID_HUB_CA_DATA` | (unset) | PEM bundle for the hub's serving certificate, added to the system roots; unset, the CA of `RAILGRID_PROVIDER_KUBECONFIG` is used |
 | `CODE_KUBECONFIG` | (unset → controllers disabled) | kcp kubeconfig for the multicluster controller manager |
 | `CODE_WORKSPACE_PATH` | `root:railgrid:providers:code` | Workspace the APIExportEndpointSlice is ensured in |
 | `CODE_COMMIT_BUNDLE_DIR` | system temp dir | Directory for the transient RepositoryCommit source bundles and git snapshots ([architecture §9](../../docs/code-provider-architecture.md#9-transient-artifacts)); use shared storage before running multiple replicas |

@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -33,6 +32,8 @@ import (
 	agentsv1alpha1 "github.com/railgrid/provider-agents/apis/v1alpha1"
 	"github.com/railgrid/provider-agents/engine"
 	"github.com/railgrid/provider-agents/resulttypes"
+
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // githubMCPEndpoint is the hosted GitHub MCP server; a github Connection with
@@ -134,11 +135,12 @@ func ConnectHubAggregateMCPEndpoint(ctx context.Context, endpoint, bearer, prefi
 }
 
 func connectMCPEndpoint(ctx context.Context, endpoint, bearer, prefix string, insecureTLS, hubAggregate bool) (*MCPSession, error) {
-	base := http.DefaultTransport
-	if insecureTLS {
-		t := http.DefaultTransport.(*http.Transport).Clone()
-		t.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // dev hubs use self-signed certs; opt-in
-		base = t
+	// System roots plus the hub CA from the provider's own kubeconfig, so a
+	// hub serving a private certificate on its in-cluster name verifies;
+	// insecureTLS (RAILGRID_HUB_INSECURE) skips verification for dev hubs.
+	base, err := hubclient.HubTransport(insecureTLS)
+	if err != nil {
+		return nil, fmt.Errorf("hub TLS configuration: %w", err)
 	}
 	httpClient := &http.Client{Timeout: 60 * time.Second, Transport: base}
 	if bearer != "" {

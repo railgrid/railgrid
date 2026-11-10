@@ -34,6 +34,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 const (
@@ -130,7 +132,8 @@ func EnsureIdentity(ctx context.Context, c client.Client, name string, refs []me
 // membership and forwards to kcp as that identity, so a provider reaches any
 // workspace the caller belongs to — the same path kubectl and the portals
 // use. insecure relaxes TLS for in-cluster hub certs (the RAILGRID_HUB_INSECURE
-// knob).
+// knob); otherwise the hub is verified against the system roots plus
+// hubclient.HubCA, the bundle of the provider's own kubeconfig.
 func RESTConfig(hubBase, clusterID, token string, insecure bool) (*rest.Config, error) {
 	if hubBase == "" {
 		return nil, fmt.Errorf("hub base URL is empty (RAILGRID_HUB_URL)")
@@ -145,8 +148,8 @@ func RESTConfig(hubBase, clusterID, token string, insecure bool) (*rest.Config, 
 		Host:        strings.TrimRight(hubBase, "/") + "/clusters/" + clusterID,
 		BearerToken: token,
 	}
-	if insecure {
-		cfg.TLSClientConfig = rest.TLSClientConfig{Insecure: true}
+	if err := hubclient.ApplyHubTLS(cfg, insecure); err != nil {
+		return nil, err
 	}
 	return cfg, nil
 }
