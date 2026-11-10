@@ -5,7 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, returnToAssistant, collapse, barContextItems, assistantAction, contextPreviewOpen })\n</script>')
+const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, returnToAssistant, engage, collapse, barContextItems, assistantAction, contextPreviewOpen })\n</script>')
 const { descriptor } = parse(source)
 descriptor.template = null
 const compiled = compileScript(descriptor, { id: 'overlay-binding' })
@@ -29,15 +29,17 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   })
   const previous = { window: globalThis.window, document: globalThis.document, customElements: globalThis.customElements }
   const host = Vue.markRaw({ children: [], appendChild(el) { this.children.push(el); el.parent = this } })
-  globalThis.window = { innerWidth: viewportWidth, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: true }) }
+  const viewport = new EventTarget()
+  globalThis.window = Object.assign(viewport, { innerWidth: viewportWidth, matchMedia: () => ({ matches: true }) })
   globalThis.document = { createElement: () => Vue.markRaw({ overlayState: {}, railgridContext: null,
     addEventListener() {}, dispatchEvent() {}, remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) } }) }
   globalThis.customElements = { get: () => function AgentsElement() {} }
   const noOp = () => {}
   const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {}, ...initialRoute })
   const overlay = Vue.reactive({ preferenceKey: 'preference', selectedAgent: 'scout', open: true, followContext: false,
-    dockVisible: false, sidePanelWidth: 0, setSidePanelClosing: noOp,
-    setMinimized(value) { this.open = !value }, setSidePanel(width) { this.sidePanelWidth = width },
+    dockVisible: false, sidePanelWidth: 0, sidePanelFullscreen: false, setSidePanelClosing: noOp,
+    setMinimized(value) { this.open = !value },
+    setSidePanel(width, fullscreen) { this.sidePanelWidth = width; this.sidePanelFullscreen = fullscreen },
     setFollowContext(value) { this.followContext = value },
     setChatLauncherVisible(value) { this.chatLauncherVisible = value },
     setDockVisible(value) { this.dockVisible = value } })
@@ -72,6 +74,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
   const exposed = vm.$.exposed
   exposed.mount.value = host
   return { state, binding, calls, host, exposed, route, overlay,
+    resizeTo(width) { viewport.innerWidth = width; viewport.dispatchEvent(new Event('resize')) },
     cleanup() { app.unmount(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value } } }
 }
 async function flush() { await Vue.nextTick(); for (let i = 0; i < 12; i++) await Promise.resolve(); await Vue.nextTick() }
@@ -134,6 +137,48 @@ test('the narrow bar keeps context sharing available from the menu', async () =>
     s.exposed.assistantAction('toggle-context')
     assert.equal(s.overlay.followContext, true)
     assert.equal(s.exposed.barContextItems.value.at(-1).label, 'Pause page context')
+  } finally { s.cleanup() }
+})
+
+test('mobile chat hides the assistant and releases the fullscreen layout', async () => {
+  const s = scenario({ viewportWidth: 390 })
+  try {
+    await flush()
+    const assistant = s.host.children[0]
+    s.exposed.engage()
+    await flush()
+    assert.equal(s.overlay.sidePanelFullscreen, true)
+    for (const [params, hash] of [
+      [{ name: 'agents' }, '#/agents/other/chat'],
+      [{ name: 'app-studio', rest: ['~new'] }, ''],
+    ]) {
+      Object.assign(s.route, { params, hash, fullPath: s.route.path + hash })
+      await flush()
+      assert.equal(s.exposed.visible.value, false)
+      assert.equal(s.exposed.panelVisible.value, false)
+      assert.equal(s.overlay.chatLauncherVisible, false)
+      assert.equal(s.overlay.dockVisible, false)
+      assert.equal(s.overlay.sidePanelFullscreen, false)
+      assert.equal(assistant.overlayState.hidden, true)
+    }
+    s.resizeTo(768)
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.ok(s.overlay.sidePanelWidth > 0)
+    assert.equal(s.overlay.sidePanelFullscreen, false)
+    assert.equal(s.host.children[0], assistant)
+
+    s.resizeTo(767)
+    await flush()
+    assert.equal(s.exposed.visible.value, false)
+    assert.equal(s.overlay.sidePanelWidth, 0)
+    assert.equal(s.overlay.sidePanelFullscreen, false)
+
+    Object.assign(s.route, { params: {}, hash: '', fullPath: s.route.path })
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.equal(s.overlay.sidePanelFullscreen, true)
+    assert.equal(s.host.children[0], assistant)
   } finally { s.cleanup() }
 })
 

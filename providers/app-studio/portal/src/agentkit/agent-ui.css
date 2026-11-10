@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 61;
+  --railgrid-agent-ui-version: 62;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -415,7 +415,7 @@ button.k-workbench-tab {
 .k-ai-composer-dock {
   flex: none;
   min-width: 0;
-  padding: 12px 16px;
+  padding: var(--k-ai-dock-pad, 12px 16px);
 }
 .k-ai-composer-dock > * {
   box-sizing: border-box;
@@ -1192,20 +1192,20 @@ button.k-workbench-tab {
     flex: none;
     margin-inline: 4px;
   }
-}
-/* Compact controls overlap the editor row. Empty positioning wrappers must
- * pass clicks through to the textarea, while controls and menus stay usable. */
-.k-ai-composer--compact .k-ai-composer__controls { pointer-events: none; }
-.k-ai-composer--compact .k-ai-composer__controls :is(button, input, select, textarea, a[href], label, summary,
-  [role="button"], [role="combobox"], [role="listbox"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"],
-  [tabindex]:not([tabindex="-1"]), .k-ai-model-picker__menu) { pointer-events: auto; }
 
-@media (pointer: coarse), (any-pointer: coarse) {
-  .k-ai-composer--compact {
+  /* Empty wrappers pass clicks through while controls and menus stay usable. */
+  & .k-ai-composer__controls {
+    pointer-events: none;
+    & :is(button, input, select, textarea, a[href], label, summary,
+      [role="button"], [role="combobox"], [role="listbox"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"],
+      [tabindex]:not([tabindex="-1"]), .k-ai-model-picker__menu) { pointer-events: auto; }
+  }
+
+  @media (pointer: coarse), (any-pointer: coarse) {
     --k-ai-bar-height: 56px;
     --k-ai-bar-inset: 52px;
+    & .k-ai-composer__editor > textarea { padding: 18px 62px 18px 10px; }
   }
-  .k-ai-composer--compact .k-ai-composer__editor > textarea { padding: 18px 62px 18px 10px; }
 }
 .k-ai-primary-action {
   display: inline-flex;
