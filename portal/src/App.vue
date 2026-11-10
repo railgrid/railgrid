@@ -234,7 +234,7 @@ watch(
        lives *inside* router-view, so keeping the dock here is what preserves the
        live xterm buffer + SSH WebSocket across route changes. -->
   <TerminalDock :inert="assistantOverlay.sidePanelFullscreen" v-show="!gettingStartedFocused && !hideTerminalDock && !scopeBlocked" />
-  <AgentOverlay v-show="!gettingStartedFocused" />
+  <AgentOverlay />
   <PkConfirmDialog />
   <ToastHost owner="primary" />
 </template>

@@ -133,7 +133,7 @@ test('Add flyouts dismiss on outside pointer/focus while preserving in-composer 
     assert.match(source, /(?:AgentKit|Assistant)AttachmentTextPreview/)
     assert.match(source, /class="flex min-w-0 max-w-full flex-col items-stretch rounded-sm border/)
   }
-  assert.match(rich, /ref="rootRef" class="relative min-h-\[72px\]"[\s\S]*ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
+  assert.match(rich, /ref="rootRef" class="(?:[^"\s]+\s+)*relative min-h-\[72px\](?:\s+[^"\s]+)*"[\s\S]*ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
   assert.match(preProject, /ref="rootRef"[\s\S]*@paste\.self="handlePaste"[\s\S]*ref="addMenuRootRef" class="(?:contents|k-ai-composer__add-control)"/)
   assert.match(preProject, /<slot name="menu" \/>/)
   assert.match(rich, /<Teleport to="body">[\s\S]*ref="attachmentMenuRef"/)

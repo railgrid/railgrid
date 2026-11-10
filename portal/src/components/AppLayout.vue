@@ -164,6 +164,7 @@ const mainStyle = computed(() => {
   if (gettingStartedFocused.value) return undefined
   // Reserve chat space only in the content track; navigation owns the outer edge.
   const space = { marginRight: `${assistantOverlay.sidePanelWidth}px` }
+  if (assistantOverlay.chatLauncherVisible) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 64px)` }
   if (layoutProps.fullBleed) return space
   if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
   return { ...space, paddingBottom: mainPaddingBottom.value }

@@ -7,7 +7,7 @@
  */
 :root {
   --railgrid-agent-ui-canonical: 1;
-  --railgrid-agent-ui-version: 60;
+  --railgrid-agent-ui-version: 61;
   --k-ai-composer-action-reserve: 60px; /* 44px touch action + 8px inset + 8px gap. */
   --k-ai-conversation-content-width: 820px;
   --k-ai-pane-enter-duration: 280ms;
@@ -1161,20 +1161,51 @@ button.k-workbench-tab {
   z-index: 2;
 }
 /* Compact chat surfaces reserve space beside the editor, not a second row. */
-.k-ai-composer--compact,
-.k-ai-composer--compact .k-ai-composer__editor { min-height: 44px; }
-.k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 44px; padding: 12px 48px 12px 10px; }
-.k-ai-composer--compact .k-ai-composer__primary { right: 6px; bottom: 6px; }
+.k-ai-composer--compact {
+  --k-ai-bar-height: 44px;
+  --k-ai-bar-inset: 36px;
+
+  &,
+  & .k-ai-composer__editor { min-height: var(--k-ai-bar-height); }
+  & .k-ai-composer__editor > textarea { min-height: var(--k-ai-bar-height); padding: 12px 48px 12px 10px; }
+  & .k-ai-composer__primary { right: 6px; bottom: 6px; }
+
+  /* Keep Add and Send in the row while the rich draft scrolls. */
+  & .k-ai-composer__editor:has(> .k-ai-rich-editor) { display: flex; align-items: center; }
+  & .k-ai-rich-editor {
+    position: static;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    max-height: var(--k-ai-bar-height);
+    overflow: auto;
+    padding-inline-start: var(--k-ai-bar-inset);
+  }
+  & .k-ai-rich-editor .k-ai-composer__controls {
+    position: absolute;
+    inset: 50% auto auto 4px;
+    margin: 0;
+    translate: 0 -50%;
+  }
+  & .k-ai-rich-editor ~ .k-ai-composer__primary {
+    position: static;
+    flex: none;
+    margin-inline: 4px;
+  }
+}
 /* Compact controls overlap the editor row. Empty positioning wrappers must
  * pass clicks through to the textarea, while controls and menus stay usable. */
 .k-ai-composer--compact .k-ai-composer__controls { pointer-events: none; }
 .k-ai-composer--compact .k-ai-composer__controls :is(button, input, select, textarea, a[href], label, summary,
   [role="button"], [role="combobox"], [role="listbox"], [role="menu"], [role="menuitem"], [role="option"], [role="switch"],
   [tabindex]:not([tabindex="-1"]), .k-ai-model-picker__menu) { pointer-events: auto; }
+
 @media (pointer: coarse), (any-pointer: coarse) {
-  .k-ai-composer--compact,
-  .k-ai-composer--compact .k-ai-composer__editor { min-height: 56px; }
-  .k-ai-composer--compact .k-ai-composer__editor > textarea { min-height: 56px; padding: 18px 62px 18px 10px; }
+  .k-ai-composer--compact {
+    --k-ai-bar-height: 56px;
+    --k-ai-bar-inset: 52px;
+  }
+  .k-ai-composer--compact .k-ai-composer__editor > textarea { padding: 18px 62px 18px 10px; }
 }
 .k-ai-primary-action {
   display: inline-flex;

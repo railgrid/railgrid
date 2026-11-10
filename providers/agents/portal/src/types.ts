@@ -18,6 +18,7 @@ import type { AgentKitComposerPart, AgentKitContextResource, AgentKitSkill } fro
 export interface AgentOverlayState {
   agent: string
   composerOnly?: boolean
+  hidden?: boolean
   // A host-curated navigation snapshot, attached only at send time.
   pageContext?: string
 }

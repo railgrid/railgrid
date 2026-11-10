@@ -54,6 +54,7 @@ const props = defineProps<{
   compact?: boolean
   composerOnly?: boolean
   overlay?: boolean
+  overlayHidden?: boolean
   pageContext?: string
   focusNewComposer?: boolean
 }>()
@@ -337,7 +338,7 @@ async function remove(): Promise<void> {
             @close="closeWorkbench"
           >
             <template #conversation>
-              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :overlay="overlay" :composer-only="composerOnly" :focus-new-composer="focusNewComposer" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
+              <AgentChat class="agents-conversation-page" :store="store" :api="api" :name="name" :compact="compact" :overlay="overlay" :overlay-hidden="overlayHidden" :composer-only="composerOnly" :focus-new-composer="focusNewComposer" :page-context="pageContext" @navigate="handleChildNavigate" @inspection-open="handleInspectionOpen">
                 <template #leading>
                   <ResourceBackLink
                     v-if="!overlay"
