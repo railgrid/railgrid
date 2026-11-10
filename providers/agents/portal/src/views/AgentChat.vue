@@ -3490,7 +3490,6 @@ defineExpose({
             <template #editor>
               <AgentRichComposer
                 ref="composer"
-                class="agents-composer-editor"
                 :api="api"
                 :agent="name"
                 :owner-key="composerOwnerKey"
