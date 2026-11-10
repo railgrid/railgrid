@@ -174,12 +174,17 @@ export function runFailurePresentation(phase: RunFailurePhase, diagnostic: strin
   }
 }
 
-export function approvalResolutionFailureMessage(status?: number): string {
+export function inboxResolutionFailureMessage(decision: 'approve' | 'deny' | 'answer', status?: number): string {
+  const kind = decision === 'answer' ? 'question' : 'approval'
   if (status === 403) {
-    return 'You do not have permission to resolve this approval. Ask a workspace administrator to review your access.'
+    const action = kind === 'question' ? 'answer this question' : 'resolve this approval'
+    return `You do not have permission to ${action}. Ask a workspace administrator to review your access.`
   }
   if (status === 404) {
-    return 'This approval is no longer available. The current run status is refreshing.'
+    return `This ${kind} is no longer available. The current run status is refreshing.`
+  }
+  if (kind === 'question') {
+    return 'Could not confirm your answer. The current run status is refreshing to check whether a reply is still needed.'
   }
   return 'Could not confirm the decision. The current run status is refreshing to check whether approval is still needed.'
 }

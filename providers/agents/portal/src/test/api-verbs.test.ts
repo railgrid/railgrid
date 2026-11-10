@@ -43,6 +43,14 @@ describe('verbs are kube paths', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch; vi.useRealTimers() })
 
+  it('answers a question directly on the known agent with structured replies intact', async () => {
+    const { api, calls } = clientWithRecorder({ id: 'question', state: 'answered' })
+    const answers = { first: 'Continue', second: null }
+    await api.resolveInbox('question', 'answer', answers, 'scout')
+    expect(calls).toEqual([{ url: `${KUBE}/agents/scout/inbox-resolve/question`, method: 'POST' }])
+    expect(bodies.get(0)).toEqual({ decision: 'answer', answers })
+  })
+
   it('does not dispatch an already-aborted question reply', async () => {
     const { api, calls } = clientWithRecorder()
     const controller = new AbortController()

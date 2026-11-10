@@ -763,8 +763,8 @@ export class ApiClient {
     for (const item of items) if (item.id && item.agentName) this.inboxAgents.set(item.id, item.agentName)
     return items.sort(byNewest)
   }
-  resolveInbox = async (id: string, decision: 'approve' | 'deny' | 'answer', response?: import('./types').QuestionReply): Promise<InboxItem> => {
-    const agent = await this.agentForInboxItem(id)
+  resolveInbox = async (id: string, decision: 'approve' | 'deny' | 'answer', response?: import('./types').QuestionReply, agentName?: string): Promise<InboxItem> => {
+    const agent = agentName ?? await this.agentForInboxItem(id)
     return this.sendVerb('POST', this.verbTail(this.verb(AGENTS, agent, 'inbox-resolve'), id), { decision, ...(typeof response === 'object' ? { answers: response } : { response }) }, undefined, true)
   }
 
