@@ -50,6 +50,7 @@ const retry = ref(0)
 const expanded = ref(false)
 const retainDedicatedMount = ref(false)
 const viewportWidth = ref(window.innerWidth)
+const mobileLayout = computed(() => viewportWidth.value < 768)
 const narrowBar = computed(() => viewportWidth.value <= 640)
 const chatsVisible = ref(false)
 const conversationTitle = ref('')
@@ -129,7 +130,7 @@ const chatPage = computed(() => {
   return false
 })
 const enabled = computed(() => allowed.value && !!overlay.selectedAgent)
-const visible = computed(() => enabled.value && !gettingStartedFocused.value)
+const visible = computed(() => enabled.value && !gettingStartedFocused.value && (!chatPage.value || !mobileLayout.value))
 const panelVisible = computed(() => visible.value && overlay.open && (expanded.value || !chatPage.value))
 const dedicatedChat = computed(() => !!agentChat.value && agentChat.value === overlay.selectedAgent)
 const dedicatedPanelOpen = computed(() => dedicatedChat.value && expanded.value && overlay.open)
@@ -337,9 +338,9 @@ const navigationWidth = computed(() => insets.navigationWidth ?? 0)
 const panelWidth = computed(() => resizeSidePanel(width.value, 0, viewportWidth.value, navigationWidth.value))
 function updateViewport(): void { viewportWidth.value = window.innerWidth }
 onMounted(() => window.addEventListener('resize', updateViewport))
-watch([panelVisible, expanded, panelWidth, viewportWidth], () => {
+watch([panelVisible, expanded, panelWidth, mobileLayout], () => {
   const showing = panelVisible.value && expanded.value
-  overlay.setSidePanel(showing && viewportWidth.value >= 768 ? panelWidth.value : 0, showing && viewportWidth.value < 768)
+  overlay.setSidePanel(showing && !mobileLayout.value ? panelWidth.value : 0, showing && mobileLayout.value)
 }, { immediate: true, flush: 'sync' })
 const resizing = ref(false)
 let stopResize: (() => void) | undefined
@@ -453,9 +454,9 @@ onBeforeUnmount(() => {
       </div>
     </section>
     </Transition>
-    <button :class="{ 'agent-overlay__launcher--hidden': panelVisible, 'agent-overlay__launcher--return': recoveryPending }" :aria-hidden="panelVisible" :tabindex="panelVisible ? -1 : 0" ref="launcher" type="button" class="k-btn k-btn--primary agent-overlay__launcher"
+    <button :class="{ 'agent-overlay__launcher--hidden': panelVisible, 'agent-overlay__launcher--return': recoveryPending && !chatPage }" :aria-hidden="panelVisible" :tabindex="panelVisible ? -1 : 0" ref="launcher" type="button" class="k-btn k-btn--primary agent-overlay__launcher"
       :aria-label="recoveryPending ? 'Return to assistant' : `Open ${overlay.selectedAgent} chat`" :aria-expanded="panelVisible" aria-controls="railgrid-agent-overlay"
-      @click="returnToAssistant"><Hexagon :size="22" :stroke-width="2" aria-hidden="true" /><span v-if="recoveryPending">Return to assistant</span></button>
+      @click="returnToAssistant"><Hexagon :size="22" :stroke-width="2" aria-hidden="true" /><span v-if="recoveryPending && !chatPage">Return to assistant</span></button>
   </div>
 </template>
 

@@ -155,7 +155,10 @@ const mainPaddingBottom = computed(() => {
 
 const mainClass = computed(() => [
   'relative z-10 min-h-0 min-w-0 flex-1',
-  { 'railgrid-shell-main--chat-closing': assistantOverlay.sidePanelClosing },
+  {
+    'railgrid-shell-main--chat-closing': assistantOverlay.sidePanelClosing,
+    'railgrid-shell-main--chat-launcher': assistantOverlay.chatLauncherVisible,
+  },
   layoutProps.fullBleed ? 'overflow-hidden p-0' : 'overflow-y-auto px-4 py-5 sm:px-8',
 ])
 
@@ -164,8 +167,11 @@ const mainStyle = computed(() => {
   if (gettingStartedFocused.value) return undefined
   // Reserve chat space only in the content track; navigation owns the outer edge.
   const space = { marginRight: `${assistantOverlay.sidePanelWidth}px` }
-  if (assistantOverlay.chatLauncherVisible) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 64px)` }
-  if (layoutProps.fullBleed) return space
+  if (layoutProps.fullBleed) {
+    return assistantOverlay.chatLauncherVisible && mainPaddingBottom.value
+      ? { ...space, paddingBottom: mainPaddingBottom.value }
+      : space
+  }
   if (assistantOverlay.dockVisible && !assistantOverlay.sidePanelWidth && !assistantOverlay.sidePanelFullscreen) return { ...space, paddingBottom: `calc(${mainPaddingBottom.value || '0px'} + 96px)` }
   return { ...space, paddingBottom: mainPaddingBottom.value }
 })
@@ -1166,6 +1172,11 @@ const contextStatus = computed<ContextStatus>(() => {
 .railgrid-shell-main--chat-closing {
   overflow: hidden;
   scrollbar-gutter: stable;
+}
+
+/* Leave room beside the composer for the floating launcher. */
+.railgrid-shell-main--chat-launcher {
+  --k-ai-dock-pad: 12px 72px 12px 16px;
 }
 
 .fade-enter-active,
