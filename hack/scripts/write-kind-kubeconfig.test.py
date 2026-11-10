@@ -1,4 +1,6 @@
+import ctypes
 import importlib.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -24,6 +26,37 @@ class KubeconfigTest(unittest.TestCase):
                 m.refresh('owned', path)
             self.assertEqual(path.read_bytes(), b'second')
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'Linux file watcher regression')
+    def test_unchanged_private_config_emits_no_watch_event(self):
+        libc = ctypes.CDLL(None, use_errno=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config'
+            path.write_bytes(b'working')
+            path.chmod(0o600)
+            fd = libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC)
+            self.assertGreaterEqual(fd, 0)
+            try:
+                # Attribute changes, completed writes, replacement or removal.
+                watch = libc.inotify_add_watch(fd, os.fsencode(path), 0x4 | 0x8 | 0x800 | 0x400)
+                self.assertGreaterEqual(watch, 0)
+                with patch.object(m.subprocess, 'check_output', return_value=b'working'):
+                    m.refresh('owned', path)
+                with self.assertRaises(BlockingIOError):
+                    os.read(fd, 4096)
+            finally:
+                os.close(fd)
+
+    def test_unchanged_content_still_repairs_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'config'
+            path.write_bytes(b'working')
+            for mode in (0o644, 0o4600):
+                path.chmod(mode)
+                with patch.object(m.subprocess, 'check_output', return_value=b'working'):
+                    m.refresh('owned', path)
+                self.assertEqual(path.stat().st_mode & 0o7777, 0o600)
+                self.assertEqual(path.read_bytes(), b'working')
 
     def test_usage_error_has_no_traceback(self):
         result = subprocess.run([sys.executable, str(Path(m.__file__))], capture_output=True, text=True)
