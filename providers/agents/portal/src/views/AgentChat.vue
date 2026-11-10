@@ -80,7 +80,7 @@ interface ConversationRailHandle {
   expanded?: boolean
 }
 
-const props = defineProps<{ store: AppStore; api: ApiClient; name: string; overlay?: boolean; compact?: boolean; composerOnly?: boolean; focusNewComposer?: boolean; pageContext?: string }>()
+const props = defineProps<{ store: AppStore; api: ApiClient; name: string; overlay?: boolean; overlayHidden?: boolean; compact?: boolean; composerOnly?: boolean; focusNewComposer?: boolean; pageContext?: string }>()
 const emit = defineEmits<{ navigate: [route: Route]; 'inspection-open': [open: boolean] }>()
 // The standalone chat keeps its Conversation heading. AgentDetail supplies a
 // leading navigation control, compact identity heading, and actions when the
@@ -148,6 +148,7 @@ function startRename(id = sessionID.value): void {
   renameError.value = ''
 }
 function cancelRename(): void { renameTarget.value = null }
+watch(() => props.overlayHidden, hidden => { if (hidden) cancelRename() })
 const titleControl = computed(() => ({
   title: activeSessionLabel.value,
   disabled: !canRenameActive.value,
@@ -3503,7 +3504,7 @@ defineExpose({
                 :attachments-pending="attachmentsPending"
                 :submitting="composerSubmitting"
                 :placeholder="compact ? `Ask ${name}…` : `Message ${name}…`"
-                :disabled="!sessionInputReady || !hasModel"
+                :disabled="overlayHidden || !sessionInputReady || !hasModel"
                 @update:model-value="draft = $event"
                 @update:content-parts="contentParts = $event"
                 @update:selected-skills="selectedSkills = $event"
@@ -3521,7 +3522,7 @@ defineExpose({
                     :effort="selectedEffort"
                     :effort-options="effortOptions"
                     :default-effort-label="effortLabel(modelPreferences?.defaultEffort || '')"
-                    :disabled="!sessionInputReady || modelInteractionLocked"
+                    :disabled="overlayHidden || !sessionInputReady || modelInteractionLocked"
                     :model-selection-disabled="modelSwitchDisabled"
                     :saving="modelSaving"
                     :save-error="modelSaveError"
