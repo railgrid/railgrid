@@ -19,7 +19,7 @@ import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
 import { toolCommand, toolCommandActivity, toolOutcome, toolOutcomeLabel } from '../toolExecution'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
-import RunFailureNotice from '../components/RunFailureNotice.vue'
+import TechnicalDetails from '../components/TechnicalDetails.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
 import AITranscriptActivity from '../agentkit/AITranscriptActivity.vue'
 import AIConversationTurn from '../agentkit/AIConversationTurn.vue'
@@ -27,9 +27,9 @@ import AIAttachmentReceipts from '../agentkit/AIAttachmentReceipts.vue'
 import type { AgentKitAttachmentReceipt } from '../agentkit/composer'
 import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
-import { formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
+import { aiTurnProgressLabel, formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
 import { isValidTimestamp } from '../agentkit/timestamp'
-import { runFailurePresentation, type FailureRecoveryTarget, type RunFailurePhase } from '../failure-presentation'
+import { runFailurePresentation, sanitizeTechnicalDiagnostic, type FailureRecoveryTarget, type RunFailurePhase } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   message: ChatMessage
@@ -158,12 +158,12 @@ const messageCopyText = computed(() => {
 const progressVisible = computed(() => {
   const progress = props.message.progress
   if (props.message.role !== 'assistant') return false
-  if (stoppedTurn.value) return true
+  if (stoppedTurn.value || failurePhase.value) return true
   if (!progress) return fallbackTools.value.length > 0
   return progressIsActive(progress.status) || traceBlocks.value.length > 0
 })
 const progressStatus = computed<AITurnProgressStatus>(() =>
-  props.message.progress?.status || (fallbackTools.value.some(tool => tool.pending) ? 'running' : 'completed'),
+  props.message.progress?.status || failurePhase.value || (fallbackTools.value.some(tool => tool.pending) ? 'running' : 'completed'),
 )
 const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.role !== 'assistant') return undefined
@@ -180,9 +180,21 @@ const failurePhase = computed<RunFailurePhase | undefined>(() => {
   if (props.message.error && status !== 'stopping') return 'failed'
   return undefined
 })
+const failureDiagnostic = computed(() => sanitizeTechnicalDiagnostic(props.message.error))
+const failurePresentation = computed(() =>
+  failurePhase.value ? runFailurePresentation(failurePhase.value, failureDiagnostic.value) : undefined,
+)
 const progressDuration = computed(() => {
   const value = props.message.progress?.durationMS
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? formatAIWorkedDuration(value) : undefined
+})
+const progressLabel = computed(() => {
+  const failure = failurePresentation.value
+  if (!failure) return stoppedTurn.value ? stoppedLabel.value : undefined
+  if (traceBlocks.value.length && progressDuration.value && !progressIsActive(progressStatus.value)) {
+    return `${failure.title} · ${aiTurnProgressLabel(progressStatus.value, progressDuration.value)}`
+  }
+  return failure.title
 })
 const progressTrace = computed(() => props.message.progress?.trace || [])
 const fallbackTools = computed(() => {
@@ -363,12 +375,13 @@ onBeforeUnmount(() => { mounted = false })
       </template>
 
       <template v-if="progressVisible" #progress>
+        <span v-if="failurePresentation" class="sr-only" :role="failurePhase === 'failed' ? 'alert' : 'status'">{{ failurePresentation.title }}</span>
         <AITurnProgress
           class="k-ai-turn-progress--divided"
           :turn-id="message.id"
           :status="progressStatus"
           :duration="progressDuration"
-          :label="stoppedTurn ? stoppedLabel : undefined"
+          :label="progressLabel"
           :announce="stoppedTurn || (!announce && progressStatus === 'stopping')"
           :expanded="progressExpanded"
           @toggle="progressChoice = $event"
@@ -379,6 +392,18 @@ onBeforeUnmount(() => { mounted = false })
             </div>
           </template>
           <template #details>
+            <div v-if="failurePresentation" class="agents-turn-failure">
+              <p>{{ failurePresentation.summary }}</p>
+              <button
+                v-if="failurePresentation.recovery"
+                class="k-btn k-btn--ghost agents-run-state__recovery"
+                type="button"
+                @click="emit('recovery', failurePresentation.recovery.target)"
+              >
+                {{ failurePresentation.recovery.label }}
+              </button>
+              <TechnicalDetails :diagnostic="failureDiagnostic" compact copyable />
+            </div>
             <template v-for="block in traceBlocks" :key="block.id">
               <div
                 v-if="block.kind === 'commentary'"
@@ -523,25 +548,8 @@ onBeforeUnmount(() => { mounted = false })
       />
     </template>
 
-    <template v-if="failurePhase || message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
-      <RunFailureNotice
-        v-if="failurePhase"
-        :phase="failurePhase"
-        :diagnostic="message.error"
-        @recovery="emit('recovery', $event)"
-      >
-        <template v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" #actions>
-          <button
-            :id="`agents-view-run-${message.id}`"
-            class="k-ai-message-metadata__button k-ai-message-hover-action agents-message-run-link agents-run-notice-link"
-            type="button"
-            @click="emit('view-run', message.runID!)"
-          >
-            View run
-          </button>
-        </template>
-      </RunFailureNotice>
-      <div v-if="!failurePhase && message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
+    <template v-if="message.role === 'user' || (message.runID && showRunLink) || message.usage || isValidTimestamp(messageCreatedAt)" #after>
+      <div v-if="message.runID && showRunLink && !(progressVisible && progressIsActive(progressStatus))" class="k-ai-message-metadata agents-message-footer">
         <button :id="`agents-view-run-${message.id}`" class="k-ai-message-metadata__button k-ai-message-hover-action agents-message-run-link" type="button" @click="emit('view-run', message.runID!)">View run</button>
       </div>
       <div v-if="message.usage" class="k-ai-message-metadata k-ai-message-hover-action agents-turn-usage">

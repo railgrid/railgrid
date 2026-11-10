@@ -30,19 +30,21 @@ describe('run failure recovery and diagnostics', () => {
       onRecovery: recovery,
       onViewRun: viewRun,
     })
-    const notice = view.element.querySelector('.agents-run-state')!
-    expect(text(notice.querySelector('[role="alert"]'))).toBe('Connection failed')
-    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    const notice = view.element.querySelector('.k-ai-turn-progress')!
+    expect(text(view.element.querySelector('[role="alert"]'))).toBe('Connection failed')
+    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!
     expect(text(toggle)).toBe('Connection failed')
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    expect(notice.querySelector('.agents-run-state__summary')).toBeNull()
+    const panel = notice.querySelector<HTMLElement>('.k-ai-turn-progress__details')!
+    expect(panel.style.display).toBe('none')
     toggle.click()
     await settleVue()
-    expect(text(notice.querySelector('.agents-run-state__summary'))).toBe('Runner “book-codex” wasn’t found.')
-    expect(view.element.querySelector('.k-ai-turn-progress')).toBeNull()
+    expect(panel.style.display).not.toBe('none')
+    expect(text(panel.querySelector('.agents-turn-failure p'))).toBe('Runner “book-codex” wasn’t found.')
     notice.querySelector<HTMLButtonElement>('.agents-run-state__recovery')!.click()
     expect(view.element.querySelectorAll('.agents-message-run-link')).toHaveLength(1)
-    notice.querySelector<HTMLButtonElement>('.agents-message-run-link')!.click()
+    expect(notice.querySelector('.agents-message-run-link')).toBeNull()
+    view.element.querySelector<HTMLButtonElement>('.agents-message-footer .agents-message-run-link')!.click()
     expect(recovery).toHaveBeenCalledWith('agent-config')
     expect(viewRun).toHaveBeenCalledWith('run-start')
   })
@@ -54,13 +56,18 @@ describe('run failure recovery and diagnostics', () => {
     const view = await mountVue(ChatMessage, {
       message: { id: 'failed-with-work', role: 'assistant', content: 'Partial answer', tools: [], error: 'Harness stopped', progress },
     })
-    expect(Boolean(view.element.querySelector('.k-ai-turn-progress'))).toBe(progress.trace.length > 0)
-    expect(view.element.querySelector('.agents-run-state')).not.toBeNull()
+    expect(view.element.querySelectorAll('.k-ai-turn-progress')).toHaveLength(1)
+    view.element.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!.click()
+    await settleVue()
+    expect(view.element.querySelector('.k-ai-turn-progress__details .agents-turn-failure')).not.toBeNull()
+    expect(text(view.element.querySelector('.k-ai-turn-progress__details .agents-trace-commentary'))).toBe(
+      progress.trace.length ? 'Inspected the rollout.' : '',
+    )
     expect(text(view.element.querySelector('.agents-body:not(.agents-trace-commentary)'))).toBe('Partial answer')
   })
 
   it('keeps short diagnostics optional in run inspection as well as chat', async () => {
-    const view = await mountVue(RunFailureNotice, { phase: 'failed', diagnostic: 'Short runner error', inspection: true })
+    const view = await mountVue(RunFailureNotice, { phase: 'failed', diagnostic: 'Short runner error' })
     const details = view.element.querySelector<HTMLDetailsElement>('details')!
     expect(details.open).toBe(false)
     expect(view.element.querySelector('.agents-run-state__diagnostic')).toBeNull()
@@ -69,30 +76,40 @@ describe('run failure recovery and diagnostics', () => {
     expect(text(details.querySelector('pre'))).toBe('Short runner error')
   })
 
-  it('expands inline details below the failure and copies from the diagnostic block', async () => {
+  it('keeps a pre-dispatch failure, nested diagnostics, and footer in the shared turn layout', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     vi.stubGlobal('navigator', { clipboard: { writeText } })
-    const diagnostic = 'starting the harness turn: runner HTTP 502: failed to connect to edge agent'
+    const diagnostic = 'connecting to the runner before dispatch: runner HTTP 502: upstream unavailable'
     const view = await mountVue(ChatMessage, {
-      message: { id: 'unclear', role: 'assistant', content: '', tools: [], runID: 'run-502', error: diagnostic },
+      message: { id: 'unclear', role: 'assistant', content: '', tools: [], runID: 'run-502', error: diagnostic, createdAt: '2026-11-09T18:00:00Z' },
     })
-    const notice = view.element.querySelector('.agents-run-state')!
-    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
-    expect(text(toggle)).toBe('Outcome unknown')
-    const detailsId = toggle.getAttribute('aria-controls')!
-    expect(document.getElementById(detailsId)).toBeNull()
+    const notice = view.element.querySelector('.k-ai-turn-progress')!
+    const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!
+    expect(text(toggle)).toBe('Connection failed')
+    const footer = view.element.querySelector('.k-ai-conversation-turn__after')!
+    expect(footer.querySelector('.agents-message-run-link')).not.toBeNull()
+    expect(footer.querySelector('time')).not.toBeNull()
+    expect(notice.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const body = document.getElementById(toggle.getAttribute('aria-controls')!)!
+    expect(body.style.display).toBe('none')
     toggle.click()
     await settleVue()
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    const body = document.getElementById(detailsId)!
-    expect(text(body.querySelector('pre'))).toBe(diagnostic)
+    expect(body.style.display).not.toBe('none')
+    expect(text(body.querySelector('.agents-turn-failure p'))).toContain('before dispatch')
+    const technical = body.querySelector('details')!
+    expect(technical.open).toBe(false)
+    technical.querySelector('summary')!.click()
+    expect(technical.open).toBe(true)
+    expect(text(technical.querySelector('pre'))).toBe(diagnostic)
     body.querySelector<HTMLButtonElement>('[aria-label="Copy details"]')!.click()
     await settleVue()
     expect(writeText).toHaveBeenCalledWith(diagnostic)
     expect(text(body.querySelector('[role="status"]'))).toBe('Technical details copied.')
     toggle.click()
     await settleVue()
-    expect(document.getElementById(detailsId)).toBeNull()
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+    await vi.waitFor(() => expect(body.style.display).toBe('none'))
   })
 
   it('copies only the sanitized diagnostic and clears feedback when it changes', async () => {
@@ -127,8 +144,10 @@ describe('run failure recovery and diagnostics', () => {
   })
 
   it('shows the summary without a diagnostic block when the diagnostic is empty', async () => {
-    const view = await mountVue(RunFailureNotice, { phase: 'failed', diagnostic: '  ' })
-    view.element.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    const view = await mountVue(ChatMessage, {
+      message: { id: 'failed-empty', role: 'assistant', content: '', tools: [], error: '  ' },
+    })
+    view.element.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!.click()
     await settleVue()
     expect(view.element.querySelector('pre')).toBeNull()
     expect(text(view.element)).not.toContain('partial output')

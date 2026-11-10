@@ -46,7 +46,7 @@ import AgentQuestionCard from '../components/AgentQuestionCard.vue'
 import { skippedQuestionResponse } from '../question-presentation'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import type { FailureRecoveryTarget, RunFailurePhase } from '../failure-presentation'
-import { approvalResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
+import { inboxResolutionFailureMessage, sanitizeTechnicalDiagnostic, technicalDiagnosticExcerpt } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
   store: AppStore
@@ -273,7 +273,7 @@ async function resolve(inboxID: string, decision: 'approve' | 'deny' | 'answer',
     await Promise.allSettled([authority.store.load('inbox'), load()])
   } catch (cause) {
     if (authorityIsCurrent(authority) && id === props.runId) {
-      toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      toast('error', inboxResolutionFailureMessage(decision, cause instanceof ApiError ? cause.status : undefined))
       await Promise.allSettled([authority.store.load('inbox'), load('background')])
     }
   } finally {
@@ -603,7 +603,6 @@ onBeforeUnmount(() => {
                 v-if="runFailurePhase"
                 :phase="runFailurePhase"
                 :diagnostic="run.message"
-                inspection
                 @recovery="navigateForFailure"
               />
               <!--
