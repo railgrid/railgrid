@@ -274,7 +274,10 @@ watch([mountable, authorityKey, () => overlay.selectedAgent, mount, retry], () =
 // Navigation and context sharing must not replace the provider's fetch wrapper
 // or reset its API/store watchers while a conversation is streaming.
 watch([expanded, panelVisible, () => overlay.followContext, pageContext], pushOverlayState, { flush: 'sync' })
-watch(panelVisible, show => overlay.setDockVisible(show), { immediate: true })
+watch(panelVisible, show => {
+  overlay.setDockVisible(show)
+  if (!show) contextPreviewOpen.value = false
+}, { immediate: true })
 watch(() => visible.value && chatPage.value && !panelVisible.value, show => overlay.setChatLauncherVisible(show), { immediate: true })
 watch([authorityKey, () => overlay.selectedAgent], () => {
   expanded.value = false

@@ -5,7 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, returnToAssistant, collapse, barContextItems, assistantAction })\n</script>')
+const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, returnToAssistant, collapse, barContextItems, assistantAction, contextPreviewOpen })\n</script>')
 const { descriptor } = parse(source)
 descriptor.template = null
 const compiled = compileScript(descriptor, { id: 'overlay-binding' })
@@ -13,7 +13,7 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ available = true, shadowReady = false, bindingReady = true, viewportWidth = 1440 } = {}) {
+function scenario({ available = true, shadowReady = false, bindingReady = true, viewportWidth = 1440, initialRoute = {} } = {}) {
   const platform = { name: 'agents', displayName: 'Platform Agents', scope: 'global', version: '1', ready: true,
     export: { path: 'root:railgrid:providers:agents' }, serving: { ui: { mainJSIntegrity: 'platform-pin' } } }
   const state = Vue.reactive({ bound: available ? platform : undefined,
@@ -34,7 +34,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true, 
     addEventListener() {}, dispatchEvent() {}, remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) } }) }
   globalThis.customElements = { get: () => function AgentsElement() {} }
   const noOp = () => {}
-  const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {} })
+  const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {}, ...initialRoute })
   const overlay = Vue.reactive({ preferenceKey: 'preference', selectedAgent: 'scout', open: true, followContext: false,
     dockVisible: false, sidePanelWidth: 0, setSidePanelClosing: noOp,
     setMinimized(value) { this.open = !value }, setSidePanel(width) { this.sidePanelWidth = width },
@@ -164,6 +164,50 @@ test('the launcher opens the side panel in chat and the panel stays open across 
     await flush()
     assert.equal(s.host.children[0], assistant)
     assert.equal(assistant.overlayState.hidden, false)
+  } finally { s.cleanup() }
+})
+
+test('opening directly on the selected agent defers its overlay mount until the launcher is used', async () => {
+  const hash = '#/agents/scout/chat'
+  const s = scenario({ initialRoute: { params: { name: 'agents' }, hash, fullPath: '/workspace' + hash } })
+  try {
+    await flush()
+    assert.equal(s.exposed.visible.value, true)
+    assert.equal(s.exposed.panelVisible.value, false)
+    assert.equal(s.host.children.length, 0)
+    assert.equal(s.calls.bundles.length, 0)
+
+    s.exposed.returnToAssistant()
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.equal(s.host.children.length, 1)
+    const assistant = s.host.children[0]
+
+    await s.exposed.collapse()
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, false)
+    assert.equal(s.host.children[0], assistant)
+    assert.equal(assistant.overlayState.hidden, true)
+    assert.equal(s.calls.bundles.length, 1)
+  } finally { s.cleanup() }
+})
+
+test('hiding the compact bar closes its page-context preview', async () => {
+  const s = scenario()
+  try {
+    await flush()
+    s.exposed.assistantAction('context-preview')
+    assert.equal(s.exposed.contextPreviewOpen.value, true)
+
+    s.route.params = { name: 'app-studio', rest: ['~new'] }
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, false)
+    assert.equal(s.exposed.contextPreviewOpen.value, false)
+
+    s.exposed.returnToAssistant()
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.equal(s.exposed.contextPreviewOpen.value, false)
   } finally { s.cleanup() }
 })
 
