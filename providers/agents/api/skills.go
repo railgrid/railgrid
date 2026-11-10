@@ -30,6 +30,7 @@ import (
 	workspaceskills "github.com/railgrid/provider-agents/skills"
 	"github.com/railgrid/provider-agents/tenant"
 	"github.com/railgrid/provider-sdk/dataplane"
+	"github.com/railgrid/provider-sdk/hubclient"
 	sdk "github.com/railgrid/provider-sdk/skills"
 )
 
@@ -250,7 +251,10 @@ func (s *Server) agentProviderCatalog(ctx context.Context, id identity) ([]agent
 	if s.cfg.HubURL == "" || strings.TrimSpace(id.token) == "" {
 		return nil, errors.New("provider catalog unavailable")
 	}
-	config := &rest.Config{Host: s.cfg.HubURL, BearerToken: id.token, TLSClientConfig: rest.TLSClientConfig{Insecure: s.cfg.HubInsecure}}
+	config := &rest.Config{Host: s.cfg.HubURL, BearerToken: id.token}
+	if err := hubclient.ApplyHubTLS(config, s.cfg.HubInsecure); err != nil {
+		return nil, err
+	}
 	client, err := rest.HTTPClientFor(config)
 	if err != nil {
 		return nil, err

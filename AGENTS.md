@@ -317,7 +317,16 @@ Heartbeat: standalone providers POST every ~30s through the one shared
 client in `provider-sdk/hubclient` (`ConfigFromEnv` + `RunHeartbeat`), which
 reads `RAILGRID_HUB_URL`, `RAILGRID_PROVIDER_NAME`, `RAILGRID_HUB_INSECURE` and
 `RAILGRID_PROVIDER_VERSION`. Do not copy the loop into a provider: TLS, token
-and retry behaviour must change in one place. `HeartbeatConfig.CanSend` is
+and retry behaviour must change in one place. TLS trust is
+`hubclient.HubCA`: the hub is verified against the system roots plus
+`RAILGRID_HUB_CA_FILE`, else `RAILGRID_HUB_CA_DATA`, else the CA bundle inside
+`RAILGRID_PROVIDER_KUBECONFIG` (the hub mints it with `providerCASecretName`,
+which covers its own serving certificate), so a hub on a private CA needs no
+`hub.insecure`; that flag stays a dev-only opt-out. Every other hub-bound
+client in the SDK (`identityclient`, `tenantaccess.RESTConfig`,
+`dataplane.NewHubCallerFactory`) and in the providers goes through
+`hubclient.HubTransport` / `hubclient.ApplyHubTLS` for the same reason —
+never build a hub `http.Transport` or `rest.Config` with its own TLS config. `HeartbeatConfig.CanSend` is
 **required** — `RunHeartbeat` logs `ErrNoReadinessGate` and refuses to start
 without it, so a provider whose watches are dead cannot keep reporting alive.
 Wire it to the provider's real readiness (`vwhealth.Readiness.Check`, or
