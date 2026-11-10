@@ -376,6 +376,7 @@ the policies it labelled as its own. Requirements and caveats:
 | `RAILGRID_HUB_TOKEN` | (unset) | Bearer token for heartbeats |
 | `RAILGRID_PROVIDER_NAME` | `infrastructure` | CatalogEntry name |
 | `RAILGRID_HUB_INSECURE` | (unset) | `true` skips TLS verify on heartbeats |
+| `RAILGRID_HUB_CA_FILE` / `RAILGRID_HUB_CA_DATA` | (unset) | PEM bundle for the hub's serving certificate, added to the system roots; unset, the CA of `RAILGRID_PROVIDER_KUBECONFIG` is used |
 | `RAILGRID_PROVIDER_KUBECONFIG` | **required** (chart: `/var/run/secrets/railgrid/railgrid-provider-kubeconfig`) | The workspace-scoped kubeconfig `init` mints. The only one `serve` reads — no `KUBECONFIG` fallback, no in-cluster fallback; unset is a startup failure |
 | `RAILGRID_TENANT_CREDENTIALS_SECRET` | `cloud-credentials` | Secret name in tenant workspace |
 | `RAILGRID_TENANT_CREDENTIALS_NAMESPACE` | `default` | Namespace in tenant workspace |

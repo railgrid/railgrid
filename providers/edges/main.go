@@ -266,6 +266,11 @@ func runServe(opts serveOptions) error {
 			keyConfig.CAData = nil
 			keyConfig.Insecure = true
 		}
+		// Neither a CA nor insecure configured: verify with the system roots
+		// plus the bundle of the provider's own kubeconfig.
+		if err := hubclient.ApplyHubTLS(keyConfig, false); err != nil {
+			return fmt.Errorf("provider relay key transport: %w", err)
+		}
 		keyHTTP, err := rest.HTTPClientFor(keyConfig)
 		if err != nil {
 			return fmt.Errorf("provider relay key transport: %w", err)

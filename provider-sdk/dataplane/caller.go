@@ -24,6 +24,8 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/util/flowcontrol"
+
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 // CallerFactory builds the per-request client a data-plane handler acts
@@ -191,7 +193,8 @@ func NewCallerFactory(base *rest.Config, opts ...CallerOption) (*Callers, error)
 // a CA bundle, for a provider that has no kubeconfig at serve time. It is the
 // same target tenantaccess.RESTConfig builds. insecure relaxes server
 // verification for in-cluster hub certificates (the RAILGRID_HUB_INSECURE
-// knob) and is never appropriate in production.
+// knob) and is never appropriate in production; with neither a CA nor
+// insecure, the hub is verified against the system roots plus hubclient.HubCA.
 func NewHubCallerFactory(hubBase string, caCertData []byte, insecure bool, opts ...CallerOption) (*Callers, error) {
 	hubBase = strings.TrimRight(strings.TrimSpace(hubBase), "/")
 	if hubBase == "" {
@@ -206,7 +209,14 @@ func NewHubCallerFactory(hubBase string, caCertData []byte, insecure bool, opts 
 		// rest refuses a config that both trusts a CA and skips verification.
 		tls.CAData = nil
 	}
-	return newCallers(&rest.Config{Host: host, TLSClientConfig: tls}, opts...), nil
+	base := &rest.Config{Host: host, TLSClientConfig: tls}
+	// No CA handed in: trust the system roots plus the bundle the provider's
+	// own kubeconfig carries (hubclient.HubCA), which covers a hub serving a
+	// private certificate on its in-cluster Service name.
+	if err := hubclient.ApplyHubTLS(base, insecure); err != nil {
+		return nil, fmt.Errorf("dataplane: hub TLS configuration: %w", err)
+	}
+	return newCallers(base, opts...), nil
 }
 
 func newCallers(base *rest.Config, opts ...CallerOption) *Callers {
