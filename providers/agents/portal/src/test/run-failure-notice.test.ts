@@ -31,9 +31,9 @@ describe('run failure recovery and diagnostics', () => {
       onViewRun: viewRun,
     })
     const notice = view.element.querySelector('.agents-run-state')!
-    expect(text(notice.querySelector('[role="alert"]'))).toBe('Couldn’t start this run')
+    expect(text(notice.querySelector('[role="alert"]'))).toBe('Connection failed')
     const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
-    expect(text(toggle)).toBe('Couldn’t start this run')
+    expect(text(toggle)).toBe('Connection failed')
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     expect(notice.querySelector('.agents-run-state__summary')).toBeNull()
     toggle.click()
@@ -78,7 +78,7 @@ describe('run failure recovery and diagnostics', () => {
     })
     const notice = view.element.querySelector('.agents-run-state')!
     const toggle = notice.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
-    expect(text(toggle)).toBe('Run status is unclear')
+    expect(text(toggle)).toBe('Outcome unknown')
     const detailsId = toggle.getAttribute('aria-controls')!
     expect(document.getElementById(detailsId)).toBeNull()
     toggle.click()

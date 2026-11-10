@@ -685,6 +685,7 @@ func bindChatStream(run *taskRun, emit func(string, map[string]any)) {
 			"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
 			"hasMcpApp": ev.HasMCPApp(),
 		}
+		addToolOutcomeMetadata(data, ev)
 		if len(ev.Sources) > 0 {
 			data["sources"] = ev.Sources
 		}

@@ -66,14 +66,16 @@ type runSummary struct {
 
 // runStep is one tool call in a run's trace.
 type runStep struct {
-	ID         string    `json:"id"`
-	Tool       string    `json:"tool"`
-	Args       string    `json:"args,omitempty"`
-	Result     string    `json:"result,omitempty"`
-	Outcome    string    `json:"outcome"`
-	Error      string    `json:"error,omitempty"`
-	DurationMS int64     `json:"durationMS,omitempty"`
-	At         time.Time `json:"at"`
+	ID             string    `json:"id"`
+	Tool           string    `json:"tool"`
+	Args           string    `json:"args,omitempty"`
+	Result         string    `json:"result,omitempty"`
+	Outcome        string    `json:"outcome"`
+	Error          string    `json:"error,omitempty"`
+	DurationMS     int64     `json:"durationMS,omitempty"`
+	ExitCode       *int64    `json:"exitCode,omitempty"`
+	OutcomeUnknown bool      `json:"outcomeUnknown,omitempty"`
+	At             time.Time `json:"at"`
 }
 
 // runDetail is the full trace view of one run. Steps and Children are always
@@ -218,6 +220,7 @@ func (s *Server) runDetailFor(ctx context.Context, scope store.Scope, runID stri
 			detail.Steps = append(detail.Steps, runStep{
 				ID: tc.ID, Tool: tc.Tool, Args: tc.Args, Result: tc.Result,
 				Outcome: tc.Outcome, Error: tc.Error, DurationMS: tc.DurationMS, At: tc.CreatedAt,
+				ExitCode: tc.ExitCode, OutcomeUnknown: tc.OutcomeUnknown,
 			})
 		}
 	}

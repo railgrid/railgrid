@@ -480,9 +480,11 @@ expanded output survived completion and group/Worked for collapse and reopen,
 and no tool rows appeared outside Worked for.
 
 Message copy controls use provider-supplied visible text for user messages and
-assistant responses. On hover-capable desktops, sender labels, timestamps, and
-message actions appear on message hover or keyboard focus; touch layouts keep
-them visible. Copy confirmation and failure feedback remain accessible.
+assistant responses. Agents offers response copy after the turn completes
+successfully and for older saved answers without turn status. On hover-capable
+desktops, sender labels, timestamps, and message actions appear on hover or
+keyboard focus. Touch layouts keep them visible. Copy confirmation and failure
+feedback remain accessible.
 
 App Studio renders assistant message timestamps after terminal turns; active
 assistant turns keep their timestamps hidden. The timestamp uses the server

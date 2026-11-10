@@ -50,6 +50,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
+	"github.com/railgrid/provider-agents/backend"
 	runctrl "github.com/railgrid/provider-agents/controller/run"
 	"github.com/railgrid/provider-agents/store"
 )
@@ -94,7 +95,7 @@ func runRetryBackoff(retry int) time.Duration {
 // is never one either, because a receipt means an attempt exists on the runner
 // and a fresh start would collide with it.
 func retryableRefusal(err error) (string, bool) {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, backend.ErrHarnessOutcomeUnknown) {
 		return "", false
 	}
 	refusal, ok := dispatch.Refusal(err)

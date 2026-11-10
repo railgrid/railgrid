@@ -257,3 +257,11 @@ with review fixes measures 1,410,195 B raw / 392,721 B gzip total and
 1,200,993 B raw / 327,705 B gzip on the page path. The total limits increase
 by 500 B raw and 2,500 B gzip to 1,410,500 B raw and 393,000 B gzip. The
 path-specific limits retain their existing values.
+
+### Shared command receipts
+
+The production build for the shared AgentKit command receipt changes measured
+1,410,858 B raw and 392,858 B gzip in both portal and container CI. The total
+raw ceiling increases by 1,000 B to 1,411,500 B, leaving 642 B of raw headroom
+on that build. The gzip total and path-specific ceilings retain their existing
+values.

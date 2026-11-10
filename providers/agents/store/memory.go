@@ -1470,6 +1470,9 @@ func (m *MemoryStore) AppendToolCall(_ context.Context, scope Scope, tc ToolCall
 	scope = m.normalizeScopeLocked(scope)
 	k := tenantKey(scope)
 	tc.Sources = cloneAgentArtifact(AgentArtifact{Sources: tc.Sources}).Sources
+	if tc.ExitCode != nil {
+		tc.ExitCode = new(*tc.ExitCode)
+	}
 	m.toolCalls[k] = append(m.toolCalls[k], tc)
 	return nil
 }
@@ -1486,6 +1489,9 @@ func (m *MemoryStore) ListToolCalls(_ context.Context, scope Scope, runID string
 		if tc.RunID == runID {
 			tc.Sources = cloneAgentArtifact(AgentArtifact{Sources: tc.Sources}).Sources
 			tc.Presentation = tc.Presentation.Clone()
+			if tc.ExitCode != nil {
+				tc.ExitCode = new(*tc.ExitCode)
+			}
 			out = append(out, tc)
 		}
 	}

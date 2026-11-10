@@ -44,6 +44,7 @@ const statusIcon = computed(() => {
   switch (status.value.state) {
     case 'running': return Loader2
     case 'succeeded': return Check
+    case 'exited': return null
     case 'failed':
     case 'timed_out':
     case 'canceled':
@@ -162,6 +163,7 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
         <span v-else />
         <span class="k-ai-execution-details__status" :class="`k-ai-execution-details__status--${status.tone}`">
           <component
+            v-if="statusIcon"
             :is="statusIcon"
             class="k-ai-execution-details__status-icon"
             :class="{ 'k-ai-execution-details__status-icon--running': status.busy }"

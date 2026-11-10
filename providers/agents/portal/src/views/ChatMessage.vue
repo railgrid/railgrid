@@ -17,7 +17,7 @@ import ApprovalDisclosure from '../components/ApprovalDisclosure.vue'
 import { answeredQuestionCount, questionPresentation, skippedQuestionResponse } from '../question-presentation'
 import AgentVisualization from '../components/AgentVisualization.vue'
 import { messageVisualizations } from '../visualization'
-import { toolCommand, toolCommandActivity } from '../toolExecution'
+import { toolCommand, toolCommandActivity, toolOutcome, toolOutcomeLabel } from '../toolExecution'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import RunFailureNotice from '../components/RunFailureNotice.vue'
 import InlineMcpApp from '../components/InlineMcpApp.vue'
@@ -148,6 +148,13 @@ const messageCreatedAt = computed(() => {
   if (role === 'assistant' && (progress ? progressIsActive(progress.status) : streaming)) return null
   return createdAt || null
 })
+const messageCopyText = computed(() => {
+  const { role, content, streaming, progress } = props.message
+  if (role === 'user') return userMessage.value.text
+  // Streamed text can still be classified as commentary or replaced by the answer.
+  if (streaming || (progress && progress.status !== 'completed')) return ''
+  return content
+})
 const progressVisible = computed(() => {
   const progress = props.message.progress
   if (props.message.role !== 'assistant') return false
@@ -231,9 +238,6 @@ function actionStatus(tool: ToolCall): string {
   if (tool.pending) {
     switch (props.message.progress?.status) {
       case 'waiting': return 'waiting'
-      case 'aborted': return 'canceled'
-      case 'failed': case 'interrupted': return 'failed'
-      case 'completed': return 'skipped'
       default: return 'running'
     }
   }
@@ -241,19 +245,13 @@ function actionStatus(tool: ToolCall): string {
   return 'succeeded'
 }
 
-function actionStatusLabel(tool: ToolCall): string {
-  switch (actionStatus(tool)) {
+function actionStatusLabel(status: string): string {
+  switch (status) {
     case 'waiting': return 'Waiting for approval'
-    case 'canceled': return 'Cancelled'
-    case 'skipped': return 'No result recorded'
     case 'running': return 'Running'
-    case 'failed': return tool.pending ? 'Interrupted' : 'Failed'
+    case 'failed': return 'Failed'
     default: return 'Completed'
   }
-}
-
-function toolBusy(tool: ToolCall): boolean {
-  return actionStatus(tool) === 'running'
 }
 
 function actionOutcome(tool: ToolCall): string {
@@ -290,21 +288,37 @@ const toolsByID = computed(() => {
   return result
 })
 
+function displayTool(tool: ToolCall): ToolCall {
+  if (tool.pending && ['failed', 'interrupted', 'completed', 'aborted'].includes(props.message.progress?.status || '')) {
+    return { ...tool, pending: false, outcomeUnknown: true }
+  }
+  return tool
+}
+
 function activityRowsFor(block: Extract<TracePresentation, { kind: 'tools' }>): AIActivityRow[] {
-  return block.tools.map(tool => {
+  return block.tools.map(recorded => {
+    const tool = displayTool(recorded)
+    const outcome = toolOutcome(tool)
+    const label = toolOutcomeLabel(outcome)
+    const needsReview = outcome?.kind === 'unknown'
     const command = toolCommand(tool)
     const status = actionStatus(tool)
-    const statusLabel = actionStatusLabel(tool)
-    const activity = command ? toolCommandActivity(command, status, statusLabel) : undefined
+    const statusLabel = actionStatusLabel(status)
+    const activity = command ? toolCommandActivity(command, outcome ? 'succeeded' : status, statusLabel) : undefined
     return {
       id: tool.id,
-      title: activity?.title ?? formatToolLabel(tool.name),
+      title: outcome?.kind === 'unknown' && command ? command : activity?.title ?? formatToolLabel(tool.name),
       category: activity?.category,
       iconKey: activity?.iconKey || toolIconKey(tool.name),
-      status, statusLabel,
-      outcome: command ? '' : actionOutcome(tool),
-      busy: toolBusy(tool), error: !!tool.error,
-      expandable: Boolean(tool.args || tool.result || tool.error),
+      status: outcome ? (outcome.kind === 'unknown' ? 'unknown' : 'succeeded') : status,
+      statusLabel: label || statusLabel,
+      outcome: label || (command ? '' : actionOutcome(tool)),
+      busy: !outcome && status === 'running',
+      attention: needsReview,
+      needsReview,
+      exitCode: outcome?.exitCode,
+      error: !outcome && !!tool.error,
+      expandable: Boolean(outcome || tool.args || tool.result || tool.error),
       detailsId: `agents-action-details-${tool.id}`,
     }
   })
@@ -340,7 +354,7 @@ onBeforeUnmount(() => { mounted = false })
       class="agents-ai-message"
       :id="message.id"
       :role="message.role"
-      :copy-text="message.role === 'user' ? userMessage.text : message.content"
+      :copy-text="messageCopyText"
       :bubble="message.role === 'user' && userHasBubbleContent"
       :aria-label="message.role === 'user' ? `Message from ${messageAuthor}` : 'Assistant message'"
     >
@@ -384,7 +398,7 @@ onBeforeUnmount(() => { mounted = false })
               >
                 <template #details="{ row }">
                   <template v-for="tool in [toolsByID.get(row.id)]" :key="row.id">
-                    <AgentToolDetails v-if="tool" :tool="tool" />
+                    <AgentToolDetails v-if="tool" :tool="displayTool(tool)" />
                   </template>
                 </template>
               </AITranscriptActivity>
@@ -399,7 +413,7 @@ onBeforeUnmount(() => { mounted = false })
             >
               <template #details="{ row }">
                 <template v-for="tool in [toolsByID.get(row.id)]" :key="row.id">
-                  <AgentToolDetails v-if="tool" :tool="tool" />
+                  <AgentToolDetails v-if="tool" :tool="displayTool(tool)" />
                 </template>
               </template>
             </AITranscriptActivity>
