@@ -35,7 +35,6 @@ package identityclient
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,7 +197,8 @@ type Options struct {
 	// other identity (wrong_identity), so the user token dev setups put in
 	// RAILGRID_HUB_TOKEN for heartbeats must never be what is presented here.
 	Token string
-	// Insecure skips TLS verification. Empty reads RAILGRID_HUB_INSECURE.
+	// Insecure skips TLS verification. Empty reads RAILGRID_HUB_INSECURE. When
+	// off, the hub is verified against the system roots plus hubclient.HubCA.
 	Insecure *bool
 	// HTTPClient overrides the transport (tests).
 	HTTPClient *http.Client
@@ -239,9 +239,9 @@ func New(opts Options) (*Client, error) {
 		if opts.Insecure != nil {
 			insecure = *opts.Insecure
 		}
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		if insecure {
-			transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // opt-in for in-cluster hub certs
+		transport, err := hubclient.HubTransport(insecure)
+		if err != nil {
+			return nil, fmt.Errorf("hub TLS configuration: %w", err)
 		}
 		client = &http.Client{Timeout: defaultTimeout, Transport: transport}
 	}

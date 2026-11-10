@@ -849,6 +849,10 @@ Content-Type: application/json
   `RAILGRID_PROVIDER_VERSION`). The bearer is `RAILGRID_HUB_TOKEN` if set,
   otherwise the token in `RAILGRID_PROVIDER_KUBECONFIG`
   (`hubclient.ResolveHubToken`). A 401/403 is logged with what to fix.
+  The hub's certificate is verified against the system roots plus
+  `hubclient.HubCA` — `RAILGRID_HUB_CA_FILE`, else `RAILGRID_HUB_CA_DATA`,
+  else the CA bundle of `RAILGRID_PROVIDER_KUBECONFIG` — so a hub serving a
+  private CA on its in-cluster Service name needs no `RAILGRID_HUB_INSECURE`.
   Charts need no change.
 - Updates `CatalogEntry.status.lastHeartbeat` and
   `reportedVersion`.

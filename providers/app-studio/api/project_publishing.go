@@ -38,11 +38,11 @@ package api
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -57,6 +57,8 @@ import (
 	asclient "github.com/railgrid/provider-app-studio/client"
 	"github.com/railgrid/provider-app-studio/hubapi"
 	"github.com/railgrid/provider-app-studio/tenant"
+
+	"github.com/railgrid/provider-sdk/hubclient"
 )
 
 const (
@@ -139,14 +141,13 @@ type projectPublishingResponse struct {
 }
 
 func newPublishingHTTPClient() *http.Client {
-	transport := http.DefaultTransport
-	if base, ok := http.DefaultTransport.(*http.Transport); ok {
-		transport = base.Clone()
-	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_HUB_INSECURE")), "true") {
-		if base, ok := transport.(*http.Transport); ok {
-			base.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // explicit local/dev opt-in
-		}
+	// System roots plus the hub CA from the provider's own kubeconfig
+	// (hubclient.HubCA); RAILGRID_HUB_INSECURE is the explicit dev opt-out.
+	insecure := strings.EqualFold(strings.TrimSpace(os.Getenv("RAILGRID_HUB_INSECURE")), "true")
+	transport, err := hubclient.HubTransport(insecure)
+	if err != nil {
+		log.Printf("publishing hub client: %v; verifying against the system roots only", err)
+		return &http.Client{Transport: http.DefaultTransport.(*http.Transport).Clone()}
 	}
 	return &http.Client{Transport: transport}
 }

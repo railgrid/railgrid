@@ -19,7 +19,6 @@ package hubclient
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -42,7 +41,8 @@ const (
 	// reports so a separately packaged binary matches its CatalogEntry/image.
 	EnvProviderVersion = "RAILGRID_PROVIDER_VERSION"
 	// EnvHubInsecure set to exactly "true" skips TLS verification of the hub.
-	// Dev-only, for self-signed certificates.
+	// Dev-only, for self-signed certificates; a hub serving a private CA is
+	// verified without it through HubCA.
 	EnvHubInsecure = "RAILGRID_HUB_INSECURE"
 
 	// DefaultHeartbeatInterval is how often a provider beats. The hub's TTL
@@ -78,7 +78,9 @@ type HeartbeatConfig struct {
 	Interval time.Duration
 	// Timeout for a single POST; DefaultHeartbeatTimeout when zero.
 	Timeout time.Duration
-	// Insecure skips TLS verification of the hub. Dev-only.
+	// Insecure skips TLS verification of the hub. Dev-only. When false the
+	// hub is verified against the system roots plus HubCA (the bundle from
+	// RAILGRID_HUB_CA_FILE, RAILGRID_HUB_CA_DATA or the provider kubeconfig).
 	Insecure bool
 	// Logger receives send failures and rejections. A zero Logger falls
 	// back to klog.
@@ -171,10 +173,13 @@ func RunHeartbeat(ctx context.Context, cfg HeartbeatConfig) {
 	}
 
 	client := &http.Client{Timeout: cfg.Timeout}
-	if cfg.Insecure {
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // dev-only; opt-in via RAILGRID_HUB_INSECURE
-		}
+	if transport, err := HubTransport(cfg.Insecure); err != nil {
+		// A configured CA that cannot be loaded is logged, not fatal: the beat
+		// keeps going against the system roots so the failure mode is a
+		// visible TLS error on every attempt rather than a silent stop.
+		log.Error(err, "heartbeat hub CA unavailable; verifying against system roots only")
+	} else {
+		client.Transport = transport
 	}
 
 	send := func() {
