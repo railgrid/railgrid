@@ -27,8 +27,31 @@ export function toolCommand(tool: ToolCall): string | undefined {
 export function toolCommandTitle(tool: ToolCall): string | undefined {
   const command = toolCommand(tool)
   if (!command) return undefined
-  const verb = tool.pending ? 'Running' : tool.error ? 'Failed' : 'Ran'
+  const verb = toolOutcome(tool)?.kind === 'exit' ? 'Ran' : tool.pending ? 'Running' : tool.error ? 'Failed' : 'Ran'
   return `${verb} ${command.replace(/\s+/g, ' ').trim()}`
+}
+
+export function toolOutcome(tool: ToolCall) {
+  if (typeof tool.exitCode === 'number' && Number.isSafeInteger(tool.exitCode)) {
+    return {
+      kind: 'exit' as const,
+      label: 'Completed',
+      exitCode: tool.exitCode,
+    }
+  }
+  if (tool.outcomeUnknown === true) {
+    return {
+      kind: 'unknown' as const,
+      label: 'Outcome unknown',
+      detail: 'No completion was confirmed. Check what the tool did before retrying.',
+    }
+  }
+  return undefined
+}
+
+export function toolOutcomeLabel(outcome: ReturnType<typeof toolOutcome>): string {
+  if (!outcome) return ''
+  return outcome.kind === 'unknown' ? outcome.label : `${outcome.label} · exit ${outcome.exitCode}`
 }
 
 export function toolCommandActivity(command: string, status: string, statusLabel: string) {

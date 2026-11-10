@@ -296,6 +296,8 @@ export function rebuildTranscript(chronological: TranscriptMessage[]): ChatMessa
           ...(sources?.length ? { sources } : {}),
           ...(metadata.hasMcpApp === true && sources?.length ? { hasMcpApp: true } : {}),
           ...(savedCapture ? { savedCapture } : {}),
+          exitCode: metadata.exitCode,
+          outcomeUnknown: metadata.outcomeUnknown,
           durationMS: durationMS(metadata.durationMS),
           pending: metadata.pending === true,
         },

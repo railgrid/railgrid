@@ -193,6 +193,13 @@ run class.
 
 ### A run is a trace, not a terminal label
 
+Chat and run inspection show a recorded process exit as **Completed · exit N**.
+Nonzero exits count in diagnostics, and the command output is available for
+inspection. A runner connection failure before dispatch is **Connection failed**.
+When dispatch or completion cannot be confirmed, show **Outcome unknown** and
+ask the operator to check the run and its effects before retrying. Historical
+command records without an exit receipt retain their recorded status.
+
 Run detail exposes the agent, trigger, run class, session, start time, duration,
 usage, and parent relationship. While a run is Pending, Running, or
 PendingApproval, the detail refreshes and its elapsed time moves; a settled run

@@ -1616,6 +1616,7 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 			Tool: ev.Name, Args: redactArgs(ev.Args), Result: safeTruncate(ev.Result, maxStoredResult),
 			Sources: ev.Sources, Presentation: ev.Presentation.Clone(),
 			Outcome: outcome, Error: errorText, DurationMS: ev.Duration.Milliseconds(), CreatedAt: time.Now().UTC(),
+			ExitCode: ev.ExitCode, OutcomeUnknown: ev.OutcomeUnknown,
 		})
 		cancel()
 		if err != nil {
@@ -1649,6 +1650,7 @@ func persistedToolMetadata(run taskRun, ev backend.ToolEvent) map[string]any {
 		historyToolCallIDKey: ev.ID, "args": redactHistoryArgs(ev.Args),
 		"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
 	}
+	addToolOutcomeMetadata(metadata, ev)
 	if len(ev.Sources) > 0 {
 		metadata["sources"] = ev.Sources
 	}
@@ -1662,6 +1664,15 @@ func persistedToolMetadata(run taskRun, ev backend.ToolEvent) map[string]any {
 		metadata["savedCapture"] = savedCapture
 	}
 	return metadata
+}
+
+func addToolOutcomeMetadata(metadata map[string]any, ev backend.ToolEvent) {
+	if ev.ExitCode != nil {
+		metadata["exitCode"] = *ev.ExitCode
+	}
+	if ev.OutcomeUnknown {
+		metadata["outcomeUnknown"] = true
+	}
 }
 
 // safeToolPresentation keeps the bounded native title in transcript/event

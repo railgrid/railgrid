@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import AIExecutionDetails from '../agentkit/AIExecutionDetails.vue'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
 import { toolCommand, toolCommandTitle } from '../toolExecution'
+import ChatMessage from '../views/ChatMessage.vue'
+import { rebuildTranscript } from '../vue/chat'
 import { mountVue, settleVue, text } from './vue-helper'
 
 describe('command receipts', () => {
@@ -11,6 +13,32 @@ describe('command receipts', () => {
     expect(toolCommand({ id: '1', name: 'exec_command', pending: false, args: '{"cmd":"pwd"}' })).toBe('pwd')
     expect(toolCommand({ id: '1', name: 'memory_search', pending: false, args: '{"command":"pwd"}' })).toBeUndefined()
     expect(toolCommand({ id: '1', name: 'shell', pending: false, args: '{"command":[]}' })).toBeUndefined()
+  })
+
+  it('restores exit receipts and unknown outcomes from transcript metadata', async () => {
+    const [message] = rebuildTranscript([
+      { id: 'a', role: 'assistant', content: 'Checked the setup.', runID: 'run' },
+      { id: 'b', role: 'tool', content: 'command not found', runID: 'run', metadata: { tool: 'commandExecution', args: 'vitest', error: true, exitCode: 127 } },
+      { id: 'c', role: 'tool', content: '', runID: 'run', metadata: { tool: 'commandExecution', args: 'deploy', error: true, outcomeUnknown: true } },
+    ])
+    const view = await mountVue(ChatMessage, { message })
+    expect(text(view.element.querySelector('.k-ai-transcript-activity__summary'))).toContain('2 to review')
+    const rows = view.element.querySelectorAll('.k-ai-action-row')
+    expect(text(rows[0].querySelector('.k-ai-action-row__outcome'))).toBe('Completed · exit 127')
+    expect(text(rows[1].querySelector('.k-ai-action-row__outcome'))).toBe('Outcome unknown')
+    rows[1].querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    await settleVue()
+    expect(text(rows[1])).toContain('Check what the tool did before retrying.')
+    view.unmount()
+  })
+
+  it('shows a silent nonzero exit without inventing error output', async () => {
+    const tool = { id: '1', name: 'commandExecution', args: 'false', exitCode: 1, error: 'Tool failed', pending: false }
+    const view = await mountVue(AgentToolDetails, { tool })
+    expect(text(view.element)).toContain('Completed · exit 1')
+    expect(text(view.element)).toContain('No output')
+    expect(text(view.element)).not.toContain('Tool failed')
+    view.unmount()
   })
 
   it('redacts structured shell commands and keeps the recorded formatting of successful output', async () => {

@@ -267,7 +267,7 @@ func TestFollowNormalizesCodexAppServerEvents(t *testing.T) {
 			event(3, runner.EventProgress, "", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"inProgress"}}`),
 			event(4, runner.EventProgress, answer, `{"delta":"Here is the result.\n"}`),
 			event(5, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"echo ok","status":"inProgress"}}`),
-			event(6, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"echo ok","status":"completed","aggregatedOutput":"ok\n","durationMs":200}}`),
+			event(6, runner.EventProgress, "", `{"item":{"id":"exec-1","type":"commandExecution","command":"echo ok","status":"completed","aggregatedOutput":"ok\n","durationMs":200,"exitCode":0}}`),
 			event(7, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":40,"outputTokens":4},"total":{"inputTokens":100,"outputTokens":10}}}`),
 			event(8, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":40,"outputTokens":4},"total":{"inputTokens":100,"outputTokens":10}}}`),
 			event(9, runner.EventProgress, "", `{"tokenUsage":{"last":{"inputTokens":50,"outputTokens":5},"total":{"inputTokens":150,"outputTokens":15}}}`),
@@ -291,7 +291,8 @@ func TestFollowNormalizesCodexAppServerEvents(t *testing.T) {
 	if got := out.Summary.Usage; got.InputTokens != 90 || got.OutputTokens != 9 || got.CostMicros != 0 {
 		t.Errorf("Codex usage = %+v, want two distinct model-call deltas", got)
 	}
-	if len(rec.toolStarts) != 1 || len(rec.toolEnds) != 1 || rec.toolEnds[0].Duration != 200*time.Millisecond || rec.toolEnds[0].Result != "ok\n" {
+	if len(rec.toolStarts) != 1 || len(rec.toolEnds) != 1 || rec.toolEnds[0].Duration != 200*time.Millisecond ||
+		rec.toolEnds[0].ExitCode == nil || *rec.toolEnds[0].ExitCode != 0 || rec.toolEnds[0].Result != "ok\n" {
 		t.Errorf("tool events = %v / %+v", rec.toolStarts, rec.toolEnds)
 	}
 	if len(rec.assistants) != 1 || rec.assistants[0].Content != strings.TrimSpace(answer) || !rec.assistants[0].Complete || rec.assistants[0].Duration != 500*time.Millisecond {
@@ -301,7 +302,7 @@ func TestFollowNormalizesCodexAppServerEvents(t *testing.T) {
 
 func TestToolItemNonzeroExitIsFailure(t *testing.T) {
 	item, ok := toolItem(json.RawMessage(`{"item":{"id":"exec-2","type":"commandExecution","status":"completed","exitCode":1,"aggregatedOutput":"permission denied"}}`))
-	if !ok || !item.Done || !item.Failed || item.Result != "permission denied" {
+	if !ok || !item.Done || !item.Failed || item.ExitCode == nil || *item.ExitCode != 1 || item.Result != "permission denied" {
 		t.Fatalf("tool item = %+v, %v; want a completed failed call with its output", item, ok)
 	}
 }
@@ -564,7 +565,7 @@ func TestOpenToolsAreClosedWhenTheAttemptEnds(t *testing.T) {
 	}}
 	rec := &recorder{}
 	_, _ = Follow(ctxWithTimeout(t), f, receipt(runner.PhaseRunning), Position{}, rec)
-	if len(rec.toolEnds) != 1 || !rec.toolEnds[0].Failed || rec.toolEnds[0].ID != "c1" {
+	if len(rec.toolEnds) != 1 || !rec.toolEnds[0].Failed || !rec.toolEnds[0].OutcomeUnknown || rec.toolEnds[0].ExitCode != nil || rec.toolEnds[0].ID != "c1" {
 		t.Errorf("tool ends = %+v", rec.toolEnds)
 	}
 }

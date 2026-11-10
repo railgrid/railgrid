@@ -1225,6 +1225,23 @@ describe('chat streaming', () => {
     expect(text(card)).toContain('Elapsed 250ms')
   })
 
+  it('shows a nonzero exit and the recorded output in live chat', async () => {
+    const { el } = await mountChat(scripted([
+      { event: 'start', data: { runID: 'r1', sessionID: 's1' } },
+      { event: 'tool_start', data: { id: 't1', name: 'commandExecution', args: 'npm test' } },
+      { event: 'tool_end', data: { id: 't1', name: 'commandExecution', result: 'Assertion failed', error: true, exitCode: 1 } },
+      { event: 'done', data: { runID: 'r1', content: 'The test failed.' } },
+    ]))
+    await send(el, 'Run the tests')
+    const card = el.querySelector('.k-ai-action-row')!
+    expect(card.classList.contains('k-ai-action-row--error')).toBe(false)
+    expect(text(card.querySelector('.k-ai-action-row__outcome'))).toBe('Completed · exit 1')
+    card.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
+    await settle()
+    expect(text(card.querySelector('.k-ai-execution-details__output'))).toBe('Assertion failed')
+    expect(text(card.querySelector('.k-ai-execution-details__status'))).toBe('Completed · exit 1')
+  })
+
   it('allows manual collapse of running activity and preserves it after success', async () => {
     const release = deferred<void>()
     const chatStream = vi.fn(async function* () {

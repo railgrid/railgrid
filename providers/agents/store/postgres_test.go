@@ -354,6 +354,37 @@ func TestPostgres_RunSaveClaimAndUsage(t *testing.T) {
 	}
 }
 
+func TestPostgres_ToolOutcomeReceipts(t *testing.T) {
+	ps := openTestPostgres(t)
+	ctx := context.Background()
+	scope := pgScope(t, ps)
+	runID := uuid.NewString()
+	now := time.Now().UTC()
+	for i, call := range []ToolCall{
+		{Outcome: "ok", ExitCode: new(int64(0))},
+		{Outcome: "error", ExitCode: new(int64(127))},
+		{Outcome: "error", OutcomeUnknown: true},
+		{Outcome: "error"},
+	} {
+		call.ID, call.RunID, call.AgentName = uuid.NewString(), runID, scope.AgentName
+		call.Tool = "commandExecution"
+		call.CreatedAt = now.Add(time.Duration(i) * time.Second)
+		if err := ps.AppendToolCall(ctx, scope, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls, err := ps.ListToolCalls(ctx, scope, runID)
+	if err != nil || len(calls) != 4 {
+		t.Fatalf("list tool calls: %v, %+v", err, calls)
+	}
+	if calls[0].ExitCode == nil || *calls[0].ExitCode != 0 ||
+		calls[1].ExitCode == nil || *calls[1].ExitCode != 127 ||
+		calls[2].ExitCode != nil || !calls[2].OutcomeUnknown ||
+		calls[3].ExitCode != nil || calls[3].OutcomeUnknown {
+		t.Fatalf("tool outcome receipts: %+v", calls)
+	}
+}
+
 func TestPostgres_RunClaimRejectsCancelledAndTerminalRuns(t *testing.T) {
 	ps := openTestPostgres(t)
 	ctx := context.Background()

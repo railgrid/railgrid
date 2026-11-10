@@ -45,6 +45,7 @@ export interface AIActivityRow {
   attention?: boolean
   error?: boolean
   canceled?: boolean
+  needsReview?: boolean
   expandable?: boolean
   /** Optional uncontrolled initial state; keyed props take precedence. */
   expanded?: boolean
@@ -132,6 +133,7 @@ const knownExecutionStatuses = new Set([
   'blocked',
   'error',
   'permission_required',
+  'outcome_unknown',
 ])
 
 const encoder = new TextEncoder()
@@ -181,6 +183,8 @@ export function executionStatusPresentation(status?: string, exitCode?: number |
     case 'canceled':
     case 'cancelled':
       return { state: 'canceled', label: 'Canceled', tone: 'muted', busy: false, success: false, known: true }
+    case 'outcome_unknown':
+      return { state: 'unknown', label: 'Outcome unknown', tone: 'attention', busy: false, success: false, known: true }
     case 'blocked':
       return { state: 'blocked', label: 'Blocked', tone: 'attention', busy: false, success: false, known: true }
     case 'permission_required':

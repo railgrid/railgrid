@@ -634,21 +634,23 @@ type HarnessMCPSession struct {
 // redacted, oversized payloads truncated with a marker) so a run's steps can
 // be inspected after the fact.
 type ToolCall struct {
-	ID           string                `json:"id"`
-	CallID       string                `json:"callID,omitempty"`
-	AgentName    string                `json:"agentName"`
-	RunID        string                `json:"runID"`
-	SessionID    string                `json:"sessionID,omitempty"`
-	Trigger      string                `json:"trigger"`
-	Tool         string                `json:"tool"`
-	Args         string                `json:"args,omitempty"`
-	Result       string                `json:"result,omitempty"`
-	Sources      []SourceReference     `json:"sources,omitempty"`
-	Presentation *ProviderPresentation `json:"presentation,omitempty"`
-	Outcome      string                `json:"outcome"` // ok | error | denied | pending_approval
-	Error        string                `json:"error,omitempty"`
-	DurationMS   int64                 `json:"durationMS,omitempty"`
-	CreatedAt    time.Time             `json:"createdAt"`
+	ID             string                `json:"id"`
+	CallID         string                `json:"callID,omitempty"`
+	AgentName      string                `json:"agentName"`
+	RunID          string                `json:"runID"`
+	SessionID      string                `json:"sessionID,omitempty"`
+	Trigger        string                `json:"trigger"`
+	Tool           string                `json:"tool"`
+	Args           string                `json:"args,omitempty"`
+	Result         string                `json:"result,omitempty"`
+	Sources        []SourceReference     `json:"sources,omitempty"`
+	Presentation   *ProviderPresentation `json:"presentation,omitempty"`
+	Outcome        string                `json:"outcome"` // ok | error | denied | pending_approval
+	Error          string                `json:"error,omitempty"`
+	DurationMS     int64                 `json:"durationMS,omitempty"`
+	ExitCode       *int64                `json:"exitCode,omitempty"`
+	OutcomeUnknown bool                  `json:"outcomeUnknown,omitempty"`
+	CreatedAt      time.Time             `json:"createdAt"`
 }
 
 // WebhookDeliveryPreviewBytes is how much of a delivery's body a list row

@@ -53,6 +53,33 @@ describe('AgentKit timestamp and chat presentation', () => {
     } finally { write.mockRestore() }
   })
 
+  it('only offers response copy once the assistant turn has settled successfully', async () => {
+    const write = vi.spyOn(navigator.clipboard, 'writeText').mockResolvedValue(undefined)
+    const draft = message({ content: 'Running the portal tests…', streaming: true })
+    const view = await mountVue(ChatMessage, { message: draft })
+    const copyButton = () => view.element.querySelector<HTMLButtonElement>('[aria-label="Copy response"]')
+    try {
+      expect(text(view.element)).toContain(draft.content)
+      expect(copyButton()).toBeNull()
+
+      for (const status of ['running', 'waiting', 'stopping', 'failed', 'aborted', 'interrupted'] as const) {
+        await view.setProps({ message: { ...draft, streaming: false, progress: { status, trace: [] } } })
+        expect(copyButton()).toBeNull()
+      }
+
+      const content = 'The portal tests passed.'
+      await view.setProps({ message: message({ content, progress: { status: 'completed', trace: [
+        { kind: 'commentary', id: 'check', content: draft.content },
+      ] } }) })
+      copyButton()!.click()
+      await settleVue()
+      expect(write).toHaveBeenCalledWith(content)
+    } finally {
+      view.unmount()
+      write.mockRestore()
+    }
+  })
+
   it('omits missing or invalid timestamps', async () => {
     const missing = await mountVue(AITimestamp, { value: '' })
     expect(missing.element.querySelector('.k-ai-timestamp')).toBeNull()

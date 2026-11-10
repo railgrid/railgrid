@@ -34,8 +34,8 @@ describe('tool activity follows the run lifecycle', () => {
   })
 
   it.each([
-    ['waiting', 'Waiting for approval'], ['aborted', 'Cancelled'],
-    ['failed', 'Interrupted'], ['interrupted', 'Interrupted'], ['completed', 'No result recorded'],
+    ['waiting', 'Waiting for approval'], ['aborted', 'Outcome unknown'],
+    ['failed', 'Outcome unknown'], ['interrupted', 'Outcome unknown'], ['completed', 'Outcome unknown'],
   ] as const)('does not keep unfinished tools spinning after %s', async (status, label) => {
     const tool = { id: 't1', name: 'describe_model', args: '{}', pending: true }
     const message: ChatMessage = { id: 'm1', role: 'assistant', content: '', tools: [tool], progress: { status, trace: [{ kind: 'tool', id: 't1', tool }] } }

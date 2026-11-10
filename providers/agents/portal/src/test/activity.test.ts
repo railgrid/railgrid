@@ -821,14 +821,17 @@ describe('RunDetail.vue', () => {
       phase: 'Failed',
       steps: [
         { id: 'closed', tool: 'commandExecution', args: 'example --token ' + commandSecret, outcome: 'ok', at },
-        { id: 'open', tool: 'command_execution', args: command, result, error: result.slice(0, 3990) + '…[truncated]', outcome: 'error', at },
+        { id: 'open', tool: 'command_execution', args: command, result, error: result.slice(0, 3990) + '…[truncated]', outcome: 'error', exitCode: 1, at },
       ],
     })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
     const [closed, open] = view.element.querySelectorAll('.agents-run-activity .k-ai-action-row')
     expect(closed!.querySelector('[aria-expanded="false"]')).not.toBeNull()
     expect(text(closed)).toContain('Ran example --token [redacted]')
-    expect(text(open)).toContain('Failed ' + safeCommand)
+    expect(text(open)).toContain('Ran ' + safeCommand)
+    expect(text(open!.querySelector('.k-ai-action-row__outcome'))).toContain('Completed · exit 1')
+    expect(text(open!.querySelector('.k-ai-execution-details__status'))).toBe('Completed · exit 1')
+    expect(text(view.element.querySelector('.k-ai-activity__trigger'))).toContain('1 to review')
     expect(text(open!.querySelector('.k-ai-execution-details__command'))).toBe('$ ' + safeCommand)
     const output = open!.querySelector('.k-ai-execution-details__output')!
     expect(output.textContent).toContain('Authorization: [redacted]')
@@ -970,7 +973,7 @@ describe('RunDetail.vue', () => {
     })) })
     const view = await mount(RunDetail, { store: makeStore(api), api, runId: 'r5' })
 
-    buttonWithText(view.element, 'View failed steps').click()
+    buttonWithText(view.element, 'Review step diagnostics').click()
     await settleVue()
 
     const heading = view.element.querySelector<HTMLElement>('#agents-run-steps-heading')!
@@ -993,7 +996,7 @@ describe('RunDetail.vue', () => {
     const store = makeStore(api)
     const view = await mount(RunDetail, { store, api, runId: 'r5' })
 
-    buttonWithText(view.element, 'View failed steps').click()
+    buttonWithText(view.element, 'Review step diagnostics').click()
     await settleVue()
     const stepToggle = () => view.element.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
     expect(stepToggle().getAttribute('aria-expanded')).toBe('true')

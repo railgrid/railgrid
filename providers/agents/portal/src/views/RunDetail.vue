@@ -19,7 +19,7 @@ import type { ResourceRefreshMode } from '../portalkit/page-state'
 import AIActivityFeed from '../agentkit/AIActivityFeed.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import AgentToolDetails from '../components/AgentToolDetails.vue'
-import { toolCommand, toolCommandActivity } from '../toolExecution'
+import { toolCommand, toolCommandActivity, toolOutcome, toolOutcomeLabel } from '../toolExecution'
 import type { AITurnProgressStatus } from '../agentkit/conversation'
 import ResourceBackLink from '../portalkit/ResourceBackLink.vue'
 import ResourcePage from '../portalkit/ResourcePage.vue'
@@ -359,8 +359,8 @@ function stepStatusLabel(step: RunStep): string {
   return 'Unknown outcome'
 }
 
-function stepOutcome(step: RunStep): string {
-  const parts = [step.outcome]
+function stepOutcome(step: RunStep, label: string): string {
+  const parts = [label || step.outcome]
   if (step.durationMS) parts.push(fmtDuration(step.durationMS))
   if (step.at) parts.push(fmtTime(step.at))
   return parts.join(' · ')
@@ -377,7 +377,7 @@ function stepsSummary(): string {
   const waiting = current.steps.filter(step => step.outcome === 'pending_approval').length
   const unknown = current.steps.filter(step => !['ok', 'error', 'pending_approval'].includes(step.outcome)).length
   if (waiting) return `${waiting} approval ${waiting === 1 ? 'request' : 'requests'}`
-  if (failed) return `${failed} failed`
+  if (failed) return `${failed} to review`
   if (unknown) return `${unknown} unresolved`
   return 'Completed'
 }
@@ -395,27 +395,36 @@ function stepCommand(step: RunStep) {
   const tool: ToolCall = {
     id: step.id, name: step.tool, args: step.args, result: step.result,
     error: step.result ? undefined : step.error,
-    durationMS: step.durationMS, pending: false,
+    durationMS: step.durationMS, exitCode: step.exitCode, outcomeUnknown: step.outcomeUnknown, pending: false,
   }
   const command = toolCommand(tool)
-  if (!command) return undefined
+  const outcome = toolOutcome(tool)
+  if (!command && !outcome) return undefined
   // Harness failures record the output again as a shorter error excerpt.
   const errorIsOutput = step.error && step.result?.startsWith(step.error.replace(/…\[truncated\]$/, ''))
   const diagnostic = tool.result && !errorIsOutput ? sanitizeTechnicalDiagnostic(step.error) : ''
-  const { title } = toolCommandActivity(command, stepStatus(step), stepStatusLabel(step))
-  return { title, tool, diagnostic }
+  const title = command && outcome?.kind !== 'unknown'
+    ? toolCommandActivity(command, outcome ? 'succeeded' : stepStatus(step), stepStatusLabel(step)).title
+    : command || step.tool
+  return { title, tool, diagnostic, outcome }
 }
 
 const stepsByID = computed(() => new Map((run.value?.steps || []).map(step => [step.id, { step, command: stepCommand(step) }])))
 const stepGroups = computed(() => [{
   key: 'steps', label: '',
-  rows: (run.value?.steps || []).map((step, index) => ({
-    id: step.id, title: stepsByID.value.get(step.id)?.command?.title ?? step.tool, target: `Step ${index + 1}`,
-    status: stepStatus(step), statusLabel: stepStatusLabel(step), outcome: stepOutcome(step),
-    attention: stepClass(step) === 'wait' || stepClass(step) === 'unknown',
-    error: stepClass(step) === 'err',
-    expandable: Boolean(step.args || step.result || step.error), detailsId: stepDetailsID(step),
-  })),
+  rows: (run.value?.steps || []).map((step, index) => {
+    const command = stepsByID.value.get(step.id)?.command
+    const outcome = command?.outcome
+    const label = toolOutcomeLabel(outcome)
+    return {
+      id: step.id, title: command?.title ?? step.tool, target: `Step ${index + 1}`,
+      status: outcome ? (outcome.kind === 'unknown' ? 'unknown' : 'succeeded') : stepStatus(step),
+      statusLabel: label || stepStatusLabel(step), outcome: stepOutcome(step, label),
+      attention: (outcome?.kind === 'unknown' || Boolean(outcome?.exitCode)) || stepClass(step) === 'wait' || stepClass(step) === 'unknown',
+      error: !outcome && stepClass(step) === 'err',
+      expandable: Boolean(outcome || step.args || step.result || step.error), detailsId: stepDetailsID(step),
+    }
+  }),
 }])
 
 function toggleSteps(): void {
@@ -618,7 +627,7 @@ onBeforeUnmount(() => {
                 @decide="resolve(run!.pending!.inboxID, $event)"
               />
             </section>
-            <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">View failed steps</button>
+            <button v-if="runFailurePhase && run.steps.some(step => step.outcome === 'error')" class="k-dashboard-action agents-run-failure-link" type="button" @click="inspectFailedSteps">Review step diagnostics</button>
             <section v-if="!runFailurePhase" class="agents-run-output-message agents-run-section" aria-labelledby="agents-run-output-heading">
               <h2 id="agents-run-output-heading">{{ run.phase === 'Succeeded' ? 'Result' : 'Output' }}</h2>
               <div v-if="run.output || run.message" class="agents-body k-ai-prose" v-html="markdownHTML(run.output || sanitizeTechnicalDiagnostic(run.message))"></div>

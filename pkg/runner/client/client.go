@@ -367,10 +367,14 @@ func (c *Client) Start(ctx context.Context, req runner.StartRequest) (runner.Rec
 	}
 	if len(req.InputFiles) > 0 {
 		if err := c.requireInputFiles(ctx); err != nil {
-			return runner.Receipt{}, err
+			return runner.Receipt{}, &PreDispatchError{err}
 		}
 	}
-	return c.mutate(ctx, "/runner/v1/attempts", req)
+	base, err := c.discover(ctx)
+	if err != nil {
+		return runner.Receipt{}, &PreDispatchError{err}
+	}
+	return c.post(ctx, base+"/runner/v1/attempts", req)
 }
 
 // StageInput streams one attempt file to the runner before Start. The file
@@ -626,14 +630,6 @@ func (c *Client) attemptBase(ctx context.Context, attemptID string) (string, err
 	return base + "/runner/v1/attempts/" + attemptID, nil
 }
 
-func (c *Client) mutate(ctx context.Context, path string, body any) (runner.Receipt, error) {
-	base, err := c.discover(ctx)
-	if err != nil {
-		return runner.Receipt{}, err
-	}
-	return c.post(ctx, base+path, body)
-}
-
 func (c *Client) post(ctx context.Context, path string, body any) (runner.Receipt, error) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -648,7 +644,7 @@ func (c *Client) post(ctx context.Context, path string, body any) (runner.Receip
 	}
 	var receipt runner.Receipt
 	if err := readJSON(resp, &receipt); err != nil {
-		return runner.Receipt{}, err
+		return runner.Receipt{}, fmt.Errorf("%w: %w", ErrMutationReceiptUnavailable, err)
 	}
 	return receipt, nil
 }

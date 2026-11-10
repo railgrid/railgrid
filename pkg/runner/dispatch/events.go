@@ -452,7 +452,7 @@ func (s *stream) tool(item harnessItem) {
 	s.toolDuration += item.Duration
 	s.obs.ToolEnd(ToolResult{
 		ID: item.ID, Name: seen.name, Args: seen.args,
-		Result: item.Result, Failed: item.Failed, Duration: item.Duration,
+		Result: item.Result, Failed: item.Failed, ExitCode: item.ExitCode, Duration: item.Duration,
 	})
 }
 
@@ -467,7 +467,7 @@ func (s *stream) endOpenTools() {
 		t.ended = true
 		s.tools[id] = t
 		s.obs.ToolEnd(ToolResult{ID: id, Name: t.name, Args: t.args,
-			Result: "the attempt ended before this tool call reported a result", Failed: true})
+			Result: "the attempt ended before this tool call reported a result", Failed: true, OutcomeUnknown: true})
 	}
 }
 
@@ -575,6 +575,7 @@ type harnessItem struct {
 	Args     string
 	Result   string
 	Duration time.Duration
+	ExitCode *int64
 	Done     bool
 	Failed   bool
 }
@@ -612,6 +613,7 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 			Result           string `json:"result"`
 			AggregatedOutput string `json:"aggregatedOutput"`
 			ExitCode         *int64 `json:"exitCode"`
+			CLIExitCode      *int64 `json:"exit_code"`
 			DurationMS       *int64 `json:"durationMs"`
 		} `json:"item"`
 	}
@@ -641,8 +643,15 @@ func toolItem(data json.RawMessage) (harnessItem, bool) {
 	case "failed", "error", "aborted":
 		item.Done, item.Failed = true, true
 	}
-	if rec.Item.ExitCode != nil && *rec.Item.ExitCode != 0 {
-		item.Done, item.Failed = true, true
+	if rec.Item.Type == "commandExecution" || rec.Item.Type == "command_execution" {
+		item.ExitCode = rec.Item.ExitCode
+		if item.ExitCode == nil {
+			item.ExitCode = rec.Item.CLIExitCode
+		}
+		if item.ExitCode != nil {
+			item.Done = true
+			item.Failed = item.Failed || *item.ExitCode != 0
+		}
 	}
 	return item, true
 }

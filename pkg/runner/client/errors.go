@@ -18,6 +18,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -28,6 +29,15 @@ import (
 // errorBodyLimit bounds what is kept from a failed response. It is small on
 // purpose: an error body is for a human reading a log line, not a payload.
 const errorBodyLimit = 64 << 10
+
+// PreDispatchError reports a failed runner preflight before Start sent the mutation.
+type PreDispatchError struct{ error }
+
+func (e *PreDispatchError) Unwrap() error { return e.error }
+
+// ErrMutationReceiptUnavailable means a successful HTTP response could not be
+// decoded as a receipt. The runner may already have acted on the request.
+var ErrMutationReceiptUnavailable = errors.New("reading runner mutation receipt")
 
 // HTTPError is a failure the runner protocol does not describe: a proxy, an
 // authenticator, or kcp itself answered instead of the runner. The bounded body

@@ -406,6 +406,29 @@ func TestStartRoundTripsTypedRequestAndReceipt(t *testing.T) {
 	}
 }
 
+func TestStartDistinguishesPreflightFromUnreadableReceipt(t *testing.T) {
+	req := runner.StartRequest{
+		RequestID: "request-1", TaskID: "task-1", AttemptID: "attempt-1", AttemptEpoch: 1,
+		WorkspaceID: "workspace-1", Instructions: "approved",
+	}
+	service := serviceObject(testService, testEdge, testEdgeKind, proxyBase())
+	preflightClient, preflightFixture := newFixtureClient(t, service, runner.Capabilities{})
+	_, err := preflightClient.Start(context.Background(), req)
+	var preflight *PreDispatchError
+	if !errors.As(err, &preflight) || len(preflightFixture.seen()) != 2 {
+		t.Fatalf("expected discovery to stop Start before the POST: %v", err)
+	}
+
+	dispatchedClient, dispatchedFixture := newFixtureClient(t, service, enrolledCapabilities())
+	dispatchedFixture.operation = func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}
+	_, err = dispatchedClient.Start(context.Background(), req)
+	if !errors.Is(err, ErrMutationReceiptUnavailable) || len(dispatchedFixture.seen()) != 3 {
+		t.Fatalf("expected an unreadable receipt after one POST: %v", err)
+	}
+}
+
 func TestInputFilesAreGatedByRunnerCapabilityAndStreamedBeforeStart(t *testing.T) {
 	data := []byte("selected text attachment")
 	sum := sha256.Sum256(data)

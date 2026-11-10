@@ -60,7 +60,7 @@ interface StartData { runID: string; sessionID: string; response?: string; answe
 interface RunStartedData { runID: string; sessionID?: string; status?: string; startedAt?: string }
 interface DeltaData { text: string }
 interface ToolStartData { id: string; name: string; args?: string }
-interface ToolEndData extends ToolStartData { runID?: string; sessionID?: string; toolCallID?: string; result?: string; error?: string; durationMS?: number; sources?: unknown; savedCapture?: unknown; hasMcpApp?: boolean }
+interface ToolEndData extends ToolStartData { runID?: string; sessionID?: string; toolCallID?: string; result?: string; error?: string | boolean; exitCode?: number; outcomeUnknown?: boolean; durationMS?: number; sources?: unknown; savedCapture?: unknown; hasMcpApp?: boolean }
 interface ApprovalData { runID: string; inboxID: string; kind?: 'approval' | 'question'; tool: string; args: string; question?: string; questions?: import('../types').AgentQuestion[]; content?: string; status?: string; startedAt?: string; durationMS?: number }
 interface AssistantMessageData { runID: string; phase: 'commentary' | 'final'; content: string; createdAt?: string; segmentDurationMS?: number }
 interface DoneData {
@@ -2375,10 +2375,13 @@ async function streamTurn(
             ? parseSavedCaptureCitation(data.savedCapture)
             : null
           const hasMcpApp = data.hasMcpApp === true && !!sources?.length && receiptMatches
+          const error = typeof data.error === 'string' ? data.error : data.error ? 'Tool failed' : undefined
           setTool(data.id, {
             toolCallID: data.id,
             result: data.result,
-            error: data.error,
+            error,
+            exitCode: data.exitCode,
+            outcomeUnknown: data.outcomeUnknown,
             sources: sources?.length ? sources : undefined,
             hasMcpApp,
             savedCapture: savedCapture || undefined,
@@ -2390,7 +2393,9 @@ async function streamTurn(
             name: data.name,
             args: data.args,
             result: data.result,
-            error: data.error,
+            error,
+            exitCode: data.exitCode,
+            outcomeUnknown: data.outcomeUnknown,
             ...(sources?.length ? { sources } : {}),
             hasMcpApp,
             ...(savedCapture ? { savedCapture } : {}),

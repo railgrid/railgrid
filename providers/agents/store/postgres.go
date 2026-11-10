@@ -250,6 +250,8 @@ var agentsSchema = []string{
 	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS session_id TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS sources JSONB NOT NULL DEFAULT '[]'::jsonb`,
 	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS presentation JSONB NOT NULL DEFAULT '{}'::jsonb`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS exit_code BIGINT`,
+	`ALTER TABLE agents_tool_calls ADD COLUMN IF NOT EXISTS outcome_unknown BOOLEAN NOT NULL DEFAULT FALSE`,
 	`ALTER TABLE agents_tool_calls DROP COLUMN IF EXISTS args_digest`,
 	`CREATE INDEX IF NOT EXISTS agents_tool_calls_scope_idx
 		ON agents_tool_calls (org_uuid, workspace_uuid, agent_name, created_at DESC)`,
@@ -1787,10 +1789,10 @@ func (p *PostgresStore) AppendToolCall(ctx context.Context, scope Scope, tc Tool
 		return err
 	}
 	_, err = mutation.executor.ExecContext(ctx, `
-		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, created_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		INSERT INTO agents_tool_calls (id, org_uuid, workspace_uuid, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, exit_code, outcome_unknown, created_at)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
 		tc.ID, scope.OrgUUID, scope.WorkspaceUUID, tc.AgentName, tc.RunID, tc.CallID, tc.SessionID, tc.Trigger, tc.Tool, tc.Args, tc.Result,
-		sourcesJSON, presentationJSON, tc.Outcome, tc.Error, tc.DurationMS, tc.CreatedAt.UTC())
+		sourcesJSON, presentationJSON, tc.Outcome, tc.Error, tc.DurationMS, tc.ExitCode, tc.OutcomeUnknown, tc.CreatedAt.UTC())
 	if err != nil {
 		return err
 	}
@@ -1803,7 +1805,7 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 		return nil, err
 	}
 	rows, err := p.db.QueryContext(ctx, `
-		SELECT id, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, created_at
+		SELECT id, agent_name, run_id, call_id, session_id, trigger_kind, tool, args, result, sources, presentation, outcome, error, duration_ms, exit_code, outcome_unknown, created_at
 		FROM agents_tool_calls
 		WHERE org_uuid=$1 AND workspace_uuid=$2 AND run_id=$3
 		ORDER BY created_at ASC, id ASC LIMIT 500`,
@@ -1817,7 +1819,7 @@ func (p *PostgresStore) ListToolCalls(ctx context.Context, scope Scope, runID st
 		var tc ToolCall
 		var sourcesJSON, presentationJSON []byte
 		if err := rows.Scan(&tc.ID, &tc.AgentName, &tc.RunID, &tc.CallID, &tc.SessionID, &tc.Trigger, &tc.Tool, &tc.Args, &tc.Result,
-			&sourcesJSON, &presentationJSON, &tc.Outcome, &tc.Error, &tc.DurationMS, &tc.CreatedAt); err != nil {
+			&sourcesJSON, &presentationJSON, &tc.Outcome, &tc.Error, &tc.DurationMS, &tc.ExitCode, &tc.OutcomeUnknown, &tc.CreatedAt); err != nil {
 			return nil, err
 		}
 		if len(sourcesJSON) > 0 {
