@@ -15,6 +15,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   const open = ref(false)
   const minimized = ref(false)
   const dockVisible = ref(false)
+  const chatLauncherVisible = ref(false)
   const sidePanelWidth = ref(0)
   const sidePanelFullscreen = ref(false)
   const sidePanelClosing = ref(false)
@@ -73,6 +74,7 @@ export const useAgentOverlayStore = defineStore('agent-overlay', () => {
   function setSidePanelClosing(value: boolean): void { sidePanelClosing.value = value }
   function setSettingsOpen(value: boolean): void { settingsOpen.value = value }
   function setDockVisible(value: boolean): void { dockVisible.value = value }
+  function setChatLauncherVisible(value: boolean): void { chatLauncherVisible.value = value }
   function setFollowContext(value: boolean): void { followContext.value = value; save() }
-  return { sidePanelClosing, setSidePanelClosing, sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
+  return { sidePanelClosing, setSidePanelClosing, sidePanelWidth, sidePanelFullscreen, setSidePanel, selectedAgent, open, minimized, dockVisible, chatLauncherVisible, setChatLauncherVisible, setMinimized, closeForNavigation, setSettingsOpen, setDockVisible, settingsOpen, followContext, preferenceKey, select, setFollowContext }
 })

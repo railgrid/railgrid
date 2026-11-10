@@ -1182,6 +1182,42 @@ railgrid-provider-agents .agents-chat-shell--bar .agents-artifact-panel { displa
 railgrid-provider-agents .agents-chat-shell--bar .agents-composer { padding: 0; border: 0; }
 railgrid-provider-agents .agents-chat-shell--bar { height: 100%; }
 
+/* Keep Add and Send in the compact row while the draft scrolls between them. */
+railgrid-provider-agents .agents-chat-shell--bar .agents-composer-surface {
+  --agents-bar-draft-height: 44px;
+  --agents-bar-add-space: 36px;
+}
+railgrid-provider-agents .agents-chat-shell--bar .k-ai-composer__editor {
+  display: flex;
+  align-items: center;
+}
+railgrid-provider-agents .agents-chat-shell--bar .agents-composer-editor {
+  position: static;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  max-height: var(--agents-bar-draft-height);
+  overflow: auto;
+  padding-inline-start: var(--agents-bar-add-space);
+}
+railgrid-provider-agents .agents-chat-shell--bar .k-ai-composer__controls {
+  position: absolute;
+  inset: 50% auto auto 4px;
+  margin: 0;
+  transform: translateY(-50%);
+}
+railgrid-provider-agents .agents-chat-shell--bar .k-ai-composer__primary {
+  position: static;
+  flex: none;
+  margin-inline: 4px;
+}
+@media (pointer: coarse), (any-pointer: coarse) {
+  railgrid-provider-agents .agents-chat-shell--bar .agents-composer-surface {
+    --agents-bar-draft-height: 56px;
+    --agents-bar-add-space: 52px;
+  }
+}
+
 @container (max-width: 760px) {
   railgrid-provider-agents .agents-chat-workspace--inspection { flex-direction: column; gap: 8px; }
   railgrid-provider-agents .agents-chat-workspace--inspection .agents-conversation-column { display: contents; }

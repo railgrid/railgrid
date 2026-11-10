@@ -369,16 +369,18 @@ test('sidebar toggles own compact geometry over late provider button styles', ()
 })
 
 
-test('chat reserves content width without shrinking navigation or padding full-bleed workbenches', () => {
+test('the assistant reserves space for the side panel, compact bar, or chat launcher', () => {
   const body = appLayout.match(/const mainStyle = computed\(\(\) => \{([\s\S]*?)\n}\)/)?.[1]
   assert.ok(body)
   const style = new Function('gettingStartedFocused', 'layoutProps', 'assistantOverlay', 'mainPaddingBottom', body)
-  const evaluate = (fullBleed, dockVisible, terminalPadding, width = 0, focused = false) =>
-    style({ value: focused }, { fullBleed }, { dockVisible, sidePanelWidth: width, sidePanelFullscreen: false }, { value: terminalPadding })
+  const evaluate = (fullBleed, dockVisible, terminalPadding, width = 0, focused = false, chatLauncherVisible = false) =>
+    style({ value: focused }, { fullBleed }, { dockVisible, chatLauncherVisible, sidePanelWidth: width, sidePanelFullscreen: false }, { value: terminalPadding })
   assert.deepEqual(evaluate(true, true, '256px', 440), { marginRight: '440px' })
   assert.deepEqual(evaluate(true, true), { marginRight: '0px' })
   assert.deepEqual(evaluate(false, true), { marginRight: '0px', paddingBottom: 'calc(0px + 96px)' })
   assert.deepEqual(evaluate(false, true, '256px'), { marginRight: '0px', paddingBottom: 'calc(256px + 96px)' })
   assert.deepEqual(evaluate(false, true, '256px', 440), { marginRight: '440px', paddingBottom: '256px' })
+  assert.deepEqual(evaluate(true, false, undefined, 0, false, true), { marginRight: '0px', paddingBottom: 'calc(0px + 64px)' })
+  assert.deepEqual(evaluate(true, false, '256px', 0, false, true), { marginRight: '0px', paddingBottom: 'calc(256px + 64px)' })
   assert.equal(evaluate(false, true, undefined, 440, true), undefined)
 })

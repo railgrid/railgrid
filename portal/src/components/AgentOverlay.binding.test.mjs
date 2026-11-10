@@ -5,7 +5,7 @@ import { parse, compileScript } from '@vue/compiler-sfc'
 import ts from 'typescript'
 import * as Vue from 'vue'
 
-const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error })\n</script>')
+const source = readFileSync(new URL('./AgentOverlay.vue', import.meta.url), 'utf8').replace('</script>', '\ndefineExpose({ entry, allowed, authorityKey, mount, error, visible, panelVisible, returnToAssistant, collapse, barContextItems, assistantAction })\n</script>')
 const { descriptor } = parse(source)
 descriptor.template = null
 const compiled = compileScript(descriptor, { id: 'overlay-binding' })
@@ -13,7 +13,7 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 
-function scenario({ available = true, shadowReady = false, bindingReady = true } = {}) {
+function scenario({ available = true, shadowReady = false, bindingReady = true, viewportWidth = 1440 } = {}) {
   const platform = { name: 'agents', displayName: 'Platform Agents', scope: 'global', version: '1', ready: true,
     export: { path: 'root:railgrid:providers:agents' }, serving: { ui: { mainJSIntegrity: 'platform-pin' } } }
   const state = Vue.reactive({ bound: available ? platform : undefined,
@@ -29,16 +29,21 @@ function scenario({ available = true, shadowReady = false, bindingReady = true }
   })
   const previous = { window: globalThis.window, document: globalThis.document, customElements: globalThis.customElements }
   const host = Vue.markRaw({ children: [], appendChild(el) { this.children.push(el); el.parent = this } })
-  globalThis.window = { innerWidth: 1440, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: true }) }
+  globalThis.window = { innerWidth: viewportWidth, addEventListener() {}, removeEventListener() {}, matchMedia: () => ({ matches: true }) }
   globalThis.document = { createElement: () => Vue.markRaw({ overlayState: {}, railgridContext: null,
     addEventListener() {}, dispatchEvent() {}, remove() { if (this.parent) this.parent.children.splice(this.parent.children.indexOf(this), 1) } }) }
   globalThis.customElements = { get: () => function AgentsElement() {} }
   const noOp = () => {}
+  const route = Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {} })
   const overlay = Vue.reactive({ preferenceKey: 'preference', selectedAgent: 'scout', open: true, followContext: false,
-    setSidePanelClosing: noOp, setSidePanel: noOp, setDockVisible: noOp })
+    dockVisible: false, sidePanelWidth: 0, setSidePanelClosing: noOp,
+    setMinimized(value) { this.open = !value }, setSidePanel(width) { this.sidePanelWidth = width },
+    setFollowContext(value) { this.followContext = value },
+    setChatLauncherVisible(value) { this.chatLauncherVisible = value },
+    setDockVisible(value) { this.dockVisible = value } })
   const modules = {
     vue: Vue,
-    'vue-router': { useRoute: () => Vue.reactive({ path: '/workspace', fullPath: '/workspace', hash: '', params: {}, meta: {} }), useRouter: () => ({ push: noOp }) },
+    'vue-router': { useRoute: () => route, useRouter: () => ({ push: noOp }) },
     '@/lib/overlayResize': { resizeSidePanel: value => value },
     '@/stores/pageResource': { usePageResourceStore: () => ({}) },
     '@/stores/agentOverlay': { useAgentOverlayStore: () => overlay },
@@ -66,7 +71,7 @@ function scenario({ available = true, shadowReady = false, bindingReady = true }
   const vm = app.mount({})
   const exposed = vm.$.exposed
   exposed.mount.value = host
-  return { state, binding, calls, host, exposed,
+  return { state, binding, calls, host, exposed, route, overlay,
     cleanup() { app.unmount(); for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value } } }
 }
 async function flush() { await Vue.nextTick(); for (let i = 0; i < 12; i++) await Promise.resolve(); await Vue.nextTick() }
@@ -85,6 +90,80 @@ test('assistant uses the healthy platform binding and its SRI even when the org 
     s.state.shadow.ready = true
     await flush()
     assert.equal(s.calls.bundles.length, 1, 'catalog changes cannot replace the mounted platform assistant')
+  } finally { s.cleanup() }
+})
+
+test('chat routes show the launcher in place of the compact bar', async () => {
+  const s = scenario()
+  try {
+    await flush()
+    const assistant = s.host.children[0]
+    for (const [params, hash, visible] of [
+      [{ name: 'agents' }, '#/agents/other/chat', false],
+      [{ name: 'agents' }, '#/agent/other', false],
+      [{ name: 'agents' }, '#/agents/other/old-tab', false],
+      [{ name: 'agents' }, '#/agents/other/%63onfig', false],
+      [{ name: 'agents' }, '#/agents/other/config', true],
+      [{ name: 'agents' }, '#/agents/other/settings', true],
+      [{ name: 'agents' }, '#/agents/other/schedules/create', true],
+      [{ name: 'agents' }, '#/agents/other/triggers/trigger/edit', true],
+      [{ name: 'app-studio', rest: ['my-project'] }, '', false],
+      [{ name: 'app-studio', rest: ['~new'] }, '', false],
+      [{ name: 'app-studio', rest: ['~models', 'provider-connections'] }, '', true],
+      [{ name: 'app-studio', rest: ['create', 'model'] }, '', true],
+      [{ name: 'app-studio' }, '', true],
+      [{}, '', true],
+    ]) {
+      Object.assign(s.route, { params, hash: decodeURIComponent(hash), fullPath: s.route.path + hash })
+      await flush()
+      assert.equal(s.exposed.visible.value, true)
+      assert.equal(s.exposed.panelVisible.value, visible, JSON.stringify({ params, hash }))
+      assert.equal(s.overlay.dockVisible, visible)
+      assert.equal(s.overlay.chatLauncherVisible, !visible)
+      assert.equal(s.host.children[0], assistant)
+      assert.equal(assistant.overlayState.hidden, !visible)
+    }
+  } finally { s.cleanup() }
+})
+
+test('the narrow bar keeps context sharing available from the menu', async () => {
+  const s = scenario({ viewportWidth: 390 })
+  try {
+    await flush()
+    assert.equal(s.exposed.barContextItems.value.at(-1).label, 'Include page context')
+    s.exposed.assistantAction('toggle-context')
+    assert.equal(s.overlay.followContext, true)
+    assert.equal(s.exposed.barContextItems.value.at(-1).label, 'Pause page context')
+  } finally { s.cleanup() }
+})
+
+test('the launcher opens the side panel in chat and the panel stays open across chat routes', async () => {
+  const s = scenario()
+  try {
+    await flush()
+    Object.assign(s.route, { params: { name: 'app-studio', rest: ['~new'] } })
+    s.exposed.returnToAssistant()
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.ok(s.overlay.sidePanelWidth > 0)
+    const assistant = s.host.children[0]
+
+    Object.assign(s.route, { params: { name: 'agents' }, hash: '#/agents/scout/chat', fullPath: '/workspace#/agents/%73cout/chat' })
+    await flush()
+    assert.equal(s.exposed.panelVisible.value, true)
+    assert.equal(s.host.children[0], assistant)
+
+    await s.exposed.collapse()
+    await flush()
+    assert.equal(s.exposed.visible.value, true)
+    assert.equal(s.exposed.panelVisible.value, false)
+    assert.equal(s.overlay.sidePanelWidth, 0)
+    assert.equal(s.host.children[0], assistant, 'collapse keeps the conversation mounted')
+    assert.equal(assistant.overlayState.hidden, true)
+    s.exposed.returnToAssistant()
+    await flush()
+    assert.equal(s.host.children[0], assistant)
+    assert.equal(assistant.overlayState.hidden, false)
   } finally { s.cleanup() }
 })
 

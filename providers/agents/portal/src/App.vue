@@ -724,6 +724,7 @@ defineExpose({ api, store, route, authorityEpoch, createSession, applyContext })
         :name="workspaceRoute.name"
         :compact="!!overlay"
         :composer-only="overlay?.composerOnly"
+        :overlay-hidden="overlay?.hidden"
         :focus-new-composer="newAgentComposerRoute === hashFor(route)"
         :overlay="!!overlay"
         :page-context="overlay?.pageContext"

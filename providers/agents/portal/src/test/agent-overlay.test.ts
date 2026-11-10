@@ -93,7 +93,7 @@ describe('persistent agent overlay', () => {
   })
 
   it('opens the panel only for a valid send, never for focus or an empty submission', async () => {
-    vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* () {})
+    const stream = vi.spyOn(ApiClient.prototype, 'chatStream').mockImplementation(async function* () {})
     const element = await mountOverlay()
     element.overlayState = { agent: 'scout', composerOnly: true }
     await settleVue()
@@ -102,8 +102,15 @@ describe('persistent agent overlay', () => {
     composerEditor(element)!.focus()
     await send(element, '   ')
     expect(engage).not.toHaveBeenCalled()
-    await send(element, 'Inspect this instance')
+    const sendButton = element.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!
+    expect(sendButton.disabled).toBe(true)
+    setComposerText(element, 'Inspect this instance')
+    await settleVue()
+    expect(sendButton.disabled).toBe(false)
+    sendButton.click()
+    await settleVue(10)
     expect(engage).toHaveBeenCalledTimes(1)
+    expect(stream).toHaveBeenCalledOnce()
   })
 
   it('keeps one composer and draft while collapsing to the assistant bar', async () => {
@@ -124,6 +131,32 @@ describe('persistent agent overlay', () => {
     await settleVue()
     expect(element.querySelector('.agents-chat-shell--bar')).toBeNull()
     expect(composerEditor(element)).toBe(input)
+  })
+
+  it('closes teleported composer controls when hidden without replacing the draft', async () => {
+    const element = await mountOverlay()
+    const input = composerEditor(element)
+    setComposerText(element, 'Keep this draft')
+    await settleVue()
+
+    for (const [trigger, popup] of [
+      ['.k-ai-model-reasoning-picker__trigger', '[role="dialog"]'],
+      ['.k-ai-composer__add-control button', '[role="menu"][aria-label="Add"]'],
+    ]) {
+      element.querySelector<HTMLButtonElement>(trigger)!.click()
+      await settleVue()
+      expect(document.body.querySelector(popup)).not.toBeNull()
+
+      element.overlayState = { agent: 'scout', hidden: true }
+      await settleVue()
+      expect(document.body.querySelector(popup)).toBeNull()
+
+      element.overlayState = { agent: 'scout', hidden: false }
+      await settleVue()
+      expect(composerEditor(element)).toBe(input)
+      expect(composerText(element)).toBe('Keep this draft')
+      expect(document.body.querySelector(popup)).toBeNull()
+    }
   })
 
   it('hands a draft to the ordinary Agents chat in the same session', async () => {
