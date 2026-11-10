@@ -1117,7 +1117,8 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 		}
 		persistCtx, cancelPersist := boundedPersistContext(ctx)
 		defer cancelPersist()
-		if phase == store.RunPhaseFailed {
+		freshDispatch := cont == nil && (harnessT == nil || harnessT.backend.Observed().AttemptID == "")
+		if phase == store.RunPhaseFailed && freshDispatch {
 			// A refusal that left nothing running on an unattended run is not
 			// an outcome: the run goes back to the queue with a wake-up time and
 			// the reconciler claims it again (api/retry.go). The transcript gets
@@ -1151,7 +1152,10 @@ func (s *Server) runTurn(ctx context.Context, run taskRun, cont *continuation) (
 	// An unavailable model can fail on either transport, for example when the
 	// provider retires an id or refuses it on the selected endpoint. Keep the
 	// upstream details and identify the credential that may need another model.
-	if err = llm.ExplainModelUnavailable(err, credentialNameForPurpose(agent, purpose)); err != nil {
+	if err != nil {
+		if !errors.Is(err, backend.ErrHarnessOutcomeUnknown) {
+			err = llm.ExplainModelUnavailable(err, credentialNameForPurpose(agent, purpose))
+		}
 		return finishFailedTurn(err)
 	}
 
@@ -1616,6 +1620,7 @@ func (k *turnSink) ToolEnd(ev backend.ToolEvent) {
 			Tool: ev.Name, Args: redactArgs(ev.Args), Result: safeTruncate(ev.Result, maxStoredResult),
 			Sources: ev.Sources, Presentation: ev.Presentation.Clone(),
 			Outcome: outcome, Error: errorText, DurationMS: ev.Duration.Milliseconds(), CreatedAt: time.Now().UTC(),
+			ExitCode: ev.ExitCode, OutcomeUnknown: ev.OutcomeUnknown,
 		})
 		cancel()
 		if err != nil {
@@ -1649,6 +1654,7 @@ func persistedToolMetadata(run taskRun, ev backend.ToolEvent) map[string]any {
 		historyToolCallIDKey: ev.ID, "args": redactHistoryArgs(ev.Args),
 		"error": ev.Err, "durationMS": ev.Duration.Milliseconds(),
 	}
+	addToolOutcomeMetadata(metadata, ev)
 	if len(ev.Sources) > 0 {
 		metadata["sources"] = ev.Sources
 	}
@@ -1662,6 +1668,15 @@ func persistedToolMetadata(run taskRun, ev backend.ToolEvent) map[string]any {
 		metadata["savedCapture"] = savedCapture
 	}
 	return metadata
+}
+
+func addToolOutcomeMetadata(metadata map[string]any, ev backend.ToolEvent) {
+	if ev.ExitCode != nil {
+		metadata["exitCode"] = *ev.ExitCode
+	}
+	if ev.OutcomeUnknown {
+		metadata["outcomeUnknown"] = true
+	}
 }
 
 // safeToolPresentation keeps the bounded native title in transcript/event

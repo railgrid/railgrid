@@ -45,6 +45,8 @@ export interface AIActivityRow {
   attention?: boolean
   error?: boolean
   canceled?: boolean
+  needsReview?: boolean
+  exitCode?: number
   expandable?: boolean
   /** Optional uncontrolled initial state; keyed props take precedence. */
   expanded?: boolean
@@ -109,7 +111,7 @@ export interface AIExecutionView {
 }
 
 export type AIExecutionVariant = 'approval' | 'activity'
-export type AIExecutionState = 'running' | 'succeeded' | 'failed' | 'timed_out' | 'canceled' | 'blocked' | 'unknown'
+export type AIExecutionState = 'running' | 'succeeded' | 'exited' | 'failed' | 'timed_out' | 'canceled' | 'blocked' | 'unknown'
 export type AIExecutionTone = 'running' | 'success' | 'danger' | 'attention' | 'muted'
 
 export interface AIExecutionStatusPresentation {
@@ -125,6 +127,7 @@ export interface AIExecutionStatusPresentation {
 const knownExecutionStatuses = new Set([
   'running',
   'succeeded',
+  'exited',
   'failed',
   'timed_out',
   'canceled',
@@ -132,6 +135,7 @@ const knownExecutionStatuses = new Set([
   'blocked',
   'error',
   'permission_required',
+  'outcome_unknown',
 ])
 
 const encoder = new TextEncoder()
@@ -173,6 +177,10 @@ export function executionStatusPresentation(status?: string, exitCode?: number |
       return { state: 'running', label: 'Running', tone: 'running', busy: true, success: false, known: true }
     case 'succeeded':
       return { state: 'succeeded', label: 'Success', tone: 'success', busy: false, success: true, known: true }
+    case 'exited':
+      return exitCode === 0
+        ? { state: 'succeeded', label: 'Completed', tone: 'success', busy: false, success: true, known: true }
+        : { state: 'exited', label: 'Completed', tone: 'muted', busy: false, success: false, known: true }
     case 'failed':
     case 'error':
       return { state: 'failed', label: 'Failed', tone: 'danger', busy: false, success: false, known: true }
@@ -181,6 +189,8 @@ export function executionStatusPresentation(status?: string, exitCode?: number |
     case 'canceled':
     case 'cancelled':
       return { state: 'canceled', label: 'Canceled', tone: 'muted', busy: false, success: false, known: true }
+    case 'outcome_unknown':
+      return { state: 'unknown', label: 'Outcome unknown', tone: 'attention', busy: false, success: false, known: true }
     case 'blocked':
       return { state: 'blocked', label: 'Blocked', tone: 'attention', busy: false, success: false, known: true }
     case 'permission_required':

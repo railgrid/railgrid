@@ -12,7 +12,7 @@ export interface RunFailurePresentation {
 
 const MAX_DIAGNOSTIC_LENGTH = 4_000
 const HARNESS_START_404_PREFIX = 'starting the harness turn: runner HTTP 404:'
-const HARNESS_START_502_PREFIX = 'starting the harness turn: runner HTTP 502:'
+const HARNESS_START_SERVER_ERROR = /^starting the harness turn: runner HTTP 5[0-9]{2}:/
 const EDGE_SERVICE_GROUP = 'edges.railgrid.ai'
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -110,17 +110,28 @@ export function runFailurePresentation(phase: RunFailurePhase, diagnostic: strin
   // A failed Start request can have an unknown outcome: the runner may have
   // accepted it before the response was lost. Check the durable run before
   // offering another attempt.
-  if (diagnostic.startsWith(HARNESS_START_502_PREFIX)) {
+  if (
+    HARNESS_START_SERVER_ERROR.test(diagnostic) ||
+    diagnostic.startsWith('confirming runner dispatch:') ||
+    diagnostic.startsWith('confirming the runner outcome:')
+  ) {
     return {
-      title: 'Run status is unclear',
-      summary: 'Check the run’s latest status before trying again.',
+      title: 'Outcome unknown',
+      summary: 'Check the run’s latest status and any changes it made before retrying.',
+    }
+  }
+
+  if (diagnostic.startsWith('connecting to the runner before dispatch:')) {
+    return {
+      title: 'Connection failed',
+      summary: 'The run could not reach the runner before dispatch. Check the runner connection before retrying.',
     }
   }
 
   const missingService = missingRunnerService(diagnostic)
   if (missingService) {
     return {
-      title: 'Couldn’t start this run',
+      title: 'Connection failed',
       summary: `Runner “${missingService}” wasn’t found.`,
       recovery: { label: 'Review agent settings', target: 'agent-config' },
     }

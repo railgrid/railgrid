@@ -66,6 +66,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +76,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/railgrid/railgrid/pkg/runner"
+	runnerclient "github.com/railgrid/railgrid/pkg/runner/client"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
 	"github.com/railgrid/provider-agents/backend"
@@ -388,10 +392,26 @@ func (b *Backend) Turn(ctx context.Context, r *backend.Run, in backend.Input, si
 	}
 	receipt, err := b.cfg.Runner.Start(ctx, req)
 	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("starting the harness turn", err)
+		operation := "starting the harness turn"
+		var dial *net.OpError
+		var request *url.Error
+		var preflight *runnerclient.PreDispatchError
+		var response *runnerclient.HTTPError
+		isRequestError := errors.As(err, &request)
+		isGatewayFailure := errors.As(err, &response) && (response.StatusCode >= 500 || response.StatusCode == http.StatusRequestTimeout)
+		switch {
+		case errors.As(err, &dial) && dial.Op == "dial",
+			errors.As(err, &preflight) && (isRequestError || isGatewayFailure):
+			operation = "connecting to the runner before dispatch"
+		case isRequestError, isGatewayFailure, errors.Is(err, runnerclient.ErrMutationReceiptUnavailable):
+			return backend.Outcome{Status: b.statusFor(ctx)}, fmt.Errorf("%w: %w", backend.ErrHarnessOutcomeUnknown, err)
+		}
+		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe(operation, err)
 	}
-	out, err := dispatch.FollowSnapshot(ctx, b.cfg.Runner, receipt, dispatch.Snapshot{Position: b.start()}, b.observer(sink))
-	return b.outcome(ctx, out, err, backend.Cost{})
+	obs := b.observer(sink)
+	obs.openTools = make(map[string]dispatch.ToolResult)
+	out, err := dispatch.FollowSnapshot(ctx, b.cfg.Runner, receipt, dispatch.Snapshot{Position: b.start()}, obs)
+	return b.outcome(ctx, out, err, backend.Cost{}, obs)
 }
 
 // Continue picks a parked turn back up.
@@ -422,20 +442,22 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		return backend.Outcome{Status: backend.StatusCancelled}, err
 	}
 	pos := state.position()
+	obs := b.observer(sink)
 	snapshot, err := b.dispatchSnapshot(ctx, state, sink)
 	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, err
+		out := dispatch.Outcome{Position: pos, Snapshot: snapshot}
+		return b.outcome(ctx, out, err, state.Spent, obs)
 	}
-	obs := b.observer(sink)
 
 	if !answer.Decided {
 		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
-		return b.outcome(ctx, out, err, state.Spent)
+		return b.outcome(ctx, out, err, state.Spent, obs)
 	}
 
 	receipt, err := b.cfg.Runner.Inspect(ctx, state.AttemptID)
 	if err != nil {
-		return backend.Outcome{Status: b.statusFor(ctx)}, dispatch.Describe("inspecting the parked attempt", err)
+		out := dispatch.Outcome{Position: snapshot.Position, Snapshot: snapshot}
+		return b.outcome(ctx, out, dispatch.Describe("inspecting the parked attempt", err), state.Spent, obs)
 	}
 	pos.Observe(receipt)
 	b.observe(pos)
@@ -445,14 +467,14 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 	// genuinely waiting on input takes the answer.
 	if receipt.Phase != runner.PhaseNeedsInput {
 		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
-		return b.outcome(ctx, out, err, state.Spent)
+		return b.outcome(ctx, out, err, state.Spent, obs)
 	}
 	if answerTargetsDifferentPark(state, receipt) {
 		// The inbox answer belongs to the park persisted with State. If the
 		// runner has already moved on, surface its current park without applying
 		// an old verdict or answer to it.
 		out, err := dispatch.RejoinSnapshot(ctx, b.cfg.Runner, snapshot, obs)
-		return b.outcome(ctx, out, err, state.Spent)
+		return b.outcome(ctx, out, err, state.Spent, obs)
 	}
 	// The runner already durably holds the original approved input. Rebuilt
 	// repository configuration deliberately omits dispatch-only input; do not
@@ -467,8 +489,9 @@ func (b *Backend) Continue(ctx context.Context, r *backend.Run, answer backend.A
 		Resolution: resolution(answer, receipt.Permission != nil),
 		Allow:      answer.Approved,
 	}, nil, &credential)
+	obs.openTools = make(map[string]dispatch.ToolResult)
 	out, err := dispatch.ResumeSnapshot(ctx, b.cfg.Runner, resume, snapshot, obs)
-	return b.outcome(ctx, out, err, state.Spent)
+	return b.outcome(ctx, out, err, state.Spent, obs)
 }
 
 // Cancel stops a turn executing on the runner, and then OBSERVES that it
@@ -512,7 +535,7 @@ func (b *Backend) Cancel(ctx context.Context, _ *backend.Run) error {
 // prior is what the run had spent before this turn began — zero for a fresh
 // turn, the checkpoint's accumulator for a resumed one. Total is the run's
 // cumulative consumption and Billed is what THIS turn added.
-func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, prior backend.Cost) (backend.Outcome, error) {
+func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, prior backend.Cost, obs *sinkObserver) (backend.Outcome, error) {
 	b.observe(out.Position)
 	usage := usage(out.Summary.Usage, prior)
 	if err != nil {
@@ -525,6 +548,11 @@ func (b *Backend) outcome(ctx context.Context, out dispatch.Outcome, err error, 
 			status = backend.StatusCancelled
 		case runner.PhaseFailed:
 			status = backend.StatusFailed
+		}
+		hadUnfinishedTools := obs.finishOpenTools()
+		if status == backend.StatusFailed && out.Position.AttemptID != "" &&
+			(!out.Terminal() || out.Completed() || hadUnfinishedTools) {
+			err = fmt.Errorf("%w: %w", backend.ErrHarnessOutcomeUnknown, err)
 		}
 		return backend.Outcome{Status: status, Usage: usage}, err
 	}
@@ -616,21 +644,43 @@ func (b *Backend) state(snapshot dispatch.Snapshot, parkType string) (State, err
 // observer wires the lifecycle's observations onto the seam. No field is
 // translated beyond naming: the stream's prose is a delta, its tool calls are
 // the seam's tool events, and its checkpoints become this backend's State.
-func (b *Backend) observer(sink backend.EventSink) dispatch.Observer {
+func (b *Backend) observer(sink backend.EventSink) *sinkObserver {
 	return &sinkObserver{b: b, sink: sink}
 }
 
 type sinkObserver struct {
-	b    *Backend
-	sink backend.EventSink
+	b         *Backend
+	sink      backend.EventSink
+	openTools map[string]dispatch.ToolResult
 }
 
 func (o *sinkObserver) Text(delta string)                 { o.sink.Delta(delta) }
-func (o *sinkObserver) ToolStart(id, name, args string)   { o.sink.ToolStart(id, name, args) }
 func (o *sinkObserver) Aborted(ctx context.Context) error { return o.sink.Aborted(ctx) }
 
+func (o *sinkObserver) ToolStart(id, name, args string) {
+	// A recovery follow can replay events that were already written after the
+	// saved cursor. Only synthesize outcomes for a new dispatch or resume.
+	if o.openTools != nil {
+		o.openTools[id] = dispatch.ToolResult{ID: id, Name: name, Args: args}
+	}
+	o.sink.ToolStart(id, name, args)
+}
+
+// Report only starts observed after dispatching this segment.
+func (o *sinkObserver) finishOpenTools() bool {
+	hadUnfinishedTools := len(o.openTools) > 0
+	for _, tool := range o.openTools {
+		tool.Failed, tool.OutcomeUnknown = true, true
+		o.ToolEnd(tool)
+	}
+	return hadUnfinishedTools
+}
+
 func (o *sinkObserver) ToolEnd(t dispatch.ToolResult) {
-	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed, Duration: t.Duration})
+	delete(o.openTools, t.ID)
+	o.sink.ToolEnd(backend.ToolEvent{ID: t.ID, Name: t.Name, Args: t.Args, Result: t.Result, Err: t.Failed, Duration: t.Duration,
+		ExitCode: t.ExitCode, OutcomeUnknown: t.OutcomeUnknown,
+	})
 }
 
 // Message classifies completed commentary immediately, before subsequent tool

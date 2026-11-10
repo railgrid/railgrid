@@ -41,7 +41,7 @@ type Observer interface {
 	// both at once.
 	ToolStart(id, name, args string)
 	// ToolEnd reports a tool call finishing. An attempt that ended with a call
-	// still open produces a ToolEnd for it with Failed set and Result saying
+	// still open produces a ToolEnd for it with OutcomeUnknown set and Result saying
 	// so, so a transcript never holds a call open forever.
 	ToolEnd(ToolResult)
 	// Checkpoint offers a point the attempt can be re-joined at — nothing is
@@ -63,6 +63,9 @@ type ToolResult struct {
 	Args   string
 	Result string
 	Failed bool
+	// ExitCode is the process exit receipt, including an explicitly reported zero.
+	ExitCode       *int64
+	OutcomeUnknown bool
 	// Duration is the elapsed time reported by the harness, when available.
 	Duration time.Duration
 }

@@ -32,6 +32,7 @@ package backend
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -42,6 +43,9 @@ import (
 
 	"github.com/railgrid/railgrid/pkg/runner/harness"
 )
+
+// ErrHarnessOutcomeUnknown marks a turn whose attempt may already have acted.
+var ErrHarnessOutcomeUnknown = errors.New("confirming the runner outcome")
 
 // Role constants for the conversation a turn runs over.
 const (
@@ -243,12 +247,14 @@ func (e *GateError) Error() string {
 // ToolEvent reports a completed tool call. ID is the model's tool-call id,
 // correlating with EventSink.ToolStart.
 type ToolEvent struct {
-	ID       string
-	Name     string
-	Args     string // raw JSON arguments from the model
-	Result   string // observation (or error text)
-	Err      bool
-	Duration time.Duration
+	ID             string
+	Name           string
+	Args           string // raw JSON arguments from the model
+	Result         string // observation (or error text)
+	Err            bool
+	ExitCode       *int64
+	OutcomeUnknown bool
+	Duration       time.Duration
 	// Sources are server-observed source references attached to a successful
 	// tool result. They are not verified business truth or freshness.
 	Sources []resulttypes.SourceReference

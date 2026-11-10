@@ -30,7 +30,7 @@ const genericFailure = {
 describe('run failure presentation', () => {
   it('recognizes the missing edge runner Service and offers agent settings', () => {
     expect(runFailurePresentation('failed', missingRunnerDiagnostic())).toEqual({
-      title: 'Couldn’t start this run',
+      title: 'Connection failed',
       summary: 'Runner “book-codex” wasn’t found.',
       recovery: { label: 'Review agent settings', target: 'agent-config' },
     })
@@ -72,9 +72,16 @@ describe('run failure presentation', () => {
 
   it('treats a runner 502 during harness startup as an unknown outcome', () => {
     expect(runFailurePresentation('failed', RUNNER_502)).toEqual({
-      title: 'Run status is unclear',
-      summary: 'Check the run’s latest status before trying again.',
+      title: 'Outcome unknown',
+      summary: 'Check the run’s latest status and any changes it made before retrying.',
     })
+  })
+
+  it('distinguishes a connection failure before dispatch from a lost receipt after dispatch', () => {
+    expect(runFailurePresentation('failed', 'connecting to the runner before dispatch: dial tcp: connection refused').title)
+      .toBe('Connection failed')
+    expect(runFailurePresentation('failed', 'confirming the runner outcome: connection reset').title)
+      .toBe('Outcome unknown')
   })
 
   it.each([
@@ -104,7 +111,7 @@ describe('run failure presentation', () => {
     expect(safeDiagnostic).not.toContain(secret)
     expect(safeDiagnostic).toContain('Bearer [redacted]')
     expect(runFailurePresentation('failed', safeDiagnostic)).toEqual({
-      title: 'Couldn’t start this run',
+      title: 'Connection failed',
       summary: 'Runner “book-codex” wasn’t found.',
       recovery: { label: 'Review agent settings', target: 'agent-config' },
     })

@@ -18,6 +18,7 @@ import (
 	"github.com/railgrid/railgrid/pkg/runner"
 	"github.com/railgrid/railgrid/pkg/runner/dispatch"
 
+	"github.com/railgrid/provider-agents/backend"
 	"github.com/railgrid/provider-agents/store"
 )
 
@@ -207,6 +208,7 @@ func TestRetryableRefusalIsNarrow(t *testing.T) {
 		want bool
 	}{
 		"busy":                    {dispatch.Describe("starting the harness turn", busy), true},
+		"busy while following":    {errors.Join(backend.ErrHarnessOutcomeUnknown, busy), false},
 		"unavailable, retryable":  {&runner.Error{Code: runner.ErrorUnavailable, Retryable: true}, true},
 		"unavailable, final":      {&runner.Error{Code: runner.ErrorUnavailable, Retryable: false}, false},
 		"busy with a receipt":     {&runner.Error{Code: runner.ErrorBusy, Retryable: true, Receipt: &runner.Receipt{AttemptID: "a"}}, false},

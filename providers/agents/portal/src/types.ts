@@ -745,6 +745,8 @@ export interface RunStep {
   result?: string
   outcome: StepOutcome
   error?: string
+  exitCode?: number
+  outcomeUnknown?: boolean
   durationMS?: number
   at: string
 }
@@ -789,7 +791,9 @@ export interface ToolCall {
   name: string
   args?: string
   result?: string
-  error?: string
+  error?: string | boolean
+  exitCode?: number
+  outcomeUnknown?: boolean
   durationMS?: number
   /** Exact MCP receipt identity for one readable saved result. */
   toolCallID?: string
@@ -924,6 +928,8 @@ export interface TranscriptMessage {
     tool?: string
     args?: string
     error?: string | boolean
+    exitCode?: number
+    outcomeUnknown?: boolean
     durationMS?: number
     turnPhase?: string
     turnStatus?: string
