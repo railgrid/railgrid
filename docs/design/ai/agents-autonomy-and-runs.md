@@ -200,6 +200,11 @@ When dispatch or completion cannot be confirmed, show **Outcome unknown** and
 ask the operator to check the run and its effects before retrying. Historical
 command records without an exit receipt retain their recorded status.
 
+In chat, a failure uses the shared turn summary even when the run recorded no
+activity. Expand it to see the explanation, recovery action when available, and
+any recorded activity. Copyable diagnostics are under **Technical details**.
+Settled turns place **View run** in the footer alongside the timestamp.
+
 Run detail exposes the agent, trigger, run class, session, start time, duration,
 usage, and parent relationship. While a run is Pending, Running, or
 PendingApproval, the detail refreshes and its elapsed time moves; a settled run
@@ -213,6 +218,11 @@ In chat, a resolved permission request becomes a collapsed disclosure in the
 turn's activity, labeled **Permission approved** or **Permission denied**.
 Later activity appears below the decision. Expand the disclosure to see the
 request details.
+
+People can answer run questions inline or from Activity → Inbox. A chat run
+streams its continuation through the attended chat tool. A run started outside
+chat, including a Factory worker, uses the Inbox resolution verb and follows
+the existing run for progress. Question errors refer to the reply.
 
 Activity retains PortalKit's queryable `ResourceTable` for filters, cursor
 pagination, read states, and keyboard row navigation. The primary cell groups

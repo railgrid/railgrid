@@ -629,16 +629,17 @@ railgrid-provider-agents .agents-msg.assistant .agents-body {
 railgrid-provider-agents .agents-msg.user { align-items: flex-end; }
 railgrid-provider-agents .agents-msg.user .agents-body { white-space: pre-wrap; }
 railgrid-provider-agents .agents-message-footer { display: flex; align-items: center; gap: 8px; }
-railgrid-provider-agents .agents-run-notice-link {
-  flex: none;
-  min-height: 28px;
-  padding-inline: 4px;
-  margin-inline-start: 6px;
-  font-size: 12px;
+railgrid-provider-agents .agents-turn-failure {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  color: var(--color-text-secondary);
 }
-@media (hover: none), (any-pointer: coarse) {
-  railgrid-provider-agents .agents-run-notice-link { min-height: 44px; }
+railgrid-provider-agents .agents-turn-failure > p {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
+railgrid-provider-agents .agents-turn-failure > button { justify-self: start; }
 railgrid-provider-agents .agents-turn-usage { font-size: 11px; color: var(--color-text-muted, #5d5f78); font-family: var(--agents-mono); }
 
 /* Code-copy is provider behavior; prose geometry and typography come from the shared kit. */

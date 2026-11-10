@@ -23,7 +23,7 @@ import AIConversationStatus from '../agentkit/AIConversationStatus.vue'
 import { toast } from '../portalkit/toast'
 import { hashFor, type Route } from '../router'
 import type { FailureRecoveryTarget } from '../failure-presentation'
-import { approvalResolutionFailureMessage } from '../failure-presentation'
+import { inboxResolutionFailureMessage } from '../failure-presentation'
 import type { AppStore, ServerEvent } from '../store'
 import { credentialUnavailable, agentHarnessBacked, agentModelCredential, pendingIsQuestion, sessionLabel, type AgentArtifact, type AgentInputCapabilities, type SavedCaptureCitation, type TranscriptMessage, type ChatMessage, type ChatProgress, type ChatTraceBlock, type RunSummary, type RunDetail, type SessionMeta, type ToolCall, type AgentSkillCatalog, type ModelInfo } from '../types'
 import type { AIConversationItem, AIPrimaryActionState } from '../agentkit/ai'
@@ -1223,7 +1223,7 @@ async function refreshRunApproval(runID: string, recoverStream = false, safeRead
     // This successful disclosure supersedes progress reads already in flight,
     // even when the lifecycle event stream is disconnected.
     acceptRunSnapshot(runID)
-    const approval = { runID, ...detail.pending }
+    const approval = { runID, runTrigger: detail.trigger, ...detail.pending }
     if (target) {
       patchMessage(target.id, {
         approval,
@@ -2419,7 +2419,7 @@ async function streamTurn(
           flushNow(serial)
           const current = currentMessage()
           patchMessage(assistantID, {
-            approval: { runID: data.runID, inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question, questions: data.questions },
+            approval: { runID: data.runID, runTrigger: 'chat', inboxID: data.inboxID, kind: data.kind, tool: data.tool, args: data.args, question: data.question, questions: data.questions },
           })
           const hasClassifiedCommentary = Boolean(current?.progress?.trace.some(block => block.kind === 'commentary'))
           if (!hasClassifiedCommentary && data.content && !current?.content) {
@@ -2633,7 +2633,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     if (!content || messages.value.some(message => message.id === id)) return
     if (!beforeID && !approvalRecoveryClosedRunIDs.has(approval.runID)) {
       orphanReadSerial += 1
-      orphanRun.value = recoverableRun(approval.runID, session, name)
+      orphanRun.value = { ...recoverableRun(approval.runID, session, name), trigger: approval.runTrigger }
       orphanError.value = null
       orphanHasSnapshot.value = true
       orphanLoading.value = false
@@ -2646,7 +2646,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     messages.value.splice(before >= 0 ? before : messages.value.length, 0, reply)
   }
   try {
-    if (decision === 'answer' && target?.approval?.runID && pendingIsQuestion(target.approval)) {
+    if (decision === 'answer' && target?.approval?.runID && target.approval.runTrigger === 'chat' && pendingIsQuestion(target.approval)) {
       await streamTurn(
         `mquestion-answer-${inboxID}`,
         signal => api.answerStream(name, inboxID, response, signal),
@@ -2657,12 +2657,10 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
       )
       return
     }
-    // Only an answer carries a body. Passing an explicit undefined third
-    // argument for approve/deny would change the call every existing caller and
-    // test sees, for a value the API does not read.
-    const item = await (response === undefined
-      ? api.resolveInbox(inboxID, decision)
-      : api.resolveInbox(inboxID, decision, response))
+    // Non-chat questions resolve through the same agent-scoped verb as Inbox.
+    const item = await (decision === 'answer'
+      ? api.resolveInbox(inboxID, decision, response, name)
+      : api.resolveInbox(inboxID, decision))
     if (!requestIsCurrent()) return
     if (target?.approval) {
       showResolution(decision, item?.response ?? (typeof response === 'string' ? response : undefined), optimisticAIMessageActor(api.context()?.user), item?.payload?.answers)
@@ -2674,7 +2672,7 @@ async function resolveApproval(inboxID: string, decision: 'approve' | 'deny' | '
     void store.load('inbox')
   } catch (error) {
     if (requestIsCurrent()) {
-      toast('error', approvalResolutionFailureMessage(error instanceof ApiError ? error.status : undefined))
+      toast('error', inboxResolutionFailureMessage(decision, error instanceof ApiError ? error.status : undefined))
       // A question answer stream may disconnect before its start frame. It
       // cleared the original observer, but the run was already admitted. Keep
       // following that known run even if the inbox/status confirmation fails.
@@ -2855,8 +2853,9 @@ watch(
         applyRunProgress(detail)
         const target = messages.value.filter(row => row.role === 'assistant' && row.runID === runID).at(-1)
         if (!approvalRecoveryClosedRunIDs.has(runID) && detail.pending && !hasResolvedApproval(target, detail.pending.inboxID)) {
-          if (target) target.approval = { runID, ...detail.pending }
-          else messages.value.push({ id: `approval-${runID}`, role: 'assistant', runID, content: '', tools: [], approval: { runID, ...detail.pending } })
+          const approval = { runID, runTrigger: detail.trigger, ...detail.pending }
+          if (target) target.approval = approval
+          else messages.value.push({ id: `approval-${runID}`, role: 'assistant', runID, content: '', tools: [], approval })
         }
         orphanError.value = null
         failures = 0

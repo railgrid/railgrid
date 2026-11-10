@@ -21,10 +21,11 @@ const props = withDefaults(defineProps<{
   status?: AITurnProgressStatus
   /** A provider-formatted duration. No client-side elapsed time is inferred. */
   duration?: string | null
+  /** Explicitly show the interruption badge alongside the label. */
   interrupted?: boolean
   /** Expansion is controlled by the provider; this component emits `toggle`. */
   expanded?: boolean
-  /** Provider-owned outcome wording, for example an attributed intentional stop. */
+  /** Provider-owned outcome wording, including interruption when applicable. */
   label?: string
   announce?: boolean
   ariaLabel?: string
@@ -90,11 +91,11 @@ const progressRegionID = computed(() => {
 })
 const statusClass = computed(() => sanitizeStatusClass(props.status))
 const isRunning = computed(() => isAITurnProgressRunning(props.status))
-const isInterrupted = computed(() => props.interrupted || props.status === 'interrupted')
+const showInterrupted = computed(() => props.interrupted || (props.status === 'interrupted' && !props.label))
 const progressLabel = computed(() => props.label || aiTurnProgressLabel(props.status, props.duration))
 function accessibleLabel(): string {
   if (props.ariaLabel.trim()) return props.ariaLabel.trim()
-  const prefix = `${progressLabel.value}${isInterrupted.value ? '. Interrupted' : ''}`
+  const prefix = `${progressLabel.value}${showInterrupted.value ? '. Interrupted' : ''}`
   return hasDetails() ? `${prefix}. ${props.expanded ? 'Hide' : 'Show'} task details.` : prefix
 }
 
@@ -115,7 +116,7 @@ ensureAgentUIStyles()
   <section
     class="k-ai-turn-progress"
     @click.capture="compensateDisclosure"
-    :class="[`k-ai-turn-progress--${statusClass}`, { 'k-ai-turn-progress--interrupted': isInterrupted }]"
+    :class="[`k-ai-turn-progress--${statusClass}`, { 'k-ai-turn-progress--interrupted': showInterrupted }]"
     :data-status="status"
   >
     <span v-if="announce" class="sr-only" role="status">{{ progressLabel }}</span>
@@ -130,7 +131,7 @@ ensureAgentUIStyles()
         @click="toggle"
       >
         <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
-        <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
+        <span v-if="showInterrupted" class="k-ai-turn-progress__interrupted">
           <span aria-hidden="true">·</span>
           <TriangleAlert :stroke-width="2" aria-hidden="true" />
           <span>Interrupted</span>
@@ -144,7 +145,7 @@ ensureAgentUIStyles()
       </button>
       <span v-else class="k-ai-turn-progress__status" :aria-label="accessibleLabel()">
         <span class="k-ai-turn-progress__label">{{ progressLabel }}</span>
-        <span v-if="isInterrupted" class="k-ai-turn-progress__interrupted">
+        <span v-if="showInterrupted" class="k-ai-turn-progress__interrupted">
           <span aria-hidden="true">·</span>
           <TriangleAlert :stroke-width="2" aria-hidden="true" />
           <span>Interrupted</span>

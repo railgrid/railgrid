@@ -7,6 +7,7 @@ import { ApiClient, ApiError, type SSEEvent } from '../api'
 import { ResourceError } from '../resources'
 import { rebuildTranscript, transcriptWithProgress } from '../vue/chat'
 import type { RunDetail, TranscriptMessage } from '../types'
+import { clearToasts } from '../ui/toast'
 import { agentFixture, makeStore, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 
@@ -16,6 +17,7 @@ afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
   localStorage.clear()
+  clearToasts()
 })
 
 const run = (phase: RunDetail['phase'] = 'Running'): RunDetail => ({
@@ -189,7 +191,7 @@ describe('chat attaches to active runs', () => {
     await settleVue(24)
     expect(text(el.querySelector('.agents-log'))).not.toContain('Stopping')
     expect(text(el.querySelector('.agents-log'))).toContain('Cancelled work')
-    expect(el.querySelector('.agents-run-state--aborted')).toBeNull()
+    expect(el.querySelector('.agents-turn-failure')).toBeNull()
     expect(text(el.querySelector('.k-ai-turn-progress--aborted'))).toContain('Turn stopped')
     const reads = getRun.mock.calls.length
     await vi.advanceTimersByTimeAsync(3000)
@@ -300,7 +302,7 @@ describe('chat attaches to active runs', () => {
     } })
     const reads = listRuns.mock.calls.length
     await send(el)
-    el.querySelector<HTMLButtonElement>('.agents-run-state--failed .k-ai-action-row__toggle')!.click()
+    el.querySelector<HTMLButtonElement>('.k-ai-turn-progress--failed .k-ai-turn-progress__trigger')!.click()
     await settleVue()
     expect(text(el)).toContain('Backend failure details')
     expect(text(el)).not.toContain('stream closed before')
@@ -372,6 +374,45 @@ describe('chat attaches to active runs', () => {
     expect(answerStream).toHaveBeenCalledTimes(1)
     expect(chatStream).not.toHaveBeenCalled()
     expect(text(el)).not.toContain('Could not')
+  })
+
+  it.each([false, true])('answers an API-run question through the inbox verb (unavailable=%s)', async unavailable => {
+    vi.useFakeTimers()
+    let detail: RunDetail = {
+      ...run('PendingApproval'), trigger: 'api',
+      pending: { inboxID: 'question', kind: 'question', tool: '', args: '', question: 'Continue?' },
+    }
+    const resolveInbox = vi.fn(async () => {
+      if (unavailable) throw new ApiError(404, 'no such inbox item')
+      detail = { ...run(), trigger: 'api', progress: [partial, command] }
+      return { response: 'Continue' }
+    })
+    const answerStream = vi.fn()
+    const { el } = await mountChat({
+      listSessions: async () => [{ id: 'session', title: 'Current chat' }],
+      listMessagePage: async () => ({ items: [user] }),
+      listRuns: async () => ({ items: [detail] }),
+      getRun: async () => detail,
+      resolveInbox,
+      answerStream,
+    })
+    const card = el.querySelector('.agents-question-card')!
+    const input = card.querySelector<HTMLInputElement>('input[type="text"]')!
+    input.value = 'Continue'
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settleVue()
+    card.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settleVue(30)
+
+    expect(resolveInbox).toHaveBeenCalledExactlyOnceWith('question', 'answer', 'Continue', 'coder')
+    expect(answerStream).not.toHaveBeenCalled()
+    if (unavailable) {
+      expect(text(document.querySelector('.k-toast--error'))).toContain('This question is no longer available.')
+    } else {
+      expect(Array.from(el.querySelectorAll('.k-ai-message--user .agents-body'), text)).toContain('Continue')
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(text(el.querySelector('.agents-log'))).toContain(partial.content)
+    }
   })
 
   it('follows an approval continuation without a replacement chat stream or lifecycle events', async () => {

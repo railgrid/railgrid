@@ -293,6 +293,8 @@ describe('AgentChat loading and draft behavior', () => {
     await settleVue(8, 1)
     expect(messages[1].querySelector('time')?.getAttribute('datetime')).toBe(finishedAt)
     if (status === 'completed') expect(text(messages[1])).toContain('answer')
-    expect(text(messages[1].querySelector('.k-ai-turn-progress__label'))).toBe('Worked for 1s')
+    expect(text(messages[1].querySelector('.k-ai-turn-progress__label'))).toBe(
+      status === 'failed' ? 'Run failed · Worked for 1s' : 'Worked for 1s',
+    )
   })
 })

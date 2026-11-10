@@ -23,7 +23,7 @@ import AgentApprovalCard from '../components/AgentApprovalCard.vue'
 import AgentUsage from './AgentUsage.vue'
 import AgentsWorkbenchSection from './AgentsWorkbenchSection.vue'
 import { skippedQuestionResponse } from '../question-presentation'
-import { approvalResolutionFailureMessage } from '../failure-presentation'
+import { inboxResolutionFailureMessage } from '../failure-presentation'
 import { RUN_PREVIEW_CELL_CHARS, RUN_PREVIEW_DISCLOSURE_CHARS, RUN_PREVIEW_MAX_WIDTH, runPreview } from '../run-preview'
 
 const props = withDefaults(defineProps<{
@@ -306,7 +306,7 @@ async function resolve(item: InboxItem, decision: InboxDecision, response?: Ques
     if (authorityIsCurrent(authority)) {
       // The request can time out after the server has already accepted it.
       // Read both projections again before leaving the pending card as truth.
-      toast('error', approvalResolutionFailureMessage(cause instanceof ApiError ? cause.status : undefined))
+      toast('error', inboxResolutionFailureMessage(decision, cause instanceof ApiError ? cause.status : undefined))
       await Promise.allSettled([authority.store.load('inbox'), reload('background')])
     }
   } finally {

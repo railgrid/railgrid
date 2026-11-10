@@ -861,6 +861,7 @@ export interface TurnUsage {
  */
 export interface PendingApproval {
   runID: string
+  runTrigger: string
   inboxID: string
   /** "approval" or "question". Absent on rows written before the distinction. */
   kind?: 'approval' | 'question'

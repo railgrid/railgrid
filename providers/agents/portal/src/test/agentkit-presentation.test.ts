@@ -212,7 +212,7 @@ describe('AgentKit timestamp and chat presentation', () => {
     const waiting = await mountVue(ChatMessage, {
       message: message({
         progress: { status: 'waiting', trace: [] },
-        approval: { runID: 'run-1', inboxID: 'inbox-1', tool: 'search', args: '{}' },
+        approval: { runID: 'run-1', runTrigger: 'chat', inboxID: 'inbox-1', tool: 'search', args: '{}' },
       }),
     })
     expect(waiting.element.querySelector('.k-ai-turn-progress')?.getAttribute('data-status')).toBe('waiting')
@@ -369,18 +369,18 @@ describe('AgentKit timestamp and chat presentation', () => {
       }),
     })
     const view = await mountVue(host, {})
-    const state = view.element.querySelector<HTMLElement>('.agents-run-state')!
-    expect(view.element.querySelector('.k-ai-turn-progress')).toBeNull()
+    const state = view.element.querySelector<HTMLElement>('.k-ai-turn-progress')!
     const partialOutput = view.element.querySelector<HTMLElement>('.agents-body')!
-    const details = state.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!
+    const details = state.querySelector<HTMLButtonElement>('.k-ai-turn-progress__trigger')!
 
-    expect(state.querySelector('[role="alert"]')).not.toBeNull()
+    expect(view.element.querySelector('[role="alert"]')).not.toBeNull()
     expect(text(details)).toBe('The model rejected a reasoning setting')
     expect(details.getAttribute('aria-expanded')).toBe('false')
-    expect(Boolean(partialOutput.compareDocumentPosition(state) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    expect(Boolean(state.compareDocumentPosition(partialOutput) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
 
     details.click()
     await settleVue()
+    state.querySelector<HTMLElement>('details summary')!.click()
     const diagnosticText = text(state.querySelector('pre'))
     expect(diagnosticText).toContain('reasoning_effort')
     expect(diagnosticText).toContain('model.example')
@@ -411,7 +411,7 @@ describe('AgentKit timestamp and chat presentation', () => {
     expect(text(view.element.querySelector('.k-ai-turn-progress__label'))).toBe('You stopped after 6s')
     expect(text(view.element)).toContain('Partial response')
     expect(text(view.element.querySelector('.k-ai-turn-progress__details'))).toContain('I will inspect the repository.')
-    expect(view.element.querySelector('.agents-run-state')).toBeNull()
+    expect(view.element.querySelector('.agents-turn-failure')).toBeNull()
     expect(view.element.querySelector('time')).toBeNull()
     expect(text(view.element)).not.toContain('cancelled by user')
     expect(view.element.querySelector('.k-ai-turn-progress__header button[aria-haspopup]')).toBeNull()
@@ -450,7 +450,7 @@ describe('AgentKit timestamp and chat presentation', () => {
     const timeout = await mountVue(ChatMessage, {
       message: message({ error: 'deadline exceeded', progress: { status: 'aborted', trace: [] } }),
     })
-    expect(text(timeout.element.querySelector('.agents-run-state'))).toContain('Run timed out')
+    expect(text(timeout.element.querySelector('.k-ai-turn-progress__label'))).toBe('Run timed out')
   })
 
   it('distinguishes canceled and recovered successful turns from failed runs', async () => {
@@ -458,7 +458,7 @@ describe('AgentKit timestamp and chat presentation', () => {
       message: message({ error: 'operator requested stop', progress: { status: 'aborted', trace: [] } }),
     })
     expect(text(canceled.element.querySelector('.k-ai-turn-progress [role="status"]'))).toBe('Turn stopped')
-    expect(canceled.element.querySelector('.agents-run-state')).toBeNull()
+    expect(canceled.element.querySelector('.agents-turn-failure')).toBeNull()
     expect(canceled.element.querySelector('.agents-run-state__recovery')).toBeNull()
 
     const completed = await mountVue(ChatMessage, {
@@ -467,20 +467,26 @@ describe('AgentKit timestamp and chat presentation', () => {
         progress: { status: 'completed', trace: [] },
       }),
     })
-    expect(completed.element.querySelector('.agents-run-state')).toBeNull()
+    expect(completed.element.querySelector('.agents-turn-failure')).toBeNull()
 
     const interrupted = await mountVue(ChatMessage, {
       message: message({ error: 'Chat failed: connection closed', progress: { status: 'interrupted', trace: [] } }),
     })
-    expect(interrupted.element.querySelector('.agents-run-state [role="status"]')).not.toBeNull()
-    expect(text(interrupted.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Chat connection interrupted')
+    expect(interrupted.element.querySelector('.k-ai-conversation-turn__progress [role="status"]')).not.toBeNull()
+    const header = interrupted.element.querySelector('.k-ai-turn-progress__header')!
+    const disclosure = header.querySelector('button')!
+    expect(text(header)).toBe('Chat connection interrupted')
+    expect(disclosure.getAttribute('aria-label')).toBe('Chat connection interrupted. Show task details.')
+    disclosure.click()
+    await settleVue()
+    expect(disclosure.getAttribute('aria-label')).toBe('Chat connection interrupted. Hide task details.')
   })
 
   it('keeps View run in the active progress controls when the chat stream is interrupted', async () => {
     const view = await mountVue(ChatMessage, {
       message: message({ runID: 'run-live', error: 'Chat failed: connection closed', progress: { status: 'running', durationMS: 1000, trace: [] } }),
     })
-    expect(text(view.element.querySelector('.agents-run-state .k-ai-action-row__title'))).toBe('Chat connection interrupted')
+    expect(text(view.element.querySelector('.k-ai-turn-progress__label'))).toBe('Chat connection interrupted')
     expect(view.element.querySelectorAll('.agents-message-run-link')).toHaveLength(1)
     expect(view.element.querySelector('.agents-progress-actions .agents-message-run-link')).not.toBeNull()
   })
