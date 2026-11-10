@@ -31,7 +31,7 @@ export function toolCommandTitle(tool: ToolCall): string | undefined {
   return `${verb} ${command.replace(/\s+/g, ' ').trim()}`
 }
 
-export function toolOutcome(tool: ToolCall) {
+export function toolOutcome(tool: Pick<ToolCall, 'exitCode' | 'outcomeUnknown'>) {
   if (typeof tool.exitCode === 'number' && Number.isSafeInteger(tool.exitCode)) {
     return {
       kind: 'exit' as const,

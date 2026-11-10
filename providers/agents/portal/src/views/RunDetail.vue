@@ -212,7 +212,7 @@ async function load(mode: ResourceRefreshMode = 'foreground'): Promise<void> {
     const nextExpanded = new Set(expanded.value)
     for (const step of next.steps) {
       if (!touchedRows.has(step.id)) {
-        if ((next.phase === 'Failed' || next.phase === 'Aborted') && step.outcome === 'error') nextExpanded.add(step.id)
+        if ((next.phase === 'Failed' || next.phase === 'Aborted') && (stepClass(step) === 'err' || step.outcomeUnknown)) nextExpanded.add(step.id)
         else nextExpanded.delete(step.id)
       }
     }
@@ -336,6 +336,9 @@ function attachCodeCopy(container: ParentNode | null): void {
 }
 
 function stepClass(step: RunStep): 'ok' | 'err' | 'wait' | 'unknown' | 'audit' {
+  const receipt = toolOutcome(step)
+  if (receipt?.kind === 'exit') return 'ok'
+  if (receipt?.kind === 'unknown') return 'unknown'
   if (step.outcome === 'ok') return 'ok'
   if (step.outcome === 'error') return 'err'
   if (step.outcome === 'pending_approval') return run.value?.phase === 'PendingApproval' ? 'wait' : 'audit'
@@ -373,13 +376,15 @@ function stepDetailsID(step: RunStep): string {
 function stepsSummary(): string {
   const current = run.value
   if (!current?.steps.length) return 'No tool calls'
-  const failed = current.steps.filter(step => step.outcome === 'error').length
+  const nonzero = current.steps.filter(step => toolOutcome(step)?.exitCode).length
+  const failed = current.steps.filter(step => step.outcome === 'error' && toolOutcome(step)?.kind !== 'exit').length
   const waiting = current.steps.filter(step => step.outcome === 'pending_approval').length
   const unknown = current.steps.filter(step => !['ok', 'error', 'pending_approval'].includes(step.outcome)).length
-  if (waiting) return `${waiting} approval ${waiting === 1 ? 'request' : 'requests'}`
-  if (failed) return `${failed} to review`
-  if (unknown) return `${unknown} unresolved`
-  return 'Completed'
+  const status = waiting ? `${waiting} approval ${waiting === 1 ? 'request' : 'requests'}`
+    : failed ? `${failed} to review`
+    : unknown ? `${unknown} unresolved` : ''
+  const exits = nonzero ? `${nonzero} nonzero ${nonzero === 1 ? 'exit' : 'exits'}` : ''
+  return [status, exits].filter(Boolean).join(' · ') || 'Completed'
 }
 
 function activityNeedsAttention(current: Run): boolean {
@@ -420,7 +425,7 @@ const stepGroups = computed(() => [{
       id: step.id, title: command?.title ?? step.tool, target: `Step ${index + 1}`,
       status: outcome ? (outcome.kind === 'unknown' ? 'unknown' : 'succeeded') : stepStatus(step),
       statusLabel: label || stepStatusLabel(step), outcome: stepOutcome(step, label),
-      attention: (outcome?.kind === 'unknown' || Boolean(outcome?.exitCode)) || stepClass(step) === 'wait' || stepClass(step) === 'unknown',
+      attention: stepClass(step) === 'wait' || stepClass(step) === 'unknown',
       error: !outcome && stepClass(step) === 'err',
       expandable: Boolean(outcome || step.args || step.result || step.error), detailsId: stepDetailsID(step),
     }
@@ -658,7 +663,7 @@ onBeforeUnmount(() => {
                 :expanded-row-keys="[...expanded]"
                 :busy="activityIsBusy(run)"
                 :attention="activityNeedsAttention(run)"
-                :error="run.steps.some(step => step.outcome === 'error')"
+                :error="run.steps.some(step => stepClass(step) === 'err')"
                 label="step"
                 @toggle="toggleSteps"
                 @toggle-row="toggle"

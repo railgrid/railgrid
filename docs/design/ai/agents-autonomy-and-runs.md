@@ -194,8 +194,8 @@ run class.
 ### A run is a trace, not a terminal label
 
 Chat and run inspection show a recorded process exit as **Completed · exit N**.
-Nonzero exits use the attention tone in activity rows and execution details,
-count in diagnostics, and retain command output for inspection. A runner connection failure before dispatch is **Connection failed**.
+Nonzero exits use neutral styling in activity rows and execution details. They
+count in diagnostics and retain command output for inspection. A runner connection failure before dispatch is **Connection failed**.
 When dispatch or completion cannot be confirmed, show **Outcome unknown** and
 ask the operator to check the run and its effects before retrying. Historical
 command records without an exit receipt retain their recorded status.

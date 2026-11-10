@@ -46,6 +46,7 @@ export interface AIActivityRow {
   error?: boolean
   canceled?: boolean
   needsReview?: boolean
+  exitCode?: number
   expandable?: boolean
   /** Optional uncontrolled initial state; keyed props take precedence. */
   expanded?: boolean
@@ -179,7 +180,7 @@ export function executionStatusPresentation(status?: string, exitCode?: number |
     case 'exited':
       return exitCode === 0
         ? { state: 'succeeded', label: 'Completed', tone: 'success', busy: false, success: true, known: true }
-        : { state: 'exited', label: 'Completed', tone: 'attention', busy: false, success: false, known: true }
+        : { state: 'exited', label: 'Completed', tone: 'muted', busy: false, success: false, known: true }
     case 'failed':
     case 'error':
       return { state: 'failed', label: 'Failed', tone: 'danger', busy: false, success: false, known: true }

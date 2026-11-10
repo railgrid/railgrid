@@ -300,7 +300,7 @@ function activityRowsFor(block: Extract<TracePresentation, { kind: 'tools' }>): 
     const tool = displayTool(recorded)
     const outcome = toolOutcome(tool)
     const label = toolOutcomeLabel(outcome)
-    const needsReview = outcome?.kind === 'unknown' || Boolean(outcome?.exitCode)
+    const needsReview = outcome?.kind === 'unknown'
     const command = toolCommand(tool)
     const status = actionStatus(tool)
     const statusLabel = actionStatusLabel(status)
@@ -316,6 +316,7 @@ function activityRowsFor(block: Extract<TracePresentation, { kind: 'tools' }>): 
       busy: !outcome && status === 'running',
       attention: needsReview,
       needsReview,
+      exitCode: outcome?.exitCode,
       error: !outcome && !!tool.error,
       expandable: Boolean(outcome || tool.args || tool.result || tool.error),
       detailsId: `agents-action-details-${tool.id}`,

@@ -22,9 +22,11 @@ describe('command receipts', () => {
       { id: 'c', role: 'tool', content: '', runID: 'run', metadata: { tool: 'commandExecution', args: 'deploy', error: true, outcomeUnknown: true } },
     ])
     const view = await mountVue(ChatMessage, { message })
-    expect(text(view.element.querySelector('.k-ai-transcript-activity__summary'))).toContain('2 to review')
+    expect(text(view.element.querySelector('.k-ai-transcript-activity__summary'))).toContain('1 nonzero exit · 1 to review')
     const rows = view.element.querySelectorAll('.k-ai-action-row')
     expect(text(rows[0].querySelector('.k-ai-action-row__outcome'))).toBe('Completed · exit 127')
+    expect(rows[0].classList.contains('k-ai-action-row--attention')).toBe(false)
+    expect(rows[1].classList.contains('k-ai-action-row--attention')).toBe(true)
     expect(text(rows[1].querySelector('.k-ai-action-row__outcome'))).toBe('Outcome unknown')
     rows[1].querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settleVue()
@@ -43,7 +45,7 @@ describe('command receipts', () => {
   it('shows a silent nonzero exit without inventing error output', async () => {
     const tool = { id: '1', name: 'commandExecution', args: 'false', exitCode: 1, error: 'Tool failed', pending: false }
     const view = await mountVue(AgentToolDetails, { tool })
-    expect(text(view.element.querySelector('.k-ai-execution-details__status--attention'))).toBe('Completed · exit 1')
+    expect(text(view.element.querySelector('.k-ai-execution-details__status--muted'))).toBe('Completed · exit 1')
     expect(text(view.element)).toContain('No output')
     expect(text(view.element)).not.toContain('Tool failed')
     view.unmount()

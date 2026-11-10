@@ -21,6 +21,7 @@ const expandedRows = ref(new Set<string>())
 const single = computed(() => props.rows.length === 1)
 const busy = computed(() => props.rows.some(row => row.busy))
 const failures = computed(() => props.rows.filter(row => row.error || row.canceled).length)
+const nonzeroExits = computed(() => props.rows.filter(row => row.exitCode !== undefined && row.exitCode !== 0).length)
 const reviewCount = computed(() => props.rows.filter(row => row.needsReview).length)
 const attention = computed(() => props.rows.some(row => row.attention))
 const title = computed(() => activitySummaryTitle(props.rows))
@@ -73,7 +74,7 @@ ensureAgentUIStyles()
       <Loader2 v-if="busy" class="k-ai-transcript-activity__icon is-busy" aria-hidden="true" />
       <TriangleAlert v-else-if="failures || attention" class="k-ai-transcript-activity__icon is-attention" aria-hidden="true" />
       <component :is="summaryIcon" v-else class="k-ai-transcript-activity__icon" aria-hidden="true" />
-      <span class="k-ai-transcript-activity__summary">{{ title }} · {{ rows.length }} calls<span v-if="failures"> · {{ failures }} failed or canceled</span><span v-if="reviewCount"> · {{ reviewCount }} to review</span><span v-else-if="attention && !failures"> · Needs attention</span></span>
+      <span class="k-ai-transcript-activity__summary">{{ title }} · {{ rows.length }} calls<span v-if="nonzeroExits"> · {{ nonzeroExits }} nonzero {{ nonzeroExits === 1 ? 'exit' : 'exits' }}</span><span v-if="failures"> · {{ failures }} failed or canceled</span><span v-if="reviewCount"> · {{ reviewCount }} to review</span><span v-else-if="attention && !failures"> · Needs attention</span></span>
       <ChevronRight class="k-ai-transcript-activity__chevron" :class="{ 'is-expanded': open }" aria-hidden="true" />
     </button>
     <Transition name="k-ai-disclosure">

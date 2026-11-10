@@ -9,7 +9,7 @@
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, TriangleAlert, X } from 'lucide-vue-next'
+import { Check, Copy, CircleHelp, ExternalLink, Loader2, Terminal, X } from 'lucide-vue-next'
 import { ensureAgentUIStyles } from '../agentkit/styles'
 import {
   executionStatusPresentation,
@@ -44,7 +44,7 @@ const statusIcon = computed(() => {
   switch (status.value.state) {
     case 'running': return Loader2
     case 'succeeded': return Check
-    case 'exited': return TriangleAlert
+    case 'exited': return null
     case 'failed':
     case 'timed_out':
     case 'canceled':
@@ -163,6 +163,7 @@ function outputLines(execution?: AIExecutionView): readonly string[] {
         <span v-else />
         <span class="k-ai-execution-details__status" :class="`k-ai-execution-details__status--${status.tone}`">
           <component
+            v-if="statusIcon"
             :is="statusIcon"
             class="k-ai-execution-details__status-icon"
             :class="{ 'k-ai-execution-details__status-icon--running': status.busy }"

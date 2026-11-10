@@ -1235,6 +1235,7 @@ describe('chat streaming', () => {
     await send(el, 'Run the tests')
     const card = el.querySelector('.k-ai-action-row')!
     expect(card.classList.contains('k-ai-action-row--error')).toBe(false)
+    expect(card.classList.contains('k-ai-action-row--attention')).toBe(false)
     expect(text(card.querySelector('.k-ai-action-row__outcome'))).toBe('Completed · exit 1')
     card.querySelector<HTMLButtonElement>('.k-ai-action-row__toggle')!.click()
     await settle()
