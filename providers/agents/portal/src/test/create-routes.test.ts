@@ -195,6 +195,70 @@ describe('route-owned creation surfaces', () => {
     expect(agentTemplates).toHaveBeenCalledTimes(1)
   })
 
+  it('replaces team context only after confirmation and preserves newer edits', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'workspace-assistant' })
+    const context = el.querySelector<HTMLTextAreaElement>('#agent-create-param-teamContext')!
+    const platform = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Platform team')!
+    const editContext = async (value: string) => {
+      context.value = value
+      context.dispatchEvent(new InputEvent('input', { bubbles: true }))
+      await settleVue()
+    }
+
+    await editContext('We maintain a customer portal.')
+    platform.click()
+    expect(confirmState.open).toBe(true)
+    expect(confirmState.title).toBe('Replace team context?')
+    resolveConfirm(false)
+    await settleVue()
+    expect(context.value).toBe('We maintain a customer portal.')
+
+    platform.click()
+    await editContext('We maintain two customer portals.')
+    resolveConfirm(true)
+    await settleVue()
+    expect(context.value).toBe('We maintain two customer portals.')
+
+    platform.click()
+    resolveConfirm(true)
+    await settleVue()
+    expect(context.value).toContain('We maintain Kubernetes clusters')
+    expect(el.querySelector('[data-generated-instructions]')?.textContent).toContain(context.value)
+  })
+
+  it('requires an area of expertise for a Specialist researcher', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn(async (agent: Agent) => ({ agent, createdSchedules: [], warnings: [] }))
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'researcher' })
+    const specialist = [...el.querySelectorAll('label')].find(label => label.textContent?.includes('Specialist'))!
+    specialist.querySelector('input')!.click()
+    await settleVue()
+    const form = el.querySelector('form')!
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(el.querySelector('#agent-create-param-domain-error')?.textContent).toContain('Enter an area of expertise')
+    expect(confirmState.open).toBe(false)
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+
+    const domain = el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')!
+    domain.value = 'EU energy policy'
+    domain.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(confirmState.open).toBe(true)
+    resolveConfirm(true)
+    await settleVue()
+    expect(createAgentFromTemplate.mock.calls[0]?.[0].spec.systemPrompt).toContain('Your area: EU energy policy.')
+  })
+
   it('preserves repository entries while refreshing setup in new tabs and allows an offline machine with a warning', async () => {
     const catalog = (await import('../../public/agent-templates.json')).default
     const api = stubApi({ agentTemplates: async () => catalog })
@@ -392,13 +456,57 @@ describe('route-owned creation surfaces', () => {
     expect(timeInput(restored).value).toBe('')
     restored.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
     await settleVue()
-    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('Enter a time')
+    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('choose a time for the digest')
     expect(createAgentFromTemplate).not.toHaveBeenCalled()
 
     const editCron = [...restored.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Edit cron')!
     editCron.click()
     await settleVue()
-    expect(restored.querySelector<HTMLInputElement>('#agent-create-param-digestTime')?.value).toBe('')
+    const cron = restored.querySelector<HTMLInputElement>('#agent-create-param-digestTime')!
+    expect(cron.value).toBe('')
+    restored.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('Enter a cron expression')
+    expect(cron.getAttribute('aria-invalid')).toBe('true')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('serializes selected digest days and keeps at least one day selected', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const day = (label: string) => el.querySelector<HTMLButtonElement>(`.agents-schedule-days [aria-label="${label}"]`)!
+    const clickButton = async (label: string) => {
+      const button = [...el.querySelectorAll('button')].find(item => item.textContent?.trim() === label)!
+      button.click()
+      await settleVue()
+    }
+    const expectCron = async (expression: string) => {
+      await clickButton('Edit cron')
+      expect(el.querySelector<HTMLInputElement>('#agent-create-param-digestTime')?.value).toBe(expression)
+      await clickButton('Use time and weekdays')
+    }
+    const time = el.querySelector<HTMLInputElement>('input[type="time"]')!
+    time.value = '09:15'
+    time.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+
+    day('Sunday').click()
+    await settleVue()
+    await expectCron('15 9 * * 0,1,2,3,4,5')
+    day('Saturday').click()
+    await settleVue()
+    await expectCron('15 9 * * *')
+
+    for (const label of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']) {
+      day(label).click()
+      await settleVue()
+    }
+    expect(day('Sunday').disabled).toBe(true)
+    expect(day('Sunday').getAttribute('aria-pressed')).toBe('true')
+    await expectCron('15 9 * * 0')
   })
 
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {

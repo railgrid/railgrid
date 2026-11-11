@@ -441,7 +441,7 @@ async function submit(): Promise<void> {
   if (chosen) {
     const digest = digestParameter.value
     if (digest && digestTimeMissing.value) {
-      errors[`param-${digest.key}`] = 'Enter a time for the digest.'
+      errors[`param-${digest.key}`] = 'Enter a cron expression, or choose a time for the digest.'
     } else if (digest && !validDigestCron(parameters.value[digest.key]?.trim() || digest.default || '')) {
       errors[`param-${digest.key}`] = 'Enter a valid cron expression.'
     }
