@@ -58,11 +58,13 @@ vi.mock('./portalkit/FirstRunGuide.vue', async () => {
 vi.mock('lucide-vue-next', async () => {
   const { h } = await import('vue')
   const icon = { setup: () => () => h('span', { 'aria-hidden': 'true' }) }
-  return { ChevronDown: icon, ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Link2: icon }
+  return { ChevronDown: icon, ArrowLeft: icon, ArrowRight: icon, Check: icon, CircleDot: icon, Info: icon, Link2: icon }
 })
 
 import ConnectionsView from './views/ConnectionsView.vue'
 import ConnectionCreateView from './views/ConnectionCreateView.vue'
+import CreateGuidance from './portalkit/CreateGuidance.vue'
+import createGuidanceSource from './portalkit/CreateGuidance.vue?raw'
 import FormSelect from './portalkit/FormSelect.vue'
 import formSelectSource from './portalkit/FormSelect.vue?raw'
 import RepositoryCreateView from './views/RepositoryCreateView.vue'
@@ -203,6 +205,7 @@ function compileClientRender(source: string, filename: string): (ctx: unknown, c
 }
 
 ;(FormSelect as unknown as { render: unknown }).render = compileClientRender(formSelectSource, 'FormSelect.vue')
+;(CreateGuidance as unknown as { render: unknown }).render = compileClientRender(createGuidanceSource, 'CreateGuidance.vue')
 ;(ConnectionsView as unknown as { render: unknown }).render = compileClientRender(connectionsSource, 'ConnectionsView.vue')
 ;(ConnectionCreateView as unknown as { render: unknown }).render = compileClientRender(connectionCreateSource, 'ConnectionCreateView.vue')
 ;(RepositoryCreateView as unknown as { render: unknown }).render = compileClientRender(repositoryCreateSource, 'RepositoryCreateView.vue')
@@ -304,21 +307,51 @@ describe('OAuth configuration error states', () => {
     app.unmount()
   })
 
-  it('shows a retry action on the GitHub creation route when configuration fails', async () => {
+  it('shows GitHub guidance only after a successful retry on the creation route', async () => {
     const configRequest = deferred<{ enabled: boolean }>()
-    mocks.api.oauthConfig.mockReturnValue(configRequest.promise)
+    mocks.api.oauthConfig.mockReturnValueOnce(configRequest.promise)
+      .mockResolvedValueOnce({ enabled: true, startURL: '/oauth/github/start' })
+    const { app, root } = mount(ConnectionCreateView, {
+      method: 'github',
+      deletions: createResourceDeletions(),
+    })
+    await settle()
+    expect(textContent(root)).toContain('Checking GitHub sign-in…')
+    expect(findNode(root, node => node.type === 'aside')).toBeUndefined()
+
+    configRequest.reject(new Error('oauth backend unavailable'))
+    await settle()
+
+    expect(textContent(root)).toContain('GitHub sign-in configuration could not be loaded: oauth backend unavailable')
+    expect(findNode(root, node => node.props.role === 'alert')).toBeDefined()
+    expect(findNode(root, node => node.type === 'aside')).toBeUndefined()
+    expect(textContent(root)).not.toContain('Go back to add a token manually.')
+    expect(textContent(root)).not.toContain('Continue with GitHub')
+    const retry = findNode(root, node => node.type === 'button' && textContent(node) === 'Retry GitHub sign-in')
+    expect(retry?.props.onClick).toBeTypeOf('function')
+    await (retry?.props.onClick as () => Promise<void>)()
+    await settle()
+
+    expect(textContent(root)).toContain('GitHub opens in a new window.')
+    expect(textContent(root)).toContain('Continue with GitHub')
+    const guidance = findNode(root, node => node.type === 'aside')
+    expect(guidance).toBeDefined()
+    expect(textContent(guidance!)).toContain('After authorization')
+    expect(findNode(root, node => node.props.role === 'alert')).toBeUndefined()
+    app.unmount()
+  })
+
+  it('directs users to manual token setup when GitHub sign-in is disabled', async () => {
     const { app, root } = mount(ConnectionCreateView, {
       method: 'github',
       deletions: createResourceDeletions(),
     })
     await settle()
 
-    configRequest.reject(new Error('oauth backend unavailable'))
-    await settle()
-
-    expect(textContent(root)).toContain('GitHub sign-in configuration could not be loaded: oauth backend unavailable')
-    expect(textContent(root)).toContain('Retry GitHub sign-in')
-    expect(findNode(root, node => node.props.role === 'alert')).toBeDefined()
+    expect(textContent(root)).toContain('GitHub sign-in is unavailable. Go back to add a token manually.')
+    expect(textContent(root)).not.toContain('Continue with GitHub')
+    expect(textContent(root)).not.toContain('Retry GitHub sign-in')
+    expect(findNode(root, node => node.type === 'aside')).toBeUndefined()
     app.unmount()
   })
 })

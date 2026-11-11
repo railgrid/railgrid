@@ -45,6 +45,7 @@ const oauthStartURL = ref('')
 const oauthConfigError = ref<string | null>(null)
 const oauthBusy = ref(false)
 const oauthAuthorized = ref(false)
+const oauthLogin = ref('')
 // Set when the OAuth App issues expiring tokens; the provider renews with it.
 const oauthRefreshToken = ref('')
 const oauthExpiry = ref('')
@@ -211,8 +212,9 @@ function onMessage(ev: MessageEvent): void {
   token.value = data.token
   oauthRefreshToken.value = typeof data.refreshToken === 'string' ? data.refreshToken : ''
   oauthExpiry.value = typeof data.expiry === 'string' ? data.expiry : ''
-  owner.value = data.login || ''
-  name.value = data.login ? 'github-' + data.login : 'github'
+  oauthLogin.value = typeof data.login === 'string' ? data.login : ''
+  owner.value = oauthLogin.value
+  name.value = oauthLogin.value ? 'github-' + oauthLogin.value : 'github'
   fieldErrors.value = {}
   oauthAuthorized.value = true
 }
@@ -365,7 +367,9 @@ watch(contextGeneration, () => {
     <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
-          <p v-if="oauthAuthorized" class="muted" role="status">GitHub authorized.</p>
+          <p v-if="oauthAuthorized" class="muted" role="status">
+            GitHub authorized<span v-if="oauthLogin"> as <code>{{ oauthLogin }}</code></span>.
+          </p>
           <label class="field" for="code-connection-name"><span class="field-label">Name in Railgrid</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
           <label class="field" for="code-connection-owner"><span class="field-label">GitHub owner (account or organization)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
           <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error code-connection-token-hint' : 'code-connection-token-hint'" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
