@@ -708,9 +708,9 @@ const selectedCategory = ref<string | null>(null)
 const customProviderSetupOpen = ref(false)
 const customProviderSetupHeading = ref<HTMLHeadingElement | null>(null)
 
-async function toggleCustomProviderSetup() {
-  customProviderSetupOpen.value = !customProviderSetupOpen.value
-  if (customProviderSetupOpen.value) {
+async function setCustomProviderSetupOpen(open: boolean) {
+  customProviderSetupOpen.value = open
+  if (open) {
     await nextTick()
     customProviderSetupHeading.value?.focus()
   }
@@ -1325,7 +1325,7 @@ function dependencyNotice(p: ProviderDTO): string {
             class="text-sm text-accent underline-offset-2 hover:underline focus-visible:underline pointer-coarse:min-h-11"
             :aria-expanded="customProviderSetupOpen"
             aria-controls="custom-provider-setup"
-            @click="toggleCustomProviderSetup"
+            @click="setCustomProviderSetupOpen(!customProviderSetupOpen)"
           >
             Adding a custom provider?
           </button>
@@ -1373,7 +1373,7 @@ function dependencyNotice(p: ProviderDTO): string {
             class="mt-2 text-accent underline underline-offset-2 pointer-coarse:min-h-11"
             :aria-expanded="customProviderSetupOpen"
             aria-controls="custom-provider-setup"
-            @click="toggleCustomProviderSetup"
+            @click="setCustomProviderSetupOpen(true)"
           >
             Learn how to add a custom provider
           </button>

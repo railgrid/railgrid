@@ -43,6 +43,7 @@ try {
     const { page, errors } = await openFixture(theme, width)
     const catalogHint = page.getByRole('button', { name: 'Adding a custom provider?', exact: true })
     const setupPanel = page.getByRole('region', { name: 'Add a custom Railgrid provider', exact: true })
+    const setupHeading = setupPanel.getByRole('heading')
     await catalogHint.press('Enter')
     await setupPanel.waitFor()
     assert.equal(await catalogHint.getAttribute('aria-expanded'), 'true')
@@ -60,9 +61,14 @@ try {
     assert.equal(await emptyHint.getAttribute('aria-controls'), await catalogHint.getAttribute('aria-controls'))
     assert.equal(await emptyHint.getAttribute('aria-expanded'), 'true')
     assert.equal(await search.inputValue(), 'custom provider')
-    assert.equal(await setupPanel.getByRole('heading').evaluate(el => el === document.activeElement), true)
+    assert.equal(await setupHeading.evaluate(el => el === document.activeElement), true)
     assert.equal(await page.locator('main').evaluate(el => el.scrollWidth > el.clientWidth), false)
+
     await emptyHint.click()
+    assert.equal(await emptyHint.getAttribute('aria-expanded'), 'true', 'the no-results hint keeps the panel open')
+    assert.equal(await setupHeading.evaluate(el => el === document.activeElement), true, 'the no-results hint returns focus to the panel')
+
+    await catalogHint.click()
     await setupPanel.waitFor({ state: 'hidden' })
     await search.clear()
     await noResults.waitFor({ state: 'hidden' })
