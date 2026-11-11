@@ -19,6 +19,8 @@ FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 ARG TARGETARCH
 ARG TARGETOS=linux
+ARG GO_BUILD_GODEBUG
+ENV GODEBUG=$GO_BUILD_GODEBUG
 
 WORKDIR /workspace
 COPY go.mod go.sum ./

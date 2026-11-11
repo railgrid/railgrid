@@ -69,6 +69,9 @@ jobs:
             if [[ "$attempt" == 3 ]] || ! grep -Eq 'proxy[.]golang[.]org.*(stream error|connection reset by peer|TLS handshake timeout|unexpected EOF|i/o timeout)' "$build_log"; then
               exit 1
             fi
+            if grep -Eq 'proxy[.]golang[.]org.*stream error' "$build_log"; then
+              export GO_BUILD_GODEBUG=http2client=0
+            fi
             echo "::warning::Go module proxy download failed on attempt $attempt. Retrying the image build."
             sleep "$((attempt * 15))"
           done

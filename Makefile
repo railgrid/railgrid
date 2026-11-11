@@ -2967,10 +2967,10 @@ E2E_IMAGE_ENV := RAILGRID_HUB_IMAGE=$(E2E_HUB_IMAGE) RAILGRID_HUB_IMAGE_TAG=$(E2
 .PHONY: e2e-hub-image e2e-agent-image e2e-images e2e-standalone-run e2e-ssh-run e2e-oidc-run e2e-external-kcp-run
 
 e2e-hub-image: ## Build the hub image the kind-based e2e suites deploy
-	docker build -f deploy/Dockerfile.hub -t $(E2E_HUB_IMAGE):$(E2E_IMAGE_TAG) .
+	docker build --build-arg GO_BUILD_GODEBUG -f deploy/Dockerfile.hub -t $(E2E_HUB_IMAGE):$(E2E_IMAGE_TAG) .
 
 e2e-agent-image: ## Build the agent image the standalone e2e suite deploys
-	docker build -f deploy/Dockerfile.agent -t $(E2E_AGENT_IMAGE):$(E2E_IMAGE_TAG) .
+	docker build --build-arg GO_BUILD_GODEBUG -f deploy/Dockerfile.agent -t $(E2E_AGENT_IMAGE):$(E2E_IMAGE_TAG) .
 
 e2e-images: e2e-hub-image e2e-agent-image ## Build both images the kind-based e2e suites deploy
 
