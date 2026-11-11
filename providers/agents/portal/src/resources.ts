@@ -1965,7 +1965,7 @@ export class Resources {
 
 /** KubeModelCredential is the object as kcp stores it. */
 interface KubeModelCredential {
-  metadata?: { name?: string; annotations?: Record<string, string> }
+  metadata?: { name?: string; uid?: string; generation?: number; annotations?: Record<string, string> }
   spec?: {
     connectionRef?: string
     provider?: string
@@ -1999,6 +1999,8 @@ function credentialView(object: KubeModelCredential): Credential {
   const firstProblem = [secretResolved, reachable, ready].find((c) => c && c.status !== 'True')
   return {
     name: object.metadata?.name ?? '',
+    uid: object.metadata?.uid,
+    generation: object.metadata?.generation,
     ...(object.spec?.connectionRef ? { connectionRef: object.spec.connectionRef } : {}),
     ...(object.metadata?.annotations?.['agents.railgrid.ai/display-name'] ? { displayName: object.metadata.annotations['agents.railgrid.ai/display-name'] } : {}),
     provider: object.spec?.provider ?? '',

@@ -54,6 +54,7 @@ describe('provider-first BYOK flow', () => {
     const save = vi.fn()
     const probeCredentialDraft = vi.fn().mockImplementation((_body, discover) => Promise.resolve(discover ? { ok: true, latencyMS: 1, models: ['first-model'] } : { ok: true, latencyMS: 2 }))
     const view = await mountEditor({ probeCredentialDraft }, { onSave: save })
+    await input(view.element, '#provider-connection-name', 'Production models')
     await input(view.element, '[name="apiKey"]', 'test-key')
     button(view.element, 'Verify & connect').click(); await settleVue()
     expect(probeCredentialDraft).toHaveBeenCalledTimes(1)
@@ -61,7 +62,7 @@ describe('provider-first BYOK flow', () => {
     expect(view.element.querySelector('#model-id')).toBeNull()
     expect(save).toHaveBeenCalledOnce()
     const body = save.mock.calls[0][0]
-    expect(body).toMatchObject({ apiKey: 'test-key', model: '', baseURL: account.baseURL })
+    expect(body).toMatchObject({ apiKey: 'test-key', model: '', baseURL: account.baseURL, displayName: 'Production models' })
     expect(body).not.toHaveProperty('newConnection')
     expect(body).not.toHaveProperty('connectionRef')
   })
@@ -78,6 +79,70 @@ describe('provider-first BYOK flow', () => {
     expect(probeCredentialDraft).not.toHaveBeenCalled()
     expect(save.mock.calls[0][0]).toMatchObject({ connectionRef: 'account', model: 'second-model' })
     expect(save.mock.calls[0][0].newConnection).toBeUndefined()
+  })
+
+  it('discovers an empty catalog on arrival and lets the user verify a manual ID while it loads', async () => {
+    const discoverProviderConnection = vi.fn().mockReturnValue(new Promise(() => {}))
+    const testProviderConnection = successfulConnectionTest()
+    const view = await mountEditor({ discoverProviderConnection, testProviderConnection }, { initialConnection: 'account' })
+    expect(discoverProviderConnection).not.toHaveBeenCalled()
+
+    await view.setProps({ credentials: [{ ...account, discovered: [] }] })
+    expect(discoverProviderConnection).toHaveBeenCalledExactlyOnceWith('account', expect.any(AbortSignal))
+    await choose(view.element, 'manual-model')
+    button(view.element, 'Verify & connect').click()
+    await settleVue()
+    expect(testProviderConnection).toHaveBeenCalledExactlyOnceWith('account', 'manual-model', expect.any(AbortSignal))
+    view.unmount()
+    expect(discoverProviderConnection.mock.calls[0][1].aborted).toBe(true)
+  })
+
+  it('refreshes inside the Model ID picker and retains cached options after a failure', async () => {
+    const discoverProviderConnection = vi.fn()
+      .mockResolvedValueOnce({ ok: false, latencyMS: 0 })
+      .mockResolvedValueOnce({ ok: true, latencyMS: 1, models: ['fresh-model'] })
+    const view = await mountEditor({ discoverProviderConnection }, { credentials: [account], initialConnection: 'account' })
+    expect(discoverProviderConnection).not.toHaveBeenCalled()
+    view.element.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settleVue()
+    const refresh = document.querySelector<HTMLButtonElement>('.k-model-id-picker button[aria-label="Refresh models"]')!
+    refresh.click()
+    await settleVue()
+    const picker = document.querySelector('.k-model-id-picker')!
+    expect(picker.textContent).toContain('You can still enter a model ID manually.')
+    expect(picker.textContent).toContain('first-model')
+
+    refresh.click()
+    await settleVue()
+    expect(picker.textContent).toContain('fresh-model')
+    expect(picker.textContent).not.toContain('first-model')
+  })
+
+  it('discards late discovery results when switching saved connections', async () => {
+    let resolveOld!: (result: { ok: boolean; latencyMS: number; models: string[] }) => void
+    const oldResult = new Promise(resolve => { resolveOld = resolve })
+    const discoverProviderConnection = vi.fn().mockReturnValueOnce(oldResult)
+      .mockResolvedValueOnce({ ok: true, latencyMS: 1, models: ['other-model'] })
+    const view = await mountEditor({ discoverProviderConnection }, {
+      credentials: [{ ...account, discovered: [] }, { ...account, name: 'other', discovered: [] }],
+      selectConnection: true,
+    })
+    const selector = view.element.querySelector<HTMLSelectElement>('#saved-provider-connection')!
+    selector.value = 'account'
+    selector.dispatchEvent(new Event('change'))
+    await settleVue()
+    selector.value = 'other'
+    selector.dispatchEvent(new Event('change'))
+    await settleVue()
+    expect(discoverProviderConnection.mock.calls[0][1].aborted).toBe(true)
+    resolveOld({ ok: true, latencyMS: 1, models: ['old-model'] })
+    await settleVue()
+
+    view.element.querySelector<HTMLButtonElement>('#model-id')!.click()
+    await settleVue()
+    const picker = document.querySelector('.k-model-id-picker')!
+    expect(picker.textContent).toContain('other-model')
+    expect(picker.textContent).not.toContain('old-model')
   })
 
   it.each([240, 253])('keeps model identity in valid DNS binding names for a %i-character connection ID', async length => {
@@ -210,7 +275,7 @@ describe('editing provider connections', () => {
     const testProviderConnection = vi.fn()
     const view = await mountEditor({ testProviderConnection }, { credentials: [account], credential: account, onRename: rename })
 
-    await input(view.element, '[name="connectionName"]', 'Production primary')
+    await input(view.element, '#provider-connection-name', 'Production primary')
     expect(view.element.querySelector('[name="modelLabel"]')).toBeNull()
     expect(button(view.element, 'Save changes').disabled).toBe(false)
     button(view.element, 'Save changes').click(); await settleVue()
@@ -226,7 +291,7 @@ describe('editing provider connections', () => {
     const view = await mountEditor({ testProviderConnection }, { credentials: [binding], credential: binding, onRename: rename })
 
     expect(view.element.querySelector<HTMLInputElement>('[name="modelLabel"]')?.value).toBe('Fast model')
-    expect(view.element.querySelector('[name="connectionName"]')).toBeNull()
+    expect(view.element.querySelector('#provider-connection-name')).toBeNull()
     await input(view.element, '[name="modelLabel"]', 'Fast response')
     expect(button(view.element, 'Save changes').disabled).toBe(false)
     button(view.element, 'Save changes').click(); await settleVue()

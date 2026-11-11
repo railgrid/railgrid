@@ -795,7 +795,10 @@ describe('route-owned creation surfaces', () => {
     expect(saveCredential).toHaveBeenCalledOnce()
     expect(saveCredential.mock.calls[0][0]).toMatchObject({ model: '', apiKey: 'secret' })
     expect(saveCredential.mock.calls[0][0]).not.toHaveProperty('connectionRef')
-    expect(el.textContent).toContain('Provider connected')
+    expect(mountedByElement.get(el)?.events['create-success']).toEqual([
+      expect.objectContaining({ resource: 'model', name: 'main', item: expect.objectContaining({ isConnection: true }) }),
+    ])
+    expect(store.credentials.data).toContainEqual(expect.objectContaining({ name: 'main', isConnection: true }))
   })})
 
 describe('route-owned collection affordances', () => {
