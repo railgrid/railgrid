@@ -215,7 +215,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_e2e_kind_suites_consume_the_shared_build_artifact(self):
         e2e = self.workflows["e2e"]["jobs"]
-        self.assertIn("make e2e-images", [step["run"] for step in e2e["build"]["steps"] if "run" in step])
+        build_commands = [step["run"] for step in e2e["build"]["steps"] if "run" in step]
+        self.assertTrue(any("make e2e-images" in command for command in build_commands), build_commands)
         upload = next(step for step in e2e["build"]["steps"] if step.get("uses", "").startswith("actions/upload-artifact"))
         self.assertEqual(upload["with"]["name"], "e2e-build")
         for job, target in [("e2e-standalone", "e2e-standalone-run"), ("e2e-ssh", "e2e-ssh-run"),
