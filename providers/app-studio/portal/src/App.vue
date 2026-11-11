@@ -868,7 +868,7 @@ const threadRailRef = ref<{
   previewEnter?: () => void
   previewLeave?: () => void
 } | null>(null)
-const threadRailExpanded = computed(() => threadRailRef.value?.expanded ?? true)
+const threadRailExpanded = computed(() => threadRailRef.value?.expanded ?? false)
 const assistantIntent = ref<AssistantResponseMode>('default')
 const approvalMode = ref<ProjectAssistantApprovalMode>('on_request')
 const approvalModeLoading = ref(false)
@@ -11349,6 +11349,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         <AIConversationLayout class="relative flex min-h-0 flex-1 flex-col overflow-hidden md:flex-row">
           <AIConversationRail
             ref="threadRailRef"
+            :default-anchored="false"
             :threads="assistantThreads"
             :active-thread-i-d="activeAssistantThreadID"
             :unread-thread-i-ds="unreadAssistantThreadIDs"

@@ -86,6 +86,10 @@ async function mountFixture(page, themeName) {
   const pane = page.locator('[data-app-studio-workbench-pane]')
   await page.locator('[data-app-studio-workbench-toggle]').waitFor({ state: 'attached' })
   if (!await pane.isVisible()) await page.getByRole('button', { name: 'Show workbench' }).click()
+  const preview = pane.getByRole('tab', { name: 'Preview', exact: true })
+  await preview.waitFor()
+  assert.equal(await preview.getAttribute('aria-selected'), 'true', 'Preview should be active when the project opens')
+  await pane.getByRole('button', { name: 'New tab', exact: true }).click()
   await pane.getByRole('searchbox', { name: 'Search workbench tabs' }).waitFor()
   return { pane, denied }
 }
