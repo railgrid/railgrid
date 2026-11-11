@@ -60,48 +60,6 @@ let oauthContextGeneration = 0
 
 const isGitHub = computed(() => props.method === 'github')
 const pageTitle = computed(() => isGitHub.value ? 'Connect with GitHub' : 'Add a token connection')
-const pageMeta = computed(() => isGitHub.value
-  ? 'Authorize GitHub, then choose the account or organization where repositories should be created.'
-  : 'Store a GitHub personal access token in this workspace and validate the connection.')
-const guidanceTitle = computed(() => isGitHub.value ? 'Authorize and connect GitHub' : 'Name and connect GitHub')
-const guidanceDescription = computed(() => isGitHub.value
-  ? 'Authorize Railgrid in GitHub, then review the workspace-local connection before creating it.'
-  : 'Choose the Railgrid connection name and GitHub owner, then provide a personal access token.')
-const guidancePrerequisites = computed(() => isGitHub.value
-  ? [
-      'A GitHub session with access to the account or organization that will own repositories.',
-      'Permission to authorize the configured Railgrid GitHub OAuth app.',
-    ]
-  : [
-      'A GitHub account or organization name that will own repositories.',
-      'A personal access token for that owner; see the permission guidance below the token field.',
-      'For GitHub Enterprise Server, the API base URL for the instance.',
-    ])
-const guidanceValues = computed(() => [
-  { label: 'Railgrid name', value: name.value.trim() || 'Not entered yet', technical: true },
-  { label: 'GitHub owner', value: owner.value.trim() || 'Not entered yet', technical: true },
-  { label: 'Authentication', value: isGitHub.value ? 'GitHub OAuth' : 'Personal access token' },
-  {
-    label: 'Git host',
-    value: isGitHub.value ? 'Configured by OAuth' : baseURL.value.trim() || 'github.com',
-    technical: !isGitHub.value,
-  },
-  {
-    label: 'Credential',
-    value: oauthAuthorized.value
-      ? 'Authorized (stored as a Secret)'
-      : token.value
-        ? 'Provided (stored as a Secret)'
-        : isGitHub.value && oauthBusy.value
-          ? 'Waiting for GitHub authorization'
-          : 'Not provided yet',
-  },
-])
-const guidanceNextSteps = [
-  'Railgrid stores the credential as a Secret in this workspace; it is not shown after submission.',
-  'The connection controller validates the credential and reports the GitHub login and readiness.',
-  'Use the connection when creating repositories; manage deploy keys and collaborators from each repository.',
-]
 
 function isDeleting(connection: Pick<Connection, 'name' | 'uid' | 'deletionTimestamp'>): boolean {
   return !!connection.deletionTimestamp || props.deletions.has('connection', connection.name, connection.uid)
@@ -369,7 +327,6 @@ watch(contextGeneration, () => {
     </button>
     <header class="k-create-header">
       <h2 class="k-create-title">{{ pageTitle }}</h2>
-      <p class="k-create-description">{{ pageMeta }}</p>
     </header>
 
     <div v-if="loading && !loaded" class="panel k-card" role="status" aria-live="polite">Loading connections…</div>
@@ -381,21 +338,19 @@ watch(contextGeneration, () => {
     <div v-if="isGitHub && !oauthAuthorized" class="k-create-surface k-create-surface--guided">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
-          <p class="muted">A separate GitHub window will open. After authorization, review the connection details before creating it.</p>
-          <span v-if="oauthLoaded && !oauthEnabled && !oauthConfigError" class="muted">GitHub OAuth is not configured. Use the token connection flow instead.</span>
-          <span v-else-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
-          <div v-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
+          <span v-if="!oauthLoaded" class="muted" role="status" aria-live="polite">Checking GitHub sign-in…</span>
+          <div v-else-if="oauthConfigError" class="error read-error" role="alert" aria-live="assertive">
             <span>GitHub sign-in configuration could not be loaded: {{ oauthConfigError }}</span>
             <button class="k-btn k-btn--ghost" type="button" @click="loadOAuthConfig">Retry GitHub sign-in</button>
           </div>
+          <p v-else-if="!oauthEnabled" class="muted">GitHub sign-in is unavailable. Go back to add a token manually.</p>
+          <p v-else class="muted">GitHub opens in a new window. Authorize Railgrid there.</p>
           <p v-if="formError" class="error" role="alert">{{ formError }}</p>
         </div>
         <CreateGuidance
-          :title="guidanceTitle"
-          :description="guidanceDescription"
-          :prerequisites="guidancePrerequisites"
-          :values="guidanceValues"
-          :next-steps="guidanceNextSteps"
+          v-if="oauthLoaded && oauthEnabled"
+          title="After authorization"
+          description="Review the GitHub owner, then create the connection."
         />
       </div>
       <div class="k-create-actions">
@@ -409,36 +364,26 @@ watch(contextGeneration, () => {
     <form v-if="method === 'token' || oauthAuthorized" class="k-create-surface k-create-surface--guided" :aria-busy="submitting" novalidate @submit.prevent="submit">
       <div class="k-create-body k-create-body--guided">
         <div class="k-create-fields">
-          <p v-if="oauthAuthorized" class="muted">
-            Authorized via GitHub<span v-if="owner"> as <code>{{ owner }}</code></span>. Pick the org/account to create repositories under, then confirm.
-          </p>
-          <label class="field" for="code-connection-name"><span class="field-label">Name</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
-          <label class="field" for="code-connection-owner"><span class="field-label">Owner (org or user)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
+          <p v-if="oauthAuthorized" class="muted" role="status">GitHub authorized.</p>
+          <label class="field" for="code-connection-name"><span class="field-label">Name in Railgrid</span><input id="code-connection-name" ref="nameInput" v-model="name" class="k-input" placeholder="my-github" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.name ? 'true' : undefined" :aria-describedby="fieldErrors.name ? 'code-connection-name-error' : undefined" @input="clearFieldError('name')" /><span v-if="fieldErrors.name" id="code-connection-name-error" class="error" role="alert">{{ fieldErrors.name }}</span></label>
+          <label class="field" for="code-connection-owner"><span class="field-label">GitHub owner (account or organization)</span><input id="code-connection-owner" ref="ownerInput" v-model="owner" class="k-input" placeholder="acme" autocomplete="off" required aria-required="true" :aria-invalid="fieldErrors.owner ? 'true' : undefined" :aria-describedby="fieldErrors.owner ? 'code-connection-owner-error' : undefined" @input="clearFieldError('owner')" /><span v-if="fieldErrors.owner" id="code-connection-owner-error" class="error" role="alert">{{ fieldErrors.owner }}</span></label>
           <label v-if="!oauthAuthorized" class="field" for="code-connection-token"><span class="field-label">Personal access token</span><input id="code-connection-token" ref="tokenInput" v-model="token" class="k-input" type="password" placeholder="ghp_…" autocomplete="new-password" required aria-required="true" :aria-invalid="fieldErrors.token ? 'true' : undefined" :aria-describedby="fieldErrors.token ? 'code-connection-token-error code-connection-token-hint' : 'code-connection-token-hint'" @input="clearFieldError('token')" /><span v-if="fieldErrors.token" id="code-connection-token-error" class="error" role="alert">{{ fieldErrors.token }}</span></label>
-          <label v-else class="field"><span class="field-label">Credential</span><input class="k-input" value="GitHub OAuth — authorized" disabled /></label>
-          <div v-if="!oauthAuthorized" id="code-connection-token-help" class="muted">
-            <p id="code-connection-token-hint">Use a token with access to the owner and repositories you want to manage. Permission details follow.</p>
-            <p>For a fine-grained token (<code>github_pat_…</code>), select the resource owner and target repositories. Grant <strong>Contents: read and write</strong> for code changes and <strong>Administration: read and write</strong> for repository management. Add <strong>Workflows: read and write</strong> to change GitHub Actions workflows. Organization approval may be required; packages require a classic token.</p>
-            <p>For a classic token, select <code>repo</code> to manage public and private repositories. The token owner must have access to the GitHub owner above.</p>
-            <p>Add classic-token scopes for the features you use:</p>
-            <ul>
-              <li><code>workflow</code> — create or update GitHub Actions workflows, including App Studio builds.</li>
-              <li><code>delete_repo</code> — delete repositories through Railgrid.</li>
-              <li><code>read:packages</code> — view repository packages.</li>
-            </ul>
-            <p><a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener noreferrer">GitHub token setup guide (opens in a new tab)</a>. For organization repositories, check the organization's token policy and authorize SSO if required.</p>
+          <div v-if="!oauthAuthorized">
+            <p id="code-connection-token-hint" class="muted">Use a token with access to the owner and repositories you want to manage.</p>
+            <details class="muted">
+              <summary>Token permissions</summary>
+              <p>For a fine-grained token, select the resource owner and repositories. Grant <strong>Contents: read and write</strong> for code changes, <strong>Administration: read and write</strong> for repository management, and <strong>Workflows: read and write</strong> to edit GitHub Actions workflows.</p>
+              <p>For a classic token, grant <code>repo</code>. Add <code>workflow</code> for GitHub Actions and App Studio builds or <code>delete_repo</code> to delete repositories. Viewing packages requires a classic token with <code>read:packages</code>.</p>
+              <p>Check your organization’s token policy for approval and SSO requirements. <a href="https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens" target="_blank" rel="noopener noreferrer">GitHub token setup guide (opens in a new tab)</a></p>
+            </details>
           </div>
-          <label v-if="!oauthAuthorized" class="field"><span class="field-label">Base URL (GHES, optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
-          <p class="muted">The token is stored as a Secret in this workspace. After creation, the connection page shows its validation status and GitHub login.</p>
+          <label v-if="!oauthAuthorized" class="field"><span class="field-label">GitHub Enterprise Server API URL (optional)</span><input v-model="baseURL" class="k-input" placeholder="https://github.example.com/api/v3" autocomplete="url" /></label>
           <span v-if="formError" class="error" role="alert">{{ formError }}</span>
           <span v-if="submitting" class="sr-only" role="status" aria-live="polite">Creating connection…</span>
         </div>
         <CreateGuidance
-          :title="guidanceTitle"
-          :description="guidanceDescription"
-          :prerequisites="guidancePrerequisites"
-          :values="guidanceValues"
-          :next-steps="guidanceNextSteps"
+          title="After you connect"
+          description="Railgrid stores the credential as a workspace Secret. Check the connection page for validation status."
         />
       </div>
       <div class="k-create-actions">

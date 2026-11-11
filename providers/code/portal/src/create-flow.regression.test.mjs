@@ -97,15 +97,15 @@ it('repository first-run state exposes its connection prerequisite action', () =
   expect(repositoryCreate).toMatch(/:disabled="submitting \|\| !connectionChoices\.length"/)
 })
 
-it('connection and repository forms use the shared live guidance rail', () => {
+it('connection and repository creation use the shared guidance layout', () => {
   for (const source of [connectionCreate, repositoryCreate]) {
     expect(source).toMatch(/import CreateGuidance from '\.\.\/portalkit\/CreateGuidance\.vue'/)
     expect(source).toContain('k-create-surface--guided')
     expect(source).toContain('k-create-body--guided')
     expect(source).toContain('k-create-fields')
-    expect(source).toMatch(/<CreateGuidance[\s\S]*:values="guidanceValues"[\s\S]*:next-steps="guidanceNextSteps"/)
   }
-  expect(connectionCreate).toMatch(/label: 'Credential'[\s\S]*stored as a Secret/)
+  expect(connectionCreate).toMatch(/<CreateGuidance\s+title="After you connect"/)
+  expect(repositoryCreate).toMatch(/<CreateGuidance[\s\S]*:values="guidanceValues"[\s\S]*:next-steps="guidanceNextSteps"/)
   expect(repositoryCreate).toMatch(/label: 'GitHub repository'/)
   expect(repositoryCreate).toMatch(/label: 'Initial content'/)
 })
