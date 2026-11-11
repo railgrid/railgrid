@@ -98,7 +98,7 @@ test('auth-compatible creation opens as an editable draft and does not start pla
 })
 
 test('auth-compatible planning and confirmation fail closed on unverified or changed template choices', () => {
-  assert.match(wizardSource, /template\?\.railgridAuthSupported === true && template\.railgridAuthReason === 'supported'/)
+  assert.match(wizardSource, /template\?\.browserPreview === true && template\.railgridAuthSupported === true && template\.railgridAuthReason === 'supported'/)
   assert.match(wizardSource, /templateName: requiredTemplate/)
   assert.match(wizardSource, /result\.template !== requiredTemplate/)
   assert.match(wizardSource, /supportedChoices\.some\(\(template\) => template\.name === requiredTemplate\)/)
@@ -172,7 +172,9 @@ test('planning failures remain honest and retain retry/edit affordances for a su
 test('confirmed details emit the exact durable create payload and honor the disabled gate', () => {
   assert.match(wizardSource, /function confirmCreate\(\) \{[\s\S]*if \(props\.disabled \|\| props\.creationChecking\) return[\s\S]*emit\('create', \{[\s\S]*prompt: prompt\.value\.trim\(\),[\s\S]*templateName: chosenTemplate\.value \|\| undefined,[\s\S]*displayName: displayName\.value\.trim\(\) \|\| undefined,[\s\S]*\}\)[\s\S]*\}/)
   assert.match(wizardSource, /@click="confirmCreate"/)
-  assert.match(wizardSource, /:disabled="disabled \|\| creationChecking"/)
+  assert.match(wizardSource, /:disabled="disabled \|\| creationChecking \|\| !hasValidTemplateChoice"/)
+  assert.match(wizardSource, /if \(!hasValidTemplateChoice\.value\) return\s+emit/)
+  assert.match(wizardSource, /<option v-if="allowEmptyTemplate" value="">No template \(start empty\)<\/option>/)
 })
 
 test('wizard keeps responsive controls and long blueprint content usable', () => {

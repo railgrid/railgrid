@@ -38,11 +38,11 @@ func privateProjectSharingSpec() aiv1alpha1.ProjectSharingSpec {
 
 // defaultProjectDevelopmentEnvironment is created WITHOUT a binding: nothing
 // runs until a development template is bound. The create path may apply an
-// explicit selection or an authorized, unambiguous preflight selection before
-// persisting the Project; otherwise the assistant's requirements interview
-// (select_project_template), the portal's template picker, or PUT /template
-// binds it later. Projects created from an imported repository work the same
-// way. Replaces the legacy always-on SandboxRunner default
+// explicit selection or a best-fit preflight selection before persisting an
+// app idea. Explicit blank projects can bind a template later through the
+// assistant (select_project_template) or the portal template picker. Projects
+// created from an imported repository work the same way. Replaces the legacy
+// always-on SandboxRunner default
 // (docs/app-studio-template-sandboxes.md §4.1; no-compat decision 2026-07-04).
 func defaultProjectDevelopmentEnvironment(_ string) aiv1alpha1.ProjectEnvironmentSpec {
 	return aiv1alpha1.ProjectEnvironmentSpec{

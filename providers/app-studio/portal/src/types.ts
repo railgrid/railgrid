@@ -780,6 +780,7 @@ export interface ListResponse<T> {
 // (declares development components). Served by
 // GET /api/projects/development-templates.
 export interface DevelopmentTemplate {
+  browserPreview?: boolean
   name: string
   displayName?: string
   description?: string
@@ -829,6 +830,7 @@ export interface ProjectPlanScaffold {
 }
 
 export interface ProjectPlan {
+  allowEmptyTemplate?: boolean
   displayName: string
   repositoryName: string
   template?: string

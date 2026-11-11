@@ -38,6 +38,7 @@ func applicationTemplateObject() *unstructured.Unstructured {
 		"kind":       "Template",
 		"metadata":   map[string]any{"name": "application"},
 		"spec": map[string]any{
+			"exposure": "public",
 			"schema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{

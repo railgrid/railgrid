@@ -69,7 +69,7 @@ let catalogRequestSerial = 0
 
 const hasInitialPrompt = computed(() => Boolean(props.initialPrompt?.trim()))
 function isVerifiedAuthTemplate(template: DevelopmentTemplate | undefined): template is DevelopmentTemplate {
-  return template?.railgridAuthSupported === true && template.railgridAuthReason === 'supported'
+  return template?.browserPreview === true && template.railgridAuthSupported === true && template.railgridAuthReason === 'supported'
 }
 
 const compatibleTemplates = computed(() => compatibleTemplateCatalog.value.filter(isVerifiedAuthTemplate))
@@ -84,6 +84,9 @@ const activeStepIndex = computed(() => wizardSteps.findIndex((wizardStep) => wiz
 const activeTemplate = computed(() =>
   selectableTemplates.value.find((template) => template.name === chosenTemplate.value) ?? null,
 )
+
+const allowEmptyTemplate = computed(() => !props.authCompatibleOnly && plan.value?.allowEmptyTemplate === true)
+const hasValidTemplateChoice = computed(() => !!activeTemplate.value || (allowEmptyTemplate.value && !chosenTemplate.value))
 
 const activeComponents = computed<Record<string, string>>(() => {
   if (activeTemplate.value) return activeTemplate.value.components ?? {}
@@ -135,7 +138,7 @@ const activeTemplateName = computed(() => (
 ))
 
 const activeTemplateDescription = computed(() => (
-  activeTemplate.value?.description || (chosenTemplate.value ? 'This development template provides the starting runtime for the project.' : 'No development template selected. The project starts empty.')
+  activeTemplate.value?.description || ''
 ))
 
 const progressSummary = computed(() => `Step ${activeStepIndex.value + 1} of ${wizardSteps.length}`)
@@ -243,6 +246,7 @@ function confirmCreate() {
     error.value = 'Choose a verified Railgrid Auth template before creating this project.'
     return
   }
+  if (!hasValidTemplateChoice.value) return
   emit('create', {
     prompt: prompt.value.trim(),
     templateName: chosenTemplate.value || undefined,
@@ -582,7 +586,7 @@ onMounted(async () => {
                 aria-label="Template"
                 aria-describedby="template-impact template-selection-review"
               >
-                <option v-if="!authCompatibleOnly" value="">No template (start empty)</option>
+                <option v-if="allowEmptyTemplate" value="">No template (start empty)</option>
                 <option v-for="template in selectableTemplates" :key="template.name" :value="template.name">
                   {{ template.displayName || template.name }}{{ template.name === plan?.template ? ' — recommended' : '' }}{{ template.hasScaffold ? ' · starter code' : '' }}
                 </option>
@@ -592,7 +596,6 @@ onMounted(async () => {
                 <span class="ml-1 text-text-primary">{{ activeTemplateName || 'No template (start empty)' }}</span>
                 <span v-if="authCompatibleOnly" class="mt-0.5 block font-medium text-success">Verified for Railgrid Auth</span>
                 <span class="mt-0.5 block">{{ activeTemplateDescription }}</span>
-                <span v-if="chosenTemplate" class="mt-0.5 block font-mono text-[12px] text-text-muted">Template ID: {{ chosenTemplate }}</span>
               </div>
             </label>
 
@@ -679,7 +682,7 @@ onMounted(async () => {
         <button
           type="button"
           class="app-studio-touch-target inline-flex h-9 w-full items-center justify-center gap-2 rounded-md bg-accent px-3.5 text-[13px] font-semibold text-on-accent shadow-[0_0_16px_var(--color-accent-glow)] outline-none transition hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent/40 disabled:cursor-not-allowed disabled:opacity-60 disabled:shadow-none sm:w-auto"
-          :disabled="disabled || creationChecking"
+          :disabled="disabled || creationChecking || !hasValidTemplateChoice"
           @click="confirmCreate"
         >
           Create project
