@@ -468,7 +468,16 @@ func TestParseProjectCreatePreflight(t *testing.T) {
 }
 
 func TestProjectCreatePreflightHonorsExplicitBlankProjectRequest(t *testing.T) {
-	for _, prompt := range []string{"Create a blank project.", "Create an empty project.", "Create a project, but do not write code yet."} {
+	for _, prompt := range []string{
+		"Create a blank project.",
+		"Create an empty project.",
+		"Create a project, but do not write code yet.",
+		"Create a blank project called Marketing Site",
+		"Create a blank project named foo.",
+		"Please create a blank project",
+		"Create a blank project and do not write code yet",
+		"Create an empty project, please",
+	} {
 		t.Run(prompt, func(t *testing.T) {
 			got, err := normalizeProjectCreatePreflight(projectCreatePreflight{
 				Naming:       projectNamingResult{DisplayName: "Blank Canvas", RepositoryName: "blank-canvas"},

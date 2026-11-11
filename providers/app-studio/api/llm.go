@@ -30,6 +30,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -809,17 +810,19 @@ func normalizeProjectCreatePreflight(preflight projectCreatePreflight, prompt st
 	return preflight, nil
 }
 
+var projectBlankRequestPattern = regexp.MustCompile(`^(?:please )?create (?:a blank|an empty) project(?: (?:called|named) [^.!?]+)?(?: and (?:do not|don't) write code yet)?(?:,? please)?$`)
+
 func projectCreatePromptDefersImplementation(prompt string) bool {
 	// Only standalone requests can opt out. App ideas may quote these words
 	// or describe features that let their own users start a blank project.
-	switch strings.TrimRight(strings.Join(strings.Fields(strings.ToLower(prompt)), " "), ".!?") {
-	case "create a blank project", "create an empty project",
-		"create a project without any code", "create a project, but do not write code yet",
+	normalized := strings.TrimRight(strings.Join(strings.Fields(strings.ToLower(prompt)), " "), ".!?")
+	switch normalized {
+	case "create a project without any code", "create a project, but do not write code yet",
 		"do not write code yet", "don't write code yet", "no source code yet",
 		"leave the project blank", "keep the project blank":
 		return true
 	default:
-		return false
+		return projectBlankRequestPattern.MatchString(normalized)
 	}
 }
 

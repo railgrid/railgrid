@@ -605,9 +605,11 @@ func (i projectTemplateInfo) supportsBrowserPreview() bool {
 	return false
 }
 
+const projectNoPreviewTemplatesMessage = "No development templates are available for app creation. A template needs spec.exposure: public and a development component port to provide a browser preview by default."
+
 func validateProjectPreviewTemplate(info projectTemplateInfo) error {
 	if !info.supportsBrowserPreview() {
-		return newValidationError(fmt.Sprintf("Development template %q does not support a browser preview. Choose a template with a browser preview.", info.Name))
+		return newValidationError(fmt.Sprintf("Development template %q does not provide a browser preview by default. App creation requires spec.exposure: public and a development component port.", info.Name))
 	}
 	return nil
 }

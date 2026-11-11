@@ -83,7 +83,7 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 
 	allowEmptyTemplate := req.TemplateName == "" && projectCreatePromptDefersImplementation(req.Prompt)
 	if len(templates) == 0 && req.TemplateName == "" && !allowEmptyTemplate {
-		writeProjectError(w, newValidationError("No development templates are available in this workspace with a browser preview. Add a template with a preview before creating an app."))
+		writeProjectError(w, newValidationError(projectNoPreviewTemplatesMessage))
 		return
 	}
 
@@ -119,21 +119,19 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if templateName != "" {
-		info, err := resolveProjectCreateTemplate(r.Context(), c, templateName, req.TemplateName == "")
+		info, err := resolveProjectCreateTemplate(r.Context(), c, templateName)
 		if err != nil {
 			writeProjectError(w, err)
 			return
 		}
-		if info != nil {
-			if err := validateProjectPreviewTemplate(*info); err != nil {
-				writeProjectError(w, err)
-				return
-			}
-			plan.Template = info.Name
-			plan.Components = info.WorkspacePaths()
-			if info.ScaffoldRepo != "" {
-				plan.Scaffold = &ProjectPlanScaffold{Repository: info.ScaffoldRepo, Ref: info.ScaffoldRef}
-			}
+		if err := validateProjectPreviewTemplate(info); err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		plan.Template = info.Name
+		plan.Components = info.WorkspacePaths()
+		if info.ScaffoldRepo != "" {
+			plan.Scaffold = &ProjectPlanScaffold{Repository: info.ScaffoldRepo, Ref: info.ScaffoldRef}
 		}
 	}
 	if plan.DisplayName == "" {
