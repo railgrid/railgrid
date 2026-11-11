@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { confirmState, resolveConfirm } from '../portalkit/confirm'
+import { validDigestCron } from '../agent-digest-cron'
+import type { Agent } from '../types'
 import AgentCreateView from '../views/AgentCreate.vue'
 import AgentsListView from '../views/AgentsList.vue'
 import ConnectionsView from '../views/Connections.vue'
@@ -160,16 +162,351 @@ describe('route-owned creation surfaces', () => {
     expect(picker.open).toBe(false)
     expect(name.value).toBe('my-draft')
     expect(el.querySelector('[data-selected-template]')?.textContent).toContain('Researcher')
-    expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
-    expect(sections()).toEqual(initialSections)
-    expect(el.querySelector('textarea[aria-labelledby="agent-create-system-prompt-label"]')).toBe(instructions)
-    expect(instructions.value).toContain(draftInstructions || 'research')
-    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
+    expect(el.querySelector('#agent-create-param-domain')).toBeNull()
+    expect(sections()).toEqual(['Agent definition', 'Connections'])
+    expect(el.querySelector('[data-use-coding-harness]')).toBeNull()
+    const templateInstructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+    expect(templateInstructions.value).toContain(draftInstructions || 'research')
+
+    const modes = el.querySelectorAll<HTMLInputElement>('input[name="research-focus"]')
+    expect(modes[0].checked).toBe(true)
+    modes[1].click()
+    await settleVue()
+    const domain = el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')!
+    domain.value = 'cloud pricing'
+    domain.dispatchEvent(new InputEvent('input', { bubbles: true }))
+
+    trigger.click()
+    const assistant = [...picker.querySelectorAll<HTMLButtonElement>('.agents-starter-card')]
+      .find(card => card.querySelector('.agents-starter-name')?.textContent === 'Workspace assistant')!
+    assistant.click()
+    await settleVue()
+    trigger.click()
+    researcher.click()
+    await settleVue()
+    expect(el.querySelector<HTMLInputElement>('input[name="research-focus"]:checked')).toBe(el.querySelectorAll('input[name="research-focus"]')[1])
+    expect(el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')?.value).toBe('cloud pricing')
+
+    ;[...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Clear template')!.click()
     await settle(el)
     expect(sections()).toEqual(initialSections)
     expect(el.querySelector('[data-selected-template]')).toBeNull()
     expect(name.value).toBe('my-draft')
     expect(agentTemplates).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces team context only after confirmation and preserves newer edits', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'workspace-assistant' })
+    const context = el.querySelector<HTMLTextAreaElement>('#agent-create-param-teamContext')!
+    const platform = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Platform team')!
+    const editContext = async (value: string) => {
+      context.value = value
+      context.dispatchEvent(new InputEvent('input', { bubbles: true }))
+      await settleVue()
+    }
+
+    await editContext('We maintain a customer portal.')
+    platform.click()
+    expect(confirmState.open).toBe(true)
+    expect(confirmState.title).toBe('Replace team context?')
+    resolveConfirm(false)
+    await settleVue()
+    expect(context.value).toBe('We maintain a customer portal.')
+
+    platform.click()
+    await editContext('We maintain two customer portals.')
+    resolveConfirm(true)
+    await settleVue()
+    expect(context.value).toBe('We maintain two customer portals.')
+
+    platform.click()
+    resolveConfirm(true)
+    await settleVue()
+    expect(context.value).toContain('We maintain Kubernetes clusters')
+    expect(el.querySelector('[data-generated-instructions]')?.textContent).toContain(context.value)
+  })
+
+  it('requires an area of expertise for a Specialist researcher', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn(async (agent: Agent) => ({ agent, createdSchedules: [], warnings: [] }))
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'main', model: 'gpt-5', ready: true }]
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'researcher' })
+    const specialist = [...el.querySelectorAll('label')].find(label => label.textContent?.includes('Specialist'))!
+    specialist.querySelector('input')!.click()
+    await settleVue()
+    const form = el.querySelector('form')!
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(el.querySelector('#agent-create-param-domain-error')?.textContent).toContain('Enter an area of expertise')
+    expect(confirmState.open).toBe(false)
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+
+    const domain = el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')!
+    domain.value = 'EU energy policy'
+    domain.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    form.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(confirmState.open).toBe(true)
+    resolveConfirm(true)
+    await settleVue()
+    expect(createAgentFromTemplate.mock.calls[0]?.[0].spec.systemPrompt).toContain('Your area: EU energy policy.')
+  })
+
+  it('preserves repository entries while refreshing setup in new tabs and allows an offline machine with a warning', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await settle(el)
+    const setup = el.querySelector('#agent-create-execution-heading')!.parentElement!
+    expect(setup.querySelectorAll('[role="combobox"]')).toHaveLength(0)
+    expect([...setup.querySelectorAll('a, button')].map(item => item.textContent?.trim())).toEqual([
+      'Connect machine', 'Add harness credential', 'Add GitHub connection',
+    ])
+    expect(setup.querySelectorAll('a[target="_blank"]')).toHaveLength(3)
+    expect(setup.querySelector('.agents-hint')).toBeNull()
+    const harnessSetup = setup.querySelector<HTMLAnchorElement>('a[href*="/create/model/harness"]')!
+    expect(harnessSetup.getAttribute('href')).toBe('/ui/org/ws/providers/agents/#/create/model/harness')
+    harnessSetup.addEventListener('auxclick', event => event.preventDefault())
+    harnessSetup.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
+    const load = vi.spyOn(store, 'load').mockImplementation(async key => {
+      if (key === 'credentials') store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+      if (key === 'connections') store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github' } }]
+      store.dispatchEvent(new Event('change'))
+    })
+    window.dispatchEvent(new Event('focus'))
+    expect(load).toHaveBeenCalledWith('credentials')
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: false }]
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex')
+    expect(el.querySelector('#agent-create-edge-hint')?.textContent).toContain('offline')
+    const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(submit.disabled).toBe(true)
+
+    const repo = el.querySelector<HTMLInputElement>('#agent-create-param-repositories')!
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'railgrid/railgrid\r\nrailgrid/docs' } })
+    repo.dispatchEvent(paste)
+    repo.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+    repo.value = 'railgrid/仮'
+    repo.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }))
+    await settleVue()
+    expect(el.querySelector('[data-generated-instructions]')?.textContent).not.toContain('railgrid/仮')
+    repo.value = 'railgrid/日本語'
+    repo.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+    repo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settleVue()
+    expect(el.querySelector('[aria-label="Remove railgrid/日本語"]')).not.toBeNull()
+    const link = [...el.querySelectorAll<HTMLAnchorElement>('a')].find(item => item.textContent?.includes('Add GitHub connection'))!
+    expect(link.getAttribute('href')).toBe('/ui/org/ws/providers/agents/#/create/connection/github')
+    link.addEventListener('click', event => event.preventDefault())
+    link.click()
+    window.dispatchEvent(new Event('focus'))
+    await settleVue()
+    expect(load).toHaveBeenCalledWith('connections')
+    await chooseFormSelect(el, '#agent-create-github', 'github')
+    expect(el.querySelector('[aria-label="Remove railgrid/railgrid"]')).not.toBeNull()
+    expect(el.querySelector('[aria-label="Remove railgrid/docs"]')).not.toBeNull()
+    expect(submit.disabled).toBe(false)
+  })
+
+  it.each(['codex', 'claude-code'])('writes reasoning effort only for Codex after changing the harness to %s', async (provider) => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn(async (agent: Agent) => ({ agent, createdSchedules: [], warnings: [] }))
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex-login', provider: 'codex' }, { name: 'claude-login', provider: 'claude-code' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github' } }]
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-github', 'github')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex-login')
+    const repo = el.querySelector<HTMLInputElement>('#agent-create-param-repositories')!
+    repo.value = 'railgrid/railgrid'
+    repo.dispatchEvent(new InputEvent('input', { bubbles: true }))
+
+    const effort = el.querySelector<HTMLInputElement>('#agent-create-harness-effort')!
+    effort.closest('details')!.open = true
+    effort.value = 'max'
+    effort.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'claude-login')
+    expect(el.querySelector('#agent-create-harness-effort')).toBeNull()
+    if (provider === 'codex') {
+      await chooseFormSelect(el, '#agent-create-harnesscred', 'codex-login')
+      expect(el.querySelector<HTMLInputElement>('#agent-create-harness-effort')?.value).toBe('max')
+    }
+
+    el.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle(el)
+    expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
+    const harness = createAgentFromTemplate.mock.calls[0][0].spec.backend?.harness
+    expect(harness?.credentialRef).toBe(provider === 'codex' ? 'codex-login' : 'claude-login')
+    expect(harness?.reasoningEffort).toBe(provider === 'codex' ? 'max' : undefined)
+  })
+
+  it('explains a GitHub connection that loses authorization and accepts a replacement', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    const oauth = { metadata: { name: 'oauth-github' }, spec: { type: 'github', auth: 'oauth' }, status: { oauthConnected: true } }
+    const replacement = { metadata: { name: 'other-github' }, spec: { type: 'github' } }
+    store.connections.data = [oauth, replacement]
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex')
+    await chooseFormSelect(el, '#agent-create-github', 'oauth-github')
+    const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(submit.disabled).toBe(false)
+
+    store.connections.data = [{ ...oauth, status: { oauthConnected: false } }, replacement]
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+
+    const picker = el.querySelector('#agent-create-github')!
+    expect(submit.disabled).toBe(true)
+    expect(picker.textContent).not.toContain('oauth-github')
+    expect(picker.getAttribute('aria-invalid')).toBe('true')
+    expect(picker.getAttribute('aria-describedby')).toContain('agent-create-github-status')
+    expect(el.querySelector('#agent-create-github-status')?.textContent).toContain('Choose another connection.')
+
+    await chooseFormSelect(el, '#agent-create-github', 'other-github')
+    expect(el.querySelector('#agent-create-github-status')).toBeNull()
+    expect(picker.hasAttribute('aria-invalid')).toBe(false)
+    expect(submit.disabled).toBe(false)
+  })
+
+  it('checks digest cron time zone names and Go integer bounds', () => {
+    expect(validDigestCron('CRON_TZ=+01:00 0 8 * * *')).toBe(false)
+    expect(validDigestCron('TZ=-05:00 0 8 * * *')).toBe(false)
+    expect(validDigestCron('CRON_TZ=america/new_york 0 8 * * *')).toBe(false)
+    expect(validDigestCron('TZ=us/eastern 0 8 * * *')).toBe(false)
+    expect(validDigestCron('CRON_TZ=America/New_York 0 8 * * *')).toBe(true)
+    expect(validDigestCron('TZ=US/Eastern 0 8 * * *')).toBe(true)
+    expect(validDigestCron('TZ=Local 0 8 * * *')).toBe(true)
+    expect(validDigestCron('*/9223372036854775808 * * * *')).toBe(false)
+    expect(validDigestCron('*/9223372036854775807 * * * *')).toBe(true)
+    expect(validDigestCron('CRON_TZ=Europe/London */15 8 * * MON-FRI')).toBe(true)
+    expect(validDigestCron('@every 3000000h')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775807ns1ns')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775808ns')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775807ns')).toBe(true)
+    expect(validDigestCron('@every -9223372036854775808ns')).toBe(true)
+    expect(validDigestCron('@every 9223372036.854775807s')).toBe(true)
+    expect(validDigestCron('@every 9223372036.854775808s')).toBe(false)
+    expect(validDigestCron('@every 1h30m.5s')).toBe(true)
+    expect(validDigestCron('@every 1h 30m')).toBe(false)
+  })
+
+  it('preserves a cleared digest time through template switches and model setup', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn()
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const timeInput = (root: Element) => root.querySelector<HTMLInputElement>('input[type="time"]')!
+    const setTime = (value: string) => {
+      const input = timeInput(el)
+      input.value = value
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    }
+    setTime('09:15')
+    await settleVue()
+    setTime('')
+    await settleVue()
+
+    const picker = el.querySelector<HTMLDialogElement>('dialog')!
+    picker.showModal = () => { picker.open = true }
+    picker.close = () => { picker.open = false }
+    const switchTemplate = async (name: string) => {
+      el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!.click()
+      await settleVue()
+      const card = [...picker.querySelectorAll<HTMLButtonElement>('.agents-starter-card')]
+        .find(button => button.querySelector('.agents-starter-name')?.textContent === name)!
+      card.click()
+      await settleVue()
+    }
+    await switchTemplate('Researcher')
+    expect(timeInput(el)).toBeNull()
+    await switchTemplate('News reporter')
+    expect(timeInput(el).value).toBe('')
+    expect(timeInput(el).checkValidity()).toBe(false)
+
+    const mounted = mountedByElement.get(el)!
+    const connect = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Connect a model')!
+    connect.click()
+    const { draft } = mounted.events['add-credential'][0] as { draft: unknown }
+    mounted.unmount()
+    const restored = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialDraft: draft })
+    expect(timeInput(restored).value).toBe('')
+    restored.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('choose a time for the digest')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+
+    const editCron = [...restored.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Edit cron')!
+    editCron.click()
+    await settleVue()
+    const cron = restored.querySelector<HTMLInputElement>('#agent-create-param-digestTime')!
+    expect(cron.value).toBe('')
+    restored.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('Enter a cron expression')
+    expect(cron.getAttribute('aria-invalid')).toBe('true')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  })
+
+  it('serializes selected digest days and keeps at least one day selected', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'connections')
+    const el = await mount('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const day = (label: string) => el.querySelector<HTMLButtonElement>(`.agents-schedule-days [aria-label="${label}"]`)!
+    const clickButton = async (label: string) => {
+      const button = [...el.querySelectorAll('button')].find(item => item.textContent?.trim() === label)!
+      button.click()
+      await settleVue()
+    }
+    const expectCron = async (expression: string) => {
+      await clickButton('Edit cron')
+      expect(el.querySelector<HTMLInputElement>('#agent-create-param-digestTime')?.value).toBe(expression)
+      await clickButton('Use time and weekdays')
+    }
+    const time = el.querySelector<HTMLInputElement>('input[type="time"]')!
+    time.value = '09:15'
+    time.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+
+    day('Sunday').click()
+    await settleVue()
+    await expectCron('15 9 * * 0,1,2,3,4,5')
+    day('Saturday').click()
+    await settleVue()
+    await expectCron('15 9 * * *')
+
+    for (const label of ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']) {
+      day(label).click()
+      await settleVue()
+    }
+    expect(day('Sunday').disabled).toBe(true)
+    expect(day('Sunday').getAttribute('aria-pressed')).toBe('true')
+    await expectCron('15 9 * * 0')
   })
 
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {
@@ -634,6 +971,7 @@ it.each([false, true])('creates an agent with the final template inputs and sche
 
   const customInstruction = 'Use a numbered summary.'
   if (edited) {
+    instructions.closest('details')!.open = true
     instructions.focus()
     await settleVue()
     expect(instructions.value).toContain('{{topics}}')
@@ -641,13 +979,42 @@ it.each([false, true])('creates an agent with the final template inputs and sche
     instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
     instructions.blur()
   }
-  const topics = el.querySelector<HTMLTextAreaElement>('#agent-create-param-topics')!
-  topics.value = 'kcp\nkubernetes'
-  topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  const topics = el.querySelector<HTMLInputElement>('#agent-create-param-topics')!
+  for (const topic of ['kcp', 'kubernetes']) {
+    topics.value = topic
+    topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    topics.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  }
+  const saturday = el.querySelector<HTMLButtonElement>('[aria-label="Saturday"]')!
+  saturday.click()
+  const time = el.querySelector<HTMLInputElement>('input[type="time"]')!
+  await settleVue()
+  time.value = ''
+  time.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  await settleVue()
+  expect(time.value).toBe('')
+  expect(saturday.disabled).toBe(true)
+  time.value = '09:15'
+  time.dispatchEvent(new InputEvent('input', { bubbles: true }))
   await chooseFormSelect(el, '#agent-create-model', 'openai')
   await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
   await chooseFormSelect(el, '#agent-create-slot-websearch', 'searx')
-  expect(instructions.value).toContain('- kcp')
+  expect(el.querySelector('[data-generated-instructions]')?.textContent).toContain('- kcp')
+  const editCron = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Edit cron')!
+  editCron.click()
+  await settleVue()
+  const cron = el.querySelector<HTMLInputElement>('#agent-create-param-digestTime')!
+  expect(cron.value).toBe('15 9 * * 1,2,3,4,5,6')
+  for (const invalid of ['CRON_TZ=UTC', '@every 3000000h', 'CRON_TZ=america/new_york 0 8 * * *']) {
+    cron.value = invalid
+    cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(el.querySelector('#agent-digest-cron-error')?.textContent).toContain('valid cron')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  }
+  cron.value = '15 9 * * MON-SAT'
+  cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
   if (edited) {
     instructions.focus()
     await settleVue()
@@ -662,6 +1029,7 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   expect(remaining, 'no validation errors should remain').toEqual([])
   expect(confirmState.message).toContain('news-reporter-daily-digest')
   expect(confirmState.message).toContain('Background runs can use web, searx')
+  expect(confirmState.message).toContain('Posts to Team Telegram.')
   expect(createAgentFromTemplate).not.toHaveBeenCalled()
   resolveConfirm(true)
   await settle(el)
@@ -678,5 +1046,5 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   expect(agent.spec.channels).toEqual([{ name: 'primary', connectionRef: 'tg', primary: true }])
   expect(agent.spec.tools.interactive.connections).toEqual(['searx'])
   expect(schedules.map(s => s.metadata.name)).toEqual(['news-reporter-daily-digest'])
-  expect(schedules[0].spec).toMatchObject({ agentRef: 'news-reporter', type: 'cron', channelRef: 'primary' })
+  expect(schedules[0].spec).toMatchObject({ agentRef: 'news-reporter', type: 'cron', channelRef: 'primary', schedule: '15 9 * * MON-SAT' })
 })

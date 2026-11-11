@@ -475,11 +475,9 @@ function addAgentCredential(detail: {
   agentCreateDraft.value = { ...detail.draft }
   agentCredentialSetup.value = {
     family: detail.family,
-    returnRoute: {
-      kind: 'create',
-      resource: 'agent',
-      ...(detail.family === 'harness' ? { type: 'harness' } : {}),
-    },
+    returnRoute: detail.draft.template || route.value.type
+      ? route.value
+      : { kind: 'create', resource: 'agent', ...(detail.family === 'harness' ? { type: 'harness' } : {}) },
     tenantKey: authority.tenantKey,
     userKey: authority.userKey,
   }

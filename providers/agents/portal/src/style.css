@@ -225,6 +225,96 @@ railgrid-provider-agents .agents-create-backends [aria-pressed="true"] {
   border-color: var(--color-accent);
   background: var(--color-accent-subtle);
 }
+railgrid-provider-agents .agents-template-fields { gap: 0; }
+railgrid-provider-agents .agents-setup-link { gap: 5px; }
+railgrid-provider-agents .agents-setup-link svg { width: 14px; height: 14px; flex: none; }
+railgrid-provider-agents .agents-template-parameter {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 6px;
+  font-size: 13px;
+}
+railgrid-provider-agents .agents-template-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+railgrid-provider-agents .agents-template-list:focus-within {
+  border-color: var(--color-accent);
+  outline: 2px solid var(--color-accent-subtle);
+}
+railgrid-provider-agents .agents-template-list input {
+  flex: 1 1 10rem;
+  width: 100%;
+  min-width: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+railgrid-provider-agents .agents-template-token {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 4px;
+  padding-inline-start: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  overflow-wrap: anywhere;
+}
+railgrid-provider-agents .agents-template-token button { flex: none; padding: 4px 6px; }
+railgrid-provider-agents .agents-template-token svg,
+railgrid-provider-agents .agents-template-settings summary svg { width: 14px; height: 14px; flex: none; }
+railgrid-provider-agents .agents-template-choice { min-width: 0; margin: 0; padding: 0; border: 0; }
+railgrid-provider-agents .agents-template-choice legend { padding: 0; margin-block-end: 6px; font-size: 13px; }
+railgrid-provider-agents .agents-template-radio {
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 8px;
+}
+railgrid-provider-agents .agents-template-radio:has(:checked),
+railgrid-provider-agents .agents-schedule-days [aria-pressed="true"] {
+  border-color: var(--color-accent);
+  background: var(--color-accent-subtle);
+}
+railgrid-provider-agents .agents-template-radio input { width: auto; accent-color: var(--color-accent); }
+railgrid-provider-agents .agents-template-radio small { display: block; color: var(--color-text-secondary); }
+railgrid-provider-agents .agents-schedule-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 18px; }
+railgrid-provider-agents .agents-schedule-days { display: flex; flex-wrap: wrap; gap: 4px; }
+railgrid-provider-agents .agents-schedule-editor > button { margin-block-start: 6px; }
+railgrid-provider-agents .agents-template-settings {
+  padding-block: 10px;
+  border-block-start: 1px solid var(--color-border-subtle);
+}
+railgrid-provider-agents .agents-template-settings summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+railgrid-provider-agents .agents-template-settings summary::-webkit-details-marker { display: none; }
+railgrid-provider-agents .agents-template-settings[open] summary svg { transform: rotate(90deg); }
+railgrid-provider-agents .agents-template-settings[open] > div { padding-block-start: 8px; }
+railgrid-provider-agents .agents-template-prompt {
+  max-block-size: 18rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+}
+@media (any-pointer: coarse) {
+  railgrid-provider-agents .agents-template-settings summary { min-height: 44px; }
+}
 /* Bound the task region, not the route shell or its contextual guidance. */
 railgrid-provider-agents .agents-resource-fields { width: 100%; max-width: 42rem; }
 railgrid-provider-agents .agents-resource-fields .agents-field-label,
