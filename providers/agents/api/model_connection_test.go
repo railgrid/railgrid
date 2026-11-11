@@ -23,8 +23,10 @@ import (
 	agentsclient "github.com/railgrid/provider-agents/client"
 	"github.com/railgrid/provider-sdk/dataplane/conformance"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ktesting "k8s.io/client-go/testing"
 
@@ -255,17 +257,72 @@ func TestVerifyCredentialModelBoundsStalledUpstream(t *testing.T) {
 	}
 }
 
-// A probe failure is recorded bounded and without the body verbatim: an
-// upstream can answer with megabytes, and it can echo the request headers the
-// key travelled in.
-func TestBoundedProbeError(t *testing.T) {
-	long := &llm.ProbeError{Status: 500, Msg: strings.Repeat("x", 4000)}
-	got := boundedProbeError(long)
-	if len(got) != maxProbeErrorLength {
-		t.Fatalf("bounded length = %d, want %d", len(got), maxProbeErrorLength)
-	}
-	if boundedProbeError(nil) != "" {
-		t.Fatal("nil error must render empty")
+func TestDiscoveryRedactsUpstreamErrorAndFencesStatusPatch(t *testing.T) {
+	const keyValue = "echoed-test-secret"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, r.Header.Get("Authorization"), http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	for _, tc := range []struct {
+		name               string
+		observedGeneration int64
+		currentVersion     string
+		wantPatches        int
+	}{
+		{name: "current", observedGeneration: 2, currentVersion: "7", wantPatches: 1},
+		{name: "unreconciled", observedGeneration: 1, currentVersion: "7"},
+		{name: "changed while probing", observedGeneration: 2, currentVersion: "8", wantPatches: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connection := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": agentsv1alpha1.SchemeGroupVersion.String(), "kind": "ModelProviderConnection",
+				"metadata": map[string]any{"name": "account", "generation": int64(2), "resourceVersion": "7"},
+				"spec":     map[string]any{"provider": "openai-compatible", "baseURL": upstream.URL, "secretRef": map[string]any{"name": "shared"}},
+				"status":   map[string]any{"observedGeneration": tc.observedGeneration, "models": []any{"cached-model"}},
+			}}
+			key := &unstructured.Unstructured{Object: map[string]any{
+				"apiVersion": "v1", "kind": "Secret",
+				"metadata": map[string]any{"name": "shared", "namespace": "default", "labels": map[string]any{"railgrid.ai/owner": "agents"}},
+				"data":     map[string]any{"apiKey": base64.StdEncoding.EncodeToString([]byte(keyValue))},
+			}}
+			callers := &conformance.FakeCallers{Cluster: conformanceCluster, User: conformanceUser, Objects: []*unstructured.Unstructured{connection, key}, Allow: func(conformance.Attributes) bool { return true }}
+			server := newGatedTestServer(t, callers)
+			provider, err := callers.AsProvider(conformanceCluster)
+			if err != nil {
+				t.Fatal(err)
+			}
+			patches := 0
+			provider.(interface {
+				PrependReactor(string, string, ktesting.ReactionFunc)
+			}).PrependReactor("patch", "modelproviderconnections", func(action ktesting.Action) (bool, runtime.Object, error) {
+				patches++
+				payload := action.(ktesting.PatchAction).GetPatch()
+				var patch unstructured.Unstructured
+				if err := json.Unmarshal(payload, &patch.Object); err != nil {
+					t.Fatal(err)
+				}
+				if action.GetSubresource() != "status" || patch.GetResourceVersion() != "7" {
+					t.Fatalf("missing versioned status patch: %s", payload)
+				}
+				diagnostic, _, _ := unstructured.NestedString(patch.Object, "status", "lastProbeError")
+				if diagnostic != "endpoint returned HTTP 401" || strings.Contains(string(payload), keyValue) {
+					t.Fatalf("unsafe discovery status: %s", payload)
+				}
+				if patch.GetResourceVersion() != tc.currentVersion {
+					return true, nil, apierrors.NewConflict(agentsclient.ModelProviderConnectionGVR.GroupResource(), "account", fmt.Errorf("resource version changed"))
+				}
+				return false, nil, nil
+			})
+			w := httptest.NewRecorder()
+			gatedHandler(t, server).ServeHTTP(w, stamped(http.MethodPost, verbBase(conformanceCluster, "modelproviderconnections", "account")+"/discover", nil, conformanceUser))
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), keyValue) || !strings.Contains(w.Body.String(), "endpoint returned HTTP 401") {
+				t.Fatalf("unexpected discovery result: %d %s", w.Code, w.Body)
+			}
+			if patches != tc.wantPatches {
+				t.Fatalf("status patches = %d, want %d", patches, tc.wantPatches)
+			}
+		})
 	}
 }
 

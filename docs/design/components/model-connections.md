@@ -264,11 +264,14 @@ label-only save changes the model name in the Studio registry, preserves its
 stable model ID and active revision, and sends no discovery or inference
 request. Those IDs remain the references used by projects and conversations.
 
-After standalone setup, Provider connected offers **Add model** and **Done**.
-Setup entered from Add model or chat recovery continues directly to Add model
+After standalone setup, the connection appears in the Models collection with
+an **Add model** action on its row.
+Setup entered from Add model, agent creation, or chat recovery continues directly to Add model
 with the new connection selected, preserving the original return route. The
 acknowledged connection is available immediately; background collection refresh
-must not hold the success state or require key re-entry. Adding a model verifies
+does not delay navigation. The model picker loads an empty saved catalog
+automatically. **Refresh models** is available in the picker, and manual IDs
+can be entered during refresh. Adding a model verifies
 the exact selected model before saving its binding. Editing shared connection
 details verifies every active model binding before activating provider changes,
 or uses discovery alone when the connection has no model bindings. A label-only

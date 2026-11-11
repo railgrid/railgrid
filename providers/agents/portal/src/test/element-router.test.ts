@@ -1115,6 +1115,52 @@ describe('dedicated chat model recovery routing', () => {
 })
 
 describe('context and create-session routing fences', () => {
+  it('returns to the chat agent draft with the model added through provider setup selected', async () => {
+    const element = await mountShell('#/create/agent')
+    const api = element.api!
+    const store = element.store!
+    const connection: Credential = {
+      name: 'new-provider', provider: 'openai', isConnection: true,
+      baseURL: 'https://api.openai.com/v1', discovered: [],
+    }
+    const added: Credential = {
+      name: 'new-model', model: 'gpt-4.1-mini', provider: 'openai', connectionRef: connection.name, ready: true,
+    }
+    const other: Credential = { name: 'other-model', model: 'gpt-4.1', provider: 'openai', ready: true }
+    api.catalog = vi.fn().mockResolvedValue([])
+    api.probeCredentialDraft = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1, models: [added.model] })
+    api.testProviderConnection = vi.fn().mockResolvedValue({ ok: true, latencyMS: 1 })
+    api.saveCredential = vi.fn().mockResolvedValueOnce(connection).mockResolvedValueOnce(added)
+    api.listCredentials = vi.fn().mockResolvedValue([connection, other])
+    store.agents.loaded = store.agents.hasSnapshot = true
+    store.credentials.loaded = store.credentials.hasSnapshot = true
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+
+    const name = element.querySelector<HTMLInputElement>('#agent-create-name')!
+    name.value = 'draft-agent'
+    name.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    buttonWithText(element, 'Connect a model').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model'))
+    const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
+    apiKey.value = 'test-key'
+    apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await settleVue()
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(text(element.querySelector('h1'))).toBe('Add model'))
+    expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
+    expect(api.saveCredential).toHaveBeenCalledTimes(1)
+
+    api.listCredentials = vi.fn().mockResolvedValue([connection, other, added])
+    await chooseModel(element, 'gpt-4.1-mini')
+    buttonWithText(element, 'Verify & connect').click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/agent'))
+    expect(element.querySelector<HTMLInputElement>('#agent-create-name')?.value).toBe('draft-agent')
+    expect(text(element.querySelector('#agent-create-model'))).toContain('gpt-4.1-mini')
+    expect(api.saveCredential).toHaveBeenNthCalledWith(2, expect.objectContaining({ model: added.model, connectionRef: connection.name }))
+    element.remove()
+  })
+
   it('keeps a harness agent draft through identity setup and discards it on explicit cancel', async () => {
     const element = await mountShell('#/create/agent/harness')
     const store = element.store!
@@ -1372,7 +1418,7 @@ describe('Models sub-tab shell routing', () => {
     element.remove()
   })
 
-  it('saves a provider without a model, then offers Add model and Done', async () => {
+  it('continues to Add model after a provider detour and returns standalone setup to Models', async () => {
     const element = await mountShell('#/models/provider-connections')
     const store = element.store!
     const api = element.api!
@@ -1412,25 +1458,24 @@ describe('Models sub-tab shell routing', () => {
     store.credentials.loaded = store.credentials.hasSnapshot = true
     store.dispatchEvent(new Event('change'))
 
-    await chooseModelCreateAction(element, 'Connect provider')
-    await settleVue(6)
+    await chooseModelCreateAction(element, 'Add model')
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model/from-connection'))
+    element.querySelector<HTMLAnchorElement>('a[href="#/create/model"]')!.click()
+    await vi.waitFor(() => expect(location.hash).toBe('#/create/model'))
     const apiKey = element.querySelector<HTMLInputElement>('#model-credential')!
     apiKey.value = 'first-key'
     apiKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
     await settleVue()
+    // The list refresh triggered by the save stays in flight during the handoff.
+    stallNextCredentialList = true
     buttonWithText(element, 'Verify & connect').click()
-    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
+    await vi.waitFor(() => expect(text(element.querySelector('h1'))).toBe('Add model'))
     expect(api.probeCredentialDraft).toHaveBeenCalledWith(expect.objectContaining({ apiKey: 'first-key', model: '' }), true, expect.any(AbortSignal))
     expect(saveCredential).toHaveBeenCalledOnce()
     expect(saveCredential.mock.calls[0][0]).toMatchObject({ apiKey: 'first-key', model: '' })
     expect(api.testProviderConnection).not.toHaveBeenCalled()
 
-    // The provider connection save already completed; a slow credentials
-    // refresh must not hold the subsequent model binding or route handoff.
-    stallNextCredentialList = true
-    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Add model').click()
-    await settleVue(6)
-    expect(text(element.querySelector('h1'))).toBe('Add model')
+    expect(document.activeElement).toBe(element.querySelector('h1'))
     expect(element.querySelector<HTMLInputElement>('#model-credential')).toBeNull()
     expect(element.querySelector<HTMLSelectElement>('#saved-provider-connection')?.value).toBe(connection.name)
     await chooseModel(element, 'gpt-4.1-mini')
@@ -1449,9 +1494,8 @@ describe('Models sub-tab shell routing', () => {
     stagingKey.dispatchEvent(new InputEvent('input', { bubbles: true }))
     await settleVue()
     buttonWithText(element, 'Verify & connect').click()
-    await vi.waitFor(() => expect(text(element.querySelector('.agents-provider-connected'))).toContain('Provider connected'))
-    buttonWithText(element.querySelector('.agents-provider-connected')!, 'Done').click()
     await vi.waitFor(() => expect(location.hash).toBe('#/models/provider-connections'))
+    expect(element.querySelector('button[aria-label="Add model to OpenAI staging"]')).toBeTruthy()
     expect(store.credentials.data.map(item => item.name)).toEqual(expect.arrayContaining([connection.name, secondConnection.name, addedModel.name]))
     element.remove()
   })
