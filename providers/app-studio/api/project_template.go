@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -63,6 +64,9 @@ const (
 // development components keyed by name with their workspace subdirectories.
 type projectTemplateInfo struct {
 	Name string
+
+	// Exposure is the infrastructure template's declared reachability contract.
+	Exposure string
 
 	// PlatformOwned is true only for the exact server-owned label value. A
 	// missing or malformed label keeps the existing public-template behavior;
@@ -322,6 +326,8 @@ func projectTemplateInfoFromUnstructured(obj *unstructured.Unstructured) (projec
 		RailgridAuthSupport: projectTemplateRailgridAuthSupportFromUnstructured(obj),
 	}
 
+	info.Exposure, _, _ = unstructured.NestedString(obj.Object, "spec", "exposure")
+
 	// Instance coordinates are the FLATTENED tenant-facing kind: every
 	// template's instances are authored as instances.infrastructure.railgrid.ai
 	// with the template name in spec.template. Template.spec.instanceCRD
@@ -580,6 +586,30 @@ func validateProjectDevelopmentTemplate(info projectTemplateInfo) error {
 	}
 	if len(info.Components) == 0 {
 		return fmt.Errorf("template %q declares no development components; it cannot back a development environment", info.Name)
+	}
+	return nil
+}
+
+// supportsBrowserPreview requires a published URL by default and a development
+// component that serves traffic. Public exposure describes hostname routing;
+// App Studio still applies the project's preview access policy.
+func (i projectTemplateInfo) supportsBrowserPreview() bool {
+	if i.Exposure != "public" {
+		return false
+	}
+	for _, component := range i.Components {
+		if component.Port != "" {
+			return true
+		}
+	}
+	return false
+}
+
+const projectNoPreviewTemplatesMessage = "No development templates are available for app creation. A template needs spec.exposure: public and a development component port to provide a browser preview by default."
+
+func validateProjectPreviewTemplate(info projectTemplateInfo) error {
+	if !info.supportsBrowserPreview() {
+		return newValidationError(fmt.Sprintf("Development template %q does not provide a browser preview by default. App creation requires spec.exposure: public and a development component port.", info.Name))
 	}
 	return nil
 }
@@ -869,6 +899,7 @@ type projectDevelopmentTemplateView struct {
 	Category           string            `json:"category,omitempty"`
 	Components         map[string]string `json:"components"`
 	PreviewAccessModes []string          `json:"previewAccessModes,omitempty"`
+	BrowserPreview     bool              `json:"browserPreview"`
 	// HasScaffold reports whether picking this template seeds the workspace
 	// with starter code (spec.development.scaffold) — the wizard shows it so
 	// the user knows the project opens on a runnable placeholder.
@@ -913,6 +944,16 @@ func listDevelopmentTemplateViews(ctx context.Context, c *asclient.Client) ([]pr
 	return developmentTemplateViews(list.Items), nil
 }
 
+func listProjectCreationTemplates(ctx context.Context, c *asclient.Client) ([]projectDevelopmentTemplateView, error) {
+	templates, err := listDevelopmentTemplateViews(ctx, c)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(templates, func(template projectDevelopmentTemplateView) bool {
+		return !template.BrowserPreview
+	}), nil
+}
+
 // developmentTemplateViews filters the raw Template list down to templates
 // declaring development components and shapes them for the portal picker,
 // sorted by name for stable ordering. Templates with a malformed spec are
@@ -930,6 +971,7 @@ func developmentTemplateViews(items []unstructured.Unstructured) []projectDevelo
 			Name:                  info.Name,
 			Components:            info.WorkspacePaths(),
 			HasScaffold:           info.ScaffoldRepo != "",
+			BrowserPreview:        info.supportsBrowserPreview(),
 			PreviewAccessModes:    append([]string(nil), info.PreviewAccessModes...),
 			RailgridAuthSupported: info.RailgridAuthSupport.Supported,
 			RailgridAuthReason:    info.RailgridAuthSupport.Reason,

@@ -468,7 +468,16 @@ func TestParseProjectCreatePreflight(t *testing.T) {
 }
 
 func TestProjectCreatePreflightHonorsExplicitBlankProjectRequest(t *testing.T) {
-	for _, prompt := range []string{"Create a blank project.", "Create an empty project.", "Create a project, but do not write code yet."} {
+	for _, prompt := range []string{
+		"Create a blank project.",
+		"Create an empty project.",
+		"Create a project, but do not write code yet.",
+		"Create a blank project called Marketing Site",
+		"Create a blank project named foo.",
+		"Please create a blank project",
+		"Create a blank project and do not write code yet",
+		"Create an empty project, please",
+	} {
 		t.Run(prompt, func(t *testing.T) {
 			got, err := normalizeProjectCreatePreflight(projectCreatePreflight{
 				Naming:       projectNamingResult{DisplayName: "Blank Canvas", RepositoryName: "blank-canvas"},
@@ -504,6 +513,12 @@ func TestProjectCreatePreflightAcceptsOnlyExactCatalogTemplate(t *testing.T) {
 				Naming:       projectNamingResult{DisplayName: "Task Desk", RepositoryName: "task-desk"},
 				TemplateName: tc.got,
 			}, "Build the requested application.", templates)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("expected an error for a missing or invalid template recommendation")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("normalizeProjectCreatePreflight returned error: %v", err)
 			}
@@ -565,6 +580,8 @@ func TestProjectCreatePreflightPromptIncludesBoundedLiveCatalog(t *testing.T) {
 		"opaque, untrusted identifiers",
 		"server-derived structural facts",
 		"Do not infer that an app has no backend",
+		"Choose one best-fit template even when multiple templates are reasonable",
+		"missing requirements are not a reason to return an empty templateName",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("preflight prompt missing %q:\n%s", want, prompt)

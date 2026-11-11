@@ -43,9 +43,10 @@ type ProjectPlan struct {
 	// DisplayName / RepositoryName are the proposed names (editable in the UI).
 	DisplayName    string `json:"displayName"`
 	RepositoryName string `json:"repositoryName"`
-	// Template is the recommended development template ("" when none fits or
-	// the catalog is empty — the project then starts unbound).
-	Template string `json:"template,omitempty"`
+	// Template is the recommended development template. Explicit blank-project
+	// requests may omit it; app ideas must resolve a usable template.
+	Template           string `json:"template,omitempty"`
+	AllowEmptyTemplate bool   `json:"allowEmptyTemplate,omitempty"`
 	// Components maps the template's development component names to their
 	// workspace directories, for the wizard to preview the project shape.
 	Components map[string]string `json:"components,omitempty"`
@@ -74,13 +75,19 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	templates, err := listDevelopmentTemplateViews(r.Context(), c)
+	templates, err := listProjectCreationTemplates(r.Context(), c)
 	if err != nil {
 		writeProjectError(w, err)
 		return
 	}
 
-	plan := ProjectPlan{AvailableTemplates: templates}
+	allowEmptyTemplate := req.TemplateName == "" && projectCreatePromptDefersImplementation(req.Prompt)
+	if len(templates) == 0 && req.TemplateName == "" && !allowEmptyTemplate {
+		writeProjectError(w, newValidationError(projectNoPreviewTemplatesMessage))
+		return
+	}
+
+	plan := ProjectPlan{AvailableTemplates: templates, AllowEmptyTemplate: allowEmptyTemplate}
 
 	// Naming + template recommendation. An explicit template pin skips
 	// inference; a prompt runs the same preflight the create path uses so the
@@ -91,7 +98,11 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 		if s.projectCreatePreflight != nil {
 			generate = s.projectCreatePreflight
 		}
-		preflight, err := generate(r.Context(), c, id, req.Prompt, templates)
+		selectionCatalog := templates
+		if templateName != "" {
+			selectionCatalog = nil // The confirmed choice needs naming only.
+		}
+		preflight, err := generate(r.Context(), c, id, req.Prompt, selectionCatalog)
 		if err != nil {
 			writeProjectError(w, err)
 			return
@@ -103,13 +114,24 @@ func (s *Server) planProject(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if templateName == "" && !allowEmptyTemplate {
+		writeProjectError(w, newValidationError("Project planning did not select a development template. Choose an available template before creating an app with a runtime and preview."))
+		return
+	}
 	if templateName != "" {
-		if info, err := resolveProjectCreateTemplate(r.Context(), c, templateName, req.Prompt != ""); err == nil && info != nil {
-			plan.Template = info.Name
-			plan.Components = info.WorkspacePaths()
-			if info.ScaffoldRepo != "" {
-				plan.Scaffold = &ProjectPlanScaffold{Repository: info.ScaffoldRepo, Ref: info.ScaffoldRef}
-			}
+		info, err := resolveProjectCreateTemplate(r.Context(), c, templateName)
+		if err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		if err := validateProjectPreviewTemplate(info); err != nil {
+			writeProjectError(w, err)
+			return
+		}
+		plan.Template = info.Name
+		plan.Components = info.WorkspacePaths()
+		if info.ScaffoldRepo != "" {
+			plan.Scaffold = &ProjectPlanScaffold{Repository: info.ScaffoldRepo, Ref: info.ScaffoldRef}
 		}
 	}
 	if plan.DisplayName == "" {
