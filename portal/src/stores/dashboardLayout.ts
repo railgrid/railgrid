@@ -75,8 +75,8 @@ interface DashboardLayoutDTO {
 // normally hands sync() a responsive column count derived from viewport
 // width. DEFAULT_W/H size a freshly-placed tile.
 export const GRID_COLS = 3
-const DEFAULT_W = 1
-const DEFAULT_H = 2
+export const DEFAULT_W = 1
+export const DEFAULT_H = 2
 
 const STORAGE_PREFIX = 'railgrid-dashboard-layout:'
 

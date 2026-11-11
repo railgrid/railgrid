@@ -3,7 +3,7 @@ import { useGettingStartedFocus } from '@/composables/gettingStartedFocus'
 import { useAuthStore } from '@/stores/auth'
 import { claimFirstWelcome, welcomeIdentity } from '@/lib/firstWelcome'
 import { useScopedNavigation } from '@/composables/useScopedNavigation'
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { GridLayout, GridItem } from 'grid-layout-plus'
 import AppLayout from '@/components/AppLayout.vue'
@@ -13,8 +13,8 @@ import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
-import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
-import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
+import { DEFAULT_H, DEFAULT_W, useDashboardLayoutStore } from '@/stores/dashboardLayout'
+import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Plus, Rocket } from 'lucide-vue-next'
 import { gettingStartedReadState } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
@@ -193,6 +193,27 @@ const providerFor = (name: string) => gated.value.find(provider => provider.name
 
 // --- Customize mode ---
 const editMode = ref(false)
+// The catalog shortcut belongs to the dashboard rather than to a provider's
+// saved layout. Use a separate layout in browse mode because the grid mutates
+// item positions when it compacts them.
+const addProviderTileID = ':add-provider'
+const gridLayout = computed(() => {
+  if (editMode.value || !tenant.workspaceUUID) return layout.value
+
+  const tiles = layout.value.map(tile => ({ ...tile }))
+  const byRow = [...tiles].sort((a, b) => a.y - b.y)
+  let first = { x: 0, y: Infinity }
+  for (let x = 0; x + DEFAULT_W <= columns.value; x++) {
+    let y = 0
+    for (const tile of byRow) {
+      if (x + DEFAULT_W <= tile.x || x >= tile.x + tile.w) continue
+      if (y + DEFAULT_H <= tile.y) break
+      y = Math.max(y, tile.y + tile.h)
+    }
+    if (y < first.y) first = { x, y }
+  }
+  return reactive([...tiles, { ...first, i: addProviderTileID, w: DEFAULT_W, h: DEFAULT_H, static: true }])
+})
 const addMenuItems = computed<ActionMenuItem[]>(() => addable.value.map((name) => ({
   id: name,
   label: providerFor(name)?.displayName ?? name,
@@ -345,6 +366,7 @@ function onGridSelectStart(event: Event) {
         <div
           v-if="layout.length === 0"
           class="flex items-start gap-3 rounded-xl border border-border-subtle bg-surface-raised/60 p-4 text-[13px] text-text-muted"
+          :class="{ 'mb-4': gridLayout.length > 0 }"
         >
           <LayoutGrid class="mt-0.5 h-4 w-4 text-text-muted" :stroke-width="1.75" />
           <div v-if="addable.length > 0">
@@ -364,8 +386,8 @@ function onGridSelectStart(event: Event) {
         </div>
 
         <GridLayout
-          v-else
-          v-model:layout="layout"
+          v-if="gridLayout.length > 0"
+          :layout="gridLayout"
           :class="editMode ? 'select-none' : undefined"
           :col-num="columns"
           :row-height="90"
@@ -377,21 +399,30 @@ function onGridSelectStart(event: Event) {
           @selectstart="onGridSelectStart"
         >
           <GridItem
-            v-for="item in layout"
+            v-for="item in gridLayout"
             :key="item.i"
             :x="item.x"
             :y="item.y"
             :w="item.w"
             :h="item.h"
             :i="item.i"
+            :static="item.i === addProviderTileID"
             :min-w="1"
             :min-h="1"
             drag-ignore-from=".tile-no-drag"
             @moved="onUserLayoutUpdated"
             @resized="onUserLayoutUpdated"
           >
+              <router-link
+                v-if="item.i === addProviderTileID"
+                :to="scopePath('/providers')"
+                class="flex h-full flex-col items-center justify-center gap-2 rounded-xl border border-border-subtle bg-surface-raised/80 text-sm font-medium text-text-primary transition-colors hover:border-accent/50 hover:bg-surface-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+              >
+                <Plus class="h-6 w-6 text-text-muted" :stroke-width="1.5" aria-hidden="true" />
+                Add provider
+              </router-link>
               <DashboardTile
-                v-if="providerFor(item.i)"
+                v-else-if="providerFor(item.i)"
                 :provider="providerFor(item.i)!"
                 :edit-mode="editMode"
                 @remove="onRemove"
@@ -404,7 +435,7 @@ function onGridSelectStart(event: Event) {
              The grid already leaves TILE_GAP below its last row. -->
         <div
           v-if="tenant.workspaceUUID"
-          :style="{ marginInline: `${TILE_GAP}px`, marginTop: gated.length > 0 && layout.length === 0 ? `${TILE_GAP}px` : undefined }"
+          :style="{ marginInline: `${TILE_GAP}px`, marginTop: gated.length > 0 && gridLayout.length === 0 ? `${TILE_GAP}px` : undefined }"
         >
           <DashboardUsageTile />
         </div>
