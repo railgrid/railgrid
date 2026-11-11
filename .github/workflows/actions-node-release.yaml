@@ -13,7 +13,7 @@ jobs:
   publish:
     name: Test and publish npm package
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: provider-sdk/actions-node
@@ -51,13 +51,14 @@ jobs:
           scratch="$(mktemp -d)"
           cd "$scratch"
           npm init --yes >/dev/null
-          for attempt in $(seq 1 12); do
-            if npm install --prefer-online --ignore-scripts --no-audit --no-fund "@railgrid/actions-node@$version"; then
-              break
-            fi
-            if [ "$attempt" -eq 12 ]; then
+          # npm may scan a new release for several minutes before serving its tarball.
+          deadline=$((SECONDS + 20 * 60))
+          until npm install --prefer-online --ignore-scripts --no-audit --no-fund \
+            --fetch-retries=0 --fetch-timeout=15000 "@railgrid/actions-node@$version"; do
+            if (( SECONDS >= deadline )); then
+              echo "Timed out waiting for @railgrid/actions-node@$version on public npm" >&2
               exit 1
             fi
-            sleep 10
+            sleep 15
           done
           node --input-type=module --eval "import { createActionsClient } from '@railgrid/actions-node'; if (typeof createActionsClient !== 'function') process.exit(1)"

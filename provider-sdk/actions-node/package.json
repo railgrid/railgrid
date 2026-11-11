@@ -1,6 +1,6 @@
 {
   "name": "@railgrid/actions-node",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Server-side App Studio integration gateway client for generated apps",
   "license": "Apache-2.0",
   "repository": {
