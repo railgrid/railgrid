@@ -80,6 +80,25 @@ surface width, guidance follows the task; at `1800px` and above, the optional
 places that rail beside its body and footer; the canonical step recipe owns its
 borders, active state, and typography.
 
+Agent creation from a template uses one form on the Agents create route.
+Keep template inputs together and place missing-prerequisite actions beside
+the relevant controls. Pair related selectors at wide widths and stack them
+in reading order when space is limited. Keep the generated instructions,
+prompt override, and execution overrides in an **Instructions and settings**
+disclosure. The selected template determines the execution type. Switching
+templates restores each draft within the current create session. Code reviewer
+opens machine, harness credential, and GitHub setup in new tabs and refreshes
+the corresponding choices on return. Chat-model setup returns to the draft
+in the same tab.
+
+Code reviewer and News reporter use pasteable repository and topic lists.
+News reporter exposes UTC time and weekdays for a simple schedule and retains
+raw cron for custom schedules. Researcher reveals the expertise field when
+Specialist is selected. Workspace assistant team examples insert editable
+text. Templates that add schedules or background access use the existing
+confirmation before writing resources. A known offline machine is a warning,
+and missing or invalid required selections block creation.
+
 When domain help is useful, put `CreateGuidance.vue` beside `k-create-fields`
 inside `k-create-surface--guided`. The rail contains only timely prerequisites,
 a live non-secret summary of what Railgrid will create, and controller-owned next

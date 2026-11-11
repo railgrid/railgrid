@@ -25,6 +25,8 @@ export interface AgentCreateDraft {
   template: string
   parameters: Record<string, string>
   wiring: Record<string, string>
+  researchSpecialist?: boolean
+  templateDrafts?: Record<string, AgentCreateDraft>
 }
 
 export function emptyAgentCreateDraft(backendType: AgentBackendType = AGENT_BACKEND_MODEL, template = ''): AgentCreateDraft {

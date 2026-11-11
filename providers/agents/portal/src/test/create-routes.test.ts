@@ -160,16 +160,98 @@ describe('route-owned creation surfaces', () => {
     expect(picker.open).toBe(false)
     expect(name.value).toBe('my-draft')
     expect(el.querySelector('[data-selected-template]')?.textContent).toContain('Researcher')
-    expect(el.querySelector('#agent-create-param-domain')).not.toBeNull()
-    expect(sections()).toEqual(initialSections)
-    expect(el.querySelector('textarea[aria-labelledby="agent-create-system-prompt-label"]')).toBe(instructions)
-    expect(instructions.value).toContain(draftInstructions || 'research')
-    el.querySelector<HTMLButtonElement>('[data-use-coding-harness]')!.click()
+    expect(el.querySelector('#agent-create-param-domain')).toBeNull()
+    expect(sections()).toEqual(['Agent definition', 'Connections'])
+    expect(el.querySelector('[data-use-coding-harness]')).toBeNull()
+    const templateInstructions = el.querySelector<HTMLTextAreaElement>('textarea[aria-labelledby="agent-create-system-prompt-label"]')!
+    expect(templateInstructions.value).toContain(draftInstructions || 'research')
+
+    const modes = el.querySelectorAll<HTMLInputElement>('input[name="research-focus"]')
+    expect(modes[0].checked).toBe(true)
+    modes[1].click()
+    await settleVue()
+    const domain = el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')!
+    domain.value = 'cloud pricing'
+    domain.dispatchEvent(new InputEvent('input', { bubbles: true }))
+
+    trigger.click()
+    const assistant = [...picker.querySelectorAll<HTMLButtonElement>('.agents-starter-card')]
+      .find(card => card.querySelector('.agents-starter-name')?.textContent === 'Workspace assistant')!
+    assistant.click()
+    await settleVue()
+    trigger.click()
+    researcher.click()
+    await settleVue()
+    expect(el.querySelector<HTMLInputElement>('input[name="research-focus"]:checked')).toBe(el.querySelectorAll('input[name="research-focus"]')[1])
+    expect(el.querySelector<HTMLTextAreaElement>('#agent-create-param-domain')?.value).toBe('cloud pricing')
+
+    ;[...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Clear template')!.click()
     await settle(el)
     expect(sections()).toEqual(initialSections)
     expect(el.querySelector('[data-selected-template]')).toBeNull()
     expect(name.value).toBe('my-draft')
     expect(agentTemplates).toHaveBeenCalledTimes(1)
+  })
+
+  it('preserves repository entries while refreshing setup in new tabs and allows an offline machine with a warning', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await settle(el)
+    const setup = el.querySelector('#agent-create-execution-heading')!.parentElement!
+    expect(setup.querySelectorAll('[role="combobox"]')).toHaveLength(0)
+    expect([...setup.querySelectorAll('a, button')].map(item => item.textContent?.trim())).toEqual([
+      'Connect machine', 'Add harness credential', 'Add GitHub connection',
+    ])
+    expect(setup.querySelectorAll('a[target="_blank"]')).toHaveLength(3)
+    expect(setup.querySelector('.agents-hint')).toBeNull()
+    const harnessSetup = setup.querySelector<HTMLAnchorElement>('a[href*="/create/model/harness"]')!
+    expect(harnessSetup.getAttribute('href')).toBe('/ui/org/ws/providers/agents/#/create/model/harness')
+    harnessSetup.addEventListener('auxclick', event => event.preventDefault())
+    harnessSetup.dispatchEvent(new MouseEvent('auxclick', { button: 1, bubbles: true, cancelable: true }))
+    const load = vi.spyOn(store, 'load').mockImplementation(async key => {
+      if (key === 'credentials') store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+      if (key === 'connections') store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github' } }]
+      store.dispatchEvent(new Event('change'))
+    })
+    window.dispatchEvent(new Event('focus'))
+    expect(load).toHaveBeenCalledWith('credentials')
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: false }]
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex')
+    expect(el.querySelector('#agent-create-edge-hint')?.textContent).toContain('offline')
+    const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(submit.disabled).toBe(true)
+
+    const repo = el.querySelector<HTMLInputElement>('#agent-create-param-repositories')!
+    const paste = new Event('paste', { bubbles: true, cancelable: true })
+    Object.defineProperty(paste, 'clipboardData', { value: { getData: () => 'railgrid/railgrid\r\nrailgrid/docs' } })
+    repo.dispatchEvent(paste)
+    repo.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }))
+    repo.value = 'railgrid/仮'
+    repo.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }))
+    await settleVue()
+    expect(el.querySelector('[data-generated-instructions]')?.textContent).not.toContain('railgrid/仮')
+    repo.value = 'railgrid/日本語'
+    repo.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true }))
+    repo.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settleVue()
+    expect(el.querySelector('[aria-label="Remove railgrid/日本語"]')).not.toBeNull()
+    const link = [...el.querySelectorAll<HTMLAnchorElement>('a')].find(item => item.textContent?.includes('Add GitHub connection'))!
+    expect(link.getAttribute('href')).toBe('/ui/org/ws/providers/agents/#/create/connection/github')
+    link.addEventListener('click', event => event.preventDefault())
+    link.click()
+    window.dispatchEvent(new Event('focus'))
+    await settleVue()
+    expect(load).toHaveBeenCalledWith('connections')
+    await chooseFormSelect(el, '#agent-create-github', 'github')
+    expect(el.querySelector('[aria-label="Remove railgrid/railgrid"]')).not.toBeNull()
+    expect(el.querySelector('[aria-label="Remove railgrid/docs"]')).not.toBeNull()
+    expect(submit.disabled).toBe(false)
   })
 
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {
@@ -634,6 +716,7 @@ it.each([false, true])('creates an agent with the final template inputs and sche
 
   const customInstruction = 'Use a numbered summary.'
   if (edited) {
+    instructions.closest('details')!.open = true
     instructions.focus()
     await settleVue()
     expect(instructions.value).toContain('{{topics}}')
@@ -641,13 +724,40 @@ it.each([false, true])('creates an agent with the final template inputs and sche
     instructions.dispatchEvent(new InputEvent('input', { bubbles: true }))
     instructions.blur()
   }
-  const topics = el.querySelector<HTMLTextAreaElement>('#agent-create-param-topics')!
-  topics.value = 'kcp\nkubernetes'
-  topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  const topics = el.querySelector<HTMLInputElement>('#agent-create-param-topics')!
+  for (const topic of ['kcp', 'kubernetes']) {
+    topics.value = topic
+    topics.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    topics.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+  }
+  const saturday = el.querySelector<HTMLButtonElement>('[aria-label="Saturday"]')!
+  saturday.click()
+  const time = el.querySelector<HTMLInputElement>('input[type="time"]')!
+  await settleVue()
+  time.value = ''
+  time.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  await settleVue()
+  expect(time.value).toBe('')
+  expect(saturday.disabled).toBe(true)
+  time.value = '09:15'
+  time.dispatchEvent(new InputEvent('input', { bubbles: true }))
   await chooseFormSelect(el, '#agent-create-model', 'openai')
   await chooseFormSelect(el, '#agent-create-channel', 'Team Telegram')
   await chooseFormSelect(el, '#agent-create-slot-websearch', 'searx')
-  expect(instructions.value).toContain('- kcp')
+  expect(el.querySelector('[data-generated-instructions]')?.textContent).toContain('- kcp')
+  const editCron = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Edit cron')!
+  editCron.click()
+  await settleVue()
+  const cron = el.querySelector<HTMLInputElement>('#agent-create-param-digestTime')!
+  expect(cron.value).toBe('15 9 * * 1,2,3,4,5,6')
+  cron.value = 'CRON_TZ=UTC'
+  cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
+  el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+  await settleVue()
+  expect(el.querySelector('#agent-digest-cron-error')?.textContent).toContain('valid cron')
+  expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  cron.value = '15 9 * * MON-SAT'
+  cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
   if (edited) {
     instructions.focus()
     await settleVue()
@@ -662,6 +772,7 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   expect(remaining, 'no validation errors should remain').toEqual([])
   expect(confirmState.message).toContain('news-reporter-daily-digest')
   expect(confirmState.message).toContain('Background runs can use web, searx')
+  expect(confirmState.message).toContain('Posts to Team Telegram.')
   expect(createAgentFromTemplate).not.toHaveBeenCalled()
   resolveConfirm(true)
   await settle(el)
@@ -678,5 +789,5 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   expect(agent.spec.channels).toEqual([{ name: 'primary', connectionRef: 'tg', primary: true }])
   expect(agent.spec.tools.interactive.connections).toEqual(['searx'])
   expect(schedules.map(s => s.metadata.name)).toEqual(['news-reporter-daily-digest'])
-  expect(schedules[0].spec).toMatchObject({ agentRef: 'news-reporter', type: 'cron', channelRef: 'primary' })
+  expect(schedules[0].spec).toMatchObject({ agentRef: 'news-reporter', type: 'cron', channelRef: 'primary', schedule: '15 9 * * MON-SAT' })
 })
