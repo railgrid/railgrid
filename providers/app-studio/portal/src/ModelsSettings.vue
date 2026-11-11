@@ -784,7 +784,7 @@ function startProviderDetour() {
         <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true"><Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" /> Refreshing models…</div>
         <InlineNotification v-if="testError" tone="error" :message="testError" />
         <InlineNotification v-else-if="testStatus" tone="success" :message="testStatus" />
-        <ModelCollection v-if="modelRows.length" class="setup-table" :rows="modelRows" preference-key="railgrid:app-studio:models:layout" table-only show-provider-connection>
+        <ModelCollection v-if="modelRows.length" class="k-table-stack-actions" :rows="modelRows" preference-key="railgrid:app-studio:models:layout" table-only show-provider-connection>
           <template #name-prefix="{ row }">
             <ResourceTableExpandButton
               :expanded="expandedModel === row.id"
@@ -817,7 +817,7 @@ function startProviderDetour() {
         <p v-else-if="!loadError && !loading && !showFirstRun" class="text-[13px] text-text-muted">No models configured</p>
       </div>
 
-      <section class="k-resource-page k-resource-page--collection app-studio-provider-connections setup-table" aria-labelledby="app-studio-provider-connections-title">
+      <section class="k-resource-page k-resource-page--collection app-studio-provider-connections k-table-stack-actions" aria-labelledby="app-studio-provider-connections-title">
         <header class="k-resource-page__header">
           <div class="k-resource-page__heading">
             <h3 id="app-studio-provider-connections-title" ref="providerConnectionsHeading" class="k-resource-page__title" tabindex="-1">Provider connections</h3>
@@ -895,15 +895,6 @@ function startProviderDetour() {
 
 <style scoped>
 .app-studio-provider-connections { margin-block-start: 1rem; }
-.setup-table :deep(.k-table__cell--primary) { min-inline-size: 18rem; }
-@media (max-width: 640px) {
-  .setup-table :deep(.k-table__primary) { flex-wrap: wrap; }
-  .setup-table :deep(.k-table__primary-content) { flex-basis: 100%; }
-  .setup-table :deep(:is(.k-table__primary-actions, .k-table__primary-actions .k-table-action)) {
-    margin-inline-start: 0;
-    opacity: 1;
-  }
-}
 .agents-provider-connect .agents-provider-connect__link{color:var(--color-accent);text-decoration:underline;text-underline-offset:3px;}
 .agents-provider-connect__section{display:grid;gap:12px;min-width:0;}
 .agents-provider-connect__details{font-size:12px;color:var(--color-text-secondary);}
