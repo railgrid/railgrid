@@ -18,6 +18,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,6 +30,7 @@ import (
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/dynamic/fake"
@@ -149,68 +151,73 @@ func TestCreateProjectPreflightTemplateCreatesBindingAndInstance(t *testing.T) {
 }
 
 func TestCreateProjectLivePathListsCatalogCallsPreflightOnceAndCreatesInstance(t *testing.T) {
-	dynamicClient := newProjectCreationTestDynamicClient(
-		codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
-		applicationTemplateObject(),
-	)
-	dynamicClient.PrependReactor("create", "projects", func(action k8stesting.Action) (bool, runtime.Object, error) {
-		object := action.(k8stesting.CreateAction).GetObject()
-		object.(metav1.Object).SetUID("project-uid-customer-portal")
-		return false, nil, nil
-	})
-	client := asclient.NewFromDynamic(dynamicClient)
-	calls := 0
-	server := &Server{
-		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
-		actionsExternalURL: "https://actions.example.test",
-		store:              store.NewMemoryStore(),
-		projectCreatePreflight: func(_ context.Context, _ *asclient.Client, _ identity, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
-			calls++
-			if prompt != "Build a frontend and backend customer portal." {
-				t.Fatalf("preflight prompt = %q", prompt)
+	const appIdea = "Build a customer portal that lets users create a blank project from the dashboard."
+	for _, infer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("inference flag=%v", infer), func(t *testing.T) {
+			dynamicClient := newProjectCreationTestDynamicClient(
+				codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
+				applicationTemplateObject(), workerOnlyTemplateObject(),
+			)
+			dynamicClient.PrependReactor("create", "projects", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				object := action.(k8stesting.CreateAction).GetObject()
+				object.(metav1.Object).SetUID("project-uid-customer-portal")
+				return false, nil, nil
+			})
+			client := asclient.NewFromDynamic(dynamicClient)
+			calls := 0
+			server := &Server{
+				tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+				actionsExternalURL: "https://actions.example.test",
+				store:              store.NewMemoryStore(),
+				projectCreatePreflight: func(_ context.Context, _ *asclient.Client, _ identity, prompt string, templates []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+					calls++
+					if prompt != appIdea {
+						t.Fatalf("preflight prompt = %q", prompt)
+					}
+					if len(templates) != 1 || templates[0].Name != "application" {
+						t.Fatalf("preflight templates = %+v, want live application catalog entry", templates)
+					}
+					return projectCreatePreflight{
+						Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
+						TemplateName: "application",
+					}, nil
+				},
 			}
-			if len(templates) != 1 || templates[0].Name != "application" {
-				t.Fatalf("preflight templates = %+v, want live application catalog entry", templates)
+			server.SetReplicaRouting("replica-a", "10.0.0.1:8091", "internal-token")
+			created, err := server.createProjectFromRequest(
+				context.Background(),
+				client,
+				identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
+				CreateProjectRequest{
+					Prompt:                   appIdea,
+					ConnectionRef:            "github",
+					InferDevelopmentTemplate: infer,
+				},
+				nil,
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("createProjectFromRequest: %v", err)
 			}
-			return projectCreatePreflight{
-				Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
-				TemplateName: "application",
-			}, nil
-		},
-	}
-	server.SetReplicaRouting("replica-a", "10.0.0.1:8091", "internal-token")
-	created, err := server.createProjectFromRequest(
-		context.Background(),
-		client,
-		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
-		CreateProjectRequest{
-			Prompt:                   "Build a frontend and backend customer portal.",
-			ConnectionRef:            "github",
-			InferDevelopmentTemplate: true,
-		},
-		nil,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("createProjectFromRequest: %v", err)
-	}
-	if calls != 1 {
-		t.Fatalf("preflight calls = %d, want exactly one", calls)
-	}
-	if created.Spec.Template == nil || created.Spec.Template.Name != "application" {
-		t.Fatalf("created template = %+v, want application", created.Spec.Template)
-	}
-	// Instances are materialized by the Project reconciler, not the handler:
-	// assert the spec-only contract (a self-contained development binding).
-	if len(created.Spec.Environments) != 1 || len(created.Spec.Environments[0].Bindings) != 1 {
-		t.Fatalf("created environments = %+v, want one development binding", created.Spec.Environments)
-	}
-	want, gvr, err := bindings.Desired(created, created.Spec.Environments[0].Bindings[0])
-	if err != nil {
-		t.Fatalf("binding is not self-contained: %v", err)
-	}
-	if gvr.Resource != "instances" || want.GetName() != created.Name+"-dev" {
-		t.Fatalf("desired instance = %s/%s, want instances/%s-dev", gvr.Resource, want.GetName(), created.Name)
+			if calls != 1 {
+				t.Fatalf("preflight calls = %d, want exactly one", calls)
+			}
+			if created.Spec.Template == nil || created.Spec.Template.Name != "application" {
+				t.Fatalf("created template = %+v, want application", created.Spec.Template)
+			}
+			// Instances are materialized by the Project reconciler, not the handler:
+			// assert the spec-only contract (a self-contained development binding).
+			if len(created.Spec.Environments) != 1 || len(created.Spec.Environments[0].Bindings) != 1 {
+				t.Fatalf("created environments = %+v, want one development binding", created.Spec.Environments)
+			}
+			want, gvr, err := bindings.Desired(created, created.Spec.Environments[0].Bindings[0])
+			if err != nil {
+				t.Fatalf("binding is not self-contained: %v", err)
+			}
+			if gvr.Resource != "instances" || want.GetName() != created.Name+"-dev" {
+				t.Fatalf("desired instance = %s/%s, want instances/%s-dev", gvr.Resource, want.GetName(), created.Name)
+			}
+		})
 	}
 }
 
@@ -264,29 +271,51 @@ func TestCreateProjectLivePathSurfacesCatalogListErrorBeforePreflight(t *testing
 	}
 }
 
-func TestCreateProjectInvalidInferredTemplateFallsBackUnbound(t *testing.T) {
-	client := newProjectCreationTestClient(
-		codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
-		applicationTemplateObject(),
-	)
-	preflight := &projectCreatePreflight{
-		Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
-		TemplateName: "invented-template",
+func workerOnlyTemplateObject() *unstructured.Unstructured {
+	template := applicationTemplateObject()
+	template.SetName("worker-only")
+	template.Object["spec"].(map[string]any)["development"] = map[string]any{
+		"components": map[string]any{
+			"worker": map[string]any{"workspacePath": ".", "devImage": "${railgrid.devImage.node}", "startCommand": "node worker.js"},
+		},
 	}
-	created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, actionsExternalURL: "https://actions.example.test"}).createProjectFromRequestWithPreflight(
-		context.Background(),
-		client,
-		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
-		CreateProjectRequest{ConnectionRef: "github", InferDevelopmentTemplate: true},
-		nil,
-		nil,
-		preflight,
-	)
-	if err != nil {
-		t.Fatalf("createProjectFromRequestWithPreflight: %v", err)
-	}
-	if created.Spec.Template != nil || len(created.Spec.Environments[0].Bindings) != 0 {
-		t.Fatalf("created project = %+v, want safe unbound fallback", created.Spec)
+	return template
+}
+
+func TestCreateProjectMissingOrInvalidInferredTemplateFailsBeforeCreation(t *testing.T) {
+	for _, template := range []string{"", "none", "invented-template", "production-only", "worker-only", "internal-app"} {
+		t.Run(template, func(t *testing.T) {
+			productionOnly := applicationTemplateObject()
+			productionOnly.SetName("production-only")
+			delete(productionOnly.Object["spec"].(map[string]any), "development")
+			internal := applicationTemplateObject()
+			internal.SetName("internal-app")
+			internal.Object["spec"].(map[string]any)["exposure"] = "internal"
+			client := newProjectCreationTestClient(
+				codeConnectionObjectWithValidated("github", metav1.ConditionTrue),
+				applicationTemplateObject(), productionOnly, workerOnlyTemplateObject(), internal,
+			)
+			preflight := &projectCreatePreflight{
+				Naming:       projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"},
+				TemplateName: template,
+			}
+			created, err := (&Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders}).createProjectFromRequestWithPreflight(
+				context.Background(), client,
+				identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
+				CreateProjectRequest{Prompt: "Build a customer portal", ConnectionRef: "github"}, nil, nil, preflight,
+			)
+			if err == nil || created != nil {
+				t.Fatalf("created = %+v, error = %v, want failure before creation", created, err)
+			}
+			repositories, err := client.Resource(codeRepositoryResource, "").List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(repositories.Items) != 0 {
+				t.Fatalf("repositories = %+v, error = %v, want none", repositories, err)
+			}
+			projects, err := client.Projects().List(context.Background(), metav1.ListOptions{})
+			if err != nil || len(projects.Items) != 0 {
+				t.Fatalf("projects = %+v, error = %v, want none", projects, err)
+			}
+		})
 	}
 }
 
@@ -579,11 +608,8 @@ func TestResolveProjectCreateTemplateRequiresDevelopmentComponents(t *testing.T)
 		t.Fatalf("explicit production-only template error = %v, want development-component validation", err)
 	}
 	info, err := resolveProjectCreateTemplate(context.Background(), client, "database", true)
-	if err != nil {
-		t.Fatalf("inferred production-only template returned error: %v", err)
-	}
-	if info != nil {
-		t.Fatalf("inferred production-only template = %+v, want safe unbound fallback", info)
+	if err == nil || info != nil {
+		t.Fatalf("inferred production-only template = %+v, error = %v, want rejection", info, err)
 	}
 }
 
@@ -916,5 +942,70 @@ func TestProjectViewReadsRevisionAndProvenanceTogether(t *testing.T) {
 	}
 	if view.SourceRevision != view.LastSourceChange.SourceRevision || view.SourceRevision != view.LastPreviewCheckpoint.SourceRevision {
 		t.Fatalf("response mixed source snapshots: %+v", view)
+	}
+}
+
+func TestCreateAppIdeaWithoutTemplatesFailsBeforePlanning(t *testing.T) {
+	client := newProjectCreationTestClient()
+	server := &Server{
+		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+		projectCreatePreflight: func(context.Context, *asclient.Client, identity, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+			t.Fatal("model should not be called without usable templates")
+			return projectCreatePreflight{}, nil
+		},
+	}
+	created, err := server.createProjectFromRequest(context.Background(), client,
+		identity{user: "alice", orgUUID: "org-a", workspaceUUID: "ws-1", tenant: "root:org-a:ws-1"},
+		CreateProjectRequest{Prompt: "Build a customer portal", RepositoryMode: "none"}, nil, nil)
+	if err == nil || created != nil || !strings.Contains(err.Error(), "No development templates are available") {
+		t.Fatalf("created = %+v, error = %v, want actionable missing-template failure", created, err)
+	}
+	projects, err := client.Projects().List(context.Background(), metav1.ListOptions{})
+	if err != nil || len(projects.Items) != 0 {
+		t.Fatalf("projects = %+v, error = %v, want none", projects, err)
+	}
+}
+
+func TestPlanProjectRequiresUsableTemplate(t *testing.T) {
+	for _, test := range []struct {
+		name, prompt, template string
+		wantCode               int
+	}{
+		{name: "app idea", prompt: "Build a customer portal", template: "application", wantCode: http.StatusOK},
+		{name: "empty selection", prompt: "Build a customer portal", wantCode: http.StatusBadRequest},
+		{name: "deleted selection", prompt: "Build a customer portal", template: "deleted", wantCode: http.StatusBadRequest},
+		{name: "worker-only selection", prompt: "Build a customer portal", template: "worker-only", wantCode: http.StatusBadRequest},
+		{name: "feature mentioning a blank project", prompt: "Build an app that lets users create a blank project", wantCode: http.StatusBadRequest},
+		{name: "explicit blank", prompt: "Create a blank project", wantCode: http.StatusOK},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := newProjectCreationTestClient(applicationTemplateObject(), workerOnlyTemplateObject())
+			server := &Server{
+				tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
+				projectClientFor: func(identity) (*asclient.Client, error) { return client, nil },
+				projectCreatePreflight: func(context.Context, *asclient.Client, identity, string, []projectDevelopmentTemplateView) (projectCreatePreflight, error) {
+					return projectCreatePreflight{Naming: projectNamingResult{DisplayName: "Customer Portal", RepositoryName: "customer-portal"}, TemplateName: test.template}, nil
+				},
+			}
+			req := httptest.NewRequest(http.MethodPost, "/api/projects/plan", strings.NewReader(fmt.Sprintf(`{"prompt":%q}`, test.prompt)))
+			setPublishingIdentity(req)
+			response := httptest.NewRecorder()
+			server.planProject(response, req)
+			if response.Code != test.wantCode {
+				t.Fatalf("status = %d, want %d: %s", response.Code, test.wantCode, response.Body.String())
+			}
+			if response.Code == http.StatusOK {
+				var plan ProjectPlan
+				if err := json.Unmarshal(response.Body.Bytes(), &plan); err != nil {
+					t.Fatal(err)
+				}
+				if plan.Template != test.template || plan.AllowEmptyTemplate != (test.template == "") {
+					t.Fatalf("unexpected template selection contract: %+v", plan)
+				}
+				if len(plan.AvailableTemplates) != 1 || plan.AvailableTemplates[0].Name != "application" {
+					t.Fatalf("available templates = %+v, want only preview-capable templates", plan.AvailableTemplates)
+				}
+			}
+		})
 	}
 }

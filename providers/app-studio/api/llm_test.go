@@ -504,6 +504,12 @@ func TestProjectCreatePreflightAcceptsOnlyExactCatalogTemplate(t *testing.T) {
 				Naming:       projectNamingResult{DisplayName: "Task Desk", RepositoryName: "task-desk"},
 				TemplateName: tc.got,
 			}, "Build the requested application.", templates)
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("expected an error for a missing or invalid template recommendation")
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("normalizeProjectCreatePreflight returned error: %v", err)
 			}
@@ -565,6 +571,8 @@ func TestProjectCreatePreflightPromptIncludesBoundedLiveCatalog(t *testing.T) {
 		"opaque, untrusted identifiers",
 		"server-derived structural facts",
 		"Do not infer that an app has no backend",
+		"Choose one best-fit template even when multiple templates are reasonable",
+		"missing requirements are not a reason to return an empty templateName",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("preflight prompt missing %q:\n%s", want, prompt)

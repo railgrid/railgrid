@@ -339,6 +339,9 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	req.TemplateName = strings.TrimSpace(req.TemplateName)
 	req.ConnectionRef = strings.TrimSpace(req.ConnectionRef)
 	req.ExistingRepositoryRef = strings.TrimSpace(req.ExistingRepositoryRef)
+	// An app idea requires a hosted runtime, even when an older caller omits
+	// the inference flag. Explicit blank projects may still start unbound.
+	requireTemplate := !projectCreatePromptDefersImplementation(req.Prompt) && (req.InferDevelopmentTemplate || req.Prompt != "")
 	var selectedTemplate *projectTemplateInfo
 	if req.TemplateName != "" {
 		info, err := resolveProjectCreateTemplate(ctx, c, req.TemplateName, false)
@@ -384,15 +387,18 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 			return nil, err
 		}
 		var templates []projectDevelopmentTemplateView
-		if selectedTemplate == nil && req.InferDevelopmentTemplate {
+		if selectedTemplate == nil && requireTemplate {
 			var err error
-			templates, err = listDevelopmentTemplateViews(ctx, c)
+			templates, err = listProjectCreationTemplates(ctx, c)
 			if err != nil {
-				// The request explicitly authorized eager provisioning. Do
-				// not silently degrade that contract when the tenant catalog
+				// An app idea requires development provisioning. Do not
+				// silently degrade that contract when the tenant catalog
 				// is unavailable or the caller cannot read it.
 				return nil, err
 			}
+		}
+		if requireTemplate && selectedTemplate == nil && len(templates) == 0 {
+			return nil, newValidationError("No development templates are available in this workspace with a browser preview. Add a template with a preview before creating an app.")
 		}
 		generatePreflight := s.generateProjectCreatePreflight
 		if s.projectCreatePreflight != nil {
@@ -417,12 +423,20 @@ func (s *Server) createProjectFromRequestWithPreflight(ctx context.Context, c *a
 	if req.DisplayName == "" {
 		return nil, newValidationError("displayName is required")
 	}
-	if selectedTemplate == nil && req.InferDevelopmentTemplate && preflight != nil && strings.TrimSpace(preflight.TemplateName) != "" {
+	if selectedTemplate == nil && requireTemplate && preflight != nil && strings.TrimSpace(preflight.TemplateName) != "" {
 		info, err := resolveProjectCreateTemplate(ctx, c, preflight.TemplateName, true)
 		if err != nil {
 			return nil, err
 		}
 		selectedTemplate = info
+	}
+	if requireTemplate {
+		if selectedTemplate == nil {
+			return nil, newValidationError("Project planning did not select a usable development template. Retry or choose a template explicitly to create an app with a runtime and preview.")
+		}
+		if err := validateProjectPreviewTemplate(*selectedTemplate); err != nil {
+			return nil, err
+		}
 	}
 	if err := emitProjectCreationStatus(onStatus, "Preparing project"); err != nil {
 		return nil, err
@@ -575,9 +589,8 @@ func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name 
 		if apierrors.IsNotFound(err) {
 			if inferred {
 				// The model chose from a catalog snapshot that raced deletion.
-				// Fall back unbound so the full assistant can clarify.
-				klog.V(1).Infof("inferred development template %q disappeared before project creation; creating project without a template", name)
-				return nil, nil
+				// Ask for a fresh selection instead of creating an app with no runtime.
+				return nil, newValidationError(fmt.Sprintf("recommended development template %q is no longer available; retry or choose another template", name))
 			}
 			return nil, newValidationError(fmt.Sprintf("development template %q was not found", name))
 		}
@@ -594,12 +607,6 @@ func resolveProjectCreateTemplate(ctx context.Context, c *asclient.Client, name 
 		return nil, newValidationError(err.Error())
 	}
 	if err := validateProjectDevelopmentTemplate(info); err != nil {
-		if inferred {
-			// A malformed or no-longer-development-capable catalog entry is
-			// not safe to provision. Preserve the unbound fallback.
-			klog.V(1).Infof("inferred development template %q is not development-capable; creating project without a template: %v", name, err)
-			return nil, nil
-		}
 		return nil, newValidationError(fmt.Sprintf("development template %q cannot back a development environment: %v", name, err))
 	}
 	return &info, nil
