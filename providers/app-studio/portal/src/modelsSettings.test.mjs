@@ -267,7 +267,6 @@ test('selecting a saved provider clears stale verification and preserves the mod
     const llmDiscoveredModels = ref([{ id: 'original-model' }]);
     const llmDiscoveryComplete = ref(true);
     const llmDiscoveryError = ref(null);
-    const llmDiscoveryStatus = ref('1 model found');
     const isGoogleCloudBaseURL = () => false;
     const normalizeLLMBaseURLInput = (_provider, baseURL) => baseURL;
     ${outputText}
@@ -1039,7 +1038,6 @@ test('renders discovered suggestions while preserving manual model entry', async
   const html = await render({
     editorOpen: true,
     canDiscover: true,
-    discoveryStatus: '3 models found; 1 marked unavailable for chat.',
     discoveredModels: [
       { id: 'gpt-5.6', name: 'gpt-5.6', compatibility: 'recommended' },
       { id: 'custom-chat', name: 'custom-chat', compatibility: 'available' },
@@ -1053,6 +1051,8 @@ test('renders discovered suggestions while preserving manual model entry', async
   const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   assert.match(source, /:models="selectedModelRows"/)
   assert.match(source, /Choose a discovered model or enter its exact ID/)
+  assert.match(await render({ editorOpen: true, discoveryLoading: true }), /Loading models…/)
+  assert.match(await render({ editorOpen: true, discoveryComplete: true, modelHint: '' }), /Choose a discovered model or enter its exact ID./)
 })
 
 test('keeps discovery failure separate from manual model validation', async () => {
@@ -1648,12 +1648,14 @@ test('discovery failures keep credentials in place unless the endpoint is unsupp
   }
 })
 
-async function connectionWatchSource(marker) {
+async function connectionWatchSource(marker, declarations = ['isLLMConnectionSnapshotReady', 'llmConnectionStatusPollIsCurrent', 'pollLLMConnectionStatus']) {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
   const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
   const watcher = ast.statements.find(n => ts.isExpressionStatement(n) && n.getText(ast).startsWith('watch(') && n.getText(ast).includes(marker))
-  const functions = ast.statements.filter(n => ts.isFunctionDeclaration(n) && ['isLLMConnectionSnapshotReady', 'llmConnectionStatusPollIsCurrent', 'pollLLMConnectionStatus'].includes(n.name?.text))
+  const functions = ast.statements.filter(n =>
+    (ts.isFunctionDeclaration(n) && declarations.includes(n.name?.text))
+    || (ts.isVariableStatement(n) && n.declarationList.declarations.some(d => declarations.includes(d.name.getText(ast)))))
   const compile = text => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   return { watcher: compile(watcher.getText(ast)).trim().replace(/;$/, ''), functions: compile(functions.map(n => n.getText(ast)).join('\n')) }
 }
@@ -1683,17 +1685,82 @@ test('identical pending responses reach the poll timeout without restarting', as
   } finally { stop() }
 })
 
-test('discovery survives equivalent list refreshes and clears when configuration changes', async () => {
-  const { watcher } = await connectionWatchSource('return [llmBindingConnectionRef.value')
-  const connections = ref([{ ...savedConnection }]), selected = ref(savedConnection.name)
-  let clears = 0
-  const stop = new Function('watch', 'llmConnections', 'llmBindingConnectionRef', 'clearLLMDiscovery', `return ${watcher}`)(watch, connections, selected, () => { clears += 1 })
+test('discovers missing models when the selected saved key is confirmed', async () => {
+  const { functions, watcher } = await connectionWatchSource('!connection.models?.length', [
+    'llmDiscoveryConnection', 'clearLLMDiscovery', 'discoverLLMModels',
+  ])
+  const pending = { ...savedConnection, observedGeneration: 0, models: [] }
+  const cached = { ...savedConnection, name: 'cached', uid: 'cached-uid', connectionFingerprint: 'cached-fingerprint' }
+  const vertex = { ...savedConnection, name: 'vertex', uid: 'vertex-uid', credentialMode: 'service-account-json', models: [] }
+  const requests = []
+  const state = {
+    props: { ctx: {} }, hasProjectRequestTransport: () => true,
+    isModelEditorPage: ref(true), routePath: ref('create/model'), llmEditorBaseline: ref({}),
+    llmConnections: ref([pending, cached, vertex]), llmBindingConnectionRef: ref(pending.name),
+    llmDiscoverySerial: 0, llmDiscoveryLoading: ref(false), llmDiscoveredModels: ref([]),
+    llmDiscoveryComplete: ref(false), llmDiscoveryError: ref(null),
+    api: {
+      discoverModelProviderConnection: (_ctx, name) => new Promise((resolve, reject) => requests.push({ name, resolve, reject })),
+    },
+  }
+  const { stop, discoverLLMModels } = new Function('state', 'computed', 'watch', `with (state) {
+    ${functions}
+    const stop = ${watcher};
+    return { stop, discoverLLMModels };
+  }`)(state, computed, watch)
   try {
-    for (let i = 0; i < 3; i += 1) { connections.value = [{ ...savedConnection, models: [`observed-${i}`] }]; await nextTick() }
-    assert.equal(clears, 0)
-    connections.value = [{ ...savedConnection, generation: 2 }]; await nextTick(); assert.equal(clears, 1)
-    connections.value = [{ ...savedConnection, generation: 2, secretName: 'rotated-key' }]; await nextTick(); assert.equal(clears, 2)
-    selected.value = 'another-connection'; await nextTick(); assert.equal(clears, 3)
+    state.llmConnections.value = [{ ...pending, resourceVersion: '13' }, cached, vertex]
+    await nextTick()
+    assert.equal(requests.length, 0)
+
+    const confirmed = { ...pending, observedGeneration: pending.generation, activationPending: true }
+    state.llmConnections.value = [confirmed, cached, vertex]
+    await nextTick()
+    assert.deepEqual(requests.map(request => request.name), [confirmed.name])
+    assert.equal(state.llmDiscoveryLoading.value, true)
+    await discoverLLMModels()
+    state.llmConnections.value = [{ ...confirmed, resourceVersion: '14' }, cached, vertex]
+    await nextTick()
+    assert.equal(requests.length, 1)
+
+    state.llmBindingConnectionRef.value = cached.name
+    await nextTick()
+    requests[0].resolve({ models: [{ id: 'stale' }] })
+    await nextTick()
+    assert.equal(requests.length, 1)
+    assert.deepEqual(state.llmDiscoveredModels.value, [])
+    assert.equal(state.llmDiscoveryLoading.value, false)
+
+    state.llmBindingConnectionRef.value = vertex.name
+    await nextTick()
+    assert.equal(requests.length, 1)
+
+    state.llmBindingConnectionRef.value = confirmed.name
+    await nextTick()
+    const model = { id: 'discovered-model' }
+    requests[1].resolve({ models: [model] })
+    await nextTick()
+    assert.deepEqual(state.llmDiscoveredModels.value, [model])
+    assert.equal(state.llmDiscoveryComplete.value, true)
+
+    const refresh = discoverLLMModels()
+    requests[2].reject(new Error('Provider unavailable'))
+    await refresh
+    assert.equal(state.llmDiscoveryError.value, 'Provider unavailable')
+    assert.deepEqual(state.llmDiscoveredModels.value, [model])
+
+    state.llmConnections.value = [{ ...confirmed, connectionFingerprint: 'rotated-key' }, cached, vertex]
+    await nextTick()
+    assert.deepEqual(state.llmDiscoveredModels.value, [])
+    assert.equal(requests.length, 4)
+    requests[3].resolve({ models: [] })
+    await nextTick()
+    assert.equal(state.llmDiscoveryComplete.value, true)
+
+    state.isModelEditorPage.value = false
+    state.llmConnections.value = [{ ...confirmed, connectionFingerprint: 'another-key' }, cached, vertex]
+    await nextTick()
+    assert.equal(requests.length, 4)
   } finally { stop() }
 })
 

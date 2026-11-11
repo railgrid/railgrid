@@ -70,6 +70,7 @@ const props = withDefaults(defineProps<{
   modelError: string
   modelHint: string
   discoveredModels: ProjectLLMDiscoveredModel[]
+  canDiscover?: boolean
   discoveryComplete?: boolean
   discoveryLoading: boolean
   discoveryError: string | null
@@ -814,11 +815,11 @@ function startProviderDetour() {
               <p v-if="modelConnectionOptions.length" class="k-model-form-hint">Need another provider? <button type="button" class="font-medium text-accent underline underline-offset-2" :disabled="saving || testing" @click="startProviderDetour">Connect provider</button></p>
             </section>
             <section class="k-model-form-section" aria-labelledby="binding-model-heading">
-              <div class="k-model-form-row"><h2 id="binding-model-heading" class="k-model-form-heading">Model</h2><button type="button" class="k-btn k-btn--ghost" :disabled="!connectionRef || !selectedConnection?.connectionFingerprint || discoveryLoading || saving" @click="emit('discoverConnection', connectionRef)"><RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />{{ discoveryLoading ? 'Loading…' : 'Refresh models' }}</button></div>
+              <div class="k-model-form-row"><h2 id="binding-model-heading" class="k-model-form-heading">Model</h2><button type="button" class="k-btn k-btn--ghost" :disabled="!canDiscover || discoveryLoading || saving" @click="emit('discoverConnection', connectionRef)"><RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />Refresh models</button></div>
               <label for="model-id" class="k-model-form-field">Model ID
                 <ModelIDSelector :model-value="model" :models="selectedModelRows" :invalid="Boolean(modelError)" :disabled="saving || testing || !connectionRef" :described-by="modelError ? 'model-id-error binding-model-help' : 'binding-model-help'" @update:model-value="emit('update:model', $event)" @select="emit('selectDiscoveredModel', $event)" />
                 <span v-if="modelError" id="model-id-error" class="k-model-form-hint text-danger" role="alert">{{ modelError }}</span>
-                <span id="binding-model-help" class="k-model-form-hint">{{ modelHint }} Choose a discovered model or enter its exact ID.</span>
+                <span id="binding-model-help" class="k-model-form-hint" role="status">{{ discoveryLoading ? 'Loading models…' : modelHint || 'Choose a discovered model or enter its exact ID.' }}</span>
               </label>
               <InlineNotification v-if="discoveryError" tone="warning" :message="`${discoveryError} You can still enter a model ID manually.`" />
               <ReasoningEffortControl variant="settings" :effort="reasoningEffort" :options="reasoningEffortOptions" :validation-error="reasoningEffortError" :disabled="saving || testing" @update:effort="emit('update:reasoningEffort', $event)" />
