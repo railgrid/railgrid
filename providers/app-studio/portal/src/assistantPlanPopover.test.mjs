@@ -29,7 +29,7 @@ test('streams assistant progress inline and keeps the turn summary', async () =>
   assert.match(appSource, /A persisted progress snapshot without an authoritative run status[\s\S]*return 'pending'/)
   assert.match(appSource, /<template v-if="message\.role === \'assistant\' && assistantProgressHeaderVisible\(message\)" #progress>/)
   assert.match(appSource, /function assistantMeasuredWork\(message:[\s\S]*message\.metadata\?\.assistantWorkedDurationMS/)
-  assert.match(appSource, /const activeAssistantWorkDuration = useTurnWorkDuration\(/)
+  assert.match(appSource, /const activeAssistantWorkDuration = useTurnWorkDuration\([\s\S]*?const run = activeAssistantRun[\s\S]*?return \{ id: run\.id, status: assistantTurnProgressStatus\(message\)/)
   assert.match(appSource, /function assistantWorkedLabel\(message:[\s\S]*activeAssistantWorkDuration\.value : assistantMeasuredWork\(message\)/)
   assert.match(appSource, /function projectMessageAssistantStatus\(message:[\s\S]*normalizeAssistantRunStatus\(message\.metadata\?\.assistantStatus\)/)
   assert.match(appSource, /function assistantProgressClosed\(message:[\s\S]*assistantRunTerminal\(assistantRunStatusForMessage\(message\)\)/)

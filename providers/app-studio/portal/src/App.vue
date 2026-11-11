@@ -2328,10 +2328,11 @@ const assistantStopRequested = computed(() => Boolean(assistantStopRequestedRunI
 
 const activeAssistantWorkDuration = useTurnWorkDuration(() => {
   activeAssistantRunRevision.value
-  if (!activeAssistantRun) return undefined
+  const run = activeAssistantRun
+  if (!run) return undefined
+  // Steering can replace the active message while the same run keeps working.
   const message = messages.value.find(assistantMessageOwnsActiveRun)
-  if (!message) return undefined
-  return { id: message.id, status: assistantTurnProgressStatus(message), measuredMs: assistantMeasuredWork(message) }
+  return { id: run.id, status: assistantTurnProgressStatus(message), measuredMs: message && assistantMeasuredWork(message) }
 })
 
 function resetAssistantStopState() {
@@ -10003,12 +10004,10 @@ function assistantMessageOwnsActiveRun(message: ProjectMessageView): boolean {
   )
 }
 
-function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<typeof normalizeAssistantRunStatus> {
-  const activeRun = activeAssistantRun
-  if (assistantMessageOwnsActiveRun(message) && assistantStopRequested.value) return 'stopping'
-  return assistantMessageOwnsActiveRun(message) && activeRun
-    ? normalizeAssistantRunStatus(activeRun.status)
-    : projectMessageAssistantStatus(message)
+function assistantRunStatusForMessage(message: ProjectMessageView | undefined): ReturnType<typeof normalizeAssistantRunStatus> {
+  if (message && !assistantMessageOwnsActiveRun(message)) return projectMessageAssistantStatus(message)
+  if (assistantStopRequested.value) return 'stopping'
+  return normalizeAssistantRunStatus(activeAssistantRun?.status)
 }
 
 function assistantMessageTimestamp(message: ProjectMessageView): string {
@@ -10025,8 +10024,8 @@ function assistantProgressStopping(message: ProjectMessageView): boolean {
 }
 
 /** Map the provider-owned run lifecycle onto AgentKit's neutral progress view. */
-function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgressStatus {
-  if (message.viewStatus === 'interrupted') return 'interrupted'
+function assistantTurnProgressStatus(message: ProjectMessageView | undefined): AITurnProgressStatus {
+  if (message?.viewStatus === 'interrupted') return 'interrupted'
   switch (assistantRunStatusForMessage(message)) {
     case 'pending_permission':
     case 'pending_input':
