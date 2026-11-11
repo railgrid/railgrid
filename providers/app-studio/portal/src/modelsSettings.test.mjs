@@ -839,6 +839,25 @@ test('labels connections awaiting explicit discovery as not verified, not failed
   assert.doesNotMatch(html, /run authorized model discovery/)
 })
 
+test('shows manual model guidance for ready providers that cannot list models', async () => {
+  const guidance = 'Automatic model discovery is unavailable for Vertex service-account credentials; enter a model ID and test it.'
+  const html = await render({
+    routePage: true,
+    connections: [{
+      ...savedConnection,
+      provider: 'google-ai-studio',
+      baseURL: 'https://aiplatform.googleapis.com',
+      credentialMode: 'service-account-json',
+      reachable: undefined,
+      lastProbeError: guidance,
+      conditions: [{ type: 'Reachable', status: 'Unknown', reason: 'DiscoveryUnavailable' }],
+    }],
+  })
+
+  assert.match(html, /data-full-value="Ready"/)
+  assert.ok(html.includes(guidance))
+})
+
 test('offers known provider presets and marks custom endpoints required', async () => {
   const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   assert.match(source, /label: 'OpenAI'/)

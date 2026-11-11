@@ -184,8 +184,9 @@ watch(() => props.connections, connections => {
 })
 const connectionTableRows = computed(() => connectionRows.value.map(connection => {
   const bindingCount = activeConnectionBindings.value(connection.name).length
-  const explicitDiscoveryRequired = connection.conditions?.some(condition => condition.type === 'Reachable'
-    && condition.status === 'Unknown' && condition.reason === 'ExplicitDiscoveryRequired') ?? false
+  const discoveryReason = connection.conditions?.find(condition => condition.type === 'Reachable'
+    && condition.status === 'Unknown')?.reason
+  const explicitDiscoveryRequired = discoveryReason === 'ExplicitDiscoveryRequired'
   const status = connection.activationPending ? 'Changes pending' : connection.ready
     ? 'Ready'
     : connection.secretResolved === false
@@ -206,7 +207,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
     status,
     statusMessage: explicitDiscoveryRequired
       ? 'No provider check has been run yet. Discover models or test a model to verify this connection.'
-      : undefined,
+      : discoveryReason === 'DiscoveryUnavailable' ? connection.lastProbeError : undefined,
     tone,
     connection,
   }
@@ -835,7 +836,7 @@ function startProviderDetour() {
           </template>
           <template #endpoint="{ row }"><span class="break-all font-mono text-[11px]">{{ connectionTableText(row, 'endpoint') }}</span></template>
           <template #bindingCount="{ row }"><span class="text-[12px]">{{ connectionBindingCount(row) }} model{{ connectionBindingCount(row) === 1 ? '' : 's' }}</span></template>
-          <template #status="{ row }"><StatusBadge :status="connectionTableText(row, 'status')" :tone="connectionTableTone(row)" /><p v-if="connectionTableText(row, 'statusMessage')" class="mt-1 max-w-[48ch] text-[11px] leading-4 text-text-muted">{{ connectionTableText(row, 'statusMessage') }}</p></template>
+          <template #status="{ row }"><StatusBadge :status="connectionTableText(row, 'status')" :tone="connectionTableTone(row)" /><p v-if="connectionTableText(row, 'statusMessage')" class="mt-1 max-w-[48ch] whitespace-normal text-[11px] leading-4 text-text-muted">{{ connectionTableText(row, 'statusMessage') }}</p></template>
           <template #actions="{ row }">
             <ResourceTableActionButton :icon="Plus" :label="`Add model using ${row.name}`" :disabled="saving || connectionBusy || modelLimitReached || connectionFromTableRow(row).deleting" @click="addModelFor(connectionFromTableRow(row))" />
             <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionFromTableRow(row).deleting" @click="openConnectionEditor(connectionFromTableRow(row))" />
