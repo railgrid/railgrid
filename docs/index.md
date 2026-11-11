@@ -12,7 +12,7 @@ permalink: /
 An open-source control plane for platform teams.
 {: .fs-6 .fw-300 }
 
-[Get started]({% link getting-started.md %}){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
+[Get started](https://railgrid.ai/docs/get-started/){: .btn .btn-primary .fs-5 .mb-4 .mb-md-0 .mr-2 }
 [View on GitHub](https://github.com/railgrid/railgrid){: .btn .fs-5 .mb-4 .mb-md-0 }
 
 ---
@@ -21,13 +21,18 @@ An open-source control plane for platform teams.
 
 Providers publish Kubernetes-style APIs, versioned actions and MCP tools into isolated tenant workspaces. Users, teams and organizations reach them through one portal, one CLI, one API and one MCP endpoint, and every call is authorized as the caller by the same RBAC. Edges extend the control plane to clusters and servers behind NAT through outbound tunnels.
 
-railgrid is alpha software at v0.1.x. There is no hosted service; you run the hub yourself.
+## Deployment and release status
+
+- **Railgrid Cloud** is the control plane operated by Railgrid. If you have access, sign in to the [hosted console](https://console.railgrid.ai). For availability, pricing, support options, and service commitments, [contact the Railgrid team](https://railgrid.ai/contact/).
+- **Self-hosted Railgrid** runs on your Kubernetes infrastructure. See the [Helm deployment guide]({% link helm.md %}) or try the [local quickstart]({% link getting-started.md %}).
+
+Railgrid is pre-1.0, and `v1alpha1` APIs may change between releases. See [GitHub Releases](https://github.com/railgrid/railgrid/releases) for published versions and [the upgrade guidance](https://railgrid.ai/docs/resources/releases/) before upgrading. For a self-hosted hub, check with its operator about CLI compatibility. Hub and provider versions can differ by deployment.
 
 ## How it works
 
 ![railgrid architecture: hub with workspaces, providers registering with it, and edge agents connecting outward](assets/diagrams/architecture.svg)
 
-1. **Run a hub.** One Helm release runs everything; larger installs can split the control-plane store into shards.
+1. **Connect to a hub.** Use Railgrid Cloud or deploy your own hub with Helm. Larger self-hosted deployments can split the control-plane store into shards.
 2. **Enable providers.** Each provider registers with the hub and serves its APIs, portal and MCP tools inside its own workspace. Tenants enable the ones they want.
 3. **Connect edges.** Install the agent on a cluster or server; it dials out to the hub and becomes reachable for `kubectl`, SSH and AI agents.
 
@@ -55,7 +60,7 @@ railgrid is alpha software at v0.1.x. There is no hosted service; you run the hu
 
 | Guide | Description |
 |:------|:------------|
-| [Getting started]({% link getting-started.md %}) | Run a local hub, connect a cluster, hand a workspace to an AI agent |
+| [Local quickstart]({% link getting-started.md %}) | Run a local hub, connect a cluster, hand a workspace to an AI agent |
 | [Helm deployment]({% link helm.md %}) | Production deployment, including the provider hardening values |
 | [Single hub]({% link install-embedded-kcp.md %}) | One release behind Gateway API, control-plane store included |
 | [Multi-shard]({% link install-external-kcp.md %}) | The control-plane store split into shards for larger installs |

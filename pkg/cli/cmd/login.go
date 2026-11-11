@@ -42,7 +42,7 @@ import (
 )
 
 // hubURLEnv names the environment variable consulted when --hub-url is not
-// given. There is no hosted railgrid hub, so there is no built-in default.
+// given. The CLI requires a hub URL from one of these two sources.
 const hubURLEnv = "RAILGRID_HUB_URL"
 
 func newLoginCommand() *cobra.Command {
