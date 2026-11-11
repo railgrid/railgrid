@@ -327,6 +327,7 @@ watch(contextGeneration, () => {
     </button>
     <header class="k-create-header">
       <h2 class="k-create-title">{{ pageTitle }}</h2>
+      <p class="k-create-description">Manage GitHub repositories from this workspace.</p>
     </header>
 
     <div v-if="loading && !loaded" class="panel k-card" role="status" aria-live="polite">Loading connections…</div>
