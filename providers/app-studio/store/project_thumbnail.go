@@ -226,12 +226,12 @@ func (s *PostgresStore) PutProjectThumbnail(ctx context.Context, scope Scope, th
 	if err := validateProjectThumbnail(scope, thumbnail); err != nil {
 		return err
 	}
-	// Preserve the legacy columns and AAD during rollout. An older replica can
-	// write a commit thumbnail without touching preview_revision; commit_sha
-	// identifies those rows on reads and allows a fresh preview to replace them.
+	// Keep preview rows below real commits in the legacy upsert's ordering so
+	// older replicas can refresh them during a rollout or rollback. Those
+	// writes leave preview_revision intact, and commit_sha identifies them.
 	commitCreatedAt := thumbnail.CommitCreatedAt
 	if thumbnail.PreviewRevision > 0 {
-		commitCreatedAt = thumbnail.CapturedAt
+		commitCreatedAt = time.Unix(0, 0).UTC()
 	}
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO app_studio_project_thumbnails (

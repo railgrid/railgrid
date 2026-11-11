@@ -137,6 +137,27 @@ func TestProjectThumbnailKeepsLegacyImageWhilePreviewRefreshes(t *testing.T) {
 	}
 }
 
+func TestProjectThumbnailCurrentnessRejectsChangedCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	id := identity{orgUUID: "org", workspaceUUID: "ws"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: "uid"}}
+	files := workspace.NewFileStore(t.TempDir())
+	if err := files.RecordPreviewCheckpoint(ctx, projectWorkspaceScope(id, project), workspace.SourceChange{SourceRevision: 8}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		workspaces: files,
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			t.Fatal("capture checked the runtime after the preview checkpoint changed")
+			return nil, nil
+		},
+	}
+	err := s.requireProjectThumbnailCurrentRevision(ctx, &projectThumbnailCaptureRequest{id: id, project: project, sourceRevision: 7})
+	if !errors.Is(err, errProjectAssistantRunSandboxConflict) {
+		t.Fatalf("currentness error = %v, want stale preview checkpoint conflict", err)
+	}
+}
+
 func TestProjectThumbnailCaptureAttachesRequiredProjectLedger(t *testing.T) {
 	proxy := tenanttest.NewServer(t)
 	proxy.Add(asclient.ProjectGVR, tenanttest.ObjectFromYAML(t, `
