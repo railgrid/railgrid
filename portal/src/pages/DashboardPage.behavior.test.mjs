@@ -13,8 +13,20 @@ const code = ts.transpileModule(compiled.content, { compilerOptions: {
   module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022,
 } }).outputText
 const { reactive, ref, h, createRenderer, nextTick } = Vue
+const layoutCode = ts.transpileModule(readFileSync(new URL('../stores/dashboardLayout.ts', import.meta.url), 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText
+const layoutModule = {}
+const layoutDependencies = {
+  pinia: { defineStore: (_, setup) => setup },
+  vue: Vue,
+  '@/auth/session': { authFetch: async () => ({ ok: false }) },
+}
+new Function('require', 'exports', 'setTimeout', 'clearTimeout', layoutCode)(
+  id => layoutDependencies[id], layoutModule, () => 0, () => {},
+)
 
-function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null, deferContent = false, contentWidth = 1280 } = {}) {
+function scenario({ unscoped = false, error = false, dismissed = false, catalog = [], bound = null, deferContent = false, contentWidth = 1280, tileRow = 0 } = {}) {
   let focused
   const previous = { window: globalThis.window, document: globalThis.document, localStorage: globalThis.localStorage, ResizeObserver: globalThis.ResizeObserver }
   const observations = []
@@ -28,7 +40,8 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   let measuredWidth = contentWidth
   globalThis.window = { addEventListener() {}, removeEventListener() {} }
   globalThis.document = { body: {}, get activeElement() { return focused ?? this.body } }
-  globalThis.localStorage = { getItem: () => JSON.stringify(dismissed ? ['ws'] : []), setItem() {} }
+  const savedLayout = bound ? { tiles: [{ i: bound.name, x: 0, y: tileRow, w: 1, h: 2 }] } : null
+  globalThis.localStorage = { getItem: () => savedLayout && JSON.stringify(savedLayout), setItem() {} }
   const tenant = reactive({ orgUUID: 'org', workspaceUUID: unscoped ? null : 'ws' })
   const providers = reactive({ loaded: true, loading: false, catalogOrgUUID: 'org', error: null,
     bindingsOrgUUID: 'org', bindingsWorkspace: 'ws', bindingsLoadState: error ? 'error' : 'ready',
@@ -37,6 +50,13 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
   const loads = []
   const candidates = []
   const syncColumns = []
+  const layoutStore = reactive(layoutModule.useDashboardLayoutStore())
+  const syncLayout = layoutStore.sync
+  layoutStore.sync = (org, ws, names, cols) => {
+    candidates.push(names)
+    syncColumns.push(cols)
+    syncLayout(org, ws, names, cols)
+  }
   providers.load = (org) => {
     loads.push(org)
     providers.loading = true
@@ -63,10 +83,14 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
     '@/lib/firstWelcome': { welcomeIdentity: auth => auth.user?.userId || '', claimFirstWelcome: () => { if (welcomeSeen) return false; welcomeSeen = true; return true } },
     '@/composables/gettingStartedFocus': { useGettingStartedFocus() {} },
     vue: Vue, pinia: { storeToRefs: Vue.toRefs },
-    '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => p }) },
+    '@/composables/useScopedNavigation': { useScopedNavigation: () => ({ scopePath: p => `/${tenant.orgUUID}/${tenant.workspaceUUID}${p}` }) },
     '@/stores/providers': { useProvidersStore: () => providers },
     '@/stores/tenant': { useTenantStore: () => tenant },
-    '@/stores/dashboardLayout': { useDashboardLayoutStore: () => reactive({ layout: bound ? [{ i: bound.name, x: 0, y: 0, w: 1, h: 2 }] : [], addable: [], columns: 3, sync(org, ws, names, cols) { candidates.push(names); syncColumns.push(cols); this.columns = cols } }) },
+    '@/stores/dashboardLayout': { ...layoutModule, useDashboardLayoutStore: () => layoutStore },
+    '@/portalkit/ActionMenu.vue': { default: { props: ['items', 'label', 'disabled'], emits: ['select'],
+      setup: (props, { emit }) => () => h('div', { 'aria-label': props.label }, props.items.map(item =>
+        h('button', { disabled: props.disabled, onClick: () => emit('select', item.id) }, item.label))),
+    } },
     '@/components/AppLayout.vue': { default: appShell },
     '@/lib/gettingStarted': { gettingStartedReadState },
     '@/components/WelcomeWizard.vue': { default: wizard },
@@ -81,13 +105,20 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
     createText: text => ({ type: '#text', text }), createComment: () => ({ type: '#comment' }),
     setText: (n, text) => { n.text = text }, setElementText: (n, text) => { n.text = text },
     patchProp: (n, k, _, v) => { n.props[k] = v },
-    insert(n, p, anchor) { n.parent = p; const i = p.children.indexOf(anchor); if (i < 0) p.children.push(n); else p.children.splice(i, 0, n) },
+    insert(n, p, anchor) {
+      const previousIndex = n.parent?.children.indexOf(n)
+      if (previousIndex >= 0) n.parent.children.splice(previousIndex, 1)
+      n.parent = p
+      const index = p.children.indexOf(anchor)
+      if (index < 0) p.children.push(n)
+      else p.children.splice(index, 0, n)
+    },
     remove(n) { const i = n.parent?.children.indexOf(n); if (i >= 0) n.parent.children.splice(i, 1) },
     parentNode: n => n.parent, nextSibling: n => n.parent?.children[n.parent.children.indexOf(n) + 1],
   })
   const root = { children: [] }
   const app = renderer.createApp(exports.default)
-  app.component('router-link', shell)
+  app.component('router-link', { props: ['to'], setup: (props, { slots }) => () => h('a', { href: props.to }, slots.default?.()) })
   app.mount(root)
   return { root, providers, tenant, loads, candidates, observations, syncColumns, shellVisible,
     remountContent(width) { measuredWidth = width; shellKey.value++ },
@@ -96,7 +127,37 @@ function scenario({ unscoped = false, error = false, dismissed = false, catalog 
 }
 const nodes = n => [n, ...(n.children ?? []).flatMap(nodes)]
 const text = n => (n.text ?? '') + (n.children ?? []).map(text).join('')
-const button = (s, label) => nodes(s.root).find(n => n.type === 'button' && text(n) === label)
+const button = (s, label) => nodes(s.root).find(n => n.type === 'button' && text(n).trim() === label)
+
+test('Add provider follows visual reading order and can be removed and restored in Customize', async () => {
+  const bound = { name: 'agents', displayName: 'Agents', ready: true, serving: { ui: {} } }
+  const s = scenario({ dismissed: true, bound, tileRow: 2 })
+  const shortcut = () => nodes(s.root).find(node => node.type === 'a' && text(node).trim() === 'Add provider')
+  try {
+    await nextTick()
+    const rendered = nodes(s.root)
+    assert.equal(shortcut().props.href, '/org/ws/providers')
+    assert.ok(rendered.indexOf(shortcut()) < rendered.findIndex(node => node.props?.id === 'provider-tile'))
+
+    button(s, 'Customize').props.onClick()
+    await nextTick()
+    assert.equal(shortcut(), undefined)
+    assert.equal(button(s, 'Add provider'), undefined)
+    button(s, 'Remove Add provider tile').props.onClick()
+    await nextTick()
+    assert.equal(button(s, 'Remove Add provider tile'), undefined)
+    button(s, 'Add provider').props.onClick()
+    await nextTick()
+    assert.ok(button(s, 'Remove Add provider tile'))
+    button(s, 'Done').props.onClick()
+    await nextTick()
+    assert.ok(shortcut())
+
+    s.tenant.workspaceUUID = null
+    await nextTick()
+    assert.equal(shortcut(), undefined)
+  } finally { s.cleanup() }
+})
 
 test('content width is observed when the shell mounts late and when its content is replaced', async () => {
   const s = scenario({ dismissed: true, deferContent: true, contentWidth: 640 })

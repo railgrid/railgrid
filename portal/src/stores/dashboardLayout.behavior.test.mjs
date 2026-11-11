@@ -24,7 +24,7 @@ function fixture(saved) {
   new Function('require', 'exports', 'setTimeout', 'clearTimeout', code)(id => modules[id], exports,
     callback => { timers.set(++timer, callback); return timer }, id => timers.delete(id))
   const store = exports.useDashboardLayoutStore()
-  return { store, requests,
+  return { store, requests, firstFreeSlot: exports.firstFreeSlot, catalogTileID: exports.ADD_PROVIDER_TILE_ID,
     saved: () => JSON.parse(storage.get('railgrid-dashboard-layout:ws')),
     flushWrites() { for (const callback of timers.values()) callback(); timers.clear() },
     cleanup() { if (previous === undefined) delete globalThis.localStorage; else globalThis.localStorage = previous },
@@ -33,6 +33,21 @@ function fixture(saved) {
 const tile = (i, w = 3, y = 0) => ({ i, x: 0, y, w, h: 2 })
 const dto = (w = 1) => ({ gridColumns: 0, tiles: [{ name: 'agents', x: 0, y: 0, w, h: 2 }], hidden: [] })
 const answer = async (request, body) => { request.resolve({ ok: true, json: async () => body }); await Promise.resolve(); await Vue.nextTick() }
+
+test('catalog tile takes the first standard-size opening at each grid width', () => {
+  const f = fixture()
+  try {
+    const { firstFreeSlot } = f
+    assert.deepEqual(firstFreeSlot([], 3), { x: 0, y: 0 })
+
+    const top = ['agents', 'code', 'edges'].map((name, x) => ({ ...tile(name, 1), x }))
+    const lower = tile('quickstart', 1, 2)
+    assert.deepEqual(firstFreeSlot(top, 3), { x: 0, y: 2 })
+    assert.deepEqual(firstFreeSlot([...top, lower], 3), { x: 1, y: 2 })
+    assert.deepEqual(firstFreeSlot([top[0], top[2], lower], 3), { x: 1, y: 0 })
+    assert.deepEqual(firstFreeSlot([top[0], lower], 1), { x: 0, y: 4 })
+  } finally { f.cleanup() }
+})
 
 test('saved columns and responsive layout use the same bounded grid width', () => {
   const f = fixture({ cols: 6, tiles: [tile('agents', 6)], hidden: [] })
@@ -47,6 +62,36 @@ test('saved columns and responsive layout use the same bounded grid width', () =
     assert.equal(f.store.columns.value, 6)
     assert.equal(f.store.layout.value[0].w, 6)
     assert.equal(f.saved().tiles[0].w, 6)
+  } finally { f.cleanup() }
+})
+
+test('catalog tile visibility is saved per workspace without saving its position', async () => {
+  const f = fixture()
+  try {
+    const { store, catalogTileID } = f
+    const hasCatalogTile = () => store.layout.value.some(t => t.i === catalogTileID)
+    store.sync('org', 'ws', ['agents'], 3)
+    assert.ok(hasCatalogTile())
+    store.hide(catalogTileID)
+    assert.equal(hasCatalogTile(), false)
+    assert.deepEqual(store.addable.value, [catalogTileID])
+    assert.deepEqual(f.saved().hidden, [catalogTileID])
+    f.flushWrites()
+    assert.deepEqual(JSON.parse(f.requests.at(-1).options.body).hidden, [catalogTileID])
+    await answer(f.requests.at(-1), {})
+
+    store.sync('org', 'other', ['agents'], 3)
+    assert.ok(hasCatalogTile())
+    store.sync('org', 'ws', ['agents'], 3)
+    assert.equal(hasCatalogTile(), false)
+    await answer(f.requests.at(-1), { tiles: [], hidden: [] })
+    assert.equal(hasCatalogTile(), false, 'an empty hub response keeps cached visibility preferences')
+
+    store.unhide(catalogTileID)
+    assert.ok(hasCatalogTile())
+    assert.deepEqual(store.addable.value, [])
+    store.persist()
+    assert.deepEqual(f.saved().tiles.map(t => t.i), ['agents'])
   } finally { f.cleanup() }
 })
 
