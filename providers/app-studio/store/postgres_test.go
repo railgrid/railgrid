@@ -759,6 +759,12 @@ func TestPostgresStorePointLookupsExternalDSN(t *testing.T) {
 		t.Fatalf("OpenPostgres: %v", err)
 	}
 	defer func() { _ = s.Close() }()
+	t.Run("thumbnail revision ordering", func(t *testing.T) {
+		testProjectThumbnailOrdersPreviewRevisionsAcrossLegacyRows(t, s)
+	})
+	t.Run("thumbnail rollback compatibility", func(t *testing.T) {
+		testPostgresProjectThumbnailRollback(t, s)
+	})
 	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-a"}
 	otherScope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "demo", ProjectUID: "project-b"}
 	now := time.Now().UTC()

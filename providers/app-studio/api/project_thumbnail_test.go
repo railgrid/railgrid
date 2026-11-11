@@ -40,7 +40,7 @@ import (
 	"github.com/railgrid/provider-app-studio/workspace"
 )
 
-func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
+func TestProjectViewWithThumbnailCapturesSynchronizedPreviewWithoutGit(t *testing.T) {
 	imageData := testProjectThumbnailPNG(t, 1280, 720)
 	inspector := &fakeProjectAssistantPreviewInspector{result: projectAssistantPreviewInspectionResult{
 		Status: "succeeded",
@@ -54,6 +54,7 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 	s := &Server{
 		tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders,
 		store:                   memory,
+		workspaces:              workspace.NewFileStore(t.TempDir()),
 		previewInspector:        inspector,
 		projectThumbnailContext: thumbnailContext,
 		projectThumbnailCurrentness: func(context.Context, identity, *aiv1alpha1.Project, uint64) error {
@@ -65,11 +66,26 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 	}
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid")}}
 	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
-	now := time.Now().UTC()
-	view := ProjectView{SourceRevision: 7, Repository: &ProjectRepositoryView{Commits: []ProjectRepositoryCommitView{
-		{Name: "commit-newest", Phase: "Succeeded", CommitSHA: "newest", CreatedAt: now},
-		{Name: "commit-older", Phase: "Succeeded", CommitSHA: "older", CreatedAt: now.Add(-time.Hour)},
-	}}}
+	ctx := context.Background()
+	workspaceScope := projectWorkspaceScope(id, project)
+	if _, err := s.workspaces.WriteFile(ctx, workspaceScope, workspace.WriteOptions{Path: "app.txt", Content: "synchronized"}); err != nil {
+		t.Fatal(err)
+	}
+	syncedRevision, err := s.workspaces.SourceRevision(ctx, workspaceScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := workspace.SourceChange{SourceRevision: syncedRevision}
+	if err := s.workspaces.RecordPreviewCheckpoint(ctx, workspaceScope, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.workspaces.WriteFile(ctx, workspaceScope, workspace.WriteOptions{Path: "app.txt", Content: "newer unsynchronized edit"}); err != nil {
+		t.Fatal(err)
+	}
+	view := s.projectViewWithSourceRevision(ctx, nil, project, id)
+	if view.SourceRevision <= syncedRevision {
+		t.Fatalf("workspace revision = %d, want newer than synchronized revision %d", view.SourceRevision, syncedRevision)
+	}
 	view = s.projectViewWithThumbnail(context.Background(), view, id, project)
 	if view.Thumbnail == nil || !view.Thumbnail.Refreshing || view.Thumbnail.Available {
 		t.Fatalf("initial thumbnail view = %#v", view.Thumbnail)
@@ -80,11 +96,11 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 		thumbnail, err := memory.GetProjectThumbnail(context.Background(), scope)
 		if err == nil {
 			config, err := png.DecodeConfig(bytes.NewReader(thumbnail.Data))
-			if err != nil || thumbnail.CommitSHA != "newest" || thumbnail.CommitOrder != "commit-newest" || thumbnail.Variant != projectThumbnailVariant || config.Width != 640 || config.Height != 360 {
+			if err != nil || thumbnail.PreviewRevision != syncedRevision || thumbnail.CommitSHA != "" || thumbnail.Variant != projectThumbnailVariant || config.Width != 640 || config.Height != 360 {
 				t.Fatalf("thumbnail = %#v", thumbnail)
 			}
 			ready := s.projectViewWithThumbnail(context.Background(), view, id, project).Thumbnail
-			if ready == nil || !ready.Available || ready.Refreshing || ready.CommitSHA != "newest" {
+			if ready == nil || !ready.Available || ready.Refreshing || ready.PreviewRevision != syncedRevision {
 				t.Fatalf("ready thumbnail view = %#v", ready)
 			}
 			return
@@ -92,6 +108,54 @@ func TestProjectViewWithThumbnailCapturesLatestSuccessfulCommit(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("thumbnail capture did not finish")
+}
+
+func TestProjectThumbnailKeepsLegacyImageWhilePreviewRefreshes(t *testing.T) {
+	ctx := context.Background()
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: "uid"}}
+	memory := store.NewMemoryStore()
+	now := time.Now().UTC()
+	if err := memory.PutProjectThumbnail(ctx, projectMessageScope(id.orgUUID, id.workspaceUUID, project), store.ProjectThumbnail{
+		CommitSHA: "commit", CommitOrder: "commit-name", CommitCreatedAt: now,
+		Variant: projectThumbnailVariant, ContentType: "image/png", SHA256: "old-image",
+		Data: []byte("png"), CapturedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		store: memory, projectThumbnailQueue: make(chan string, 1), projectThumbnailWorkersUp: true,
+	}
+	view := s.projectViewWithThumbnail(ctx, ProjectView{}, id, project)
+	if view.Thumbnail == nil || !view.Thumbnail.Available || view.Thumbnail.Refreshing {
+		t.Fatalf("thumbnail before first preview checkpoint = %#v", view.Thumbnail)
+	}
+	view.LastPreviewCheckpoint = &workspace.SourceChange{SourceRevision: 7}
+	view = s.projectViewWithThumbnail(ctx, view, id, project)
+	if view.Thumbnail == nil || !view.Thumbnail.Available || !view.Thumbnail.Refreshing || view.Thumbnail.Revision != "old-image" {
+		t.Fatalf("thumbnail during preview refresh = %#v", view.Thumbnail)
+	}
+}
+
+func TestProjectThumbnailCurrentnessRejectsChangedCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	id := identity{orgUUID: "org", workspaceUUID: "ws"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: "uid"}}
+	files := workspace.NewFileStore(t.TempDir())
+	if err := files.RecordPreviewCheckpoint(ctx, projectWorkspaceScope(id, project), workspace.SourceChange{SourceRevision: 8}); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{
+		workspaces: files,
+		projectClientFor: func(identity) (*asclient.Client, error) {
+			t.Fatal("capture checked the runtime after the preview checkpoint changed")
+			return nil, nil
+		},
+	}
+	err := s.requireProjectThumbnailCurrentRevision(ctx, &projectThumbnailCaptureRequest{id: id, project: project, sourceRevision: 7})
+	if !errors.Is(err, errProjectAssistantRunSandboxConflict) {
+		t.Fatalf("currentness error = %v, want stale preview checkpoint conflict", err)
+	}
 }
 
 func TestProjectThumbnailCaptureAttachesRequiredProjectLedger(t *testing.T) {
@@ -106,6 +170,8 @@ spec: {}
 status:
   workspace:
     sourceRevision: 7
+    lastPreviewCheckpoint:
+      sourceRevision: 7
 `))
 
 	files := workspace.NewFileStore(t.TempDir())
@@ -125,8 +191,7 @@ status:
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid-app")}}
 	id := identity{clusterID: "cluster-a", orgUUID: "org-a", workspaceUUID: "workspace-a"}
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: time.Now().UTC(),
-		commitOrder: "commit-name", sourceRevision: 7,
+		id: id, project: project, sourceRevision: 7,
 	}
 
 	// With the production-style required ledger, the detached worker must read
@@ -142,7 +207,7 @@ status:
 	}
 	projectReads := proxy.RequestsFor("GET", asclient.ProjectGVR)
 	if len(projectReads) == 0 {
-		t.Fatal("capture worker did not attach the Project ledger before reading workspace revision")
+		t.Fatal("capture worker did not attach the Project ledger before reading the preview checkpoint")
 	}
 }
 
@@ -158,27 +223,13 @@ func TestProjectThumbnailFailureSummaryDoesNotExposeUnderlyingError(t *testing.T
 	}
 }
 
-func TestLatestSuccessfulProjectCommitSkipsIncompleteHistory(t *testing.T) {
-	now := time.Now().UTC()
-	got := latestSuccessfulProjectCommit(&ProjectRepositoryView{Commits: []ProjectRepositoryCommitView{
-		{Name: "running", Phase: "Running", CommitSHA: "newest", CreatedAt: now.Add(time.Hour)},
-		{Name: "missing-sha", Phase: "Succeeded", CreatedAt: now.Add(time.Minute)},
-		{Name: "commit-a", Phase: "Succeeded", CommitSHA: "older", CreatedAt: now},
-		{Name: "commit-z", Phase: "Succeeded", CommitSHA: "current", CreatedAt: now},
-	}})
-	if got.SHA != "current" || got.Order != "commit-z" || !got.CreatedAt.Equal(now) {
-		t.Fatalf("latest successful commit = %#v", got)
-	}
-}
-
 func TestProjectThumbnailCooldownIsScopedToFailedCapture(t *testing.T) {
 	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: types.UID("uid")}}
 	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
 	key := projectThumbnailCaptureKey(id, project)
 	now := time.Now().UTC()
 	failed := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "old-sha", commitCreatedAt: now,
-		commitOrder: "old-commit", sourceRevision: 7,
+		id: id, project: project, sourceRevision: 7,
 	}
 	s := &Server{
 		projectThumbnailFailures: map[string]projectThumbnailFailure{
@@ -188,9 +239,7 @@ func TestProjectThumbnailCooldownIsScopedToFailedCapture(t *testing.T) {
 		projectThumbnailWorkersUp: true,
 	}
 
-	if !s.scheduleProjectThumbnailCapture(id, project, projectThumbnailCommit{
-		SHA: failed.commitSHA, CreatedAt: failed.commitCreatedAt, Order: failed.commitOrder,
-	}, failed.sourceRevision) {
+	if !s.scheduleProjectThumbnailCapture(id, project, failed.sourceRevision) {
 		t.Fatal("failed capture cooldown should continue reporting refreshing")
 	}
 	if len(s.projectThumbnailQueue) != 0 {
@@ -200,12 +249,11 @@ func TestProjectThumbnailCooldownIsScopedToFailedCapture(t *testing.T) {
 		t.Fatal("cooling-down capture should not be marked queued")
 	}
 
-	newer := projectThumbnailCommit{SHA: "new-sha", CreatedAt: now.Add(time.Second), Order: "new-commit"}
-	if !s.scheduleProjectThumbnailCapture(id, project, newer, failed.sourceRevision+1) {
-		t.Fatal("newer commit should bypass the failed capture cooldown")
+	if !s.scheduleProjectThumbnailCapture(id, project, failed.sourceRevision+1) {
+		t.Fatal("newer preview revision should bypass the failed capture cooldown")
 	}
-	if got := s.projectThumbnailCaptures[key]; got == nil || got.commitSHA != newer.SHA || got.sourceRevision != failed.sourceRevision+1 {
-		t.Fatalf("scheduled capture = %#v, want newer commit and source revision", got)
+	if got := s.projectThumbnailCaptures[key]; got == nil || got.sourceRevision != failed.sourceRevision+1 {
+		t.Fatalf("scheduled capture = %#v, want newer preview revision", got)
 	}
 	if len(s.projectThumbnailQueue) != 1 {
 		t.Fatalf("queued captures = %d, want 1", len(s.projectThumbnailQueue))
@@ -221,8 +269,7 @@ func TestProjectThumbnailCooldownExpirySchedulesRetry(t *testing.T) {
 	key := projectThumbnailCaptureKey(id, project)
 	now := time.Now().UTC()
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: now,
-		commitOrder: "commit-name", sourceRevision: 7,
+		id: id, project: project, sourceRevision: 7,
 	}
 	s := &Server{
 		projectThumbnailFailures: map[string]projectThumbnailFailure{
@@ -232,9 +279,7 @@ func TestProjectThumbnailCooldownExpirySchedulesRetry(t *testing.T) {
 		projectThumbnailWorkersUp: true,
 	}
 
-	if !s.scheduleProjectThumbnailCapture(id, project, projectThumbnailCommit{
-		SHA: request.commitSHA, CreatedAt: request.commitCreatedAt, Order: request.commitOrder,
-	}, request.sourceRevision) {
+	if !s.scheduleProjectThumbnailCapture(id, project, request.sourceRevision) {
 		t.Fatal("expired capture cooldown should schedule a retry")
 	}
 	if got := s.projectThumbnailCaptures[key]; got == nil || !projectThumbnailRequestMatches(got, request) {
@@ -256,12 +301,10 @@ func TestStopAssistantForDeletedProjectForgetsOnlyMatchingThumbnailState(t *test
 	replacementKey := projectThumbnailCaptureKey(id, replacement)
 	now := time.Now().UTC()
 	deletedRequest := &projectThumbnailCaptureRequest{
-		id: id, project: deleted, commitSHA: "old-sha", commitCreatedAt: now,
-		commitOrder: "old-commit", sourceRevision: 1,
+		id: id, project: deleted, sourceRevision: 1,
 	}
 	replacementRequest := &projectThumbnailCaptureRequest{
-		id: id, project: replacement, commitSHA: "new-sha", commitCreatedAt: now,
-		commitOrder: "new-commit", sourceRevision: 2,
+		id: id, project: replacement, sourceRevision: 2,
 	}
 	s := &Server{
 		store: store.NewMemoryStore(),
@@ -300,8 +343,7 @@ func TestDeletedProjectThumbnailCaptureDoesNotRestoreFailureCooldown(t *testing.
 	key := projectThumbnailCaptureKey(id, project)
 	now := time.Now().UTC()
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "commit-sha", commitCreatedAt: now,
-		commitOrder: "commit-name", sourceRevision: 7,
+		id: id, project: project, sourceRevision: 7,
 	}
 	currentnessStarted := make(chan struct{})
 	allowFailure := make(chan struct{})
@@ -398,7 +440,7 @@ func TestCaptureProjectThumbnailRespectsForeignReplicaClaim(t *testing.T) {
 	inspector := &fakeProjectAssistantPreviewInspector{}
 	s := &Server{tenantWorkspaces: defaultTestWorkspaces.lookup, tenantActors: defaultTestActors.lookup, tenantProviders: defaultTestProviders, store: memory, previewInspector: inspector}
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "commit", commitCreatedAt: time.Now().UTC(), commitOrder: "commit-name",
+		id: id, project: project,
 	}
 	err := s.captureProjectThumbnail(context.Background(), projectThumbnailCaptureKey(id, project), request)
 	if !errors.Is(err, errProjectThumbnailClaimHeld) {
@@ -406,6 +448,35 @@ func TestCaptureProjectThumbnailRespectsForeignReplicaClaim(t *testing.T) {
 	}
 	if inspector.calls != 0 {
 		t.Fatalf("foreign claim still invoked inspector %d times", inspector.calls)
+	}
+}
+
+func TestCaptureProjectThumbnailRechecksStoredRevisionAfterClaim(t *testing.T) {
+	ctx := context.Background()
+	memory := store.NewMemoryStore()
+	id := identity{orgUUID: "org", workspaceUUID: "workspace"}
+	project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: "app", UID: "uid"}}
+	scope := projectMessageScope(id.orgUUID, id.workspaceUUID, project)
+	s := &Server{
+		store:                 memory,
+		projectThumbnailQueue: make(chan string, 1), projectThumbnailWorkersUp: true,
+		projectThumbnailCurrentness: func(context.Context, identity, *aiv1alpha1.Project, uint64) error {
+			t.Fatal("capture checked the runtime after another replica stored the queued revision")
+			return nil
+		},
+	}
+	if !s.scheduleProjectThumbnailCapture(id, project, 7) {
+		t.Fatal("expected thumbnail capture to be queued")
+	}
+	if err := memory.PutProjectThumbnail(ctx, scope, store.ProjectThumbnail{
+		PreviewRevision: 7, Variant: projectThumbnailVariant, ContentType: "image/png",
+		SHA256: "image", Data: []byte("png"), CapturedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	key := <-s.projectThumbnailQueue
+	if err := s.captureProjectThumbnail(ctx, key, s.projectThumbnailCaptures[key]); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -466,12 +537,9 @@ func TestProjectThumbnailCaptureUsesBoundedWorkerPool(t *testing.T) {
 			return "https://preview.example/", nil
 		},
 	}
-	now := time.Now().UTC()
 	for index := 0; index < 4; index++ {
 		project := &aiv1alpha1.Project{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("app-%d", index), UID: types.UID(fmt.Sprintf("uid-%d", index))}}
-		if !s.scheduleProjectThumbnailCapture(identity{orgUUID: "org", workspaceUUID: "workspace"}, project, projectThumbnailCommit{
-			SHA: fmt.Sprintf("sha-%d", index), CreatedAt: now.Add(time.Duration(index) * time.Second), Order: fmt.Sprintf("commit-%d", index),
-		}, uint64(index+1)) {
+		if !s.scheduleProjectThumbnailCapture(identity{orgUUID: "org", workspaceUUID: "workspace"}, project, uint64(index+1)) {
 			t.Fatalf("capture %d was not scheduled", index)
 		}
 	}
@@ -525,7 +593,7 @@ func TestCaptureProjectThumbnailRejectsScreenshotWhenRuntimeRevisionTurnsStale(t
 		},
 	}
 	request := &projectThumbnailCaptureRequest{
-		id: id, project: project, commitSHA: "commit", commitCreatedAt: time.Now().UTC(), commitOrder: "commit-name", sourceRevision: 7,
+		id: id, project: project, sourceRevision: 7,
 	}
 	key := projectThumbnailCaptureKey(id, project)
 	s.projectThumbnailCaptures = map[string]*projectThumbnailCaptureRequest{key: request}

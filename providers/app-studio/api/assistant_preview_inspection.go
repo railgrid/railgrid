@@ -216,6 +216,10 @@ func (s *Server) inspectProjectDevelopmentPreview(ctx context.Context, req proje
 }
 
 func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req projectAssistantToolCallRequest, includeScreenshot bool) (projectAssistantPreviewInspectionResult, error) {
+	return s.inspectProjectDevelopmentPreviewResultWithFence(ctx, req, includeScreenshot, nil)
+}
+
+func (s *Server) inspectProjectDevelopmentPreviewResultWithFence(ctx context.Context, req projectAssistantToolCallRequest, includeScreenshot bool, sourceFence *projectAssistantPreviewSourceFence) (projectAssistantPreviewInspectionResult, error) {
 	if s == nil {
 		return projectAssistantPreviewInspectionResult{}, errors.New("server is not configured")
 	}
@@ -237,7 +241,6 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 		}
 		browserRef = ref
 	}
-	var sourceFence *projectAssistantPreviewSourceFence
 	if req.RunState != nil {
 		checkpointed, checkpointErr := s.checkpointProjectAssistantRunSandboxIfDirty(ctx, req.RunState)
 		if checkpointErr != nil {
@@ -271,7 +274,7 @@ func (s *Server) inspectProjectDevelopmentPreviewResult(ctx context.Context, req
 			}
 		}
 	}
-	if req.RunState == nil {
+	if req.RunState == nil && sourceFence == nil {
 		var err error
 		sourceFence, err = s.captureProjectAssistantPreviewSourceFence(ctx, nil, projectAssistantPreviewWorkspaceScope(req))
 		if err != nil {

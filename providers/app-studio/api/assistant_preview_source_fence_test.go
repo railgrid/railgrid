@@ -115,6 +115,41 @@ func newSourceFencePreviewFixture(t *testing.T) (*Server, projectAssistantToolCa
 	return server, projectAssistantToolCallRequest{Identity: id, Project: project, WorkspaceScope: scope, RunState: state}, inspector, mutate
 }
 
+func TestPreviewCheckpointOnlyFenceIgnoresUnsyncedEditsButRejectsCheckpointMove(t *testing.T) {
+	ctx := context.Background()
+	files := workspace.NewFileStore(t.TempDir())
+	scope := workspace.Scope{OrgUUID: "org", WorkspaceUUID: "ws", ProjectName: "shop", ProjectUID: "project-uid"}
+	revision, err := files.SourceRevision(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := files.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: revision}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.WriteFile(ctx, scope, workspace.WriteOptions{Path: "main.go", Content: "unsynchronized edit"}); err != nil {
+		t.Fatal(err)
+	}
+	newRevision, err := files.SourceRevision(ctx, scope)
+	if err != nil || newRevision <= revision {
+		t.Fatalf("workspace revision = %d, %v, want a revision greater than %d", newRevision, err, revision)
+	}
+	fence := &projectAssistantPreviewSourceFence{
+		server: &Server{workspaces: files}, scope: scope, revision: revision,
+		requiresSharedPreviewCheckpoint: true, previewCheckpointOnly: true,
+	}
+	if err := fence.validate(ctx); err != nil {
+		t.Fatalf("fence rejected the synchronized preview with unsynced edits: %v", err)
+	}
+	if err := files.RecordPreviewCheckpoint(ctx, scope, workspace.SourceChange{SourceRevision: newRevision}); err != nil {
+		t.Fatal(err)
+	}
+	err = fence.validate(ctx)
+	var stale *projectAssistantSharedPreviewSourceStaleError
+	if !errors.As(err, &stale) || stale.workspaceRevision != revision || stale.previewRevision != newRevision {
+		t.Fatalf("fence error after checkpoint moved = %v, want stale revision %d with checkpoint %d", err, revision, newRevision)
+	}
+}
+
 func TestPreviewInspectionRejectsSourceChangesDuringVerification(t *testing.T) {
 	for _, phase := range []string{"sync", "resolve", "inspect", "private-inspect", "unchanged"} {
 		t.Run(phase, func(t *testing.T) {

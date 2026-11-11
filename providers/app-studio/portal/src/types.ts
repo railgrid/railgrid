@@ -441,6 +441,7 @@ export interface Project {
     available: boolean
     refreshing?: boolean
     commitSHA?: string
+    previewRevision?: number
     revision?: string
   }
 }

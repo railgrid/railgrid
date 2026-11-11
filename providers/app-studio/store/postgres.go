@@ -237,6 +237,10 @@ func (s *PostgresStore) EnsureSchema(ctx context.Context) error {
 	if err := ensureSchemaVersion(ctx, tx, projectThumbnailVariantSchemaVersion, projectThumbnailVariantSchemaStatements()...); err != nil {
 		return err
 	}
+	if err := ensureSchemaVersion(ctx, tx, "project-thumbnail-preview-revision-v5",
+		`ALTER TABLE app_studio_project_thumbnails ADD COLUMN IF NOT EXISTS preview_revision bigint NOT NULL DEFAULT 0`); err != nil {
+		return err
+	}
 	if err := ensureSchemaVersion(ctx, tx, replicaClaimSchemaVersion, replicaClaimSchemaStatements()...); err != nil {
 		return err
 	}
