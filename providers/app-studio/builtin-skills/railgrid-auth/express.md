@@ -10,13 +10,14 @@ Install the exact server dependency in the app's server `package.json`:
 }
 ```
 
-For the `application` template, edit `api/package.json` and let App Studio sync
-the change. The API component's dependency reload runs the install when the
-manifest changes, and the production build uses the same manifest. A separate
-registry lookup or install command is unnecessary for the normal setup.
-If a command shows `Unverified` with no output, use the API component's install
-and startup logs to determine whether dependency setup failed. If the logs
-show a registry or install error, report that error and keep the pinned SDK.
+For the `application` template, edit `api/package.json`. Once App Studio syncs
+the change, the API component installs dependencies and reloads the process
+automatically. A separate registry lookup or install command is unnecessary.
+A separate `restart_runtime` is unnecessary for this manifest change. Run
+`verify_development_runtime` to check sync and process health. If
+verification reports a blocker, use the API component's install and startup
+logs to diagnose it. Report any registry or install error and keep the pinned
+SDK. The production build uses the same manifest.
 
 ```js
 import express from 'express';
