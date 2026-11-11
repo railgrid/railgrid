@@ -157,7 +157,7 @@ export function parseAssistantExecDisclosure(value: unknown): ProjectAssistantEx
   if (outputTruncated !== undefined && typeof outputTruncated !== 'boolean') return undefined
 
   const detail = value.detail === undefined ? undefined : value.detail
-  if (detail !== undefined && !boundedString(detail, 240, true)) return undefined
+  if (detail !== undefined && !boundedCodePointString(detail, 240, true)) return undefined
   const detailURL = value.detailURL === undefined ? undefined : parseDetailURL(value.detailURL)
   if (value.detailURL !== undefined && !detailURL) return undefined
 

@@ -72,6 +72,25 @@ const savedConnection = {
   models: ['gpt-5.4'],
 }
 
+test('onboarding renders provider setup first, then the saved connection and model picker', async () => {
+  const fresh = await render({ onboarding: true, editorOpen: true, model: '' })
+  assert.match(fresh, /Connect a provider/)
+  assert.match(fresh, /Save provider and continue/)
+  assert.doesNotMatch(fresh, /Choose a model/)
+
+  const model = await render({
+    onboarding: true,
+    editorOpen: true,
+    connections: [{ ...savedConnection, models: [{ id: 'gpt-5.4', name: 'gpt-5.4', compatibility: 'recommended' }] }],
+    connectionRef: savedConnection.name,
+  })
+  assert.match(model, /OpenAI main/)
+  assert.match(model, /Provider <strong[^>]*>OpenAI main<\/strong>/)
+  assert.match(model, /Choose a model/)
+  assert.match(model, /Save model and continue/)
+  assert.doesNotMatch(model, /Paste your API key/)
+})
+
 test('retains initial and stale model errors with one disabled busy retry action', async () => {
   for (const settings of [null, {
     provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4',
@@ -140,6 +159,24 @@ test('a pending model retry keeps its previous error until the read succeeds', a
 
 const pendingModel = { id: 'new-model', configured: false }
 const readyModel = { id: 'ready-model', configured: true }
+
+test('first-run setup waits for the saved model to become usable before continuing', async () => {
+  const { createState } = await modelSettingsLoader()
+  const state = createState()
+  const pending = state.loadLLMSettings(true)
+  state.reads.shift().resolve({ models: [pendingModel] })
+  await nextTick()
+
+  assert.equal(state.llmSettingsLoading.value, true)
+  assert.equal(state.timers.length, 1)
+  state.timers.shift()()
+  await nextTick()
+  state.reads.shift().resolve({ models: [{ ...pendingModel, configured: true }] })
+  await pending
+
+  assert.equal(state.llmSettingsLoading.value, false)
+  assert.equal(state.llmSettings.value.models[0].configured, true)
+})
 
 for (const existingModels of [[], [readyModel]]) {
   test(`project model settings retry a saved binding with ${existingModels.length} other ready models`, async () => {
@@ -675,6 +712,7 @@ test('provider detours preserve the original Models or project route and the mod
       CREATE_MODEL_ROUTE: 'create/model',
       modelsReturnRoute: ref(returnRoute),
       llmProviderDetourActive: ref(false),
+      createModelSetup: ref(false),
       llmProviderDetourReturnRoute: ref(''),
       isCreateRoute: ref(createRoute),
       isCreateModelRoute: ref(createModelRoute),
@@ -1091,14 +1129,15 @@ test('renders discovered suggestions while preserving manual model entry', async
   assert.match(await render({ editorOpen: true, discoveryComplete: true, modelHint: '' }), /Choose a discovered model or enter its exact ID./)
 })
 
-test('keeps discovery failure separate from manual model validation', async () => {
+test('shows discovery failure inside the model picker and keeps manual model entry available', async () => {
+  const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   const html = await render({
     editorOpen: true,
     discoveryError: 'Provider model discovery returned 401 Unauthorized.',
   })
 
-  assert.match(html, /Provider model discovery returned 401 Unauthorized/)
-  assert.match(html, /You can still enter a model ID manually/)
+  assert.match(source, /<template #status>[^]*?v-if="discoveryError"[^]*?You can still enter a model ID manually/)
+  assert.doesNotMatch(html, /Provider model discovery returned 401 Unauthorized/)
   assert.match(html, /id="model-id"/)
 })
 
@@ -1318,7 +1357,7 @@ test('App Studio owns save state while the extracted surface owns presentation',
   assert.match(app, /const isCreateModelRoute = computed\(\(\) => routePath\.value === CREATE_MODEL_ROUTE\)/)
   assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && !isModelUsageRoute\.value && !llmProviderDetourActive\.value && llmEditorOpen\.value\)\)/)
   assert.match(app, /const routePath = computed\(\(\) => \(props\.ctx\?\.subPath \?\? ''\)\.split\('\/'\)\.filter\(Boolean\)\.join\('\/'\)\)/)
-  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
+  assert.match(app, /v-if="createModelSetup \|\| showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
   assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
   assert.match(app, /<ModelsSettings[\s\S]*@save="verifyAndSaveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
   assert.doesNotMatch(app, /llmApiKey|selectLLMProvider|updateLLMBaseURL|updateLLMAPIKey/)
@@ -1369,7 +1408,7 @@ test('composer exposes the configured model and reasoning picker and sends stabl
 test('guards delayed model mutations against context, route, and newer mutation generations', async () => {
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const mutationStart = app.indexOf('async function saveLLMSettings')
-  const mutationEnd = app.indexOf('async function createProjectFromPrompt', mutationStart)
+  const mutationEnd = app.indexOf('function createProjectFromPrompt', mutationStart)
   assert.ok(mutationStart >= 0 && mutationEnd > mutationStart)
   const mutations = app.slice(mutationStart, mutationEnd)
 
@@ -1731,7 +1770,8 @@ test('discovers missing models when the selected saved key is confirmed', async 
   const requests = []
   const state = {
     props: { ctx: {} }, hasProjectRequestTransport: () => true,
-    isModelEditorPage: ref(true), routePath: ref('create/model'), llmEditorBaseline: ref({}),
+    isModelEditorPage: ref(true), createModelSetup: ref(false), routePath: ref('create/model'), llmEditorBaseline: ref({}),
+    appContextFingerprint: () => 'test-workspace',
     llmConnections: ref([pending, cached, vertex]), llmBindingConnectionRef: ref(pending.name),
     llmDiscoverySerial: 0, llmDiscoveryLoading: ref(false), llmDiscoveredModels: ref([]),
     llmDiscoveryComplete: ref(false), llmDiscoveryError: ref(null),
@@ -1797,6 +1837,13 @@ test('discovers missing models when the selected saved key is confirmed', async 
     state.llmConnections.value = [{ ...confirmed, connectionFingerprint: 'another-key' }, cached, vertex]
     await nextTick()
     assert.equal(requests.length, 4)
+
+    state.createModelSetup.value = true
+    await nextTick()
+    assert.deepEqual(requests.map(request => request.name), Array(5).fill(confirmed.name))
+    requests[4].resolve({ models: [model] })
+    await nextTick()
+    assert.deepEqual(state.llmDiscoveredModels.value, [model])
   } finally { stop() }
 })
 

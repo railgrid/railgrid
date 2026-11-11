@@ -29,6 +29,10 @@ The guide explains the value, offers the immediate primary action, and shows
 the shortest meaningful resource journey. The supported implementations are
 `FirstRunGuide.vue` and matching vanilla `k-first-run*` semantic markup.
 
+Step descriptions are optional when the labels explain the journey. The embedded
+variant renders just the progress list within an existing creation card, below
+the current task heading.
+
 ## Behavior
 
 Missing prerequisites change the current step and action. The guide continues

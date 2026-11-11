@@ -151,6 +151,7 @@ type projectAssistantExecMetadata struct {
 	WritebackPolicy  string   `json:"writebackPolicy,omitempty"`
 	Status           string   `json:"status,omitempty"`
 	Summary          string   `json:"summary,omitempty"`
+	Detail           string   `json:"detail,omitempty"`
 	ExitCode         *int     `json:"exitCode,omitempty"`
 	DurationMS       int64    `json:"durationMs,omitempty"`
 	Stdout           []string `json:"stdout,omitempty"`
@@ -373,6 +374,7 @@ func cloneProjectAssistantExecMetadata(src *projectAssistantExecMetadata) *proje
 	out.Stdout, stdoutTruncated = projectAssistantExecPublicOutput(src.Stdout)
 	out.Stderr, stderrTruncated = projectAssistantExecPublicOutput(src.Stderr)
 	out.Summary = trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(src.Summary), 240)
+	out.Detail = projectAssistantExecPublicDetail(src.Detail)
 	out.OutputTruncated = src.OutputTruncated || stdoutTruncated || stderrTruncated
 	if src.ExitCode != nil {
 		code := *src.ExitCode
@@ -428,6 +430,9 @@ func mergeProjectAssistantExecMetadata(existing, next *projectAssistantExecMetad
 	out.SourceStale = existing.SourceStale || next.SourceStale
 	if out.Status == "" {
 		out.Status = existing.Status
+	}
+	if out.Detail == "" && out.Status == existing.Status {
+		out.Detail = projectAssistantExecPublicDetail(existing.Detail)
 	}
 	if existing.SourceStale && existing.Summary != "" {
 		out.Summary = existing.Summary
@@ -519,7 +524,15 @@ func projectAssistantExecMetadataForToolArguments(name string, args map[string]a
 	metadata.Stderr = stderr
 	metadata.OutputTruncated = commandResult.OutputTruncated || stdoutTruncated || stderrTruncated
 	metadata.Status = projectAssistantExecCommandReceiptStatus(metadata)
+	if metadata.Status == "blocked" || metadata.Status == "rejected" || metadata.Status == "not_executed" {
+		metadata.Detail = projectAssistantExecPublicDetail(strings.Join(commandResult.Blockers, " "))
+	}
 	return metadata
+}
+
+func projectAssistantExecPublicDetail(detail string) string {
+	detail = strings.ReplaceAll(detail, "\x00", "\ufffd")
+	return trimProjectAssistantWorkflowString(projectAssistantExecRedactSecrets(detail), 240)
 }
 
 func projectAssistantExecPublicOutput(lines []string) ([]string, bool) {

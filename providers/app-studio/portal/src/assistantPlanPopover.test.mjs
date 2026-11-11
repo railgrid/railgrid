@@ -11,37 +11,7 @@ test.before(async () => {
 })
 test.after(async () => vite?.close())
 
-test('renders the floating desktop capsule and accessible checklist', async () => {
-  const { default: AssistantPlanPopover } = await vite.ssrLoadModule('/src/AssistantPlanPopover.vue')
-  const html = await renderToString(createSSRApp(AssistantPlanPopover, {
-    messageId: 'assistant-active',
-    plan: {
-      steps: [
-        { content: 'Inspect the quote form', status: 'completed' },
-        { content: 'Add the quote form', activeForm: 'Adding the quote form', status: 'in_progress' },
-        { content: 'Verify the preview', status: 'pending' },
-      ],
-    },
-  }))
-  assert.match(html, /absolute bottom-3 right-4/)
-  assert.match(html, /1 of 3 steps · Adding the quote form/)
-  assert.match(html, /aria-expanded="false"/)
-  assert.match(html, /Completed:/)
-  assert.match(html, /In progress:/)
-  assert.match(html, /Pending:/)
-  assert.doesNotMatch(html, /border-t/)
-})
-
-test('supports explicit collapse and releases the mobile sheet at the desktop breakpoint', async () => {
-  const source = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
-  assert.match(source, /if \(pinned\.value\) \{[\s\S]*dismissed\.value = true/)
-  assert.match(source, /desktopOpen = computed\(\(\) => !dismissed\.value/)
-  assert.match(source, /matchMedia\('\(min-width: 768px\)'\)/)
-  assert.match(source, /if \(event\.matches\) closeMobile\(false\)/)
-  assert.match(source, /removeEventListener\('change', onDesktopBreakpoint\)/)
-})
-
-test('keeps action details, assistant progress prose, working status, and plan details as separate surfaces', async () => {
+test('streams assistant progress inline and keeps the turn summary', async () => {
   const appSource = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   assert.match(appSource, /<AIConversationTurn[\s\S]*:turn-id="message\.id"/)
   assert.match(appSource, /import AITimestamp from '\.\/agentkit\/AITimestamp\.vue'/)
@@ -50,7 +20,8 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.doesNotMatch(appSource, /expandedMessageTimestampID|messageTimestampLabel|toggleMessageTimestamp/)
   assert.match(appSource, /<AITurnProgress[\s\S]*:status="assistantTurnProgressStatus\(message\)"/)
   assert.match(appSource, /:duration="assistantWorkedLabel\(message\)"/)
-  assert.match(appSource, /<template v-if="assistantTraceBlocks\(message\)\.length" #details>[\s\S]*assistantTraceBlocks\(message\)/)
+  assert.match(appSource, /v-if="!assistantProgressClosed\(message\) && assistantTraceBlocks\(message\)\.length"\s*class="k-ai-turn-progress k-ai-turn-progress__content"\s*role="log"/)
+  assert.doesNotMatch(appSource, /<AssistantPlanPopover|<AssistantPlanDisclosure|toggleAssistantProgress/)
   assert.match(appSource, /<template v-if="message\.role === 'user' && \(assistantAttachmentsForMessage\(message\)\.length \|\| assistantAnnotationsForMessage\(message\)\.length\)" #before>/)
   assert.match(appSource, /<AssistantActionLog[\s\S]*v-if="hasAssistantResponseContent\(message\)"/)
   assert.match(appSource, /function assistantTurnProgressStatus\(message:[\s\S]*return 'stopping'/)
@@ -63,7 +34,6 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(appSource, /message\.viewStatus === 'interrupted'[\s\S]*text-warning\/80[\s\S]*Interrupted/)
   assert.match(appSource, /v-if="message\.role === 'assistant' && message\.viewStatus === 'interrupted' && !assistantProgressHeaderVisible\(message\)"[\s\S]*role="status"[\s\S]*Interrupted/)
   assert.doesNotMatch(appSource, /Interrupted before completion/)
-  assert.match(appSource, /:expanded="assistantProgressExpanded\(message\)"/)
   assert.match(appSource, /parseAssistantProgress\(message\.metadata\?\.assistantProgress\)/)
   assert.match(appSource, /rawItem\.data\?\.assistantProgress[\s\S]*assistantProgress: rawItem\.data\.assistantProgress/)
   assert.doesNotMatch(appSource, /v-if="message\.actionFeed\?\.length && !message\.progress"/)
@@ -78,16 +48,11 @@ test('keeps action details, assistant progress prose, working status, and plan d
   assert.match(workingStatus, /\{\{ label \}\}/)
   assert.match(workingStatus, /animation-delay:120ms/)
   assert.match(workingStatus, /animation-delay:240ms/)
-  assert.match(appSource, /if \(activePlanMessage\.value\) return 'Running'/)
   assert.match(appSource, /assistantStopRequested\.value \|\| activeAssistantRun\?\.status === 'stopping'\) return 'Stopping…'/)
   assert.match(appSource, /status === 'running' \|\| status === 'working'[\s\S]*return 'Running'/)
   assert.doesNotMatch(workingStatus, /animate-pulse font-medium/)
-  assert.match(appSource, /<AssistantPlanPopover[\s\S]*v-if="activePlanMessage"/)
-  assert.match(appSource, /<AssistantPlanDisclosure[\s\S]*v-if="assistantPlanDisclosureVisible\(message\)"/)
-  assert.match(appSource, /function assistantPlanDisclosureVisible\(message: ProjectMessageView\)/)
   assert.doesNotMatch(appSource, /Plan ended/)
   assert.doesNotMatch(appSource, /Plan completed/)
-  assert.doesNotMatch(appSource, /if \(activePlanMessage\.value\) return ''/)
 })
 
 test('does not create an output frame for a progress-only conditional turn', async () => {
@@ -103,13 +68,6 @@ test('does not create an output frame for a progress-only conditional turn', asy
 
   assert.match(html, /k-ai-turn-progress[^>]*data-status="running"/)
   assert.doesNotMatch(html, /k-ai-message__content/)
-})
-
-test('routes plan steps through the canonical AgentKit list', async () => {
-  const source = await readFile(new URL('./AssistantPlanSteps.vue', import.meta.url), 'utf8')
-  assert.match(source, /import AIPlanSteps from '\.\/agentkit\/AIPlanSteps\.vue'/)
-  assert.match(source, /:plan="plan"/)
-  assert.match(source, /:mobile="mobile"/)
 })
 
 test('protects live plan progress from stale sequence or revision events', async () => {
@@ -129,14 +87,6 @@ test('renders the running label quietly without animated gradient text', async (
   assert.match(shared, /@media \(prefers-reduced-motion: reduce\)[\s\S]*animation: none/)
   assert.match(shared, /k-ai-conversation-status__dot[\s\S]*width: 4px;[\s\S]*height: 4px;/)
   assert.doesNotMatch(style, /@keyframes app-studio-running-ripple|background-clip: text/)
-})
-
-test('uses semantic overlay layers and hides decorative plan icons', async () => {
-  const popover = await readFile(new URL('./AssistantPlanPopover.vue', import.meta.url), 'utf8')
-  assert.match(popover, /\[z-index:var\(--app-studio-z-dropdown\)\]/)
-  assert.match(popover, /\[z-index:var\(--app-studio-z-modal-backdrop\)\]/)
-  assert.match(popover, /\[z-index:var\(--app-studio-z-modal\)\]/)
-  assert.equal((popover.match(/aria-hidden="true"/g) ?? []).length, 4)
 })
 
 test('offers an explicit Default-mode implementation turn after the latest completed plan', async () => {
@@ -162,7 +112,7 @@ test('programmatic active-project prompts replace rich composer state atomically
   assert.match(implementation, /replaceAssistantComposerText\('Implement the plan above\.'\)/)
 })
 
-test('an action-only terminal turn activates the collapsed combined disclosure', async () => {
+test('an action-only terminal turn retains its summary', async () => {
   const { parseAssistantProgress } = await vite.ssrLoadModule('/src/assistantProgress.ts')
   const { buildAssistantTrace } = await vite.ssrLoadModule('/src/assistantTrace.ts')
   const { assistantRunTerminal } = await vite.ssrLoadModule('/src/conversationResilience.ts')

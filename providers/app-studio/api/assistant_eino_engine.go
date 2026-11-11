@@ -623,9 +623,7 @@ func (e projectEinoAssistantEngine) newAgent(ctx context.Context, req projectAss
 		Instruction:  projectEinoAssistantDeepInstructionForRun(runState),
 		ToolsConfig:  toolsConfig,
 		MaxIteration: projectAssistantDeepIterations(),
-		// App Studio owns write_todos so its request, admission, result, and
-		// replay all pass through the durable run ledger. Do not also install
-		// Deep's framework middleware: that path only mutates Eino session state.
+		// App Studio streams progress through the conversation.
 		WithoutWriteTodos:      true,
 		WithoutGeneralSubAgent: true,
 		Handlers:               handlers,

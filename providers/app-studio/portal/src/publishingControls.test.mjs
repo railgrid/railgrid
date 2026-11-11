@@ -46,7 +46,7 @@ test('exposes Publishing separately and keeps workspace model config out of Proj
   assert.doesNotMatch(app, /aria-label="Project Settings sections"/)
   assert.doesNotMatch(app, /project-settings-tab-model/)
   assert.match(app, /v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"/)
-  assert.match(app, /v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
+  assert.match(app, /v-if="!createModelSetup && !settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"/)
   assert.doesNotMatch(app, /projectSettingsPane === 'production'/)
   assert.doesNotMatch(app, /project-settings-tab-production/)
   assert.doesNotMatch(app, /id: 'builtin:production'/)
@@ -606,7 +606,7 @@ test('settles terminal project-list failures and keeps a visible Retry action', 
 
   const landingStart = app.indexOf('<div v-else-if="!isBuilderVisible"')
   const errorStart = app.indexOf('<div v-if="error && !projectDeletionError"', landingStart)
-  const gridStart = app.indexOf('<template v-else-if="projectLayout === \'grid\'">', errorStart)
+  const gridStart = app.indexOf('<template v-if="projectLayout === \'grid\'">', errorStart)
   assert.ok(landingStart >= 0 && errorStart > landingStart && gridStart > errorStart)
   const listError = app.slice(errorStart, gridStart)
   assert.ok(listError.includes('@click="load"'))

@@ -787,6 +787,8 @@ export interface DevelopmentTemplate {
   description?: string
   category?: string
   components: Record<string, string>
+  instanceKind?: string
+  resourceKinds?: Array<{ kind: string; conditional?: boolean }>
   hasScaffold?: boolean
   previewAccessModes?: Array<'private' | 'public'>
   // Verified from the template's current Ready Railgrid Auth capability.

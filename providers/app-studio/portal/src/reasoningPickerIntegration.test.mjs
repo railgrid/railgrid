@@ -9,7 +9,7 @@ const [app, modelsSettings] = await Promise.all([
 
 function actionSlotAt(markerIndex) {
   assert.notEqual(markerIndex, -1, 'picker is present')
-  const slotStart = app.lastIndexOf('<template #actions>', markerIndex)
+  const slotStart = [...app.slice(0, markerIndex).matchAll(/<template(?: v-if="[^"]+")? #actions>/g)].at(-1)?.index ?? -1
   const slotEnd = app.indexOf('</template>', markerIndex)
   assert.ok(slotStart >= 0 && slotEnd > markerIndex, 'picker is inside an actions slot')
   return app.slice(slotStart, slotEnd)
