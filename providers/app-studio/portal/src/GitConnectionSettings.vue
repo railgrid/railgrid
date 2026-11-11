@@ -12,6 +12,7 @@ const emit = defineEmits<{ connected: [project: Project]; ready: [] }>()
 const open = defineModel<boolean>('open', { default: false })
 const readiness = ref<ProjectCreateReadiness | null>(null)
 const checking = ref(false)
+const checkFailed = ref(false)
 const saving = ref(false)
 const error = ref('')
 let generation = 0
@@ -46,6 +47,7 @@ const repositoryMessage = computed(() => {
   }
 })
 const action = computed(() => {
+  if (checkFailed.value) return { href: portalHref('/providers'), label: 'View providers' }
   switch (connection.value?.status) {
     case 'provider-missing': return { href: portalHref('/providers'), label: 'Enable Code provider' }
     case 'failed': return { href: portalHref('/ui/providers/code/connections'), label: 'Fix Git connection' }
@@ -54,14 +56,20 @@ const action = computed(() => {
   }
 })
 async function check() {
-  const current = ++generation
+  if (!open.value || checking.value || saving.value || props.project.repository?.ref) return
+  const current = generation
   checking.value = true
-  error.value = ''
   try {
     const result = await api.getProjectCreateReadiness(props.ctx)
-    if (current === generation) readiness.value = result
-  } catch (e) {
-    if (current === generation) { readiness.value = null; error.value = e instanceof Error ? e.message : String(e) }
+    if (current === generation) {
+      readiness.value = result
+      checkFailed.value = false
+    }
+  } catch {
+    if (current === generation) {
+      readiness.value = null
+      checkFailed.value = true
+    }
   } finally { if (current === generation) checking.value = false }
 }
 async function connect() {
@@ -81,18 +89,29 @@ async function connect() {
     if (current === generation) error.value = e instanceof Error ? e.message : String(e)
   } finally { if (current === generation) saving.value = false }
 }
-function wake() { if (!saving.value && !props.project.repository?.ref) void check() }
-watch(() => [props.ctx?.orgUUID, props.ctx?.workspaceUUID, props.ctx?.user?.sub, props.ctx?.user?.userId, props.project.name, props.project.uid, recovery.value], () => {
+watch([
+  () => props.ctx?.orgUUID,
+  () => props.ctx?.workspaceUUID,
+  () => props.ctx?.user?.sub,
+  () => props.ctx?.user?.userId,
+  () => props.project.name,
+  () => props.project.uid,
+  () => props.project.repository?.ref,
+], () => {
   generation++
+  checking.value = false
+  checkFailed.value = false
   saving.value = false
+  error.value = ''
   readiness.value = null
-  if (!props.project.repository?.ref) void check()
+  void check()
 }, { immediate: true })
+watch(open, check)
 onMounted(() => {
-  window.addEventListener('focus', wake)
+  window.addEventListener('focus', check)
   emit('ready')
 })
-onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) })
+onBeforeUnmount(() => { generation++; window.removeEventListener('focus', check) })
 </script>
 
 <template>
@@ -111,9 +130,9 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', wake) 
     </template>
     <template v-else>
       <p class="text-[12px] text-text-secondary">Git adds backup, history, and builds. You can keep building without it.</p>
-      <p class="text-[12px] text-text-secondary" role="status">{{ checking ? 'Checking Git connection…' : connection?.message }}</p>
+      <p class="text-[12px] text-text-secondary" role="status">{{ checking ? 'Checking Git connection…' : checkFailed ? 'Couldn’t check the Git connection.' : connection?.message }}</p>
       <div v-if="!canCreate" class="flex flex-wrap gap-2">
-        <a :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
+        <a v-if="connection || checkFailed" :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
         <button type="button" class="k-btn k-btn--ghost" :disabled="checking" @click="check">Check again</button>
       </div>
     </template>

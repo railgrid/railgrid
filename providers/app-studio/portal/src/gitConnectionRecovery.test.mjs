@@ -3,12 +3,58 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp } from 'vue'
+import { createSSRApp, onServerPrefetch } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 
 const vite = await createServer({ appType: 'custom', cacheDir: '/tmp/railgrid-vite-git-recovery', configFile: false, plugins: [vue()], server: { middlewareMode: true, hmr: false } })
 const { default: Settings } = await vite.ssrLoadModule('/src/GitConnectionSettings.vue')
+const { api } = await vite.ssrLoadModule('/src/api.ts')
 test.after(() => vite.close())
+
+test('opening project settings with Git collapsed does not check for a connection', async (t) => {
+  const check = t.mock.method(api, 'getProjectCreateReadiness', async () => {
+    throw new Error('list Code connections: access denied')
+  })
+  const html = await renderToString(createSSRApp(Settings, { ctx: null, project: { name: 'demo' } }))
+
+  assert.equal(check.mock.callCount(), 0)
+  assert.match(html, /Not connected/)
+  assert.doesNotMatch(html, /role="alert"/)
+})
+
+for (const retry of [false, true]) {
+  test(`Git readiness access denial keeps setup actionable (retry: ${retry})`, async (t) => {
+    let requests = 0
+    const check = t.mock.method(api, 'getProjectCreateReadiness', async () => {
+      if (++requests === 1) throw new Error('list Code connections: access denied')
+      return { gitConnection: { ready: false, status: 'provider-missing' } }
+    })
+    const settings = {
+      ...Settings,
+      setup(props, context) {
+        const state = Settings.setup(props, context)
+        onServerPrefetch(async () => {
+          // Let the initial rejection settle before rendering or retrying.
+          await Promise.resolve()
+          if (retry) await state.check()
+        })
+        return state
+      },
+    }
+    const html = await renderToString(createSSRApp(settings, { open: true, ctx: null, project: { name: 'demo' } }))
+
+    assert.equal(check.mock.callCount(), retry ? 2 : 1)
+    assert.doesNotMatch(html, /access denied|role="alert"/)
+    if (retry) {
+      assert.match(html, /Enable Code provider/)
+      assert.doesNotMatch(html, /Couldn’t check the Git connection/)
+    } else {
+      assert.match(html, /Couldn’t check the Git connection/)
+      assert.match(html, /View providers/)
+      assert.match(html, /Check again/)
+    }
+  })
+}
 
 for (const canRetryCreation of [false, true]) {
   test(`Git recovery action requires server eligibility: ${canRetryCreation}`, async () => {
