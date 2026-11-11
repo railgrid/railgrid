@@ -784,7 +784,7 @@ func TestProjectAssistantReadOnlyRecoveryStopsWithoutMutation(t *testing.T) {
 	}
 }
 
-func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing.T) {
+func TestProjectPromptDocumentsActionsSDKPinForActiveGrant(t *testing.T) {
 	project := &aiv1alpha1.Project{
 		Spec: aiv1alpha1.ProjectSpec{
 			DisplayName: "Actions app",
@@ -803,8 +803,8 @@ func TestProjectPromptDocumentsPublishedActionsSDKAliasForActiveGrant(t *testing
 	}
 	prompt := projectSystemPromptForMode(project, nil, projectAssistantCollaborationModeDefault, false)
 	for _, want := range []string{
-		`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"`,
-		"For this existing project, if package.json lacks or pins another version of this dependency",
+		`"@railgrid/actions-node": "0.2.2"`,
+		"if package.json lacks this dependency or uses a different pin (including an npm alias)",
 		".railgrid/proposals/provider-actions-sdk.patch",
 		"Apply it to package.json only after the user explicitly approves that proposed change",
 		"import { createActionsClient } from '@railgrid/actions-node';",
@@ -866,7 +866,7 @@ func TestProjectPromptDoesNotClaimActionsSDKWithoutActiveGrant(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			prompt := projectSystemPromptForMode(tt.project, nil, projectAssistantCollaborationModeDefault, false)
-			if strings.Contains(prompt, "MUST declare this exact dependency alias") || strings.Contains(prompt, "import { createActionsClient } from '@railgrid/actions-node';") {
+			if strings.Contains(prompt, `"@railgrid/actions-node":`) || strings.Contains(prompt, "import { createActionsClient } from '@railgrid/actions-node';") {
 				t.Fatalf("prompt made an SDK availability claim without an active grant:\n%s", prompt)
 			}
 			if !strings.Contains(prompt, "No active integration action grant is present") {

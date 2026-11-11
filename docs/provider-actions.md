@@ -354,14 +354,12 @@ explicitly supplies the CA.
 
 ## Server-side SDK
 
-The package is `@crwilhit/railgrid-actions-node@0.2.1`. Generated server
-components declare it under the stable consumer name with this npm alias in
-`package.json`; the package name and import name are intentionally different:
+Pin `@railgrid/actions-node` in the generated server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
+    "@railgrid/actions-node": "0.2.2"
   }
 }
 ```

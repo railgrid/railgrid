@@ -50,9 +50,13 @@ func TestBundledRailgridAuthSkillIsDiscoverableAndReadOnly(t *testing.T) {
 	}
 
 	checks := map[string][]string{
-		"SKILL.md":   {"get_project_authentication", "configure_project_authentication", "only after the project owner explicitly asks", "supportReason", "do not switch or update that Project's Template", "first Railgrid user", "third-party"},
-		"express.md": {"@railgrid/auth-node", "X-Railgrid-App-Identity", "RAILGRID_AUTH_AUDIENCE"},
-		"react.md":   {"/__railgrid/auth/login?returnTo=/", "/__railgrid/auth/logout", "401"},
+		"SKILL.md": {"get_project_authentication", "configure_project_authentication", "only after the project owner explicitly asks", "supportReason", "do not switch or update that Project's Template", "first Railgrid user", "third-party"},
+		"express.md": {
+			"@railgrid/auth-node", "X-Railgrid-App-Identity", "RAILGRID_AUTH_AUDIENCE",
+			"A separate `restart_runtime` is unnecessary for this manifest change", "Run `verify_development_runtime`",
+			"Use `get_project_authentication`", "Check that `/api/me` returns 401 without an app session, returns the user's ID after sign-in, and returns 401 again after logout",
+		},
+		"react.md": {"/__railgrid/auth/login?returnTo=/", "/__railgrid/auth/logout", "401"},
 		"ownership.md": {
 			"railgrid_user_id TEXT PRIMARY KEY", "owner_railgrid_user_id", "WHERE owner_railgrid_user_id = $1", "Two users",
 		},

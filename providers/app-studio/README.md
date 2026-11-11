@@ -956,14 +956,13 @@ kcp route using the Project workload identity; the hub proxy forwards that
 token and kcp enforces its RBAC. The original human caller's bearer does not cross to the provider.
 Callers cannot supply provider URLs, resource overrides, or credentials.
 
-Generated server applications install the public
-`@crwilhit/railgrid-actions-node@0.2.1` artifact under the stable consumer name
-with this exact dependency alias in the server component's `package.json`:
+Generated applications pin `@railgrid/actions-node` in the server component's
+`package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
+    "@railgrid/actions-node": "0.2.2"
   }
 }
 ```

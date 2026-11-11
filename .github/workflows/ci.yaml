@@ -240,7 +240,7 @@ jobs:
       run: make verify-ui-conformance
     - name: Verify provider manifests, claims and route classes
       run: make verify-provider-contract
-    - name: Test Actions Node SDK package and clean alias install
+    - name: Test Actions Node SDK package and clean install
       working-directory: provider-sdk/actions-node
       run: npm test && npm run test:install
 

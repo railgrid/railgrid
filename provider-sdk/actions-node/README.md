@@ -1,21 +1,20 @@
-# `@crwilhit/railgrid-actions-node`
+# `@railgrid/actions-node`
 
 This server-only SDK invokes an App Studio Project's saved integration through
-the project's cluster-qualified kcp subresource. Generated applications import
-the stable consumer name, `@railgrid/actions-node`, mapped to the package name
-with an npm alias:
+the project's cluster-qualified kcp subresource. Pin `@railgrid/actions-node`
+in the server component's `package.json`:
 
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"
+    "@railgrid/actions-node": "0.2.2"
   }
 }
 ```
 
-Publishing a new SDK version does not update an already deployed application's
-manifest or installed dependency. Each application must apply its own manifest
-change through its normal dependency update flow.
+To migrate an existing app from the old npm alias, update the server manifest
+and lockfile through the app's normal dependency update flow. Keep the import
+path `@railgrid/actions-node`.
 
 App Studio injects `RAILGRID_ACTIONS_BASE_URL` from trusted Project context. It
 has the form
@@ -115,11 +114,15 @@ not silently edit or replace an existing `package.json`.
 
 ## Release
 
-The GitHub Actions workflow publishes from tags named
-`actions-node/v<version>`. The tag must exactly match `package.json`. The npm
-package must trust GitHub Actions for repository `railgrid/railgrid` and
-workflow `.github/workflows/actions-node-release.yaml` as its trusted
-publisher. The workflow runs the unit suite, installs the packed artifact in a
-clean consumer under the public alias, publishes with provenance, and verifies
-the registry alias install. It uses GitHub's short-lived OIDC identity; no
-long-lived npm token is stored in the repository.
+Publish and verify the organization-scoped package before deploying App Studio
+with the new pin or distributing the updated skill. For the first release, an
+npm maintainer with write access to the `railgrid` scope publishes from this
+directory with `npm publish --access public`. Verify a clean install of
+`@railgrid/actions-node@0.2.2` from the public registry.
+
+Once the package exists, configure `railgrid/railgrid` and workflow filename
+`actions-node-release.yaml` as its npm trusted publisher with direct publish
+enabled. For subsequent releases, the workflow runs on
+`actions-node/v<version>` tags matching `package.json`. It tests the packed
+artifact in a clean consumer, publishes with provenance using GitHub OIDC, and
+verifies a direct registry install.
