@@ -86,6 +86,7 @@ const parameters = ref<Record<string, string>>({ ...initialDraft.parameters })
 // below (model credential, channel, machine, harness identity, GitHub).
 const slotWiring = ref<Record<string, string>>({ ...initialDraft.wiring })
 const researchSpecialist = ref(initialDraft.researchSpecialist ?? Boolean(initialDraft.parameters.domain?.trim()))
+const digestTimeMissing = ref(initialDraft.digestTimeMissing ?? false)
 const teamExamples = {
   'Platform team': 'We maintain Kubernetes clusters and help teams ship internal tools.',
   'Product team': 'We build product features and use this workspace to coordinate releases.',
@@ -253,6 +254,7 @@ function snapshotDraft(): AgentCreateDraft {
     harnessGitHubConnection: harnessGitHubConnection.value, systemPrompt: systemPrompt.value,
     customPrompt: customPrompt.value, channel: channel.value, template: template.value,
     parameters: { ...parameters.value }, wiring: { ...slotWiring.value }, researchSpecialist: researchSpecialist.value,
+    digestTimeMissing: digestTimeMissing.value,
   }
 }
 
@@ -285,6 +287,7 @@ function switchTemplate(value: string): void {
   parameters.value = { ...draft.parameters }
   slotWiring.value = { ...draft.wiring }
   researchSpecialist.value = draft.researchSpecialist ?? Boolean(draft.parameters.domain?.trim())
+  digestTimeMissing.value = draft.digestTimeMissing ?? false
   template.value = value
   selectOnlyModel()
 }
@@ -437,7 +440,9 @@ async function submit(): Promise<void> {
   if (template.value && !chosen) errors.template = 'Load the selected template before creating this agent.'
   if (chosen) {
     const digest = digestParameter.value
-    if (digest && !validDigestCron(parameters.value[digest.key]?.trim() || digest.default || '')) {
+    if (digest && digestTimeMissing.value) {
+      errors[`param-${digest.key}`] = 'Enter a time for the digest.'
+    } else if (digest && !validDigestCron(parameters.value[digest.key]?.trim() || digest.default || '')) {
       errors[`param-${digest.key}`] = 'Enter a valid cron expression.'
     }
     for (const param of templateParameters.value) {
@@ -736,6 +741,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
             <section v-if="digestParameter" class="agents-create-section" aria-labelledby="agent-create-digest-heading">
               <h2 id="agent-create-digest-heading">Digest delivery</h2>
               <AgentDigestSchedule :model-value="parameters[digestParameter.key] || ''" :key="template"
+                v-model:time-missing="digestTimeMissing"
                 @update:model-value="parameters[digestParameter.key] = $event"
                 :default-value="digestParameter.default || ''" :disabled="busy" :error="errors[`param-${digestParameter.key}`]" />
               <label v-if="channelSlot">

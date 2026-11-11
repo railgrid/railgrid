@@ -26,6 +26,7 @@ export interface AgentCreateDraft {
   parameters: Record<string, string>
   wiring: Record<string, string>
   researchSpecialist?: boolean
+  digestTimeMissing?: boolean
   templateDrafts?: Record<string, AgentCreateDraft>
 }
 

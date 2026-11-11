@@ -326,12 +326,79 @@ describe('route-owned creation surfaces', () => {
     expect(submit.disabled).toBe(false)
   })
 
-  it('checks digest cron UTC offsets and Go integer bounds', () => {
+  it('checks digest cron time zone names and Go integer bounds', () => {
     expect(validDigestCron('CRON_TZ=+01:00 0 8 * * *')).toBe(false)
     expect(validDigestCron('TZ=-05:00 0 8 * * *')).toBe(false)
+    expect(validDigestCron('CRON_TZ=america/new_york 0 8 * * *')).toBe(false)
+    expect(validDigestCron('TZ=us/eastern 0 8 * * *')).toBe(false)
+    expect(validDigestCron('CRON_TZ=America/New_York 0 8 * * *')).toBe(true)
+    expect(validDigestCron('TZ=US/Eastern 0 8 * * *')).toBe(true)
+    expect(validDigestCron('TZ=Local 0 8 * * *')).toBe(true)
     expect(validDigestCron('*/9223372036854775808 * * * *')).toBe(false)
     expect(validDigestCron('*/9223372036854775807 * * * *')).toBe(true)
     expect(validDigestCron('CRON_TZ=Europe/London */15 8 * * MON-FRI')).toBe(true)
+    expect(validDigestCron('@every 3000000h')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775807ns1ns')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775808ns')).toBe(false)
+    expect(validDigestCron('@every 9223372036854775807ns')).toBe(true)
+    expect(validDigestCron('@every -9223372036854775808ns')).toBe(true)
+    expect(validDigestCron('@every 9223372036.854775807s')).toBe(true)
+    expect(validDigestCron('@every 9223372036.854775808s')).toBe(false)
+    expect(validDigestCron('@every 1h30m.5s')).toBe(true)
+    expect(validDigestCron('@every 1h 30m')).toBe(false)
+  })
+
+  it('preserves a cleared digest time through template switches and model setup', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn()
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'news-reporter' })
+    const timeInput = (root: Element) => root.querySelector<HTMLInputElement>('input[type="time"]')!
+    const setTime = (value: string) => {
+      const input = timeInput(el)
+      input.value = value
+      input.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    }
+    setTime('09:15')
+    await settleVue()
+    setTime('')
+    await settleVue()
+
+    const picker = el.querySelector<HTMLDialogElement>('dialog')!
+    picker.showModal = () => { picker.open = true }
+    picker.close = () => { picker.open = false }
+    const switchTemplate = async (name: string) => {
+      el.querySelector<HTMLButtonElement>('.k-create-header [aria-haspopup="dialog"]')!.click()
+      await settleVue()
+      const card = [...picker.querySelectorAll<HTMLButtonElement>('.agents-starter-card')]
+        .find(button => button.querySelector('.agents-starter-name')?.textContent === name)!
+      card.click()
+      await settleVue()
+    }
+    await switchTemplate('Researcher')
+    expect(timeInput(el)).toBeNull()
+    await switchTemplate('News reporter')
+    expect(timeInput(el).value).toBe('')
+    expect(timeInput(el).checkValidity()).toBe(false)
+
+    const mounted = mountedByElement.get(el)!
+    const connect = [...el.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Connect a model')!
+    connect.click()
+    const { draft } = mounted.events['add-credential'][0] as { draft: unknown }
+    mounted.unmount()
+    const restored = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialDraft: draft })
+    expect(timeInput(restored).value).toBe('')
+    restored.querySelector('form')!.dispatchEvent(new Event('submit', { cancelable: true }))
+    await settleVue()
+    expect(restored.querySelector('#agent-digest-cron-error')?.textContent).toContain('Enter a time')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+
+    const editCron = [...restored.querySelectorAll('button')].find(button => button.textContent?.trim() === 'Edit cron')!
+    editCron.click()
+    await settleVue()
+    expect(restored.querySelector<HTMLInputElement>('#agent-create-param-digestTime')?.value).toBe('')
   })
 
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {
@@ -830,12 +897,14 @@ it.each([false, true])('creates an agent with the final template inputs and sche
   await settleVue()
   const cron = el.querySelector<HTMLInputElement>('#agent-create-param-digestTime')!
   expect(cron.value).toBe('15 9 * * 1,2,3,4,5,6')
-  cron.value = 'CRON_TZ=UTC'
-  cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
-  el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
-  await settleVue()
-  expect(el.querySelector('#agent-digest-cron-error')?.textContent).toContain('valid cron')
-  expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  for (const invalid of ['CRON_TZ=UTC', '@every 3000000h', 'CRON_TZ=america/new_york 0 8 * * *']) {
+    cron.value = invalid
+    cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    el.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settleVue()
+    expect(el.querySelector('#agent-digest-cron-error')?.textContent).toContain('valid cron')
+    expect(createAgentFromTemplate).not.toHaveBeenCalled()
+  }
   cron.value = '15 9 * * MON-SAT'
   cron.dispatchEvent(new InputEvent('input', { bubbles: true }))
   if (edited) {
