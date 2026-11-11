@@ -21,7 +21,9 @@ Run a local hub, connect a cluster, and hand a workspace to an AI agent.
 
 ## Overview
 
-This guide uses the CLI's built-in local environment: one kind cluster that runs the hub, the edges provider, and an agent that joins that same cluster as an edge. Nothing here is exposed to the internet. For a real install, follow [Helm deployment]({% link helm.md %}) instead; the CLI steps from section 3 onward are the same.
+This guide uses the CLI's built-in local environment. One kind cluster runs the hub, the edges provider, and an agent that joins the same cluster as an edge. The environment stays on your machine.
+
+For Railgrid Cloud, follow the [hosted quickstarts](https://railgrid.ai/docs/get-started/). To operate your own hub, follow the [Helm deployment guide]({% link helm.md %}).
 
 ## Prerequisites
 
@@ -31,7 +33,7 @@ This guide uses the CLI's built-in local environment: one kind cluster that runs
 | [kind](https://kind.sigs.k8s.io/docs/user/quick-start/#installation) | Local Kubernetes |
 | [kubectl](https://kubernetes.io/docs/tasks/tools/) | Talks to the clusters |
 | [Helm](https://helm.sh/docs/intro/install/) 3 | Only needed to connect extra clusters by hand; `railgrid dev init` installs the hub, provider and agent charts itself |
-| `railgrid` CLI | A binary from the [releases page](https://github.com/railgrid/railgrid/releases), or `go install github.com/railgrid/railgrid/cmd/railgrid@latest` with Go 1.26+ |
+| `railgrid` CLI | A binary from the [releases page](https://github.com/railgrid/railgrid/releases) or the [CLI installer](https://railgrid.ai/docs/get-started/install/#install-the-cli) |
 
 ## Step 1: Create a local hub
 
