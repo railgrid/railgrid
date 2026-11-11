@@ -1275,7 +1275,7 @@ function dependencyNotice(p: ProviderDTO): string {
               type="search"
               aria-label="Search providers"
               placeholder="Search providers…"
-              class="k-input w-full bg-surface-raised/60 py-1.5 pl-8 pr-3 text-sm"
+              class="catalog-search-input k-input w-full bg-surface-raised/60 py-1.5 pr-3 text-sm"
             />
           </div>
           <div class="flex flex-wrap items-center gap-1.5" role="group" aria-label="Filter providers by category">
@@ -1572,3 +1572,10 @@ function dependencyNotice(p: ProviderDTO): string {
     />
   </AppLayout>
 </template>
+
+<style scoped>
+/* Keep room for the icon when PortalKit injects its unlayered input styles. */
+.catalog-search-input {
+  padding-left: 2rem;
+}
+</style>
