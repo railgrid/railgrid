@@ -41,6 +41,7 @@ const tabs: { key: Tab; label: string }[] = [
 const activeRegistration = ref<OrgProviderRegistration | null>(null)
 const inventoryScope = ref<string | null>(null)
 const inventoryCurrent = computed(() => inventoryScope.value === currentTenantScope.value && orgProviders.loaded)
+const orgProvidersAvailable = computed(() => !inventoryCurrent.value || orgProviders.supported)
 const requestedInstallName = computed(() => typeof route.query.install === 'string' ? route.query.install : null)
 const installProvider = computed(() => {
   const name = requestedInstallName.value
@@ -704,6 +705,16 @@ const categoryChips = computed(() => {
 // Active filters. selectedCategory === null means "All".
 const search = ref('')
 const selectedCategory = ref<string | null>(null)
+const customProviderSetupOpen = ref(false)
+const customProviderSetupHeading = ref<HTMLHeadingElement | null>(null)
+
+async function setCustomProviderSetupOpen(open: boolean) {
+  customProviderSetupOpen.value = open
+  if (open) {
+    await nextTick()
+    customProviderSetupHeading.value?.focus()
+  }
+}
 
 // filteredCards applies the search query (matched against display name,
 // provider name, and category) and the active category chip.
@@ -718,6 +729,10 @@ const filteredCards = computed<ProviderCard[]>(() => {
       c.categoryName.toLowerCase().includes(q)
     )
   })
+})
+const catalogEmptyMessage = computed(() => {
+  if (!providers.loaded || filteredCards.value.length) return ''
+  return providers.items.length ? 'No providers match your search.' : 'No providers installed yet.'
 })
 
 // The catalog renders as one flat grid, but self-managed providers — the ones
@@ -804,6 +819,7 @@ watch(dialogScope, () => {
   instructionName.value = null
   instructionError.value = null
   inventoryScope.value = null
+  customProviderSetupOpen.value = false
   stopSelfHostRemovalPolling()
   clearProviderPageRouteState()
   selfHostError.value = null
@@ -854,6 +870,7 @@ onUnmounted(() => {
 })
 
 watch(tab, () => {
+  customProviderSetupOpen.value = false
   selfHostRequestGeneration += 1
   activeRegistration.value = null
   instructionName.value = null
@@ -967,7 +984,7 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <!-- Catalog vs Self-Hosting. Hidden entirely when the hub has no
            org-provider support, so the tab never leads to a dead surface. -->
-      <nav v-if="!inventoryCurrent || orgProviders.supported" class="k-tabs mb-5" aria-label="Provider sections">
+      <nav v-if="orgProvidersAvailable" class="k-tabs mb-5" aria-label="Provider sections">
         <button
           v-for="t in tabs"
           :key="t.key"
@@ -987,13 +1004,6 @@ function dependencyNotice(p: ProviderDTO): string {
 
       <div v-if="providers.loading && !providers.loaded" class="text-sm text-text-muted">
         Loading providers&hellip;
-      </div>
-
-      <div v-else-if="providers.items.length === 0 && tab !== 'self-hosting'" class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-text-muted">
-        No providers installed yet.
-        <div class="mt-2 text-xs">
-          See <code>docs/providers.md</code> and <code>providers/quickstart/</code> for an example.
-        </div>
       </div>
 
       <!-- ===== Self-Hosting tab ===== -->
@@ -1309,16 +1319,70 @@ function dependencyNotice(p: ProviderDTO): string {
               {{ chip.name }}
             </button>
           </div>
+          <button
+            v-if="orgProvidersAvailable"
+            type="button"
+            class="text-sm text-accent underline-offset-2 hover:underline focus-visible:underline pointer-coarse:min-h-11"
+            :aria-expanded="customProviderSetupOpen"
+            aria-controls="custom-provider-setup"
+            @click="setCustomProviderSetupOpen(!customProviderSetupOpen)"
+          >
+            Adding a custom provider?
+          </button>
         </div>
+
+        <section
+          v-if="orgProvidersAvailable"
+          v-show="customProviderSetupOpen"
+          id="custom-provider-setup"
+          aria-labelledby="custom-provider-setup-heading"
+          class="mb-4 rounded-lg border border-border-subtle bg-surface-raised/60 p-4"
+        >
+          <h2
+            id="custom-provider-setup-heading"
+            ref="customProviderSetupHeading"
+            tabindex="-1"
+            class="text-sm font-semibold text-text-primary"
+          >
+            Add a custom Railgrid provider
+          </h2>
+          <p class="mt-1 max-w-prose text-sm text-text-secondary">
+            Register with the Hub API and deploy with Helm on a connected Kubernetes Edge.
+            Once it’s ready, enable it in each workspace that needs it.
+          </p>
+          <a
+            href="https://github.com/railgrid/railgrid/blob/main/docs/byo-providers.md#manual-installation"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="mt-3 inline-flex items-center gap-1 text-sm text-accent underline-offset-2 hover:underline focus-visible:underline pointer-coarse:min-h-11"
+          >
+            View setup guide
+            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" />
+          </a>
+        </section>
 
         <div
-          v-if="filteredCards.length === 0"
-          class="rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-sm text-text-muted"
+          :class="catalogEmptyMessage
+            ? 'rounded-lg border border-border-subtle bg-surface-raised/60 p-6 text-center text-sm text-text-muted'
+            : 'sr-only'"
         >
-          No providers match your search.
+          <p role="status">{{ catalogEmptyMessage }}</p>
+          <button
+            v-if="catalogEmptyMessage && orgProvidersAvailable"
+            type="button"
+            class="mt-2 text-accent underline underline-offset-2 pointer-coarse:min-h-11"
+            :aria-expanded="customProviderSetupOpen"
+            aria-controls="custom-provider-setup"
+            @click="setCustomProviderSetupOpen(true)"
+          >
+            Learn how to add a custom provider
+          </button>
+          <p v-else-if="catalogEmptyMessage && providers.items.length === 0" class="mt-2 text-xs">
+            See <code>docs/providers.md</code> and <code>providers/quickstart/</code> for an example.
+          </p>
         </div>
 
-        <ul v-else class="grid grid-cols-[repeat(auto-fill,minmax(240px,320px))] justify-start gap-3">
+        <ul v-if="orderedCards.length" class="grid grid-cols-[repeat(auto-fill,minmax(240px,320px))] justify-start gap-3">
           <template v-for="(p, i) in orderedCards" :key="p.name">
           <!-- Full-width section divider inside the same grid, so the cards
                below it keep their column alignment. -->
