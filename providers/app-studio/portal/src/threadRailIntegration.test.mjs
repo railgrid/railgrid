@@ -133,7 +133,7 @@ test('keeps identity and thread controls in one workspace-wide title bar', () =>
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*@click="toggleThreadPanel"/)
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*@pointerenter="previewThreadPanel"[\s\S]*@pointerleave="closeThreadPanelPreview"/)
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*@focusin="previewThreadPanel"[\s\S]*@focusout="closeThreadPanelPreview"/)
-  assert.match(app, /const threadRailExpanded = computed\(\(\) => threadRailRef\.value\?\.expanded \?\? true\)/)
+  assert.match(app, /const threadRailExpanded = computed\(\(\) => threadRailRef\.value\?\.expanded \?\? false\)/)
   assert.match(app, /aria-label="Toggle thread side panel"[\s\S]*:aria-expanded="threadRailExpanded"[\s\S]*aria-controls="app-studio-thread-rail"/)
   assert.match(app, /function toggleThreadPanel\(event\?: MouseEvent\)[\s\S]*returnFocus[\s\S]*threadRailRef\.value\?\.toggle\?\.\(returnFocus\)/)
   assert.match(app, /focusThread\?: \(threadID: string\) => void/)
