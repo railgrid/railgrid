@@ -38,6 +38,9 @@ browser bundle, or trust a user ID supplied by the browser. The trusted runtime
 also injects issuer, audience, origin, and platform-stamped instance UID
 configuration; do not replace those values with request data.
 
+Use the API component's normal dependency reload after updating the manifest.
+Follow the preview checks in `express.md` before reporting that sign-in works.
+
 Link sign-in to `/__railgrid/auth/login?returnTo=/`. Send logout as a same-origin
 `POST` to `/__railgrid/auth/logout`. A `401` from an app API means the browser
 session expired; show a sign-in-again link instead of reading, storing, or

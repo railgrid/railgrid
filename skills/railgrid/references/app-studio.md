@@ -584,12 +584,9 @@ identity** (not yours) with a two-minute budget and a 4 MiB response cap;
 forwarded. Only shipped action today: Databricks `query_table/v1` (sync,
 read-only, `columns` ≤ 64, `limit` 1..100).
 
-In-app SDK package: `@crwilhit/railgrid-actions-node@0.2.1`, imported as
-`@railgrid/actions-node`. Use the dependency alias
-`"@railgrid/actions-node": "npm:@crwilhit/railgrid-actions-node@0.2.1"` in the
-server component's `package.json`. A package release does not update an
-already deployed application's manifest; each app applies its own dependency
-change through its normal manifest flow.
+Use `"@railgrid/actions-node": "0.2.2"` in the server component's
+`package.json` and import from `@railgrid/actions-node`. Existing apps update
+their manifest and lockfile through their normal dependency update flow.
 App Studio injects `RAILGRID_ACTIONS_BASE_URL` with the trusted cluster and
 Project path. Use
 `createActionsClient({baseURL: RAILGRID_ACTIONS_BASE_URL, tokenFile: RAILGRID_ACTIONS_TOKEN_FILE})`
