@@ -62,14 +62,19 @@ jobs:
         run: |
           build_log=$(mktemp)
           trap 'rm -f "$build_log"' EXIT
+          go_proxy='https://proxy[.]golang[.]org/.*'
+          http2_errors='stream error|GOAWAY|client connection lost'
+          network_errors='connection reset by peer|TLS handshake timeout|unexpected EOF|i/o timeout'
+          server_errors=': 5[0-9]{2}([[:space:]]|$)|Bad Gateway|Service Unavailable|Gateway Timeout'
+          retryable_errors="$go_proxy($http2_errors|$network_errors|$server_errors)"
           for attempt in 1 2 3; do
             if make e2e-images 2>&1 | tee "$build_log"; then
               exit 0
             fi
-            if [[ "$attempt" == 3 ]] || ! grep -Eq 'proxy[.]golang[.]org.*(stream error|connection reset by peer|TLS handshake timeout|unexpected EOF|i/o timeout)' "$build_log"; then
+            if [[ "$attempt" == 3 ]] || ! grep -Eq "$retryable_errors" "$build_log"; then
               exit 1
             fi
-            if grep -Eq 'proxy[.]golang[.]org.*stream error' "$build_log"; then
+            if grep -Eq "$go_proxy($http2_errors)" "$build_log"; then
               export GO_BUILD_GODEBUG=http2client=0
             fi
             echo "::warning::Go module proxy download failed on attempt $attempt. Retrying the image build."
