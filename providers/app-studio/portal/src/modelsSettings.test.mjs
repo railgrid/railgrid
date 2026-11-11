@@ -858,6 +858,23 @@ test('shows manual model guidance for ready providers that cannot list models', 
   assert.ok(html.includes(guidance))
 })
 
+test('shows recovery guidance when a saved provider probe fails', async () => {
+  const guidance = 'Provider model discovery failed; check the endpoint and credential, or enter a model ID and test it.'
+  const html = await render({
+    routePage: true,
+    connections: [{
+      ...savedConnection,
+      ready: false,
+      reachable: false,
+      lastProbeError: guidance,
+      conditions: [{ type: 'Reachable', status: 'False', reason: 'ProbeFailed' }],
+    }],
+  })
+
+  assert.match(html, /data-full-value="Unreachable"/)
+  assert.ok(html.includes(guidance))
+})
+
 test('offers known provider presets and marks custom endpoints required', async () => {
   const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
   assert.match(source, /label: 'OpenAI'/)

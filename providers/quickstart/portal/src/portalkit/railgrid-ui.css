@@ -2785,8 +2785,6 @@ railgrid-resource-table-filter { display: contents; }
   }
 }
 
-/* A contextual workbench table uses the parent canvas and wraps its primary
- * value. Persistent actions reflow below the value in the narrowest panes. */
 /* Tables with several row actions keep space for the name on desktop and
  * put the actions on their own line on narrow screens. */
 .k-table-stack-actions .k-table__cell--primary { min-inline-size: 18rem; }
@@ -2798,6 +2796,8 @@ railgrid-resource-table-filter { display: contents; }
   .k-table-stack-actions .k-table__primary-actions .k-table-action { opacity: 1; }
 }
 
+/* A contextual workbench table uses the parent canvas and wraps its primary
+ * value. Persistent actions reflow below the value in the narrowest panes. */
 .k-table.k-table--workbench {
   container: k-workbench-table / inline-size;
   border: 0;

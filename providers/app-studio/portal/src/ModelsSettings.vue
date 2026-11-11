@@ -207,7 +207,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
     status,
     statusMessage: explicitDiscoveryRequired
       ? 'No provider check has been run yet. Discover models or test a model to verify this connection.'
-      : discoveryReason === 'DiscoveryUnavailable' ? connection.lastProbeError : undefined,
+      : connection.reachable === false || discoveryReason === 'DiscoveryUnavailable' ? connection.lastProbeError : undefined,
     tone,
     connection,
   }
