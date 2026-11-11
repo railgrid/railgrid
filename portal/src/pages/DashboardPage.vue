@@ -13,8 +13,8 @@ import WelcomeWizard from '@/components/WelcomeWizard.vue'
 import ActionMenu, { type ActionMenuItem } from '@/portalkit/ActionMenu.vue'
 import { useProvidersStore, type ProviderDTO } from '@/stores/providers'
 import { useTenantStore } from '@/stores/tenant'
-import { useDashboardLayoutStore } from '@/stores/dashboardLayout'
-import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Rocket } from 'lucide-vue-next'
+import { ADD_PROVIDER_TILE_ID, useDashboardLayoutStore } from '@/stores/dashboardLayout'
+import { Puzzle, RotateCcw, Check, LayoutDashboard, LayoutGrid, Plus, Rocket } from 'lucide-vue-next'
 import { gettingStartedReadState } from '@/lib/gettingStarted'
 
 const { scopePath } = useScopedNavigation()
@@ -193,9 +193,15 @@ const providerFor = (name: string) => gated.value.find(provider => provider.name
 
 // --- Customize mode ---
 const editMode = ref(false)
+const addProviderLabel = 'Add provider'
+const catalogTileOptions: ActionMenuItem[] = [{ id: 'remove', label: 'Remove Add provider tile', tone: 'danger' }]
+// Follow the visible reading order, including positions updated by compaction.
+const gridItems = computed(() => editMode.value
+  ? layout.value
+  : [...layout.value].sort((a, b) => a.y - b.y || a.x - b.x))
 const addMenuItems = computed<ActionMenuItem[]>(() => addable.value.map((name) => ({
   id: name,
-  label: providerFor(name)?.displayName ?? name,
+  label: name === ADD_PROVIDER_TILE_ID ? addProviderLabel : providerFor(name)?.displayName ?? name,
   tone: 'neutral',
 })))
 
@@ -365,7 +371,7 @@ function onGridSelectStart(event: Event) {
 
         <GridLayout
           v-else
-          v-model:layout="layout"
+          :layout="layout"
           :class="editMode ? 'select-none' : undefined"
           :col-num="columns"
           :row-height="90"
@@ -377,21 +383,39 @@ function onGridSelectStart(event: Event) {
           @selectstart="onGridSelectStart"
         >
           <GridItem
-            v-for="item in layout"
+            v-for="item in gridItems"
             :key="item.i"
             :x="item.x"
             :y="item.y"
             :w="item.w"
             :h="item.h"
             :i="item.i"
+            :static="item.static"
             :min-w="1"
             :min-h="1"
             drag-ignore-from=".tile-no-drag"
             @moved="onUserLayoutUpdated"
             @resized="onUserLayoutUpdated"
           >
+              <component
+                v-if="item.i === ADD_PROVIDER_TILE_ID"
+                :is="editMode ? 'div' : 'router-link'"
+                :to="editMode ? undefined : scopePath('/providers')"
+                class="relative flex h-full flex-col items-center justify-center gap-2 rounded-xl border bg-surface-raised/80 text-sm font-medium text-text-primary"
+                :class="editMode ? 'border-accent/40 ring-1 ring-accent/30' : 'border-border-subtle transition-colors hover:border-accent/50 hover:bg-surface-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent'"
+              >
+                <Plus class="h-6 w-6 text-text-muted" :stroke-width="1.5" aria-hidden="true" />
+                {{ addProviderLabel }}
+                <ActionMenu
+                  v-if="editMode"
+                  class="tile-no-drag absolute right-3 top-3"
+                  :items="catalogTileOptions"
+                  label="Add provider tile options"
+                  @select="onRemove(ADD_PROVIDER_TILE_ID)"
+                />
+              </component>
               <DashboardTile
-                v-if="providerFor(item.i)"
+                v-else-if="providerFor(item.i)"
                 :provider="providerFor(item.i)!"
                 :edit-mode="editMode"
                 @remove="onRemove"
