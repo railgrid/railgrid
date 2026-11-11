@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
-import { ArrowLeft, Check, Cpu, Loader2, Pencil, Play, Plus, RefreshCw, Star, Trash2 } from 'lucide-vue-next'
+import { computed, nextTick, ref, useId, watch } from 'vue'
+import { ArrowLeft, Check, Cpu, Loader2, Play, Plus, RefreshCw, Star } from 'lucide-vue-next'
 import ResourceTableEditButton from './portalkit/ResourceTableEditButton.vue'
 import ResourceTableDeleteButton from './portalkit/ResourceTableDeleteButton.vue'
 import ResourceTableActionButton from './portalkit/ResourceTableActionButton.vue'
@@ -8,7 +8,8 @@ import ResourceTable from './portalkit/ResourceTable.vue'
 import StatusBadge from './portalkit/StatusBadge.vue'
 import PortalTabs from './portalkit/Tabs.vue'
 import ModelCollection from './agentkit/ModelCollection.vue'
-import ModelConnectionCard from './agentkit/ModelConnectionCard.vue'
+import ActionMenu from './portalkit/ActionMenu.vue'
+import ResourceTableExpandButton from './portalkit/ResourceTableExpandButton.vue'
 import ModelIDSelector from './agentkit/ModelIDSelector.vue'
 import { ensureAgentUIStyles } from './agentkit/styles'
 import ModelUsageSection from './agentkit/ModelUsageSection.vue'
@@ -51,7 +52,6 @@ const props = withDefaults(defineProps<{
   connectionStatusChecking?: boolean
   connectionStatusTimedOut?: boolean
   modelTests?: Record<string, { state: string; tone: 'success' | 'danger' | 'muted'; error?: string }>
-  modelTestsStatus?: string | null
   settings: ProjectLLMSettings | null
   loading: boolean
   loadError: string | null
@@ -88,7 +88,6 @@ const props = withDefaults(defineProps<{
   connectionsLoading: false,
   connectionsError: null,
   modelTests: () => ({}),
-  modelTestsStatus: null,
   reasoningEffort: '',
   reasoningEffortOptions: () => [],
   reasoningEffortError: '',
@@ -99,7 +98,6 @@ const emit = defineEmits<{
   retry: []
   navigate: [route: string]
   openEditor: [modelID?: string, connectionRef?: string, connectionInfo?: ProjectModelProviderConnection]
-  startProviderSetup: []
   beginProviderDetour: []
   continueModelWithProvider: [connection: ProjectModelProviderConnection]
   cancelProviderDetour: []
@@ -120,8 +118,14 @@ const emit = defineEmits<{
 }>()
 
 const MODELS_ROUTE = '~models'
-const CONNECTIONS_ROUTE = '~models/provider-connections'
 const USAGE_ROUTE = '~models/usage'
+const setupTabs = [
+  { id: 'models', label: 'Models' },
+  { id: 'usage', label: 'Usage & cost' },
+]
+const providerConnectionsHeading = ref<HTMLHeadingElement | null>(null)
+const modelDetailsPrefix = useId()
+const expandedModel = ref<string | null>(null)
 const pendingConnection = ref<ProjectModelProviderConnection | null>(null)
 const connectionEditorOpen = ref(false)
 const connectionStage = ref<'details' | 'verify'>('details')
@@ -156,7 +160,11 @@ const modelRows = computed(() => (props.settings?.models || []).map(saved => ({
   id: saved.id,
   name: saved.name,
   model: saved.model,
-  endpoint: saved.connectionName || saved.baseURL || 'Provider default',
+  endpoint: saved.baseURL || 'Provider default',
+  providerConnection: saved.connectionRef
+    ? connectionRows.value.find(connection => connection.name === saved.connectionRef)?.displayName
+      || saved.connectionName || saved.connectionRef
+    : 'Direct credential',
   configured: saved.configured,
   default: saved.default,
   status: props.modelTests?.[saved.id]?.state || 'Not tested',
@@ -198,7 +206,7 @@ const connectionTableRows = computed(() => connectionRows.value.map(connection =
     status,
     statusMessage: explicitDiscoveryRequired
       ? 'No provider check has been run yet. Discover models or test a model to verify this connection.'
-      : connection.lastProbeError,
+      : undefined,
     tone,
     connection,
   }
@@ -207,8 +215,8 @@ const providerConnectionColumns = [
   { key: 'name', label: 'Provider', primary: true, sortable: true },
   { key: 'endpoint', label: 'Endpoint' },
   { key: 'bindingCount', label: 'Model bindings', sortable: true },
-  { key: 'status', label: 'Status' },
-  { key: 'actions', label: 'Actions' },
+  { key: 'status', label: 'Readiness', sortable: true },
+  { key: 'actions', label: '', ariaLabel: 'Actions', align: 'end' as const },
 ]
 
 function connectionFromTableRow(row: Record<string, unknown>): ProjectModelProviderConnection {
@@ -373,7 +381,23 @@ function closeConnectionEditor() {
 
 watch(connectionEditorOpen, open => {
   if (open) void nextTick(() => connectionHeadingRef.value?.focus({ preventScroll: true }))
+  else if (!props.providerDetourActive) void focusProviderConnections()
 })
+
+async function focusProviderConnections() {
+  await nextTick()
+  providerConnectionsHeading.value?.focus()
+}
+
+watch(() => props.providerConnectionsRoute, active => {
+  if (active && !props.providerDetourActive) void focusProviderConnections()
+  if (!active && connectionEditorOpen.value) {
+    invalidateConnectionProbe()
+    connectionEditorOpen.value = false
+    connectionOriginal.value = null
+    connectionAPIKey.value = ''
+  }
+}, { immediate: true, flush: 'post' })
 
 watch(() => props.usageRoute, active => {
   if (!active) return
@@ -633,9 +657,21 @@ const modelCanSave = computed(() => Boolean(props.nameOnlyEdit || (props.connect
   && props.model.trim().length > 0
   && !props.saving && !props.testing && !props.reasoningEffortError)
 
-function startModelSetup() {
-  if (modelConnectionOptions.value.length) emit('openEditor')
-  else emit('startProviderSetup')
+const modelLimitReached = computed(() => (props.settings?.models.length ?? 0) >= 20)
+const createActions = computed(() => [
+  { id: 'model', label: 'Add model', description: 'Use a saved provider connection', disabled: modelLimitReached.value },
+  { id: 'provider', label: 'Connect provider', description: 'Save API access for models' },
+])
+const showFirstRun = computed(() => !props.loading && !props.loadError && !props.connectionsLoading
+  && !props.connectionsError && !modelRows.value.length && !connectionRows.value.length)
+
+function selectCreateAction(id: string) {
+  if (id === 'provider') openConnectionEditor()
+  else emit('openEditor')
+}
+
+function toggleModelDetails(id: string) {
+  expandedModel.value = expandedModel.value === id ? null : id
 }
 
 function startProviderDetour() {
@@ -647,24 +683,15 @@ function startProviderDetour() {
 
 <template>
   <section class="grid gap-4" :aria-label="providerConnectionsRoute ? 'Provider connections' : creationRoute ? 'Add model' : 'Models'">
-    <div v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen" class="flex flex-wrap items-center justify-between gap-3">
-      <div class="grid gap-1">
-        <h2 class="k-resource-page__title">{{ providerConnectionsRoute ? 'Provider connections' : 'Models' }}</h2>
-        <p class="text-[13px] text-text-muted">{{ providerConnectionsRoute ? 'Save provider credentials once and reuse them across model configurations.' : usageRoute ? 'Review model usage and cost for this workspace.' : 'Choose the model bindings available when creating and chatting in projects.' }}</p>
-      </div>
-      <button v-if="providerConnectionsRoute" type="button" class="k-btn k-btn--primary" :disabled="saving || connectionBusy" @click="openConnectionEditor()">
-        <Plus class="h-4 w-4" :stroke-width="1.75" /> Connect provider
-      </button>
-      <button v-else-if="!usageRoute" type="button" class="k-btn k-btn--primary" :disabled="modelConnectionOptions.length > 0 && (settings?.models.length ?? 0) >= 20" @click="startModelSetup">
-        <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ modelConnectionOptions.length ? 'Add model' : 'Connect provider' }}
-      </button>
-    </div>
-
-    <PortalTabs v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen" :tabs="[
-      { id: 'models', label: 'Models' },
-      { id: 'connections', label: 'Provider connections' },
-      { id: 'usage', label: 'Usage & cost' },
-    ]" :active="usageRoute ? 'usage' : providerConnectionsRoute ? 'connections' : 'models'" aria-label="Model settings" @select="emit('navigate', $event === 'usage' ? USAGE_ROUTE : $event === 'connections' ? CONNECTIONS_ROUTE : MODELS_ROUTE)" />
+    <template v-if="routePage && !creationRoute && !editorOpen && !connectionEditorOpen">
+      <header class="k-resource-page__header">
+        <div class="k-resource-page__heading">
+          <h2 class="k-resource-page__title">Setup</h2>
+          <p class="k-resource-page__subtitle">Manage the models and provider access App Studio uses.</p>
+        </div>
+      </header>
+      <PortalTabs class="k-tabs--compact" :tabs="setupTabs" :active="usageRoute ? 'usage' : 'models'" aria-label="Setup sections" @select="emit('navigate', $event === 'usage' ? USAGE_ROUTE : MODELS_ROUTE)" />
+    </template>
 
     <InlineNotification v-if="loadError" tone="error" :message="loadError" action-label="Retry" :action-busy="loading" action-busy-label="Retrying models…" @action="emit('retry')" />
     <InlineNotification v-if="actionError" tone="error" :message="actionError" />
@@ -673,37 +700,9 @@ function startProviderDetour() {
       <ModelUsageSection provider="App Studio" />
     </template>
 
-    <template v-else-if="providerConnectionsRoute && !connectionEditorOpen">
-      <InlineNotification v-if="pendingConnection" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="pendingConnection = null" />
-      <div v-if="connectionsLoading && !connections.length" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
-        <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading provider connections…
-      </div>
-      <InlineNotification v-else-if="connectionsError && !connections.length" tone="error" :message="connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
-      <ResourceTable v-else-if="connectionRows.length" :rows="connectionTableRows" :columns="providerConnectionColumns" row-key="id" :interactive="false" searchable search-placeholder="Search provider connections…" :search-keys="['name', 'endpoint', 'status']" aria-label="Provider connections" loaded empty-text="No provider connections match your search.">
-        <template #name="{ row }">
-          <div class="grid min-w-0 gap-1"><span class="font-medium">{{ row.name }}</span><span class="text-[10px] text-text-muted">{{ connectionFromTableRow(row).provider === 'google-ai-studio' ? 'Google AI Studio / Vertex' : providerOptions.find(option => option.value === providerPresetFor(connectionFromTableRow(row).provider, connectionFromTableRow(row).baseURL))?.label || 'OpenAI-compatible' }}</span></div>
-        </template>
-        <template #endpoint="{ row }"><span class="break-all font-mono text-[11px]">{{ connectionTableText(row, 'endpoint') }}</span></template>
-        <template #bindingCount="{ row }"><span class="text-[12px]">{{ connectionBindingCount(row) }} model{{ connectionBindingCount(row) === 1 ? '' : 's' }}</span></template>
-        <template #status="{ row }"><StatusBadge :status="connectionTableText(row, 'status')" :tone="connectionTableTone(row)" /><p v-if="connectionTableText(row, 'statusMessage')" class="mt-1 max-w-[48ch] text-[11px] leading-4 text-text-muted">{{ connectionTableText(row, 'statusMessage') }}</p></template>
-        <template #actions="{ row }">
-          <ResourceTableActionButton :icon="Plus" :label="`Add model using ${row.name}`" :disabled="saving || connectionBusy" @click="addModelFor(connectionFromTableRow(row))" />
-          <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionFromTableRow(row).deleting" @click="openConnectionEditor(connectionFromTableRow(row))" />
-          <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionBindingCount(row) > 0 || connectionFromTableRow(row).deleting" @click="emit('deleteConnection', connectionFromTableRow(row))" />
-        </template>
-      </ResourceTable>
-      <FirstRunGuide v-else title="No provider connections" description="Connect a provider once, then use it for one or more model configurations." primary-label="Connect provider" :steps="[
-        { label: 'Connect a provider', description: 'Choose the endpoint and save a workspace credential.' },
-        { label: 'Add model bindings', description: 'Choose one or more models that use this provider.' },
-        { label: 'Set a workspace default', description: 'Choose the model used for new projects and turns.' },
-      ]" @primary="openConnectionEditor()">
-        <template #icon><Cpu :stroke-width="1.75" /></template>
-      </FirstRunGuide>
-    </template>
-
-    <template v-else-if="providerConnectionsRoute && connectionEditorOpen">
+    <template v-else-if="connectionEditorOpen">
       <div class="k-create-page">
-        <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="connectionBusy" @click="closeConnectionEditor"><ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Provider connections</button>
+        <button type="button" class="k-btn k-btn--ghost k-back-action" :disabled="connectionBusy" @click="closeConnectionEditor"><ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> Back to Models</button>
         <header class="k-create-header">
           <h1 ref="connectionHeadingRef" class="k-create-title" tabindex="-1">{{ connectionOriginal ? 'Edit provider connection' : 'Connect provider' }}</h1>
           <p class="k-create-description">Save a provider credential once so multiple model configurations can reuse it.</p>
@@ -762,27 +761,50 @@ function startProviderDetour() {
       </div>
     </template>
 
-    <template v-else>
-      <div v-if="loading && !settings && !creationRoute && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
+    <template v-else-if="!editorOpen && !creationRoute">
+      <header class="k-resource-page__header">
+        <div class="k-resource-page__heading">
+          <h3 class="k-resource-page__title">Available models</h3>
+          <p class="k-resource-page__subtitle">Models you can use to create and chat in projects.</p>
+        </div>
+        <div class="k-resource-page__actions">
+          <ActionMenu label="Create" primary-menu :items="createActions" :disabled="saving || connectionsLoading" @select="selectCreateAction" />
+        </div>
+      </header>
+
+      <FirstRunGuide v-if="showFirstRun" title="Connect a provider to add models" description="Connect a provider once, then reuse it across models in App Studio." primary-label="Connect provider" :steps="[
+        { label: 'Connect a provider', description: 'Save a workspace credential.' },
+        { label: 'Add a model', description: 'Choose a model on the saved connection.' },
+        { label: 'Use it in projects', description: 'Select a model when creating or chatting.' },
+      ]" @primary="openConnectionEditor()"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+      <div v-else-if="loading && !settings && !loadError" class="grid min-h-48 content-start gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-live="polite" aria-busy="true">
         <div class="shimmer h-4 w-36 rounded bg-surface-overlay" /><div class="shimmer h-24 w-full rounded bg-surface-overlay" /><div class="text-[12px] text-text-muted">Loading models…</div>
       </div>
       <div v-else>
         <div v-if="loading" class="flex items-center gap-2 text-[11px] text-text-muted" role="status" aria-live="polite" aria-busy="true"><Loader2 class="h-3.5 w-3.5 animate-spin text-accent" :stroke-width="1.75" /> Refreshing models…</div>
-        <InlineNotification v-if="testError && !editorOpen && !creationRoute" tone="error" :message="testError" />
-        <InlineNotification v-else-if="testStatus && !editorOpen && !creationRoute" tone="success" :message="testStatus" />
-        <ModelCollection v-if="settings?.models.length && !creationRoute && !editorOpen" :rows="modelRows" preference-key="railgrid:app-studio:models:layout">
-          <template #cards="{ rows }">
-            <ModelConnectionCard v-for="{ saved } in rows" :key="saved.id" :name="saved.name" :model="saved.model" :endpoint="saved.connectionName || saved.baseURL" :configured="saved.configured" :is-default="saved.default" :busy="saving" :test-state="modelTests?.[saved.id]?.state" :test-tone="modelTests?.[saved.id]?.tone">
-              <p v-if="saved.catalog" class="text-[11px] text-text-secondary">${{ saved.catalog.inputPer1M }} input · ${{ saved.catalog.outputPer1M }} output<br />USD per 1M tokens · catalog estimate</p><p v-else class="text-[11px] text-text-secondary">Pricing unavailable</p>
-              <p class="text-[11px] text-text-secondary">{{ saved.default ? 'Default for new projects' : 'Available in project model pickers' }}</p>
-              <InlineNotification v-if="modelTests?.[saved.id]?.error" tone="error" :message="modelTests[saved.id].error" />
-              <template #actions>
-                <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="saving" @click="emit('openEditor', saved.id)"><Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> Edit</button>
-                <button type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="saving || !saved.configured" @click="emit('testSaved', saved.id)">Test connection</button>
-                <button v-if="!saved.default" type="button" class="app-studio-touch-target k-btn k-btn--ghost" :disabled="saving || !saved.configured" @click="emit('setDefault', saved.id)"><Star class="h-3.5 w-3.5" :stroke-width="1.75" /> Make default</button>
-                <button type="button" class="app-studio-touch-target k-icon-action" :disabled="saving" :aria-label="`Delete ${saved.name}`" @click="emit('delete', saved.id)"><Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /></button>
-              </template>
-            </ModelConnectionCard>
+        <InlineNotification v-if="testError" tone="error" :message="testError" />
+        <InlineNotification v-else-if="testStatus" tone="success" :message="testStatus" />
+        <ModelCollection v-if="modelRows.length" class="setup-table" :rows="modelRows" preference-key="railgrid:app-studio:models:layout" table-only show-provider-connection>
+          <template #name-prefix="{ row }">
+            <ResourceTableExpandButton
+              :expanded="expandedModel === row.id"
+              :label="`Show details for ${row.name}`"
+              :expanded-label="`Hide details for ${row.name}`"
+              :controls="`${modelDetailsPrefix}-${row.id}`"
+              @click="toggleModelDetails(row.id)"
+            />
+          </template>
+          <template #after-row="{ row, columnCount }">
+            <tr v-if="expandedModel === row.id" :id="`${modelDetailsPrefix}-${row.id}`">
+              <td :colspan="columnCount">
+                <div class="grid gap-1 py-2 text-[12px] text-text-secondary">
+                  <p class="break-all">Endpoint: {{ row.endpoint }}</p>
+                  <p v-if="row.saved.catalog">${{ row.saved.catalog.inputPer1M }} input · ${{ row.saved.catalog.outputPer1M }} output (USD per 1M tokens, catalog estimate)</p>
+                  <p v-else>Pricing unavailable</p>
+                  <p v-if="row.default">Default for new projects</p>
+                </div>
+              </td>
+            </tr>
           </template>
           <template #details="{ row: { saved } }"><InlineNotification v-if="modelTests?.[saved.id]?.error" tone="error" :message="modelTests[saved.id].error" /></template>
           <template #actions="{ row: { saved } }">
@@ -792,14 +814,40 @@ function startProviderDetour() {
             <ResourceTableDeleteButton :label="`Delete ${saved.name}`" :disabled="saving" @click="emit('delete', saved.id)" />
           </template>
         </ModelCollection>
-      <FirstRunGuide v-else-if="!editorOpen && !creationRoute" title="No models configured" description="Connect a provider, then add one or more model configurations that use it." :primary-label="modelConnectionOptions.length ? 'Add model' : 'Connect provider'" :steps="[
-          { label: 'Connect a provider', description: 'Save a workspace credential on the Provider connections tab.' },
-          { label: 'Add a model binding', description: 'Choose a model on a saved provider connection.' },
-          { label: 'Use it in projects', description: 'Select a configured model when creating or chatting.' },
-        ]" @primary="startModelSetup"><template #icon><Cpu :stroke-width="1.75" /></template></FirstRunGuide>
+        <p v-else-if="!loadError && !loading && !showFirstRun" class="text-[13px] text-text-muted">No models configured</p>
       </div>
 
-      <form v-if="editorOpen || creationRoute" class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect" aria-label="Model binding form" novalidate :aria-busy="saving || testing" @submit.prevent="emit('save')">
+      <section class="k-resource-page k-resource-page--collection app-studio-provider-connections setup-table" aria-labelledby="app-studio-provider-connections-title">
+        <header class="k-resource-page__header">
+          <div class="k-resource-page__heading">
+            <h3 id="app-studio-provider-connections-title" ref="providerConnectionsHeading" class="k-resource-page__title" tabindex="-1">Provider connections</h3>
+            <p class="k-resource-page__subtitle">Save provider credentials once and reuse them across models.</p>
+          </div>
+        </header>
+        <InlineNotification v-if="pendingConnection" tone="warning" message="Provider changes are saved and waiting for revision space. Existing model bindings keep their previous configuration." action-label="Dismiss" @action="pendingConnection = null" />
+        <div v-if="connectionsLoading && !connections.length" class="grid gap-3 rounded-lg border border-dashed border-border-subtle bg-surface p-4" role="status" aria-busy="true">
+          <Loader2 class="h-4 w-4 animate-spin text-accent" :stroke-width="1.75" /> Loading provider connections…
+        </div>
+        <InlineNotification v-else-if="connectionsError" tone="error" :message="connectionsError" action-label="Retry" :action-busy="connectionsLoading" action-busy-label="Retrying connections…" @action="emit('connectionsChanged')" />
+        <ResourceTable v-if="connectionRows.length" :rows="connectionTableRows" :columns="providerConnectionColumns" row-key="id" :interactive="false" searchable search-placeholder="Search provider connections…" :search-keys="['name', 'endpoint', 'status']" aria-label="Provider connections" loaded empty-text="No provider connections match your search.">
+          <template #name="{ row }">
+            <div class="grid min-w-0 gap-1"><span class="font-medium">{{ row.name }}</span><span class="text-[10px] text-text-muted">{{ connectionFromTableRow(row).provider === 'google-ai-studio' ? 'Google AI Studio / Vertex' : providerOptions.find(option => option.value === providerPresetFor(connectionFromTableRow(row).provider, connectionFromTableRow(row).baseURL))?.label || 'OpenAI-compatible' }}</span></div>
+          </template>
+          <template #endpoint="{ row }"><span class="break-all font-mono text-[11px]">{{ connectionTableText(row, 'endpoint') }}</span></template>
+          <template #bindingCount="{ row }"><span class="text-[12px]">{{ connectionBindingCount(row) }} model{{ connectionBindingCount(row) === 1 ? '' : 's' }}</span></template>
+          <template #status="{ row }"><StatusBadge :status="connectionTableText(row, 'status')" :tone="connectionTableTone(row)" /><p v-if="connectionTableText(row, 'statusMessage')" class="mt-1 max-w-[48ch] text-[11px] leading-4 text-text-muted">{{ connectionTableText(row, 'statusMessage') }}</p></template>
+          <template #actions="{ row }">
+            <ResourceTableActionButton :icon="Plus" :label="`Add model using ${row.name}`" :disabled="saving || connectionBusy || modelLimitReached || connectionFromTableRow(row).deleting" @click="addModelFor(connectionFromTableRow(row))" />
+            <ResourceTableEditButton :label="`Edit provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionFromTableRow(row).deleting" @click="openConnectionEditor(connectionFromTableRow(row))" />
+            <ResourceTableDeleteButton :label="`Delete provider connection ${row.name}`" :disabled="saving || connectionBusy || connectionBindingCount(row) > 0 || connectionFromTableRow(row).deleting" @click="emit('deleteConnection', connectionFromTableRow(row))" />
+          </template>
+        </ResourceTable>
+        <p v-else-if="!connectionsLoading && !connectionsError && !showFirstRun" class="text-[13px] text-text-muted">No provider connections</p>
+      </section>
+    </template>
+
+    <template v-else>
+      <form class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect" aria-label="Model binding form" novalidate :aria-busy="saving || testing" @submit.prevent="emit('save')">
         <div class="k-create-body">
             <section class="agents-provider-connect__section" aria-labelledby="binding-provider-heading">
               <h2 id="binding-provider-heading" class="k-model-form-heading">Provider connection</h2>
@@ -841,12 +889,21 @@ function startProviderDetour() {
         </footer>
       </form>
 
-      <div v-if="connectionsError && !providerConnectionsRoute" class="text-[11px] text-text-muted" role="status">Provider connection details could not be loaded. Model bindings remain available.</div>
     </template>
   </section>
 </template>
 
 <style scoped>
+.app-studio-provider-connections { margin-block-start: 1rem; }
+.setup-table :deep(.k-table__cell--primary) { min-inline-size: 18rem; }
+@media (max-width: 640px) {
+  .setup-table :deep(.k-table__primary) { flex-wrap: wrap; }
+  .setup-table :deep(.k-table__primary-content) { flex-basis: 100%; }
+  .setup-table :deep(:is(.k-table__primary-actions, .k-table__primary-actions .k-table-action)) {
+    margin-inline-start: 0;
+    opacity: 1;
+  }
+}
 .agents-provider-connect .agents-provider-connect__link{color:var(--color-accent);text-decoration:underline;text-underline-offset:3px;}
 .agents-provider-connect__section{display:grid;gap:12px;min-width:0;}
 .agents-provider-connect__details{font-size:12px;color:var(--color-text-secondary);}

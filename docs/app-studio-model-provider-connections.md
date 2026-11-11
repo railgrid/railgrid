@@ -1,12 +1,14 @@
 # App Studio model provider connections
 
 App Studio separates a provider account from the models selected through it.
-**Models** manages model bindings and the workspace default. **Usage & cost**
-(`~models/usage`) has its own tab rather than appearing below the model list;
-it retains the explicit unavailable state until reporting is supported. **Provider
-connections** manages provider endpoints and workspace credentials. The staged
-setup follows the Agents flow: connect a provider once, then select and verify
-each model that will use it.
+Under **Setup → Models**, the **Available models** table shows model bindings
+and the workspace default. The **Provider connections** table below it manages
+provider endpoints and workspace credentials. The **Create** menu offers
+**Add model** and **Connect provider**. Connect a provider once, then select and
+verify each model that uses it. The existing provider connections link
+(`~models/provider-connections`) opens the combined page at that section.
+**Usage & cost** (`~models/usage`) is a separate Setup tab with an unavailable
+state until reporting is supported.
 
 A workspace-scoped `ModelProviderConnection` in `ai.railgrid.ai/v1alpha1` holds
 provider configuration, an optional Anthropic workspace ID, and a reference to

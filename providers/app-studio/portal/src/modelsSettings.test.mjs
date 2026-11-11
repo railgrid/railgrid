@@ -82,7 +82,7 @@ test('retains initial and stale model errors with one disabled busy retry action
     assert.match(html, /Could not load model settings\./)
     assert.match(html, /<button[^>]*class="k-inline-notification__action"[^>]*disabled[^>]*aria-label="Retrying models…"[^>]*aria-busy="true"[^>]*>Retrying models…<\/button>/)
     assert.doesNotMatch(html, />Loading models…</)
-    if (settings) assert.match(html, /aria-label="Model Main model"/)
+    if (settings) assert.match(html, /aria-label="Edit Main model"/)
   }
 })
 
@@ -542,21 +542,20 @@ test('presents multiple workspace models with explicit default and readiness sta
     },
   })
 
-  assert.match(html, /aria-label="Model GPT High"/)
-  assert.match(html, /aria-label="Model Gemini Fast"/)
-  assert.match(html, /k-model-grid/)
+  assert.match(html, /aria-label="Edit GPT High"/)
+  assert.match(html, /aria-label="Edit Gemini Fast"/)
+  assert.match(html, /<table/)
   assert.match(html, /gpt-5\.4/)
   assert.match(html, /Default/)
-  assert.match(html, /Credential stored/)
+  assert.match(html, /Not tested/)
   assert.match(html, /Needs credential/)
-  assert.match(html, /Make default/)
   assert.doesNotMatch(html, /aria-label="Model configuration form"/)
 })
 
 test('uses an explicit empty state before opening the model form', async () => {
   const html = await render()
 
-  assert.match(html, /No models configured/)
+  assert.match(html, /Connect a provider to add models/)
   assert.match(html, />Connect provider/)
   assert.doesNotMatch(html, /aria-label="Model binding form"/)
 })
@@ -574,10 +573,11 @@ test('keeps the usage tab separate from the Models collection', async () => {
     },
   })
 
-  assert.match(html, /<h2[^>]*>Models<\/h2>/)
+  assert.match(html, /<h2[^>]*>Setup<\/h2>/)
+  assert.match(html, /data-k-tab-id="models"[^>]*aria-current="page"/)
   assert.match(html, /Usage &amp; cost/)
   assert.doesNotMatch(html, /aria-label="Usage and cost"/)
-  assert.match(html, /aria-label="Model GPT High"/)
+  assert.match(html, /aria-label="Edit GPT High"/)
 })
 
 test('usage route renders its own section even without configured models', async () => {
@@ -589,7 +589,7 @@ test('usage route renders its own section even without configured models', async
     assert.match(html, /data-k-tab-id="usage"[^>]*aria-current="page"/)
     assert.match(html, /aria-label="Usage and cost"/)
     assert.match(html, /Usage reporting isn’t available yet/)
-    assert.doesNotMatch(html, /No models configured|aria-label="Model Main model"|>Add model<|>Connect provider</)
+    assert.doesNotMatch(html, /No models configured|aria-label="Edit Main model"|>Add model<|>Connect provider</)
   }
 
 })
@@ -609,7 +609,7 @@ test('route-owned model creation keeps the collection out of the form surface', 
 
   assert.match(html, /aria-label="Model binding form"/)
   assert.match(html, /Saved provider connection/)
-  assert.doesNotMatch(html, /aria-label="Model GPT High"/)
+  assert.doesNotMatch(html, /aria-label="Edit GPT High"/)
   assert.doesNotMatch(html, />Add model<\/button>/)
 })
 
@@ -659,7 +659,7 @@ test('provider detours preserve the original Models or project route and the mod
   const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
   const script = app.slice(app.indexOf('>', app.indexOf('<script')) + 1, app.indexOf('</script>'))
   const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-  const names = ['startModelProviderSetup', 'beginLLMProviderDetour', 'finishLLMProviderDetour', 'continueModelWithProvider']
+  const names = ['beginLLMProviderDetour', 'finishLLMProviderDetour', 'continueModelWithProvider']
   const declarations = names.map(name => {
     const declaration = ast.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === name)
     assert.ok(declaration, `${name} exists`)
@@ -698,19 +698,9 @@ test('provider detours preserve the original Models or project route and the mod
       handleModelConnectionsChanged: () => {},
       navigation,
     }
-    const functions = new Function(...Object.keys(values), `${outputText}; return { startModelProviderSetup, beginLLMProviderDetour, continueModelWithProvider }`)(...Object.values(values))
+    const functions = new Function(...Object.keys(values), `${outputText}; return { beginLLMProviderDetour, continueModelWithProvider }`)(...Object.values(values))
     return { ...values, ...functions }
   }
-
-  const models = buildState()
-  models.startModelProviderSetup()
-  assert.equal(models.modelsReturnRoute.value, '~models')
-  assert.deepEqual(models.navigation.at(-1), { route: '~models/provider-connections', options: undefined })
-
-  const project = buildState({ createRoute: true })
-  project.startModelProviderSetup()
-  assert.equal(project.modelsReturnRoute.value, '~new')
-  assert.deepEqual(project.navigation.at(-1), { route: '~models/provider-connections', options: undefined })
 
   const editor = buildState({ createModelRoute: true, returnRoute: '~new' })
   editor.beginLLMProviderDetour()
@@ -798,16 +788,26 @@ test('keeps the provider detour link visible beneath an existing model binding s
   assert.match(html, />Connect provider<\/button>/)
 })
 
-test('keeps Provider connections separate and defines a progressive provider-first connect form', async () => {
+test('combines models and provider connections and keeps a focused provider-first form', async () => {
   const html = await render({
+    routePage: true,
     providerConnectionsRoute: true,
+    connections: [savedConnection],
+    settings: {
+      provider: 'openai-compatible', baseURL: '', model: 'gpt-5.4', configured: true,
+      models: [{ id: 'main', name: 'Main model', model: 'gpt-5.4', configured: true, connectionRef: savedConnection.name }],
+    },
   })
 
-  assert.match(html, /aria-label="Provider connections"/)
-  assert.match(html, /Connect provider/)
+  assert.match(html, /data-k-tab-id="models"[^>]*aria-current="page"/)
+  assert.doesNotMatch(html, /data-k-tab-id="connections"/)
+  assert.match(html, /aria-label="Models"[\s\S]*OpenAI main[\s\S]*aria-label="Provider connections"/)
+  assert.match(html, /aria-label="Create"/)
+  assert.match(html, /aria-label="Delete provider connection OpenAI main"[^>]*disabled/)
   const source = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
-  const start = source.indexOf('<template v-else-if="providerConnectionsRoute && connectionEditorOpen">')
-  const end = source.indexOf('\n    <template v-else>', start)
+  const start = source.indexOf('<template v-else-if="connectionEditorOpen">')
+  const end = source.indexOf('<template v-else-if="!editorOpen && !creationRoute">', start)
+  assert.ok(start >= 0 && end > start)
   const form = source.slice(start, end)
   assert.match(form, /<h1[^>]*tabindex="-1"/)
   assert.match(form, /id="model-provider"/)
@@ -1087,7 +1087,7 @@ test('editing replaces the collection with one focused form', async () => {
   assert.match(html, /aria-label="Model binding form"/)
   assert.match(html, /class="k-create-surface k-create-surface--wide k-model-form agents-provider-connect"/)
   assert.match(html, /Verify &amp; save/)
-  assert.doesNotMatch(html, /aria-label="Model GPT High"/)
+  assert.doesNotMatch(html, /aria-label="Edit GPT High"/)
 })
 
 test('Models-route editing uses the wide full-page form without an inner editor heading', async () => {
@@ -1123,7 +1123,7 @@ test('associates field guidance and validation errors with their controls', asyn
   assert.match(html, /Enter the provider’s exact model ID\./)
 })
 
-test('announces the active model mutation and disables competing card actions', async () => {
+test('announces the active model mutation and disables competing table actions', async () => {
   const editing = await render({
     editorOpen: true,
     editingModelID: 'gpt-high',
@@ -1146,7 +1146,7 @@ test('announces the active model mutation and disables competing card actions', 
       models: [{ id: 'gpt-high', name: 'GPT High', provider: 'openai-compatible', baseURL: 'https://api.openai.com/v1', model: 'gpt-5.4', configured: true, default: true }],
     },
   })
-  assert.match(collection, /<button type="button"[^>]*disabled[^>]*>\s*<svg[^>]*>[\s\S]*?<\/svg> Edit/)
+  assert.match(collection, /aria-label="Edit GPT High"[^>]*disabled/)
 })
 
 test('model binding combines verification and save in one primary action', async () => {
@@ -1280,9 +1280,9 @@ test('App Studio owns save state while the extracted surface owns presentation',
 
   assert.match(app, /const CREATE_MODEL_ROUTE = 'create\/model'/)
   assert.match(app, /const isCreateModelRoute = computed\(\(\) => routePath\.value === CREATE_MODEL_ROUTE\)/)
-  assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && !isModelUsageRoute\.value && llmEditorOpen\.value\)\)/)
+  assert.match(app, /const isModelEditorPage = computed\(\(\) => isCreateModelRoute\.value \|\| \(isModelsRoute\.value && !isModelUsageRoute\.value && !llmProviderDetourActive\.value && llmEditorOpen\.value\)\)/)
   assert.match(app, /const routePath = computed\(\(\) => \(props\.ctx\?\.subPath \?\? ''\)\.split\('\/'\)\.filter\(Boolean\)\.join\('\/'\)\)/)
-  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isProviderConnectionsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
+  assert.match(app, /v-if="showSettings[\s\S]*\(\(isModelsRoute \|\| isCreateModelRoute\) && !\(initializing && !loading\)\)"/)
   assert.match(app, /<ModelsSettings[\s\S]*:creation-route="isCreateModelRoute"/)
   assert.match(app, /<ModelsSettings[\s\S]*@save="verifyAndSaveLLMSettings"[\s\S]*@delete="deleteLLMModel"[\s\S]*@set-default="setDefaultLLMModel"/)
   assert.doesNotMatch(app, /llmApiKey|selectLLMProvider|updateLLMBaseURL|updateLLMAPIKey/)
@@ -1441,9 +1441,9 @@ test('refreshing settings allows retry and ignores old saved-model completions',
   }
 })
 
-test('restores the saved list layout with ResourceTable actions and model states', async () => {
+test('shows model actions and states in a table even with a saved card preference', async () => {
   const previousWindow = globalThis.window
-  globalThis.window = { localStorage: { getItem: key => key === 'railgrid:app-studio:models:layout' ? 'list' : null } }
+  globalThis.window = { localStorage: { getItem: key => key === 'railgrid:app-studio:models:layout' ? 'grid' : null } }
   try {
     const html = await render({
       settings: {
@@ -1453,7 +1453,7 @@ test('restores the saved list layout with ResourceTable actions and model states
     })
     assert.match(html, /<table/)
     assert.doesNotMatch(html, /k-model-grid/)
-    assert.match(html, /Model layout: List/)
+    assert.doesNotMatch(html, /Model layout:/)
     assert.match(html, /aria-label="Edit Sol"/)
     assert.match(html, /aria-label="Test connection for Sol"/)
     assert.match(html, /aria-label="Delete Sol"/)

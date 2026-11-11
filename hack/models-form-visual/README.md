@@ -65,9 +65,9 @@ guidance and storage copy remain visible in the captures. The geometry gate
 compares the shared route frame, provider controls, credential controls, and the
 custom endpoint target without modifying the screenshots.
 
-## Models tab review matrix
+## App Studio Setup review matrix
 
-With the fixture server running, capture the three real App Studio Models tabs:
+With the fixture server running, capture the two App Studio Setup tabs:
 
 ```sh
 PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs \
@@ -76,12 +76,11 @@ PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs \
   node hack/models-tabs-visual.mjs
 ```
 
-`models-tabs-visual.mjs` captures Models, Provider connections, and Usage & cost
-at 1440px and 390px in both `html.light` and `html.dark` (12 screenshots). It
-clicks the real tab controls and checks that the outer Projects/Models navigation
-stays visible, the selected tab changes, content loads, no page-level horizontal
-overflow occurs, and no browser errors are emitted. `index.html` is the local
-rendered evidence gallery; `report.json` records the matrix and PNG filenames.
+`models-tabs-visual.mjs` captures Models and Usage & cost at 1440px and 390px
+in light and dark themes (eight screenshots). It checks both collections on
+Models, model expansion, the Create menu and provider form, the existing
+provider connections link, tab selection, overflow, and browser errors.
+`index.html` is the local evidence gallery and `report.json` records the matrix.
 The opt-in `scenario=tabs` data supplies a configured model and shared provider;
 Usage & cost shows its actual reporting-unavailable state. This captures the
 provider shell, not the host console's workspace sidebar. The existing create-form

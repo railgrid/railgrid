@@ -127,9 +127,8 @@ limit and disclose when a breakdown shows only its top six rows.
 ## Layout and responsive behavior
 
 Models routes use an unboxed page header with the title and provider-appropriate
-primary action on one wrapping row, followed by supporting copy. Agents uses a
-single Create menu. App Studio uses Add model, or Connect provider when no
-connection is saved. Keep the title, supporting copy, and primary action at the
+primary action on one wrapping row, followed by supporting copy. Both providers use a single Create menu and a direct Connect provider action
+in the first-run guide. Keep the title, supporting copy, and primary action at the
 canvas level and use the collection area for tables or cards.
 Match Databricks collection spacing: the host owns the outer inset, with no
 additional page padding and 16px between content groups.
@@ -212,12 +211,13 @@ omit technical disclosures and explain the scope of the harness credential
 check where applicable. Both tables use one recovery control for a failed
 credential read and retain the last successful results on refresh failure.
 
-**App Studio.** The **Models** tab offers **Add model**, or **Connect provider**
-when no connection is saved. App Studio keeps **Provider connections** on a
-separate tab. Its searchable list shows the provider, endpoint, active
+**App Studio.** Setup opens to Models. **Available models** shows model
+bindings and their provider connections. Expand a model row for endpoint and
+pricing details. The **Provider connections** table shows the provider, endpoint,
 model-binding count, readiness, and Add model, Edit, and Delete actions.
-App Studio retains its Google API-key and Vertex service-account credential
-controls, model reasoning defaults, and workspace default designation.
+The **Create** menu offers **Add model** and **Connect provider**. App Studio
+supports Google API-key and Vertex service-account credentials, model reasoning
+defaults, and a workspace default model. **Usage & cost** stays under Setup.
 
 Both portals connect an API provider once, then choose the saved connection
 when adding and verifying each model binding. A connection with active model

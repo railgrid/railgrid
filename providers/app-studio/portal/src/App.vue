@@ -11,7 +11,6 @@ import {
   Braces,
   Check,
   ClipboardList,
-  Cpu,
   FileCode,
   ChevronRight,
   ExternalLink,
@@ -30,6 +29,7 @@ import {
   Plus,
   Search,
   RefreshCw,
+  Settings,
   Settings2,
   Plug,
   TriangleAlert,
@@ -612,7 +612,7 @@ const CREATE_MODEL_ROUTE = 'create/model'
 const PROJECT_DELETION_POLL_MS = 2000
 const appStudioSectionTabs = [
   { id: 'projects', label: 'Projects', icon: Folder },
-  { id: 'models', label: 'Models', icon: Cpu },
+  { id: 'setup', label: 'Setup', icon: Settings },
 ] as const
 const MISSING_CODE_CONNECTION_ERROR = 'You need to connect to a Git account before you can continue'
 const CODE_CONNECTIONS_URL = portalHref('/ui/providers/code/connections')
@@ -2199,9 +2199,9 @@ const isProjectIndexRoute = computed(() => routeSegment.value === '')
 const isCreateRoute = computed(() => routeSegment.value === CREATE_PROJECT_ROUTE)
 const isProviderConnectionsRoute = computed(() => routePath.value === MODEL_PROVIDER_CONNECTIONS_ROUTE)
 const isModelUsageRoute = computed(() => routePath.value === MODEL_USAGE_ROUTE)
-const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE && !isProviderConnectionsRoute.value)
+const isModelsRoute = computed(() => routeSegment.value === MODELS_ROUTE)
 const isCreateModelRoute = computed(() => routePath.value === CREATE_MODEL_ROUTE)
-const isModelEditorPage = computed(() => isCreateModelRoute.value || (isModelsRoute.value && !isModelUsageRoute.value && llmEditorOpen.value))
+const isModelEditorPage = computed(() => isCreateModelRoute.value || (isModelsRoute.value && !isModelUsageRoute.value && !llmProviderDetourActive.value && llmEditorOpen.value))
 const modelCreateHeadingRef = ref<HTMLHeadingElement | null>(null)
 const projectIndexRoutePending = computed(() =>
   isProjectIndexRoute.value &&
@@ -2209,8 +2209,8 @@ const projectIndexRoutePending = computed(() =>
   (loading.value || !projectsLoaded.value),
 )
 const showProjectIndexRouteLoading = useDelayedLoading(projectIndexRoutePending)
-const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
-const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value)
+const selectedNameFromPath = computed(() => (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value ? '' : routeSegment.value))
+const isAppStudioLandingRoute = computed(() => isProjectIndexRoute.value || isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value)
 
 watch(isCreateRoute, (active) => {
   if (active || !authCompatibleCreation.value) return
@@ -2243,6 +2243,11 @@ function shouldKeepProjectBoundFirstSubmission(): boolean {
 const modelsReturnRoute = ref('')
 const llmProviderDetourActive = ref(false)
 const llmProviderDetourReturnRoute = ref('')
+watch(isProviderConnectionsRoute, (active, previous) => {
+  if (active || !previous) return
+  llmProviderDetourActive.value = false
+  llmProviderDetourReturnRoute.value = ''
+})
 const llmCreateReturnLabel = computed(() => modelsReturnRoute.value === CREATE_PROJECT_ROUTE ? 'Workspace setup' : modelsReturnRoute.value === MODEL_PROVIDER_CONNECTIONS_ROUTE ? 'Provider connections' : 'Models')
 const projectRouteLoading = computed(() => Boolean(
   projectOpenLoading.value ||
@@ -2263,7 +2268,7 @@ const projectRouteShellVisible = computed(() => projectRouteLoading.value || pro
 const conversationLoading = computed(() => projectRouteLoading.value || threadHistoryLoading.value || !!selectingThreadID.value)
 const conversationInteractionBusy = computed(() => conversationLoading.value || conversationRefreshing.value || projectRouteFailure.value)
 const isBuilderVisible = computed(() =>
-  !isAppStudioLandingRoute.value || (!isModelsRoute.value && !isProviderConnectionsRoute.value && !isCreateModelRoute.value && selected.value !== null),
+  !isAppStudioLandingRoute.value || (!isModelsRoute.value && !isCreateModelRoute.value && selected.value !== null),
 )
 watch(
   isBuilderVisible,
@@ -2989,12 +2994,12 @@ const settingsInWorkbench = computed(() => !!settingsProject.value && activeWork
 const publishingInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'publishing')
 const historyInWorkbench = computed(() => activeWorkbenchTab.value?.kind === 'history')
 const projectControlSurfaceInWorkbench = computed(() => settingsInWorkbench.value || publishingInWorkbench.value || historyInWorkbench.value)
-const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value)
+const settingsSurfaceInline = computed(() => projectControlSurfaceInWorkbench.value || isModelsRoute.value || isCreateModelRoute.value)
 const projectControlSurfaceTarget = computed(() => {
   if (publishingInWorkbench.value) return '#app-studio-publishing-host'
   if (historyInWorkbench.value) return '#app-studio-history-host'
   if (settingsInWorkbench.value) return '#app-studio-project-settings-host'
-  if (isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value) return '#app-studio-models-host'
+  if (isModelsRoute.value || isCreateModelRoute.value) return '#app-studio-models-host'
   return 'body'
 })
 const productionSurfaceActive = computed(() => publishingInWorkbench.value || shareDialogOpen.value)
@@ -3739,7 +3744,7 @@ async function load() {
     void hydrateProjectThumbnails(visibleProjectList)
     projectsLoaded.value = true
     initializing.value = false
-    if (isCreateRoute.value || isModelsRoute.value || isProviderConnectionsRoute.value || isCreateModelRoute.value) {
+    if (isCreateRoute.value || isModelsRoute.value || isCreateModelRoute.value) {
       // A project can exist even when its first attachment upload or turn
       // start failed. Keep that submission bound to the project so returning
       // to ~new can retry uploads without creating a second project.
@@ -5261,13 +5266,6 @@ function navigateModelSettings(route: string) {
   props.navigate(route)
 }
 
-function startModelProviderSetup() {
-  if (!modelsReturnRoute.value) {
-    modelsReturnRoute.value = isCreateRoute.value ? CREATE_PROJECT_ROUTE : MODELS_ROUTE
-  }
-  props.navigate(MODEL_PROVIDER_CONNECTIONS_ROUTE)
-}
-
 function beginLLMProviderDetour() {
   llmProviderDetourActive.value = true
   llmProviderDetourReturnRoute.value = isCreateModelRoute.value ? CREATE_MODEL_ROUTE : MODELS_ROUTE
@@ -6353,7 +6351,7 @@ function openModelsSection() {
 }
 
 function selectAppStudioSection(id: string) {
-  if (id === 'models') {
+  if (id === 'setup') {
     openModelsSection()
   } else if (id === 'projects') {
     openProjectsSection()
@@ -10710,9 +10708,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
     <div class="flex min-h-full w-full flex-col gap-4">
       <Tabs
         v-if="!isCreateModelRoute"
-        v-show="!llmEditorOpen"
+        v-show="!isModelEditorPage && !llmProviderDetourActive"
         :tabs="appStudioSectionTabs"
-        :active="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute ? 'models' : 'projects'"
+        :active="isModelsRoute || isCreateModelRoute ? 'setup' : 'projects'"
         aria-label="App Studio sections"
         @select="selectAppStudioSection"
       />
@@ -11236,7 +11234,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
         </main>
       </div>
 
-      <section v-else-if="isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute" :class="isModelEditorPage ? 'k-create-page' : 'min-h-0 pb-6'">
+      <section v-else-if="isModelsRoute || isCreateModelRoute" :class="isModelEditorPage ? 'k-create-page' : 'min-h-0 pb-6'">
         <button v-if="isModelEditorPage" type="button" class="k-btn k-btn--ghost k-back-action" :disabled="llmSaving" @click="cancelLLMEditor">
           <ArrowLeft class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ llmCreateReturnLabel }}
         </button>
@@ -12363,7 +12361,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
 
   <Teleport defer :to="projectControlSurfaceTarget">
     <div
-      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute) && !(initializing && !loading))"
+      v-if="showSettings || publishingInWorkbench || historyInWorkbench || ((isModelsRoute || isCreateModelRoute) && !(initializing && !loading))"
       :class="settingsSurfaceInline
         ? 'h-full min-h-0'
         : 'fixed inset-0 [z-index:var(--app-studio-z-modal-backdrop)] flex items-center justify-center bg-surface/60 px-4 py-6 backdrop-blur-sm'"
@@ -12375,12 +12373,12 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           ? 'k-ai-workbench-canvas h-full min-h-0 overflow-hidden'
           : isCreateModelRoute
             ? ''
-          : isModelsRoute || isProviderConnectionsRoute
+          : isModelsRoute
             ? ''
           : 'max-h-[90vh] max-w-2xl rounded-xl border border-border-subtle shadow-2xl'"
       >
         <header
-          v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute && !isProviderConnectionsRoute"
+          v-if="!settingsInWorkbench && !publishingInWorkbench && !historyInWorkbench && !isCreateModelRoute && !isModelsRoute"
           class="flex items-center justify-between gap-3 border-b border-border-subtle bg-surface-overlay/60 px-4 py-3"
         >
           <div class="min-w-0">
@@ -12402,7 +12400,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </button>
         </header>
 
-        <div :class="isCreateModelRoute ? '' : isModelsRoute || isProviderConnectionsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 overflow-auto p-4'">
+        <div :class="isCreateModelRoute ? '' : isModelsRoute ? 'min-h-0' : publishingInWorkbench || historyInWorkbench ? 'min-h-0 overflow-auto' : settingsInWorkbench ? 'min-h-0 flex-1 overflow-hidden' : 'min-h-0 overflow-auto p-4'">
           <div :class="settingsInWorkbench ? 'flex h-full min-h-0 flex-col' : 'grid gap-4'">
           <component
             v-if="settingsProject && !publishingInWorkbench && !historyInWorkbench"
@@ -12865,9 +12863,9 @@ function isMissingCodeConnectionError(value: string | null): boolean {
           </section>
 
           <ModelsSettings
-            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject && (isModelsRoute || isProviderConnectionsRoute || isCreateModelRoute)"
+            v-if="!publishingInWorkbench && !historyInWorkbench && !settingsProject && (isModelsRoute || isCreateModelRoute)"
             :ctx="props.ctx"
-            :route-page="isModelsRoute || isProviderConnectionsRoute"
+            :route-page="isModelsRoute"
             :provider-connections-route="isProviderConnectionsRoute"
             :usage-route="isModelUsageRoute"
             :provider-detour-active="llmProviderDetourActive"
@@ -12877,7 +12875,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :connection-status-checking="llmConnectionStatusChecking"
             :connection-status-timed-out="llmConnectionStatusTimedOutFor === llmBindingConnectionRef"
             :model-tests="llmModelTests"
-            :model-tests-status="llmTestStatus"
             :settings="llmSettings"
             :loading="llmSettingsLoading"
             :load-error="llmSettingsError"
@@ -12908,7 +12905,6 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             @retry="loadLLMSettings"
             @open-editor="openModelEditor"
             @navigate="navigateModelSettings"
-            @start-provider-setup="startModelProviderSetup"
             @begin-provider-detour="beginLLMProviderDetour"
             @continue-model-with-provider="continueModelWithProvider"
             @cancel-provider-detour="cancelLLMProviderDetour"
