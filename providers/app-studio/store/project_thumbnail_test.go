@@ -92,6 +92,86 @@ func TestMemoryProjectThumbnailBreaksEqualTimestampTiesByCommitOrder(t *testing.
 	}
 }
 
+func TestMemoryProjectThumbnailOrdersPreviewRevisionsAcrossLegacyRows(t *testing.T) {
+	testProjectThumbnailOrdersPreviewRevisionsAcrossLegacyRows(t, NewMemoryStore())
+}
+
+func testProjectThumbnailOrdersPreviewRevisionsAcrossLegacyRows(t *testing.T, s ProjectThumbnailStore) {
+	t.Helper()
+	ctx := context.Background()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "app", ProjectUID: "uid"}
+	now := time.Now().UTC()
+	for _, thumbnail := range []ProjectThumbnail{
+		{CommitSHA: "legacy", CommitOrder: "commit-name", CommitCreatedAt: now, SHA256: "legacy", CapturedAt: now},
+		{PreviewRevision: 7, SHA256: "preview", CapturedAt: now},
+		{PreviewRevision: 6, SHA256: "stale", CapturedAt: now.Add(time.Second)},
+		{CommitSHA: "late-legacy", CommitOrder: "other-commit", CommitCreatedAt: now.Add(time.Minute), SHA256: "late-legacy", CapturedAt: now.Add(time.Minute)},
+	} {
+		thumbnail.Variant = "card-v1"
+		thumbnail.ContentType = "image/png"
+		thumbnail.Data = []byte(thumbnail.SHA256)
+		if err := s.PutProjectThumbnail(ctx, scope, thumbnail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.GetProjectThumbnail(ctx, scope)
+	if err != nil || got.PreviewRevision != 7 || string(got.Data) != "preview" {
+		t.Fatalf("thumbnail = %#v, %v", got, err)
+	}
+}
+
+func testPostgresProjectThumbnailRollback(t *testing.T, s *PostgresStore) {
+	t.Helper()
+	ctx := context.Background()
+	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "app", ProjectUID: "rollback"}
+	now := time.Now().UTC()
+	preview := ProjectThumbnail{
+		PreviewRevision: 7, Variant: "card-v1", ContentType: "image/png",
+		SHA256: "preview", Data: []byte("preview"), CapturedAt: now,
+	}
+	if err := s.PutProjectThumbnail(ctx, scope, preview); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run the previous binary's upsert with a commit that predates the preview.
+	// It updates the legacy columns while leaving preview_revision in place.
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO app_studio_project_thumbnails (
+			org_uuid, workspace_uuid, project_name, project_uid, commit_sha, commit_created_at, commit_order, variant, content_type, sha256,
+			image_bytes, image_encrypted, image_key_id, captured_at
+		) VALUES ($1,$2,$3,$4,'legacy-commit',$5,'legacy-order','card-v1','image/png','legacy',$6,false,'',$7)
+		ON CONFLICT (org_uuid, workspace_uuid, project_name, project_uid) DO UPDATE SET
+			commit_sha = EXCLUDED.commit_sha, commit_created_at = EXCLUDED.commit_created_at, commit_order = EXCLUDED.commit_order,
+			variant = EXCLUDED.variant, content_type = EXCLUDED.content_type,
+			sha256 = EXCLUDED.sha256, image_bytes = EXCLUDED.image_bytes, image_encrypted = EXCLUDED.image_encrypted,
+			image_key_id = EXCLUDED.image_key_id, captured_at = EXCLUDED.captured_at
+		WHERE (app_studio_project_thumbnails.commit_created_at, app_studio_project_thumbnails.commit_order)
+			<= (EXCLUDED.commit_created_at, EXCLUDED.commit_order)
+	`, scope.OrgUUID, scope.WorkspaceUUID, scope.ProjectName, scope.ProjectUID, now.Add(-time.Hour), []byte("legacy"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := s.GetProjectThumbnailMetadata(ctx, scope)
+	if err != nil || metadata.PreviewRevision != 0 || metadata.CommitSHA != "legacy-commit" || metadata.SHA256 != "legacy" {
+		t.Fatalf("thumbnail metadata after rollback = %#v, %v", metadata, err)
+	}
+	legacy, err := s.GetProjectThumbnail(ctx, scope)
+	if err != nil || legacy.PreviewRevision != 0 || string(legacy.Data) != "legacy" {
+		t.Fatalf("thumbnail after rollback = %#v, %v", legacy, err)
+	}
+
+	// A preview can replace the legacy row after re-upgrade even if its revision
+	// is below the leftover value in the preview_revision column.
+	preview.PreviewRevision = 6
+	if err := s.PutProjectThumbnail(ctx, scope, preview); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetProjectThumbnail(ctx, scope)
+	if err != nil || got.PreviewRevision != preview.PreviewRevision || got.CommitSHA != "" || string(got.Data) != "preview" {
+		t.Fatalf("thumbnail after re-upgrade = %#v, %v", got, err)
+	}
+}
+
 func TestEncryptedStorePreservesProjectThumbnailContract(t *testing.T) {
 	base := NewMemoryStore()
 	wrapped, err := NewEncryptedStore(base, testEncryptionKeys(t))
@@ -103,7 +183,7 @@ func TestEncryptedStorePreservesProjectThumbnailContract(t *testing.T) {
 		t.Fatal("encrypted store does not preserve thumbnail capability")
 	}
 	scope := Scope{OrgUUID: "org", WorkspaceUUID: "workspace", ProjectName: "app", ProjectUID: "uid"}
-	want := ProjectThumbnail{CommitSHA: "commit", CommitCreatedAt: time.Now().Add(-time.Minute), CommitOrder: "commit-name", Variant: "card-v1", ContentType: "image/png", SHA256: "digest", Data: []byte("png"), CapturedAt: time.Now().UTC()}
+	want := ProjectThumbnail{PreviewRevision: 7, Variant: "card-v1", ContentType: "image/png", SHA256: "digest", Data: []byte("png"), CapturedAt: time.Now().UTC()}
 	if err := thumbnailStore.PutProjectThumbnail(context.Background(), scope, want); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +191,7 @@ func TestEncryptedStorePreservesProjectThumbnailContract(t *testing.T) {
 		t.Fatalf("thumbnail = %#v, %v", got, err)
 	}
 	metadata, err := thumbnailStore.GetProjectThumbnailMetadata(context.Background(), scope)
-	if err != nil || metadata.CommitSHA != want.CommitSHA || metadata.Variant != want.Variant {
+	if err != nil || metadata.PreviewRevision != want.PreviewRevision || metadata.Variant != want.Variant {
 		t.Fatalf("thumbnail metadata = %#v, %v", metadata, err)
 	}
 	raw, err := base.GetProjectThumbnail(context.Background(), scope)

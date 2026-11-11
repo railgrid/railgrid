@@ -35,6 +35,8 @@ type projectAssistantPreviewSourceFence struct {
 	revision                        uint64
 	digest                          string
 	requiresSharedPreviewCheckpoint bool
+	// A thumbnail can describe the synchronized preview while newer edits wait to sync.
+	previewCheckpointOnly bool
 }
 
 type projectAssistantSharedPreviewSourceStaleError struct {
@@ -117,12 +119,14 @@ func (f *projectAssistantPreviewSourceFence) validate(ctx context.Context) error
 		return err
 	}
 	if f.server.workspaces != nil {
-		current, err := f.server.workspaces.SourceRevision(ctx, f.scope)
-		if err != nil {
-			return err
-		}
-		if current != f.revision {
-			return fmt.Errorf("%w: shared source changed during preview verification", errProjectAssistantRunSandboxConflict)
+		if !f.previewCheckpointOnly {
+			current, err := f.server.workspaces.SourceRevision(ctx, f.scope)
+			if err != nil {
+				return err
+			}
+			if current != f.revision {
+				return fmt.Errorf("%w: shared source changed during preview verification", errProjectAssistantRunSandboxConflict)
+			}
 		}
 		if f.requiresSharedPreviewCheckpoint {
 			checkpoint, err := f.server.workspaces.LastPreviewCheckpoint(ctx, f.scope)

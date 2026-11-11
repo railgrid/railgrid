@@ -1615,10 +1615,7 @@ func (s *Server) projectViewWithSourceRevision(ctx context.Context, c *asclient.
 	return view
 }
 
-// projectListView includes the workspace revision before thumbnail
-// reconciliation. The capture scheduler uses that revision to prove the
-// development runtime is serving the exact committed source shown by the
-// gallery image.
+// projectListView loads the workspace preview checkpoint before reconciling thumbnails.
 func (s *Server) projectListView(ctx context.Context, c *asclient.Client, p *aiv1alpha1.Project, id identity) ProjectView {
 	view := s.projectViewWithSourceRevision(ctx, c, p, id)
 	return s.projectViewWithThumbnail(ctx, view, id, p)
