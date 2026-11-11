@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AgentChat from '../views/AgentChat.vue'
+import ChatMessage from '../views/ChatMessage.vue'
 import { rebuildTranscript } from '../vue/chat'
 import type { SSEEvent } from '../api'
-import type { TranscriptMessage } from '../types'
+import type { ChatMessage as ChatMessageData, ChatProgress, TranscriptMessage } from '../types'
 import { agentFixture, composerEditor, composerText, makeStore, setComposerText, stubApi } from './helpers'
 import { mountVue, settleVue, text, type MountedVue } from './vue-helper'
 
@@ -23,6 +24,54 @@ function session(id: string) {
 }
 
 describe('typed chat progress projection', () => {
+  it('ticks between measurements, pauses while waiting, and settles on measured work', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    let view: MountedVue | undefined
+    const message: ChatMessageData = { id: 'a1', role: 'assistant', content: '', tools: [] }
+    const snapshot = (status: ChatProgress['status'], durationMS?: number): ChatMessageData => ({
+      ...message,
+      progress: { status, durationMS, trace: [{ id: 'c1', kind: 'commentary', content: 'Checking the files' }] },
+    })
+    try {
+      view = await mountVue(ChatMessage, { message: snapshot('running', 16_000) })
+      const { element } = view
+      const label = () => text(element.querySelector('.k-ai-turn-progress__label'))
+      expect(label()).toBe('Working for 16s')
+      expect(vi.getTimerCount()).toBe(1)
+
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(label()).toBe('Working for 18s')
+      await view.setProps({ message: snapshot('running', 17_000) })
+      expect(label()).toBe('Working for 18s')
+
+      await view.setProps({ message: snapshot('waiting', 17_000) })
+      expect(label()).toBe('Waiting')
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(30_000)
+      await view.setProps({ message: snapshot('running', 17_000) })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(label()).toBe('Working for 19s')
+
+      await view.setProps({ message: snapshot('stopping', 17_000) })
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(label()).toBe('Stopping after 19s')
+      await view.setProps({ message: snapshot('completed', 17_000) })
+      expect(label()).toBe('Worked for 17s')
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(label()).toBe('Worked for 17s')
+
+      await view.setProps({ message: { ...snapshot('stopping'), id: 'a2' } })
+      expect(label()).toBe('Stopping')
+      await view.setProps({ message: { ...snapshot('running'), id: 'a3' } })
+      expect(label()).toBe('Working')
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(label()).toBe('Working for 2s')
+    } finally {
+      view?.unmount()
+      vi.useRealTimers()
+    }
+  })
+
   it('restores stop attribution and elapsed time independently of measured work', () => {
     const messages = rebuildTranscript([
       { id: 'u1', role: 'user', runID: 'r1', content: 'Compute pi' },

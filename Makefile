@@ -731,6 +731,7 @@ verify-agentkit: ## Verify optional AgentKit style loading and conversation cont
 	@node --test hack/verify-agentkit-dependencies.test.mjs
 	@node --test provider-sdk/agentkit/styles.conformance.test.mjs
 	@node --test provider-sdk/agentkit-vue/conversation.conformance.test.mjs
+	@node --test provider-sdk/agentkit-vue/turn-work-duration.behavior.test.mjs
 
 .PHONY: test-scoped-navigation
 test-scoped-navigation: ## Verify scoped portal URLs, login returns, and provider request isolation

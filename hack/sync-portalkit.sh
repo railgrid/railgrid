@@ -66,7 +66,7 @@ AGENTKIT_VUE_FILES=(
   ModelCollection.vue ModelConnectionCard.vue ModelUsageSection.vue ModelConnectionForm.vue
   ModelIDSelector.vue AIOverflowTitle.vue threadPins.ts threadReadState.ts ai.ts modelIDSelection.ts
   AIActivityFeed.vue AITranscriptActivity.vue AIExecutionDetails.vue AIConversationTurn.vue AIConversationStatus.vue AITurnProgress.vue AIPlanDisclosure.vue AIPlanSteps.vue
-  useDisclosureScroll.ts conversation.ts AITimestamp.vue clock.ts timestamp.ts
+  useDisclosureScroll.ts conversation.ts AITimestamp.vue clock.ts timestamp.ts turn-work-duration.ts
   AIConversationComposer.vue AICommandPalette.vue AgentKitAttachmentPreview.vue AgentKitAttachmentTextPreview.vue
   composer.ts composerAttachments.ts composerSkillsSearch.ts attachmentDrag.ts attachmentDeletion.ts
   useDismissibleAddMenu.ts useAssistantFilePickerFocus.ts AISkillCatalogList.vue AIAttachmentReceipts.vue
@@ -83,7 +83,7 @@ HOST_UI="$ROOT/portal/src/assets/railgrid-ui.css"
 TS_CANONICAL_ONLY=(README.md dashboardtile.conformance.test.mjs kube.behavior.test.mjs page-state.ts)
 VUE_CANONICAL_ONLY=(ActionMenu.conformance.test.mjs ResourceTable.selection.test.mjs ResourceTable.sorting.test.mjs ResourceTable.overflow.test.mjs ResourceTimestamp.behavior.test.mjs resource-technical.conformance.test.mjs Toast.behavior.test.mjs Toast.conformance.test.mjs)
 AGENTKIT_CANONICAL_ONLY=(README.md styles.conformance.test.mjs)
-AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs)
+AGENTKIT_VUE_CANONICAL_ONLY=(conversation.conformance.test.mjs turn-work-duration.behavior.test.mjs)
 
 # Vue migrations no longer need the vanilla confirm/alert implementation;
 # remove that legacy copy while preserving it for string-building portals.

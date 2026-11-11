@@ -29,6 +29,7 @@ import AITimestamp from '../agentkit/AITimestamp.vue'
 import AITurnProgress from '../agentkit/AITurnProgress.vue'
 import { aiTurnProgressLabel, formatAIMessageAuthor, formatAIWorkedDuration, type AITurnProgressStatus } from '../agentkit/conversation'
 import { isValidTimestamp } from '../agentkit/timestamp'
+import { useTurnWorkDuration } from '../agentkit/turn-work-duration'
 import { runFailurePresentation, sanitizeTechnicalDiagnostic, type FailureRecoveryTarget, type RunFailurePhase } from '../failure-presentation'
 
 const props = withDefaults(defineProps<{
@@ -184,10 +185,17 @@ const failureDiagnostic = computed(() => sanitizeTechnicalDiagnostic(props.messa
 const failurePresentation = computed(() =>
   failurePhase.value ? runFailurePresentation(failurePhase.value, failureDiagnostic.value) : undefined,
 )
-const progressDuration = computed(() => {
-  const value = props.message.progress?.durationMS
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? formatAIWorkedDuration(value) : undefined
+const progressTrace = computed(() => props.message.progress?.trace || [])
+const fallbackTools = computed(() => {
+  if (props.message.role !== 'assistant' || props.message.progress) return []
+  return props.message.tools
 })
+const workDuration = useTurnWorkDuration(() => {
+  const message = props.message
+  if (message.role !== 'assistant') return undefined
+  return { id: message.id, status: progressStatus.value, measuredMs: message.progress?.durationMS }
+})
+const progressDuration = computed(() => workDuration.value === undefined ? undefined : formatAIWorkedDuration(workDuration.value))
 const progressLabel = computed(() => {
   const failure = failurePresentation.value
   if (!failure) return stoppedTurn.value ? stoppedLabel.value : undefined
@@ -195,11 +203,6 @@ const progressLabel = computed(() => {
     return `${failure.title} · ${aiTurnProgressLabel(progressStatus.value, progressDuration.value)}`
   }
   return failure.title
-})
-const progressTrace = computed(() => props.message.progress?.trace || [])
-const fallbackTools = computed(() => {
-  if (props.message.role !== 'assistant' || props.message.progress) return []
-  return props.message.tools
 })
 function progressIsActive(status: AITurnProgressStatus): boolean {
   return status === 'pending' || status === 'running' || status === 'waiting' || status === 'stopping'

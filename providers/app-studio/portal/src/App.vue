@@ -148,6 +148,7 @@ import {
   shouldHydrateAssistantComposerDraftForThread,
 } from './assistantComposerDraftPolicy'
 import { isValidTimestamp } from './agentkit/timestamp'
+import { useTurnWorkDuration } from './agentkit/turn-work-duration'
 import type { AIWorkbenchLauncherItemView, AIWorkbenchTabView } from './agentkit/ai'
 import { useUserLabels } from './portalkit/useUserLabels'
 import { formatAIMessageAuthor, optimisticAIMessageActor, type AITurnProgressStatus } from './agentkit/conversation'
@@ -2324,6 +2325,15 @@ const assistantResumeBusy = computed(() => {
 // is still in flight; tying the latch to it makes the primary action briefly
 // fall back to Send and then return to Stop.
 const assistantStopRequested = computed(() => Boolean(assistantStopRequestedRunID.value) || assistantPendingStartStopRequested.value)
+
+const activeAssistantWorkDuration = useTurnWorkDuration(() => {
+  activeAssistantRunRevision.value
+  const run = activeAssistantRun
+  if (!run) return undefined
+  // Steering can replace the active message while the same run keeps working.
+  const message = messages.value.find(assistantMessageOwnsActiveRun)
+  return { id: run.id, status: assistantTurnProgressStatus(message), measuredMs: message && assistantMeasuredWork(message) }
+})
 
 function resetAssistantStopState() {
   assistantStopRequestGeneration += 1
@@ -9985,20 +9995,19 @@ function projectMessageAssistantStatus(message: ProjectMessage): ReturnType<type
 }
 
 function assistantMessageOwnsActiveRun(message: ProjectMessageView): boolean {
+  activeAssistantRunRevision.value
   const activeRun = activeAssistantRun
-  if (!activeRun || message.metadata?.assistantPhase === 'commentary') return false
+  if (!activeRun || message.role !== 'assistant' || message.metadata?.assistantPhase === 'commentary') return false
   return activeRun.activeMessageID === message.id || (
     message.metadata?.assistantMessageID === activeRun.activeMessageID &&
     message.id === message.metadata.assistantMessageID
   )
 }
 
-function assistantRunStatusForMessage(message: ProjectMessageView): ReturnType<typeof normalizeAssistantRunStatus> {
-  const activeRun = activeAssistantRun
-  if (assistantMessageOwnsActiveRun(message) && assistantStopRequested.value) return 'stopping'
-  return assistantMessageOwnsActiveRun(message) && activeRun
-    ? normalizeAssistantRunStatus(activeRun.status)
-    : projectMessageAssistantStatus(message)
+function assistantRunStatusForMessage(message: ProjectMessageView | undefined): ReturnType<typeof normalizeAssistantRunStatus> {
+  if (message && !assistantMessageOwnsActiveRun(message)) return projectMessageAssistantStatus(message)
+  if (assistantStopRequested.value) return 'stopping'
+  return normalizeAssistantRunStatus(activeAssistantRun?.status)
 }
 
 function assistantMessageTimestamp(message: ProjectMessageView): string {
@@ -10015,8 +10024,8 @@ function assistantProgressStopping(message: ProjectMessageView): boolean {
 }
 
 /** Map the provider-owned run lifecycle onto AgentKit's neutral progress view. */
-function assistantTurnProgressStatus(message: ProjectMessageView): AITurnProgressStatus {
-  if (message.viewStatus === 'interrupted') return 'interrupted'
+function assistantTurnProgressStatus(message: ProjectMessageView | undefined): AITurnProgressStatus {
+  if (message?.viewStatus === 'interrupted') return 'interrupted'
   switch (assistantRunStatusForMessage(message)) {
     case 'pending_permission':
     case 'pending_input':
@@ -10045,15 +10054,19 @@ function assistantProgressHeaderVisible(message: ProjectMessageView): boolean {
     (assistantMessageOwnsActiveRun(message) && !assistantProgressClosed(message)))
 }
 
+function assistantMeasuredWork(message: ProjectMessageView): number | undefined {
+  const measured = message.metadata?.assistantWorkedDurationMS
+  if (typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 0) {
+    return measured
+  }
+  return message.progress?.workedDurationMs || undefined
+}
+
 function assistantWorkedLabel(message: ProjectMessageView): string {
   const status = assistantTurnProgressStatus(message)
   if (status === 'pending' || status === 'waiting') return ''
-  const measured = message.metadata?.assistantWorkedDurationMS
-  if (typeof measured === 'number' && Number.isSafeInteger(measured) && measured >= 0) {
-    return formatAssistantWorkedDuration(measured)
-  }
-  const legacy = message.progress?.workedDurationMs
-  return legacy ? formatAssistantWorkedDuration(legacy) : ''
+  const durationMs = assistantMessageOwnsActiveRun(message) ? activeAssistantWorkDuration.value : assistantMeasuredWork(message)
+  return durationMs === undefined ? '' : formatAssistantWorkedDuration(durationMs)
 }
 
 function assistantTraceBlocks(message: ProjectMessageView): AssistantTraceBlock[] {
