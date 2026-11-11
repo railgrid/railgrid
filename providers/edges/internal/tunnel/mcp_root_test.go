@@ -73,7 +73,7 @@ func TestRootMCPListEdges(t *testing.T) {
 		}
 		return result
 	}
-	checkEdges := func(t *testing.T, result *mcp.CallToolResult, want []connectedEdge) {
+	checkEdges := func(t *testing.T, result *mcp.CallToolResult, want []connectedEdge) []string {
 		t.Helper()
 		if result.IsError {
 			t.Fatalf("list_edges failed: %+v", result.Content)
@@ -89,34 +89,59 @@ func TestRootMCPListEdges(t *testing.T) {
 		if out.Edges == nil || !slices.Equal(out.Edges, want) {
 			t.Fatalf("list_edges = %+v, want %+v", out.Edges, want)
 		}
+		return out.Warnings
+	}
+	denyLists := func(t *testing.T, bearer, resource string) {
+		t.Helper()
+		client, err := callers.For(testCluster, bearer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.(*dynamicfake.FakeDynamicClient).PrependReactor("list", resource, func(action k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", nil)
+		})
 	}
 
+	connected := []connectedEdge{
+		{Name: "connected", Kind: "KubernetesCluster"},
+		{Name: "connected", Kind: "LinuxServer"},
+		{Name: "connected", Kind: "MacOSServer"},
+	}
 	t.Run("all connected kinds", func(t *testing.T) {
-		checkEdges(t, call(t, token), []connectedEdge{
-			{Name: "connected", Kind: "KubernetesCluster"},
-			{Name: "connected", Kind: "LinuxServer"},
-			{Name: "connected", Kind: "MacOSServer"},
-		})
+		if warnings := checkEdges(t, call(t, token), connected); len(warnings) != 0 {
+			t.Fatalf("unexpected warnings: %v", warnings)
+		}
 	})
 	t.Run("caller scope", func(t *testing.T) {
 		// The fake exposes workspace objects only to the configured caller.
 		checkEdges(t, call(t, "other-token"), []connectedEdge{})
 	})
-	t.Run("forbidden list surfaces as an error", func(t *testing.T) {
-		client, err := callers.For(testCluster, token)
-		if err != nil {
-			t.Fatal(err)
+	t.Run("forbidden kind preserves readable edges", func(t *testing.T) {
+		denyLists(t, token, macOSServerResource)
+		warnings := checkEdges(t, call(t, token), connected[:2])
+		if len(warnings) != 1 || !strings.Contains(warnings[0], "list macosservers") || !strings.Contains(warnings[0], "forbidden") {
+			t.Fatalf("expected a macOS list permission warning, got %v", warnings)
 		}
-		client.(*dynamicfake.FakeDynamicClient).PrependReactor("list", macOSServerResource, func(action k8stesting.Action) (bool, runtime.Object, error) {
-			return true, nil, apierrors.NewForbidden(action.GetResource().GroupResource(), "", nil)
-		})
-		result := call(t, token)
+	})
+	t.Run("empty partial inventory includes a warning", func(t *testing.T) {
+		const emptyToken = "other-token"
+		denyLists(t, emptyToken, macOSServerResource)
+		if warnings := checkEdges(t, call(t, emptyToken), []connectedEdge{}); len(warnings) != 1 {
+			t.Fatalf("expected one warning, got %v", warnings)
+		}
+	})
+	t.Run("no readable kinds surfaces as an error", func(t *testing.T) {
+		const deniedToken = "denied-token"
+		for resource := range s.kinds {
+			denyLists(t, deniedToken, resource)
+		}
+		result := call(t, deniedToken)
 		if !result.IsError || len(result.Content) != 1 {
 			t.Fatalf("expected a tool error, got %+v", result)
 		}
 		content, ok := result.Content[0].(*mcp.TextContent)
-		if !ok || !strings.Contains(content.Text, "list macosservers") || !strings.Contains(content.Text, "forbidden") {
-			t.Fatalf("expected a macOS list permission error, got %+v", result.Content[0])
+		if !ok || !strings.Contains(content.Text, "could not list any Edge kind") {
+			t.Fatalf("expected a complete inventory failure, got %+v", result.Content[0])
 		}
 	})
 }

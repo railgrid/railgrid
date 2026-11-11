@@ -160,14 +160,15 @@ type connectedEdge struct {
 }
 
 type listEdgesOutput struct {
-	Edges []connectedEdge `json:"edges"`
+	Edges    []connectedEdge `json:"edges"`
+	Warnings []string        `json:"warnings,omitempty"`
 }
 
 func (p *Server) registerListEdges(srv *mcp.Server, cluster, token string) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "list_edges",
 		Title:       "List connected Edges",
-		Description: "List the name and kind of every connected Kubernetes cluster, macOS server, and Linux server in the current Railgrid workspace.",
+		Description: "List connected Kubernetes, macOS, and Linux Edges in the current workspace. Warnings identify kinds that could not be listed, so the inventory may be incomplete even when it is empty.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, listEdgesOutput, error) {
 		if p.callers == nil {
@@ -183,7 +184,8 @@ func (p *Server) registerListEdges(srv *mcp.Server, cluster, token string) {
 			kind := p.kinds[resource]
 			list, err := client.Resource(kind.GVR).List(ctx, metav1.ListOptions{})
 			if err != nil {
-				return nil, listEdgesOutput{}, fmt.Errorf("list %s: %w", resource, err)
+				out.Warnings = append(out.Warnings, fmt.Sprintf("list %s: %v", resource, err))
+				continue
 			}
 			for _, edge := range list.Items {
 				connected, _, err := unstructured.NestedBool(edge.Object, "status", "connected")
@@ -194,6 +196,9 @@ func (p *Server) registerListEdges(srv *mcp.Server, cluster, token string) {
 					out.Edges = append(out.Edges, connectedEdge{Name: edge.GetName(), Kind: kind.Kind})
 				}
 			}
+		}
+		if len(out.Warnings) > 0 && len(out.Warnings) == len(p.kinds) {
+			return nil, listEdgesOutput{}, fmt.Errorf("could not list any Edge kind: %s", strings.Join(out.Warnings, "\n"))
 		}
 		return nil, out, nil
 	})
