@@ -1064,7 +1064,6 @@ const llmDiscoveredModels = ref<ProjectLLMDiscoveredModel[]>([])
 const llmDiscoveryComplete = ref(false)
 const llmDiscoveryLoading = ref(false)
 const llmDiscoveryError = ref<string | null>(null)
-const llmDiscoveryStatus = ref<string | null>(null)
 let llmDiscoverySerial = 0
 const llmNameOnlyEdit = computed(() => {
   const saved = llmSettings.value?.models.find(model => model.id === llmEditingModelID.value)
@@ -1623,6 +1622,8 @@ function invalidateProjectContextState() {
   developmentTemplatesLoadSerial += 1
   providerCatalogLoadSerial += 1
   invalidateLLMSettingsLoad()
+  llmConnections.value = []
+  clearLLMDiscovery()
   createReadinessLoadSerial += 1
   toolLoadSerial += 1
   developmentPreviewAuthorizationSerial += 1
@@ -2566,7 +2567,7 @@ const productionSummaryTarget = computed(() => {
 const llmModelHint = computed(() =>
   llmCredentialMode.value === 'service-account-json'
     ? 'Use the exact Vertex AI model identifier, including its publisher prefix.'
-    : 'Use the exact model identifier shown by your provider.',
+    : '',
 )
 const llmFormValidation = computed(() => validateLLMModelForm({
   name: llmName.value.trim() || llmSuggestedName.value || llmModel.value.trim().split('/').pop() || '',
@@ -3645,6 +3646,7 @@ useEscapeKey(() => {
 onBeforeUnmount(() => {
   appComponentMounted = false
   invalidateLLMSettingsLoad()
+  clearLLMDiscovery()
   projectCreationSubmit.invalidate()
   developmentPreviewComponentMounted = false
   developmentPreviewRefreshController.dispose()
@@ -5108,16 +5110,24 @@ function clearLLMDiscovery() {
   llmDiscoveredModels.value = []
   llmDiscoveryComplete.value = false
   llmDiscoveryError.value = null
-  llmDiscoveryStatus.value = null
 }
 
-watch(() => {
+const llmDiscoveryConnection = computed(() => {
+  if (!isModelEditorPage.value || !hasProjectRequestTransport(props.ctx)) return
   const connection = llmConnections.value.find(item => item.name === llmBindingConnectionRef.value)
-  return [llmBindingConnectionRef.value, connection?.uid, connection?.generation, connection?.secretName]
-}, (current, previous) => {
-  if (previous && current.every((value, index) => value === previous[index])) return
-  clearLLMDiscovery()
+  if (connection?.connectionFingerprint && !connection.deleting && connection.credentialMode !== 'service-account-json'
+    && connection.observedGeneration === connection.generation) return connection
 })
+
+watch(
+  [routePath, llmEditorBaseline, () => llmDiscoveryConnection.value?.connectionFingerprint],
+  () => {
+    clearLLMDiscovery()
+    // Discovery uses the confirmed key independently of binding activation.
+    const connection = llmDiscoveryConnection.value
+    if (connection && !connection.models?.length) void discoverLLMModels()
+  },
+)
 
 function openLLMEditor(
   modelID?: string,
@@ -5172,27 +5182,22 @@ function openLLMEditor(
 }
 
 async function discoverLLMModels() {
-  if (!llmBindingConnectionRef.value || llmDiscoveryLoading.value) return
+  const connection = llmDiscoveryConnection.value
+  if (!connection || llmDiscoveryLoading.value) return
   const serial = ++llmDiscoverySerial
-  const contextFingerprint = appContextFingerprint(props.ctx)
   const requestRoute = routePath.value
+  const requestFingerprint = connection.connectionFingerprint
+  const isCurrent = () => serial === llmDiscoverySerial && requestRoute === routePath.value
+    && requestFingerprint === llmDiscoveryConnection.value?.connectionFingerprint
   llmDiscoveryLoading.value = true
   llmDiscoveryError.value = null
-  llmDiscoveryStatus.value = null
   try {
-    const result = await api.discoverModelProviderConnection(props.ctx, llmBindingConnectionRef.value)
-    if (serial !== llmDiscoverySerial || contextFingerprint !== appContextFingerprint(props.ctx) || requestRoute !== routePath.value) return
+    const result = await api.discoverModelProviderConnection(props.ctx, connection.name)
+    if (!isCurrent()) return
     llmDiscoveredModels.value = result.models
     llmDiscoveryComplete.value = true
-    const selectable = result.models.filter((model) => model.compatibility !== 'unsuitable').length
-    const unavailable = result.models.length - selectable
-    const total = result.models.length
-    llmDiscoveryStatus.value = total > 0
-      ? `${total} model${total === 1 ? '' : 's'} found${unavailable > 0 ? `; ${unavailable} marked unavailable for chat` : ''}.`
-      : 'No models were found. You can still enter a model ID manually.'
   } catch (e) {
-    if (serial !== llmDiscoverySerial || contextFingerprint !== appContextFingerprint(props.ctx) || requestRoute !== routePath.value) return
-    llmDiscoveredModels.value = []
+    if (!isCurrent()) return
     llmDiscoveryError.value = e instanceof Error ? e.message : String(e)
   } finally {
     if (serial === llmDiscoverySerial) llmDiscoveryLoading.value = false
@@ -12891,6 +12896,7 @@ function isMissingCodeConnectionError(value: string | null): boolean {
             :model-error="llmModelError"
             :model-hint="llmModelHint"
             :discovered-models="llmDiscoveredModels"
+            :can-discover="Boolean(llmDiscoveryConnection)"
             :discovery-complete="llmDiscoveryComplete"
             :discovery-loading="llmDiscoveryLoading"
             :discovery-error="llmDiscoveryError"
