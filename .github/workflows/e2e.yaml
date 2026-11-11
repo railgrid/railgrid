@@ -46,7 +46,7 @@ jobs:
     if: needs.changes.outputs.mode == 'full'
     name: Build hub + agent (binaries and images)
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -58,7 +58,20 @@ jobs:
         run: make build
 
       - name: Build hub and agent images
-        run: make e2e-images
+        shell: bash
+        run: |
+          build_log=$(mktemp)
+          trap 'rm -f "$build_log"' EXIT
+          for attempt in 1 2 3; do
+            if make e2e-images 2>&1 | tee "$build_log"; then
+              exit 0
+            fi
+            if [[ "$attempt" == 3 ]] || ! grep -Eq 'proxy[.]golang[.]org.*(stream error|connection reset by peer|TLS handshake timeout|unexpected EOF|i/o timeout)' "$build_log"; then
+              exit 1
+            fi
+            echo "::warning::Go module proxy download failed on attempt $attempt. Retrying the image build."
+            sleep "$((attempt * 15))"
+          done
 
       - name: Archive binaries and images
         run: |
