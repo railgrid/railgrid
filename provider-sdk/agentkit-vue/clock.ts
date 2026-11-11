@@ -2,7 +2,7 @@
 // under providers/*/portal/src/agentkit/; edit here and run
 // `make sync-portalkit`.
 
-import { onBeforeUnmount, onMounted, readonly, ref, type Ref } from 'vue'
+import { onBeforeUnmount, onMounted, readonly, ref, watch, type Ref } from 'vue'
 
 const CLOCK_INTERVAL_MS = 1_000
 const now = ref(Date.now())
@@ -33,23 +33,24 @@ function stop(): void {
  * rendering AgentKit during SSR never creates a browser timer. Each consumer
  * refreshes the value on mount, while all consumers share one interval.
  */
-export function useReactiveNow(): Readonly<Ref<number>> {
+export function useReactiveNow(enabled: () => boolean = () => true): Readonly<Ref<number>> {
   let subscribed = false
 
-  onMounted(() => {
-    if (subscribed) return
-    subscribed = true
-    subscribers += 1
-    refresh()
-    if (subscribers === 1) start()
-  })
+  function setSubscribed(active: boolean): void {
+    if (subscribed === active) return
+    subscribed = active
+    if (active) {
+      subscribers += 1
+      refresh()
+      start()
+    } else {
+      subscribers -= 1
+      if (subscribers === 0) stop()
+    }
+  }
 
-  onBeforeUnmount(() => {
-    if (!subscribed) return
-    subscribed = false
-    subscribers -= 1
-    if (subscribers === 0) stop()
-  })
+  onMounted(() => { watch(enabled, setSubscribed, { immediate: true }) })
+  onBeforeUnmount(() => setSubscribed(false))
 
   return readonlyNow
 }
