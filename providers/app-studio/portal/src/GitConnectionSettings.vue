@@ -2,7 +2,7 @@
 import { portalHref } from './portalkit/navigation'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ExternalLink, Loader2 } from 'lucide-vue-next'
-import { api } from './api'
+import { api, ProjectAPIRequestError } from './api'
 import type { RailgridContext, Project } from './types'
 import type { ProjectCreateReadiness } from './createReadiness'
 import AIWorkbenchSection from './agentkit/AIWorkbenchSection.vue'
@@ -12,7 +12,7 @@ const emit = defineEmits<{ connected: [project: Project]; ready: [] }>()
 const open = defineModel<boolean>('open', { default: false })
 const readiness = ref<ProjectCreateReadiness | null>(null)
 const checking = ref(false)
-const checkFailed = ref(false)
+const checkFailure = ref<'forbidden' | 'unavailable' | null>(null)
 const saving = ref(false)
 const error = ref('')
 let generation = 0
@@ -47,7 +47,7 @@ const repositoryMessage = computed(() => {
   }
 })
 const action = computed(() => {
-  if (checkFailed.value) return { href: portalHref('/providers'), label: 'View providers' }
+  if (checkFailure.value === 'forbidden') return { href: portalHref('/providers'), label: 'View providers' }
   switch (connection.value?.status) {
     case 'provider-missing': return { href: portalHref('/providers'), label: 'Enable Code provider' }
     case 'failed': return { href: portalHref('/ui/providers/code/connections'), label: 'Fix Git connection' }
@@ -56,19 +56,20 @@ const action = computed(() => {
   }
 })
 async function check() {
-  if (!open.value || checking.value || saving.value || props.project.repository?.ref) return
-  const current = generation
+  if (!open.value || saving.value || props.project.repository?.ref) return
+  const current = ++generation
   checking.value = true
   try {
     const result = await api.getProjectCreateReadiness(props.ctx)
     if (current === generation) {
       readiness.value = result
-      checkFailed.value = false
+      checkFailure.value = null
     }
-  } catch {
+  } catch (err) {
     if (current === generation) {
+      console.warn('App Studio Git readiness check failed', err)
       readiness.value = null
-      checkFailed.value = true
+      checkFailure.value = err instanceof ProjectAPIRequestError && err.status === 403 ? 'forbidden' : 'unavailable'
     }
   } finally { if (current === generation) checking.value = false }
 }
@@ -100,7 +101,7 @@ watch([
 ], () => {
   generation++
   checking.value = false
-  checkFailed.value = false
+  checkFailure.value = null
   saving.value = false
   error.value = ''
   readiness.value = null
@@ -130,9 +131,9 @@ onBeforeUnmount(() => { generation++; window.removeEventListener('focus', check)
     </template>
     <template v-else>
       <p class="text-[12px] text-text-secondary">Git adds backup, history, and builds. You can keep building without it.</p>
-      <p class="text-[12px] text-text-secondary" role="status">{{ checking ? 'Checking Git connection…' : checkFailed ? 'Couldn’t check the Git connection.' : connection?.message }}</p>
+      <p class="text-[12px] text-text-secondary" role="status">{{ checking ? 'Checking Git connection…' : checkFailure ? 'Couldn’t check the Git connection.' : connection?.message }}</p>
       <div v-if="!canCreate" class="flex flex-wrap gap-2">
-        <a v-if="connection || checkFailed" :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
+        <a v-if="connection || checkFailure === 'forbidden'" :href="action.href" target="_blank" rel="noopener noreferrer" class="k-btn k-btn--primary no-underline">{{ action.label }} <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" aria-hidden="true" /></a>
         <button type="button" class="k-btn k-btn--ghost" :disabled="checking" @click="check">Check again</button>
       </div>
     </template>
