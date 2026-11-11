@@ -2,6 +2,7 @@
 // before creating the Agent, since its Schedule is written separately.
 const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
 const weekdays = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
+const maxCronStep = 9223372036854775807n // robfig/cron parses steps with strconv.Atoi on the 64-bit scheduler.
 const descriptors = new Set(['@yearly', '@annually', '@monthly', '@weekly', '@daily', '@midnight', '@hourly'])
 
 function validField(field: string, min: number, max: number, names: string[] = []): boolean {
@@ -13,7 +14,12 @@ function validField(field: string, min: number, max: number, names: string[] = [
 
   return field.split(',').every(part => {
     const [range, step, extra] = part.split('/')
-    if (extra !== undefined || (step !== undefined && (!/^\+?\d+$/.test(step) || Number(step) < 1))) return false
+    if (extra !== undefined) return false
+    if (step !== undefined) {
+      if (!/^\+?\d+$/.test(step)) return false
+      const amount = BigInt(step)
+      if (amount < 1n || amount > maxCronStep) return false
+    }
     if (range === '*' || range === '?') return true
     const [first, last, extraRange] = range.split('-')
     if (extraRange !== undefined) return false
@@ -28,7 +34,8 @@ export function validDigestCron(raw: string): boolean {
   if (expression.length > 253) return false
   if (/^(?:CRON_)?TZ=/.test(expression)) {
     const prefix = /^(?:CRON_)?TZ=([^\s]+) +(.+)$/.exec(expression)
-    if (!prefix) return false
+    // Intl also accepts bare UTC offsets, which time.LoadLocation rejects.
+    if (!prefix || /^[+-]/.test(prefix[1])) return false
     if (prefix[1] !== 'Local') {
       try {
         new Intl.DateTimeFormat('en', { timeZone: prefix[1] })

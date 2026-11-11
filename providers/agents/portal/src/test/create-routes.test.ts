@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { confirmState, resolveConfirm } from '../portalkit/confirm'
+import { validDigestCron } from '../agent-digest-cron'
+import type { Agent } from '../types'
 import AgentCreateView from '../views/AgentCreate.vue'
 import AgentsListView from '../views/AgentsList.vue'
 import ConnectionsView from '../views/Connections.vue'
@@ -252,6 +254,84 @@ describe('route-owned creation surfaces', () => {
     expect(el.querySelector('[aria-label="Remove railgrid/railgrid"]')).not.toBeNull()
     expect(el.querySelector('[aria-label="Remove railgrid/docs"]')).not.toBeNull()
     expect(submit.disabled).toBe(false)
+  })
+
+  it.each(['codex', 'claude-code'])('writes reasoning effort only for Codex after changing the harness to %s', async (provider) => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const createAgentFromTemplate = vi.fn(async (agent: Agent) => ({ agent, createdSchedules: [], warnings: [] }))
+    const api = stubApi({ agentTemplates: async () => catalog, createAgentFromTemplate })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex-login', provider: 'codex' }, { name: 'claude-login', provider: 'claude-code' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    store.connections.data = [{ metadata: { name: 'github' }, spec: { type: 'github' } }]
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-github', 'github')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex-login')
+    const repo = el.querySelector<HTMLInputElement>('#agent-create-param-repositories')!
+    repo.value = 'railgrid/railgrid'
+    repo.dispatchEvent(new InputEvent('input', { bubbles: true }))
+
+    const effort = el.querySelector<HTMLInputElement>('#agent-create-harness-effort')!
+    effort.closest('details')!.open = true
+    effort.value = 'max'
+    effort.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'claude-login')
+    expect(el.querySelector('#agent-create-harness-effort')).toBeNull()
+    if (provider === 'codex') {
+      await chooseFormSelect(el, '#agent-create-harnesscred', 'codex-login')
+      expect(el.querySelector<HTMLInputElement>('#agent-create-harness-effort')?.value).toBe('max')
+    }
+
+    el.querySelector<HTMLButtonElement>('button[type="submit"]')!.click()
+    await settle(el)
+    expect(createAgentFromTemplate).toHaveBeenCalledTimes(1)
+    const harness = createAgentFromTemplate.mock.calls[0][0].spec.backend?.harness
+    expect(harness?.credentialRef).toBe(provider === 'codex' ? 'codex-login' : 'claude-login')
+    expect(harness?.reasoningEffort).toBe(provider === 'codex' ? 'max' : undefined)
+  })
+
+  it('explains a GitHub connection that loses authorization and accepts a replacement', async () => {
+    const catalog = (await import('../../public/agent-templates.json')).default
+    const api = stubApi({ agentTemplates: async () => catalog })
+    const store = makeStore(api)
+    store.credentials.data = [{ name: 'codex', provider: 'codex' }]
+    store.edges.data = [{ kind: 'LinuxServer', name: 'build-01', connected: true }]
+    const oauth = { metadata: { name: 'oauth-github' }, spec: { type: 'github', auth: 'oauth' }, status: { oauthConnected: true } }
+    const replacement = { metadata: { name: 'other-github' }, spec: { type: 'github' } }
+    store.connections.data = [oauth, replacement]
+    markAuthoritative(store, 'agents', 'credentials', 'edges', 'connections')
+    const el = await mount<AgentCreateWizard>('agents-agent-create', { store, api, initialTemplate: 'code-reviewer' })
+    await chooseFormSelect(el, '#agent-create-edge', 'build-01')
+    await chooseFormSelect(el, '#agent-create-harnesscred', 'codex')
+    await chooseFormSelect(el, '#agent-create-github', 'oauth-github')
+    const submit = el.querySelector<HTMLButtonElement>('button[type="submit"]')!
+    expect(submit.disabled).toBe(false)
+
+    store.connections.data = [{ ...oauth, status: { oauthConnected: false } }, replacement]
+    store.dispatchEvent(new Event('change'))
+    await settleVue()
+
+    const picker = el.querySelector('#agent-create-github')!
+    expect(submit.disabled).toBe(true)
+    expect(picker.textContent).not.toContain('oauth-github')
+    expect(picker.getAttribute('aria-invalid')).toBe('true')
+    expect(picker.getAttribute('aria-describedby')).toContain('agent-create-github-status')
+    expect(el.querySelector('#agent-create-github-status')?.textContent).toContain('Choose another connection.')
+
+    await chooseFormSelect(el, '#agent-create-github', 'other-github')
+    expect(el.querySelector('#agent-create-github-status')).toBeNull()
+    expect(picker.hasAttribute('aria-invalid')).toBe(false)
+    expect(submit.disabled).toBe(false)
+  })
+
+  it('checks digest cron UTC offsets and Go integer bounds', () => {
+    expect(validDigestCron('CRON_TZ=+01:00 0 8 * * *')).toBe(false)
+    expect(validDigestCron('TZ=-05:00 0 8 * * *')).toBe(false)
+    expect(validDigestCron('*/9223372036854775808 * * * *')).toBe(false)
+    expect(validDigestCron('*/9223372036854775807 * * * *')).toBe(true)
+    expect(validDigestCron('CRON_TZ=Europe/London */15 8 * * MON-FRI')).toBe(true)
   })
 
   it('keeps the last machine snapshot visible and describes runner fields accessibly', async () => {

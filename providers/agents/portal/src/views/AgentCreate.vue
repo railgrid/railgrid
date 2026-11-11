@@ -29,6 +29,7 @@ import {
   AGENT_BACKEND_HARNESS,
   AGENT_BACKEND_MODEL,
   HARNESS_EDGE_KINDS,
+  MODEL_PROVIDER_CODEX,
   WORKSPACE_MODES,
   credentialUnavailable,
   edgeKey,
@@ -138,9 +139,11 @@ const harnessCredentialOptions = computed<FormSelectOption[]>(() => [
 ])
 const workspaceOptions = computed<FormSelectOption[]>(() => WORKSPACE_MODES.map(mode => ({ value: mode.id, label: mode.label })))
 // The harness is NOT chosen here: it is derived from the credential's provider.
-const selectedHarness = computed(() => harnessLabel(
-  harnessCredentials.value.find(credential => credential.name === harnessCredential.value)?.provider,
-))
+const selectedHarnessProvider = computed(() =>
+  harnessCredentials.value.find(credential => credential.name === harnessCredential.value)?.provider)
+const selectedHarness = computed(() => harnessLabel(selectedHarnessProvider.value))
+const usesCodex = computed(() => selectedHarnessProvider.value === MODEL_PROVIDER_CODEX)
+const reasoningEffort = computed(() => usesCodex.value ? harnessReasoningEffort.value.trim() : '')
 const channels = computed(() => { revision.value; return props.store.channelConnections() })
 const githubConnections = computed(() => { revision.value; return props.store.githubConnections() })
 const usableGitHubConnections = computed(() => githubConnections.value.filter(connection =>
@@ -168,6 +171,8 @@ const channelSlot = computed(() => slotOf('channel'))
 const githubSlot = computed(() => slotOf('githubConnection'))
 const connectionSlice = computed(() => { revision.value; return { ...props.store.connections } })
 const connections = computed(() => connectionSlice.value.data)
+const githubSelectionUnavailable = computed(() => connectionSlice.value.hasSnapshot && Boolean(harnessGitHubConnection.value) &&
+  !usableGitHubConnections.value.some(connection => connection.metadata.name === harnessGitHubConnection.value))
 const connectionSetupHref = (type?: string) => portalHref(
   '/providers/agents/#/create/connection' + (type ? '/' + type : ''), props.api.tenant(),
 )
@@ -340,6 +345,17 @@ const channelOptions = computed(() => [
   })),
 ])
 const hasOption = (options: FormSelectOption[], value: string) => Boolean(value) && options.some(option => option.value === value)
+const githubConnectionStatus = computed(() => {
+  if (githubSelectionUnavailable.value) {
+    return usableGitHubConnections.value.length
+      ? 'The selected GitHub connection is unavailable. Choose another connection.'
+      : 'The selected GitHub connection is unavailable. Reconnect it or add another.'
+  }
+  if (!githubSlot.value?.required || hasOption(githubConnectionOptions.value, harnessGitHubConnection.value)) return ''
+  if (connectionSlice.value.error) return 'Could not check GitHub connections.'
+  if (!connectionSlice.value.hasSnapshot || connectionSlice.value.loading) return 'Checking GitHub connections…'
+  return errors.harnessGitHubConnection || (isCodeReviewer.value ? '' : 'Select a GitHub connection to create this agent.')
+})
 const requiresReview = computed(() => {
   const spec = selectedTemplate.value?.spec
   const access = spec?.agent.tools?.background
@@ -405,7 +421,7 @@ async function submit(): Promise<void> {
   if (isHarness.value) {
     // A harness-backed agent needs a machine and an identity, and needs NO chat
     // credential. Requiring one here was the bug: it blocked the whole backend.
-    if (harnessReasoningEffort.value.trim() && !REASONING_EFFORT_RE.test(harnessReasoningEffort.value.trim())) {
+    if (reasoningEffort.value && !REASONING_EFFORT_RE.test(reasoningEffort.value)) {
       errors.harnessReasoningEffort = 'Use up to 32 lowercase letters, digits, dashes, or underscores. Start with a letter.'
       if (settings.value) settings.value.open = true
     }
@@ -451,7 +467,7 @@ async function submit(): Promise<void> {
       edgeRef: { kind: edge.kind as 'LinuxServer' | 'MacOSServer', name: edge.name },
       credentialRef: harnessCredential.value,
       ...(harnessModel.value.trim() ? { model: harnessModel.value.trim() } : {}),
-      ...(harnessReasoningEffort.value.trim() ? { reasoningEffort: harnessReasoningEffort.value.trim() } : {}),
+      ...(reasoningEffort.value ? { reasoningEffort: reasoningEffort.value } : {}),
       workspace: harnessWorkspace.value,
       ...(harnessGitHubConnection.value ? { githubConnectionRef: harnessGitHubConnection.value } : {}),
     }
@@ -510,7 +526,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
   const harness = instance.agent.spec.backend?.harness
   if (harness) {
     if (harnessModel.value.trim()) harness.model = harnessModel.value.trim()
-    if (harnessReasoningEffort.value.trim()) harness.reasoningEffort = harnessReasoningEffort.value.trim()
+    if (reasoningEffort.value) harness.reasoningEffort = reasoningEffort.value
     harness.workspace = harnessWorkspace.value
   }
   const { agent, schedules } = instance
@@ -828,7 +844,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                       <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
                       <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
                     </label>
-                    <label>
+                    <label v-if="usesCodex">
                       <span id="agent-create-harness-effort-label">Reasoning effort</span>
                       <input id="agent-create-harness-effort" :disabled="busy" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label"  :aria-invalid="!!errors.harnessReasoningEffort || undefined"
                         :aria-describedby="errors.harnessReasoningEffort ? 'agent-create-harness-effort-hint agent-create-harness-effort-error' : 'agent-create-harness-effort-hint'" />
@@ -846,9 +862,11 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                 <template v-if="selectedTemplate">
                   <div class="agents-template-parameter">
                     <span id="agent-create-github-label">GitHub connection{{ githubSlot?.required ? ' *' : '' }}</span>
-                    <FormSelect v-if="usableGitHubConnections.length || !githubSlot?.required" id="agent-create-github" v-model="harnessGitHubConnection" name="harnessGitHubConnection"
-                      :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required" :invalid="Boolean(errors.harnessGitHubConnection)"
-                      labelledby="agent-create-github-label" :describedby="isCodeReviewer ? undefined : 'agent-create-github-hint'" />
+                    <FormSelect v-if="usableGitHubConnections.length || !githubSlot?.required" id="agent-create-github" name="harnessGitHubConnection"
+                      :model-value="githubSelectionUnavailable ? '' : harnessGitHubConnection" @update:model-value="harnessGitHubConnection = $event"
+                      :options="githubConnectionOptions" :disabled="busy" :required="!!githubSlot?.required"
+                      :invalid="githubSelectionUnavailable || Boolean(errors.harnessGitHubConnection)" labelledby="agent-create-github-label"
+                      :describedby="[githubConnectionStatus ? 'agent-create-github-status' : '', !isCodeReviewer ? 'agent-create-github-hint' : ''].filter(Boolean).join(' ')" />
                     <p v-if="!isCodeReviewer" id="agent-create-github-hint" class="agents-hint">{{ githubSlot?.description }}</p>
                     <div v-if="githubSlot?.required && !usableGitHubConnections.length && connectionSlice.hasSnapshot" class="agents-form-actions">
                       <a class="k-dashboard-action agents-setup-link" :href="githubSetupHref" target="_blank" rel="noopener noreferrer"
@@ -861,10 +879,8 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     </div>
                     <button v-if="!connectionSlice.hasSnapshot && connectionSlice.error" class="k-btn k-btn--ghost" type="button"
                       :disabled="busy || connectionSlice.loading" @click="store.load('connections')">Retry GitHub connections</button>
-                    <p v-if="githubSlot?.required && !hasOption(githubConnectionOptions, harnessGitHubConnection) &&
-                      (!isCodeReviewer || connectionSlice.error || !connectionSlice.hasSnapshot || connectionSlice.loading || errors.harnessGitHubConnection)" class="agents-hint" role="status">
-                      {{ connectionSlice.error ? 'Could not check GitHub connections.' : !connectionSlice.hasSnapshot || connectionSlice.loading ? 'Checking GitHub connections…' : errors.harnessGitHubConnection || 'Select a GitHub connection to create this agent.' }}
-                    </p>
+                    <p v-if="githubConnectionStatus" id="agent-create-github-status" role="status"
+                      :class="githubSelectionUnavailable ? 'agents-fielderr' : 'agents-hint'">{{ githubConnectionStatus }}</p>
                   </div>
                 </template>
                 <div v-if="isCodeReviewer && reviewerSetupOpened && !edgeSlice.error && !connectionSlice.error && !credentials.error &&
@@ -967,7 +983,7 @@ async function submitTemplate(chosen: AgentTemplate, normalizedName: string): Pr
                     <input id="agent-create-harness-model" v-model="harnessModel" class="k-input" placeholder="Harness default" :disabled="busy" aria-labelledby="agent-create-harness-model-label" aria-describedby="agent-create-harness-model-hint" />
                     <span id="agent-create-harness-model-hint" class="agents-hint">Optional — blank leaves the harness’s own default.</span>
                   </label>
-                  <label>
+                  <label v-if="usesCodex">
                     <span id="agent-create-harness-effort-label">Reasoning effort</span>
                     <input id="agent-create-harness-effort" :disabled="busy" v-model="harnessReasoningEffort" class="k-input" placeholder="Harness default" maxlength="32" aria-labelledby="agent-create-harness-effort-label"  :aria-invalid="!!errors.harnessReasoningEffort || undefined"
                         :aria-describedby="errors.harnessReasoningEffort ? 'agent-create-harness-effort-hint agent-create-harness-effort-error' : 'agent-create-harness-effort-hint'" />
