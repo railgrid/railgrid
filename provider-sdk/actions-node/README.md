@@ -7,7 +7,7 @@ in the server component's `package.json`:
 ```json
 {
   "dependencies": {
-    "@railgrid/actions-node": "0.2.2"
+    "@railgrid/actions-node": "0.2.3"
   }
 }
 ```
@@ -118,7 +118,7 @@ Publish and verify the organization-scoped package before deploying App Studio
 with the new pin or distributing the updated skill. For the first release, an
 npm maintainer with write access to the `railgrid` scope publishes from this
 directory with `npm publish --access public`. Verify a clean install of
-`@railgrid/actions-node@0.2.2` from the public registry.
+the published version from the public registry.
 
 Once the package exists, configure `railgrid/railgrid` and workflow filename
 `actions-node-release.yaml` as its npm trusted publisher with direct publish
