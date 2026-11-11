@@ -28,7 +28,7 @@
   --railgrid-ui-canonical: 1;
   /* This marker covers the core PortalKit recipes only. It advances when a
    * core primitive changes, independently from optional AgentKit recipes. */
-  --railgrid-ui-core-version: 46;
+  --railgrid-ui-core-version: 47;
   --k-toast-bottom-offset: 16px;
   /* Shared stacking contract: menus sit above page content, fullscreen
    * surfaces above menus, and global modal/toast layers remain topmost. */
@@ -2783,6 +2783,17 @@ railgrid-resource-table-filter { display: contents; }
     opacity: 1;
     pointer-events: auto;
   }
+}
+
+/* Tables with several row actions keep space for the name on desktop and
+ * put the actions on their own line on narrow screens. */
+.k-table-stack-actions .k-table__cell--primary { min-inline-size: 18rem; }
+@media (max-width: 640px) {
+  .k-table-stack-actions .k-table__primary { flex-wrap: wrap; }
+  .k-table-stack-actions .k-table__primary-content { flex-basis: 100%; }
+  .k-table-stack-actions .k-table__primary-actions { margin-inline-start: 0; }
+  .k-table-stack-actions .k-table__primary-actions,
+  .k-table-stack-actions .k-table__primary-actions .k-table-action { opacity: 1; }
 }
 
 /* A contextual workbench table uses the parent canvas and wraps its primary
