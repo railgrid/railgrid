@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import test from 'node:test'
+import { nextTick, ref, watch } from 'vue'
 
 const app = await readFile(new URL('./App.vue', import.meta.url), 'utf8')
 const models = await readFile(new URL('./ModelsSettings.vue', import.meta.url), 'utf8')
 
 test('checks required model setup before showing the project composer', () => {
   assert.doesNotMatch(app, /<FirstTimeSetup|<GitRecommendationBanner/)
-  assert.match(app, /\[isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel\][\s\S]*!configured[\s\S]*beginCreateModelSetup\(\)/)
+  assert.match(app, /\[isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel, wizardOpen\][\s\S]*!configured[\s\S]*beginCreateModelSetup\(\)/)
   assert.match(app, /<form v-else-if="llmConfigured"[^>]+@submit\.prevent="createProjectFromPrompt"/)
   assert.match(app, /watch\(promptRef, \(composer\) => \{[\s\S]*?composer\?\.focus\(\)/)
   assert.match(app, /if \(createModelSetup\.value\) \{\s*awaitingCreatedModel\.value = !llmConfigured\.value\s*createModelSetup\.value = false/)
@@ -24,4 +25,32 @@ test('shows the four-step journey during setup and review', () => {
   assert.match(models, /if \(!props\.onboarding\) emit\('beginProviderDetour'\)/)
   assert.match(models, /Save provider and continue/)
   assert.match(models, /Save model and continue/)
+})
+
+test('reopens model setup when leaving a review after the last model is lost', async () => {
+  const start = app.indexOf('watch(\n  [isCreateRoute, llmSettingsChecking')
+  const end = app.indexOf('\nfunction createProjectFromPrompt', start)
+  assert.ok(start >= 0 && end > start)
+  const state = {
+    isCreateRoute: ref(true),
+    llmSettingsChecking: ref(false),
+    llmConfigured: ref(true),
+    llmSettingsError: ref(null),
+    awaitingCreatedModel: ref(false),
+    wizardOpen: ref(true),
+    llmSettings: ref({ models: [] }),
+    beginCreateModelSetup: () => { opened += 1 },
+  }
+  let opened = 0
+  const stop = new Function('watch', 'state', `with (state) { return ${app.slice(start, end)} }`)(watch, state)
+  try {
+    state.llmConfigured.value = false
+    await nextTick()
+    assert.equal(opened, 0)
+    state.wizardOpen.value = false
+    await nextTick()
+    assert.equal(opened, 1)
+  } finally {
+    stop()
+  }
 })

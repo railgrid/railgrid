@@ -81,10 +81,10 @@ func TestDevelopmentTemplateViewResourceKinds(t *testing.T) {
 		map[string]any{"id": "frontendDeployment", "template": map[string]any{"kind": "Deployment"}},
 		map[string]any{"id": "frontendService", "template": map[string]any{"kind": "Service"}},
 		map[string]any{"id": "backendService", "template": map[string]any{"kind": "Service"}},
-		map[string]any{"id": "existingSecret", "externalRef": map[string]any{"kind": "Secret"}},
+		map[string]any{"id": "existingGateway", "externalRef": map[string]any{"kind": "Gateway"}},
 		map[string]any{"id": "prodDB", "includeWhen": []any{`${schema.spec.railgridMode != "development"}`}, "template": map[string]any{"kind": "StatefulSet"}},
 		map[string]any{"id": "devRoute", "includeWhen": []any{`${schema.spec.railgridMode == "development"}`}, "template": map[string]any{"kind": "HTTPRoute"}},
-		map[string]any{"id": "optionalJob", "includeWhen": []any{`${schema.spec.runJobs}`}, "template": map[string]any{"kind": "Job"}},
+		map[string]any{"id": "optionalIngress", "includeWhen": []any{`${schema.spec.expose}`}, "template": map[string]any{"kind": "Ingress"}},
 	}
 	if err := unstructured.SetNestedSlice(obj.Object, nodes, "spec", "backendConfig", "resources"); err != nil {
 		t.Fatal(err)
@@ -94,7 +94,9 @@ func TestDevelopmentTemplateViewResourceKinds(t *testing.T) {
 		t.Fatalf("views = %+v, want the Infrastructure Instance created by the development binding", views)
 	}
 	want := []projectDevelopmentResourceKind{
-		{Kind: "Deployment"}, {Kind: "HTTPRoute"}, {Kind: "Service"}, {Kind: "Job", Conditional: true},
+		{Kind: "ConfigMap"}, {Kind: "Deployment"}, {Kind: "HTTPRoute"}, {Kind: "Job"},
+		{Kind: "PersistentVolumeClaim"}, {Kind: "Role"}, {Kind: "RoleBinding"}, {Kind: "Secret"},
+		{Kind: "Service"}, {Kind: "ServiceAccount"}, {Kind: "Ingress", Conditional: true},
 	}
 	if got := views[0].ResourceKinds; !reflect.DeepEqual(got, want) {
 		t.Fatalf("resource kinds = %+v, want %+v", got, want)

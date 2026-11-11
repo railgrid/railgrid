@@ -85,6 +85,7 @@ const resourcePresentation = new Map([
   ['ConfigMap', { icon: FileCog, description: 'Supplies app configuration' }],
   ['Deployment', { icon: Box, description: 'Runs and manages app containers' }],
   ['HTTPRoute', { icon: Route, description: 'Routes HTTP traffic to the app' }],
+  ['PersistentVolumeClaim', { icon: Database, description: 'Provides persistent storage for the development runtime' }],
   ['Service', { icon: Network, description: 'Provides a stable network endpoint' }],
   ['StatefulSet', { icon: Database, description: 'Runs workloads with stable identities' }],
   ['Job', { icon: Workflow, description: 'Runs a task to completion' }],
@@ -490,7 +491,7 @@ onMounted(async () => {
                     </div>
                   </li>
                 </ul>
-                <p v-if="activeTemplate?.resourceKinds?.length" class="mt-2 text-[12px] text-text-secondary">Resources are grouped by kind. Railgrid also provisions supporting resources for the development runtime.</p>
+                <p v-if="activeTemplate?.resourceKinds?.length" class="mt-2 text-[12px] text-text-secondary">Includes Railgrid’s development runtime resources. Resources are grouped by kind.</p>
                 <p v-else class="mt-2 text-[12px] text-text-secondary">This template does not provide a breakdown of its managed resources.</p>
                 <p v-if="willAttachScaffold" class="mt-1 text-[12px] text-text-secondary">App Studio attaches the template’s starter source when it is available.</p>
               </template>

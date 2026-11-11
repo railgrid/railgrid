@@ -917,9 +917,8 @@ type projectDevelopmentResourceKind struct {
 	Conditional bool   `json:"conditional,omitempty"`
 }
 
-// developmentResourceKinds summarizes the managed kinds in the template's
-// authored graph. Names and counts depend on the reconciled instance, and
-// Infrastructure also generates its own development support resources.
+// developmentResourceKinds summarizes authored and platform-generated
+// resource kinds. Names and counts depend on the reconciled instance.
 func developmentResourceKinds(obj *unstructured.Unstructured, info projectTemplateInfo) []projectDevelopmentResourceKind {
 	backend, _, _ := unstructured.NestedString(obj.Object, "spec", "backend")
 	if backend != "kro" {
@@ -927,6 +926,14 @@ func developmentResourceKinds(obj *unstructured.Unstructured, info projectTempla
 	}
 	nodes, _, _ := unstructured.NestedSlice(obj.Object, "spec", "backendConfig", "resources")
 	kinds := make(map[string]bool)
+	if len(info.Components) > 0 {
+		// Infrastructure's Kro development overlay always adds component
+		// platform-state storage, a CA ConfigMap, and a control Service. It
+		// also adds an instance-wide control-token bootstrap and its RBAC.
+		for _, kind := range []string{"ConfigMap", "Job", "PersistentVolumeClaim", "Role", "RoleBinding", "Secret", "Service", "ServiceAccount"} {
+			kinds[kind] = false
+		}
+	}
 	for _, raw := range nodes {
 		node, ok := raw.(map[string]any)
 		if !ok {

@@ -3886,7 +3886,6 @@ async function loadModelProviderConnections() {
   if (!hasProjectRequestTransport(props.ctx)) {
     llmConnections.value = []
     llmConnectionsLoading.value = false
-  llmConnectionsLoaded.value = false
     llmConnectionsError.value = null
     llmConnectionsLoaded.value = false
     return
@@ -5783,8 +5782,8 @@ function backToProjectList() {
 }
 
 watch(
-  [isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel],
-  ([active, checking, configured, settingsError, awaitingModel]) => {
+  [isCreateRoute, llmSettingsChecking, llmConfigured, llmSettingsError, awaitingCreatedModel, wizardOpen],
+  ([active, checking, configured, settingsError, awaitingModel, reviewing]) => {
     if (!active) {
       if (createModelSetup.value) clearCreateModelSetup()
       showProjectSetupJourney.value = false
@@ -5792,7 +5791,7 @@ watch(
       return
     }
     if (configured) awaitingCreatedModel.value = false
-    if (!wizardOpen.value && !awaitingModel && !checking && !configured && !settingsError && llmSettings.value) {
+    if (!reviewing && !awaitingModel && !checking && !configured && !settingsError && llmSettings.value) {
       beginCreateModelSetup()
     }
   },

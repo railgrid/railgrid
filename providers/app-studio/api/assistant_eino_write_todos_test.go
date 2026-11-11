@@ -50,11 +50,9 @@ var projectEinoAssistantWriteTodosParameters = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// newProjectEinoAssistantWriteTodosTool is the App Studio-owned replacement
-// for Eino Deep's framework middleware. Keeping it as an ordinary App tool
-// means every update enters the same request/admission/result ledger as the
-// other tools; the lifecycle projects its settled plan only after that result
-// is durable.
+// newProjectEinoAssistantWriteTodosTool simulates the retired tool in tests
+// that exercise the durable ledger and replay of historical plan updates.
+// App Studio streams progress through report_progress for new turns.
 func newProjectEinoAssistantWriteTodosTool(
 	server *Server,
 	req projectAssistantRunRequest,
